@@ -2861,11 +2861,6 @@ class ModelBuilder:
         fix_right: bool = False,
         fix_top: bool = False,
         fix_bottom: bool = False,
-        tri_ke: float | None = None,
-        tri_ka: float | None = None,
-        tri_kd: float | None = None,
-        tri_drag: float | None = None,
-        tri_lift: float | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -2892,12 +2887,6 @@ class ModelBuilder:
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
-
         start_vertex = len(self.particle_q)
 
         mass = cell_x * cell_y * cell_z * density
@@ -2973,8 +2962,27 @@ class ModelBuilder:
                         add_tet(v5, v2, v7, v0)
 
         # add triangles
+        start_tri = len(self.tri_indices)
         for _k, v in faces.items():
-            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+            self.add_triangle(v[0], v[1], v[2], 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        end_tri = len(self.tri_indices)
+
+        adj = wp.utils.MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+
+        # add edges
+        edge_indices = np.fromiter(
+            (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+            int,
+        ).reshape(-1, 4)
+        self.add_edges(
+            edge_indices[:, 0],
+            edge_indices[:, 1],
+            edge_indices[:, 2],
+            edge_indices[:, 3],
+            edge_ke=[0.0] * len(edge_indices),
+            edge_kd=[0.0] * len(edge_indices),
+        )
 
     def add_soft_mesh(
         self,
@@ -2988,11 +2996,6 @@ class ModelBuilder:
         k_mu: float,
         k_lambda: float,
         k_damp: float,
-        tri_ke: float | None = None,
-        tri_ka: float | None = None,
-        tri_kd: float | None = None,
-        tri_drag: float | None = None,
-        tri_lift: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
 
@@ -3007,12 +3010,6 @@ class ModelBuilder:
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
-
         num_tets = int(len(indices) / 4)
 
         start_vertex = len(self.particle_q)
@@ -3058,11 +3055,29 @@ class ModelBuilder:
                 add_face(v0, v3, v2)
 
         # add triangles
+        start_tri = len(self.tri_indices)
         for _k, v in faces.items():
             try:
-                self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+                self.add_triangle(v[0], v[1], v[2], 0.0, 0.0, 0.0, 0.0, 0.0)
             except np.linalg.LinAlgError:
                 continue
+        end_tri = len(self.tri_indices)
+
+        adj = wp.utils.MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+
+        # add edges
+        edge_indices = np.fromiter(
+            (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+            int,
+        ).reshape(-1, 4)
+        self.add_edges(
+            edge_indices[:, 0],
+            edge_indices[:, 1],
+            edge_indices[:, 2],
+            edge_indices[:, 3],
+            edge_ke=[0.0] * len(edge_indices),
+            edge_kd=[0.0] * len(edge_indices),
+        )
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i, m, I, p, q):
