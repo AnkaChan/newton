@@ -1448,54 +1448,56 @@ def VBD_solve_trimesh_no_self_contact(
             )
         # fmt: on
 
-        f_tri, h_tri = evaluate_stvk_force_hessian(
-            tri_id,
-            particle_order,
-            pos,
-            tri_indices,
-            tri_poses[tri_id],
-            tri_areas[tri_id],
-            tri_materials[tri_id, 0],
-            tri_materials[tri_id, 1],
-            tri_materials[tri_id, 2],
-        )
-        # compute damping
-        k_d = tri_materials[tri_id, 2]
-        h_d = h_tri * (k_d / dt)
-
-        f_d = h_d * (prev_pos[particle_index] - pos[particle_index])
-
-        f = f + f_tri + f_d
-        h = h + h_tri + h_d
-
-        # fmt: off
-        if wp.static("elasticity_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
-            wp.printf(
-                "particle: %d, i_adj_tri: %d, particle_order: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
-                particle_index,
-                i_adj_tri,
+        if tri_materials[tri_index, 0] != 0.0 or tri_materials[tri_index, 1] != 0.0:
+            f_tri, h_tri = evaluate_stvk_force_hessian(
+                tri_id,
                 particle_order,
-                f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
+                pos,
+                tri_indices,
+                tri_poses[tri_id],
+                tri_areas[tri_id],
+                tri_materials[tri_id, 0],
+                tri_materials[tri_id, 1],
+                tri_materials[tri_id, 2],
             )
-        # fmt: on
+            # compute damping
+            k_d = tri_materials[tri_id, 2]
+            h_d = h_tri * (k_d / dt)
+
+            f_d = h_d * (prev_pos[particle_index] - pos[particle_index])
+
+            f = f + f_tri + f_d
+            h = h + h_tri + h_d
+
+            # fmt: off
+            if wp.static("elasticity_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
+                wp.printf(
+                    "particle: %d, i_adj_tri: %d, particle_order: %d, \nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
+                    particle_index,
+                    i_adj_tri,
+                    particle_order,
+                    f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
+                )
+            # fmt: on
 
     for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
         nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(adjacency, particle_index, i_adj_edge)
-        f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-            nei_edge_index,
-            vertex_order_on_edge,
-            pos,
-            prev_pos,
-            edge_indices,
-            edge_rest_angles,
-            edge_rest_length,
-            edge_bending_properties[nei_edge_index, 0],
-            edge_bending_properties[nei_edge_index, 1],
-            dt,
-        )
+        if edge_bending_properties[nei_edge_index, 0] != 0.0:
+            f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                nei_edge_index,
+                vertex_order_on_edge,
+                pos,
+                prev_pos,
+                edge_indices,
+                edge_rest_angles,
+                edge_rest_length,
+                edge_bending_properties[nei_edge_index, 0],
+                edge_bending_properties[nei_edge_index, 1],
+                dt,
+            )
 
-        f = f + f_edge
-        h = h + h_edge
+            f = f + f_edge
+            h = h + h_edge
 
     if has_ground:
         ground_normal = wp.vec3(ground[0], ground[1], ground[2])
@@ -1877,26 +1879,26 @@ def VBD_solve_trimesh_with_self_contact_penetration_free(
                 tri_indices[tri_index, 2],
             )
         # fmt: on
+        if tri_materials[tri_index, 0] != 0. or tri_materials[tri_index, 1] != 0.:
+            f_tri, h_tri = evaluate_stvk_force_hessian(
+                tri_index,
+                vertex_order,
+                pos,
+                tri_indices,
+                tri_poses[tri_index],
+                tri_areas[tri_index],
+                tri_materials[tri_index, 0],
+                tri_materials[tri_index, 1],
+                tri_materials[tri_index, 2],
+            )
+            # compute damping
+            k_d = tri_materials[tri_index, 2]
+            h_d = h_tri * (k_d / dt)
 
-        f_tri, h_tri = evaluate_stvk_force_hessian(
-            tri_index,
-            vertex_order,
-            pos,
-            tri_indices,
-            tri_poses[tri_index],
-            tri_areas[tri_index],
-            tri_materials[tri_index, 0],
-            tri_materials[tri_index, 1],
-            tri_materials[tri_index, 2],
-        )
-        # compute damping
-        k_d = tri_materials[tri_index, 2]
-        h_d = h_tri * (k_d / dt)
+            f_d = h_d * (particle_prev_pos - particle_pos)
 
-        f_d = h_d * (particle_prev_pos - particle_pos)
-
-        f = f + f_tri + f_d
-        h = h + h_tri + h_d
+            f = f + f_tri + f_d
+            h = h + h_tri + h_d
 
 
     for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
