@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 from typing_extensions import override
-from warp.types import float32, matrix
+from warp.types import float32, matrix, vector
 
 from newton.collision.collide import (
     TriMeshCollisionDetector,
@@ -43,6 +43,10 @@ VBD_DEBUG_PRINTING_OPTIONS = {
 }
 
 
+class mat99(matrix(shape=(9, 9), dtype=float32)):
+    pass
+
+
 class mat66(matrix(shape=(6, 6), dtype=float32)):
     pass
 
@@ -52,6 +56,10 @@ class mat32(matrix(shape=(3, 2), dtype=float32)):
 
 
 class mat43(matrix(shape=(4, 3), dtype=float32)):
+    pass
+
+
+class vec9(vector(length=9, dtype=float32)):
     pass
 
 
@@ -1735,6 +1743,329 @@ def VBD_accumulate_contact_force_and_hessian(
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
+
+
+@wp.func
+def assemble_tet_vertex_force_and_hessian(
+    dE_dF: vec9,
+    H: mat99,
+    m1: float,
+    m2: float,
+    m3: float,
+):
+    f = wp.vec3(
+        -(dE_dF[0] * m1 + dE_dF[3] * m2 + dE_dF[6] * m3),
+        -(dE_dF[1] * m1 + dE_dF[4] * m2 + dE_dF[7] * m3),
+        -(dE_dF[2] * m1 + dE_dF[5] * m2 + dE_dF[8] * m3),
+    )
+    h = wp.mat33()
+
+    h[0, 0] += (
+        m1 * (H[0, 0] * m1 + H[3, 0] * m2 + H[6, 0] * m3)
+        + m2 * (H[0, 3] * m1 + H[3, 3] * m2 + H[6, 3] * m3)
+        + m3 * (H[0, 6] * m1 + H[3, 6] * m2 + H[6, 6] * m3)
+    )
+
+    h[1, 0] += (
+        m1 * (H[1, 0] * m1 + H[4, 0] * m2 + H[7, 0] * m3)
+        + m2 * (H[1, 3] * m1 + H[4, 3] * m2 + H[7, 3] * m3)
+        + m3 * (H[1, 6] * m1 + H[4, 6] * m2 + H[7, 6] * m3)
+    )
+
+    h[2, 0] += (
+        m1 * (H[2, 0] * m1 + H[5, 0] * m2 + H[8, 0] * m3)
+        + m2 * (H[2, 3] * m1 + H[5, 3] * m2 + H[8, 3] * m3)
+        + m3 * (H[2, 6] * m1 + H[5, 6] * m2 + H[8, 6] * m3)
+    )
+
+    h[0, 1] += (
+        m1 * (H[0, 1] * m1 + H[3, 1] * m2 + H[6, 1] * m3)
+        + m2 * (H[0, 4] * m1 + H[3, 4] * m2 + H[6, 4] * m3)
+        + m3 * (H[0, 7] * m1 + H[3, 7] * m2 + H[6, 7] * m3)
+    )
+
+    h[1, 1] += (
+        m1 * (H[1, 1] * m1 + H[4, 1] * m2 + H[7, 1] * m3)
+        + m2 * (H[1, 4] * m1 + H[4, 4] * m2 + H[7, 4] * m3)
+        + m3 * (H[1, 7] * m1 + H[4, 7] * m2 + H[7, 7] * m3)
+    )
+
+    h[2, 1] += (
+        m1 * (H[2, 1] * m1 + H[5, 1] * m2 + H[8, 1] * m3)
+        + m2 * (H[2, 4] * m1 + H[5, 4] * m2 + H[8, 4] * m3)
+        + m3 * (H[2, 7] * m1 + H[5, 7] * m2 + H[8, 7] * m3)
+    )
+
+    h[0, 2] += (
+        m1 * (H[0, 2] * m1 + H[3, 2] * m2 + H[6, 2] * m3)
+        + m2 * (H[0, 5] * m1 + H[3, 5] * m2 + H[6, 5] * m3)
+        + m3 * (H[0, 8] * m1 + H[3, 8] * m2 + H[6, 8] * m3)
+    )
+
+    h[1, 2] += (
+        m1 * (H[1, 2] * m1 + H[4, 2] * m2 + H[7, 2] * m3)
+        + m2 * (H[1, 5] * m1 + H[4, 5] * m2 + H[7, 5] * m3)
+        + m3 * (H[1, 8] * m1 + H[4, 8] * m2 + H[7, 8] * m3)
+    )
+
+    h[2, 2] += (
+        m1 * (H[2, 2] * m1 + H[5, 2] * m2 + H[8, 2] * m3)
+        + m2 * (H[2, 5] * m1 + H[5, 5] * m2 + H[8, 5] * m3)
+        + m3 * (H[2, 8] * m1 + H[5, 8] * m2 + H[8, 8] * m3)
+    )
+
+    return f, h
+
+
+@wp.func
+def damp_force_and_hessian(
+    particle_pos_prev: wp.vec3,
+    particle_pos: wp.vec3,
+    force: wp.vec3,
+    hessian: wp.mat33,
+    damping: float,
+    dt: float,
+):
+    displacement = particle_pos_prev - particle_pos
+    h_d = hessian * (damping / dt)
+    f_d = h_d * displacement
+
+    return force + f_d, hessian + h_d
+
+
+@wp.func
+def evaluate_volumetric_neo_hooken_force_and_hessian_4_vertices(
+    tet_id: int,
+    pos_prev: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    tet_indices: wp.array(dtype=wp.int32, ndim=2),
+    tet_poses: wp.array(dtype=wp.mat33),
+    tet_materials: wp.array(dtype=float, ndim=2),
+    dt: float,
+):
+    v0_idx = tet_indices[tet_id, 0]
+    v1_idx = tet_indices[tet_id, 1]
+    v2_idx = tet_indices[tet_id, 2]
+    v3_idx = tet_indices[tet_id, 3]
+
+    mu = tet_materials[tet_id, 0]
+    lmbd = tet_materials[tet_id, 1]
+
+    v0 = pos[v0_idx]
+    v1 = pos[v1_idx]
+    v2 = pos[v2_idx]
+    v3 = pos[v3_idx]
+
+    Dm_inv = tet_poses[tet_id]
+    rest_volume = 1.0 / (wp.determinant(Dm_inv) * 6.0)
+
+    diff_1 = v1 - v0
+    diff_2 = v2 - v0
+    diff_3 = v3 - v0
+    Ds = wp.mat33(
+        diff_1[0],
+        diff_2[0],
+        diff_3[0],
+        diff_1[1],
+        diff_2[1],
+        diff_3[1],
+        diff_1[2],
+        diff_2[2],
+        diff_3[2],
+    )
+
+    F = Ds * Dm_inv
+
+    a = 1.0 + mu / lmbd
+    det_F = wp.determinant(F)
+
+    F1_1 = F[0, 0]
+    F2_1 = F[1, 0]
+    F3_1 = F[2, 0]
+    F1_2 = F[0, 1]
+    F2_2 = F[1, 1]
+    F3_2 = F[2, 1]
+    F1_3 = F[0, 2]
+    F2_3 = F[1, 2]
+    F3_3 = F[2, 2]
+
+    dPhi_D_dF = vec9(
+        F1_1,
+        F2_1,
+        F3_1,
+        F1_2,
+        F2_2,
+        F3_2,
+        F1_3,
+        F2_3,
+        F3_3,
+    )
+
+    ddetF_dF = vec9(
+        F2_2 * F3_3 - F2_3 * F3_2,
+        F1_3 * F3_2 - F1_2 * F3_3,
+        F1_2 * F2_3 - F1_3 * F2_2,
+        F2_3 * F3_1 - F2_1 * F3_3,
+        F1_1 * F3_3 - F1_3 * F3_1,
+        F1_3 * F2_1 - F1_1 * F2_3,
+        F2_1 * F3_2 - F2_2 * F3_1,
+        F1_2 * F3_1 - F1_1 * F3_2,
+        F1_1 * F2_2 - F1_2 * F2_1,
+    )
+
+    d2E_dF_dF = wp.outer(ddetF_dF, ddetF_dF)
+    k = det_F - a
+    d2E_dF_dF[0, 4] += k * F3_3
+    d2E_dF_dF[4, 0] += k * F3_3
+    d2E_dF_dF[0, 5] += k * -F2_3
+    d2E_dF_dF[5, 0] += k * -F2_3
+    d2E_dF_dF[0, 7] += k * -F3_2
+    d2E_dF_dF[7, 0] += k * -F3_2
+    d2E_dF_dF[0, 8] += k * F2_2
+    d2E_dF_dF[8, 0] += k * F2_2
+
+    d2E_dF_dF[1, 3] += k * -F3_3
+    d2E_dF_dF[3, 1] += k * -F3_3
+    d2E_dF_dF[1, 5] += k * F1_3
+    d2E_dF_dF[5, 1] += k * F1_3
+    d2E_dF_dF[1, 6] += k * F3_2
+    d2E_dF_dF[6, 1] += k * F3_2
+    d2E_dF_dF[1, 8] += k * -F1_2
+    d2E_dF_dF[8, 1] += k * -F1_2
+
+    d2E_dF_dF[2, 3] += k * F2_3
+    d2E_dF_dF[3, 2] += k * F2_3
+    d2E_dF_dF[2, 4] += k * -F1_3
+    d2E_dF_dF[4, 2] += k * -F1_3
+    d2E_dF_dF[2, 6] += k * -F2_2
+    d2E_dF_dF[6, 2] += k * -F2_2
+    d2E_dF_dF[2, 7] += k * F1_2
+    d2E_dF_dF[7, 2] += k * F1_2
+
+    d2E_dF_dF[3, 7] += k * F3_1
+    d2E_dF_dF[7, 3] += k * F3_1
+    d2E_dF_dF[3, 8] += k * -F2_1
+    d2E_dF_dF[8, 3] += k * -F2_1
+
+    d2E_dF_dF[4, 6] += k * -F3_1
+    d2E_dF_dF[6, 4] += k * -F3_1
+    d2E_dF_dF[4, 8] += k * F1_1
+    d2E_dF_dF[8, 4] += k * F1_1
+
+    d2E_dF_dF[5, 6] += k * F2_1
+    d2E_dF_dF[6, 5] += k * F2_1
+    d2E_dF_dF[5, 7] += k * -F1_1
+    d2E_dF_dF[7, 5] += k * -F1_1
+
+    d2E_dF_dF = d2E_dF_dF * lmbd
+
+    d2E_dF_dF[0, 0] += mu
+    d2E_dF_dF[1, 1] += mu
+    d2E_dF_dF[2, 2] += mu
+    d2E_dF_dF[3, 3] += mu
+    d2E_dF_dF[4, 4] += mu
+    d2E_dF_dF[5, 5] += mu
+    d2E_dF_dF[6, 6] += mu
+    d2E_dF_dF[7, 7] += mu
+    d2E_dF_dF[8, 8] += mu
+
+    d2E_dF_dF = d2E_dF_dF * rest_volume
+
+    dPhi_D_dF = dPhi_D_dF * mu
+    dPhi_H_dF = ddetF_dF * lmbd * k
+
+    dE_dF = (dPhi_D_dF + dPhi_H_dF) * rest_volume
+
+    Dm_inv_1_1 = Dm_inv[0, 0]
+    Dm_inv_2_1 = Dm_inv[1, 0]
+    Dm_inv_3_1 = Dm_inv[2, 0]
+    Dm_inv_1_2 = Dm_inv[0, 1]
+    Dm_inv_2_2 = Dm_inv[1, 1]
+    Dm_inv_3_2 = Dm_inv[2, 1]
+    Dm_inv_1_3 = Dm_inv[0, 2]
+    Dm_inv_2_3 = Dm_inv[1, 2]
+    Dm_inv_3_3 = Dm_inv[2, 2]
+
+    ms = mat43(
+        -Dm_inv_1_1 - Dm_inv_2_1 - Dm_inv_3_1,
+        -Dm_inv_1_2 - Dm_inv_2_2 - Dm_inv_3_2,
+        -Dm_inv_1_3 - Dm_inv_2_3 - Dm_inv_3_3,
+        Dm_inv_1_1,
+        Dm_inv_1_2,
+        Dm_inv_1_3,
+        Dm_inv_2_1,
+        Dm_inv_2_2,
+        Dm_inv_2_3,
+        Dm_inv_3_1,
+        Dm_inv_3_2,
+        Dm_inv_3_3,
+    )
+
+    f1, h1 = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[0, 0], ms[0, 1], ms[0, 2])
+    f1, h1 = damp_force_and_hessian(pos_prev[v0_idx], v0, f1, h1, tet_materials[tet_id, 2], dt)
+    f2, h2 = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[1, 0], ms[1, 1], ms[1, 2])
+    f2, h2 = damp_force_and_hessian(pos_prev[v1_idx], v1, f2, h2, tet_materials[tet_id, 2], dt)
+    f3, h3 = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[2, 0], ms[2, 1], ms[2, 2])
+    f3, h3 = damp_force_and_hessian(pos_prev[v2_idx], v2, f3, h3, tet_materials[tet_id, 2], dt)
+    f4, h4 = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[3, 0], ms[3, 1], ms[3, 2])
+    f4, h4 = damp_force_and_hessian(pos_prev[v3_idx], v3, f4, h4, tet_materials[tet_id, 2], dt)
+
+    return f1, f2, f3, f4, h1, h2, h3, h4
+
+
+@wp.kernel
+def VBD_solve_tet_mesh_force_and_hessian(
+    # inputs
+    dt: float,
+    current_color: int,
+    pos_prev: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    particle_colors: wp.array(dtype=int),
+    tet_indices: wp.array(dtype=wp.int32, ndim=2),
+    tet_poses: wp.array(dtype=wp.mat33),
+    tet_materials: wp.array(dtype=float, ndim=2),
+    # outputs: particle force and hessian
+    particle_forces: wp.array(dtype=wp.vec3),
+    particle_hessians: wp.array(dtype=wp.mat33),
+):
+    t_id = wp.tid()
+
+    v0_idx = tet_indices[t_id, 0]
+    v1_idx = tet_indices[t_id, 1]
+    v2_idx = tet_indices[t_id, 2]
+    v3_idx = tet_indices[t_id, 3]
+
+    if (
+        particle_colors[v0_idx] == current_color
+        or particle_colors[v1_idx] == current_color
+        or particle_colors[v2_idx] == current_color
+        or particle_colors[v3_idx] == current_color
+    ):
+        f1, f2, f3, f4, h1, h2, h3, h4 = evaluate_volumetric_neo_hooken_force_and_hessian_4_vertices(
+            t_id,
+            pos,  # dont need damping
+            pos,
+            tet_indices,
+            tet_poses,
+            tet_materials,
+            dt,
+        )
+
+        if particle_colors[v0_idx] == current_color:
+            wp.atomic_add(particle_forces, v0_idx, f1)
+            wp.atomic_add(particle_hessians, v0_idx, h1)
+
+        if particle_colors[v1_idx] == current_color:
+            wp.atomic_add(particle_forces, v1_idx, f2)
+            wp.atomic_add(particle_hessians, v1_idx, h2)
+
+        if particle_colors[v2_idx] == current_color:
+            wp.atomic_add(particle_forces, v2_idx, f3)
+            wp.atomic_add(particle_hessians, v2_idx, h3)
+
+        if particle_colors[v3_idx] == current_color:
+            wp.atomic_add(particle_forces, v3_idx, f4)
+            wp.atomic_add(particle_hessians, v3_idx, h4)
 
 
 @wp.kernel
