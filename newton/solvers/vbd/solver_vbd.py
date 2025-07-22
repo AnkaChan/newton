@@ -1355,22 +1355,24 @@ def accumulate_spring_force_and_hessian(
 def forward_step(
     dt: float,
     gravity: wp.vec3,
-    pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
     external_force: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.uint32),
+    # output
+    pos_prev: wp.array(dtype=wp.vec3),
     inertia: wp.array(dtype=wp.vec3),
+    pos_out: wp.array(dtype=wp.vec3),
 ):
     particle = wp.tid()
 
-    pos_prev[particle] = pos[particle]
     if not particle_flags[particle] & PARTICLE_FLAG_ACTIVE:
         inertia[particle] = pos_prev[particle]
         return
     vel_new = vel[particle] + (gravity + external_force[particle] * inv_mass[particle]) * dt
-    pos[particle] = pos[particle] + vel_new * dt
+    pos_prev[particle] = pos[particle]
+    pos_out[particle] = pos[particle] + vel_new * dt
     inertia[particle] = pos[particle]
 
 
@@ -1499,7 +1501,6 @@ def solve_trimesh_no_self_contact_tile(
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
     inertia: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.uint32),
@@ -1648,7 +1649,6 @@ def solve_trimesh_no_self_contact(
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
     inertia: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.uint32),
@@ -2605,26 +2605,39 @@ class VBDSolver(SolverBase):
     ):
         model = self.model
 
+        requires_grad = self.model.requires_grad
+        if requires_grad:
+            particle_q_in = wp.zeros_like(state_in.particle_q)
+            inertia = wp.zeros_like(self.inertia)
+            particle_q_prev = wp.zeros_like(self.particle_q_prev)
+        else:
+            particle_q_in = state_in.particle_q
+            inertia = self.inertia
+            particle_q_prev = self.particle_q_prev
+
         wp.launch(
             kernel=forward_step,
             inputs=[
                 dt,
                 model.gravity,
-                self.particle_q_prev,
                 state_in.particle_q,
                 state_in.particle_qd,
                 self.model.particle_inv_mass,
                 state_in.particle_f,
                 self.model.particle_flags,
-                self.inertia,
             ],
+            outputs=[particle_q_prev, intertia, particle_q_in],
             dim=self.model.particle_count,
             device=self.device,
         )
 
         for _iter in range(self.iterations):
-            self.particle_forces.zero_()
-            self.particle_hessians.zero_()
+            if requires_grad:
+                self.particle_forces = wp.zeros_like(self.particle_forces)
+                self.particle_hessians = wp.zeros_like(self.particle_hessians)
+            else:
+                self.particle_forces.zero_()
+                self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
                 wp.launch(
@@ -2633,8 +2646,8 @@ class VBDSolver(SolverBase):
                     inputs=[
                         dt,
                         color,
-                        self.particle_q_prev,
-                        state_in.particle_q,
+                        particle_q_prev,
+                        particle_in,
                         self.model.particle_colors,
                         # body-particle contact
                         self.model.soft_contact_ke,
@@ -2666,8 +2679,8 @@ class VBDSolver(SolverBase):
                         inputs=[
                             dt,
                             color,
-                            self.particle_q_prev,
-                            state_in.particle_q,
+                            particle_q_prev,
+                            particle_q_in,
                             self.model.particle_color_groups[color],
                             self.adjacency,
                             self.model.spring_indices,
@@ -2680,17 +2693,21 @@ class VBDSolver(SolverBase):
                         device=self.device,
                     )
 
+                if requires_grad:
+                    particle_q_out = wp.clone(state_in.particle_q)
+                else:
+                    particle_q_out = state_out.particle_q
+
                 if self.use_tile_solve:
                     wp.launch(
                         kernel=solve_trimesh_no_self_contact_tile,
                         inputs=[
                             dt,
                             self.model.particle_color_groups[color],
-                            self.particle_q_prev,
+                            particle_q_prev,
                             state_in.particle_q,
-                            state_in.particle_qd,
                             self.model.particle_mass,
-                            self.inertia,
+                            inertia,
                             self.model.particle_flags,
                             self.model.tri_indices,
                             self.model.tri_poses,
@@ -2705,7 +2722,7 @@ class VBDSolver(SolverBase):
                             self.particle_hessians,
                         ],
                         outputs=[
-                            state_out.particle_q,
+                            particle_q_out,
                         ],
                         dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
                         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -2717,11 +2734,10 @@ class VBDSolver(SolverBase):
                         inputs=[
                             dt,
                             self.model.particle_color_groups[color],
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            state_in.particle_qd,
+                            particle_q_prev,
+                            particle_q_in,
                             self.model.particle_mass,
-                            self.inertia,
+                            inertia,
                             self.model.particle_flags,
                             self.model.tri_indices,
                             self.model.tri_poses,
@@ -2736,23 +2752,27 @@ class VBDSolver(SolverBase):
                             self.particle_hessians,
                         ],
                         outputs=[
-                            state_out.particle_q,
+                            particle_q_out,
                         ],
                         dim=self.model.particle_color_groups[color].size,
                         device=self.device,
                     )
 
-                wp.launch(
-                    kernel=copy_particle_positions_back,
-                    inputs=[self.model.particle_color_groups[color], state_in.particle_q],
-                    outputs=[state_out.particle_q],
-                    dim=self.model.particle_color_groups[color].size,
-                    device=self.device,
-                )
+                if requires_grad:
+                    particle_q_in = particle_q_out
+                else:
+                    wp.launch(
+                        kernel=copy_particle_positions_back,
+                        inputs=[self.model.particle_color_groups[color], particle_q_in],
+                        outputs=[particle_q_out],
+                        dim=self.model.particle_color_groups[color].size,
+                        device=self.device,
+                    )
 
+        state_out.particle_q = particle_q_out
         wp.launch(
             kernel=update_velocity,
-            inputs=[dt, self.particle_q_prev, state_out.particle_q],
+            inputs=[dt, particle_q_prev, state_out.particle_q],
             outputs=[state_out.particle_qd],
             dim=self.model.particle_count,
             device=self.device,
