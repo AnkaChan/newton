@@ -1366,12 +1366,14 @@ def forward_step(
     pos_out: wp.array(dtype=wp.vec3),
 ):
     particle = wp.tid()
+    pos_prev[particle] = pos[particle]
 
     if not particle_flags[particle] & PARTICLE_FLAG_ACTIVE:
         inertia[particle] = pos_prev[particle]
+        pos_out[particle] = pos[particle]
         return
+
     vel_new = vel[particle] + (gravity + external_force[particle] * inv_mass[particle]) * dt
-    pos_prev[particle] = pos[particle]
     pos_out[particle] = pos[particle] + vel_new * dt
     inertia[particle] = pos[particle]
 
@@ -2626,7 +2628,7 @@ class VBDSolver(SolverBase):
                 state_in.particle_f,
                 self.model.particle_flags,
             ],
-            outputs=[particle_q_prev, intertia, particle_q_in],
+            outputs=[particle_q_prev, inertia, particle_q_in],
             dim=self.model.particle_count,
             device=self.device,
         )
@@ -2647,7 +2649,7 @@ class VBDSolver(SolverBase):
                         dt,
                         color,
                         particle_q_prev,
-                        particle_in,
+                        particle_q_in,
                         self.model.particle_colors,
                         # body-particle contact
                         self.model.soft_contact_ke,
@@ -2694,7 +2696,7 @@ class VBDSolver(SolverBase):
                     )
 
                 if requires_grad:
-                    particle_q_out = wp.clone(state_in.particle_q)
+                    particle_q_out = wp.clone(particle_q_in)
                 else:
                     particle_q_out = state_out.particle_q
 
@@ -2705,7 +2707,7 @@ class VBDSolver(SolverBase):
                             dt,
                             self.model.particle_color_groups[color],
                             particle_q_prev,
-                            state_in.particle_q,
+                            particle_q_in,
                             self.model.particle_mass,
                             inertia,
                             self.model.particle_flags,
@@ -2769,7 +2771,7 @@ class VBDSolver(SolverBase):
                         device=self.device,
                     )
 
-        state_out.particle_q = particle_q_out
+        wp.copy(state_out.particle_q, particle_q_out)
         wp.launch(
             kernel=update_velocity,
             inputs=[dt, particle_q_prev, state_out.particle_q],
