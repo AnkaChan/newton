@@ -1375,7 +1375,7 @@ def forward_step(
 
     vel_new = vel[particle] + (gravity + external_force[particle] * inv_mass[particle]) * dt
     pos_out[particle] = pos[particle] + vel_new * dt
-    inertia[particle] = pos[particle]
+    inertia[particle] = pos[particle] + vel_new * dt
 
 
 @wp.kernel
@@ -1677,8 +1677,6 @@ def solve_trimesh_no_self_contact(
         pos_new[particle_index] = pos[particle_index]
         return
 
-    particle_pos = pos[particle_index]
-
     dt_sqr_reciprocal = 1.0 / (dt * dt)
 
     # inertia force and hessian
@@ -1757,7 +1755,7 @@ def solve_trimesh_no_self_contact(
 
     if abs(wp.determinant(h)) > 1e-5:
         hInv = wp.inverse(h)
-        pos_new[particle_index] = particle_pos + hInv * f
+        pos_new[particle_index] += hInv * f
 
 
 @wp.kernel
@@ -2770,7 +2768,7 @@ class VBDSolver(SolverBase):
                         dim=self.model.particle_color_groups[color].size,
                         device=self.device,
                     )
-
+        print("particle_q_out:\n", particle_q_out)
         wp.copy(state_out.particle_q, particle_q_out)
         wp.launch(
             kernel=update_velocity,
