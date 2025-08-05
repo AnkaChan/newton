@@ -32,7 +32,7 @@ from .tri_mesh_collision import (
 )
 
 # TODO: Grab changes from Warp that has fixed the backward pass
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": True})
 
 VBD_DEBUG_PRINTING_OPTIONS = {
     # "elasticity_force_hessian",
@@ -2425,6 +2425,9 @@ class VBDSolver(SolverBase):
         self.self_contact_radius = self_contact_radius
         self.self_contact_margin = self_contact_margin
 
+        self.intemediate_particle_qs = []
+        self.prev_particle_qs = []
+
         if model.device.is_cpu and use_tile_solve:
             wp.utils.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
 
@@ -2610,10 +2613,13 @@ class VBDSolver(SolverBase):
             particle_q_in = wp.zeros_like(state_in.particle_q)
             inertia = wp.zeros_like(self.inertia)
             particle_q_prev = wp.zeros_like(self.particle_q_prev)
+            self.prev_particle_qs.append(particle_q_prev)
         else:
             particle_q_in = state_in.particle_q
             inertia = self.inertia
             particle_q_prev = self.particle_q_prev
+
+        self.intemediate_particle_qs.append(particle_q_in)
 
         wp.launch(
             kernel=forward_step,
@@ -2694,9 +2700,11 @@ class VBDSolver(SolverBase):
                     )
 
                 if requires_grad:
-                    particle_q_out = wp.clone(particle_q_in)
+                    particle_q_out = wp.empty_like(self.intemediate_particle_qs[-1])
                 else:
                     particle_q_out = state_out.particle_q
+
+                self.intemediate_particle_qs.append(particle_q_out)
 
                 if self.use_tile_solve:
                     wp.launch(
@@ -2705,7 +2713,7 @@ class VBDSolver(SolverBase):
                             dt,
                             self.model.particle_color_groups[color],
                             particle_q_prev,
-                            particle_q_in,
+                            self.intemediate_particle_qs[-2],
                             self.model.particle_mass,
                             inertia,
                             self.model.particle_flags,
@@ -2722,7 +2730,7 @@ class VBDSolver(SolverBase):
                             self.particle_hessians,
                         ],
                         outputs=[
-                            particle_q_out,
+                            self.intemediate_particle_qs[-1],
                         ],
                         dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
                         block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -2735,7 +2743,7 @@ class VBDSolver(SolverBase):
                             dt,
                             self.model.particle_color_groups[color],
                             particle_q_prev,
-                            particle_q_in,
+                            self.intemediate_particle_qs[-2],
                             self.model.particle_mass,
                             inertia,
                             self.model.particle_flags,
@@ -2752,15 +2760,13 @@ class VBDSolver(SolverBase):
                             self.particle_hessians,
                         ],
                         outputs=[
-                            particle_q_out,
+                            self.intemediate_particle_qs[-1],
                         ],
                         dim=self.model.particle_color_groups[color].size,
                         device=self.device,
                     )
 
-                if requires_grad:
-                    particle_q_in = particle_q_out
-                else:
+                if not requires_grad:
                     wp.launch(
                         kernel=copy_particle_positions_back,
                         inputs=[self.model.particle_color_groups[color], particle_q_in],
@@ -2768,7 +2774,7 @@ class VBDSolver(SolverBase):
                         dim=self.model.particle_color_groups[color].size,
                         device=self.device,
                     )
-        print("particle_q_out:\n", particle_q_out)
+        # print("particle_q_out:\n", particle_q_out)
         wp.copy(state_out.particle_q, particle_q_out)
         wp.launch(
             kernel=update_velocity,
