@@ -2352,6 +2352,7 @@ class SolverVBD(SolverBase):
                 vertex_collision_buffer_pre_alloc=vertex_collision_buffer_pre_alloc,
                 edge_collision_buffer_pre_alloc=edge_collision_buffer_pre_alloc,
                 edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
+                record_triangle_contacting_vertices=True,
             )
 
             self.trimesh_collision_info = wp.array(
