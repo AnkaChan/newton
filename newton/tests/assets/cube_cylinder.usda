@@ -8,7 +8,7 @@
             }
             dictionary Perspective = {
                 double3 position = (2.65069671420763, -2.152297546483383, 1.3280812735778755)
-                double3 target = (-2.6645352591003757e-15, 0, -0.7463218077594247)
+                double3 target = (-2.6645352591003757e-15, 8.881784197001252e-16, -0.746321807759426)
             }
             dictionary Right = {
                 double3 position = (0, -5, 0)
@@ -21,7 +21,7 @@
             string boundCamera = "/World/Camera"
         }
         dictionary omni_layer = {
-            string authoring_layer = "./cube_cylinder_new.usda"
+            string authoring_layer = "./cube_cylinder.usda"
             dictionary locked = {
             }
             dictionary muteness = {
@@ -181,7 +181,7 @@ def Xform "World"
                     interpolation = "faceVarying"
                 )
                 uniform token orientation = "rightHanded"
-                token physics:approximation = "meshSimplification"
+                token physics:approximation = "none"
                 point3f[] points = [(0.5, -0.5, 0.5), (-0.5, -0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5), (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)] (
                     interpolation = "vertex"
                 )
