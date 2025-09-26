@@ -1333,7 +1333,9 @@ def apply_conservative_bound_truncation(
     conservative_bound = particle_conservative_bounds[v_index]
 
     accumulated_displacement_norm = wp.length(accumulated_displacement)
-    if accumulated_displacement_norm > conservative_bound and conservative_bound > 1e-5:
+    if conservative_bound < 1e-5:
+        return particle_pos_prev_collision_detection
+    if accumulated_displacement_norm > conservative_bound:
         accumulated_displacement_norm_truncated = conservative_bound
         accumulated_displacement = accumulated_displacement * (
             accumulated_displacement_norm_truncated / accumulated_displacement_norm
