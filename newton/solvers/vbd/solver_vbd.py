@@ -1382,7 +1382,6 @@ def forward_step(
 def forward_step_penetration_free(
     dt: float,
     gravity: wp.vec3,
-    pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
     inv_mass: wp.array(dtype=float),
@@ -1390,19 +1389,22 @@ def forward_step_penetration_free(
     particle_flags: wp.array(dtype=wp.uint32),
     pos_prev_collision_detection: wp.array(dtype=wp.vec3),
     particle_conservative_bounds: wp.array(dtype=float),
+    pos_prev: wp.array(dtype=wp.vec3),
     inertia: wp.array(dtype=wp.vec3),
+    pos_out: wp.array(dtype=wp.vec3),
 ):
     particle_index = wp.tid()
 
     pos_prev[particle_index] = pos[particle_index]
     if not particle_flags[particle_index] & PARTICLE_FLAG_ACTIVE:
         inertia[particle_index] = pos_prev[particle_index]
+        pos_out[particle_index] = pos[particle_index]
         return
     vel_new = vel[particle_index] + (gravity + external_force[particle_index] * inv_mass[particle_index]) * dt
     pos_inertia = pos[particle_index] + vel_new * dt
     inertia[particle_index] = pos_inertia
 
-    pos[particle_index] = apply_conservative_bound_truncation(
+    pos_out[particle_index] = apply_conservative_bound_truncation(
         particle_index, pos_inertia, pos_prev_collision_detection, particle_conservative_bounds
     )
 
@@ -2792,12 +2794,24 @@ class VBDSolver(SolverBase):
 
         model = self.model
 
+        requires_grad = self.model.requires_grad
+        if requires_grad:
+            particle_q_in = wp.zeros_like(state_in.particle_q)
+            inertia = wp.zeros_like(self.inertia)
+            particle_q_prev = wp.zeros_like(self.particle_q_prev)
+            self.prev_particle_qs.append(particle_q_prev)
+        else:
+            particle_q_in = state_in.particle_q
+            inertia = self.inertia
+            particle_q_prev = self.particle_q_prev
+
+        self.intemediate_particle_qs.append(particle_q_in)
+
         wp.launch(
             kernel=forward_step_penetration_free,
             inputs=[
                 dt,
                 model.gravity,
-                self.particle_q_prev,
                 state_in.particle_q,
                 state_in.particle_qd,
                 self.model.particle_inv_mass,
@@ -2805,13 +2819,24 @@ class VBDSolver(SolverBase):
                 self.model.particle_flags,
                 self.pos_prev_collision_detection,
                 self.particle_conservative_bounds,
-                self.inertia,
+            ],
+            outputs=[
+                particle_q_prev,
+                inertia,
+                particle_q_in,
             ],
             dim=self.model.particle_count,
             device=self.device,
         )
 
         for _iter in range(self.iterations):
+            if requires_grad:
+                self.particle_forces = wp.zeros_like(self.particle_forces)
+                self.particle_hessians = wp.zeros_like(self.particle_hessians)
+            else:
+                self.particle_forces.zero_()
+                self.particle_hessians.zero_()
+
             # after initialization, we need new collision detection to update the bounds
             if (self.collision_detection_interval == 0 and _iter == 0) or (
                 self.collision_detection_interval >= 1 and _iter % self.collision_detection_interval == 0
@@ -2829,7 +2854,7 @@ class VBDSolver(SolverBase):
                         inputs=[
                             dt,
                             color,
-                            self.particle_q_prev,
+                            particle_q_prev,
                             state_in.particle_q,
                             self.model.particle_colors,
                             self.model.tri_indices,
@@ -2869,7 +2894,7 @@ class VBDSolver(SolverBase):
                         inputs=[
                             dt,
                             color,
-                            self.particle_q_prev,
+                            particle_q_prev,
                             state_in.particle_q,
                             self.model.particle_color_groups[color],
                             self.adjacency,
@@ -2883,6 +2908,12 @@ class VBDSolver(SolverBase):
                         device=self.device,
                     )
 
+                if requires_grad:
+                    particle_q_out = wp.empty_like(self.intemediate_particle_qs[-1])
+                else:
+                    particle_q_out = state_out.particle_q
+                self.intemediate_particle_qs.append(particle_q_out)
+
                 if self.use_tile_solve:
                     wp.launch(
                         kernel=solve_trimesh_with_self_contact_penetration_free_tile,
@@ -2891,8 +2922,8 @@ class VBDSolver(SolverBase):
                         inputs=[
                             dt,
                             self.model.particle_color_groups[color],
-                            self.particle_q_prev,
-                            state_in.particle_q,
+                            particle_q_prev,
+                            self.intemediate_particle_qs[-2],
                             state_in.particle_qd,
                             self.model.particle_mass,
                             self.inertia,
@@ -2912,7 +2943,7 @@ class VBDSolver(SolverBase):
                             self.particle_conservative_bounds,
                         ],
                         outputs=[
-                            state_out.particle_q,
+                            self.intemediate_particle_qs[-1],
                         ],
                         device=self.device,
                     )
@@ -2923,8 +2954,8 @@ class VBDSolver(SolverBase):
                         inputs=[
                             dt,
                             self.model.particle_color_groups[color],
-                            self.particle_q_prev,
-                            state_in.particle_q,
+                            particle_q_prev,
+                            self.intemediate_particle_qs[-2],
                             state_in.particle_qd,
                             self.model.particle_mass,
                             self.inertia,
@@ -2944,7 +2975,7 @@ class VBDSolver(SolverBase):
                             self.particle_conservative_bounds,
                         ],
                         outputs=[
-                            state_out.particle_q,
+                            self.intemediate_particle_qs[-1],
                         ],
                         device=self.device,
                     )
