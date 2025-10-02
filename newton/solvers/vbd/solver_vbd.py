@@ -1755,9 +1755,25 @@ def solve_trimesh_no_self_contact(
     h += particle_hessians[particle_index]
     f += particle_forces[particle_index]
 
+    # fmt: off
+    if wp.static("overall_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
+        wp.printf(
+            "particle: %d,\nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
+            particle_index,
+            f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
+        )
+    # fmt: on
+
     if abs(wp.determinant(h)) > 1e-5:
         hInv = wp.inverse(h)
-        pos_new[particle_index] += hInv * f
+        pos_new[particle_index] = pos[particle_index] + hInv * f
+    # fmt: off
+    if wp.static("overall_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
+        wp.printf(
+            "particle final position:\n %f %f %f\n",
+            pos_new[particle_index][0], pos_new[particle_index][1], pos_new[particle_index][2],
+        )
+    # fmt: on
 
 
 @wp.kernel
@@ -2853,7 +2869,7 @@ class VBDSolver(SolverBase):
                             dt,
                             color,
                             particle_q_prev,
-                            state_in.particle_q,
+                            particle_q_in,
                             self.model.particle_colors,
                             self.model.tri_indices,
                             self.model.edge_indices,
@@ -2893,7 +2909,7 @@ class VBDSolver(SolverBase):
                             dt,
                             color,
                             particle_q_prev,
-                            state_in.particle_q,
+                            particle_q_in,
                             self.model.particle_color_groups[color],
                             self.adjacency,
                             self.model.spring_indices,
@@ -2994,11 +3010,21 @@ class VBDSolver(SolverBase):
         )
 
     def collision_detection_penetration_free(self, current_state: State, dt: float):
+        if self.model.requires_grad:
+            self.pos_prev_collision_detection = wp.clone(current_state.particle_q, requires_grad=False)
+            self.particle_conservative_bounds = wp.empty_like(self.particle_conservative_bounds)
+            self.trimesh_collision_detector.create_collision_buffers()
+            self.trimesh_collision_info = wp.array(
+                [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
+            )
+
+        else:
+            self.pos_prev_collision_detection.assign(current_state.particle_q)
+
         self.trimesh_collision_detector.refit(current_state.particle_q)
         self.trimesh_collision_detector.vertex_triangle_collision_detection(self.self_contact_margin)
         self.trimesh_collision_detector.edge_edge_collision_detection(self.self_contact_margin)
 
-        self.pos_prev_collision_detection.assign(current_state.particle_q)
         wp.launch(
             kernel=compute_particle_conservative_bound,
             inputs=[
