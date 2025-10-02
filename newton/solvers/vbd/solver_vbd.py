@@ -2065,7 +2065,6 @@ def solve_trimesh_with_self_contact_penetration_free(
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
     inertia: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.uint32),
@@ -2185,7 +2184,6 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
     mass: wp.array(dtype=float),
     inertia: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.uint32),
@@ -2924,9 +2922,8 @@ class VBDSolver(SolverBase):
                             self.model.particle_color_groups[color],
                             particle_q_prev,
                             self.intemediate_particle_qs[-2],
-                            state_in.particle_qd,
                             self.model.particle_mass,
-                            self.inertia,
+                            inertia,
                             self.model.particle_flags,
                             self.model.tri_indices,
                             self.model.tri_poses,
@@ -2956,9 +2953,8 @@ class VBDSolver(SolverBase):
                             self.model.particle_color_groups[color],
                             particle_q_prev,
                             self.intemediate_particle_qs[-2],
-                            state_in.particle_qd,
                             self.model.particle_mass,
-                            self.inertia,
+                            inertia,
                             self.model.particle_flags,
                             self.model.tri_indices,
                             self.model.tri_poses,
@@ -2980,16 +2976,19 @@ class VBDSolver(SolverBase):
                         device=self.device,
                     )
 
-                wp.launch(
-                    kernel=copy_particle_positions_back,
-                    inputs=[self.model.particle_color_groups[color], state_in.particle_q, state_out.particle_q],
-                    dim=self.model.particle_color_groups[color].size,
-                    device=self.device,
-                )
+                if not requires_grad:
+                    wp.launch(
+                        kernel=copy_particle_positions_back,
+                        inputs=[self.model.particle_color_groups[color], particle_q_in, particle_q_out],
+                        dim=self.model.particle_color_groups[color].size,
+                        device=self.device,
+                    )
 
+        wp.copy(state_out.particle_q, particle_q_out)
         wp.launch(
             kernel=update_velocity,
-            inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
+            inputs=[dt, particle_q_prev, state_out.particle_q],
+            outputs=[state_out.particle_qd],
             dim=self.model.particle_count,
             device=self.device,
         )
