@@ -2045,11 +2045,15 @@ def triangle_triangle_collision_detection_kernel(
         ):
             continue
 
-        u1 = pos[t2_v1]
-        u2 = pos[t2_v2]
-        u3 = pos[t2_v3]
+        u1_d = wp.vec3d(pos[t2_v1])
+        u2_d = wp.vec3d(pos[t2_v2])
+        u3_d = wp.vec3d(pos[t2_v3])
 
-        if wp.intersect_tri_tri(v1, v2, v3, u1, u2, u3):
+        v1_d = wp.vec3d(v1)
+        v2_d = wp.vec3d(v2)
+        v3_d = wp.vec3d(v3)
+
+        if wp.intersect_tri_tri(v1_d, v2_d, v3_d, u1_d, u2_d, u3_d):
             if intersection_count < buffer_size:
                 triangle_intersecting_triangles[buffer_offset + intersection_count] = tri_index_2
             else:
