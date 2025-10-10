@@ -1167,10 +1167,6 @@ def broadphase_collision_pairs(
     elif type_a == GeoType.BOX or type_b == GeoType.BOX:
         num_contacts = 8
 
-    elif type_b == GeoType.MESH and type_a != GeoType.PLANE:
-        if wp.static(wp.config.verbose):
-            print("broadphase_collision_pairs: unsupported geometry type for mesh collision")
-        return
     elif type_a == GeoType.MESH and type_b == GeoType.MESH:
         mesh_a = wp.mesh_get(shape_source_ptr[shape_a])
         num_contacts_a = mesh_a.points.shape[0]

@@ -42,6 +42,8 @@ from newton._src.utils.schema_resolver import (
 )
 from newton._src.utils.update_usd import UpdateUsd
 
+import newton.examples
+
 
 def parse_xform(prim, time=Usd.TimeCode.Default()):
     from pxr import UsdGeom
@@ -93,9 +95,9 @@ class SchemaResolverSimUsd(SchemaResolver):
             "soft_contact_kd": [Attribute("newton:soft_contact_kd", 1.0e2)],
             # solver attributes
             "fps": [Attribute("newton:fps", 60)],
-            "sim_substeps": [Attribute("newton:substeps", 32)],
+            "sim_substeps": [Attribute("newton:substeps", 8)],
             "integrator_type": [Attribute("newton:integrator", "xpbd")],
-            "integrator_iterations": [Attribute("newton:integrator_iterations", 100)],
+            "integrator_iterations": [Attribute("newton:integrator_iterations", 10)],
             "collide_on_substeps": [Attribute("newton:collide_on_substeps", True)],
         },
         PrimType.BODY: {
@@ -153,7 +155,8 @@ class SchemaResolverMJWarp(SchemaResolver):
             "ls_iterations": [Attribute("newton:mjwarp:ls_iterations", 5)],
             "save_to_mjcf": [Attribute("newton:mjwarp:save_to_mjcf", "sim_usd_mjcf.xml")],
             "contact_stiffness_time_const": [Attribute("newton:mjwarp:contact_stiffness_time_const", 0.02)],
-            "ncon_per_env": [Attribute("newton:mjwarp:ncon_per_env", 8)],
+            "ncon_per_env": [Attribute("newton:mjwarp:ncon_per_env", 150)],
+            "njmax": [Attribute("newton:mjwarp:njmax", 16)],
         },
     }
 
@@ -641,6 +644,9 @@ class Simulator:
 
         builder = newton.ModelBuilder()
         builder.up_axis = newton.Axis.Z
+        builder.default_shape_cfg.density = 1.0
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         results = parse_usd(
             builder,
             self.in_stage,
@@ -650,22 +656,22 @@ class Simulator:
         self.R = _ResolverManager([SchemaResolverSimUsd(), SchemaResolverNewton(), SchemaResolverMJWarp()])
         self.physics_prim = next(iter([prim for prim in self.in_stage.Traverse() if prim.IsA(UsdPhysics.Scene)]), None)
 
-        self._collect_animated_colliders(builder, results["path_body_map"], results["path_shape_map"])
         self.path_body_map = results["path_body_map"]
-        self.path_shape_map = results["path_shape_map"]
-        self.body_path_map = {idx: path for path, idx in self.path_body_map.items()}
-        self.shape_path_map = {idx: path for path, idx in self.path_shape_map.items()}
 
         self._setup_solver_attributes()
         if integrator:
             self.integrator_type = integrator
 
+        self._collect_animated_colliders(builder, results["path_body_map"], results["path_shape_map"])
         if self.integrator_type == IntegratorType.VBD:
             builder.color()
         self.model = builder.finalize()
         self.builder_results = results
 
         self.path_body_map = self.builder_results["path_body_map"]
+        self.path_shape_map = results["path_shape_map"]
+        self.body_path_map = {idx: path for path, idx in self.path_body_map.items()}
+        self.shape_path_map = {idx: path for path, idx in self.path_shape_map.items()}
         collapse_results = self.builder_results["collapse_results"]
         self.path_body_relative_transform = self.builder_results["path_body_relative_transform"]
         if collapse_results:
@@ -682,6 +688,7 @@ class Simulator:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
+        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=self.rigid_contact_margin)
 
         # NB: body_q will be modified, so initial state will be slightly altered
         if self.model.joint_count:
@@ -808,11 +815,14 @@ class Simulator:
         for path, body_id in path_body_map.items():
             kinematic_collider = R.get_value(self.in_stage.GetPrimAtPath(path), PrimType.BODY, "kinematic_collider")
             if kinematic_collider:
-                builder.body_mass[body_id] = 0.0
-                builder.body_inv_mass[body_id] = 0.0
-                builder.body_inv_inertia[body_id] = wp.mat33(0.0)
                 self.animated_colliders_body_ids.append(body_id)
                 self.animated_colliders_paths.append(path)
+                # Mujoco requires nonzero inertia
+                #if self.integrator_type != IntegratorType.MJWARP:
+                builder.body_mass[body_id] = 9999999.0
+                builder.body_inv_mass[body_id] = 0.00000001
+                builder.body_inertia[body_id] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+                builder.body_inv_inertia[body_id] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
     @wp.kernel
     def _update_animated_colliders_kernel(
@@ -854,11 +864,28 @@ class Simulator:
         )
 
         delta_time = (time_next - time) / self.fps
-        wp.launch(
-            self._update_animated_colliders_kernel,
-            dim=len(collider_prims),
-            inputs=[delta_time, usd_transforms, usd_transforms_next, self.state_0.body_q, self.state_0.body_qd],
-        )
+        if self.integrator_type != IntegratorType.MJWARP:
+            wp.launch(
+                self._update_animated_colliders_kernel,
+                dim=len(collider_prims),
+                inputs=[delta_time, usd_transforms, usd_transforms_next, self.state_0.body_q, self.state_0.body_qd],
+            )
+        else:
+            body_q_np = self.state_0.body_q.numpy()
+            body_qd_np = self.state_0.body_qd.numpy()
+            for i in self.animated_colliders_body_ids:
+                path = self.animated_colliders_paths[i]
+                prim = self.in_stage.GetPrimAtPath(path)
+                wp_xform = parse_xform(prim, time)
+                wp_xform_next = parse_xform(prim, time_next)
+                vel = wp.vec3(wp_xform_next[0:3] - wp_xform[0:3]) / delta_time
+                # TODO: WARNING: we are not computing the angular velocity correctly
+                ang = wp.vec3(0.0, 0.0, 0.0)
+                body_q_np[i] = wp_xform
+                body_qd_np[i] = wp.spatial_vector(vel[0], vel[1], vel[2], ang[0], ang[1], ang[2])
+            self.state_0.joint_q.assign(body_q_np)
+            self.state_0.joint_qd.assign(body_qd_np)
+
 
     def simulate(self):
         if not self.collide_on_substeps:
