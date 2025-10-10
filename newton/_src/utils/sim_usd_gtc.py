@@ -152,6 +152,7 @@ class SchemaResolverMJWarp(SchemaResolver):
             "ls_iterations": [Attribute("newton:mjwarp:ls_iterations", 5)],
             "save_to_mjcf": [Attribute("newton:mjwarp:save_to_mjcf", "sim_usd_mjcf.xml")],
             "contact_stiffness_time_const": [Attribute("newton:mjwarp:contact_stiffness_time_const", 0.02)],
+            "ncon_per_env": [Attribute("newton:mjwarp:ncon_per_env", 8)],
         },
     }
 
@@ -225,7 +226,7 @@ class Simulator:
         self.R = _ResolverManager([SchemaResolverSimUsd(), SchemaResolverNewton(), SchemaResolverMJWarp()])
         self.physics_prim = next(iter([prim for prim in self.in_stage.Traverse() if prim.IsA(UsdPhysics.Scene)]), None)
 
-        # self._prepare_kinematic_bodies(builder, results["path_body_map"], results["path_shape_map"])
+        self._collect_animated_colliders(builder, results["path_body_map"], results["path_shape_map"])
         self.path_body_map = results["path_body_map"]
         self.path_shape_map = results["path_shape_map"]
         self.body_path_map = {idx: path for path, idx in self.path_body_map.items()}
@@ -262,7 +263,7 @@ class Simulator:
         if self.model.joint_count:
             newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0, mask=None)
 
-        self.use_cuda_graph = wp.get_device().is_cuda
+        self.use_cuda_graph = False  # wp.get_device().is_cuda
         self.is_mujoco_cpu_mode = self.integrator_type == IntegratorType.MJWARP and self.R.get_value(
             self.physics_prim, PrimType.SCENE, "use_mujoco_cpu", False
         )
@@ -285,7 +286,7 @@ class Simulator:
             builder_results=self.builder_results,
         )
 
-        self.DEBUG = False
+        self.DEBUG = True
         if self.DEBUG:
             self.viewer = newton.viewer.ViewerGL()
             self.viewer.set_model(self.model)
@@ -362,27 +363,49 @@ class Simulator:
             if value is not None and hasattr(self.integrator, key):
                 setattr(self.integrator, key, value)
 
-    def _prepare_kinematic_bodies(self, builder, path_body_map, path_shape_map):
+    def _collect_animated_colliders(self, builder, path_body_map, path_shape_map):
         """
         Go through the builder mass array and set the inverse mass and inertia to 0 for kinematic bodies.
         """
-        print(f"==== process_kinematic_bodies ====")
+        self.animated_colliders_body_ids = []
+        self.animated_colliders_paths = []
         R = _ResolverManager([SchemaResolverSimUsd()])
         for path, body_id in path_body_map.items():
             kinematic_collider = R.get_value(self.in_stage.GetPrimAtPath(path), PrimType.BODY, "kinematic_collider")
-            print(f"kinematic_collider = {kinematic_collider} for path {path}")
             if kinematic_collider:
-                print(f"builder.body_mass[body_id] orig = {builder.body_mass[body_id]}")
                 builder.body_mass[body_id] = 0.0
                 builder.body_inv_mass[body_id] = 0.0
                 builder.body_inv_inertia[body_id] = wp.mat33(0.0)
-        print(f"==== end process_kinematic_bodies ====")
+                self.animated_colliders_body_ids.append(body_id)
+                self.animated_colliders_paths.append(path)
+
+    def _update_animated_colliders(self, substep):
+        time = self.fps * (self.sim_time + self.sim_dt / self.sim_substeps * float(substep))
+        time_next = self.fps * (self.sim_time + self.frame_dt)
+        delta_time =  time_next - time
+
+        body_q_np = self.state_0.body_q.numpy()
+        body_qd_np = self.state_0.body_qd.numpy()
+        for i in self.animated_colliders_body_ids:
+            path = self.animated_colliders_paths[i]
+            prim = self.in_stage.GetPrimAtPath(path)
+            wp_xform = parse_xform(prim, time)
+            wp_xform_next = parse_xform(prim, time_next)
+            vel = wp.vec3(wp_xform_next[0:3] - wp_xform[0:3]) / delta_time
+            # TODO: WARNING: we are not computing the angular velocity correctly
+            ang = wp.vec3(0.0, 0.0, 0.0)
+            body_q_np[i] = wp_xform
+            body_qd_np[i] = wp.spatial_vector(vel[0], vel[1], vel[2], ang[0], ang[1], ang[2])
+        self.state_0.body_q.assign(body_q_np)
+        self.state_0.body_qd.assign(body_qd_np)
 
     def simulate(self):
         if not self.collide_on_substeps:
             self.contacts = self.model.collide(self.state_0, rigid_contact_margin=self.rigid_contact_margin)
 
         for substep in range(self.sim_substeps):
+            self._update_animated_colliders(substep)
+
             if self.collide_on_substeps:
                 self.contacts = self.model.collide(self.state_0, rigid_contact_margin=self.rigid_contact_margin)
 
