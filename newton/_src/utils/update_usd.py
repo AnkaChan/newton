@@ -231,6 +231,33 @@ class UpdateUsd:
                 # set xform ops at current frame index
                 self._update_usd_prim_xform(prim_path, full_xform)
 
+    def render_points(self, path: str, points:wp.array, rotations:wp.array, scales:wp.array, radius:float):
+        from pxr import UsdGeom
+
+        stage = self.stage
+        time = self.time
+
+        instancer_path = path
+        instancer = UsdGeom.PointInstancer.Get(stage, instancer_path)
+        if not instancer:
+            # UsdGeom.Xform.Define(stage, root_path)
+            instancer = UsdGeom.PointInstancer.Define(stage, instancer_path)
+            instancer_sphere = UsdGeom.Sphere.Define(stage, instancer.GetPath().AppendChild("sphere"))
+            instancer_sphere.GetRadiusAttr().Set(radius)
+            # instancer_sphere = UsdGeom.Cube.Define(self.stage, instancer.GetPath().AppendChild("sphere"))
+            # instancer_sphere.GetSizeAttr().Set(radius*2.0)
+
+            instancer.CreatePrototypesRel().SetTargets([instancer_sphere.GetPath()])
+            instancer.CreateProtoIndicesAttr().Set([0] * len(points))
+
+        instancer.GetPositionsAttr().Set(points.numpy(), time)
+
+        if rotations is not None:
+            instancer.GetOrientationsAttr().Set(rotations.numpy(), time)
+
+        if scales is not None:
+            instancer.GetScalesAttr().Set(scales.numpy(), time)
+
     def _apply_parents_inverse_xform(self, full_xform: wp.transform, prim_path: str) -> wp.transform:
         """
         Transformation in Warp sim consists of translation and pure rotation: trnslt and quat.
