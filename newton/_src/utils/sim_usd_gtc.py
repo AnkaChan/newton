@@ -28,7 +28,7 @@ from typing import ClassVar, Optional
 
 import numpy as np
 import warp as wp
-from pxr import Usd, UsdPhysics
+from pxr import Usd, UsdGeom, UsdPhysics
 
 import newton
 from newton._src.utils.import_usd import parse_usd
@@ -814,25 +814,51 @@ class Simulator:
                 self.animated_colliders_body_ids.append(body_id)
                 self.animated_colliders_paths.append(path)
 
+    @wp.kernel
+    def _update_animated_colliders_kernel(
+        dt: float,
+        usd_transforms: wp.array(dtype=wp.mat44),
+        usd_transforms_next: wp.array(dtype=wp.mat44),
+        body_q: wp.array(dtype=wp.transform),
+        body_qd: wp.array(dtype=wp.spatial_vector),
+    ):
+        i = wp.tid()
+        xform = wp.transpose(usd_transforms[i])
+        xform_next = wp.transpose(usd_transforms_next[i])
+
+        pos, R, _s = wp.transform_decompose(xform)
+        pos_next, R_next, _s_next = wp.transform_decompose(xform_next)
+
+        axis, angle = wp.quat_to_axis_angle(R_next * wp.quat_inverse(R))
+
+        body_q[i] = wp.transform(pos, R)
+        body_qd[i] = wp.spatial_vector(
+            (pos_next - pos) / dt,
+            axis * angle / dt,
+        )
+
     def _update_animated_colliders(self, substep):
+        collider_prims = [
+            self.in_stage.GetPrimAtPath(self.animated_colliders_paths[i]) for i in self.animated_colliders_body_ids
+        ]
         time = self.fps * (self.sim_time + self.sim_dt / self.sim_substeps * float(substep))
         time_next = self.fps * (self.sim_time + self.frame_dt)
-        delta_time = (time_next - time) / self.fps
 
-        body_q_np = self.state_0.body_q.numpy()
-        body_qd_np = self.state_0.body_qd.numpy()
-        for i in self.animated_colliders_body_ids:
-            path = self.animated_colliders_paths[i]
-            prim = self.in_stage.GetPrimAtPath(path)
-            wp_xform = parse_xform(prim, time)
-            wp_xform_next = parse_xform(prim, time_next)
-            vel = wp.vec3(wp_xform_next[0:3] - wp_xform[0:3]) / delta_time
-            # TODO: WARNING: we are not computing the angular velocity correctly
-            ang = wp.vec3(0.0, 0.0, 0.0)
-            body_q_np[i] = wp_xform
-            body_qd_np[i] = wp.spatial_vector(vel[0], vel[1], vel[2], ang[0], ang[1], ang[2])
-        self.state_0.body_q.assign(body_q_np)
-        self.state_0.body_qd.assign(body_qd_np)
+        xform_cache = UsdGeom.XformCache(time)
+        usd_transforms = wp.array(
+            [xform_cache.GetLocalToWorldTransform(prim) for prim in collider_prims], dtype=wp.mat44
+        )
+        xform_cache.SetTime(time_next)
+        usd_transforms_next = wp.array(
+            [xform_cache.GetLocalToWorldTransform(prim) for prim in collider_prims], dtype=wp.mat44
+        )
+
+        delta_time = (time_next - time) / self.fps
+        wp.launch(
+            self._update_animated_colliders_kernel,
+            dim=len(collider_prims),
+            inputs=[delta_time, usd_transforms, usd_transforms_next, self.state_0.body_q, self.state_0.body_qd],
+        )
 
     def simulate(self):
         if not self.collide_on_substeps:
