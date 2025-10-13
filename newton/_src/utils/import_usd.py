@@ -231,6 +231,12 @@ def parse_usd(
         pos = mat[3, :3]
         return wp.transform(pos, rot)
 
+    def get_local_xform_mat(prim):
+        xform = UsdGeom.Xform(prim)
+        xform = xform.GetLocalTransformation()
+        mat = np.array(xform, dtype=np.float32)
+        return mat.T
+
     if ignore_paths is None:
         ignore_paths = []
 
@@ -328,7 +334,7 @@ def parse_usd(
         has_particle_collision=False,
     )
 
-    def load_visual_shapes(parent_body_id, prim, incoming_xform):
+    def load_visual_shapes(parent_body_id, prim, incoming_xform, incoming_scales=(1, 1, 1)):
         if (
             prim.HasAPI(UsdPhysics.RigidBodyAPI)
             or prim.HasAPI(UsdPhysics.MassAPI)
@@ -339,19 +345,28 @@ def parse_usd(
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
             return
-        xform = incoming_xform * parse_xform(prim)
+
+        incoming_xform_mat = np.array(wp.transform_to_matrix(incoming_xform)).reshape(4, 4)
+        incoming_scale_mat = np.array(wp.diag(wp.vec4(*incoming_scales, 1.0))).reshape(4, 4)
+
+        local_xform_mat = get_local_xform_mat(prim)
+        xform_mat = incoming_xform_mat @ incoming_scale_mat @ local_xform_mat
+        scale = parse_xform_scale(xform_mat)
+
+        xform = wp.transform_from_matrix(wp.mat44(xform_mat))
+
         if prim.IsInstance():
             proto = prim.GetPrototype()
             for child in proto.GetChildren():
                 # remap prototype child path to this instance's path (instance proxy)
                 inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
                 inst_child = stage.GetPrimAtPath(inst_path)
-                load_visual_shapes(parent_body_id, inst_child, xform)
+                load_visual_shapes(parent_body_id, inst_child, xform, scale)
             return
         type_name = str(prim.GetTypeName()).lower()
         if type_name.endswith("joint"):
             return
-        scale = parse_scale(prim)
+
         shape_id = -1
         if path_name not in path_shape_map:
             if type_name == "cube":
@@ -491,7 +506,7 @@ def parse_usd(
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
-            load_visual_shapes(parent_body_id, child, xform)
+            load_visual_shapes(parent_body_id, child, xform, scale)
 
     def add_body(prim, xform, key, armature):
         b = builder.add_body(
@@ -532,13 +547,12 @@ def parse_usd(
                 "armature": body_armature,
             }
 
-    def parse_scale(prim):
-        xform = UsdGeom.Xform(prim)
-        scale = np.ones(3, dtype=np.float32)
-        for op in xform.GetOrderedXformOps():
-            if op.GetOpType() == UsdGeom.XformOp.TypeScale:
-                scale = np.array(op.Get(), dtype=np.float32)
+    def parse_xform_scale(xform_mat):
+        scale = np.linalg.norm(xform_mat[:3, :3], axis=0)
         return scale
+
+    def parse_scale(prim):
+        return parse_xform_scale(get_local_xform_mat(prim))
 
     def resolve_joint_parent_child(joint_desc, body_index_map: dict[str, int], get_transforms: bool = True):
         if get_transforms:
