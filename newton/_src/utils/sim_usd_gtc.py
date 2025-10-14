@@ -24,13 +24,14 @@
 import inspect
 from enum import Enum
 from pathlib import Path
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import numpy as np
 import warp as wp
 from pxr import Usd, UsdGeom, UsdPhysics
 
 import newton
+import newton.examples
 from newton import ParticleFlags
 from newton._src.utils.import_usd import parse_usd
 from newton._src.utils.schema_resolver import (
@@ -41,8 +42,6 @@ from newton._src.utils.schema_resolver import (
     _ResolverManager,
 )
 from newton._src.utils.update_usd import UpdateUsd
-
-import newton.examples
 
 run_cfgs = {
     "test_040": {
@@ -64,10 +63,30 @@ run_cfgs = {
         },
         "viewer_type": "usd",
         # "viewer_type": "gl",
-    }
+    },
+    "scene1": {
+        # "camera_cfg": {
+        #     "pos": wp.vec3(11.52, 4.85, 1.68),  # Position
+        #     "pitch": -0.8,  # Pitch in degrees
+        #     "yaw": 72.4,
+        # },
+        "cloth_cfg": {
+            "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo05K",
+            #   elasticity
+            "tri_ke": 1e2,
+            "tri_ka": 1e2,
+            "tri_kd": 1.5e-6,
+            "bending_ke": 1e-3,
+            "bending_kd": 1e-3,
+            "particle_radius": 0.02,
+            # "fixed_particles" : [23100, 22959]
+        },
+        "viewer_type": "usd",
+        # "viewer_type": "gl",
+    },
 }
 
-run_cfg = run_cfgs["test_040"]
+run_cfg = run_cfgs["scene1"]
 
 
 def get_top_vertices(
@@ -935,7 +954,7 @@ class Simulator:
                 self.animated_colliders_body_ids.append(body_id)
                 self.animated_colliders_paths.append(path)
                 # Mujoco requires nonzero inertia
-                #if self.integrator_type != IntegratorType.MJWARP:
+                # if self.integrator_type != IntegratorType.MJWARP:
                 builder.body_mass[body_id] = 9999999.0
                 builder.body_inv_mass[body_id] = 0.00000001
                 builder.body_inertia[body_id] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
@@ -1002,7 +1021,6 @@ class Simulator:
                 body_qd_np[i] = wp.spatial_vector(vel[0], vel[1], vel[2], ang[0], ang[1], ang[2])
             self.state_0.joint_q.assign(body_q_np)
             self.state_0.joint_qd.assign(body_qd_np)
-
 
     def simulate(self):
         if not self.collide_on_substeps:
