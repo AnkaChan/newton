@@ -231,7 +231,14 @@ class UpdateUsd:
                 # set xform ops at current frame index
                 self._update_usd_prim_xform(prim_path, full_xform)
 
-    def render_points(self, path: str, points: wp.array, rotations: wp.array, scales: wp.array, radius: float):
+    def render_points(
+        self,
+        path: str,
+        points: wp.array,
+        rotations: wp.array | None = None,
+        scales: wp.array | None = None,
+        radius: float | None = None,
+    ):
         from pxr import UsdGeom
 
         stage = self.stage
