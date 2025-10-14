@@ -226,7 +226,7 @@ class UpdateUsd:
                     full_xform = wp.mul(full_xform, rel_xform)
 
                 # convert to local space relative to parent (if required)
-                full_xform = self._apply_parents_inverse_xform(full_xform, prim_path)
+                full_xform = self._apply_parents_inverse_xform(wp.transform(*full_xform), prim_path)
 
                 # set xform ops at current frame index
                 self._update_usd_prim_xform(prim_path, full_xform)
@@ -307,7 +307,7 @@ class UpdateUsd:
         warp_translate = wp.transform_get_translation(full_xform)
         warp_quat = wp.transform_get_rotation(full_xform)
 
-        prim_translate = parent_inv_Rot * (warp_translate - parent_translate)
+        prim_translate = parent_inv_Rot * (warp_translate - wp.vec3(parent_translate))
         prim_quat = parent_inv_Rot_n * warp_quat
 
         return wp.transform(prim_translate, prim_quat)
