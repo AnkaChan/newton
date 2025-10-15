@@ -231,7 +231,7 @@ class UpdateUsd:
                 # set xform ops at current frame index
                 self._update_usd_prim_xform(prim_path, full_xform)
 
-    def render_points(self, path: str, points:wp.array, rotations:wp.array, scales:wp.array, radius:float):
+    def render_points(self, path: str, points: wp.array, rotations: wp.array, scales: wp.array, radius: float):
         from pxr import UsdGeom
 
         stage = self.stage
@@ -323,10 +323,19 @@ class UpdateUsd:
         xform = UsdGeom.Xform(prim)
         xform_ops = xform.GetOrderedXformOps()
 
-        if pos is not None:
-            xform_ops[0].Set(Gf.Vec3f(pos[0], pos[1], pos[2]), self.time)
-        if rot is not None:
-            xform_ops[1].Set(Gf.Quatf(rot[3], rot[0], rot[1], rot[2]), self.time)
+        # Detect precision from the first xform op (translation)
+        if xform_ops and xform_ops[0].GetPrecision() == UsdGeom.XformOp.PrecisionDouble:
+            # Use double precision types
+            if pos is not None:
+                xform_ops[0].Set(Gf.Vec3d(pos[0], pos[1], pos[2]), self.time)
+            if rot is not None:
+                xform_ops[1].Set(Gf.Quatd(rot[3], rot[0], rot[1], rot[2]), self.time)
+        else:
+            # Use float precision types
+            if pos is not None:
+                xform_ops[0].Set(Gf.Vec3f(pos[0], pos[1], pos[2]), self.time)
+            if rot is not None:
+                xform_ops[1].Set(Gf.Quatf(rot[3], rot[0], rot[1], rot[2]), self.time)
 
     # Note: if _compute_parents_inverses turns to be too slow, then we should consider using a UsdGeomXformCache as described here:
     # https://openusd.org/release/api/class_usd_geom_imageable.html#a4313664fa692f724da56cc254bce70fc
@@ -433,6 +442,7 @@ class UpdateUsd:
         Update the transformation stack of a primitive to translate/orient/scale format.
 
         The original transformation stack is assumed to be a rigid transformation.
+        The precision (float/double) is detected from existing transform ops.
         """
         from pxr import Gf, Usd, UsdGeom  # noqa: PLC0415
 
@@ -440,14 +450,20 @@ class UpdateUsd:
             time = Usd.TimeCode.Default()
 
         _tqs_op_order = [UsdGeom.XformOp.TypeTranslate, UsdGeom.XformOp.TypeOrient, UsdGeom.XformOp.TypeScale]
-        _tqs_op_precision = [
-            UsdGeom.XformOp.PrecisionFloat,
-            UsdGeom.XformOp.PrecisionFloat,
-            UsdGeom.XformOp.PrecisionFloat,
-        ]
 
         xform = UsdGeom.Xform(prim)
         xform_ops = xform.GetOrderedXformOps()
+
+        # Detect precision from existing transform ops
+        # Prefer double if any op uses double, otherwise use float
+        detected_precision = UsdGeom.XformOp.PrecisionFloat
+        if xform_ops:
+            for op in xform_ops:
+                if op.GetPrecision() == UsdGeom.XformOp.PrecisionDouble:
+                    detected_precision = UsdGeom.XformOp.PrecisionDouble
+                    break
+
+        _tqs_op_precision = [detected_precision, detected_precision, detected_precision]
 
         # if the order, type, and precision of the transformation is already in our canonical form, then there's no need to change anything.
         if _tqs_op_order == [op.GetOpType() for op in xform_ops] and _tqs_op_precision == [
@@ -460,9 +476,15 @@ class UpdateUsd:
         m_lcl = xform.GetLocalTransformation(time)
         (_, _, scale, _, translation, _) = m_lcl.Factor()
 
-        t = Gf.Vec3f(translation)
-        q = Gf.Quatf(m_lcl.ExtractRotationQuat())
-        s = Gf.Vec3f(scale)
+        # Use appropriate type based on detected precision
+        if detected_precision == UsdGeom.XformOp.PrecisionDouble:
+            t = Gf.Vec3d(translation)
+            q = Gf.Quatd(m_lcl.ExtractRotationQuat())
+            s = Gf.Vec3d(scale)
+        else:
+            t = Gf.Vec3f(translation)
+            q = Gf.Quatf(m_lcl.ExtractRotationQuat())
+            s = Gf.Vec3f(scale)
 
         # need to reset the transform
         for op in xform_ops:
@@ -470,6 +492,6 @@ class UpdateUsd:
             prim.RemoveProperty(attr.GetName())
 
         xform.ClearXformOpOrder()
-        xform.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(t)
-        xform.AddOrientOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(q)
-        xform.AddScaleOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(s)
+        xform.AddTranslateOp(precision=detected_precision).Set(t)
+        xform.AddOrientOp(precision=detected_precision).Set(q)
+        xform.AddScaleOp(precision=detected_precision).Set(s)
