@@ -606,7 +606,7 @@ class Simulator:
         self.frame_dt = 1.0 / self.fps
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.integrator_type = IntegratorType(self.integrator_type)
-        self.rigid_contact_margin = self.R.get_value(self.physics_prim, PrimType.SCENE, "contact_margin", 0.1)
+        self.rigid_contact_margin = self.R.get_value(self.physics_prim, PrimType.SCENE, "contact_margin", 0.01)
 
     def _setup_model_attributes(self):
         """Apply scene attributes parsed from the stage to the model."""
