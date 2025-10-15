@@ -551,8 +551,12 @@ def parse_usd(
         scale = np.linalg.norm(xform_mat[:3, :3], axis=0)
         return scale
 
-    def parse_scale(prim):
-        return parse_xform_scale(get_local_xform_mat(prim))
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+
+    def parse_scale(prim, ref_prim):
+        xform, _reset = xform_cache.ComputeRelativeTransform(prim, ref_prim)
+        mat = np.array(xform, dtype=np.float32).reshape(4, 4).T
+        return parse_xform_scale(mat)
 
     def resolve_joint_parent_child(joint_desc, body_index_map: dict[str, int], get_transforms: bool = True):
         if get_transforms:
@@ -1300,7 +1304,7 @@ def parse_usd(
                 # print("shape ", prim, "body =" , body_path)
                 body_id = path_body_map.get(body_path, -1)
                 # scale = np.array(shape_spec.localScale)
-                scale = parse_scale(prim)
+                scale = parse_scale(prim, ref_prim=stage.GetPrimAtPath(body_path))
                 collision_group = -1
                 if len(shape_spec.collisionGroups) > 0:
                     cgroup_name = str(shape_spec.collisionGroups[0])
