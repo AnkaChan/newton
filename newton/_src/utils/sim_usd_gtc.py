@@ -31,6 +31,7 @@ import warp as wp
 from pxr import Usd, UsdGeom, UsdPhysics
 
 import newton
+import newton.examples
 from newton._src.utils.import_usd import parse_usd
 from newton._src.utils.schema_resolver import (
     Attribute,
@@ -41,8 +42,6 @@ from newton._src.utils.schema_resolver import (
     _ResolverManager,
 )
 from newton._src.utils.update_usd import UpdateUsd
-
-import newton.examples
 
 
 def parse_xform(prim, time=Usd.TimeCode.Default()):
@@ -782,7 +781,7 @@ class Simulator:
                 resolver_mgr=R,
                 prim=self.physics_prim,
                 prim_type=PrimType.SCENE,
-                solver_cls=CoupledMPMIntegrator,
+                solver_cls=newton.solvers.SolverXPBD,
                 defaults={"iterations": self.integrator_iterations},
             )
             self.integrator = CoupledMPMIntegrator(self.model, **solver_args)
@@ -928,8 +927,10 @@ class Simulator:
             self.usd_updater.end_frame()
 
             if self.DEBUG:
+
                 self.viewer.begin_frame(self.sim_time)
                 self.viewer.log_state(self.state_0)
+                self.viewer.log_contacts(self.contacts, self.state_0)
                 if self.integrator_type == IntegratorType.COUPLED_MPM:
                     self.viewer.log_points(
                         "sand",
@@ -987,10 +988,15 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         simulator = Simulator(input_path=args.stage_path, output_path=args.output, integrator=args.integrator)
 
-        for i in range(args.num_frames):
+        i = 0
+        while i < args.num_frames:
             print(f"frame {i}")
-            simulator.step()
+            if simulator.DEBUG and not simulator.viewer.is_paused():
+                simulator.step()
             simulator.render()
+            if simulator.DEBUG and not simulator.viewer.is_paused():
+                i += 1
+
 
         print_time_profiler(simulator)
 
