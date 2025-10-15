@@ -881,9 +881,9 @@ def _particle_parameter(
 
 
 def _merge_meshes(
-    points: list[np.array],
-    indices: list[np.array],
-    shape_ids: np.array,
+    points: list[np.array] = (),
+    indices: list[np.array] = (),
+    shape_ids: np.array = (),
 ):
     pt_count = np.array([len(pts) for pts in points])
     offsets = np.cumsum(pt_count) - pt_count
@@ -909,7 +909,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
         return vertices, indices
     if geo_type == newton.GeoType.PLANE:
         # Handle "infinite" planes encoded with non-positive scales
-        width = geo_scale[0] if geo_scale and geo_scale[0] > 0.0 else 1000.0
+        width = geo_scale[0] if len(geo_scale) > 0 and geo_scale[0] > 0.0 else 1000.0
         length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 1000.0
         return newton.utils.create_plane_mesh(width, length)
     elif geo_type == newton.GeoType.SPHERE:
@@ -1156,6 +1156,11 @@ class ImplicitMPMModel:
         if collider_adhesion is None:
             collider_adhesion = [_DEFAULT_ADHESION] * collider_count
 
+        assert len(collider_body_ids) == len(collider_thicknesses)
+        assert len(collider_body_ids) == len(collider_projection_threshold)
+        assert len(collider_body_ids) == len(collider_friction)
+        assert len(collider_body_ids) == len(collider_adhesion)
+
         if model is None:
             model = self.model
         if body_com is None:
@@ -1170,8 +1175,6 @@ class ImplicitMPMModel:
             for k, mesh in enumerate(collider_meshes):
                 if mesh is not None:
                     continue
-                if collider_body_ids[k] < 0:
-                    raise ValueError("Collider mesh is required for kinematic colliders")
 
                 body_index = collider_body_ids[k]
                 collider_meshes[k] = _create_body_collider_mesh(model, body_index)
