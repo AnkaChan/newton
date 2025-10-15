@@ -156,7 +156,7 @@ class SchemaResolverMJWarp(SchemaResolver):
             "save_to_mjcf": [Attribute("newton:mjwarp:save_to_mjcf", "sim_usd_mjcf.xml")],
             "contact_stiffness_time_const": [Attribute("newton:mjwarp:contact_stiffness_time_const", 0.02)],
             "ncon_per_env": [Attribute("newton:mjwarp:ncon_per_env", 150)],
-            "njmax": [Attribute("newton:mjwarp:njmax", 16)],
+            "njmax": [Attribute("newton:mjwarp:njmax", 152)],
         },
     }
 
@@ -818,7 +818,7 @@ class Simulator:
                 self.animated_colliders_body_ids.append(body_id)
                 self.animated_colliders_paths.append(path)
                 # Mujoco requires nonzero inertia
-                #if self.integrator_type != IntegratorType.MJWARP:
+                # if self.integrator_type != IntegratorType.MJWARP:
                 builder.body_mass[body_id] = 9999999.0
                 builder.body_inv_mass[body_id] = 0.00000001
                 builder.body_inertia[body_id] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
@@ -885,7 +885,6 @@ class Simulator:
                 body_qd_np[i] = wp.spatial_vector(vel[0], vel[1], vel[2], ang[0], ang[1], ang[2])
             self.state_0.joint_q.assign(body_q_np)
             self.state_0.joint_qd.assign(body_qd_np)
-
 
     def simulate(self):
         if not self.collide_on_substeps:
