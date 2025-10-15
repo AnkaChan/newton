@@ -4711,6 +4711,14 @@ class ModelBuilder:
                 else:
                     shape_a, shape_b = s1, s2
 
+                b1 = self.shape_body[s1]
+                b2 = self.shape_body[s2]
+
+                b1_static = b1 == -1 or self.body_mass[b1] == 0.0
+                b2_static = b2 == -1 or self.body_mass[b2] == 0.0
+                if b1_static and b2_static:
+                    continue
+
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
 
