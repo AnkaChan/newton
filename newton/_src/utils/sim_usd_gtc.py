@@ -22,6 +22,7 @@
 ###########################################################################
 
 import inspect
+import itertools
 from enum import Enum
 from pathlib import Path
 from typing import ClassVar, Optional
@@ -512,6 +513,8 @@ class Simulator:
         self.in_stage = create_stage_from_path(input_path)
 
         builder = newton.ModelBuilder()
+        builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        builder.default_joint_cfg.armature = 0.1
         builder.up_axis = newton.Axis.Z
         builder.default_shape_cfg.density = 1.0
         builder.default_shape_cfg.ke = 1.0e3
@@ -526,6 +529,14 @@ class Simulator:
         self.physics_prim = next(iter([prim for prim in self.in_stage.Traverse() if prim.IsA(UsdPhysics.Scene)]), None)
 
         self.path_body_map = results["path_body_map"]
+
+        # set up pair-wise filters for the BDX Droid shapes to disable self collisions
+        droid_shapes: list[int] = []
+        for i, key in enumerate(builder.shape_key):
+            if "BDXDroid" in key:
+                droid_shapes.append(i)
+        for shape1, shape2 in itertools.combinations(droid_shapes, 2):
+            builder.shape_collision_filter_pairs.append((shape1, shape2))
 
         self._setup_solver_attributes()
         if integrator:
