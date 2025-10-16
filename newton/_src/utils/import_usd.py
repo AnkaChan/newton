@@ -611,6 +611,9 @@ def parse_usd(
             "key": str(joint_path),
             "enabled": joint_desc.jointEnabled,
         }
+        if key in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint, UsdPhysics.ObjectType.SphericalJoint):
+            joint_params["armature"] = joint_armature
+            joint_params["friction"] = joint_friction
 
         # joint index before insertion
         joint_index = builder.joint_count
@@ -636,8 +639,6 @@ def parse_usd(
             joint_params["limit_upper"] = joint_desc.limit.upper
             joint_params["limit_ke"] = current_joint_limit_ke
             joint_params["limit_kd"] = current_joint_limit_kd
-            joint_params["armature"] = joint_armature
-            joint_params["friction"] = joint_friction
             if joint_desc.drive.enabled:
                 # XXX take the target which is nonzero to decide between position vs. velocity target...
                 if joint_desc.drive.targetVelocity:

@@ -1769,6 +1769,8 @@ class ModelBuilder:
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
+        armature: float | None = None,
+        friction: float | None = None,
     ) -> int:
         """Adds a ball (spherical) joint to the model. Its position is defined by a 4D quaternion (xyzw) and its velocity is a 3D vector.
 
@@ -1780,11 +1782,23 @@ class ModelBuilder:
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
-
+            armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
+            friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
         Returns:
             The index of the added joint.
 
         """
+
+        if armature is None:
+            armature = self.default_joint_cfg.armature
+        if friction is None:
+            friction = self.default_joint_cfg.friction
+
+        ax = ModelBuilder.JointDofConfig(
+            axis=(1.0, 0.0, 0.0),
+            armature=armature,
+            friction=friction,
+        )
 
         return self.add_joint(
             JointType.BALL,
@@ -1792,6 +1806,7 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
+            angular_axes=[ax, ax, ax],
             key=key,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
