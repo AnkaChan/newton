@@ -32,6 +32,7 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 import newton
 import newton.examples
+from newton._src.core.spatial import angvel_between_quats
 from newton._src.utils.import_usd import parse_usd
 from newton._src.utils.schema_resolver import (
     Attribute,
@@ -696,6 +697,8 @@ class Simulator:
         """
         self.animated_colliders_body_ids = []
         self.animated_colliders_paths = []
+        self.animated_colliders_joint_q_start = []  # start indices of joint_q of the free joints corresponding to the animated colliders
+        self.animated_colliders_joint_qd_start = []  # start indices of joint_qd of the free joints corresponding to the animated colliders
         R = _ResolverManager([SchemaResolverSimUsd()])
         for path, body_id in path_body_map.items():
             kinematic_collider = R.get_value(self.in_stage.GetPrimAtPath(path), PrimType.BODY, "kinematic_collider")
@@ -706,6 +709,9 @@ class Simulator:
 
                 self.animated_colliders_body_ids.append(body_id)
                 self.animated_colliders_paths.append(path)
+                joint_id = builder.joint_child.index(body_id)
+                self.animated_colliders_joint_q_start.append(builder.joint_q_start[joint_id])
+                self.animated_colliders_joint_qd_start.append(builder.joint_qd_start[joint_id])
                 # Mujoco requires nonzero inertia
                 if self.integrator_type == IntegratorType.MJWARP:
                     builder.body_mass[body_id] = 9999999.0
@@ -762,17 +768,27 @@ class Simulator:
         else:
             body_q_np = self.state_0.body_q.numpy()
             body_qd_np = self.state_0.body_qd.numpy()
-            for i, path in zip(self.animated_colliders_body_ids, self.animated_colliders_paths, strict=True):
+            joint_q_np = self.state_0.joint_q.numpy()
+            joint_qd_np = self.state_0.joint_qd.numpy()
+            for i, body_id in enumerate(self.animated_colliders_body_ids):
+                path = self.animated_colliders_paths[i]
                 prim = self.in_stage.GetPrimAtPath(path)
                 wp_xform = parse_xform(prim, time)
                 wp_xform_next = parse_xform(prim, time_next)
                 vel = wp.vec3(wp_xform_next[0:3] - wp_xform[0:3]) / delta_time
-                # TODO: WARNING: we are not computing the angular velocity correctly
-                ang = wp.vec3(0.0, 0.0, 0.0)
-                body_q_np[i] = wp_xform
-                body_qd_np[i] = wp.spatial_vector(vel[0], vel[1], vel[2], ang[0], ang[1], ang[2])
+                ang = angvel_between_quats(wp_xform.q, wp_xform_next.q, delta_time)
+                body_q_np[body_id] = wp_xform
+                body_qd_np[body_id] = wp.spatial_vector(*vel, *ang)
+                # update free joint coordinates (necessary for MuJoCo)
+                q_start = self.animated_colliders_joint_q_start[i]
+                qd_start = self.animated_colliders_joint_qd_start[i]
+                joint_q_np[q_start:q_start+7] = wp_xform
+                joint_qd_np[qd_start:qd_start+3] = vel
+                joint_qd_np[qd_start+3:qd_start+6] = ang
             self.state_0.body_q.assign(body_q_np)
             self.state_0.body_qd.assign(body_qd_np)
+            self.state_0.joint_q.assign(joint_q_np)
+            self.state_0.joint_qd.assign(joint_qd_np)
 
     def simulate(self):
         if not self.collide_on_substeps:
