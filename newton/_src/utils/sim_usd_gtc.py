@@ -149,9 +149,9 @@ class SchemaResolverMJWarp(SchemaResolver):
         PrimType.SCENE: {
             "use_mujoco_cpu": [Attribute("newton:mjwarp:use_mujoco_cpu", False)],
             "solver": [Attribute("newton:mjwarp:solver", "newton")],
-            "integrator": [Attribute("newton:mjwarp:integrator", "euler")],
+            "integrator": [Attribute("newton:mjwarp:integrator", "implicitfast")],
             "iterations": [Attribute("newton:mjwarp:iterations", 100)],
-            "ls_iterations": [Attribute("newton:mjwarp:ls_iterations", 5)],
+            "ls_iterations": [Attribute("newton:mjwarp:ls_iterations", 25)],
             "save_to_mjcf": [Attribute("newton:mjwarp:save_to_mjcf", "sim_usd_mjcf.xml")],
             "contact_stiffness_time_const": [Attribute("newton:mjwarp:contact_stiffness_time_const", 0.02)],
             "ncon_per_env": [Attribute("newton:mjwarp:ncon_per_env", 150)],
@@ -738,7 +738,7 @@ class Simulator:
 
     def _update_animated_colliders(self, substep: int = 0):
         collider_prims = [
-            self.in_stage.GetPrimAtPath(self.animated_colliders_paths[i]) for i in self.animated_colliders_body_ids
+            self.in_stage.GetPrimAtPath(p) for p in self.animated_colliders_paths
         ]
         time = self.fps * (self.sim_time + self.sim_dt / self.sim_substeps * float(substep))
         time_next = self.fps * (self.sim_time + self.frame_dt)
@@ -762,8 +762,7 @@ class Simulator:
         else:
             body_q_np = self.state_0.body_q.numpy()
             body_qd_np = self.state_0.body_qd.numpy()
-            for i in self.animated_colliders_body_ids:
-                path = self.animated_colliders_paths[i]
+            for i, path in zip(self.animated_colliders_body_ids, self.animated_colliders_paths, strict=True):
                 prim = self.in_stage.GetPrimAtPath(path)
                 wp_xform = parse_xform(prim, time)
                 wp_xform_next = parse_xform(prim, time_next)
@@ -772,8 +771,8 @@ class Simulator:
                 ang = wp.vec3(0.0, 0.0, 0.0)
                 body_q_np[i] = wp_xform
                 body_qd_np[i] = wp.spatial_vector(vel[0], vel[1], vel[2], ang[0], ang[1], ang[2])
-            self.state_0.joint_q.assign(body_q_np)
-            self.state_0.joint_qd.assign(body_qd_np)
+            self.state_0.body_q.assign(body_q_np)
+            self.state_0.body_qd.assign(body_qd_np)
 
     def simulate(self):
         if not self.collide_on_substeps:

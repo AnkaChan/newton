@@ -218,7 +218,7 @@ class UpdateUsd:
         # Use a change block for efficient time-sampled updates
         with Sdf.ChangeBlock():
             for prim_path, body_id in self.path_body_map.items():
-                full_xform = body_q[body_id]
+                full_xform = wp.transform(*body_q[body_id])
 
                 # apply relative xform if any
                 rel_xform = self.path_body_relative_transform.get(prim_path)
