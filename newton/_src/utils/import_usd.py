@@ -476,6 +476,10 @@ def parse_usd(
                 points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
                 indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
                 counts = mesh.GetFaceVertexCountsAttr().Get()
+                if counts is None:
+                    if verbose:
+                        print(f"Warning: No face vertex counts found for mesh {path_name}")
+                    return
                 faces = []
                 face_id = 0
                 for count in counts:
