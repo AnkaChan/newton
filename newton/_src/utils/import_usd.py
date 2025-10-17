@@ -330,8 +330,9 @@ def parse_usd(
 
     visual_shape_cfg = ModelBuilder.ShapeConfig(
         density=0.0,
+        mu=0.2,
         has_shape_collision=False,
-        has_particle_collision=False,
+        has_particle_collision=True,
     )
 
     def load_visual_shapes(parent_body_id, prim, incoming_xform, incoming_scales=(1, 1, 1)):

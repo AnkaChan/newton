@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import numpy as np
+import tqdm
 import warp as wp
 from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -65,23 +66,35 @@ run_cfgs = {
         # "viewer_type": "gl",
     },
     "scene1": {
-        # "camera_cfg": {
-        #     "pos": wp.vec3(11.52, 4.85, 1.68),  # Position
-        #     "pitch": -0.8,  # Pitch in degrees
-        #     "yaw": 72.4,
-        # },
+        "camera_cfg": {
+            "pos": wp.vec3(19.82, 11.22, 1.41),  # Position
+            "pitch": -3.2,  # Pitch in degrees
+            "yaw": 97.6,
+        },
+        "initial_time": 7.0,
+        "preroll_frames": 200,
+        # "load_preroll_state": False,
+        "load_preroll_state": True,
         "cloth_cfg": {
-            "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo05K",
+            # "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo05K",
+            "path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
+            # "rest_path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
             #   elasticity
-            "tri_ke": 1e2,
-            "tri_ka": 1e2,
-            "tri_kd": 1.5e-6,
-            "bending_ke": 1e-3,
-            "bending_kd": 1e-3,
-            "particle_radius": 0.02,
+            "tri_ke": 5e2,
+            "tri_ka": 5e2,
+            "tri_kd": 1e-6,
+            "bending_ke": 3e-1,
+            "bending_kd": 1e-6,
+            "particle_radius": 0.03,
             # "fixed_particles" : [23100, 22959]
         },
-        "viewer_type": "usd",
+        "additional_collider": [
+            "/World/TerrainCollision_01/geo/collision/staircol02",
+            "/World/TerrainCollision_01/geo/collision/staircol01",
+            "/World/TerrainCollision_01/geo/collision/shelfcol01",
+            "/World/ClothModuleC_01/geo/clothModuleCsupport002",
+        ],
+        "save_usd": True,
         # "viewer_type": "gl",
     },
 }
@@ -157,13 +170,13 @@ class SchemaResolverSimUsd(SchemaResolver):
             # model attributes
             "joint_attach_kd": [Attribute("newton:joint_attach_kd", 2718.0)],
             "joint_attach_ke": [Attribute("newton:joint_attach_ke", 2718.0)],
-            "soft_contact_ke": [Attribute("newton:soft_contact_ke", 1.0e4)],
+            "soft_contact_ke": [Attribute("newton:soft_contact_ke", 1.0e2)],
             "soft_contact_kd": [Attribute("newton:soft_contact_kd", 1.0e2)],
             # solver attributes
             "fps": [Attribute("newton:fps", 60)],
-            "sim_substeps": [Attribute("newton:substeps", 8)],
+            "sim_substeps": [Attribute("newton:substeps", 50)],
             "integrator_type": [Attribute("newton:integrator", "xpbd")],
-            "integrator_iterations": [Attribute("newton:integrator_iterations", 10)],
+            "integrator_iterations": [Attribute("newton:integrator_iterations", 5)],
             "collide_on_substeps": [Attribute("newton:collide_on_substeps", True)],
         },
         PrimType.BODY: {
@@ -191,8 +204,8 @@ class SchemaResolverVBD(SchemaResolver):
         PrimType.SCENE: {
             "friction_epsilon": [Attribute("newton:vbd:friction_epsilon", 2718.0)],
             "handle_self_contact": [Attribute("newton:vbd:handle_self_contact", True)],
-            "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", 0.003)],
-            "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", 0.01)],
+            "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", 0.01)],
+            "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", 0.02)],
             "integrate_with_external_rigid_solver": [
                 Attribute("newton:vbd:integrate_with_external_rigid_solver", True)
             ],
@@ -719,6 +732,7 @@ class Simulator:
         builder.default_shape_cfg.density = 1.0
         builder.default_shape_cfg.ke = 1.0e3
         builder.default_shape_cfg.kd = 1.0e2
+        builder.default_shape_cfg.mu = 0.1
         results = parse_usd(
             builder,
             self.in_stage,
@@ -732,16 +746,35 @@ class Simulator:
                 print(f"  {prim.GetPath()}")
 
         if run_cfg["cloth_cfg"].get("path", None) is not None:
-            usd_geom = UsdGeom.Mesh(self.in_stage.GetPrimAtPath(run_cfg["cloth_cfg"]["path"]))
+            rest_shape_path = run_cfg["cloth_cfg"].get("rest_path", None)
+            has_rest_shape = rest_shape_path is not None
+            rest_shape_path = rest_shape_path if has_rest_shape else run_cfg["cloth_cfg"]["path"]
+
+            usd_geom = UsdGeom.Mesh(self.in_stage.GetPrimAtPath(rest_shape_path))
             mesh_points = np.array(usd_geom.GetPointsAttr().Get())
             mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
             vertices = [wp.vec3(v) for v in mesh_points]
-
             transform = parse_xform(usd_geom)
-
             # Extract position and rotation
-            position = wp.transform_get_translation(transform) + wp.vec3(0.0, 0.0, 0.5)  # wp.vec3
+            position = wp.transform_get_translation(transform)  # wp.vec3
             rotation = wp.transform_get_rotation(transform)
+
+            if has_rest_shape:
+                usd_geom_initial_shape = UsdGeom.Mesh(self.in_stage.GetPrimAtPath(run_cfg["cloth_cfg"]["path"]))
+                mesh_points_initial_org = np.array(usd_geom_initial_shape.GetPointsAttr().Get())
+                transform_initial_shape = parse_xform(usd_geom_initial_shape)
+
+                # Apply transform_initial_shape to mesh_points_initial
+                mesh_points_initial = np.array(
+                    [wp.transform_point(transform_initial_shape, wp.vec3(*p)) for p in mesh_points_initial_org]
+                )
+            else:
+                mesh_points_initial_org = mesh_points
+                mesh_points_initial = np.array(
+                    [wp.transform_point(transform, wp.vec3(*p)) for p in mesh_points_initial_org]
+                )
+
+            top_vertices = get_top_vertices(mesh_points_initial_org, "y", thresh=0.1)
 
             builder.add_cloth_mesh(
                 vertices=vertices,
@@ -749,7 +782,7 @@ class Simulator:
                 rot=rotation,
                 pos=position,
                 vel=wp.vec3(0.0, 0.0, 0.0),
-                density=0.2,
+                density=1.0,
                 scale=1.0,
                 tri_ke=run_cfg["cloth_cfg"]["tri_ke"],
                 tri_ka=run_cfg["cloth_cfg"]["tri_ka"],
@@ -763,11 +796,6 @@ class Simulator:
             #     fixed_particles = run_cfg["cloth_cfg"].get("fixed_particles", None)
             #     for fixed_v_id in fixed_particles:
             #         builder.particle_flags[fixed_v_id] = builder.particle_flags[fixed_v_id] & ~ParticleFlags.ACTIVE
-
-            top_vertices = get_top_vertices(
-                mesh_points,
-                "y",
-            )
 
             for fixed_v_id in top_vertices:
                 builder.particle_flags[fixed_v_id] = builder.particle_flags[fixed_v_id] & ~ParticleFlags.ACTIVE
@@ -785,11 +813,59 @@ class Simulator:
         if self.integrator_type == IntegratorType.VBD:
             builder.color()
 
-        builder.shape_scale[0] = wp.vec3(1, 1, 1)
+        # INSERT_YOUR_CODE
+        # Add additional static collider meshes from run_cfg if provided
+        additional_colliders = run_cfg.get("additional_collider", [])
+        for collider_path in additional_colliders:
+            # Find the prim for the collider path
+            prim = self.in_stage.GetPrimAtPath(collider_path)
+            if prim and prim.IsValid():
+                mesh = UsdGeom.Mesh(prim)
+                if not mesh:
+                    continue  # Not a mesh, skip
+
+                # Get mesh points and faces
+                points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
+                face_vertex_counts = np.array(mesh.GetFaceVertexCountsAttr().Get())
+                face_vertex_indices = np.array(mesh.GetFaceVertexIndicesAttr().Get())
+
+                # Only support triangles/quads, but best effort: triangulate faces if needed.
+                # If all faces are triangles, proceed, else skip (could add robust triangulation here)
+                if not np.all(face_vertex_counts == 3):
+                    # Simple conversion to triangles for quads (for e.g.)
+                    tris = []
+                    idx = 0
+                    for n in face_vertex_counts:
+                        if n == 3:
+                            tris.append(face_vertex_indices[idx : idx + 3])
+                        elif n == 4:
+                            f = face_vertex_indices[idx : idx + 4]
+                            tris.append([f[0], f[1], f[2]])
+                            tris.append([f[0], f[2], f[3]])
+                        else:
+                            # skip faces that are not tri/quad
+                            pass
+                        idx += n
+                    mesh_indices = np.array(tris, dtype=np.int32).reshape(-1, 3)
+                else:
+                    mesh_indices = face_vertex_indices.reshape(-1, 3)
+
+                # Use identity for transform, could later do more (respect local Xform?)
+                builder.add_shape_mesh(
+                    body=-1,
+                    xform=parse_xform(prim),
+                    mesh=newton.Mesh(points, indices=mesh_indices),
+                    scale=wp.vec3(
+                        *np.array(prim.GetAttribute("xformOp:scale").Get() or [1.0, 1.0, 1.0], dtype=np.float32)
+                    ),
+                )
+
+        # builder.shape_scale[0] = wp.vec3(1, 1, 1)
 
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 1000
+        self.model.soft_contact_ke = 100
         self.model.soft_contact_kd = 2e-3
+        self.model.soft_contact_mu = 0.1
         self.builder_results = results
 
         self.path_body_map = self.builder_results["path_body_map"]
@@ -814,18 +890,28 @@ class Simulator:
         self.state_1 = self.model.state()
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=self.rigid_contact_margin)
 
+        if run_cfg["cloth_cfg"].get("path", None) is not None and has_rest_shape:
+            self.state_0.particle_q.assign(mesh_points_initial)
+            self.state_1.particle_q.assign(mesh_points_initial)
+
         # NB: body_q will be modified, so initial state will be slightly altered
         if self.model.joint_count:
             newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0, mask=None)
 
-        self.use_cuda_graph = False  # wp.get_device().is_cuda
+        self.use_cuda_graph = True  # wp.get_device().is_cuda
         self.is_mujoco_cpu_mode = self.integrator_type == IntegratorType.MJWARP and self.R.get_value(
             self.physics_prim, PrimType.SCENE, "use_mujoco_cpu", False
         )
         if self.use_cuda_graph and not self.is_mujoco_cpu_mode:
             with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+                self.run_substep()
+            self.graph_even_step = capture.graph
+            (self.state_0, self.state_1) = (self.state_1, self.state_0)
+
+            with wp.ScopedCapture() as capture:
+                self.run_substep()
+            self.graph_odd_step = capture.graph
+            (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
         self.usd_updater = UpdateUsd(
             stage=output_path,
@@ -843,20 +929,63 @@ class Simulator:
 
         self.DEBUG = True
         if self.DEBUG:
-            if run_cfg["viewer_type"] == "usd":
-                self.viewer = newton.viewer.ViewerUSD(output_path=output_path + ".debug.usd", num_frames=None)
+            if run_cfg["save_usd"]:
+                self.viewer_usd = newton.viewer.ViewerUSD(
+                    output_path=input_path.replace(".usd", "_sim_v.usd"), num_frames=None
+                )
+                self.viewer_usd.set_model(self.model)
+            else:
+                self.viewer_usd = None
 
-            elif run_cfg["viewer_type"] == "gl":
-                self.viewer = newton.viewer.ViewerGL()
-
-            self.viewer.set_model(self.model)
+            self.viewer_gl = newton.viewer.ViewerGL()
+            self.viewer_gl.set_model(self.model)
 
             if run_cfg.get("camera_cfg", None) is not None:
-                self.viewer.set_camera(
-                    pos=wp.vec3(11.52, 4.85, 1.68),  # Position
-                    pitch=-0.8,  # Pitch in degrees
-                    yaw=72.4,  # Yaw in degrees
+                self.viewer_gl.set_camera(
+                    pos=run_cfg["camera_cfg"]["pos"],  # Position
+                    pitch=run_cfg["camera_cfg"]["pitch"],  # Pitch in degrees
+                    yaw=run_cfg["camera_cfg"]["yaw"],  # Yaw in degrees
                 )
+
+        self.sim_time = run_cfg["initial_time"]
+        self.run_preroll(output_path)
+
+    def run_preroll(self, output_path):
+        preroll_frames = run_cfg.get("preroll_frames", 0)
+        out_p = Path(output_path)
+        preroll_state_path = str(out_p.parent / f"{out_p.stem}.preroll.npy")
+        load_preroll_state = run_cfg.get("load_preroll_state", False)
+        # If not explicitly provided, deduce preroll state path from the output path
+
+        if load_preroll_state and preroll_state_path is not None:
+            import numpy as np
+
+            preroll_state = np.load(preroll_state_path, allow_pickle=True).item()
+            self.state_0.particle_q.assign(preroll_state["particle_q"])
+            self.state_1.particle_q.assign(preroll_state["particle_q"])
+        elif preroll_frames > 0:
+            import numpy as np
+
+            state = self.state_0
+            for _ in tqdm.tqdm(range(preroll_frames), desc="Preroll Frames"):
+                for substep in range(self.sim_substeps):
+                    self.state_0.clear_forces()
+                    self.integrator.step(self.state_0, self.state_1, None, self.contacts, self.sim_dt)
+                    self.state_0, self.state_1 = self.state_1, self.state_0
+
+                self.viewer_gl.begin_frame(self.sim_time)
+                self.viewer_gl.log_state(self.state_0)
+
+                self.viewer_gl.end_frame()
+
+            state = self.state_0  # assuming self.simulate() advances self.state_0
+
+            # Save the last frame's state
+            last_frame = {
+                "particle_q": np.array(state.particle_q.numpy()),
+                "particle_qd": np.array(state.particle_qd.numpy()),
+            }
+            np.save(preroll_state_path, last_frame)
 
     def _setup_solver_attributes(self):
         """Apply scene attributes parsed from the stage to self."""
@@ -1028,60 +1157,73 @@ class Simulator:
 
         for substep in range(self.sim_substeps):
             self._update_animated_colliders(substep)
-
-            if self.collide_on_substeps:
-                self.contacts = self.model.collide(
-                    self.state_0,
-                    rigid_contact_margin=self.rigid_contact_margin,
-                    soft_contact_margin=run_cfg["cloth_cfg"]["particle_radius"] * 2,
-                )
-
-            self.state_0.clear_forces()
-            self.integrator.step(self.state_0, self.state_1, None, self.contacts, self.sim_dt)
+            if self.use_cuda_graph:
+                if substep % self.sim_substeps:
+                    wp.capture_launch(self.graph_even_step)
+                else:
+                    wp.capture_launch(self.graph_odd_step)
+            else:
+                self.run_substep()
 
             # swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
+    def run_substep(self):
+        if self.collide_on_substeps:
+            self.contacts = self.model.collide(
+                self.state_0,
+                rigid_contact_margin=self.rigid_contact_margin,
+                soft_contact_margin=run_cfg["cloth_cfg"]["particle_radius"],
+            )
+
+        self.state_0.clear_forces()
+        self.integrator.step(self.state_0, self.state_1, None, self.contacts, self.sim_dt)
+
     def step(self):
         with wp.ScopedTimer("step", dict=self.profiler):
-            if self.use_cuda_graph and not self.is_mujoco_cpu_mode:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+            self.simulate()
         self.sim_time += self.frame_dt
         print(f"sim_time = {self.sim_time}")
 
     def render(self):
         with wp.ScopedTimer("render", dict=self.profiler):
-            self.usd_updater.begin_frame(self.sim_time)
-            self.usd_updater.update_usd(self.state_0)
-            if self.integrator_type == IntegratorType.COUPLED_MPM:
-                rot, scale = extract_particle_rotation_and_scales(self.integrator.mpm_state_0)
-                self.usd_updater.render_points(
-                    path="/particles",
-                    points=self.integrator.mpm_state_0.particle_q,
-                    rotations=rot,
-                    scales=scale,
-                    radius=float(self.integrator.mpm_solver.mpm_model.model.particle_radius.numpy()[0]),
-                )
-
-            self.usd_updater.end_frame()
+            # self.usd_updater.begin_frame(self.sim_time)
+            # self.usd_updater.update_usd(self.state_0)
+            # if self.integrator_type == IntegratorType.COUPLED_MPM:
+            #     rot, scale = extract_particle_rotation_and_scales(self.integrator.mpm_state_0)
+            #     self.usd_updater.render_points(
+            #         path="/particles",
+            #         points=self.integrator.mpm_state_0.particle_q,
+            #         rotations=rot,
+            #         scales=scale,
+            #         radius=float(self.integrator.mpm_solver.mpm_model.model.particle_radius.numpy()[0]),
+            #     )
+            #
+            # self.usd_updater.end_frame()
 
             if self.DEBUG:
-                self.viewer.begin_frame(self.sim_time)
-                self.viewer.log_state(self.state_0)
-                if self.integrator_type == IntegratorType.COUPLED_MPM:
-                    self.viewer.log_points(
-                        "sand",
-                        points=self.integrator.mpm_state_0.particle_q,
-                        radii=self.integrator.mpm_solver.mpm_model.model.particle_radius,
-                        colors=self.integrator.particle_render_colors,
-                        hidden=False,
-                    )
-                self.viewer.end_frame()
+                self.viewer_gl.begin_frame(self.sim_time)
+                self.viewer_gl.log_state(self.state_0)
+                self.viewer_gl.end_frame()
+
+                if self.viewer_usd is not None:
+                    if self.integrator_type == IntegratorType.COUPLED_MPM:
+                        self.viewer_usd.log_points(
+                            "sand",
+                            points=self.integrator.mpm_state_0.particle_q,
+                            radii=self.integrator.mpm_solver.mpm_model.model.particle_radius,
+                            colors=self.integrator.particle_render_colors,
+                            hidden=False,
+                        )
+
+                    self.viewer_usd.begin_frame(self.sim_time)
+                    self.viewer_usd.log_state(self.state_0)
+                    self.viewer_usd.end_frame()
 
     def save(self):
-        self.viewer.close()
+        self.viewer_gl.close()
+        if self.viewer_usd is not None:
+            self.viewer_usd.close()
 
         self.usd_updater.close()
 
