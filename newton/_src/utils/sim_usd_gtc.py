@@ -71,14 +71,46 @@ run_cfgs = {
             "pitch": -3.2,  # Pitch in degrees
             "yaw": 97.6,
         },
-        "initial_time": 7.0,
-        "preroll_frames": 200,
-        # "load_preroll_state": False,
-        "load_preroll_state": True,
+        "initial_time": 0.0,
+        "preroll_frames": 1000,
+        "preroll_zero_velocity_ratio": 0.1,
+        "load_preroll_state": False,
+        # "load_preroll_state": True,
+        "cloth_cfg": {
+            "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo05K",
+            # "path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
+            "rest_path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
+            #   elasticity
+            "tri_ke": 5e2,
+            "tri_ka": 5e2,
+            "tri_kd": 1e-6,
+            "bending_ke": 1e-1,
+            "bending_kd": 1e-6,
+            "particle_radius": 0.04,
+            "additional_translation": [0,0,-0.05]
+            # "fixed_particles" : [23100, 22959]
+        },
+        "additional_collider": [
+
+        ],
+        "save_usd": True,
+        "fixed_points_scheme": "top",
+        # "viewer_type": "gl",
+    },
+    "sceneA": {
+        "camera_cfg": {
+            "pos": wp.vec3(19.82, 11.22, 1.41),  # Position
+            "pitch": -3.2,  # Pitch in degrees
+            "yaw": 97.6,
+        },
+        "initial_time": 0.0,
+        "preroll_frames": 500,
+        "load_preroll_state": False,
+        # "load_preroll_state": True,
         "cloth_cfg": {
             # "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo05K",
-            "path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
-            # "rest_path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
+            "path": "/World/RopeNetA_01/geo/ropeNetA05KCollision",
+            "rest_path": "/World/RopeNetA5kCollisionRest_01/geo/ropeNetA05KCollisionRest",
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
@@ -89,12 +121,15 @@ run_cfgs = {
             # "fixed_particles" : [23100, 22959]
         },
         "additional_collider": [
-            "/World/TerrainCollision_01/geo/collision/staircol02",
-            "/World/TerrainCollision_01/geo/collision/staircol01",
-            "/World/TerrainCollision_01/geo/collision/shelfcol01",
-            "/World/ClothModuleC_01/geo/clothModuleCsupport002",
+            "/World/TerrainCollision_01/geo/collision/staircol01"
         ],
         "save_usd": True,
+        "fixed_points_scheme": {
+            "name": "box",
+            "boxes":[
+
+            ]
+        }
         # "viewer_type": "gl",
     },
 }
@@ -170,13 +205,13 @@ class SchemaResolverSimUsd(SchemaResolver):
             # model attributes
             "joint_attach_kd": [Attribute("newton:joint_attach_kd", 2718.0)],
             "joint_attach_ke": [Attribute("newton:joint_attach_ke", 2718.0)],
-            "soft_contact_ke": [Attribute("newton:soft_contact_ke", 1.0e2)],
+            "soft_contact_ke": [Attribute("newton:soft_contact_ke", 2.0e2)],
             "soft_contact_kd": [Attribute("newton:soft_contact_kd", 1.0e2)],
             # solver attributes
             "fps": [Attribute("newton:fps", 60)],
-            "sim_substeps": [Attribute("newton:substeps", 50)],
+            "sim_substeps": [Attribute("newton:substeps", 20)],
             "integrator_type": [Attribute("newton:integrator", "xpbd")],
-            "integrator_iterations": [Attribute("newton:integrator_iterations", 5)],
+            "integrator_iterations": [Attribute("newton:integrator_iterations", 10)],
             "collide_on_substeps": [Attribute("newton:collide_on_substeps", True)],
         },
         PrimType.BODY: {
@@ -774,7 +809,31 @@ class Simulator:
                     [wp.transform_point(transform, wp.vec3(*p)) for p in mesh_points_initial_org]
                 )
 
-            top_vertices = get_top_vertices(mesh_points_initial_org, "y", thresh=0.1)
+            if run_cfg["fixed_points_scheme"] == "top":
+                fixed_vertices = get_top_vertices(mesh_points_initial_org, "y", thresh=0.1)
+            elif (
+                isinstance(run_cfg.get("fixed_points_scheme"), dict)
+                and run_cfg["fixed_points_scheme"].get("name") == "box"
+            ):
+                # Implement box selection for fixed vertices
+                fixed_vertices = []
+                boxes = run_cfg["fixed_points_scheme"].get("boxes", [])
+                # Each box: [min_x, min_y, min_z, max_x, max_y, max_z]
+                mesh_points_arr = np.array(mesh_points_initial_org)
+                for box in boxes:
+                    min_x, min_y, min_z, max_x, max_y, max_z = box
+                    mask = (
+                        (mesh_points_arr[:, 0] >= min_x)
+                        & (mesh_points_arr[:, 0] <= max_x)
+                        & (mesh_points_arr[:, 1] >= min_y)
+                        & (mesh_points_arr[:, 1] <= max_y)
+                        & (mesh_points_arr[:, 2] >= min_z)
+                        & (mesh_points_arr[:, 2] <= max_z)
+                    )
+                    idx_in_box = np.where(mask)[0]
+                    fixed_vertices.extend(idx_in_box.tolist())
+                # Remove duplicates if boxes overlap
+                fixed_vertices = np.unique(fixed_vertices)
 
             builder.add_cloth_mesh(
                 vertices=vertices,
@@ -797,7 +856,7 @@ class Simulator:
             #     for fixed_v_id in fixed_particles:
             #         builder.particle_flags[fixed_v_id] = builder.particle_flags[fixed_v_id] & ~ParticleFlags.ACTIVE
 
-            for fixed_v_id in top_vertices:
+            for fixed_v_id in fixed_vertices:
                 builder.particle_flags[fixed_v_id] = builder.particle_flags[fixed_v_id] & ~ParticleFlags.ACTIVE
 
         self.R = _ResolverManager([SchemaResolverSimUsd(), SchemaResolverNewton(), SchemaResolverMJWarp()])
@@ -863,7 +922,7 @@ class Simulator:
         # builder.shape_scale[0] = wp.vec3(1, 1, 1)
 
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 100
+        self.model.soft_contact_ke = 1000
         self.model.soft_contact_kd = 2e-3
         self.model.soft_contact_mu = 0.1
         self.builder_results = results
@@ -967,11 +1026,19 @@ class Simulator:
             import numpy as np
 
             state = self.state_0
-            for _ in tqdm.tqdm(range(preroll_frames), desc="Preroll Frames"):
+            for frame in tqdm.tqdm(range(preroll_frames), desc="Preroll Frames"):
                 for substep in range(self.sim_substeps):
                     self.state_0.clear_forces()
-                    self.integrator.step(self.state_0, self.state_1, None, self.contacts, self.sim_dt)
+                    if self.use_cuda_graph:
+                        if substep % self.sim_substeps:
+                            wp.capture_launch(self.graph_even_step)
+                        else:
+                            wp.capture_launch(self.graph_odd_step)
                     self.state_0, self.state_1 = self.state_1, self.state_0
+
+                    if frame < run_cfg.get("preroll_zero_velocity_ratio", 0.1) * preroll_frames:
+                        self.state_0.particle_qd.zero_()
+                        self.state_1.particle_qd.zero_()
 
                 self.viewer_gl.begin_frame(self.sim_time)
                 self.viewer_gl.log_state(self.state_0)
@@ -1112,12 +1179,12 @@ class Simulator:
             axis * angle / dt,
         )
 
-    def _update_animated_colliders(self, substep):
-        collider_prims = [
-            self.in_stage.GetPrimAtPath(self.animated_colliders_paths[i]) for i in self.animated_colliders_body_ids
-        ]
-        time = self.fps * (self.sim_time + self.sim_dt / self.sim_substeps * float(substep))
-        time_next = self.fps * (self.sim_time + self.frame_dt)
+    def _update_animated_colliders(self, substep: int = 0):
+        collider_prims = [self.in_stage.GetPrimAtPath(p) for p in self.animated_colliders_paths]
+        collider_body_ids = wp.array(self.animated_colliders_body_ids, dtype=int)
+
+        time = self.fps * (self.sim_time + self.sim_dt * float(substep))
+        time_next = time + self.fps * self.sim_dt
 
         xform_cache = UsdGeom.XformCache(time)
         usd_transforms = wp.array(
