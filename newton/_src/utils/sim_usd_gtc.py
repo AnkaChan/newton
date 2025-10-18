@@ -72,7 +72,7 @@ run_cfgs = {
             "yaw": 97.6,
         },
         "initial_time": 0.0,
-        "preroll_frames": 1000,
+        "preroll_frames": 1500,
         "preroll_zero_velocity_ratio": 0.1,
         "load_preroll_state": False,
         # "load_preroll_state": True,
@@ -83,9 +83,9 @@ run_cfgs = {
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
-            "tri_kd": 1e-6,
-            "bending_ke": 1e-1,
-            "bending_kd": 1e-6,
+            "tri_kd": 1e-7,
+            "bending_ke": 1e-2,
+            "bending_kd": 1e-8,
             "particle_radius": 0.04,
             "additional_translation": [0,0,-0.05]
             # "fixed_particles" : [23100, 22959]
@@ -104,7 +104,8 @@ run_cfgs = {
             "yaw": 97.6,
         },
         "initial_time": 0.0,
-        "preroll_frames": 500,
+        "preroll_frames": 1500,
+        "preroll_zero_velocity_ratio": 0.1,
         "load_preroll_state": False,
         # "load_preroll_state": True,
         "cloth_cfg": {
@@ -114,27 +115,31 @@ run_cfgs = {
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
-            "tri_kd": 1e-6,
-            "bending_ke": 3e-1,
-            "bending_kd": 1e-6,
-            "particle_radius": 0.03,
+            "tri_kd": 1e-7,
+            "bending_ke": 1e-2,
+            "bending_kd": 1e-8,
+            "particle_radius": 0.04,
             # "fixed_particles" : [23100, 22959]
         },
         "additional_collider": [
-            "/World/TerrainCollision_01/geo/collision/staircol01"
+            # "/World/TerrainCollision_01/geo/collision/staircol01"
         ],
         "save_usd": True,
         "fixed_points_scheme": {
             "name": "box",
             "boxes":[
-
+                [18.59 - 0.05, 2.03 - 0.05, 19.81 - 0.05, 18.59 + 0.05, 2.03 + 0.05, 19.81 + 0.05,],
+                [17.98 - 0.05, 2.59 - 0.05, 19.40 - 0.05, 17.98 + 0.05, 2.59 + 0.05, 19.40 + 0.05,],
             ]
-        }
+        },
         # "viewer_type": "gl",
     },
 }
 
-run_cfg = run_cfgs["scene1"]
+# D:\Data\GTC2025DC_Demo\Inputs\SceneB\20251017_to_sim_inSimClothB_01_physics.usd -n 1800 -i vbd
+# run_cfg = run_cfgs["scene1"]
+
+run_cfg = run_cfgs["sceneA"]
 
 
 def get_top_vertices(
@@ -241,6 +246,7 @@ class SchemaResolverVBD(SchemaResolver):
             "handle_self_contact": [Attribute("newton:vbd:handle_self_contact", True)],
             "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", 0.01)],
             "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", 0.02)],
+            "collision_detection_interval": [Attribute("newton:vbd:collision_detection_interval", 5)],
             "integrate_with_external_rigid_solver": [
                 Attribute("newton:vbd:integrate_with_external_rigid_solver", True)
             ],
