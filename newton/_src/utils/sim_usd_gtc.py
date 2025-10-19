@@ -22,7 +22,9 @@
 ###########################################################################
 
 import inspect
+import os
 from enum import Enum
+from os.path import join
 from pathlib import Path
 from typing import ClassVar
 
@@ -43,6 +45,68 @@ from newton._src.utils.schema_resolver import (
     _ResolverManager,
 )
 from newton._src.utils.update_usd import UpdateUsd
+
+
+def writeObj(vs, vns, vts, fs, outFile, withMtl=False, textureFile=None, convertToMM=False, vIdAdd1=True):
+    # write new
+    with open(outFile, "w+") as f:
+        fp = Path(outFile)
+        outMtlFile = join(str(fp.parent), fp.stem + ".mtl")
+        if withMtl:
+            f.write("mtllib ./" + fp.stem + ".mtl\n")
+            with open(outMtlFile, "w") as fMtl:
+                mtlStr = """newmtl material_0
+    Ka 0.200000 0.200000 0.200000
+    Kd 1.000000 1.000000 1.000000
+    Ks 1.000000 1.000000 1.000000
+    Tr 1.000000
+    illum 2
+    Ns 0.000000
+    map_Kd """
+                assert textureFile is not None
+                mtlStr += textureFile
+                fMtl.write(mtlStr)
+
+        for i, v in enumerate(vs):
+            if convertToMM:
+                v[0] = 1000 * v[0]
+                v[1] = 1000 * v[1]
+                v[2] = 1000 * v[2]
+            if len(v) == 3:
+                f.write(f"v {v[0]:f} {v[1]:f} {v[2]:f}\n")
+            elif len(v) == 6:
+                f.write(f"v {v[0]:f} {v[1]:f} {v[2]:f} {v[3]:f} {v[4]:f} {v[5]:f}\n")
+        if vns:
+            for i, v in enumerate(vns):
+                vn = vns[i]
+                f.write(f"vn {vn[0]:f} {vn[1]:f} {vn[2]:f}\n")
+
+        if vns:
+            for vt in vts:
+                f.write(f"vt {vt[0]:f} {vt[1]:f}\n")
+
+        if withMtl:
+            f.write("usemtl material_0\n")
+        for iF in range(len(fs)):
+            # if facesToPreserve is not None and iF not in facesToPreserve:
+            #     continue
+            f.write("f")
+            if vIdAdd1:
+                for fis in fs[iF]:
+                    if isinstance(fis, list):
+                        f.write(" {}".format("/".join([str(fi + 1) for fi in fis])))
+                    else:
+                        f.write(f" {fis + 1}")
+
+            else:
+                for fis in fs[iF]:
+                    if isinstance(fis, list):
+                        f.write(" {}".format("/".join([str(fi) for fi in fis])))
+                    else:
+                        f.write(f" {fis}")
+            f.write("\n")
+        f.close()
+
 
 run_cfgs = {
     "test_040": {
@@ -65,36 +129,74 @@ run_cfgs = {
         "viewer_type": "usd",
         # "viewer_type": "gl",
     },
-    "scene1": {
+    # "scene1": {
+    #     "camera_cfg": {
+    #         "pos": wp.vec3(19.82, 11.22, 1.41),  # Position
+    #         "pitch": -3.2,  # Pitch in degrees
+    #         "yaw": 97.6,
+    #     },
+    #     "initial_time": 0.0,
+    #     "preroll_frames": 1500,
+    #     "preroll_zero_velocity_ratio": 0.1,
+    #     "load_preroll_state": False,
+    #     # "load_preroll_state": True,
+    #     "cloth_cfg": {
+    #         "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo05K",
+    #         # "path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
+    #         "rest_path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
+    #         #   elasticity
+    #         "tri_ke": 5e2,
+    #         "tri_ka": 5e2,
+    #         "tri_kd": 1e-7,
+    #         "bending_ke": 1e-2,
+    #         "bending_kd": 1e-8,
+    #         "particle_radius": 0.04,
+    #         "additional_translation": [0,0,-0.05]
+    #         # "fixed_particles" : [23100, 22959]
+    #     },
+    #     "additional_collider": [
+    #
+    #     ],
+    #     "save_usd": True,
+    #     "save_rest_and_init_state": True,
+    #     "fixed_points_scheme": "top",
+    #     # "viewer_type": "gl",
+    # },
+    "sceneB": {
         "camera_cfg": {
             "pos": wp.vec3(19.82, 11.22, 1.41),  # Position
             "pitch": -3.2,  # Pitch in degrees
             "yaw": 97.6,
         },
-        "initial_time": 0.0,
+        "initial_time": 7.0,
         "preroll_frames": 1500,
         "preroll_zero_velocity_ratio": 0.1,
-        "load_preroll_state": False,
-        # "load_preroll_state": True,
+        # "load_preroll_state": False,
+        "load_preroll_state": True,
         "cloth_cfg": {
-            "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo05K",
+            "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo1p12",
             # "path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
-            "rest_path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
+            "rest_path": "/World/ClothModuleC1p12CollisionRest_01/geo/clothModuleCbCollisionRestGeo1p12",
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
             "tri_kd": 1e-7,
             "bending_ke": 1e-2,
             "bending_kd": 1e-8,
-            "particle_radius": 0.04,
-            "additional_translation": [0,0,-0.05]
+            "particle_radius": 0.03,
+            "additional_translation": [0, 0, -0.05],
             # "fixed_particles" : [23100, 22959]
         },
-        "additional_collider": [
-
-        ],
+        "additional_collider": [],
         "save_usd": True,
+        "save_rest_and_init_state": True,
         "fixed_points_scheme": "top",
+        "substeps": 20,
+        "iterations": 20,
+        "collision_detection_interval": 5,
+        "self_contact_radius": 0.006,
+        "handle_self_contact": True,
+        "soft_contact_ke": 1e3,
         # "viewer_type": "gl",
     },
     "sceneA": {
@@ -117,7 +219,7 @@ run_cfgs = {
             "tri_ka": 5e2,
             "tri_kd": 1e-7,
             "bending_ke": 1e-2,
-            "bending_kd": 1e-8,
+            "bending_kd": 1e-7,
             "particle_radius": 0.04,
             # "fixed_particles" : [23100, 22959]
         },
@@ -127,19 +229,34 @@ run_cfgs = {
         "save_usd": True,
         "fixed_points_scheme": {
             "name": "box",
-            "boxes":[
-                [18.59 - 0.05, 2.03 - 0.05, 19.81 - 0.05, 18.59 + 0.05, 2.03 + 0.05, 19.81 + 0.05,],
-                [17.98 - 0.05, 2.59 - 0.05, 19.40 - 0.05, 17.98 + 0.05, 2.59 + 0.05, 19.40 + 0.05,],
-            ]
+            "boxes": [
+                [
+                    19.42 - 0.05,
+                    18 - 0.05,
+                    2.59 - 0.05,
+                    19.42 + 0.05,
+                    18 + 0.05,
+                    2.59 + 0.05,
+                ],
+                [
+                    19.81 - 0.05,
+                    18.59 - 0.05,
+                    2.03 - 0.05,
+                    19.81 + 0.05,
+                    18.59 + 0.05,
+                    2.03 + 0.05,
+                ],
+            ],
         },
         # "viewer_type": "gl",
     },
 }
 
 # D:\Data\GTC2025DC_Demo\Inputs\SceneB\20251017_to_sim_inSimClothB_01_physics.usd -n 1800 -i vbd
-# run_cfg = run_cfgs["scene1"]
+# D:\Data\GTC2025DC_Demo\Inputs\SceneB\20251017_to_sim_inSimClothB_01_physics.usd -n 1800 -i vbd
+run_cfg = run_cfgs["sceneB"]
 
-run_cfg = run_cfgs["sceneA"]
+# run_cfg = run_cfgs["sceneA"]
 
 
 def get_top_vertices(
@@ -214,9 +331,9 @@ class SchemaResolverSimUsd(SchemaResolver):
             "soft_contact_kd": [Attribute("newton:soft_contact_kd", 1.0e2)],
             # solver attributes
             "fps": [Attribute("newton:fps", 60)],
-            "sim_substeps": [Attribute("newton:substeps", 20)],
+            "sim_substeps": [Attribute("newton:substeps", run_cfg["substeps"])],
             "integrator_type": [Attribute("newton:integrator", "xpbd")],
-            "integrator_iterations": [Attribute("newton:integrator_iterations", 10)],
+            "integrator_iterations": [Attribute("newton:integrator_iterations", run_cfg["iterations"])],
             "collide_on_substeps": [Attribute("newton:collide_on_substeps", True)],
         },
         PrimType.BODY: {
@@ -243,10 +360,12 @@ class SchemaResolverVBD(SchemaResolver):
     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
         PrimType.SCENE: {
             "friction_epsilon": [Attribute("newton:vbd:friction_epsilon", 2718.0)],
-            "handle_self_contact": [Attribute("newton:vbd:handle_self_contact", True)],
-            "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", 0.01)],
-            "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", 0.02)],
-            "collision_detection_interval": [Attribute("newton:vbd:collision_detection_interval", 5)],
+            "handle_self_contact": [Attribute("newton:vbd:handle_self_contact", run_cfg["handle_self_contact"])],
+            "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", run_cfg["self_contact_radius"])],
+            "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", run_cfg["self_contact_radius"] * 1.5)],
+            "collision_detection_interval": [
+                Attribute("newton:vbd:collision_detection_interval", run_cfg["collision_detection_interval"])
+            ],
             "integrate_with_external_rigid_solver": [
                 Attribute("newton:vbd:integrate_with_external_rigid_solver", True)
             ],
@@ -763,6 +882,8 @@ class Simulator:
             out_stage = Usd.Stage.Open(flattened.identifier)
             return out_stage
 
+        self.output_folder = os.path.dirname(output_path)
+
         self.sim_time = 0.0
         self.profiler = {}
 
@@ -794,6 +915,12 @@ class Simulator:
             usd_geom = UsdGeom.Mesh(self.in_stage.GetPrimAtPath(rest_shape_path))
             mesh_points = np.array(usd_geom.GetPointsAttr().Get())
             mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+
+            if run_cfg.get("save_rest_and_init_state", False):
+                writeObj(
+                    mesh_points, None, None, mesh_indices.reshape(-1, 3), join(self.output_folder, "rest_state.obj")
+                )
+
             vertices = [wp.vec3(v) for v in mesh_points]
             transform = parse_xform(usd_geom)
             # Extract position and rotation
@@ -815,6 +942,11 @@ class Simulator:
                     [wp.transform_point(transform, wp.vec3(*p)) for p in mesh_points_initial_org]
                 )
 
+            if run_cfg.get("save_rest_and_init_state", False):
+                writeObj(
+                    mesh_points, None, None, mesh_indices.reshape(-1, 3), join(self.output_folder, "init_state.obj")
+                )
+
             if run_cfg["fixed_points_scheme"] == "top":
                 fixed_vertices = get_top_vertices(mesh_points_initial_org, "y", thresh=0.1)
             elif (
@@ -825,7 +957,14 @@ class Simulator:
                 fixed_vertices = []
                 boxes = run_cfg["fixed_points_scheme"].get("boxes", [])
                 # Each box: [min_x, min_y, min_z, max_x, max_y, max_z]
-                mesh_points_arr = np.array(mesh_points_initial_org)
+                mesh_points_arr = np.array(mesh_points_initial)
+
+                def save_obj(filename, vertices):
+                    with open(filename, "w") as f:
+                        for v in vertices:
+                            f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+
+                # save_obj("mesh_points_arr.obj", mesh_points_arr)
                 for box in boxes:
                     min_x, min_y, min_z, max_x, max_y, max_z = box
                     mask = (
@@ -878,6 +1017,8 @@ class Simulator:
         if self.integrator_type == IntegratorType.VBD:
             builder.color()
 
+        print("average edge length: ", np.mean(builder.edge_rest_length))
+
         # INSERT_YOUR_CODE
         # Add additional static collider meshes from run_cfg if provided
         additional_colliders = run_cfg.get("additional_collider", [])
@@ -928,7 +1069,7 @@ class Simulator:
         # builder.shape_scale[0] = wp.vec3(1, 1, 1)
 
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 1000
+        self.model.soft_contact_ke = run_cfg["soft_contact_ke"]
         self.model.soft_contact_kd = 2e-3
         self.model.soft_contact_mu = 0.1
         self.builder_results = results
@@ -1045,6 +1186,9 @@ class Simulator:
                     if frame < run_cfg.get("preroll_zero_velocity_ratio", 0.1) * preroll_frames:
                         self.state_0.particle_qd.zero_()
                         self.state_1.particle_qd.zero_()
+                    # else:
+                    #     self.state_0.particle_qd.assign(self.state_0.particle_qd * run_cfg.get("preroll_velocity_damping_ratio", 0.99))
+                    #     self.state_1.particle_qd.assign(self.state_1.particle_qd * run_cfg.get("preroll_velocity_damping_ratio", 0.99))
 
                 self.viewer_gl.begin_frame(self.sim_time)
                 self.viewer_gl.log_state(self.state_0)
@@ -1201,16 +1345,21 @@ class Simulator:
             [xform_cache.GetLocalToWorldTransform(prim) for prim in collider_prims], dtype=wp.mat44
         )
 
+        if self.integrator_type == IntegratorType.VBD:
+            state_out = self.state_1
+        else:
+            state_out = self.state_0
+
         delta_time = (time_next - time) / self.fps
         if self.integrator_type != IntegratorType.MJWARP:
             wp.launch(
                 self._update_animated_colliders_kernel,
                 dim=len(collider_prims),
-                inputs=[delta_time, usd_transforms, usd_transforms_next, self.state_0.body_q, self.state_0.body_qd],
+                inputs=[delta_time, usd_transforms, usd_transforms_next, state_out.body_q, state_out.body_qd],
             )
         else:
-            body_q_np = self.state_0.body_q.numpy()
-            body_qd_np = self.state_0.body_qd.numpy()
+            body_q_np = state_out.body_q.numpy()
+            body_qd_np = state_out.body_qd.numpy()
             for i in self.animated_colliders_body_ids:
                 path = self.animated_colliders_paths[i]
                 prim = self.in_stage.GetPrimAtPath(path)
@@ -1221,8 +1370,8 @@ class Simulator:
                 ang = wp.vec3(0.0, 0.0, 0.0)
                 body_q_np[i] = wp_xform
                 body_qd_np[i] = wp.spatial_vector(vel[0], vel[1], vel[2], ang[0], ang[1], ang[2])
-            self.state_0.joint_q.assign(body_q_np)
-            self.state_0.joint_qd.assign(body_qd_np)
+            state_out.joint_q.assign(body_q_np)
+            state_out.joint_qd.assign(body_qd_np)
 
     def simulate(self):
         if not self.collide_on_substeps:
