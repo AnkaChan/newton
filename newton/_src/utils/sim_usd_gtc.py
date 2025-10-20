@@ -180,10 +180,11 @@ run_cfgs = {
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
-            "tri_kd": 1e-7,
+            "tri_kd": 1e-6,
             "bending_ke": 1e-2,
-            "bending_kd": 1e-8,
+            "bending_kd": 1e-7,
             "particle_radius": 0.03,
+            "density": 1.0,
             "additional_translation": [0, 0, -0.05],
             # "fixed_particles" : [23100, 22959]
         },
@@ -197,6 +198,8 @@ run_cfgs = {
         "self_contact_radius": 0.006,
         "handle_self_contact": True,
         "soft_contact_ke": 1e3,
+        "soft_contact_kd": 1e-3,
+        "soft_contact_mu": 0.
         # "viewer_type": "gl",
     },
     "sceneA": {
@@ -254,6 +257,24 @@ run_cfgs = {
 
 # D:\Data\GTC2025DC_Demo\Inputs\SceneB\20251017_to_sim_inSimClothB_01_physics.usd -n 1800 -i vbd
 # D:\Data\GTC2025DC_Demo\Inputs\SceneB\20251017_to_sim_inSimClothB_01_physics.usd -n 1800 -i vbd
+
+"""
+Comments:
+- [x] the cloth look too light:
+    1, I increased the density of the cloth
+    2, Reduce the time step
+- [] the cloth keeps going up after the robot strucks on it
+    1, added a bit extra bending damping (not working)
+    2, reduce the density for a bit  (not working)
+    3, reduce collision stiffness (looks like works but cause penetration)
+    4, more iterations (will through it even higher)
+    5, even higher damping on bending? (not significant)
+    6. making it even heavier?
+        a 5x too much
+        b 2x
+    7, damp collision in both ways
+"""
+
 run_cfg = run_cfgs["sceneB"]
 
 # run_cfg = run_cfgs["sceneA"]
@@ -328,7 +349,7 @@ class SchemaResolverSimUsd(SchemaResolver):
             "joint_attach_kd": [Attribute("newton:joint_attach_kd", 2718.0)],
             "joint_attach_ke": [Attribute("newton:joint_attach_ke", 2718.0)],
             "soft_contact_ke": [Attribute("newton:soft_contact_ke", 2.0e2)],
-            "soft_contact_kd": [Attribute("newton:soft_contact_kd", 1.0e2)],
+            "soft_contact_kd": [Attribute("newton:soft_contact_kd", 1.0e-2)],
             # solver attributes
             "fps": [Attribute("newton:fps", 60)],
             "sim_substeps": [Attribute("newton:substeps", run_cfg["substeps"])],
@@ -986,7 +1007,7 @@ class Simulator:
                 rot=rotation,
                 pos=position,
                 vel=wp.vec3(0.0, 0.0, 0.0),
-                density=1.0,
+                density=run_cfg["cloth_cfg"]["density"],
                 scale=1.0,
                 tri_ke=run_cfg["cloth_cfg"]["tri_ke"],
                 tri_ka=run_cfg["cloth_cfg"]["tri_ka"],
@@ -1070,8 +1091,8 @@ class Simulator:
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = run_cfg["soft_contact_ke"]
-        self.model.soft_contact_kd = 2e-3
-        self.model.soft_contact_mu = 0.1
+        self.model.soft_contact_kd = run_cfg["soft_contact_kd"]
+        self.model.soft_contact_mu = run_cfg["soft_contact_mu"]
         self.builder_results = results
 
         self.path_body_map = self.builder_results["path_body_map"]
