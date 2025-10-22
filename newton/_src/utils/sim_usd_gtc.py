@@ -192,7 +192,7 @@ run_cfgs = {
         "save_usd": True,
         "save_rest_and_init_state": True,
         "fixed_points_scheme": {
-           "name": "top",
+            "name": "top",
             "threshold": 0.1,
         },
         "substeps": 20,
@@ -204,7 +204,7 @@ run_cfgs = {
         "handle_self_contact": True,
         "soft_contact_ke": 1e3,
         "soft_contact_kd": 1e-3,
-        "soft_contact_mu": 0.
+        "soft_contact_mu": 0.0,
     },
     "sceneA": {
         "camera_cfg": {
@@ -214,7 +214,7 @@ run_cfgs = {
         },
         "initial_time": 14.0,
         "preroll_frames": 500,
-        "self_collision_off_frame" : 1000,
+        "self_collision_off_frame": 1000,
         "preroll_zero_velocity_ratio": 0.1,
         # "load_preroll_state": False,
         "load_preroll_state": True,
@@ -255,8 +255,7 @@ run_cfgs = {
         "handle_self_contact": True,
         "soft_contact_ke": 1e3,
         "soft_contact_kd": 1e-3,
-        "soft_contact_mu": 0.
-
+        "soft_contact_mu": 0.0,
     },
     "sceneC": {
         "camera_cfg": {
@@ -286,8 +285,8 @@ run_cfgs = {
             # "/World/TerrainCollision_01/geo/collision/staircol01"
         ],
         "save_usd": True,
-         "fixed_points_scheme": {
-           "name": "top",
+        "fixed_points_scheme": {
+            "name": "top",
             "threshold": 0.3,
         },
         # "viewer_type": "gl",
@@ -301,8 +300,7 @@ run_cfgs = {
         "handle_self_contact": True,
         "soft_contact_ke": 3e3,
         "soft_contact_kd": 1e-3,
-        "soft_contact_mu": 0.
-
+        "soft_contact_mu": 0.0,
     },
 }
 
@@ -445,7 +443,9 @@ class SchemaResolverVBD(SchemaResolver):
             "handle_self_contact": [Attribute("newton:vbd:handle_self_contact", run_cfg["handle_self_contact"])],
             "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", run_cfg["self_contact_radius"])],
             "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", run_cfg["self_contact_margin"])],
-            "self_contact_rest_filter_radius": [Attribute("newton:vbd:self_contact_rest_filter_radius", run_cfg["self_contact_rest_filter_radius"])],
+            "self_contact_rest_filter_radius": [
+                Attribute("newton:vbd:self_contact_rest_filter_radius", run_cfg["self_contact_rest_filter_radius"])
+            ],
             "collision_detection_interval": [
                 Attribute("newton:vbd:collision_detection_interval", run_cfg["collision_detection_interval"])
             ],
@@ -1031,7 +1031,9 @@ class Simulator:
                 )
 
             if run_cfg["fixed_points_scheme"]["name"] == "top":
-                fixed_vertices = get_top_vertices(mesh_points_initial_org, "y", thresh=run_cfg["fixed_points_scheme"]["threshold"])
+                fixed_vertices = get_top_vertices(
+                    mesh_points_initial_org, "y", thresh=run_cfg["fixed_points_scheme"]["threshold"]
+                )
             elif (
                 isinstance(run_cfg.get("fixed_points_scheme"), dict)
                 and run_cfg["fixed_points_scheme"].get("name") == "box"
@@ -1489,9 +1491,6 @@ class Simulator:
                         self.run_substep()
                     self.graph_odd_step = capture.graph
                     (self.state_0, self.state_1) = (self.state_1, self.state_0)
-
-
-
 
     def run_substep(self):
         if self.collide_on_substeps:
