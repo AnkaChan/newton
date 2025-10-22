@@ -180,9 +180,9 @@ run_cfgs = {
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
-            "tri_kd": 1e-8,
+            "tri_kd": 1e-7,
             "bending_ke": 1e-2,
-            "bending_kd": 1e-8,
+            "bending_kd": 1e-7,
             "particle_radius": 0.03,
             "density": 1.0,
             "additional_translation": [0, 0, -0.05],
@@ -300,9 +300,11 @@ Comments:
 # run_cfg = run_cfgs["sceneA"]
 
 
-
-
-
+# ClothA: omniverse://creative3d.ov.nvidia.com/Projects/CreativeRealtime3D/Projects/GTC_DC2025_DisneyDroidDemo/shot/tdSim/tdSimClothA//pub/sim/handoff/20251021_to_sim_tdSimClothA_01.usd
+# ClothB: omniverse://creative3d.ov.nvidia.com/Projects/CreativeRealtime3D/Projects/GTC_DC2025_DisneyDroidDemo/shot/tdSim/tdSimClothB//pub/sim/handoff/20251021_to_sim_tdSimClothB_01.usd
+# ClothC: omniverse://creative3d.ov.nvidia.com/Projects/CreativeRealtime3D/Projects/GTC_DC2025_DisneyDroidDemo/shot/tdSim/tdSimClothC//pub/sim/handoff/20251021_to_sim_tdSimClothC_02.usd (edited)
+#
+#
 
 def get_top_vertices(
     verts,

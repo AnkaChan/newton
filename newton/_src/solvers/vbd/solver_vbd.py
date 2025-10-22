@@ -2600,10 +2600,10 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
             )
             particle_pos_new = particle_pos + h_inv * f_total
 
-            # pos_new[particle_index] = apply_conservative_bound_truncation(
-            #     particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
-            # )
-            pos_new[particle_index] = particle_pos_new
+            pos_new[particle_index] = apply_conservative_bound_truncation(
+                particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
+            )
+            # pos_new[particle_index] = particle_pos_new
 
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for cloth simulation.
