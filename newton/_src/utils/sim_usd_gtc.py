@@ -191,7 +191,10 @@ run_cfgs = {
         "additional_collider": [],
         "save_usd": True,
         "save_rest_and_init_state": True,
-        "fixed_points_scheme": "top",
+        "fixed_points_scheme": {
+           "name": "top",
+            "threshold": 0.1,
+        },
         "substeps": 20,
         "iterations": 20,
         "collision_detection_interval": 10,
@@ -239,23 +242,6 @@ run_cfgs = {
             "boxes": [
                 [a - 0.05 for a in [19.57, 17.09, 2.60]] + [a + 0.05 for a in [19.57, 17.09, 2.60]],
                 [a - 0.05 for a in [20.19, 17.49, 2.05]] + [a + 0.05 for a in [20.19, 17.49, 2.05]],
-
-                # [
-                #     19.42 - 0.05,
-                #     18 - 0.05,
-                #     2.59 - 0.05,
-                #     19.42 + 0.05,
-                #     18 + 0.05,
-                #     2.59 + 0.05,
-                # ],
-                # [
-                #     19.81 - 0.05,
-                #     18.59 - 0.05,
-                #     2.03 - 0.05,
-                #     19.81 + 0.05,
-                #     18.59 + 0.05,
-                #     2.03 + 0.05,
-                # ],
             ],
         },
         # "viewer_type": "gl",
@@ -268,6 +254,52 @@ run_cfgs = {
         "self_contact_margin": 0.02,
         "handle_self_contact": True,
         "soft_contact_ke": 1e3,
+        "soft_contact_kd": 1e-3,
+        "soft_contact_mu": 0.
+
+    },
+    "sceneC": {
+        "camera_cfg": {
+            "pos": wp.vec3(19.82, 11.22, 1.41),  # Position
+            "pitch": -3.2,  # Pitch in degrees
+            "yaw": 97.6,
+        },
+        "initial_time": 22.0,
+        "preroll_frames": 500,
+        # "self_collision_off_frame" : 1000,
+        "preroll_zero_velocity_ratio": 0.1,
+        # "load_preroll_state": False,
+        "load_preroll_state": True,
+        "cloth_cfg": {
+            "path": "/World/ClothModuleD_01/geo/clothModuleDCollisionGeo1p50",
+            #   elasticity
+            "density": 1,
+            "tri_ke": 5e2,
+            "tri_ka": 5e2,
+            "tri_kd": 1e-8,
+            "bending_ke": 1e-2,
+            "bending_kd": 1e-8,
+            "particle_radius": 0.035,
+            # "fixed_particles" : [23100, 22959]
+        },
+        "additional_collider": [
+            # "/World/TerrainCollision_01/geo/collision/staircol01"
+        ],
+        "save_usd": True,
+         "fixed_points_scheme": {
+           "name": "top",
+            "threshold": 0.3,
+        },
+        # "viewer_type": "gl",
+        "save_rest_and_init_state": True,
+        "substeps": 20,
+        "iterations": 20,
+        "collision_detection_interval": 10,
+        "self_contact_rest_filter_radius": 0.02,
+        "self_contact_radius": 0.005,
+        "self_contact_margin": 0.02,
+        "handle_self_contact": True,
+        "soft_contact_ke": 3e3,
         "soft_contact_kd": 1e-3,
         "soft_contact_mu": 0.
 
@@ -305,6 +337,9 @@ Comments:
 # ClothC: omniverse://creative3d.ov.nvidia.com/Projects/CreativeRealtime3D/Projects/GTC_DC2025_DisneyDroidDemo/shot/tdSim/tdSimClothC//pub/sim/handoff/20251021_to_sim_tdSimClothC_02.usd (edited)
 #
 #
+# D:\Data\GTC2025DC_Demo\Inputs\SceneC\1021\20251021_to_sim_tdSimClothC_02.usd
+run_cfg = run_cfgs["sceneC"]
+
 
 def get_top_vertices(
     verts,
@@ -995,8 +1030,8 @@ class Simulator:
                     mesh_points, None, None, mesh_indices.reshape(-1, 3), join(self.output_folder, "init_state.obj")
                 )
 
-            if run_cfg["fixed_points_scheme"] == "top":
-                fixed_vertices = get_top_vertices(mesh_points_initial_org, "y", thresh=0.1)
+            if run_cfg["fixed_points_scheme"]["name"] == "top":
+                fixed_vertices = get_top_vertices(mesh_points_initial_org, "y", thresh=run_cfg["fixed_points_scheme"]["threshold"])
             elif (
                 isinstance(run_cfg.get("fixed_points_scheme"), dict)
                 and run_cfg["fixed_points_scheme"].get("name") == "box"
