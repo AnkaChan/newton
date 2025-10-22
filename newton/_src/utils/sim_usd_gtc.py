@@ -168,21 +168,21 @@ run_cfgs = {
             "pitch": -3.2,  # Pitch in degrees
             "yaw": 97.6,
         },
-        "initial_time": 7.0,
-        "preroll_frames": 1500,
+        "initial_time": 18.0,
+        "preroll_frames": 500,
         "preroll_zero_velocity_ratio": 0.1,
         # "load_preroll_state": False,
         "load_preroll_state": True,
         "cloth_cfg": {
             "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo1p12",
             # "path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
-            "rest_path": "/World/ClothModuleC1p12CollisionRest_01/geo/clothModuleCbCollisionRestGeo1p12",
+            "rest_path": "/World/ClothModuleC_01_Rest/geo/clothModuleCbCollisionRestGeo1p12",
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
-            "tri_kd": 1e-6,
+            "tri_kd": 1e-8,
             "bending_ke": 1e-2,
-            "bending_kd": 1e-7,
+            "bending_kd": 1e-8,
             "particle_radius": 0.03,
             "density": 1.0,
             "additional_translation": [0, 0, -0.05],
@@ -194,13 +194,14 @@ run_cfgs = {
         "fixed_points_scheme": "top",
         "substeps": 20,
         "iterations": 20,
-        "collision_detection_interval": 5,
-        "self_contact_radius": 0.006,
+        "collision_detection_interval": 10,
+        "self_contact_rest_filter_radius": 0.02,
+        "self_contact_radius": 0.005,
+        "self_contact_margin": 0.025,
         "handle_self_contact": True,
         "soft_contact_ke": 1e3,
         "soft_contact_kd": 1e-3,
         "soft_contact_mu": 0.
-        # "viewer_type": "gl",
     },
     "sceneA": {
         "camera_cfg": {
@@ -208,22 +209,25 @@ run_cfgs = {
             "pitch": -3.2,  # Pitch in degrees
             "yaw": 97.6,
         },
-        "initial_time": 0.0,
-        "preroll_frames": 1500,
+        "initial_time": 14.0,
+        "preroll_frames": 500,
+        "self_collision_off_frame" : 1000,
         "preroll_zero_velocity_ratio": 0.1,
-        "load_preroll_state": False,
-        # "load_preroll_state": True,
+        # "load_preroll_state": False,
+        "load_preroll_state": True,
         "cloth_cfg": {
-            # "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo05K",
-            "path": "/World/RopeNetA_01/geo/ropeNetA05KCollision",
-            "rest_path": "/World/RopeNetA5kCollisionRest_01/geo/ropeNetA05KCollisionRest",
+            # "rest_path": "/World/RopeNetA1p12CollisionRest_01/geo/ropeNetACollisionRest1p12",
+            # "path": "/World/RopeNetA_01/geo/ropeNetACollision1p12",
+            "rest_path": "/World/RopeNetA1p50CollisionRest_01/geo/ropeNetACollisionRest1p50",
+            "path": "/World/RopeNetA_01/geo/ropeNetACollision1p50",
             #   elasticity
+            "density": 1,
             "tri_ke": 5e2,
             "tri_ka": 5e2,
-            "tri_kd": 1e-7,
+            "tri_kd": 1e-8,
             "bending_ke": 1e-2,
-            "bending_kd": 1e-7,
-            "particle_radius": 0.04,
+            "bending_kd": 1e-8,
+            "particle_radius": 0.03,
             # "fixed_particles" : [23100, 22959]
         },
         "additional_collider": [
@@ -233,31 +237,47 @@ run_cfgs = {
         "fixed_points_scheme": {
             "name": "box",
             "boxes": [
-                [
-                    19.42 - 0.05,
-                    18 - 0.05,
-                    2.59 - 0.05,
-                    19.42 + 0.05,
-                    18 + 0.05,
-                    2.59 + 0.05,
-                ],
-                [
-                    19.81 - 0.05,
-                    18.59 - 0.05,
-                    2.03 - 0.05,
-                    19.81 + 0.05,
-                    18.59 + 0.05,
-                    2.03 + 0.05,
-                ],
+                [a - 0.05 for a in [19.57, 17.09, 2.60]] + [a + 0.05 for a in [19.57, 17.09, 2.60]],
+                [a - 0.05 for a in [20.19, 17.49, 2.05]] + [a + 0.05 for a in [20.19, 17.49, 2.05]],
+
+                # [
+                #     19.42 - 0.05,
+                #     18 - 0.05,
+                #     2.59 - 0.05,
+                #     19.42 + 0.05,
+                #     18 + 0.05,
+                #     2.59 + 0.05,
+                # ],
+                # [
+                #     19.81 - 0.05,
+                #     18.59 - 0.05,
+                #     2.03 - 0.05,
+                #     19.81 + 0.05,
+                #     18.59 + 0.05,
+                #     2.03 + 0.05,
+                # ],
             ],
         },
         # "viewer_type": "gl",
+        "save_rest_and_init_state": True,
+        "substeps": 20,
+        "iterations": 20,
+        "collision_detection_interval": 10,
+        "self_contact_rest_filter_radius": 0.02,
+        "self_contact_radius": 0.005,
+        "self_contact_margin": 0.02,
+        "handle_self_contact": True,
+        "soft_contact_ke": 1e3,
+        "soft_contact_kd": 1e-3,
+        "soft_contact_mu": 0.
+
     },
 }
 
 # D:\Data\GTC2025DC_Demo\Inputs\SceneB\20251017_to_sim_inSimClothB_01_physics.usd -n 1800 -i vbd
 # D:\Data\GTC2025DC_Demo\Inputs\SceneB\20251017_to_sim_inSimClothB_01_physics.usd -n 1800 -i vbd
-
+# D:\Data\GTC2025DC_Demo\Inputs\SceneB\1021\20251021_to_sim_tdSimClothB_01_physics.usd
+run_cfg = run_cfgs["sceneB"]
 """
 Comments:
 - [x] the cloth look too light:
@@ -275,9 +295,13 @@ Comments:
     7, damp collision in both ways
 """
 
-run_cfg = run_cfgs["sceneB"]
-
+#
+# D:\Data\GTC2025DC_Demo\Inputs\SceneA\1021\20251021_to_sim_tdSimClothA_01_physics.usd
 # run_cfg = run_cfgs["sceneA"]
+
+
+
+
 
 
 def get_top_vertices(
@@ -383,7 +407,8 @@ class SchemaResolverVBD(SchemaResolver):
             "friction_epsilon": [Attribute("newton:vbd:friction_epsilon", 2718.0)],
             "handle_self_contact": [Attribute("newton:vbd:handle_self_contact", run_cfg["handle_self_contact"])],
             "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", run_cfg["self_contact_radius"])],
-            "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", run_cfg["self_contact_radius"] * 1.5)],
+            "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", run_cfg["self_contact_margin"])],
+            "self_contact_rest_filter_radius": [Attribute("newton:vbd:self_contact_rest_filter_radius", run_cfg["self_contact_rest_filter_radius"])],
             "collision_detection_interval": [
                 Attribute("newton:vbd:collision_detection_interval", run_cfg["collision_detection_interval"])
             ],
@@ -985,7 +1010,7 @@ class Simulator:
                         for v in vertices:
                             f.write(f"v {v[0]} {v[1]} {v[2]}\n")
 
-                # save_obj("mesh_points_arr.obj", mesh_points_arr)
+                save_obj("mesh_points_arr.obj", mesh_points_arr)
                 for box in boxes:
                     min_x, min_y, min_z, max_x, max_y, max_z = box
                     mask = (
@@ -1126,6 +1151,7 @@ class Simulator:
             newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0, mask=None)
 
         self.use_cuda_graph = True  # wp.get_device().is_cuda
+        # self.use_cuda_graph = False  # wp.get_device().is_cuda
         self.is_mujoco_cpu_mode = self.integrator_type == IntegratorType.MJWARP and self.R.get_value(
             self.physics_prim, PrimType.SCENE, "use_mujoco_cpu", False
         )
@@ -1410,6 +1436,25 @@ class Simulator:
 
             # swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
+
+        if run_cfg.get("self_collision_off_frame", -1) > 0 and self.integrator.penetration_free_init:
+            self_collision_off_time = (run_cfg.get("self_collision_off_frame", -1)) / self.fps
+            if self.sim_time > self_collision_off_time:
+                self.integrator.penetration_free_init = False
+
+                if self.use_cuda_graph and not self.is_mujoco_cpu_mode:
+                    with wp.ScopedCapture() as capture:
+                        self.run_substep()
+                    self.graph_even_step = capture.graph
+                    (self.state_0, self.state_1) = (self.state_1, self.state_0)
+
+                    with wp.ScopedCapture() as capture:
+                        self.run_substep()
+                    self.graph_odd_step = capture.graph
+                    (self.state_0, self.state_1) = (self.state_1, self.state_0)
+
+
+
 
     def run_substep(self):
         if self.collide_on_substeps:
