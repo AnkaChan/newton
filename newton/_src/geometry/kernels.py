@@ -777,7 +777,7 @@ def create_soft_contacts(
         sign = float(0.0)
 
         min_scale = wp.min(geo_scale)
-        if wp.mesh_query_point_sign_normal(
+        if wp.mesh_query_point(
             mesh, wp.cw_div(x_local, geo_scale), margin + radius / min_scale, sign, face_index, face_u, face_v
         ):
             shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
@@ -2340,6 +2340,8 @@ def vertex_triangle_collision_detection_kernel(
     vertex_colliding_triangles_buffer_sizes: wp.array(dtype=wp.int32),
     triangle_colliding_vertices_offsets: wp.array(dtype=wp.int32),
     triangle_colliding_vertices_buffer_sizes: wp.array(dtype=wp.int32),
+    vertex_triangle_filtering_list: wp.array(dtype=wp.int32),
+    vertex_triangle_filtering_list_offsets: wp.array(dtype=wp.int32),
     # outputs
     vertex_colliding_triangles: wp.array(dtype=wp.int32),
     vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
@@ -2398,7 +2400,24 @@ def vertex_triangle_collision_detection_kernel(
         t1 = tri_indices[tri_index, 0]
         t2 = tri_indices[tri_index, 1]
         t3 = tri_indices[tri_index, 2]
+
         if vertex_adjacent_to_triangle(v_index, t1, t2, t3):
+            continue
+        skip_this = wp.bool(False)
+        if vertex_triangle_filtering_list:
+            for tri_counter in range(vertex_triangle_filtering_list_offsets[v_index],  vertex_triangle_filtering_list_offsets[v_index+1]):
+                if vertex_triangle_filtering_list[tri_counter] == tri_index:
+                    skip_this = True
+                    # u1 = pos[t1]
+                    # u2 = pos[t2]
+                    # u3 = pos[t3]
+                    #
+                    # closest_p, bary, feature_type = triangle_closest_point(u1, u2, u3, v)
+                    #
+                    # dist = wp.length(closest_p - v)
+                    # wp.printf("skipping v-t collision between v%d and t%d, distance:%f\n", v_index, tri_index, dist)
+                    break
+        if skip_this:
             continue
 
         u1 = pos[t1]
@@ -2420,16 +2439,17 @@ def vertex_triangle_collision_detection_kernel(
 
             vertex_num_collisions = vertex_num_collisions + 1
 
-            wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dist)
-            tri_buffer_size = triangle_colliding_vertices_buffer_sizes[tri_index]
-            tri_num_collisions = wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
+            if triangle_colliding_vertices:
+                wp.atomic_min(triangle_colliding_vertices_min_dist, tri_index, dist)
+                tri_buffer_size = triangle_colliding_vertices_buffer_sizes[tri_index]
+                tri_num_collisions = wp.atomic_add(triangle_colliding_vertices_count, tri_index, 1)
 
-            if tri_num_collisions < tri_buffer_size:
-                tri_buffer_offset = triangle_colliding_vertices_offsets[tri_index]
-                # record v-f collision to triangle
-                triangle_colliding_vertices[tri_buffer_offset + tri_num_collisions] = v_index
-            else:
-                resize_flags[TRI_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
+                if tri_num_collisions < tri_buffer_size:
+                    tri_buffer_offset = triangle_colliding_vertices_offsets[tri_index]
+                    # record v-f collision to triangle
+                    triangle_colliding_vertices[tri_buffer_offset + tri_num_collisions] = v_index
+                else:
+                    resize_flags[TRI_COLLISION_BUFFER_OVERFLOW_INDEX] = 1
 
     vertex_colliding_triangles_count[v_index] = vertex_num_collisions
     vertex_colliding_triangles_min_dist[v_index] = min_dis_to_tris
@@ -2532,6 +2552,8 @@ def edge_colliding_edges_detection_kernel(
     edge_colliding_edges_offsets: wp.array(dtype=wp.int32),
     edge_colliding_edges_buffer_sizes: wp.array(dtype=wp.int32),
     edge_edge_parallel_epsilon: float,
+    edge_filtering_list: wp.array(dtype=wp.int32),
+    edge_filtering_list_offsets: wp.array(dtype=wp.int32),
     # outputs
     edge_colliding_edges: wp.array(dtype=wp.int32),
     edge_colliding_edges_count: wp.array(dtype=wp.int32),
@@ -2573,6 +2595,26 @@ def edge_colliding_edges_detection_kernel(
         e1_v1 = edge_indices[colliding_edge_index, 3]
 
         if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
+            continue
+
+        skip_this = wp.bool(False)
+        if edge_filtering_list:
+            for e_counter in range(edge_filtering_list_offsets[e_index],  edge_filtering_list_offsets[e_index+1]):
+                if edge_filtering_list[e_counter] == colliding_edge_index:
+                    skip_this = True
+                    # e1_v0_pos = pos[e1_v0]
+                    # e1_v1_pos = pos[e1_v1]
+                    #
+                    # st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
+                    # s = st[0]
+                    # t = st[1]
+                    # c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
+                    # c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
+                    #
+                    # dist = wp.length(c1 - c2)
+                    # wp.printf("skipping e-e collision between e%d and e%d, distance:%f\n", e_index, colliding_edge_index, dist)
+                    break
+        if skip_this:
             continue
 
         e1_v0_pos = pos[e1_v0]
