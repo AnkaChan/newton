@@ -23,6 +23,7 @@
 
 import inspect
 import os
+import itertools
 from enum import Enum
 from os.path import join
 from pathlib import Path
@@ -36,6 +37,7 @@ from pxr import Usd, UsdGeom, UsdPhysics
 import newton
 import newton.examples
 from newton import ParticleFlags
+from newton._src.core.spatial import angvel_between_quats
 from newton._src.utils.import_usd import parse_usd
 from newton._src.utils.schema_resolver import (
     Attribute,
@@ -45,7 +47,6 @@ from newton._src.utils.schema_resolver import (
     _ResolverManager,
 )
 from newton._src.utils.update_usd import UpdateUsd
-
 
 def writeObj(vs, vns, vts, fs, outFile, withMtl=False, textureFile=None, convertToMM=False, vIdAdd1=True):
     # write new
@@ -478,13 +479,13 @@ class SchemaResolverMJWarp(SchemaResolver):
         PrimType.SCENE: {
             "use_mujoco_cpu": [Attribute("newton:mjwarp:use_mujoco_cpu", False)],
             "solver": [Attribute("newton:mjwarp:solver", "newton")],
-            "integrator": [Attribute("newton:mjwarp:integrator", "euler")],
+            "integrator": [Attribute("newton:mjwarp:integrator", "implicitfast")],
             "iterations": [Attribute("newton:mjwarp:iterations", 100)],
-            "ls_iterations": [Attribute("newton:mjwarp:ls_iterations", 5)],
+            "ls_iterations": [Attribute("newton:mjwarp:ls_iterations", 25)],
             "save_to_mjcf": [Attribute("newton:mjwarp:save_to_mjcf", "sim_usd_mjcf.xml")],
             "contact_stiffness_time_const": [Attribute("newton:mjwarp:contact_stiffness_time_const", 0.02)],
             "ncon_per_env": [Attribute("newton:mjwarp:ncon_per_env", 150)],
-            "njmax": [Attribute("newton:mjwarp:njmax", 16)],
+            "njmax": [Attribute("newton:mjwarp:njmax", 152)],
         },
     }
 
@@ -500,7 +501,7 @@ class SchemaResolverMPM(SchemaResolver):
     name: ClassVar[str] = "mpm"
     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
         PrimType.SCENE: {
-            "voxel_size": [Attribute("newton:mpm:voxel_size", False)],
+            "voxel_size": [Attribute("newton:mpm:voxel_size", 0.05)],
             "grid_type": [Attribute("newton:mpm:grid_type", "sparse")],
             "max_iterations": [Attribute("newton:mpm:max_iterations", 250)],
         },
@@ -510,8 +511,10 @@ class SchemaResolverMPM(SchemaResolver):
 class CoupledMPMIntegrator(newton.solvers.SolverBase):
     """Integrator for coupled MPM and rigid body solvers."""
 
-    def __init__(self, model: newton.Model, **kwargs):
+    def __init__(self, model: newton.Model, particles_dict: dict[str, np.ndarray], **kwargs):
         super().__init__(model)
+
+        self.particles_dict = particles_dict
 
         rigid_solver_kwargs = {}
 
@@ -549,46 +552,73 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         dt: float,
     ):
         if not self._initialized:
-            # not required for MuJoCo, but required for other solvers
-            newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state_0)
             self.sand_body_forces = wp.zeros_like(state_0.body_f)
-            self._update_collider_meshes(state_0, state_0, dt)
-
             self.collider_impulses = None
             self.collider_impulse_pos = None
             self.collider_impulse_ids = None
-            # self.collect_collider_impulses(self.mpm_state_0)
+            self.collect_collider_impulses(self.mpm_state_0)
             self._initialized = True
 
-        # wp.launch(
-        #     compute_body_forces,
-        #     dim=self.collider_impulse_ids.shape[0],
-        #     inputs=[
-        #         self.frame_dt,
-        #         self.collider_impulse_ids,
-        #         self.collider_impulses,
-        #         self.collider_impulse_pos,
-        #         self.collider_body_id,
-        #         self.state_0.body_q,
-        #         self.model.body_com,
-        #         self.state_0.body_f,
-        #     ],
-        # )
+        has_compliance_bodies = self.mpm_state_0.body_q is not None
+
+        if has_compliance_bodies:
+            wp.launch(
+                compute_body_forces,
+                dim=self.collider_impulse_ids.shape[0],
+                inputs=[
+                    dt,
+                    self.collider_impulse_ids,
+                    self.collider_impulses,
+                    self.collider_impulse_pos,
+                    self.collider_body_id,
+                    state_0.body_q,
+                    self.model.body_com,
+                    self.model.body_mass,
+                    state_0.body_f,
+                ],
+            )
+
         self.sand_body_forces.assign(state_0.body_f)
         self.rigid_solver.step(state_0, state_1, control, contacts, dt)
 
-        self._update_collider_meshes(state_0, state_1, dt)
+        # Subtract previously applied impulses from body velocities
+        if has_compliance_bodies:
+            wp.launch(
+                substract_body_force,
+                dim=self.mpm_state_0.body_q.shape,
+                inputs=[
+                    dt,
+                    state_1.body_q,
+                    state_1.body_qd,
+                    self.sand_body_forces,
+                    self.model.body_inv_inertia,
+                    self.model.body_inv_mass,
+                    self.mpm_state_0.body_q,
+                    self.mpm_state_0.body_qd,
+                ],
+            )
 
         self.mpm_solver.step(self.mpm_state_0, self.mpm_state_1, None, None, dt)
-        self.mpm_solver.project_outside(self.mpm_state_1, self.mpm_state_1, dt)
-        # self.collect_collider_impulses(self.mpm_state_1)
+
+        self.collect_collider_impulses(self.mpm_state_1)
+
+        # self.mpm_state_1.body_q.assign(state_1.body_q)
+        # self.mpm_state_1.body_qd.assign(state_1.body_qd)
+        # self.mpm_solver.project_outside(self.mpm_state_1, self.mpm_state_1, dt)
 
         self.mpm_state_0, self.mpm_state_1 = self.mpm_state_1, self.mpm_state_0
 
     def _build_mpm_model(self, model, mpm_options):
         sand_builder = newton.ModelBuilder()
-        self._add_particles(sand_builder)
+        self._add_particles(sand_builder, mpm_options.voxel_size)
         sand_model = sand_builder.finalize()
+
+        # basic particle material params
+        sand_model.particle_mu = 0.48
+        sand_model.particle_ke = 1.0e15
+        sand_model.particle_kd = 0.0
+        sand_model.particle_adhesion = 0.0
+        sand_model.particle_cohesion = 0.0
 
         mpm_model = newton.solvers.SolverImplicitMPM.Model(sand_model, mpm_options)
 
@@ -597,238 +627,67 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         return mpm_model
 
     def _setup_mpm_collider(self, model: newton.Model, mpm_model: newton.solvers.SolverImplicitMPM.Model):
-        collider_body_shapes = {}
+        collider_body_id = np.arange(-1, model.body_count)
 
-        shape_body = model.shape_body.numpy()
+        # terrain_id =-1
+        # collider_body_id = [terrain_id]
+        # print(self.model.body_key[terrain_id[0]])
 
-        # build body_id -> shapes map
-        for k in range(model.shape_count):
-            src = model.shape_source[k]
-            if src is not None:
-                if shape_body[k] not in collider_body_shapes:
-                    collider_body_shapes[shape_body[k]] = []
-
-                collider_body_shapes[shape_body[k]].append(k)
-
-        # merge meshes for each body
-        collider_meshes = []
-        collider_ids = []
-        collider_shape_ids = []
-        collider_body_id = []
-
-        for body, shapes in collider_body_shapes.items():
-            collider_points, collider_indices, collider_v_shape_ids = self._merge_meshes(
-                [self.model.shape_source[m].vertices for m in shapes],
-                [self.model.shape_source[m].indices for m in shapes],
-                [self.model.shape_scale.numpy()[m] for m in shapes],
-                shapes,
-            )
-
-            collider_mesh = wp.Mesh(wp.clone(collider_points), collider_indices, wp.zeros_like(collider_points))
-            nv = collider_points.shape[0]
-
-            collider_meshes.append(collider_mesh)
-            collider_ids.append(
-                np.hstack(
-                    (
-                        np.full(nv, len(collider_ids)).reshape(-1, 1),
-                        np.arange(nv).reshape(-1, 1),
-                    )
-                )
-            )
-            collider_body_id.append(body)
-            collider_shape_ids.append(collider_v_shape_ids)
-
-        self.collider_meshes = collider_meshes
-        self.collider_mesh_ids = wp.array([mesh.id for mesh in collider_meshes], dtype=wp.uint64)
-        self.collider_ids = wp.array(np.vstack(collider_ids), dtype=wp.vec2i)
-        self.collider_shape_ids = wp.array(np.concatenate(collider_shape_ids), dtype=int)
-        self.collider_body_id = wp.array(collider_body_id, dtype=int)
-        self.collider_rest_points = wp.array(
-            np.vstack([mesh.points.numpy() for mesh in collider_meshes]), dtype=wp.vec3
-        )
-
-        body_masses = self.model.body_mass.numpy()
         mpm_model.setup_collider(
-            colliders=self.collider_meshes,
-            # collider_masses=[body_masses[body_id] if body_id >= 0 else 1.0e15 for body_id in collider_body_id],
+            model=self.model,
+            collider_body_ids=collider_body_id,
             collider_friction=[0.5 for _ in collider_body_id],
             collider_adhesion=[0.0 for _ in collider_body_id],
+            # body_mass=wp.zeros_like(self.model.body_mass),  # so that the bodies are considered as kinematic,
+            ground_height=-10.0,
         )
 
-    def _add_particles(self, sand_builder: newton.ModelBuilder):
-        # ------------------------------------------
-        # Add sand bed (2m x 2m x 0.5m) above ground
-        # ------------------------------------------
-        voxel_size = 0.05  # 5 cm
-        particles_per_cell = 3.0
-        density = 2500.0
+        self.collider_body_id = wp.array(collider_body_id, dtype=int)
 
-        bed_lo = np.array([3.0, -1.0, 0.0])
-        bed_hi = np.array([4.0, 1.0, 0.5])
-        bed_res = np.array(np.ceil(particles_per_cell * (bed_hi - bed_lo) / voxel_size), dtype=int)
+    def _add_particles(self, sand_builder: newton.ModelBuilder, voxel_size: float):
+        density = 2500
 
-        # spawn particles on a jittered grid
-        Nx, Ny, Nz = bed_res
-        px = np.linspace(bed_lo[0], bed_hi[0], Nx + 1)
-        py = np.linspace(bed_lo[1], bed_hi[1], Ny + 1)
-        pz = np.linspace(bed_lo[2], bed_hi[2], Nz + 1)
-        points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
+        if self.particles_dict:
+            psize = voxel_size / 2.0
+            radius = float(psize * 0.5)
+            mass = float(psize**3 * density)
 
-        cell_size = (bed_hi - bed_lo) / bed_res
-        cell_volume = np.prod(cell_size)
-        radius = float(np.max(cell_size) * 0.5)
-        mass = float(np.prod(cell_volume) * density)
+            points = np.vstack([pts for pts in self.particles_dict.values()])
+        else:
+            # ------------------------------------------
+            # Add sand bed (1m x 2m x 0.5m) above ground
+            # ------------------------------------------
+            particles_per_cell = 3.0
 
-        rng = np.random.default_rng()
-        points += 2.0 * radius * (rng.random(points.shape) - 0.5)
-        vel = np.zeros_like(points)
+            bed_lo = np.array([3.0, -1.0, 0.0])
+            bed_hi = np.array([4.0, 1.0, 0.5])
+            bed_res = np.array(np.ceil(particles_per_cell * (bed_hi - bed_lo) / voxel_size), dtype=int)
+
+            # spawn particles on a jittered grid
+            Nx, Ny, Nz = bed_res
+            px = np.linspace(bed_lo[0], bed_hi[0], Nx + 1)
+            py = np.linspace(bed_lo[1], bed_hi[1], Ny + 1)
+            pz = np.linspace(bed_lo[2], bed_hi[2], Nz + 1)
+            points = np.stack(np.meshgrid(px, py, pz)).reshape(3, -1).T
+
+            cell_size = (bed_hi - bed_lo) / bed_res
+            cell_volume = np.prod(cell_size)
+            radius = float(np.max(cell_size) * 0.5)
+            mass = float(np.prod(cell_volume) * density)
+
+            rng = np.random.default_rng()
+            points += 2.0 * radius * (rng.random(points.shape) - 0.5)
 
         sand_builder.particle_q = points
-        sand_builder.particle_qd = vel
+        sand_builder.particle_qd = np.zeros_like(points)
         sand_builder.particle_mass = np.full(points.shape[0], mass)
         sand_builder.particle_radius = np.full(points.shape[0], radius)
         sand_builder.particle_flags = np.ones(points.shape[0], dtype=int)
 
-    @staticmethod
-    def _merge_meshes(
-        points: list[np.array],
-        indices: list[np.array],
-        scales: list[np.array],
-        shape_ids: list[int],
-    ):
-        pt_count = np.array([len(pts) for pts in points])
-        offsets = np.cumsum(pt_count) - pt_count
-
-        mesh_id = np.repeat(np.arange(len(points), dtype=int), repeats=pt_count)
-
-        merged_points = np.vstack([pts * scale for pts, scale in zip(points, scales, strict=False)])
-
-        merged_indices = np.concatenate([idx + offsets[k] for k, idx in enumerate(indices)])
-        # merged_shape_ids = np.concatenate([np.full(len(idx), shape_ids[k]) for k, idx in enumerate(indices)])
-
-        return (
-            wp.array(merged_points, dtype=wp.vec3),
-            wp.array(merged_indices, dtype=int),
-            np.array(shape_ids)[mesh_id],
-        )
-
     def collect_collider_impulses(self, mpm_state):
-        if self.collider_impulses is None:
-            self.collider_impulses, self.collider_impulse_pos, self.collider_impulse_ids = (
-                self.mpm_solver.collect_collider_impulses(mpm_state)
-            )
-        else:
-            collider_impulses, collider_impulse_pos, collider_impulse_ids = self.mpm_solver.collect_collider_impulses(
-                mpm_state
-            )
-            self.collider_impulses.assign(collider_impulses)
-            self.collider_impulse_pos.assign(collider_impulse_pos)
-            self.collider_impulse_ids.assign(collider_impulse_ids)
-
-    def _update_collider_meshes(self, state_cur, state_next, dt):
-        wp.launch(
-            update_collider_coms,
-            dim=self.collider_body_id.shape[0],
-            inputs=[
-                self.collider_body_id,
-                state_next.body_q,
-                # self.ref_q,
-                self.model.body_inv_inertia,
-                self.model.body_com,
-                self.mpm_solver.mpm_model.collider_inv_inertia,
-                self.mpm_solver.mpm_model.collider_coms,
-            ],
+        self.collider_impulses, self.collider_impulse_pos, self.collider_impulse_ids = (
+            self.mpm_solver.collect_collider_impulses(mpm_state)
         )
-        wp.launch(
-            update_collider_meshes,
-            dim=self.collider_rest_points.shape[0],
-            inputs=[
-                self.collider_ids,
-                self.collider_mesh_ids,
-                self.collider_rest_points,
-                self.collider_shape_ids,
-                self.model.shape_transform,
-                self.model.shape_body,
-                state_cur.body_q,
-                state_next.body_q,
-                state_next.body_qd,
-                dt,
-                self.sand_body_forces,
-                self.model.body_inv_inertia,
-                self.model.body_com,
-                self.model.body_inv_mass,
-            ],
-        )
-
-        for mesh in self.collider_meshes:
-            mesh.refit()
-
-
-@wp.kernel
-def update_collider_meshes(
-    collider_id: wp.array(dtype=wp.vec2i),
-    collider_meshes: wp.array(dtype=wp.uint64),
-    src_points: wp.array(dtype=wp.vec3),
-    src_shape: wp.array(dtype=int),
-    shape_transforms: wp.array(dtype=wp.transform),
-    shape_body_id: wp.array(dtype=int),
-    body_q_cur: wp.array(dtype=wp.transform),
-    body_q_next: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    dt: float,
-    body_f: wp.array(dtype=wp.spatial_vector),
-    body_inv_inertia: wp.array(dtype=wp.mat33),
-    body_coms: wp.array(dtype=wp.vec3),
-    body_inv_mass: wp.array(dtype=float),
-):
-    v = wp.tid()
-
-    cid = collider_id[v][0]
-    cv = collider_id[v][1]
-
-    res_mesh = collider_meshes[cid]
-    res = wp.mesh_get(res_mesh)
-
-    shape_id = src_shape[v]
-    p = wp.transform_point(shape_transforms[shape_id], src_points[v])
-
-    body_id = shape_body_id[shape_id]
-
-    # Remove previously applied force
-    f = body_f[body_id]
-    delta_v = dt * body_inv_mass[body_id] * wp.spatial_top(f)
-    r = wp.transform_get_rotation(body_q_next[body_id])
-
-    dw = dt * body_inv_inertia[body_id] * wp.quat_rotate_inv(r, wp.spatial_bottom(f))
-    delta_v += wp.quat_rotate(r, wp.cross(dw, p - body_coms[body_id]))
-
-    # (body_inv_mass[body_id] > 0.0)
-
-    # q_new, qd_new = integrate_rigid_body(
-    #     q,
-    #     body_f.dtype(0.0),
-    #     -f,
-    #     body_coms[body_id],
-    #     wp.mat33(0.0),
-    #     body_inv_mass[body_id],
-    #     body_inv_inertia[body_id],
-    #     wp.vec3(0.0),
-    #     0.0,
-    #     dt,
-    # )
-
-    next_p = wp.transform_point(body_q_next[body_id], p)
-
-    vel = wp.spatial_top(body_qd[body_id]) + wp.cross(
-        wp.spatial_bottom(body_qd[body_id]), wp.quat_rotate(r, p - body_coms[body_id])
-    )
-    res.velocities[cv] = vel - delta_v
-    res.points[cv] = next_p
-
-    # cur_p = wp.transform_point(body_q_cur[body_id], p)  # res.points[cv] + dt * res.velocities[cv]
-    # res.velocities[cv] = (next_p - cur_p) / dt - delta_v * IR
-    # res.points[cv] = cur_p
 
 
 @wp.kernel
@@ -840,6 +699,7 @@ def compute_body_forces(
     body_ids: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
+    body_mass: wp.array(dtype=float),
     body_f: wp.array(dtype=wp.spatial_vector),
 ):
     i = wp.tid()
@@ -847,32 +707,42 @@ def compute_body_forces(
     cid = collider_ids[i]
     if cid >= 0 and cid < body_ids.shape[0]:
         body_index = body_ids[cid]
-        f_world = collider_impulses[i] / dt
+        if body_index >= 0:
+            m = body_mass[body_index]
 
-        X_wb = body_q[body_index]
-        X_com = body_com[body_index]
-        r = collider_impulse_pos[i] - wp.transform_point(X_wb, X_com)
-        wp.atomic_add(body_f, body_index, wp.spatial_vector(f_world, wp.cross(r, f_world)))
+            f_world = collider_impulses[i] / dt
+            max_f = 0.0 * m
+            if wp.length(f_world) > max_f:
+                f_world = f_world * max_f / wp.length(f_world)
+
+            X_wb = body_q[body_index]
+            X_com = body_com[body_index]
+            r = collider_impulse_pos[i] - wp.transform_point(X_wb, X_com)
+            wp.atomic_add(body_f, body_index, wp.spatial_vector(f_world, wp.cross(r, f_world)))
 
 
 @wp.kernel
-def update_collider_coms(
-    body_id: wp.array(dtype=int),
+def substract_body_force(
+    dt: float,
     body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_f: wp.array(dtype=wp.spatial_vector),
     body_inv_inertia: wp.array(dtype=wp.mat33),
-    body_coms: wp.array(dtype=wp.vec3),
-    collider_inv_inertia: wp.array(dtype=wp.mat33),
-    collider_coms: wp.array(dtype=wp.vec3),
+    body_inv_mass: wp.array(dtype=float),
+    body_q_res: wp.array(dtype=wp.transform),
+    body_qd_res: wp.array(dtype=wp.spatial_vector),
 ):
-    i = wp.tid()
-    body_index = body_id[i]
+    body_id = wp.tid()
 
-    X_wb = body_q[body_index]
-    X_com = body_coms[body_index]
+    # Remove previously applied force
+    f = body_f[body_id]
+    delta_v = dt * body_inv_mass[body_id] * wp.spatial_top(f)
+    r = wp.transform_get_rotation(body_q[body_id])
 
-    collider_coms[i] = wp.transform_point(X_wb, X_com)
-    R = wp.quat_to_matrix(wp.transform_get_rotation(X_wb))
-    collider_inv_inertia[i] = R @ body_inv_inertia[body_index] @ wp.transpose(R)
+    delta_w = dt * wp.quat_rotate(r, body_inv_inertia[body_id] * wp.quat_rotate_inv(r, wp.spatial_bottom(f)))
+
+    body_q_res[body_id] = body_q[body_id]
+    body_qd_res[body_id] = body_qd[body_id] - wp.spatial_vector(delta_v, delta_w)
 
 
 @wp.kernel
@@ -973,6 +843,8 @@ class Simulator:
         self.in_stage = create_stage_from_path(input_path)
 
         builder = newton.ModelBuilder()
+        builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        builder.default_joint_cfg.armature = 0.1
         builder.up_axis = newton.Axis.Z
         builder.default_shape_cfg.density = 1.0
         builder.default_shape_cfg.ke = 1.0e3
@@ -1094,6 +966,14 @@ class Simulator:
 
         self.path_body_map = results["path_body_map"]
 
+        # set up pair-wise filters for the BDX Droid shapes to disable self collisions
+        droid_shapes: list[int] = []
+        for i, key in enumerate(builder.shape_key):
+            if "BDXDroid" in key:
+                droid_shapes.append(i)
+        for shape1, shape2 in itertools.combinations(droid_shapes, 2):
+            builder.shape_collision_filter_pairs.append((shape1, shape2))
+
         self._setup_solver_attributes()
         if integrator:
             self.integrator_type = integrator
@@ -1179,7 +1059,6 @@ class Simulator:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=self.rigid_contact_margin)
 
         if run_cfg["cloth_cfg"].get("path", None) is not None and has_rest_shape:
             self.state_0.particle_q.assign(mesh_points_initial)
@@ -1191,6 +1070,10 @@ class Simulator:
 
         self.use_cuda_graph = True  # wp.get_device().is_cuda
         # self.use_cuda_graph = False  # wp.get_device().is_cuda
+        self._update_animated_colliders()
+        self.contacts = self.model.collide(self.state_0, rigid_contact_margin=self.rigid_contact_margin)
+
+        self.use_cuda_graph = True  # wp.get_device().is_cuda
         self.is_mujoco_cpu_mode = self.integrator_type == IntegratorType.MJWARP and self.R.get_value(
             self.physics_prim, PrimType.SCENE, "use_mujoco_cpu", False
         )
@@ -1290,6 +1173,7 @@ class Simulator:
             }
             np.save(preroll_state_path, last_frame)
 
+
     def _setup_solver_attributes(self):
         """Apply scene attributes parsed from the stage to self."""
 
@@ -1303,7 +1187,7 @@ class Simulator:
         self.frame_dt = 1.0 / self.fps
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.integrator_type = IntegratorType(self.integrator_type)
-        self.rigid_contact_margin = self.R.get_value(self.physics_prim, PrimType.SCENE, "contact_margin", 0.1)
+        self.rigid_contact_margin = self.R.get_value(self.physics_prim, PrimType.SCENE, "contact_margin", 0.01)
 
     def _setup_model_attributes(self):
         """Apply scene attributes parsed from the stage to the model."""
@@ -1350,10 +1234,24 @@ class Simulator:
                 resolver_mgr=R,
                 prim=self.physics_prim,
                 prim_type=PrimType.SCENE,
-                solver_cls=CoupledMPMIntegrator,
+                solver_cls=newton.solvers.SolverXPBD,
                 defaults={"iterations": self.integrator_iterations},
             )
-            self.integrator = CoupledMPMIntegrator(self.model, **solver_args)
+            mpm_solver_args = _build_solver_args_from_resolver(
+                resolver_mgr=R,
+                prim=self.physics_prim,
+                prim_type=PrimType.SCENE,
+                solver_cls=newton.solvers.SolverImplicitMPM.Options,
+                defaults={},
+            )
+
+            particles_dict = {}
+            for prim in self.in_stage.Traverse():
+                if prim.GetTypeName() == "PointInstancer":
+                    pi = UsdGeom.PointInstancer(prim)
+                    particles_dict[prim.GetPath()] = np.array(pi.GetPositionsAttr().Get())
+
+            self.integrator = CoupledMPMIntegrator(self.model, particles_dict, **solver_args, **mpm_solver_args)
         else:  # VBD
             res = SchemaResolverVBD()
             R = _ResolverManager([res])
@@ -1379,18 +1277,28 @@ class Simulator:
         """
         self.animated_colliders_body_ids = []
         self.animated_colliders_paths = []
+        self.animated_colliders_joint_q_start = []  # start indices of joint_q of the free joints corresponding to the animated colliders
+        self.animated_colliders_joint_qd_start = []  # start indices of joint_qd of the free joints corresponding to the animated colliders
         R = _ResolverManager([SchemaResolverSimUsd()])
         for path, body_id in path_body_map.items():
             kinematic_collider = R.get_value(self.in_stage.GetPrimAtPath(path), PrimType.BODY, "kinematic_collider")
             if kinematic_collider:
+                builder.body_mass[body_id] = 0.0
+                builder.body_inv_mass[body_id] = 0.0
+                builder.body_inv_inertia[body_id] = wp.mat33(0.0)
+
                 self.animated_colliders_body_ids.append(body_id)
                 self.animated_colliders_paths.append(path)
+                joint_id = builder.joint_child.index(body_id)
+                self.animated_colliders_joint_q_start.append(builder.joint_q_start[joint_id])
+                self.animated_colliders_joint_qd_start.append(builder.joint_qd_start[joint_id])
                 # Mujoco requires nonzero inertia
-                # if self.integrator_type != IntegratorType.MJWARP:
-                builder.body_mass[body_id] = 9999999.0
-                builder.body_inv_mass[body_id] = 0.00000001
-                builder.body_inertia[body_id] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-                builder.body_inv_inertia[body_id] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+                if self.integrator_type == IntegratorType.MJWARP:
+                    builder.body_mass[body_id] = 9999999.0
+                    builder.body_inv_mass[body_id] = 0.00000001
+                    builder.body_inertia[body_id] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+                    builder.body_inv_inertia[body_id] = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
     @wp.kernel
     def _update_animated_colliders_kernel(
@@ -1444,20 +1352,30 @@ class Simulator:
                 inputs=[delta_time, usd_transforms, usd_transforms_next, state_out.body_q, state_out.body_qd],
             )
         else:
-            body_q_np = state_out.body_q.numpy()
-            body_qd_np = state_out.body_qd.numpy()
-            for i in self.animated_colliders_body_ids:
+            body_q_np = self.state_0.body_q.numpy()
+            body_qd_np = self.state_0.body_qd.numpy()
+            joint_q_np = self.state_0.joint_q.numpy()
+            joint_qd_np = self.state_0.joint_qd.numpy()
+            for i, body_id in enumerate(self.animated_colliders_body_ids):
                 path = self.animated_colliders_paths[i]
                 prim = self.in_stage.GetPrimAtPath(path)
                 wp_xform = parse_xform(prim, time)
                 wp_xform_next = parse_xform(prim, time_next)
                 vel = wp.vec3(wp_xform_next[0:3] - wp_xform[0:3]) / delta_time
-                # TODO: WARNING: we are not computing the angular velocity correctly
-                ang = wp.vec3(0.0, 0.0, 0.0)
-                body_q_np[i] = wp_xform
-                body_qd_np[i] = wp.spatial_vector(vel[0], vel[1], vel[2], ang[0], ang[1], ang[2])
-            state_out.joint_q.assign(body_q_np)
-            state_out.joint_qd.assign(body_qd_np)
+
+                ang = angvel_between_quats(wp_xform.q, wp_xform_next.q, delta_time)
+                body_q_np[body_id] = wp_xform
+                body_qd_np[body_id] = wp.spatial_vector(*vel, *ang)
+                # update free joint coordinates (necessary for MuJoCo)
+                q_start = self.animated_colliders_joint_q_start[i]
+                qd_start = self.animated_colliders_joint_qd_start[i]
+                joint_q_np[q_start:q_start+7] = wp_xform
+                joint_qd_np[qd_start:qd_start+3] = vel
+                joint_qd_np[qd_start+3:qd_start+6] = ang
+            self.state_0.body_q.assign(body_q_np)
+            self.state_0.body_qd.assign(body_qd_np)
+            self.state_0.joint_q.assign(joint_q_np)
+            self.state_0.joint_qd.assign(joint_qd_np)
 
     def simulate(self):
         if not self.collide_on_substeps:
@@ -1555,8 +1473,11 @@ class Simulator:
 def print_time_profiler(simulator):
     frame_times = simulator.profiler["step"]
     render_times = simulator.profiler["render"]
-    print(f"\nAverage frame sim time: {sum(frame_times) / len(frame_times):.2f} ms")
-    print(f"\nAverage frame render time: {sum(render_times) / len(render_times):.2f} ms")
+
+    if frame_times:
+        print("\nAverage frame sim time: {:.2f} ms".format(sum(frame_times) / len(frame_times)))
+    if render_times:
+        print("\nAverage frame render time: {:.2f} ms".format(sum(render_times) / len(render_times)))
 
 
 if __name__ == "__main__":
@@ -1595,10 +1516,14 @@ if __name__ == "__main__":
     with wp.ScopedDevice(args.device):
         simulator = Simulator(input_path=args.stage_path, output_path=args.output, integrator=args.integrator)
 
-        for i in range(args.num_frames):
+        i = 0
+        while i < args.num_frames:
             print(f"frame {i}")
-            simulator.step()
+            if simulator.DEBUG and not simulator.viewer.is_paused():
+                simulator.step()
             simulator.render()
+            if simulator.DEBUG and not simulator.viewer.is_paused():
+                i += 1
 
         print_time_profiler(simulator)
 

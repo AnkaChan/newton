@@ -18,13 +18,7 @@ import warp as wp
 from ...core import velocity_at_point
 from ...geometry import ParticleFlags
 from ...sim import JointMode, JointType
-from ...utils import (
-    vec_abs,
-    vec_leaky_max,
-    vec_leaky_min,
-    vec_max,
-    vec_min,
-)
+from ...utils import vec_abs, vec_leaky_max, vec_leaky_min, vec_max, vec_min
 
 
 @wp.kernel
@@ -2114,8 +2108,8 @@ def solve_body_contact_positions(
     n = -contact_normal[tid]
     d = wp.dot(n, bx_b - bx_a) - thickness
 
-    if d >= 0.0:
-        return
+    # if d >= 0.0:
+    #     return
 
     m_inv_a = 0.0
     m_inv_b = 0.0
@@ -2140,6 +2134,7 @@ def solve_body_contact_positions(
         m_inv_a = body_m_inv[body_a]
         I_inv_a = body_I_inv[body_a]
         omega_a = wp.spatial_bottom(body_qd[body_a])
+        vlin_a = wp.spatial_top(body_qd[body_a])
 
     if body_b >= 0:
         X_wb_b = body_q[body_b]
@@ -2147,6 +2142,7 @@ def solve_body_contact_positions(
         m_inv_b = body_m_inv[body_b]
         I_inv_b = body_I_inv[body_b]
         omega_b = wp.spatial_bottom(body_qd[body_b])
+        vlin_b = wp.spatial_top(body_qd[body_b])
 
     # use average contact material properties
     mat_nonzero = 0
@@ -2162,6 +2158,14 @@ def solve_body_contact_positions(
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)
     r_b = bx_b - wp.transform_point(X_wb_b, com_b)
+
+    bv_a = vlin_a + wp.cross(omega_a, r_a + offset_a)
+    bv_b = vlin_b + wp.cross(omega_b, r_b + offset_b)
+    delta = dt * (bv_b - bv_a)
+    d = min(d, wp.dot(n, delta))
+
+    if d >= 0.0:
+        return
 
     angular_a = -wp.cross(r_a, n)
     angular_b = wp.cross(r_b, n)
@@ -2189,7 +2193,8 @@ def solve_body_contact_positions(
         bx_b += wp.transform_vector(X_wb_b, offset_b)
 
         # update delta
-        delta = bx_b - bx_a
+        # delta = bx_b - bx_a
+        delta = dt * (bv_b - bv_a)
         friction_delta = delta - wp.dot(n, delta) * n
 
         perp = wp.normalize(friction_delta)

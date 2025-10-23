@@ -477,6 +477,10 @@ def parse_usd(
                 points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
                 indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.float32)
                 counts = mesh.GetFaceVertexCountsAttr().Get()
+                if counts is None:
+                    if verbose:
+                        print(f"Warning: No face vertex counts found for mesh {path_name}")
+                    return
                 faces = []
                 face_id = 0
                 for count in counts:
@@ -552,8 +556,12 @@ def parse_usd(
         scale = np.linalg.norm(xform_mat[:3, :3], axis=0)
         return scale
 
-    def parse_scale(prim):
-        return parse_xform_scale(get_local_xform_mat(prim))
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+
+    def parse_scale(prim, ref_prim):
+        xform, _reset = xform_cache.ComputeRelativeTransform(prim, ref_prim)
+        mat = np.array(xform, dtype=np.float32).reshape(4, 4).T
+        return parse_xform_scale(mat)
 
     def resolve_joint_parent_child(joint_desc, body_index_map: dict[str, int], get_transforms: bool = True):
         if get_transforms:
@@ -608,6 +616,9 @@ def parse_usd(
             "key": str(joint_path),
             "enabled": joint_desc.jointEnabled,
         }
+        if key in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint, UsdPhysics.ObjectType.SphericalJoint):
+            joint_params["armature"] = joint_armature
+            joint_params["friction"] = joint_friction
 
         # joint index before insertion
         joint_index = builder.joint_count
@@ -633,8 +644,6 @@ def parse_usd(
             joint_params["limit_upper"] = joint_desc.limit.upper
             joint_params["limit_ke"] = current_joint_limit_ke
             joint_params["limit_kd"] = current_joint_limit_kd
-            joint_params["armature"] = joint_armature
-            joint_params["friction"] = joint_friction
             if joint_desc.drive.enabled:
                 # XXX take the target which is nonzero to decide between position vs. velocity target...
                 if joint_desc.drive.targetVelocity:
@@ -1301,7 +1310,7 @@ def parse_usd(
                 # print("shape ", prim, "body =" , body_path)
                 body_id = path_body_map.get(body_path, -1)
                 # scale = np.array(shape_spec.localScale)
-                scale = parse_scale(prim)
+                scale = parse_scale(prim, ref_prim=stage.GetPrimAtPath(body_path))
                 collision_group = -1
                 if len(shape_spec.collisionGroups) > 0:
                     cgroup_name = str(shape_spec.collisionGroups[0])

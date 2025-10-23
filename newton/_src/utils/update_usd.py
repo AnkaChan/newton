@@ -218,7 +218,7 @@ class UpdateUsd:
         # Use a change block for efficient time-sampled updates
         with Sdf.ChangeBlock():
             for prim_path, body_id in self.path_body_map.items():
-                full_xform = body_q[body_id]
+                full_xform = wp.transform(*body_q[body_id])
 
                 # apply relative xform if any
                 rel_xform = self.path_body_relative_transform.get(prim_path)
@@ -226,12 +226,19 @@ class UpdateUsd:
                     full_xform = wp.mul(full_xform, rel_xform)
 
                 # convert to local space relative to parent (if required)
-                full_xform = self._apply_parents_inverse_xform(full_xform, prim_path)
+                full_xform = self._apply_parents_inverse_xform(wp.transform(*full_xform), prim_path)
 
                 # set xform ops at current frame index
                 self._update_usd_prim_xform(prim_path, full_xform)
 
-    def render_points(self, path: str, points:wp.array, rotations:wp.array, scales:wp.array, radius:float):
+    def render_points(
+        self,
+        path: str,
+        points: wp.array,
+        rotations: wp.array | None = None,
+        scales: wp.array | None = None,
+        radius: float | None = None,
+    ):
         from pxr import UsdGeom
 
         stage = self.stage
@@ -307,7 +314,7 @@ class UpdateUsd:
         warp_translate = wp.transform_get_translation(full_xform)
         warp_quat = wp.transform_get_rotation(full_xform)
 
-        prim_translate = parent_inv_Rot * (warp_translate - parent_translate)
+        prim_translate = parent_inv_Rot * (warp_translate - wp.vec3(parent_translate))
         prim_quat = parent_inv_Rot_n * warp_quat
 
         return wp.transform(prim_translate, prim_quat)
