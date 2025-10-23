@@ -2328,7 +2328,20 @@ def init_triangle_collision_data_kernel(
     if tri_index == 0:
         for i in range(3):
             resize_flags[i] = 0
-
+@wp.func
+def _binary_search_contains_int32(sorted_arr: wp.array(dtype=wp.int32),
+                                  start: int, end: int, key: int) -> bool:
+    # Search [start, end) — end is exclusive
+    lo = wp.int32(start)
+    hi = wp.int32(end)
+    while lo < hi:
+        mid = (lo + hi) // wp.int32(2)
+        val = sorted_arr[mid]
+        if val < key:
+            lo = mid + 1
+        else:
+            hi = mid
+    return (lo < wp.int32(end)) and (sorted_arr[lo] == key)
 
 @wp.kernel
 def vertex_triangle_collision_detection_kernel(
@@ -2403,22 +2416,18 @@ def vertex_triangle_collision_detection_kernel(
 
         if vertex_adjacent_to_triangle(v_index, t1, t2, t3):
             continue
-        skip_this = wp.bool(False)
+
         if vertex_triangle_filtering_list:
-            for tri_counter in range(vertex_triangle_filtering_list_offsets[v_index],  vertex_triangle_filtering_list_offsets[v_index+1]):
-                if vertex_triangle_filtering_list[tri_counter] == tri_index:
-                    skip_this = True
-                    # u1 = pos[t1]
-                    # u2 = pos[t2]
-                    # u3 = pos[t3]
-                    #
-                    # closest_p, bary, feature_type = triangle_closest_point(u1, u2, u3, v)
-                    #
-                    # dist = wp.length(closest_p - v)
-                    # wp.printf("skipping v-t collision between v%d and t%d, distance:%f\n", v_index, tri_index, dist)
-                    break
-        if skip_this:
-            continue
+            fl_start = vertex_triangle_filtering_list_offsets[v_index]
+            fl_end = vertex_triangle_filtering_list_offsets[v_index + 1]  # start of next vertex slice (end exclusive)
+
+            if fl_end > fl_start:
+                # Optional fast-fail using first/last elements (remember end is exclusive)
+                first_val = vertex_triangle_filtering_list[fl_start]
+                last_val = vertex_triangle_filtering_list[fl_end - 1]
+                if (tri_index >= first_val) and (tri_index <= last_val):
+                    if _binary_search_contains_int32(vertex_triangle_filtering_list, fl_start, fl_end, tri_index):
+                        continue
 
         u1 = pos[t1]
         u2 = pos[t2]
@@ -2597,25 +2606,18 @@ def edge_colliding_edges_detection_kernel(
         if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
             continue
 
-        skip_this = wp.bool(False)
         if edge_filtering_list:
-            for e_counter in range(edge_filtering_list_offsets[e_index],  edge_filtering_list_offsets[e_index+1]):
-                if edge_filtering_list[e_counter] == colliding_edge_index:
-                    skip_this = True
-                    # e1_v0_pos = pos[e1_v0]
-                    # e1_v1_pos = pos[e1_v1]
-                    #
-                    # st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
-                    # s = st[0]
-                    # t = st[1]
-                    # c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
-                    # c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
-                    #
-                    # dist = wp.length(c1 - c2)
-                    # wp.printf("skipping e-e collision between e%d and e%d, distance:%f\n", e_index, colliding_edge_index, dist)
-                    break
-        if skip_this:
-            continue
+            fl_start = edge_filtering_list_offsets[e_index]
+            fl_end   = edge_filtering_list_offsets[e_index + 1]  # start of next vertex slice (end exclusive)
+
+            if fl_end > fl_start:
+                # Optional fast-fail using first/last elements (remember end is exclusive)
+                first_val = edge_filtering_list[fl_start]
+                last_val  = edge_filtering_list[fl_end - 1]
+                if (colliding_edge_index >= first_val) and (colliding_edge_index <= last_val):
+                    if _binary_search_contains_int32(edge_filtering_list, fl_start, fl_end, colliding_edge_index):
+                        continue
+                # else: key is out of range, cannot be present -> skip_this remains False
 
         e1_v0_pos = pos[e1_v0]
         e1_v1_pos = pos[e1_v1]

@@ -206,6 +206,95 @@ def vt_filter_count_kernel(
 
     out_counts[v] = local_count
 
+@wp.kernel
+def sort_filtering_list(
+    vertex_triangle_filtering_list: wp.array(dtype=wp.int32),
+    vertex_triangle_filtering_list_offsets: wp.array(dtype=wp.int32),
+):
+    # One thread per vertex slice; sorts in-place [start, end) (end exclusive)
+    v = wp.tid()
+
+    start = vertex_triangle_filtering_list_offsets[v]
+    end   = vertex_triangle_filtering_list_offsets[v + 1]
+    n = end - start
+    if n <= 1:
+        return
+
+    # In-place Shell sort (stable not required; duplicates preserved)
+    gap = n // 2
+    while gap > 0:
+        i = start + gap
+        while i < end:
+            tmp = vertex_triangle_filtering_list[i]
+            j = i
+            while (j - gap) >= start and vertex_triangle_filtering_list[j - gap] > tmp:
+                vertex_triangle_filtering_list[j] = vertex_triangle_filtering_list[j - gap]
+                j = j - gap
+            vertex_triangle_filtering_list[j] = tmp
+            i += 1
+        gap = gap // 2
+
+# ---- helpers (once, above kernels) ----
+@wp.func
+def _lower_bound_int32(arr: wp.array(dtype=wp.int32), start: int, n: int, key: int) -> int:
+    # search in [start, start+n); return first index >= key
+    lo = wp.int32(0)
+    hi = wp.int32(n)
+    while lo < hi:
+        mid = (lo + hi) // wp.int32(2)
+        val = arr[start + mid]
+        if val < key:
+            lo = mid + 1
+        else:
+            hi = mid
+    return start + lo  # absolute index in arr
+
+import warp as wp
+
+# per-vertex sortedness check
+@wp.kernel
+def vt_check_sorted_kernel(
+    vt_offsets: wp.array(dtype=wp.int32),     # [V+1]
+    vt_flat:    wp.array(dtype=wp.int32),     # flat list
+    strict:     int,                          # 0 => non-decreasing, 1 => strictly increasing
+
+    # outputs
+    per_vertex_ok:      wp.array(dtype=wp.int32),  # [V], 1 = ok, 0 = fail
+    per_vertex_bad_pos: wp.array(dtype=wp.int32),  # [V], first index (local within slice) of violation or -1
+    per_vertex_prev:    wp.array(dtype=wp.int32),  # [V], offending prev value (debug)
+    per_vertex_curr:    wp.array(dtype=wp.int32),  # [V], offending curr value (debug)
+    any_fail:           wp.array(dtype=wp.int32),  # [1], set to 1 if any vertex fails
+):
+    v = wp.tid()
+
+    start = vt_offsets[v]
+    n     = vt_offsets[v+1] - vt_offsets[v]
+
+    # default to OK
+    per_vertex_ok[v]      = 1
+    per_vertex_bad_pos[v] = -1
+    per_vertex_prev[v]    = 0
+    per_vertex_curr[v]    = 0
+
+    if n <= 1:
+        return
+
+    # walk once and find first violation
+    prev = vt_flat[start]
+    for i in range(1, n):
+        curr = vt_flat[start + i]
+
+        # violation condition
+        if (strict != 0 and not (curr >  prev)) or \
+           (strict == 0 and not (curr >= prev)):
+            per_vertex_ok[v]      = 0
+            per_vertex_bad_pos[v] = i
+            per_vertex_prev[v]    = prev
+            per_vertex_curr[v]    = curr
+            wp.atomic_max(any_fail, 0, 1)
+            return
+
+        prev = curr
 
 @wp.kernel
 def vt_filter_fill_kernel(
@@ -297,6 +386,37 @@ def build_vertex_triangle_filtering_csr(
         ],
         device=device,
     )
+
+    # 4) sort
+    wp.launch(
+        kernel=sort_filtering_list,
+        dim=V,
+        inputs=[
+            vt_flat,
+            vt_offsets,
+        ],
+        device=device,
+    )
+
+    per_vertex_ok = wp.zeros(V, dtype=wp.int32, device="cuda")
+    per_vertex_bad_pos = wp.empty(V, dtype=wp.int32, device="cuda")
+    per_vertex_prev = wp.empty(V, dtype=wp.int32, device="cuda")
+    per_vertex_curr = wp.empty(V, dtype=wp.int32, device="cuda")
+    any_fail = wp.zeros(1, dtype=wp.int32, device="cuda")
+
+    # strict = 0 (allow duplicates) or 1 (no duplicates)
+    wp.launch(
+        kernel=vt_check_sorted_kernel,
+        dim=V,
+        inputs=[
+            vt_offsets, vt_flat, 0,  # strict=0 => non-decreasing
+        ],
+        outputs=[
+            per_vertex_ok, per_vertex_bad_pos, per_vertex_prev, per_vertex_curr, any_fail
+        ],
+        device="cuda",
+    )
+    assert np.logical_not(any_fail.numpy().all())
 
     return vt_flat, vt_offsets
 
@@ -455,6 +575,38 @@ def build_edge_edge_filtering_csr(
         ],
         device=device,
     )
+
+    # 3) sort
+    wp.launch(
+        kernel=sort_filtering_list,
+        dim=E,
+        inputs=[
+            ee_flat,
+            ee_offsets,
+        ],
+        device=device,
+    )
+
+    per_element_ok = wp.zeros(E, dtype=wp.int32, device="cuda")
+    per_element_bad_pos = wp.empty(E, dtype=wp.int32, device="cuda")
+    per_element_prev = wp.empty(E, dtype=wp.int32, device="cuda")
+    per_element_curr = wp.empty(E, dtype=wp.int32, device="cuda")
+    any_fail = wp.zeros(1, dtype=wp.int32, device="cuda")
+
+    # strict = 0 (allow duplicates) or 1 (no duplicates)
+    wp.launch(
+        kernel=vt_check_sorted_kernel,
+        dim=E,
+        inputs=[
+            ee_offsets, ee_flat, 0,  # strict=0 => non-decreasing
+        ],
+        outputs=[
+            per_element_ok, per_element_bad_pos, per_element_prev, per_element_curr, any_fail
+        ],
+        device="cuda",
+    )
+
+    assert np.logical_not(any_fail.numpy().all())
 
     return ee_flat, ee_offsets
 
