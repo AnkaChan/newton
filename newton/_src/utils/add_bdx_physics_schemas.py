@@ -137,10 +137,10 @@ if __name__ == "__main__":
             for child in prim.GetChildren():
                 apply_collision_api(child)
 
-    # check if lanterns are present
-    if stage.GetPrimAtPath("/World/HangingLanternA_01") is not None:
-        print("Adding lanterns")
-        add_lantern_joints(stage)
+    # # check if lanterns are present
+    # if stage.GetPrimAtPath("/World/HangingLanternA_01") is not None:
+    #     print("Adding lanterns")
+    #     add_lantern_joints(stage)
 
     print(f"Saving to {output_path}")
     stage.Export(output_path)

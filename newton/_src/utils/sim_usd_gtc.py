@@ -169,10 +169,11 @@ run_cfgs = {
             "pitch": -3.2,  # Pitch in degrees
             "yaw": 97.6,
         },
-        "initial_time": 18.0,
+        "initial_time": 19.0,
         "preroll_frames": 500,
         "preroll_zero_velocity_ratio": 0.1,
         # "load_preroll_state": False,
+        "self_collision_off_frame": 1450,
         "load_preroll_state": True,
         "cloth_cfg": {
             "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo1p12",
@@ -181,7 +182,7 @@ run_cfgs = {
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
-            "tri_kd": 1e-7,
+            "tri_kd": 1e-3,
             "bending_ke": 1e-2,
             "bending_kd": 1e-7,
             "particle_radius": 0.03,
@@ -200,10 +201,10 @@ run_cfgs = {
         "iterations": 20,
         "collision_detection_interval": 10,
         "self_contact_rest_filter_radius": 0.02,
-        "self_contact_radius": 0.005,
+        "self_contact_radius": 0.008,
         "self_contact_margin": 0.025,
         "handle_self_contact": True,
-        "soft_contact_ke": 1e3,
+        "soft_contact_ke": 5e2,
         "soft_contact_kd": 1e-3,
         "soft_contact_mu": 0.0,
     },
@@ -213,8 +214,8 @@ run_cfgs = {
             "pitch": -3.2,  # Pitch in degrees
             "yaw": 97.6,
         },
-        "initial_time": 14.0,
-        "preroll_frames": 500,
+        "initial_time": 10.0,
+        "preroll_frames": 1000,
         "self_collision_off_frame": 1000,
         "preroll_zero_velocity_ratio": 0.1,
         # "load_preroll_state": False,
@@ -337,7 +338,7 @@ Comments:
 #
 #
 # D:\Data\GTC2025DC_Demo\Inputs\SceneC\1021\20251021_to_sim_tdSimClothC_02.usd
-run_cfg = run_cfgs["sceneC"]
+# run_cfg = run_cfgs["sceneC"]
 
 
 def get_top_vertices(
@@ -1519,11 +1520,9 @@ if __name__ == "__main__":
         i = 0
         while i < args.num_frames:
             print(f"frame {i}")
-            if simulator.DEBUG and not simulator.viewer.is_paused():
-                simulator.step()
+            simulator.step()
             simulator.render()
-            if simulator.DEBUG and not simulator.viewer.is_paused():
-                i += 1
+            i += 1
 
         print_time_profiler(simulator)
 
