@@ -22,8 +22,8 @@
 ###########################################################################
 
 import inspect
-import os
 import itertools
+import os
 from enum import Enum
 from os.path import join
 from pathlib import Path
@@ -47,6 +47,7 @@ from newton._src.utils.schema_resolver import (
     _ResolverManager,
 )
 from newton._src.utils.update_usd import UpdateUsd
+
 
 def writeObj(vs, vns, vts, fs, outFile, withMtl=False, textureFile=None, convertToMM=False, vIdAdd1=True):
     # write new
@@ -165,9 +166,9 @@ run_cfgs = {
     # },
     "sceneB": {
         "camera_cfg": {
-            "pos": wp.vec3(19.82, 11.22, 1.41),  # Position
-            "pitch": -3.2,  # Pitch in degrees
-            "yaw": 97.6,
+            "pos": wp.vec3(12.8, 18.74, 1.41),  # Position
+            "pitch": -4.8,  # Pitch in degrees
+            "yaw": -9.6,
         },
         "initial_time": 19.0,
         "preroll_frames": 500,
@@ -182,11 +183,11 @@ run_cfgs = {
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
-            "tri_kd": 1e-3,
-            "bending_ke": 1e-2,
-            "bending_kd": 1e-7,
+            "tri_kd": 1e-4,
+            "bending_ke": 5e-2,
+            "bending_kd": 1e-6,
             "particle_radius": 0.03,
-            "density": 1.0,
+            "density": 2.0,
             "additional_translation": [0, 0, -0.05],
             # "fixed_particles" : [23100, 22959]
         },
@@ -198,14 +199,15 @@ run_cfgs = {
             "threshold": 0.1,
         },
         "substeps": 20,
-        "iterations": 20,
+        "iterations": 10,
         "collision_detection_interval": 10,
         "self_contact_rest_filter_radius": 0.02,
         "self_contact_radius": 0.008,
         "self_contact_margin": 0.025,
-        "handle_self_contact": True,
-        "soft_contact_ke": 5e2,
-        "soft_contact_kd": 1e-3,
+        # "handle_self_contact": True,
+        "handle_self_contact": False,
+        "soft_contact_ke": 5e3,
+        "soft_contact_kd": 1e-5,
         "soft_contact_mu": 0.0,
     },
     "sceneA": {
@@ -258,6 +260,7 @@ run_cfgs = {
         "soft_contact_ke": 1e3,
         "soft_contact_kd": 1e-3,
         "soft_contact_mu": 0.0,
+
     },
     "sceneC": {
         "camera_cfg": {
@@ -1078,6 +1081,7 @@ class Simulator:
         self.is_mujoco_cpu_mode = self.integrator_type == IntegratorType.MJWARP and self.R.get_value(
             self.physics_prim, PrimType.SCENE, "use_mujoco_cpu", False
         )
+        self.model.shape_material_mu.zero_()
         if self.use_cuda_graph and not self.is_mujoco_cpu_mode:
             with wp.ScopedCapture() as capture:
                 self.run_substep()
@@ -1173,7 +1177,6 @@ class Simulator:
                 "particle_qd": np.array(state.particle_qd.numpy()),
             }
             np.save(preroll_state_path, last_frame)
-
 
     def _setup_solver_attributes(self):
         """Apply scene attributes parsed from the stage to self."""
@@ -1370,9 +1373,9 @@ class Simulator:
                 # update free joint coordinates (necessary for MuJoCo)
                 q_start = self.animated_colliders_joint_q_start[i]
                 qd_start = self.animated_colliders_joint_qd_start[i]
-                joint_q_np[q_start:q_start+7] = wp_xform
-                joint_qd_np[qd_start:qd_start+3] = vel
-                joint_qd_np[qd_start+3:qd_start+6] = ang
+                joint_q_np[q_start : q_start + 7] = wp_xform
+                joint_qd_np[qd_start : qd_start + 3] = vel
+                joint_qd_np[qd_start + 3 : qd_start + 6] = ang
             self.state_0.body_q.assign(body_q_np)
             self.state_0.body_qd.assign(body_qd_np)
             self.state_0.joint_q.assign(joint_q_np)
@@ -1476,9 +1479,9 @@ def print_time_profiler(simulator):
     render_times = simulator.profiler["render"]
 
     if frame_times:
-        print("\nAverage frame sim time: {:.2f} ms".format(sum(frame_times) / len(frame_times)))
+        print(f"\nAverage frame sim time: {sum(frame_times) / len(frame_times):.2f} ms")
     if render_times:
-        print("\nAverage frame render time: {:.2f} ms".format(sum(render_times) / len(render_times)))
+        print(f"\nAverage frame render time: {sum(render_times) / len(render_times):.2f} ms")
 
 
 if __name__ == "__main__":

@@ -1094,10 +1094,9 @@ def evaluate_body_particle_contact(
 
         dx = particle_pos - particle_prev_pos
 
-        if wp.dot(n, dx) < 0:
-            damping_hessian = (soft_contact_kd / dt) * body_contact_hessian
-            body_contact_hessian = body_contact_hessian + damping_hessian
-            body_contact_force = body_contact_force - damping_hessian * dx
+        damping_hessian = (soft_contact_kd / dt) * body_contact_hessian
+        body_contact_hessian = body_contact_hessian + damping_hessian
+        body_contact_force = body_contact_force - damping_hessian * dx
 
         # body velocity
         if body_q_prev:
@@ -1890,6 +1889,8 @@ def solve_trimesh_no_self_contact_tile(
     # contact info
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
+    air_density: float,
+    air_drag_coefficient: float,  # Cd
     # output
     pos_new: wp.array(dtype=wp.vec3),
 ):
@@ -1913,6 +1914,7 @@ def solve_trimesh_no_self_contact_tile(
 
     f = wp.vec3(0.0)
     h = wp.mat33(0.0)
+    a = wp.float32(0.0)
 
     num_adj_faces = get_vertex_num_adjacent_faces(adjacency, particle_index)
 
@@ -1924,7 +1926,7 @@ def solve_trimesh_no_self_contact_tile(
         batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
         # elastic force and hessian
         tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, adj_tri_counter)
-
+        a += tri_areas[tri_index]
         f_tri, h_tri = evaluate_stvk_force_hessian(
             tri_index,
             vertex_order,
@@ -1982,11 +1984,50 @@ def solve_trimesh_no_self_contact_tile(
 
     f_tile = wp.tile(f, preserve_type=True)
     h_tile = wp.tile(h, preserve_type=True)
+    a_tile = wp.tile(a, )
 
     f_total = wp.tile_reduce(wp.add, f_tile)[0]
     h_total = wp.tile_reduce(wp.add, h_tile)[0]
+    a_total = wp.tile_reduce(wp.add, a_tile)[0]
 
     if thread_idx == 0:
+        if thread_idx == 0:
+
+            # implicit quadratic drag (local linearization)
+            # A = vertex_ref_area[particle_index]
+            A = a_total / 3.0
+            k = 0.5 * air_density * air_drag_coefficient * A  # N·s^2/m^2
+            if k > 0.0:
+                x = pos[particle_index]
+                x_prev = pos_prev[particle_index]
+                v_rel = (x - x_prev) / dt  # relative velocity
+                speed = wp.length(v_rel)
+                eps = 1e-8
+
+                # force at current iterate (negative gradient)
+                f_drag = -k * speed * v_rel  # N
+                f_total = f_total + f_drag
+
+                # Jacobian-based implicit contribution (SPD)
+                s = wp.max(speed, eps)
+                w_iso = (k / dt) * speed  # scalar * I     (isotropic)
+                # rank-1 term: (k/dt) * (v v^T / s)
+                vx = v_rel[0];
+                vy = v_rel[1];
+                vz = v_rel[2]
+                # build 3x3 outer product scaled
+                scale_rank1 = (k / dt) / s
+                H_rank1 = wp.mat33(scale_rank1 * vx * vx, scale_rank1 * vx * vy, scale_rank1 * vx * vz,
+                                   scale_rank1 * vy * vx, scale_rank1 * vy * vy, scale_rank1 * vy * vz,
+                                   scale_rank1 * vz * vx, scale_rank1 * vz * vy, scale_rank1 * vz * vz)
+                h_total = h_total + w_iso * wp.identity(n=3, dtype=float) + H_rank1
+
+            h_total = (
+                    h_total
+                    + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
+                    + particle_hessians[particle_index]
+            )
+
         h_total = (
             h_total
             + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
@@ -2022,6 +2063,7 @@ def solve_trimesh_no_self_contact(
     edge_rest_length: wp.array(dtype=float),
     edge_bending_properties: wp.array(dtype=float, ndim=2),
     adjacency: ForceElementAdjacencyInfo,
+
     # contact info
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
@@ -2617,7 +2659,6 @@ def solve_trimesh_with_self_contact_penetration_free(
 
         # pos_new[particle_index] = particle_pos_new
 
-
 @wp.kernel
 def solve_trimesh_with_self_contact_penetration_free_tile(
     dt: float,
@@ -2641,6 +2682,8 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
     particle_hessians: wp.array(dtype=wp.mat33),
     pos_prev_collision_detection: wp.array(dtype=wp.vec3),
     particle_conservative_bounds: wp.array(dtype=float),
+    air_density: float,
+    air_drag_coefficient:float,  # Cd
     # output
     pos_new: wp.array(dtype=wp.vec3),
 ):
@@ -2663,7 +2706,7 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
 
     f = wp.vec3(0.0)
     h = wp.mat33(0.0)
-
+    a = wp.float32(0.0)
     batch_counter = wp.int32(0)
 
     # loop through all the adjacent triangles using whole block
@@ -2688,7 +2731,7 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
                 tri_indices[tri_index, 2],
             )
         # fmt: on
-
+        a += tri_areas[tri_index]
         f_tri, h_tri = evaluate_stvk_force_hessian(
             tri_index,
             vertex_order,
@@ -2733,11 +2776,44 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
 
     f_tile = wp.tile(f, preserve_type=True)
     h_tile = wp.tile(h, preserve_type=True)
+    a_tile = wp.tile(a, )
 
     f_total = wp.tile_reduce(wp.add, f_tile)[0]
     h_total = wp.tile_reduce(wp.add, h_tile)[0]
+    a_total = wp.tile_reduce(wp.add, a_tile)[0]
+
 
     if thread_idx == 0:
+
+        # implicit quadratic drag (local linearization)
+        # A = vertex_ref_area[particle_index]
+        A = a_total / 3.0
+        k = 0.5 * air_density * air_drag_coefficient * A  # N·s^2/m^2
+        if k > 0.0:
+            x = pos[particle_index]
+            x_prev = pos_prev[particle_index]
+            v_rel = (x - x_prev) / dt  # relative velocity
+            speed = wp.length(v_rel)
+            eps = 1e-8
+
+            # force at current iterate (negative gradient)
+            f_drag = -k * speed * v_rel  # N
+            f_total = f_total + f_drag
+
+            # Jacobian-based implicit contribution (SPD)
+            s = wp.max(speed, eps)
+            w_iso = (k / dt) * speed  # scalar * I     (isotropic)
+            # rank-1 term: (k/dt) * (v v^T / s)
+            vx = v_rel[0];
+            vy = v_rel[1];
+            vz = v_rel[2]
+            # build 3x3 outer product scaled
+            scale_rank1 = (k / dt) / s
+            H_rank1 = wp.mat33(scale_rank1 * vx * vx, scale_rank1 * vx * vy, scale_rank1 * vx * vz,
+                               scale_rank1 * vy * vx, scale_rank1 * vy * vy, scale_rank1 * vy * vz,
+                               scale_rank1 * vz * vx, scale_rank1 * vz * vy, scale_rank1 * vz * vz)
+            h_total = h_total + w_iso * wp.identity(n=3, dtype=float) + H_rank1
+
         h_total = (
             h_total
             + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
@@ -2923,6 +2999,8 @@ class SolverVBD(SolverBase):
         #           dim=1, device=self.device)
 
         self.penetration_free_init = True
+        self.air_density = 1.225        # kg/m^3
+        self.air_drag_coefficient = 10  # Cd
 
     def compute_force_element_adjacency(self, model):
         adjacency = ForceElementAdjacencyInfo()
@@ -3209,6 +3287,8 @@ class SolverVBD(SolverBase):
                             self.adjacency,
                             self.particle_forces,
                             self.particle_hessians,
+                            self.air_density,
+                            self.air_drag_coefficient,
                         ],
                         outputs=[
                             state_out.particle_q,
@@ -3409,6 +3489,8 @@ class SolverVBD(SolverBase):
                             self.particle_hessians,
                             self.pos_prev_collision_detection,
                             self.particle_conservative_bounds,
+                            self.air_density,
+                            self.air_drag_coefficient,
                         ],
                         outputs=[
                             state_out.particle_q,
