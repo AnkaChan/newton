@@ -3000,7 +3000,7 @@ class SolverVBD(SolverBase):
 
         self.penetration_free_init = True
         self.air_density = 1.225        # kg/m^3
-        self.air_drag_coefficient = 10  # Cd
+        self.air_drag_coefficient = 1  # Cd
 
     def compute_force_element_adjacency(self, model):
         adjacency = ForceElementAdjacencyInfo()

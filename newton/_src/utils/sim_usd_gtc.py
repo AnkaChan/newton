@@ -23,6 +23,7 @@
 
 import inspect
 import itertools
+import json
 import os
 from enum import Enum
 from os.path import join
@@ -170,12 +171,12 @@ run_cfgs = {
             "pitch": -4.8,  # Pitch in degrees
             "yaw": -9.6,
         },
-        "initial_time": 19.0,
-        "preroll_frames": 500,
+        "initial_time": 16.0,
+        "preroll_frames": 1000,
         "preroll_zero_velocity_ratio": 0.1,
-        # "load_preroll_state": False,
-        "self_collision_off_frame": 1450,
-        "load_preroll_state": True,
+        # "self_collision_off_frame": 1450,
+        "load_preroll_state": False,
+        # "load_preroll_state": True,
         "cloth_cfg": {
             "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo1p12",
             # "path": "/World/ClothModuleC5kCollisionRest_01/geo/clothModuleCbCollisionRestGeo05K",
@@ -183,9 +184,9 @@ run_cfgs = {
             #   elasticity
             "tri_ke": 5e2,
             "tri_ka": 5e2,
-            "tri_kd": 1e-4,
+            "tri_kd": 1e-5,
             "bending_ke": 5e-2,
-            "bending_kd": 1e-6,
+            "bending_kd": 1e-7,
             "particle_radius": 0.03,
             "density": 2.0,
             "additional_translation": [0, 0, -0.05],
@@ -199,16 +200,17 @@ run_cfgs = {
             "threshold": 0.1,
         },
         "substeps": 20,
-        "iterations": 10,
+        "iterations": 20,
         "collision_detection_interval": 10,
         "self_contact_rest_filter_radius": 0.02,
         "self_contact_radius": 0.008,
         "self_contact_margin": 0.025,
-        # "handle_self_contact": True,
-        "handle_self_contact": False,
-        "soft_contact_ke": 5e3,
-        "soft_contact_kd": 1e-5,
+        "handle_self_contact": True,
+        # "handle_self_contact": False,
+        "soft_contact_ke": 3e2,
+        "soft_contact_kd": 6e-3,
         "soft_contact_mu": 0.0,
+        "air_drag":0.1
     },
     "sceneA": {
         "camera_cfg": {
@@ -832,14 +834,17 @@ class Simulator:
     MODEL_ATTRIBUTES_KEYS = MODEL_ATTRIBUTES.keys()
     SOLVER_ATTRIBUTES_KEYS = SOLVER_ATTRIBUTES.keys()
 
-    def __init__(self, input_path, output_path, integrator: IntegratorType | None = None):
+    def __init__(self, input_path, output_path, config_path=None, integrator: IntegratorType | None = None):
         def create_stage_from_path(input_path) -> Usd.Stage:
             stage = Usd.Stage.Open(input_path, Usd.Stage.LoadAll)
             flattened = stage.Flatten()
             out_stage = Usd.Stage.Open(flattened.identifier)
             return out_stage
 
+        self.output_path = output_path
         self.output_folder = os.path.dirname(output_path)
+        # if config_path:
+        #     run_cfg = json.load(open(config_path))
 
         self.sim_time = 0.0
         self.profiler = {}
@@ -1058,8 +1063,9 @@ class Simulator:
             self.body_merged_parent = None
             self.body_merged_transform = None
 
-        self._setup_model_attributes()
+        # self._setup_model_attributes()
         self._setup_integrator()
+        self.integrator.air_drag_coefficient = run_cfg["air_drag"]
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -1072,8 +1078,8 @@ class Simulator:
         if self.model.joint_count:
             newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0, mask=None)
 
-        self.use_cuda_graph = True  # wp.get_device().is_cuda
-        # self.use_cuda_graph = False  # wp.get_device().is_cuda
+        # self.use_cuda_graph = True  # wp.get_device().is_cuda
+        self.use_cuda_graph = False  # wp.get_device().is_cuda
         self._update_animated_colliders()
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=self.rigid_contact_margin)
 
@@ -1093,25 +1099,25 @@ class Simulator:
             self.graph_odd_step = capture.graph
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
-        self.usd_updater = UpdateUsd(
-            stage=output_path,
-            source_stage=input_path,
-            path_body_relative_transform=self.path_body_relative_transform,
-            path_body_map=self.path_body_map,
-            builder_results=self.builder_results,
-            up_axis="Z",
-        )
-        self.usd_updater.configure_body_mapping(
-            path_body_map=self.path_body_map,
-            path_body_relative_transform=self.path_body_relative_transform,
-            builder_results=self.builder_results,
-        )
+        # self.usd_updater = UpdateUsd(
+        #     stage=output_path,
+        #     source_stage=input_path,
+        #     path_body_relative_transform=self.path_body_relative_transform,
+        #     path_body_map=self.path_body_map,
+        #     builder_results=self.builder_results,
+        #     up_axis="Z",
+        # )
+        # self.usd_updater.configure_body_mapping(
+        #     path_body_map=self.path_body_map,
+        #     path_body_relative_transform=self.path_body_relative_transform,
+        #     builder_results=self.builder_results,
+        # )
 
         self.DEBUG = True
         if self.DEBUG:
             if run_cfg["save_usd"]:
                 self.viewer_usd = newton.viewer.ViewerUSD(
-                    output_path=input_path.replace(".usd", "_sim_v.usd"), num_frames=None
+                    output_path=self.output_path, num_frames=None
                 )
                 self.viewer_usd.set_model(self.model)
             else:
@@ -1122,7 +1128,7 @@ class Simulator:
 
             if run_cfg.get("camera_cfg", None) is not None:
                 self.viewer_gl.set_camera(
-                    pos=run_cfg["camera_cfg"]["pos"],  # Position
+                    pos=wp.vec3(*run_cfg["camera_cfg"]["pos"]),  # Position
                     pitch=run_cfg["camera_cfg"]["pitch"],  # Pitch in degrees
                     yaw=run_cfg["camera_cfg"]["yaw"],  # Yaw in degrees
                 )
@@ -1150,11 +1156,8 @@ class Simulator:
             for frame in tqdm.tqdm(range(preroll_frames), desc="Preroll Frames"):
                 for substep in range(self.sim_substeps):
                     self.state_0.clear_forces()
-                    if self.use_cuda_graph:
-                        if substep % self.sim_substeps:
-                            wp.capture_launch(self.graph_even_step)
-                        else:
-                            wp.capture_launch(self.graph_odd_step)
+
+                    self.run_substep()
                     self.state_0, self.state_1 = self.state_1, self.state_0
 
                     if frame < run_cfg.get("preroll_zero_velocity_ratio", 0.1) * preroll_frames:
@@ -1267,6 +1270,7 @@ class Simulator:
                 defaults={"iterations": self.integrator_iterations},
             )
             self.integrator = newton.solvers.SolverVBD(self.model, **solver_args)
+
 
         # Iterate resolver-defined keys (these are your internal integrator attribute names)
         var_map = res.mapping.get(PrimType.SCENE, {})
@@ -1471,7 +1475,7 @@ class Simulator:
         if self.viewer_usd is not None:
             self.viewer_usd.close()
 
-        self.usd_updater.close()
+        # self.usd_updater.close()
 
 
 def print_time_profiler(simulator):
@@ -1497,6 +1501,12 @@ if __name__ == "__main__":
         "--output",
         help="Path to the output USD file.",
     )
+    parser.add_argument(
+        "-c",
+        "--config",
+        help="Path to the config.",
+        default=None,
+    )
     parser.add_argument("-d", "--device", type=str, default=None, help="Override the default Warp device.")
     parser.add_argument("-n", "--num_frames", type=int, default=300, help="Total number of frames.")
     parser.add_argument(
@@ -1511,14 +1521,12 @@ if __name__ == "__main__":
     args = parser.parse_known_args()[0]
 
     if not args.output:
-        path = Path(args.stage_path)
-        base_path = path.parent / "output"
-        base_path.mkdir(parents=True, exist_ok=True)
-        args.output = str(base_path / path.name)
+        args.output = args.stage_path.replace(".usd", "_sim_v.usd")
         print(f'Output path not specified (-o flag). Writing to "{args.output}".')
 
+
     with wp.ScopedDevice(args.device):
-        simulator = Simulator(input_path=args.stage_path, output_path=args.output, integrator=args.integrator)
+        simulator = Simulator(input_path=args.stage_path, output_path=args.output, config_path=args.config, integrator=args.integrator)
 
         i = 0
         while i < args.num_frames:
