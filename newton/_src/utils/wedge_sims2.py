@@ -1,14 +1,12 @@
-from wedge_sims import *
-from wedge_rendering import *
-
-from os.path import join, exists, dirname, abspath
-
-import os
 import json
+import os
+from os.path import join
 
+from wedge_rendering import *
+from wedge_sims import *
 
-if __name__ == '__main__':
-    good_numbers = [4,6,8,9,10,14]
+if __name__ == "__main__":
+    good_numbers = [4, 6, 8, 9, 10, 14]
 
     loaded_configs = {}
     base_dir_new = r"D:\Data\GTC2025DC_Demo\B1021_2"
@@ -17,7 +15,7 @@ if __name__ == '__main__':
         sweep_name = f"sweep_{str(sweep_idx).zfill(3)}"
         config_path = os.path.join(OUTPUT_FOLDER, sweep_name, "config.json")
         if os.path.exists(config_path):
-            with open(config_path, "r") as f:
+            with open(config_path) as f:
                 config = json.load(f)
             loaded_configs[sweep_name] = config
             print(f"Loaded {sweep_name} from {config_path}")
@@ -27,7 +25,6 @@ if __name__ == '__main__':
         new_sweep_name = f"sweep_batch2_{str(new_sweep_idx).zfill(3)}"
 
         sweep_folder = os.path.join(base_dir_new, new_sweep_name)
-
 
         abbreviation_map = {
             "tri_ke": "t_ke",
@@ -51,6 +48,5 @@ if __name__ == '__main__':
         cfg = json.load(open(os.path.join(sweep_folder, "config.json")))
         rendering_folder = os.path.join(sweep_folder, r"rendering")
         render_usd(sweep_folder, render_temp_dir, rendering_folder, cfg)
-
 
     # loaded_configs now contains the configs indexed by sweep_name

@@ -23,7 +23,6 @@
 
 import inspect
 import itertools
-import json
 import os
 from enum import Enum
 from os.path import join
@@ -47,7 +46,6 @@ from newton._src.utils.schema_resolver import (
     SchemaResolverNewton,
     _ResolverManager,
 )
-from newton._src.utils.update_usd import UpdateUsd
 
 
 def writeObj(vs, vns, vts, fs, outFile, withMtl=False, textureFile=None, convertToMM=False, vIdAdd1=True):
@@ -210,7 +208,7 @@ run_cfgs = {
         "soft_contact_ke": 3e2,
         "soft_contact_kd": 6e-3,
         "soft_contact_mu": 0.0,
-        "air_drag":0.1
+        "air_drag": 0.1,
     },
     "sceneA": {
         "camera_cfg": {
@@ -262,7 +260,6 @@ run_cfgs = {
         "soft_contact_ke": 1e3,
         "soft_contact_kd": 1e-3,
         "soft_contact_mu": 0.0,
-
     },
     "sceneC": {
         "camera_cfg": {
@@ -1116,9 +1113,7 @@ class Simulator:
         self.DEBUG = True
         if self.DEBUG:
             if run_cfg["save_usd"]:
-                self.viewer_usd = newton.viewer.ViewerUSD(
-                    output_path=self.output_path, num_frames=None
-                )
+                self.viewer_usd = newton.viewer.ViewerUSD(output_path=self.output_path, num_frames=None)
                 self.viewer_usd.set_model(self.model)
             else:
                 self.viewer_usd = None
@@ -1270,7 +1265,6 @@ class Simulator:
                 defaults={"iterations": self.integrator_iterations},
             )
             self.integrator = newton.solvers.SolverVBD(self.model, **solver_args)
-
 
         # Iterate resolver-defined keys (these are your internal integrator attribute names)
         var_map = res.mapping.get(PrimType.SCENE, {})
@@ -1524,9 +1518,10 @@ if __name__ == "__main__":
         args.output = args.stage_path.replace(".usd", "_sim_v.usd")
         print(f'Output path not specified (-o flag). Writing to "{args.output}".')
 
-
     with wp.ScopedDevice(args.device):
-        simulator = Simulator(input_path=args.stage_path, output_path=args.output, config_path=args.config, integrator=args.integrator)
+        simulator = Simulator(
+            input_path=args.stage_path, output_path=args.output, config_path=args.config, integrator=args.integrator
+        )
 
         i = 0
         while i < args.num_frames:

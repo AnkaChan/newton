@@ -11,45 +11,37 @@
 # Only <stage_path> is required, it can be an `omniverse://` path or a local path. All other arguments have default values.
 ########################################################
 
-from pathlib import Path
-from typing import List
 import argparse
 import os
-import pathlib
-import re
 import sys
+from pathlib import Path
 
 try:
     from isaacsim import SimulationApp
 except ImportError:
-    print(
-        "Are you running this with Kit's `python.bat/sh`?\nCheck the top of the file for instructions."
-    )
+    print("Are you running this with Kit's `python.bat/sh`?\nCheck the top of the file for instructions.")
     sys.exit(1)
 
 
-def do_render(
-    stage_path, output_path, start_time, num_frames, frame_rate
-):
+def do_render(stage_path, output_path, start_time, num_frames, frame_rate):
     simulation_app = SimulationApp({"headless": True})
 
-    import carb
     import omni
     import omni.replicator.core as rep
     import omni.timeline
     from isaacsim.core.api import SimulationContext
-
     from pxr import Usd, UsdGeom
 
     # -----------------------------------------------------
 
-    def get_cameras(stage: Usd.Stage) -> List[Usd.Prim]:
+    def get_cameras(stage: Usd.Stage) -> list[Usd.Prim]:
         """Return camera prims from the stage, **excluding** the default Kit cameras."""
         return [
             prim
             for prim in stage.Traverse()
             if prim.IsA(UsdGeom.Camera) and not prim.GetName().startswith("OmniverseKit")
         ]
+
     # -----------------------------------------------------
 
     success = omni.usd.get_context().open_stage(stage_path)
@@ -108,24 +100,12 @@ Usage:
 See the top of the file for more information.
         """,
     )
-    parser.add_argument(
-        "stage_path", type=str, help="Path to the stage to record LiDAR data from"
-    )
-    parser.add_argument(
-        "-o", "--output_path", type=str, help="Path to the output directory"
-    )
-    parser.add_argument(
-        "-n", "--num_frames", type=int, default=1, help="Number of frames to record"
-    )
-    parser.add_argument(
-        "-t", "--start_time", type=float, default=0.0, help="Start time"
-    )
-    parser.add_argument(
-        "-f", "--frame_rate", type=int, default=60, help="Frame rate"
-    )
-    parser.add_argument(
-        "-y", "--yes_to_all", action="store_true", help="Yes to all prompts"
-    )
+    parser.add_argument("stage_path", type=str, help="Path to the stage to record LiDAR data from")
+    parser.add_argument("-o", "--output_path", type=str, help="Path to the output directory")
+    parser.add_argument("-n", "--num_frames", type=int, default=1, help="Number of frames to record")
+    parser.add_argument("-t", "--start_time", type=float, default=0.0, help="Start time")
+    parser.add_argument("-f", "--frame_rate", type=int, default=60, help="Frame rate")
+    parser.add_argument("-y", "--yes_to_all", action="store_true", help="Yes to all prompts")
 
     args = parser.parse_args()
 
@@ -134,15 +114,10 @@ See the top of the file for more information.
         output_path = Path(args.output_path).resolve()
     else:
         sep = "/" if stage_path.startswith("omniverse://") else os.sep
-        output_path = Path(
-            "./render/"
-            + stage_path[stage_path.rfind(sep) + 1 : stage_path.rfind(".")]
-        ).resolve()
+        output_path = Path("./render/" + stage_path[stage_path.rfind(sep) + 1 : stage_path.rfind(".")]).resolve()
 
     if output_path.exists() and not args.yes_to_all:
-        do_overwrite = input(
-            f"Output directory {output_path} already exists. Overwrite? (y/n): "
-        )
+        do_overwrite = input(f"Output directory {output_path} already exists. Overwrite? (y/n): ")
         if do_overwrite.lower() != "y":
             print("Aborting...")
             return 1

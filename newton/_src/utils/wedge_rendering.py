@@ -1,18 +1,20 @@
 import json
 import os.path
-
-from wedge_sims import *
+import re
 
 # --- video_maker.py ---
 from pathlib import Path
+
 import cv2
 import numpy as np
-import re
+from wedge_sims import *
+
 
 def _numeric_key(p: Path):
     """Sort by frame number if present; fallback to name."""
-    m = re.search(r'(\d+)(?=\.[a-zA-Z]+$)', p.name)
-    return (int(m.group(1)) if m else float('inf'), p.name)
+    m = re.search(r"(\d+)(?=\.[a-zA-Z]+$)", p.name)
+    return (int(m.group(1)) if m else float("inf"), p.name)
+
 
 def _find_image_dirs(root: Path):
     """Yield subdirs (including root) that contain PNGs."""
@@ -28,6 +30,7 @@ def _find_image_dirs(root: Path):
                 yielded.add(d.resolve())
                 yield d
 
+
 def _draw_banner(img, lines, margin=16, pad=12, alpha=0.55):
     """Draw a semi-transparent black banner with white text.
     - First line uses 2x font scale of others
@@ -36,7 +39,7 @@ def _draw_banner(img, lines, margin=16, pad=12, alpha=0.55):
     h, w = img.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    base_scale = max(1.0, min(w, h) / 800.0)          # auto scale with resolution
+    base_scale = max(1.0, min(w, h) / 800.0)  # auto scale with resolution
     scales = [(base_scale * 2.0 if i == 0 else base_scale) for i in range(len(lines))]
     thicknesses = [max(1, int(2 * s)) for s in scales]
 
@@ -68,17 +71,19 @@ def _draw_banner(img, lines, margin=16, pad=12, alpha=0.55):
         if i < len(lines) - 1:
             y += line_gap
 
+
 def _safe_read(cap, last_frame):
     ok, frame = cap.read()
     if ok:
         return frame, frame
     return last_frame, last_frame  # hold last frame if ended
 
+
 def combine_videos_grid_2x2(
     paths,
     out_path,
     fps=None,
-    size=None,           # (w, h) for each cell; None -> use first valid video
+    size=None,  # (w, h) for each cell; None -> use first valid video
     labels=None,
     font_scale=0.6,
     write_final_hold_frame=True,  # 写一帧“最终保持画面”，然后停止
@@ -111,7 +116,7 @@ def combine_videos_grid_2x2(
     if fps is None:
         fps = next((m[2] for m in metas if m[2] > 0), 30.0)
     if size is None:
-        size = next(((m[0]//2, m[1]//2) for m in metas if m[0] > 0 and m[1] > 0), (640, 360))
+        size = next(((m[0] // 2, m[1] // 2) for m in metas if m[0] > 0 and m[1] > 0), (640, 360))
     cell_w, cell_h = size
 
     out_w, out_h = cell_w * 2, cell_h * 2
@@ -140,7 +145,7 @@ def combine_videos_grid_2x2(
                 if ok:
                     frame = f
                     last_frames[i] = f
-                    any_new_frame = True   # 本轮至少有一路获得新帧
+                    any_new_frame = True  # 本轮至少有一路获得新帧
                 else:
                     # 到结尾
                     ended[i] = True
@@ -160,7 +165,9 @@ def combine_videos_grid_2x2(
                 overlay = cell.copy()
                 cv2.rectangle(overlay, (6, 6), (6 + tw + 2 * pad, 6 + th + 2 * pad), (0, 0, 0), -1)
                 cv2.addWeighted(overlay, 0.5, cell, 0.5, 0, cell)
-                cv2.putText(cell, txt, (6 + pad, 6 + th + pad), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                cv2.putText(
+                    cell, txt, (6 + pad, 6 + th + pad), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA
+                )
                 frame = cell
 
             cells.append(frame if frame.shape[:2] == (cell_h, cell_w) else cv2.resize(frame, (cell_w, cell_h)))
@@ -187,23 +194,27 @@ def combine_videos_grid_2x2(
 
     print(f"✅ 2x2 grid video created: {out_path}")
 
+
 def process_batch(batch):
     """Put your processing code here for a batch of up to 4 files."""
     print("Processing batch:", batch)
     # Example: call your 2x2 combiner here
     # combine_videos_grid_2x2(paths=batch, out_path=f"grid_{i}.mp4")
 
+
 def run_in_batches_of_4(files):
     files = [str(Path(f)) for f in files if f]  # normalize paths
     for i in range(0, len(files), 4):
-        batch = files[i:i+4]  # up to 4 items
+        batch = files[i : i + 4]  # up to 4 items
         # pad to exactly 4 if needed (use None for empty slots)
         while len(batch) < 4:
             batch.append(None)
         process_batch(batch)
 
 
-def make_videos_for_sweep(rendering_folder: str | Path, cfg: dict, fps: int | None = None, out_dir: str | Path | None = None):
+def make_videos_for_sweep(
+    rendering_folder: str | Path, cfg: dict, fps: int | None = None, out_dir: str | Path | None = None
+):
     """
     Build one video per image-containing folder under `rendering_folder`.
     Names videos like: <foldername>_sweep_<N>.mp4 (in the same folder or out_dir if provided).
@@ -230,7 +241,7 @@ def make_videos_for_sweep(rendering_folder: str | Path, cfg: dict, fps: int | No
 
         # Writer
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # widely compatible
-        video_name = f"rendering.mp4"
+        video_name = "rendering.mp4"
         video_path = (out_dir / video_name) if out_dir else (img_dir / video_name)
         writer = cv2.VideoWriter(str(video_path), fourcc, float(fps), (w, h))
         if not writer.isOpened():
@@ -252,19 +263,22 @@ def make_videos_for_sweep(rendering_folder: str | Path, cfg: dict, fps: int | No
 
     return video_path
 
+
 def process_batch(batch):
     """Put your processing code here for a batch of up to 4 files."""
     print("Processing batch:", batch)
     # Example: call your 2x2 combiner here
 
+
 def run_in_batches_of_4(files, base_dir):
     files = [str(Path(f)) for f in files if f]  # normalize paths
     for i in range(0, len(files), 4):
-        batch = files[i:i+4]  # up to 4 items
+        batch = files[i : i + 4]  # up to 4 items
         # pad to exactly 4 if needed (use None for empty slots)
         while len(batch) < 4:
             batch.append(None)
         combine_videos_grid_2x2(paths=batch, out_path=os.path.join(base_dir, f"grid_{i}.mp4"))
+
 
 def render_usd(sweep_folder, render_temp_dir, rendering_folder, cfg):
     src_file = os.path.join(sweep_folder, src_filename_base + str(sweep_idx).zfill(3) + ".usd")
@@ -293,12 +307,13 @@ def render_usd(sweep_folder, render_temp_dir, rendering_folder, cfg):
         r"60",
         "-t",
         str(cfg["initial_time"]),
-        "-y"
+        "-y",
     ]
 
     subprocess.run(cmd)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     import shutil
     from pathlib import Path
 
@@ -321,7 +336,13 @@ if __name__ == '__main__':
         rendering_folder = os.path.join(sweep_folder, r"rendering")
         render_usd(sweep_folder, rendering_folder, cfg)
 
-        videos.append(make_videos_for_sweep(rendering_folder, cfg, 60, ))
+        videos.append(
+            make_videos_for_sweep(
+                rendering_folder,
+                cfg,
+                60,
+            )
+        )
 
     run_in_batches_of_4(videos, base_dir)
 

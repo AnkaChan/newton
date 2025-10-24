@@ -23,15 +23,13 @@ from warp.types import float32, matrix
 
 from ...core.types import override
 from ...geometry import ParticleFlags
-from ...geometry.kernels import triangle_closest_point
+from ...geometry.kernels import triangle_closest_point, vertex_adjacent_to_triangle
 from ...sim import Contacts, Control, Model, State
 from ..solver import SolverBase
 from .tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
 )
-from ...geometry.kernels import vertex_adjacent_to_triangle
-
 
 # TODO: Grab changes from Warp that has fixed the backward pass
 wp.set_module_options({"enable_backward": False})
@@ -92,8 +90,10 @@ class ForceElementAdjacencyInfo:
 
             return adjacency_gpu
 
+
 def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
-    return vals[offs[i]:offs[i+1]]
+    return vals[offs[i] : offs[i + 1]]
+
 
 def _set_to_csr(list_of_sets, dtype=np.int32):
     offsets = np.zeros(len(list_of_sets) + 1, dtype=dtype)
@@ -103,19 +103,20 @@ def _set_to_csr(list_of_sets, dtype=np.int32):
     idx = 0
     for s in list_of_sets:
         arr = np.fromiter(sorted(s), count=len(s), dtype=dtype)
-        flat[idx:idx+len(arr)] = arr
+        flat[idx : idx + len(arr)] = arr
         idx += len(arr)
     return flat, offsets
 
+
 def build_vertex_strict_two_ring_tris(
     num_vertices: int,
-    faces: np.ndarray,                   # (F, 3) int; only F is used for sizing/inverse
-    edge_indices: np.ndarray,            # (M, 2) int; undirected edges (u, v)
-    v_adj_edges: np.ndarray,             # CSR flat: incident edge ids per vertex
-    v_adj_edges_offsets: np.ndarray,     # CSR offs: len = V+1
-    v_adj_faces: np.ndarray,             # CSR flat: incident face ids per vertex
-    v_adj_faces_offsets: np.ndarray,     # CSR offs: len = V+1
-    dtype=np.int32
+    faces: np.ndarray,  # (F, 3) int; only F is used for sizing/inverse
+    edge_indices: np.ndarray,  # (M, 2) int; undirected edges (u, v)
+    v_adj_edges: np.ndarray,  # CSR flat: incident edge ids per vertex
+    v_adj_edges_offsets: np.ndarray,  # CSR offs: len = V+1
+    v_adj_faces: np.ndarray,  # CSR flat: incident face ids per vertex
+    v_adj_faces_offsets: np.ndarray,  # CSR offs: len = V+1
+    dtype=np.int32,
 ):
     """
     For each vertex v, return ONLY triangles adjacent to v's one ring neighbor vertices.
@@ -159,21 +160,24 @@ def build_vertex_strict_two_ring_tris(
             assert v in faces[t, :]
             assert t not in acc
 
-
-
     v_two_flat, v_two_offs = _set_to_csr(v_two_sets, dtype=dtype)
 
-    return v_two_flat, v_two_offs,
+    return (
+        v_two_flat,
+        v_two_offs,
+    )
+
 
 import warp as wp
+
 
 @wp.kernel
 def vt_filter_count_kernel(
     query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),                     # 所有顶点位置（与 tri_indices 索引一致）
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),    # (F,3)
-    out_counts: wp.array(dtype=wp.int32),             # [V] 输出：每顶点计数
+    pos: wp.array(dtype=wp.vec3),  # 所有顶点位置（与 tri_indices 索引一致）
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),  # (F,3)
+    out_counts: wp.array(dtype=wp.int32),  # [V] 输出：每顶点计数
 ):
     v = wp.tid()
     p = pos[v]
@@ -206,6 +210,7 @@ def vt_filter_count_kernel(
 
     out_counts[v] = local_count
 
+
 @wp.kernel
 def sort_filtering_list(
     vertex_triangle_filtering_list: wp.array(dtype=wp.int32),
@@ -215,7 +220,7 @@ def sort_filtering_list(
     v = wp.tid()
 
     start = vertex_triangle_filtering_list_offsets[v]
-    end   = vertex_triangle_filtering_list_offsets[v + 1]
+    end = vertex_triangle_filtering_list_offsets[v + 1]
     n = end - start
     if n <= 1:
         return
@@ -234,6 +239,7 @@ def sort_filtering_list(
             i += 1
         gap = gap // 2
 
+
 # ---- helpers (once, above kernels) ----
 @wp.func
 def _lower_bound_int32(arr: wp.array(dtype=wp.int32), start: int, n: int, key: int) -> int:
@@ -249,32 +255,33 @@ def _lower_bound_int32(arr: wp.array(dtype=wp.int32), start: int, n: int, key: i
             hi = mid
     return start + lo  # absolute index in arr
 
+
 import warp as wp
+
 
 # per-vertex sortedness check
 @wp.kernel
 def vt_check_sorted_kernel(
-    vt_offsets: wp.array(dtype=wp.int32),     # [V+1]
-    vt_flat:    wp.array(dtype=wp.int32),     # flat list
-    strict:     int,                          # 0 => non-decreasing, 1 => strictly increasing
-
+    vt_offsets: wp.array(dtype=wp.int32),  # [V+1]
+    vt_flat: wp.array(dtype=wp.int32),  # flat list
+    strict: int,  # 0 => non-decreasing, 1 => strictly increasing
     # outputs
-    per_vertex_ok:      wp.array(dtype=wp.int32),  # [V], 1 = ok, 0 = fail
+    per_vertex_ok: wp.array(dtype=wp.int32),  # [V], 1 = ok, 0 = fail
     per_vertex_bad_pos: wp.array(dtype=wp.int32),  # [V], first index (local within slice) of violation or -1
-    per_vertex_prev:    wp.array(dtype=wp.int32),  # [V], offending prev value (debug)
-    per_vertex_curr:    wp.array(dtype=wp.int32),  # [V], offending curr value (debug)
-    any_fail:           wp.array(dtype=wp.int32),  # [1], set to 1 if any vertex fails
+    per_vertex_prev: wp.array(dtype=wp.int32),  # [V], offending prev value (debug)
+    per_vertex_curr: wp.array(dtype=wp.int32),  # [V], offending curr value (debug)
+    any_fail: wp.array(dtype=wp.int32),  # [1], set to 1 if any vertex fails
 ):
     v = wp.tid()
 
     start = vt_offsets[v]
-    n     = vt_offsets[v+1] - vt_offsets[v]
+    n = vt_offsets[v + 1] - vt_offsets[v]
 
     # default to OK
-    per_vertex_ok[v]      = 1
+    per_vertex_ok[v] = 1
     per_vertex_bad_pos[v] = -1
-    per_vertex_prev[v]    = 0
-    per_vertex_curr[v]    = 0
+    per_vertex_prev[v] = 0
+    per_vertex_curr[v] = 0
 
     if n <= 1:
         return
@@ -285,16 +292,16 @@ def vt_check_sorted_kernel(
         curr = vt_flat[start + i]
 
         # violation condition
-        if (strict != 0 and not (curr >  prev)) or \
-           (strict == 0 and not (curr >= prev)):
-            per_vertex_ok[v]      = 0
+        if (strict != 0 and not (curr > prev)) or (strict == 0 and not (curr >= prev)):
+            per_vertex_ok[v] = 0
             per_vertex_bad_pos[v] = i
-            per_vertex_prev[v]    = prev
-            per_vertex_curr[v]    = curr
+            per_vertex_prev[v] = prev
+            per_vertex_curr[v] = curr
             wp.atomic_max(any_fail, 0, 1)
             return
 
         prev = curr
+
 
 @wp.kernel
 def vt_filter_fill_kernel(
@@ -302,8 +309,8 @@ def vt_filter_fill_kernel(
     bvh_id: wp.uint64,
     pos: wp.array(dtype=wp.vec3),
     tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    vt_offsets: wp.array(dtype=wp.int32),             # [V+1] 已由主机端前缀和计算
-    vt_flat: wp.array(dtype=wp.int32),                # 扁平输出：按 offsets 排
+    vt_offsets: wp.array(dtype=wp.int32),  # [V+1] 已由主机端前缀和计算
+    vt_flat: wp.array(dtype=wp.int32),  # 扁平输出：按 offsets 排
 ):
     v = wp.tid()
     p = pos[v]
@@ -336,13 +343,14 @@ def vt_filter_fill_kernel(
             vt_flat[write_base + written] = tri_index
             written += 1
 
-            wp.expect_eq(written <= vt_offsets[v+1] - vt_offsets[v], True)
+            wp.expect_eq(written <= vt_offsets[v + 1] - vt_offsets[v], True)
+
 
 def build_vertex_triangle_filtering_csr(
     query_radius: float,
     bvh_id: int,
-    pos: wp.array,                 # dtype=wp.vec3, len=|V|
-    tri_indices: wp.array,         # dtype=wp.int32, shape=(F,3)
+    pos: wp.array,  # dtype=wp.vec3, len=|V|
+    tri_indices: wp.array,  # dtype=wp.int32, shape=(F,3)
     device,
 ):
     V = pos.shape[0]
@@ -370,7 +378,7 @@ def build_vertex_triangle_filtering_csr(
     total = int(offsets_np[-1])
 
     vt_offsets = wp.from_numpy(offsets_np, dtype=wp.int32, device=device)
-    vt_flat    = wp.empty(total, dtype=wp.int32, device=device)
+    vt_flat = wp.empty(total, dtype=wp.int32, device=device)
 
     # 3) fill
     wp.launch(
@@ -409,16 +417,17 @@ def build_vertex_triangle_filtering_csr(
         kernel=vt_check_sorted_kernel,
         dim=V,
         inputs=[
-            vt_offsets, vt_flat, 0,  # strict=0 => non-decreasing
+            vt_offsets,
+            vt_flat,
+            0,  # strict=0 => non-decreasing
         ],
-        outputs=[
-            per_vertex_ok, per_vertex_bad_pos, per_vertex_prev, per_vertex_curr, any_fail
-        ],
+        outputs=[per_vertex_ok, per_vertex_bad_pos, per_vertex_prev, per_vertex_curr, any_fail],
         device="cuda",
     )
     assert np.logical_not(any_fail.numpy().all())
 
     return vt_flat, vt_offsets
+
 
 # --- 1st pass: count how many edges are within query_radius of each edge
 @wp.kernel
@@ -437,12 +446,12 @@ def ee_filter_count_kernel(
     p0 = pos[e0_v0]
     p1 = pos[e0_v1]
 
-    lower = wp.vec3(wp.min(p0[0], p1[0]) - query_radius,
-                    wp.min(p0[1], p1[1]) - query_radius,
-                    wp.min(p0[2], p1[2]) - query_radius)
-    upper = wp.vec3(wp.max(p0[0], p1[0]) + query_radius,
-                    wp.max(p0[1], p1[1]) + query_radius,
-                    wp.max(p0[2], p1[2]) + query_radius)
+    lower = wp.vec3(
+        wp.min(p0[0], p1[0]) - query_radius, wp.min(p0[1], p1[1]) - query_radius, wp.min(p0[2], p1[2]) - query_radius
+    )
+    upper = wp.vec3(
+        wp.max(p0[0], p1[0]) + query_radius, wp.max(p0[1], p1[1]) + query_radius, wp.max(p0[2], p1[2]) + query_radius
+    )
 
     query = wp.bvh_query_aabb(bvh_id, lower, upper)
 
@@ -481,7 +490,7 @@ def ee_filter_fill_kernel(
     edge_indices: wp.array(dtype=wp.int32, ndim=2),
     edge_edge_parallel_epsilon: float,
     ee_offsets: wp.array(dtype=wp.int32),  # [E+1]
-    ee_flat: wp.array(dtype=wp.int32),     # flattened output
+    ee_flat: wp.array(dtype=wp.int32),  # flattened output
 ):
     e_index = wp.tid()
 
@@ -490,12 +499,12 @@ def ee_filter_fill_kernel(
     p0 = pos[e0_v0]
     p1 = pos[e0_v1]
 
-    lower = wp.vec3(wp.min(p0[0], p1[0]) - query_radius,
-                    wp.min(p0[1], p1[1]) - query_radius,
-                    wp.min(p0[2], p1[2]) - query_radius)
-    upper = wp.vec3(wp.max(p0[0], p1[0]) + query_radius,
-                    wp.max(p0[1], p1[1]) + query_radius,
-                    wp.max(p0[2], p1[2]) + query_radius)
+    lower = wp.vec3(
+        wp.min(p0[0], p1[0]) - query_radius, wp.min(p0[1], p1[1]) - query_radius, wp.min(p0[2], p1[2]) - query_radius
+    )
+    upper = wp.vec3(
+        wp.max(p0[0], p1[0]) + query_radius, wp.max(p0[1], p1[1]) + query_radius, wp.max(p0[2], p1[2]) + query_radius
+    )
 
     query = wp.bvh_query_aabb(bvh_id, lower, upper)
 
@@ -524,11 +533,12 @@ def ee_filter_fill_kernel(
             ee_flat[write_base + written] = other_e
             written += 1
 
+
 def build_edge_edge_filtering_csr(
     query_radius: float,
     bvh_id: int,
-    pos: wp.array,                 # wp.array(vec3)
-    edge_indices: wp.array,        # (E,2)
+    pos: wp.array,  # wp.array(vec3)
+    edge_indices: wp.array,  # (E,2)
     device,
     edge_edge_parallel_epsilon: float = 1e-5,
 ):
@@ -598,11 +608,11 @@ def build_edge_edge_filtering_csr(
         kernel=vt_check_sorted_kernel,
         dim=E,
         inputs=[
-            ee_offsets, ee_flat, 0,  # strict=0 => non-decreasing
+            ee_offsets,
+            ee_flat,
+            0,  # strict=0 => non-decreasing
         ],
-        outputs=[
-            per_element_ok, per_element_bad_pos, per_element_prev, per_element_curr, any_fail
-        ],
+        outputs=[per_element_ok, per_element_bad_pos, per_element_prev, per_element_curr, any_fail],
         device="cuda",
     )
 
@@ -1984,7 +1994,9 @@ def solve_trimesh_no_self_contact_tile(
 
     f_tile = wp.tile(f, preserve_type=True)
     h_tile = wp.tile(h, preserve_type=True)
-    a_tile = wp.tile(a, )
+    a_tile = wp.tile(
+        a,
+    )
 
     f_total = wp.tile_reduce(wp.add, f_tile)[0]
     h_total = wp.tile_reduce(wp.add, h_tile)[0]
@@ -1992,7 +2004,6 @@ def solve_trimesh_no_self_contact_tile(
 
     if thread_idx == 0:
         if thread_idx == 0:
-
             # implicit quadratic drag (local linearization)
             # A = vertex_ref_area[particle_index]
             A = a_total / 3.0
@@ -2012,20 +2023,28 @@ def solve_trimesh_no_self_contact_tile(
                 s = wp.max(speed, eps)
                 w_iso = (k / dt) * speed  # scalar * I     (isotropic)
                 # rank-1 term: (k/dt) * (v v^T / s)
-                vx = v_rel[0];
-                vy = v_rel[1];
+                vx = v_rel[0]
+                vy = v_rel[1]
                 vz = v_rel[2]
                 # build 3x3 outer product scaled
                 scale_rank1 = (k / dt) / s
-                H_rank1 = wp.mat33(scale_rank1 * vx * vx, scale_rank1 * vx * vy, scale_rank1 * vx * vz,
-                                   scale_rank1 * vy * vx, scale_rank1 * vy * vy, scale_rank1 * vy * vz,
-                                   scale_rank1 * vz * vx, scale_rank1 * vz * vy, scale_rank1 * vz * vz)
+                H_rank1 = wp.mat33(
+                    scale_rank1 * vx * vx,
+                    scale_rank1 * vx * vy,
+                    scale_rank1 * vx * vz,
+                    scale_rank1 * vy * vx,
+                    scale_rank1 * vy * vy,
+                    scale_rank1 * vy * vz,
+                    scale_rank1 * vz * vx,
+                    scale_rank1 * vz * vy,
+                    scale_rank1 * vz * vz,
+                )
                 h_total = h_total + w_iso * wp.identity(n=3, dtype=float) + H_rank1
 
             h_total = (
-                    h_total
-                    + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
-                    + particle_hessians[particle_index]
+                h_total
+                + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
+                + particle_hessians[particle_index]
             )
 
         h_total = (
@@ -2063,7 +2082,6 @@ def solve_trimesh_no_self_contact(
     edge_rest_length: wp.array(dtype=float),
     edge_bending_properties: wp.array(dtype=float, ndim=2),
     adjacency: ForceElementAdjacencyInfo,
-
     # contact info
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
@@ -2659,6 +2677,7 @@ def solve_trimesh_with_self_contact_penetration_free(
 
         # pos_new[particle_index] = particle_pos_new
 
+
 @wp.kernel
 def solve_trimesh_with_self_contact_penetration_free_tile(
     dt: float,
@@ -2683,7 +2702,7 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
     pos_prev_collision_detection: wp.array(dtype=wp.vec3),
     particle_conservative_bounds: wp.array(dtype=float),
     air_density: float,
-    air_drag_coefficient:float,  # Cd
+    air_drag_coefficient: float,  # Cd
     # output
     pos_new: wp.array(dtype=wp.vec3),
 ):
@@ -2776,15 +2795,15 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
 
     f_tile = wp.tile(f, preserve_type=True)
     h_tile = wp.tile(h, preserve_type=True)
-    a_tile = wp.tile(a, )
+    a_tile = wp.tile(
+        a,
+    )
 
     f_total = wp.tile_reduce(wp.add, f_tile)[0]
     h_total = wp.tile_reduce(wp.add, h_tile)[0]
     a_total = wp.tile_reduce(wp.add, a_tile)[0]
 
-
     if thread_idx == 0:
-
         # implicit quadratic drag (local linearization)
         # A = vertex_ref_area[particle_index]
         A = a_total / 3.0
@@ -2804,14 +2823,22 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
             s = wp.max(speed, eps)
             w_iso = (k / dt) * speed  # scalar * I     (isotropic)
             # rank-1 term: (k/dt) * (v v^T / s)
-            vx = v_rel[0];
-            vy = v_rel[1];
+            vx = v_rel[0]
+            vy = v_rel[1]
             vz = v_rel[2]
             # build 3x3 outer product scaled
             scale_rank1 = (k / dt) / s
-            H_rank1 = wp.mat33(scale_rank1 * vx * vx, scale_rank1 * vx * vy, scale_rank1 * vx * vz,
-                               scale_rank1 * vy * vx, scale_rank1 * vy * vy, scale_rank1 * vy * vz,
-                               scale_rank1 * vz * vx, scale_rank1 * vz * vy, scale_rank1 * vz * vz)
+            H_rank1 = wp.mat33(
+                scale_rank1 * vx * vx,
+                scale_rank1 * vx * vy,
+                scale_rank1 * vx * vz,
+                scale_rank1 * vy * vx,
+                scale_rank1 * vy * vy,
+                scale_rank1 * vy * vz,
+                scale_rank1 * vz * vx,
+                scale_rank1 * vz * vy,
+                scale_rank1 * vz * vz,
+            )
             h_total = h_total + w_iso * wp.identity(n=3, dtype=float) + H_rank1
 
         h_total = (
@@ -2832,6 +2859,7 @@ def solve_trimesh_with_self_contact_penetration_free_tile(
                 particle_index, particle_pos_new, pos_prev_collision_detection, particle_conservative_bounds
             )
             # pos_new[particle_index] = particle_pos_new
+
 
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for cloth simulation.
@@ -2873,7 +2901,7 @@ class SolverVBD(SolverBase):
         self_contact_radius: float = 0.2,
         self_contact_margin: float = 0.2,
         filter_2_ring_contact: bool = True,
-        self_contact_rest_filter_radius: float = 0.,
+        self_contact_rest_filter_radius: float = 0.0,
         integrate_with_external_rigid_solver: bool = False,
         penetration_free_conservative_bound_relaxation: float = 0.42,
         friction_epsilon: float = 1e-2,
@@ -2999,7 +3027,7 @@ class SolverVBD(SolverBase):
         #           dim=1, device=self.device)
 
         self.penetration_free_init = True
-        self.air_density = 1.225        # kg/m^3
+        self.air_density = 1.225  # kg/m^3
         self.air_drag_coefficient = 1  # Cd
 
     def compute_force_element_adjacency(self, model):
@@ -3149,12 +3177,14 @@ class SolverVBD(SolverBase):
         # tri_indices: wp.array,         # dtype=wp.int32, shape=(F,3)
         # device,
         if self.self_contact_rest_filter_radius > 0:
-            self.vertex_triangle_filtering_list, self.vertex_triangle_filtering_list_offsets = build_vertex_triangle_filtering_csr(
-                self.self_contact_rest_filter_radius,
-                self.trimesh_collision_detector.bvh_tris.id,
-                self.model.particle_q,
-                self.model.tri_indices,
-                self.device
+            self.vertex_triangle_filtering_list, self.vertex_triangle_filtering_list_offsets = (
+                build_vertex_triangle_filtering_csr(
+                    self.self_contact_rest_filter_radius,
+                    self.trimesh_collision_detector.bvh_tris.id,
+                    self.model.particle_q,
+                    self.model.tri_indices,
+                    self.device,
+                )
             )
 
             # query_radius: float,
@@ -3168,14 +3198,13 @@ class SolverVBD(SolverBase):
                 self.trimesh_collision_detector.bvh_edges.id,
                 self.model.particle_q,
                 self.model.edge_indices,
-                self.device
+                self.device,
             )
         else:
-             self.vertex_triangle_filtering_list = None
-             self.vertex_triangle_filtering_list_offsets = None
-             self.ee_filtering_list = None
-             self.ee_filtering_list_offsets = None
-
+            self.vertex_triangle_filtering_list = None
+            self.vertex_triangle_filtering_list_offsets = None
+            self.ee_filtering_list = None
+            self.ee_filtering_list_offsets = None
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
@@ -3388,7 +3417,6 @@ class SolverVBD(SolverBase):
                 dim=self.model.particle_count,
                 device=self.device,
             )
-
 
         for _iter in range(self.iterations):
             # after initialization, we need new collision detection to update the bounds
