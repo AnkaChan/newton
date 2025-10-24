@@ -1,3 +1,4 @@
+import glob
 import json
 import os.path
 import re
@@ -8,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from wedge_sims import *
-
+import shutil
 
 def _numeric_key(p: Path):
     """Sort by frame number if present; fallback to name."""
@@ -213,7 +214,7 @@ def run_in_batches_of_4(files):
 
 
 def make_videos_for_sweep(
-    rendering_folder: str | Path, cfg: dict, fps: int | None = None, out_dir: str | Path | None = None
+    rendering_folder: str | Path, cfg: dict, fps: int | None = None, out_dir: str | Path | None = None, banner_lines=None,
 ):
     """
     Build one video per image-containing folder under `rendering_folder`.
@@ -248,7 +249,8 @@ def make_videos_for_sweep(
             print(f"❌ Failed to open writer for {video_path}")
             continue
 
-        banner_lines = [f"{sweep_num}", text]
+        if banner_lines is None:
+            banner_lines = [f"{sweep_num}", text]
 
         for idx, im_path in enumerate(images):
             frame = cv2.imread(str(im_path))
@@ -280,10 +282,11 @@ def run_in_batches_of_4(files, base_dir):
         combine_videos_grid_2x2(paths=batch, out_path=os.path.join(base_dir, f"grid_{i}.mp4"))
 
 
-def render_usd(sweep_folder, render_temp_dir, rendering_folder, cfg):
-    src_file = os.path.join(sweep_folder, src_filename_base + str(sweep_idx).zfill(3) + ".usd")
+def render_usd(sweep_folder, render_temp_dir, rendering_folder, src_filename_base=""):
+    src_file = glob.glob(os.path.join(sweep_folder, "*.usd"))[0]
+    dst_filename = "20251021_to_sim_tdSimClothB_01_physics_sim_v.usd"
     if Path(src_file).exists():
-        dst_file = render_temp_dir / f"{dst_filename}"  # Keep folder name in output
+        dst_file = os.path.join(render_temp_dir, dst_filename)  # Keep folder name in output
         # If you want the SAME name for all (no prefix), use: dst_file = render_dir / dst_filename
 
         shutil.copy2(src_file, dst_file)

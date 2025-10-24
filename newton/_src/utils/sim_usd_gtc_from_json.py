@@ -47,6 +47,8 @@ from newton._src.utils.schema_resolver import (
     _ResolverManager,
 )
 
+import json
+
 
 def writeObj(vs, vns, vts, fs, outFile, withMtl=False, textureFile=None, convertToMM=False, vIdAdd1=True):
     # write new
@@ -311,7 +313,6 @@ run_cfgs = {
 # D:\Data\GTC2025DC_Demo\Inputs\SceneB\20251017_to_sim_inSimClothB_01_physics.usd -n 1800 -i vbd
 # D:\Data\GTC2025DC_Demo\Inputs\SceneB\20251017_to_sim_inSimClothB_01_physics.usd -n 1800 -i vbd
 # D:\Data\GTC2025DC_Demo\Inputs\SceneB\1021\20251021_to_sim_tdSimClothB_01_physics.usd
-run_cfg = run_cfgs["sceneB"]
 """
 Comments:
 - [x] the cloth look too light:
@@ -331,7 +332,7 @@ Comments:
 
 #
 # D:\Data\GTC2025DC_Demo\Inputs\SceneA\1021\20251021_to_sim_tdSimClothA_01_physics.usd
-# run_cfg = run_cfgs["sceneA"]
+# self.run_cfg = self.run_cfgs["sceneA"]
 
 
 # ClothA: omniverse://creative3d.ov.nvidia.com/Projects/CreativeRealtime3D/Projects/GTC_DC2025_DisneyDroidDemo/shot/tdSim/tdSimClothA//pub/sim/handoff/20251021_to_sim_tdSimClothA_01.usd
@@ -340,7 +341,7 @@ Comments:
 #
 #
 # D:\Data\GTC2025DC_Demo\Inputs\SceneC\1021\20251021_to_sim_tdSimClothC_02.usd
-# run_cfg = run_cfgs["sceneC"]
+# self.run_cfg = self.run_cfgs["sceneC"]
 
 
 def get_top_vertices(
@@ -415,9 +416,9 @@ class SchemaResolverSimUsd(SchemaResolver):
             "soft_contact_kd": [Attribute("newton:soft_contact_kd", 1.0e-2)],
             # solver attributes
             "fps": [Attribute("newton:fps", 60)],
-            "sim_substeps": [Attribute("newton:substeps", run_cfg["substeps"])],
+            "sim_substeps": [Attribute("newton:substeps", 20)],
             "integrator_type": [Attribute("newton:integrator", "xpbd")],
-            "integrator_iterations": [Attribute("newton:integrator_iterations", run_cfg["iterations"])],
+            "integrator_iterations": [Attribute("newton:integrator_iterations", 20)],
             "collide_on_substeps": [Attribute("newton:collide_on_substeps", True)],
         },
         PrimType.BODY: {
@@ -439,76 +440,76 @@ class SchemaResolverEuler(SchemaResolver):
     }
 
 
-class SchemaResolverVBD(SchemaResolver):
-    name: ClassVar[str] = "vbd"
-    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
-        PrimType.SCENE: {
-            "friction_epsilon": [Attribute("newton:vbd:friction_epsilon", 2718.0)],
-            "handle_self_contact": [Attribute("newton:vbd:handle_self_contact", run_cfg["handle_self_contact"])],
-            "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", run_cfg["self_contact_radius"])],
-            "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", run_cfg["self_contact_margin"])],
-            "self_contact_rest_filter_radius": [
-                Attribute("newton:vbd:self_contact_rest_filter_radius", run_cfg["self_contact_rest_filter_radius"])
-            ],
-            "collision_detection_interval": [
-                Attribute("newton:vbd:collision_detection_interval", run_cfg["collision_detection_interval"])
-            ],
-            "integrate_with_external_rigid_solver": [
-                Attribute("newton:vbd:integrate_with_external_rigid_solver", True)
-            ],
-        },
-    }
+# class SchemaResolverVBD(SchemaResolver):
+#     name: ClassVar[str] = "vbd"
+#     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+#         PrimType.SCENE: {
+#             "friction_epsilon": [Attribute("newton:vbd:friction_epsilon", 2718.0)],
+#             "handle_self_contact": [Attribute("newton:vbd:handle_self_contact", self.run_cfg["handle_self_contact"])],
+#             "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", self.run_cfg["self_contact_radius"])],
+#             "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", self.run_cfg["self_contact_margin"])],
+#             "self_contact_rest_filter_radius": [
+#                 Attribute("newton:vbd:self_contact_rest_filter_radius", self.run_cfg["self_contact_rest_filter_radius"])
+#             ],
+#             "collision_detection_interval": [
+#                 Attribute("newton:vbd:collision_detection_interval", self.run_cfg["collision_detection_interval"])
+#             ],
+#             "integrate_with_external_rigid_solver": [
+#                 Attribute("newton:vbd:integrate_with_external_rigid_solver", True)
+#             ],
+#         },
+#     }
 
 
-class SchemaResolverXPBD(SchemaResolver):
-    name: ClassVar[str] = "xpbd"
-    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
-        PrimType.SCENE: {
-            "soft_body_relaxation": [Attribute("newton:xpbd:soft_body_relaxation", 0.9)],
-            "soft_contact_relaxation": [Attribute("newton:xpbd:soft_contact_relaxation", 0.9)],
-            "joint_linear_relaxation": [Attribute("newton:xpbd:joint_linear_relaxation", 0.7)],
-            "joint_angular_relaxation": [Attribute("newton:xpbd:joint_angular_relaxation", 0.4)],
-            "rigid_contact_relaxation": [Attribute("newton:xpbd:rigid_contact_relaxation", 0.8)],
-            "rigid_contact_con_weighting": [Attribute("newton:xpbd:rigid_contact_con_weighting", True)],
-            "angular_damping": [Attribute("newton:xpbd:angular_damping", 0.0)],
-            "enable_restitution": [Attribute("newton:xpbd:enable_restitution", False)],
-        },
-    }
-
-
-class SchemaResolverMJWarp(SchemaResolver):
-    name: ClassVar[str] = "mjwarp"
-    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
-        PrimType.SCENE: {
-            "use_mujoco_cpu": [Attribute("newton:mjwarp:use_mujoco_cpu", False)],
-            "solver": [Attribute("newton:mjwarp:solver", "newton")],
-            "integrator": [Attribute("newton:mjwarp:integrator", "implicitfast")],
-            "iterations": [Attribute("newton:mjwarp:iterations", 100)],
-            "ls_iterations": [Attribute("newton:mjwarp:ls_iterations", 25)],
-            "save_to_mjcf": [Attribute("newton:mjwarp:save_to_mjcf", "sim_usd_mjcf.xml")],
-            "contact_stiffness_time_const": [Attribute("newton:mjwarp:contact_stiffness_time_const", 0.02)],
-            "ncon_per_env": [Attribute("newton:mjwarp:ncon_per_env", 150)],
-            "njmax": [Attribute("newton:mjwarp:njmax", 152)],
-        },
-    }
-
-
-class SchemaResolverCoupledMPM(SchemaResolver):
-    name: ClassVar[str] = "cmpm"
-    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
-        PrimType.SCENE: {},
-    }
-
-
-class SchemaResolverMPM(SchemaResolver):
-    name: ClassVar[str] = "mpm"
-    mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
-        PrimType.SCENE: {
-            "voxel_size": [Attribute("newton:mpm:voxel_size", 0.05)],
-            "grid_type": [Attribute("newton:mpm:grid_type", "sparse")],
-            "max_iterations": [Attribute("newton:mpm:max_iterations", 250)],
-        },
-    }
+# class SchemaResolverXPBD(SchemaResolver):
+#     name: ClassVar[str] = "xpbd"
+#     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+#         PrimType.SCENE: {
+#             "soft_body_relaxation": [Attribute("newton:xpbd:soft_body_relaxation", 0.9)],
+#             "soft_contact_relaxation": [Attribute("newton:xpbd:soft_contact_relaxation", 0.9)],
+#             "joint_linear_relaxation": [Attribute("newton:xpbd:joint_linear_relaxation", 0.7)],
+#             "joint_angular_relaxation": [Attribute("newton:xpbd:joint_angular_relaxation", 0.4)],
+#             "rigid_contact_relaxation": [Attribute("newton:xpbd:rigid_contact_relaxation", 0.8)],
+#             "rigid_contact_con_weighting": [Attribute("newton:xpbd:rigid_contact_con_weighting", True)],
+#             "angular_damping": [Attribute("newton:xpbd:angular_damping", 0.0)],
+#             "enable_restitution": [Attribute("newton:xpbd:enable_restitution", False)],
+#         },
+#     }
+#
+#
+# class SchemaResolverMJWarp(SchemaResolver):
+#     name: ClassVar[str] = "mjwarp"
+#     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+#         PrimType.SCENE: {
+#             "use_mujoco_cpu": [Attribute("newton:mjwarp:use_mujoco_cpu", False)],
+#             "solver": [Attribute("newton:mjwarp:solver", "newton")],
+#             "integrator": [Attribute("newton:mjwarp:integrator", "implicitfast")],
+#             "iterations": [Attribute("newton:mjwarp:iterations", 100)],
+#             "ls_iterations": [Attribute("newton:mjwarp:ls_iterations", 25)],
+#             "save_to_mjcf": [Attribute("newton:mjwarp:save_to_mjcf", "sim_usd_mjcf.xml")],
+#             "contact_stiffness_time_const": [Attribute("newton:mjwarp:contact_stiffness_time_const", 0.02)],
+#             "ncon_per_env": [Attribute("newton:mjwarp:ncon_per_env", 150)],
+#             "njmax": [Attribute("newton:mjwarp:njmax", 152)],
+#         },
+#     }
+#
+#
+# class SchemaResolverCoupledMPM(SchemaResolver):
+#     name: ClassVar[str] = "cmpm"
+#     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+#         PrimType.SCENE: {},
+#     }
+#
+#
+# class SchemaResolverMPM(SchemaResolver):
+#     name: ClassVar[str] = "mpm"
+#     mapping: ClassVar[dict[PrimType, dict[str, list[Attribute]]]] = {
+#         PrimType.SCENE: {
+#             "voxel_size": [Attribute("newton:mpm:voxel_size", 0.05)],
+#             "grid_type": [Attribute("newton:mpm:grid_type", "sparse")],
+#             "max_iterations": [Attribute("newton:mpm:max_iterations", 250)],
+#         },
+#     }
 
 
 class CoupledMPMIntegrator(newton.solvers.SolverBase):
@@ -840,8 +841,8 @@ class Simulator:
 
         self.output_path = output_path
         self.output_folder = os.path.dirname(output_path)
-        # if config_path:
-        #     run_cfg = json.load(open(config_path))
+        if config_path:
+            self.run_cfg = json.load(open(config_path))
 
         self.sim_time = 0.0
         self.profiler = {}
@@ -868,16 +869,16 @@ class Simulator:
             if prim.IsA(UsdGeom.Mesh):
                 print(f"  {prim.GetPath()}")
 
-        if run_cfg["cloth_cfg"].get("path", None) is not None:
-            rest_shape_path = run_cfg["cloth_cfg"].get("rest_path", None)
+        if self.run_cfg["cloth_cfg"].get("path", None) is not None:
+            rest_shape_path = self.run_cfg["cloth_cfg"].get("rest_path", None)
             has_rest_shape = rest_shape_path is not None
-            rest_shape_path = rest_shape_path if has_rest_shape else run_cfg["cloth_cfg"]["path"]
+            rest_shape_path = rest_shape_path if has_rest_shape else self.run_cfg["cloth_cfg"]["path"]
 
             usd_geom = UsdGeom.Mesh(self.in_stage.GetPrimAtPath(rest_shape_path))
             mesh_points = np.array(usd_geom.GetPointsAttr().Get())
             mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
 
-            if run_cfg.get("save_rest_and_init_state", False):
+            if self.run_cfg.get("save_rest_and_init_state", False):
                 writeObj(
                     mesh_points, None, None, mesh_indices.reshape(-1, 3), join(self.output_folder, "rest_state.obj")
                 )
@@ -889,7 +890,7 @@ class Simulator:
             rotation = wp.transform_get_rotation(transform)
 
             if has_rest_shape:
-                usd_geom_initial_shape = UsdGeom.Mesh(self.in_stage.GetPrimAtPath(run_cfg["cloth_cfg"]["path"]))
+                usd_geom_initial_shape = UsdGeom.Mesh(self.in_stage.GetPrimAtPath(self.run_cfg["cloth_cfg"]["path"]))
                 mesh_points_initial_org = np.array(usd_geom_initial_shape.GetPointsAttr().Get())
                 transform_initial_shape = parse_xform(usd_geom_initial_shape)
 
@@ -903,22 +904,22 @@ class Simulator:
                     [wp.transform_point(transform, wp.vec3(*p)) for p in mesh_points_initial_org]
                 )
 
-            if run_cfg.get("save_rest_and_init_state", False):
+            if self.run_cfg.get("save_rest_and_init_state", False):
                 writeObj(
                     mesh_points, None, None, mesh_indices.reshape(-1, 3), join(self.output_folder, "init_state.obj")
                 )
 
-            if run_cfg["fixed_points_scheme"]["name"] == "top":
+            if self.run_cfg["fixed_points_scheme"]["name"] == "top":
                 fixed_vertices = get_top_vertices(
-                    mesh_points_initial_org, "y", thresh=run_cfg["fixed_points_scheme"]["threshold"]
+                    mesh_points_initial_org, "y", thresh=self.run_cfg["fixed_points_scheme"]["threshold"]
                 )
             elif (
-                isinstance(run_cfg.get("fixed_points_scheme"), dict)
-                and run_cfg["fixed_points_scheme"].get("name") == "box"
+                isinstance(self.run_cfg.get("fixed_points_scheme"), dict)
+                and self.run_cfg["fixed_points_scheme"].get("name") == "box"
             ):
                 # Implement box selection for fixed vertices
                 fixed_vertices = []
-                boxes = run_cfg["fixed_points_scheme"].get("boxes", [])
+                boxes = self.run_cfg["fixed_points_scheme"].get("boxes", [])
                 # Each box: [min_x, min_y, min_z, max_x, max_y, max_z]
                 mesh_points_arr = np.array(mesh_points_initial)
 
@@ -949,25 +950,25 @@ class Simulator:
                 rot=rotation,
                 pos=position,
                 vel=wp.vec3(0.0, 0.0, 0.0),
-                density=run_cfg["cloth_cfg"]["density"],
+                density=self.run_cfg["cloth_cfg"]["density"],
                 scale=1.0,
-                tri_ke=run_cfg["cloth_cfg"]["tri_ke"],
-                tri_ka=run_cfg["cloth_cfg"]["tri_ka"],
-                tri_kd=run_cfg["cloth_cfg"]["tri_kd"],
-                edge_ke=run_cfg["cloth_cfg"]["bending_ke"],
-                edge_kd=run_cfg["cloth_cfg"]["bending_kd"],
-                particle_radius=run_cfg["cloth_cfg"]["particle_radius"],
+                tri_ke=self.run_cfg["cloth_cfg"]["tri_ke"],
+                tri_ka=self.run_cfg["cloth_cfg"]["tri_ka"],
+                tri_kd=self.run_cfg["cloth_cfg"]["tri_kd"],
+                edge_ke=self.run_cfg["cloth_cfg"]["bending_ke"],
+                edge_kd=self.run_cfg["cloth_cfg"]["bending_kd"],
+                particle_radius=self.run_cfg["cloth_cfg"]["particle_radius"],
             )
 
-            # if run_cfg["cloth_cfg"].get("fixed_particles", None) is not None:
-            #     fixed_particles = run_cfg["cloth_cfg"].get("fixed_particles", None)
+            # if self.run_cfg["cloth_cfg"].get("fixed_particles", None) is not None:
+            #     fixed_particles = self.run_cfg["cloth_cfg"].get("fixed_particles", None)
             #     for fixed_v_id in fixed_particles:
             #         builder.particle_flags[fixed_v_id] = builder.particle_flags[fixed_v_id] & ~ParticleFlags.ACTIVE
 
             for fixed_v_id in fixed_vertices:
                 builder.particle_flags[fixed_v_id] = builder.particle_flags[fixed_v_id] & ~ParticleFlags.ACTIVE
 
-        self.R = _ResolverManager([SchemaResolverSimUsd(), SchemaResolverNewton(), SchemaResolverMJWarp()])
+        # self.R = _ResolverManager([SchemaResolverSimUsd(), SchemaResolverNewton(), SchemaResolverMJWarp()])
         self.physics_prim = next(iter([prim for prim in self.in_stage.Traverse() if prim.IsA(UsdPhysics.Scene)]), None)
 
         self.path_body_map = results["path_body_map"]
@@ -991,8 +992,8 @@ class Simulator:
         print("average edge length: ", np.mean(builder.edge_rest_length))
 
         # INSERT_YOUR_CODE
-        # Add additional static collider meshes from run_cfg if provided
-        additional_colliders = run_cfg.get("additional_collider", [])
+        # Add additional static collider meshes from self.run_cfg if provided
+        additional_colliders = self.run_cfg.get("additional_collider", [])
         for collider_path in additional_colliders:
             # Find the prim for the collider path
             prim = self.in_stage.GetPrimAtPath(collider_path)
@@ -1040,9 +1041,7 @@ class Simulator:
         # builder.shape_scale[0] = wp.vec3(1, 1, 1)
 
         self.model = builder.finalize()
-        self.model.soft_contact_ke = run_cfg["soft_contact_ke"]
-        self.model.soft_contact_kd = run_cfg["soft_contact_kd"]
-        self.model.soft_contact_mu = run_cfg["soft_contact_mu"]
+
         self.builder_results = results
 
         self.path_body_map = self.builder_results["path_body_map"]
@@ -1060,14 +1059,13 @@ class Simulator:
             self.body_merged_parent = None
             self.body_merged_transform = None
 
-        # self._setup_model_attributes()
+        self._setup_model_attributes()
         self._setup_integrator()
-        self.integrator.air_drag_coefficient = run_cfg["air_drag"]
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        if run_cfg["cloth_cfg"].get("path", None) is not None and has_rest_shape:
+        if self.run_cfg["cloth_cfg"].get("path", None) is not None and has_rest_shape:
             self.state_0.particle_q.assign(mesh_points_initial)
             self.state_1.particle_q.assign(mesh_points_initial)
 
@@ -1080,14 +1078,18 @@ class Simulator:
         self._update_animated_colliders()
         self.contacts = self.model.collide(self.state_0, rigid_contact_margin=self.rigid_contact_margin)
 
-        self.use_cuda_graph = True  # wp.get_device().is_cuda
-        self.is_mujoco_cpu_mode = self.integrator_type == IntegratorType.MJWARP and self.R.get_value(
-            self.physics_prim, PrimType.SCENE, "use_mujoco_cpu", False
-        )
-        self.model.shape_material_mu.zero_()
-        if self.use_cuda_graph and not self.is_mujoco_cpu_mode:
+        self.use_cuda_graph = wp.get_device().is_cuda
 
-        self.capture_substeps()
+        if self.use_cuda_graph:
+            with wp.ScopedCapture() as capture:
+                self.run_substep()
+            self.graph_even_step = capture.graph
+            (self.state_0, self.state_1) = (self.state_1, self.state_0)
+
+            with wp.ScopedCapture() as capture:
+                self.run_substep()
+            self.graph_odd_step = capture.graph
+            (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
         # self.usd_updater = UpdateUsd(
         #     stage=output_path,
@@ -1105,7 +1107,7 @@ class Simulator:
 
         self.DEBUG = True
         if self.DEBUG:
-            if run_cfg["save_usd"]:
+            if self.run_cfg["save_usd"]:
                 self.viewer_usd = newton.viewer.ViewerUSD(output_path=self.output_path, num_frames=None)
                 self.viewer_usd.set_model(self.model)
             else:
@@ -1114,32 +1116,21 @@ class Simulator:
             self.viewer_gl = newton.viewer.ViewerGL()
             self.viewer_gl.set_model(self.model)
 
-            if run_cfg.get("camera_cfg", None) is not None:
+            if self.run_cfg.get("camera_cfg", None) is not None:
                 self.viewer_gl.set_camera(
-                    pos=wp.vec3(*run_cfg["camera_cfg"]["pos"]),  # Position
-                    pitch=run_cfg["camera_cfg"]["pitch"],  # Pitch in degrees
-                    yaw=run_cfg["camera_cfg"]["yaw"],  # Yaw in degrees
+                    pos=wp.vec3(*self.run_cfg["camera_cfg"]["pos"]),  # Position
+                    pitch=self.run_cfg["camera_cfg"]["pitch"],  # Pitch in degrees
+                    yaw=self.run_cfg["camera_cfg"]["yaw"],  # Yaw in degrees
                 )
 
-        self.sim_time = run_cfg["initial_time"]
+        self.sim_time = self.run_cfg["initial_time"]
         self.run_preroll(output_path)
 
-    def capture_subteps(self):
-        with wp.ScopedCapture() as capture:
-            self.run_substep()
-        self.graph_even_step = capture.graph
-        (self.state_0, self.state_1) = (self.state_1, self.state_0)
-
-        with wp.ScopedCapture() as capture:
-            self.run_substep()
-        self.graph_odd_step = capture.graph
-        (self.state_0, self.state_1) = (self.state_1, self.state_0)
-
     def run_preroll(self, output_path):
-        preroll_frames = run_cfg.get("preroll_frames", 0)
+        preroll_frames = self.run_cfg.get("preroll_frames", 0)
         out_p = Path(output_path)
         preroll_state_path = str(out_p.parent / f"{out_p.stem}.preroll.npy")
-        load_preroll_state = run_cfg.get("load_preroll_state", False)
+        load_preroll_state = self.run_cfg.get("load_preroll_state", False)
         # If not explicitly provided, deduce preroll state path from the output path
 
         if load_preroll_state and preroll_state_path is not None:
@@ -1151,10 +1142,6 @@ class Simulator:
         elif preroll_frames > 0:
             import numpy as np
 
-            air_drag_old = self.integrator.air_drag_coefficient
-            self.integrator.air_drag_coefficient = 10
-            self.capture_subteps()
-
             state = self.state_0
             for frame in tqdm.tqdm(range(preroll_frames), desc="Preroll Frames"):
                 for substep in range(self.sim_substeps):
@@ -1163,12 +1150,12 @@ class Simulator:
                     self.run_substep()
                     self.state_0, self.state_1 = self.state_1, self.state_0
 
-                    if frame < run_cfg.get("preroll_zero_velocity_ratio", 0.1) * preroll_frames:
+                    if frame < self.run_cfg.get("preroll_zero_velocity_ratio", 0.1) * preroll_frames:
                         self.state_0.particle_qd.zero_()
                         self.state_1.particle_qd.zero_()
                     # else:
-                    #     self.state_0.particle_qd.assign(self.state_0.particle_qd * run_cfg.get("preroll_velocity_damping_ratio", 0.99))
-                    #     self.state_1.particle_qd.assign(self.state_1.particle_qd * run_cfg.get("preroll_velocity_damping_ratio", 0.99))
+                    #     self.state_0.particle_qd.assign(self.state_0.particle_qd * self.run_cfg.get("preroll_velocity_damping_ratio", 0.99))
+                    #     self.state_1.particle_qd.assign(self.state_1.particle_qd * self.run_cfg.get("preroll_velocity_damping_ratio", 0.99))
 
                 self.viewer_gl.begin_frame(self.sim_time)
                 self.viewer_gl.log_state(self.state_0)
@@ -1176,9 +1163,6 @@ class Simulator:
                 self.viewer_gl.end_frame()
 
             state = self.state_0  # assuming self.simulate() advances self.state_0
-
-            self.integrator.air_drag_coefficient = air_drag_old
-            self.capture_subteps()
 
             # Save the last frame's state
             last_frame = {
@@ -1190,17 +1174,17 @@ class Simulator:
     def _setup_solver_attributes(self):
         """Apply scene attributes parsed from the stage to self."""
 
-        self.fps = self.R.get_value(self.physics_prim, PrimType.SCENE, "fps")
-        self.sim_substeps = self.R.get_value(self.physics_prim, PrimType.SCENE, "sim_substeps")
-        self.integrator_type = self.R.get_value(self.physics_prim, PrimType.SCENE, "integrator_type")
-        self.integrator_iterations = self.R.get_value(self.physics_prim, PrimType.SCENE, "integrator_iterations")
-        self.collide_on_substeps = self.R.get_value(self.physics_prim, PrimType.SCENE, "collide_on_substeps")
+        self.fps = 60
+        self.sim_substeps = self.run_cfg["substeps"]
+        self.integrator_type = "vbd"
+        self.integrator_iterations =  self.run_cfg["iterations"]
+        self.collide_on_substeps = True
 
         # Derived/computed attributes that depend on the above
         self.frame_dt = 1.0 / self.fps
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.integrator_type = IntegratorType(self.integrator_type)
-        self.rigid_contact_margin = self.R.get_value(self.physics_prim, PrimType.SCENE, "contact_margin", 0.01)
+        self.rigid_contact_margin = self.run_cfg.get("soft_contact_margin", 0.01)
 
     def _setup_model_attributes(self):
         """Apply scene attributes parsed from the stage to the model."""
@@ -1208,81 +1192,106 @@ class Simulator:
         # Defaults
         # TODO: set self.model.ground from the resolver manager
         self.model.ground = False
-        self.model.joint_attach_kd = self.R.get_value(self.physics_prim, PrimType.SCENE, "joint_attach_kd")
-        self.model.joint_attach_ke = self.R.get_value(self.physics_prim, PrimType.SCENE, "joint_attach_ke")
-        self.model.soft_contact_kd = self.R.get_value(self.physics_prim, PrimType.SCENE, "soft_contact_kd")
-        self.model.soft_contact_ke = self.R.get_value(self.physics_prim, PrimType.SCENE, "soft_contact_ke")
+        self.model.joint_attach_kd =  self.run_cfg.get("joint_attach_kd", 2718.0)
+        self.model.joint_attach_ke =  self.run_cfg.get("joint_attach_ke", 2718.0)
+        self.model.soft_contact_ke = self.run_cfg["soft_contact_ke"]
+        self.model.soft_contact_kd = self.run_cfg["soft_contact_kd"]
+        self.model.soft_contact_mu = self.run_cfg["soft_contact_mu"]
+        self.model.shape_material_mu.zero_()
 
     def _setup_integrator(self):
         """Set up the integrator, and apply attributes parsed from the stage."""
 
-        if self.integrator_type == IntegratorType.XPBD:
-            res = SchemaResolverXPBD()
-            R = _ResolverManager([res])
-            solver_args = _build_solver_args_from_resolver(
-                resolver_mgr=R,
-                prim=self.physics_prim,
-                prim_type=PrimType.SCENE,
-                solver_cls=newton.solvers.SolverXPBD,
-                defaults={"iterations": self.integrator_iterations},
+        # if self.integrator_type == IntegratorType.XPBD:
+        #     res = SchemaResolverXPBD()
+        #     R = _ResolverManager([res])
+        #     solver_args = _build_solver_args_from_resolver(
+        #         resolver_mgr=R,
+        #         prim=self.physics_prim,
+        #         prim_type=PrimType.SCENE,
+        #         solver_cls=newton.solvers.SolverXPBD,
+        #         defaults={"iterations": self.integrator_iterations},
+        #     )
+        #     self.integrator = newton.solvers.SolverXPBD(self.model, **solver_args)
+        #
+        # elif self.integrator_type == IntegratorType.MJWARP:
+        #     res = SchemaResolverMJWarp()
+        #     R = _ResolverManager([res])
+        #     solver_args = _build_solver_args_from_resolver(
+        #         resolver_mgr=R,
+        #         prim=self.physics_prim,
+        #         prim_type=PrimType.SCENE,
+        #         solver_cls=newton.solvers.SolverMuJoCo,
+        #         defaults={"iterations": self.integrator_iterations},
+        #     )
+        #     self.integrator = newton.solvers.SolverMuJoCo(self.model, **solver_args)
+        #
+        # elif self.integrator_type == IntegratorType.COUPLED_MPM:
+        #     res = SchemaResolverCoupledMPM()
+        #     R = _ResolverManager([SchemaResolverMPM(), SchemaResolverXPBD()])
+        #     solver_args = _build_solver_args_from_resolver(
+        #         resolver_mgr=R,
+        #         prim=self.physics_prim,
+        #         prim_type=PrimType.SCENE,
+        #         solver_cls=newton.solvers.SolverXPBD,
+        #         defaults={"iterations": self.integrator_iterations},
+        #     )
+        #     mpm_solver_args = _build_solver_args_from_resolver(
+        #         resolver_mgr=R,
+        #         prim=self.physics_prim,
+        #         prim_type=PrimType.SCENE,
+        #         solver_cls=newton.solvers.SolverImplicitMPM.Options,
+        #         defaults={},
+        #     )
+        #
+        #     particles_dict = {}
+        #     for prim in self.in_stage.Traverse():
+        #         if prim.GetTypeName() == "PointInstancer":
+        #             pi = UsdGeom.PointInstancer(prim)
+        #             particles_dict[prim.GetPath()] = np.array(pi.GetPositionsAttr().Get())
+        #
+        #     self.integrator = CoupledMPMIntegrator(self.model, particles_dict, **solver_args, **mpm_solver_args)
+        if self.integrator_type == IntegratorType.VBD:  # VBD
+            self.integrator = newton.solvers.SolverVBD(self.model,
+                                                       iterations=self.integrator_iterations,
+                                                       handle_self_contact=self.run_cfg["handle_self_contact"],
+                                                       self_contact_radius=self.run_cfg["self_contact_radius"],
+                                                       self_contact_margin=self.run_cfg["self_contact_margin"],
+                                                       self_contact_rest_filter_radius=self.run_cfg["self_contact_rest_filter_radius"],
+                                                       collision_detection_interval=self.run_cfg["collision_detection_interval"],
+                                                       integrate_with_external_rigid_solver=True
             )
-            self.integrator = newton.solvers.SolverXPBD(self.model, **solver_args)
+            self.integrator.air_drag_coefficient = self.run_cfg["air_drag"]
 
-        elif self.integrator_type == IntegratorType.MJWARP:
-            res = SchemaResolverMJWarp()
-            R = _ResolverManager([res])
-            solver_args = _build_solver_args_from_resolver(
-                resolver_mgr=R,
-                prim=self.physics_prim,
-                prim_type=PrimType.SCENE,
-                solver_cls=newton.solvers.SolverMuJoCo,
-                defaults={"iterations": self.integrator_iterations},
-            )
-            self.integrator = newton.solvers.SolverMuJoCo(self.model, **solver_args)
-
-        elif self.integrator_type == IntegratorType.COUPLED_MPM:
-            res = SchemaResolverCoupledMPM()
-            R = _ResolverManager([SchemaResolverMPM(), SchemaResolverXPBD()])
-            solver_args = _build_solver_args_from_resolver(
-                resolver_mgr=R,
-                prim=self.physics_prim,
-                prim_type=PrimType.SCENE,
-                solver_cls=newton.solvers.SolverXPBD,
-                defaults={"iterations": self.integrator_iterations},
-            )
-            mpm_solver_args = _build_solver_args_from_resolver(
-                resolver_mgr=R,
-                prim=self.physics_prim,
-                prim_type=PrimType.SCENE,
-                solver_cls=newton.solvers.SolverImplicitMPM.Options,
-                defaults={},
-            )
-
-            particles_dict = {}
-            for prim in self.in_stage.Traverse():
-                if prim.GetTypeName() == "PointInstancer":
-                    pi = UsdGeom.PointInstancer(prim)
-                    particles_dict[prim.GetPath()] = np.array(pi.GetPositionsAttr().Get())
-
-            self.integrator = CoupledMPMIntegrator(self.model, particles_dict, **solver_args, **mpm_solver_args)
-        else:  # VBD
-            res = SchemaResolverVBD()
-            R = _ResolverManager([res])
-            solver_args = _build_solver_args_from_resolver(
-                resolver_mgr=R,
-                prim=self.physics_prim,
-                prim_type=PrimType.SCENE,
-                solver_cls=newton.solvers.SolverVBD,
-                defaults={"iterations": self.integrator_iterations},
-            )
-            self.integrator = newton.solvers.SolverVBD(self.model, **solver_args)
+            # res = SchemaResolverVBD()
+            # R = _ResolverManager([res])
+            # solver_args = _build_solver_args_from_resolver(
+            #     resolver_mgr=R,
+            #     prim=self.physics_prim,
+            #     prim_type=PrimType.SCENE,
+            #     solver_cls=newton.solvers.SolverVBD,
+            #     defaults={"iterations": self.integrator_iterations},
+            # )
+        #             "friction_epsilon": [Attribute("newton:vbd:friction_epsilon", 2718.0)],
+        #             "handle_self_contact": [Attribute("newton:vbd:handle_self_contact", self.run_cfg["handle_self_contact"])],
+        #             "self_contact_radius": [Attribute("newton:vbd:self_contact_radius", self.run_cfg["self_contact_radius"])],
+        #             "self_contact_margin": [Attribute("newton:vbd:self_contact_margin", self.run_cfg["self_contact_margin"])],
+        #             "self_contact_rest_filter_radius": [
+        #                 Attribute("newton:vbd:self_contact_rest_filter_radius", self.run_cfg["self_contact_rest_filter_radius"])
+        #             ],
+        #             "collision_detection_interval": [
+        #                 Attribute("newton:vbd:collision_detection_interval", self.run_cfg["collision_detection_interval"])
+        #             ],
+        #             "integrate_with_external_rigid_solver": [
+        #                 Attribute("newton:vbd:integrate_with_external_rigid_solver", True)
+        #             ],
 
         # Iterate resolver-defined keys (these are your internal integrator attribute names)
-        var_map = res.mapping.get(PrimType.SCENE, {})
-        for key in var_map.keys():
-            value = R.get_value(self.physics_prim, PrimType.SCENE, key)
-            if value is not None and hasattr(self.integrator, key):
-                setattr(self.integrator, key, value)
+        # var_map = res.mapping.get(PrimType.SCENE, {})
+        # for key in var_map.keys():
+        #     value = R.get_value(self.physics_prim, PrimType.SCENE, key)
+        #     if value is not None and hasattr(self.integrator, key):
+        #         setattr(self.integrator, key, value)
 
     def _collect_animated_colliders(self, builder, path_body_map, path_shape_map):
         """
@@ -1407,8 +1416,8 @@ class Simulator:
             # swap states
             (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
-        if run_cfg.get("self_collision_off_frame", -1) > 0 and self.integrator.penetration_free_init:
-            self_collision_off_time = (run_cfg.get("self_collision_off_frame", -1)) / self.fps
+        if self.run_cfg.get("self_collision_off_frame", -1) > 0 and self.integrator.penetration_free_init:
+            self_collision_off_time = (self.run_cfg.get("self_collision_off_frame", -1)) / self.fps
             if self.sim_time > self_collision_off_time:
                 self.integrator.penetration_free_init = False
 
@@ -1428,7 +1437,7 @@ class Simulator:
             self.contacts = self.model.collide(
                 self.state_0,
                 rigid_contact_margin=self.rigid_contact_margin,
-                soft_contact_margin=run_cfg["cloth_cfg"]["particle_radius"],
+                soft_contact_margin=self.run_cfg["cloth_cfg"]["particle_radius"],
             )
 
         self.state_0.clear_forces()

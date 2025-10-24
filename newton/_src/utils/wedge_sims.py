@@ -101,6 +101,44 @@ def run_cloth_sim(config, output_folder):
     end = time.time()
 
 
+def run_cloth_sim_2(config, output_folder):
+    import json
+    import os
+
+    # Create the output folder if it doesn't exist
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # Save the config as a json file in the output folder
+    config_path = os.path.join(output_folder, "config.json")
+    config["output_usd"] = os.path.join(
+        output_folder, Path(config["input_usd"]).stem + "_" + config["wedge_number"] + ".usd"
+    )
+
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=4)
+
+    # Fill config parameter, if needed - for demonstration, let's say fill a 'run_id' if not present
+    create_usd = [
+        "python",
+        "sim_usd_gtc_from_json.py",
+        config["input_usd"],
+        "-o",
+        config["output_usd"],
+        "-c",
+        config_path,
+        "-n",
+        str(config["frames"]),
+        "-i",
+        "vbd",
+        # "-t",
+        # str(config["t"])
+    ]
+    start = time.time()
+    subprocess.run(create_usd, check=False)
+    end = time.time()
+
+
 def get_wedges_configs():
     test_cases = {
         "bdx_lantern": {
