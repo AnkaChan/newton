@@ -9,10 +9,10 @@ if __name__ == "__main__":
 
 
     loaded_configs = {}
-    base_dir_new = r"D:\Data\GTC2025DC_Demo\B1024\density"
+    base_dir_new = r"D:\Data\GTC2025DC_Demo\B1024\friction"
     base_config_path = 'Config/config_b_1024.json'
 
-    wedge_base_name = "sweep_weight"
+    wedge_base_name = "sweep_friction_coefficient"
 
     if os.path.exists(base_config_path):
         with open(base_config_path) as f:
@@ -20,16 +20,16 @@ if __name__ == "__main__":
         loaded_configs[base_config_path] = config
 
     do_sim = True
-    do_sim = False
+    # do_sim = False
     do_rendering = True
-    do_rendering = False
+    # do_rendering = False
 
 
     # config["frames"] = 10
     # config["preroll_frames"] = 10
 
-    wedge_parameter_name = ["cloth_cfg", "density"]
-    wedge_parameters = [ 5.0, 3.0, 2.0, 1.0, ]
+    wedge_parameter_name = "body_contact_mu"
+    wedge_parameters = [0.4, 0.2, 0.1, 0.0,]
     # config["cloth_cfg"]["bending_kd"] = 0.01
 
     videos = []

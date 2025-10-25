@@ -48,6 +48,7 @@
     "soft_contact_ke": 500.0,
     "soft_contact_kd": 0.006,
     "soft_contact_mu": 0.0,
+    "body_contact_mu": 0.0,
     "do_process": true,
     "text": "t_ke=500.0_t_kd=1e-06_b_ke=0.1_b_kd=1e-07_c_ke=500.0_c_kd=0.006",
     "wedge_number": "sweep_014",

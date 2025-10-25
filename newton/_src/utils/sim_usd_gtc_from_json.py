@@ -1208,7 +1208,7 @@ class Simulator:
         self.model.soft_contact_ke = self.run_cfg["soft_contact_ke"]
         self.model.soft_contact_kd = self.run_cfg["soft_contact_kd"]
         self.model.soft_contact_mu = self.run_cfg["soft_contact_mu"]
-        self.model.shape_material_mu.zero_()
+        self.model.shape_material_mu.fill_(self.run_cfg.get("body_contact_mu", 0.0))
 
     def _setup_integrator(self):
         """Set up the integrator, and apply attributes parsed from the stage."""
@@ -1417,10 +1417,10 @@ class Simulator:
         for substep in range(self.sim_substeps):
             self._update_animated_colliders(substep)
             if self.use_cuda_graph:
-                if substep % self.sim_substeps:
-                    wp.capture_launch(self.graph_even_step)
-                else:
+                if substep % 2:
                     wp.capture_launch(self.graph_odd_step)
+                else:
+                    wp.capture_launch(self.graph_even_step)
             else:
                 self.run_substep()
 
