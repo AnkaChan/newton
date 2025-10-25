@@ -344,6 +344,17 @@ Comments:
 # self.run_cfg = self.run_cfgs["sceneC"]
 
 
+# Will Cavanagh
+#   Yesterday at 5:41 PM
+# @Andre Pradhana @Anka Chen @Eric Heiden
+# So sorry for this, but as Kevin called out in the other thread, antenna animation wasn't transferred correctly onto the sim setups and I need to re-deliver sim setups for the cloth and lanterns
+# These setups should be otherwise unchanged, with the exception of LanternsRods where I set the scale on VIEWER_CAM to 1.
+# ClothA: omniverse://creative3d.ov.nvidia.com/Projects/CreativeRealtime3D/Projects/GTC_DC2025_DisneyDroidDemo/shot/tdSim/tdSimClothA//pub/sim/handoff/20251024_to_sim_tdSimClothA_01.usd
+# ClothB: omniverse://creative3d.ov.nvidia.com/Projects/CreativeRealtime3D/Projects/GTC_DC2025_DisneyDroidDemo/shot/tdSim/tdSimClothB//pub/sim/handoff/20251024_to_sim_tdSimClothB_01.usd
+# ClothC: omniverse://creative3d.ov.nvidia.com/Projects/CreativeRealtime3D/Projects/GTC_DC2025_DisneyDroidDemo/shot/tdSim/tdSimClothC//pub/sim/handoff/20251024_to_sim_tdSimClothC_01.usd
+# LanternsRods: omniverse://creative3d.ov.nvidia.com/Projects/CreativeRealtime3D/Projects/GTC_DC2025_DisneyDroidDemo/shot/tdSim/tdSimLanternsRods//pub/sim/handoff/20251024_to_sim_tdSimLanternsRods_03.usd
+#
+#
 def get_top_vertices(
     verts,
     axis="z",
@@ -1421,7 +1432,7 @@ class Simulator:
             if self.sim_time > self_collision_off_time:
                 self.integrator.penetration_free_init = False
 
-                if self.use_cuda_graph and not self.is_mujoco_cpu_mode:
+                if self.use_cuda_graph:
                     with wp.ScopedCapture() as capture:
                         self.run_substep()
                     self.graph_even_step = capture.graph

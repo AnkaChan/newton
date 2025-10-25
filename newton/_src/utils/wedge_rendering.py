@@ -282,9 +282,11 @@ def run_in_batches_of_4(files, base_dir):
         combine_videos_grid_2x2(paths=batch, out_path=os.path.join(base_dir, f"grid_{i}.mp4"))
 
 
-def render_usd(sweep_folder, render_temp_dir, rendering_folder, src_filename_base=""):
+def render_usd(sweep_folder, render_temp_dir, rendering_folder, src_filename_base="", dst_filename=None, sim_project_name="full_20251021_to_sim_tdSimClothB_01_physics_sim_v.usd"):
+    if dst_filename is None:
+        dst_filename = "20251021_to_sim_tdSimClothB_01_physics_sim_v.usd"
+
     src_file = glob.glob(os.path.join(sweep_folder, "*.usd"))[0]
-    dst_filename = "20251021_to_sim_tdSimClothB_01_physics_sim_v.usd"
     if Path(src_file).exists():
         dst_file = os.path.join(render_temp_dir, dst_filename)  # Keep folder name in output
         # If you want the SAME name for all (no prefix), use: dst_file = render_dir / dst_filename
@@ -300,7 +302,7 @@ def render_usd(sweep_folder, render_temp_dir, rendering_folder, src_filename_bas
     cmd = [
         r"C:\isaac-sim\python.bat",
         r"D:\Code\Graphics\newton\newton\_src\utils\render_py.py",
-        os.path.join(render_temp_dir, "full_20251021_to_sim_tdSimClothB_01_physics_sim_v.usd"),
+        os.path.join(render_temp_dir, sim_project_name),
         "-o",
         rendering_folder,
         "-n",

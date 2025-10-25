@@ -134,6 +134,9 @@ def run_cloth_sim_2(config, output_folder):
         # "-t",
         # str(config["t"])
     ]
+
+    print(" ".join(create_usd))
+
     start = time.time()
     subprocess.run(create_usd, check=False)
     end = time.time()

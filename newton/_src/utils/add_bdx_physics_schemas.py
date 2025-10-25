@@ -114,7 +114,7 @@ if __name__ == "__main__":
         path = str(prim.GetPath()).split("/")
 
         # ROBOT
-        if any(name in path[-1] for name in ("HEAD", "HIP", "KNEE", "PELVIS", "NECK", "FOOT")):
+        if any(name in path[-1] for name in ("HEAD", "HIP", "KNEE", "PELVIS", "NECK", "FOOT", "ANTENNA")):
             print(f"Applying RigidBodyAPI to {prim}")
             rigidBodyAPI = UsdPhysics.RigidBodyAPI.Apply(prim)
             rigidBodyAPI.CreateKinematicEnabledAttr(True)
