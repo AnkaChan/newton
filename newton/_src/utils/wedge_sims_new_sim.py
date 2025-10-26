@@ -19,22 +19,18 @@ if __name__ == "__main__":
             config = json.load(f)
         loaded_configs[base_config_path] = config
 
-    do_sim = True
-    # do_sim = False
-    do_rendering = True
-    # do_rendering = False
+    # do_sim = True
+    do_sim = False
+    # do_rendering = True
+    do_rendering = False
 
 
     # config["frames"] = 10
     # config["preroll_frames"] = 10
 
-    # wedge_parameter_name = ["cloth_cfg", "bending_kd"]
-    # # wedge_parameters = [ 1e-4, 1e-5, 1e-6, 1e-7]
-    # wedge_parameters = [ 1e-1, 1e-2, 1e-3, 1e-4]
-
-    wedge_parameter_name = ["parameters"]
-    wedge_parameters = [ 0.05, 0.1, 0.2, 0.3]
-
+    wedge_parameter_name = ["cloth_cfg", "bending_kd"]
+    # wedge_parameters = [ 1e-4, 1e-5, 1e-6, 1e-7]
+    wedge_parameters = [ 1e-1, 1e-2, 1e-3, 1e-4]
 
     # config["cloth_cfg"]["bending_kd"] = 0.01
     config["handle_self_contact"] = False

@@ -1145,21 +1145,26 @@ class Simulator:
         # If not explicitly provided, deduce preroll state path from the output path
 
         if load_preroll_state and preroll_state_path is not None:
-            import numpy as np
 
             preroll_state = np.load(preroll_state_path, allow_pickle=True).item()
             self.state_0.particle_q.assign(preroll_state["particle_q"])
             self.state_1.particle_q.assign(preroll_state["particle_q"])
         elif preroll_frames > 0:
-            import numpy as np
 
             state = self.state_0
             for frame in tqdm.tqdm(range(preroll_frames), desc="Preroll Frames"):
                 for substep in range(self.sim_substeps):
                     self.state_0.clear_forces()
+                    if self.use_cuda_graph:
+                        if substep % 2:
+                            wp.capture_launch(self.graph_odd_step)
+                        else:
+                            wp.capture_launch(self.graph_even_step)
+                    else:
+                        self.run_substep()
 
-                    self.run_substep()
-                    self.state_0, self.state_1 = self.state_1, self.state_0
+                        # swap states
+                    (self.state_0, self.state_1) = (self.state_1, self.state_0)
 
                     if frame < self.run_cfg.get("preroll_zero_velocity_ratio", 0.1) * preroll_frames:
                         self.state_0.particle_qd.zero_()

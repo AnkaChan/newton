@@ -9,7 +9,7 @@ if __name__ == "__main__":
 
 
     loaded_configs = {}
-    base_dir_new = r"D:\Data\GTC2025DC_Demo\B1024\new_sim"
+    base_dir_new = r"D:\Data\GTC2025DC_Demo\B1024\bending_ke"
     base_config_path = 'Config/config_b_1024.json'
 
     wedge_base_name = "sweep_new_sim"
@@ -28,16 +28,12 @@ if __name__ == "__main__":
     # config["frames"] = 10
     # config["preroll_frames"] = 10
 
-    # wedge_parameter_name = ["cloth_cfg", "bending_kd"]
-    # # wedge_parameters = [ 1e-4, 1e-5, 1e-6, 1e-7]
-    # wedge_parameters = [ 1e-1, 1e-2, 1e-3, 1e-4]
+    wedge_parameter_name = ["cloth_cfg", "bending_ke"]
+    # wedge_parameters = [ 1e-4, 1e-5, 1e-6, 1e-7]
+    wedge_parameters = [ 1.0, 0.3, 0.1, 0.03]
 
-    wedge_parameter_name = ["parameters"]
-    wedge_parameters = [ 0.05, 0.1, 0.2, 0.3]
-
-
-    # config["cloth_cfg"]["bending_kd"] = 0.01
-    config["handle_self_contact"] = False
+    config["cloth_cfg"]["bending_kd"] = 1e-3
+    config["handle_self_contact"] = True
     config["preroll_frames"] = 1000
     # config["save_usd"] = False
 
