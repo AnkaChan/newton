@@ -32,7 +32,7 @@ if __name__ == "__main__":
     # # wedge_parameters = [ 1e-4, 1e-5, 1e-6, 1e-7]
     # wedge_parameters = [ 1e-1, 1e-2, 1e-3, 1e-4]
 
-    wedge_parameter_name = ["parameters"]
+    wedge_parameter_name = "body_contact_mu"
     wedge_parameters = [ 0.05, 0.1, 0.2, 0.3]
 
 
