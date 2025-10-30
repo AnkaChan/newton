@@ -9,10 +9,10 @@ if __name__ == "__main__":
 
 
     loaded_configs = {}
-    base_dir_new = r"D:\Data\GTC2025DC_Demo\B1024\density_new_sim"
-    base_config_path = 'Config/config_b_1024.json'
+    base_dir_new = r"D:\Data\GTC2025DC_Demo\B1024\radius"
+    base_config_path = 'Config/config_b_1025.json'
 
-    wedge_base_name = "sweep_weight"
+    wedge_base_name = "sweep_radius"
 
     if os.path.exists(base_config_path):
         with open(base_config_path) as f:
@@ -20,7 +20,7 @@ if __name__ == "__main__":
         loaded_configs[base_config_path] = config
 
     do_sim = True
-    # do_sim = False
+    do_sim = False
     do_rendering = True
     # do_rendering = False
 
@@ -28,10 +28,15 @@ if __name__ == "__main__":
     # config["frames"] = 10
     # config["preroll_frames"] = 10
 
-    wedge_parameter_name = ["cloth_cfg", "density"]
-    wedge_parameters = [ 5.0, 3.0, 2.0, 1.0, ]
-    # config["cloth_cfg"]["bending_kd"] = 0.01
+    wedge_parameter_name = ["cloth_cfg", "particle_radius"]
+    # wedge_parameters = [ 1e-4, 1e-5, 1e-6, 1e-7]
+    wedge_parameters = [0.03, 0.02, 0.01, 0.08]
+
+    config["cloth_cfg"]["bending_ke"] = 0.03
+    config["handle_self_contact"] = True
+    config["preroll_frames"] = 1000
     config["body_friction_mu"] = 0.1
+    # config["save_usd"] = False
 
     videos = []
     # for new_sweep_idx, parameter in enumerate(wedge_parameters):

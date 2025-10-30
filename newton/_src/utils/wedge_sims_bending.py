@@ -9,7 +9,7 @@ if __name__ == "__main__":
 
 
     loaded_configs = {}
-    base_dir_new = r"D:\Data\GTC2025DC_Demo\B1024\bending_ke"
+    base_dir_new = r"D:\Data\GTC2025DC_Demo\B1024\new_bending_ke"
     base_config_path = 'Config/config_b_1024.json'
 
     wedge_base_name = "sweep_new_sim"
@@ -19,10 +19,10 @@ if __name__ == "__main__":
             config = json.load(f)
         loaded_configs[base_config_path] = config
 
-    do_sim = True
-    # do_sim = False
-    do_rendering = True
-    # do_rendering = False
+    # do_sim = True
+    do_sim = False
+    # do_rendering = True
+    do_rendering = False
 
 
     # config["frames"] = 10
@@ -30,16 +30,17 @@ if __name__ == "__main__":
 
     wedge_parameter_name = ["cloth_cfg", "bending_ke"]
     # wedge_parameters = [ 1e-4, 1e-5, 1e-6, 1e-7]
-    wedge_parameters = [ 1.0, 0.3, 0.1, 0.03]
+    wedge_parameters = [ 0.03, 0.02, 0.01, 0.005]
 
     config["cloth_cfg"]["bending_kd"] = 1e-3
     config["handle_self_contact"] = True
     config["preroll_frames"] = 1000
+    config["body_friction_mu"] = 0.05
     # config["save_usd"] = False
 
     videos = []
     # for new_sweep_idx, parameter in enumerate(wedge_parameters):
-    for new_sweep_idx in range(0, 4):
+    for new_sweep_idx in range(0, 3):
         parameter = wedge_parameters[new_sweep_idx]
         new_sweep_name = wedge_base_name + f"_{str(new_sweep_idx).zfill(3)}"
 
