@@ -720,7 +720,7 @@ def create_soft_contacts(
         sign = float(0.0)
 
         min_scale = wp.min(geo_scale)
-        if wp.mesh_query_point_sign_normal(
+        if wp.mesh_query_point(
             mesh, wp.cw_div(x_local, geo_scale), margin + radius / min_scale, sign, face_index, face_u, face_v
         ):
             shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)

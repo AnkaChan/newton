@@ -645,10 +645,9 @@ def evaluate_body_particle_contact(
 
         dx = particle_pos - particle_prev_pos
 
-        if wp.dot(n, dx) < 0:
-            damping_hessian = (soft_contact_kd / dt) * body_contact_hessian
-            body_contact_hessian = body_contact_hessian + damping_hessian
-            body_contact_force = body_contact_force - damping_hessian * dx
+        damping_hessian = (soft_contact_kd / dt) * body_contact_hessian
+        body_contact_hessian = body_contact_hessian + damping_hessian
+        body_contact_force = body_contact_force - damping_hessian * dx
 
         # body velocity
         if body_q_prev:
