@@ -1,0 +1,55 @@
+{
+    "camera_cfg": {
+        "pos": [
+            12.8,
+            18.74,
+            1.41
+        ],
+        "pitch": -4.8,
+        "yaw": -9.6
+    },
+    "input_usd": "D:\\Data\\GTC2025DC_Demo\\Inputs\\SceneB\\1024\\20251024_to_sim_tdSimClothB_01_physics.usd",
+    "output_usd": "D:\\Data\\GTC2025DC_Demo\\Inputs\\SceneB\\1024\\20251024_to_sim_tdSimClothB_01_sim.usd",
+    "initial_time": 16.0,
+    "frames": 1200,
+    "preroll_frames": 500,
+    "preroll_zero_velocity_ratio": 0.1,
+    "load_preroll_state": false,
+    "cloth_cfg": {
+        "path": "/World/ClothModuleC_01/geo/clothModuleCbCollisionGeo1p12",
+        "rest_path": "/World/ClothModuleC_01_Rest/geo/clothModuleCbCollisionRestGeo1p12",
+        "tri_ke": 500.0,
+        "tri_ka": 500.0,
+        "tri_kd": 1e-06,
+        "bending_ke": 0.1,
+        "bending_kd": 1e-07,
+        "particle_radius": 0.03,
+        "density": 2.0,
+        "additional_translation": [
+            0,
+            0,
+            -0.05
+        ]
+    },
+    "additional_collider": [],
+    "save_usd": true,
+    "save_rest_and_init_state": true,
+    "fixed_points_scheme": {
+        "name": "top",
+        "threshold": 0.1
+    },
+    "substeps": 20,
+    "iterations": 20,
+    "collision_detection_interval": 10,
+    "self_contact_rest_filter_radius": 0.02,
+    "self_contact_radius": 0.008,
+    "self_contact_margin": 0.025,
+    "handle_self_contact": true,
+    "soft_contact_ke": 500.0,
+    "soft_contact_kd": 0.006,
+    "soft_contact_mu": 0.0,
+    "do_process": true,
+    "text": "t_ke=500.0_t_kd=1e-06_b_ke=0.1_b_kd=1e-07_c_ke=500.0_c_kd=0.006",
+    "wedge_number": "sweep_014",
+	"air_drag":1.0
+}

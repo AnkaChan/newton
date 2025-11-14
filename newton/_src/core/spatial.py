@@ -329,7 +329,59 @@ def quat_between_axes(*axes: AxisType) -> wp.quat:
     return q
 
 
+@wp.func
+def angvel_between_quats(q1: wp.quat, q2: wp.quat, dt: float):
+    """
+    Compute angular velocity vector ω (rad/s) taking orientation q1 to q2 over time dt.
+
+    Args:
+        q1, q2 : wp.quat
+            Unit quaternions representing orientations.
+        dt : float
+            Time step in seconds (> 0).
+
+    Returns:
+        omega : ndarray shape (3,)
+            Angular velocity vector in rad/s.
+
+    Notes:
+        - Uses ω = (2/dt) * log( q_rel ), where q_rel = q2 * conj(q1) with shortest-arc fix.
+        - The returned ω corresponds to the rotation that maps q1 to q2.
+        - q1 and q2 are normalized internally; dt must be positive.
+    """
+
+    # shortest-arc: flip q2 if dot(q1,q2) < 0
+    if wp.dot(q1, q2) < 0.0:
+        q2 = -q2
+
+    # relative rotation q_rel = q2 * conj(q1)
+    q_rel = q2 * wp.quat_inverse(q1)
+    q_rel = wp.normalize(q_rel)
+
+    v = wp.vec3(q_rel.x, q_rel.y, q_rel.z)
+    w = wp.clamp(q_rel.w, -1.0, 1.0)
+
+    # log map of a unit quaternion q = [v, w] with q = [n*sin(θ/2), cos(θ/2)]
+    # log(q) = [0, n * θ/2]  => ω = (2/dt) * (n * θ/2) * 2 = (θ/dt) * n
+    v_norm = wp.length(v)
+
+    # Stable handling for small angles
+    eps = 1e-12
+    if v_norm < eps:
+        # θ ≈ 2*|v|/w? Use series: sin(θ/2)≈θ/2 -> v = n * θ/2 => n*θ = 2*v
+        # So ω ≈ (1/dt) * 2*v  when θ small.
+        omega = (2.0 / dt) * v
+    else:
+        phi = wp.atan2(v_norm, w)  # φ = θ/2 in [0, π/2]
+        n = v / v_norm  # axis
+        theta = 2.0 * phi  # full rotation angle
+        omega = (theta / dt) * n
+
+    return omega
+
+
 __all__ = [
+    "angvel_between_quats",
     "quat_between_axes",
     "quat_decompose",
     "quat_from_euler",

@@ -2202,138 +2202,150 @@ class SolverMuJoCo(SolverBase):
                     limited=False,
                 )
             elif j_type in supported_joint_types:
-                lin_axis_count, ang_axis_count = joint_dof_dim[j]
-                # linear dofs
-                for i in range(lin_axis_count):
-                    ai = qd_start + i
-
-                    axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
-
-                    joint_params = {
-                        "armature": joint_armature[qd_start + i],
-                        "pos": joint_pos,
-                    }
-                    # Set friction
-                    joint_params["frictionloss"] = joint_friction[ai]
-                    lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
-                        joint_params["limited"] = False
-                    else:
-                        joint_params["limited"] = True
-                        joint_params["range"] = (lower, upper)
-                        # Add global solver parameters if provided
-                        if self.joint_solref_limit is not None:
-                            joint_params["solref_limit"] = self.joint_solref_limit
-                        if self.joint_solimp_limit is not None:
-                            joint_params["solimp_limit"] = self.joint_solimp_limit
-                    axname = name
-                    if lin_axis_count > 1 or ang_axis_count > 1:
-                        axname += "_lin"
-                    if lin_axis_count > 1:
-                        axname += str(i)
+                if j_type == JointType.BALL:
                     body.add_joint(
-                        name=axname,
-                        type=mujoco.mjtJoint.mjJNT_SLIDE,
-                        axis=axis,
-                        **joint_params,
+                        name=name,
+                        type=mujoco.mjtJoint.mjJNT_BALL,
+                        axis=wp.quat_rotate(joint_rot, wp.vec3(1.0, 0.0, 0.0)),
+                        damping=0.0,
+                        limited=False,
+                        pos=joint_pos,
+                        armature=joint_armature[qd_start],
+                        frictionloss=joint_friction[qd_start],
                     )
-                    if actuated_axes is None or ai in actuated_axes:
-                        # add actuator for this axis
-                        gear = actuator_gears.get(axname)
-                        if gear is not None:
-                            args = {}
-                            args.update(actuator_args)
-                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
+                else:
+                    lin_axis_count, ang_axis_count = joint_dof_dim[j]
+                    # linear dofs
+                    for i in range(lin_axis_count):
+                        ai = qd_start + i
+
+                        axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
+
+                        joint_params = {
+                            "armature": joint_armature[qd_start + i],
+                            "pos": joint_pos,
+                        }
+                        # Set friction
+                        joint_params["frictionloss"] = joint_friction[ai]
+                        lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
+                        if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
+                            joint_params["limited"] = False
                         else:
-                            args = actuator_args
+                            joint_params["limited"] = True
+                            joint_params["range"] = (lower, upper)
+                            # Add global solver parameters if provided
+                            if self.joint_solref_limit is not None:
+                                joint_params["solref_limit"] = self.joint_solref_limit
+                            if self.joint_solimp_limit is not None:
+                                joint_params["solimp_limit"] = self.joint_solimp_limit
+                        axname = name
+                        if lin_axis_count > 1 or ang_axis_count > 1:
+                            axname += "_lin"
+                        if lin_axis_count > 1:
+                            axname += str(i)
+                        body.add_joint(
+                            name=axname,
+                            type=mujoco.mjtJoint.mjJNT_SLIDE,
+                            axis=axis,
+                            **joint_params,
+                        )
+                        if actuated_axes is None or ai in actuated_axes:
+                            # add actuator for this axis
+                            gear = actuator_gears.get(axname)
+                            if gear is not None:
+                                args = {}
+                                args.update(actuator_args)
+                                args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
+                            else:
+                                args = actuator_args
 
-                        if joint_dof_mode[ai] == JointMode.TARGET_POSITION:
-                            kp = joint_target_ke[ai]
-                            kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                        elif joint_dof_mode[ai] == JointMode.TARGET_VELOCITY:
-                            kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            if joint_dof_mode[ai] == JointMode.TARGET_POSITION:
+                                kp = joint_target_ke[ai]
+                                kv = joint_target_kd[ai]
+                                args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
+                                args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            elif joint_dof_mode[ai] == JointMode.TARGET_VELOCITY:
+                                kv = joint_target_kd[ai]
+                                args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
+                                args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            else:
+                                # no target position or velocity, just use the default gain
+                                args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
+                                args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+                            # Add effort limits from Newton model
+                            effort_limit = joint_effort_limit[ai]
+                            args["forcerange"] = [-effort_limit, effort_limit]
+
+                            spec.add_actuator(target=axname, **args)
+                            axis_to_actuator[ai] = actuator_count
+                            actuator_count += 1
+
+                    # angular dofs
+                    for i in range(lin_axis_count, lin_axis_count + ang_axis_count):
+                        ai = qd_start + i
+
+                        axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
+
+                        joint_params = {
+                            "armature": joint_armature[qd_start + i],
+                            "pos": joint_pos,
+                        }
+                        # Set friction
+                        joint_params["frictionloss"] = joint_friction[ai]
+                        lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
+                        if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
+                            joint_params["limited"] = False
                         else:
-                            # no target position or velocity, just use the default gain
-                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            joint_params["limited"] = True
+                            joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
+                            # Add global solver parameters if provided
+                            if self.joint_solref_limit is not None:
+                                joint_params["solref_limit"] = self.joint_solref_limit
+                            if self.joint_solimp_limit is not None:
+                                joint_params["solimp_limit"] = self.joint_solimp_limit
+                        axname = name
+                        if lin_axis_count > 1 or ang_axis_count > 1:
+                            axname += "_ang"
+                        if ang_axis_count > 1:
+                            axname += str(i - lin_axis_count)
+                        body.add_joint(
+                            name=axname,
+                            type=mujoco.mjtJoint.mjJNT_HINGE,
+                            axis=axis,
+                            **joint_params,
+                        )
+                        if actuated_axes is None or ai in actuated_axes:
+                            # add actuator for this axis
+                            gear = actuator_gears.get(axname)
+                            if gear is not None:
+                                args = {}
+                                args.update(actuator_args)
+                                args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
+                            else:
+                                args = actuator_args
 
-                        # Add effort limits from Newton model
-                        effort_limit = joint_effort_limit[ai]
-                        args["forcerange"] = [-effort_limit, effort_limit]
+                            if joint_dof_mode[ai] == JointMode.TARGET_POSITION:
+                                kp = joint_target_ke[ai]
+                                kv = joint_target_kd[ai]
+                                args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
+                                args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            elif joint_dof_mode[ai] == JointMode.TARGET_VELOCITY:
+                                kv = joint_target_kd[ai]
+                                args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
+                                args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            else:
+                                # no target position or velocity, just use the default gain
+                                args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
+                                args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
-                        spec.add_actuator(target=axname, **args)
-                        axis_to_actuator[ai] = actuator_count
-                        actuator_count += 1
+                            # Add effort limits from Newton model
+                            effort_limit = joint_effort_limit[ai]
+                            args["forcerange"] = [-effort_limit, effort_limit]
 
-                # angular dofs
-                for i in range(lin_axis_count, lin_axis_count + ang_axis_count):
-                    ai = qd_start + i
-
-                    axis = wp.quat_rotate(joint_rot, wp.vec3(*joint_axis[ai]))
-
-                    joint_params = {
-                        "armature": joint_armature[qd_start + i],
-                        "pos": joint_pos,
-                    }
-                    # Set friction
-                    joint_params["frictionloss"] = joint_friction[ai]
-                    lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
-                    if lower == upper or (abs(lower) > joint_limit_threshold and abs(upper) > joint_limit_threshold):
-                        joint_params["limited"] = False
-                    else:
-                        joint_params["limited"] = True
-                        joint_params["range"] = (np.rad2deg(lower), np.rad2deg(upper))
-                        # Add global solver parameters if provided
-                        if self.joint_solref_limit is not None:
-                            joint_params["solref_limit"] = self.joint_solref_limit
-                        if self.joint_solimp_limit is not None:
-                            joint_params["solimp_limit"] = self.joint_solimp_limit
-                    axname = name
-                    if lin_axis_count > 1 or ang_axis_count > 1:
-                        axname += "_ang"
-                    if ang_axis_count > 1:
-                        axname += str(i - lin_axis_count)
-                    body.add_joint(
-                        name=axname,
-                        type=mujoco.mjtJoint.mjJNT_HINGE,
-                        axis=axis,
-                        **joint_params,
-                    )
-                    if actuated_axes is None or ai in actuated_axes:
-                        # add actuator for this axis
-                        gear = actuator_gears.get(axname)
-                        if gear is not None:
-                            args = {}
-                            args.update(actuator_args)
-                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
-                        else:
-                            args = actuator_args
-
-                        if joint_dof_mode[ai] == JointMode.TARGET_POSITION:
-                            kp = joint_target_ke[ai]
-                            kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, -kp, -kv, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                        elif joint_dof_mode[ai] == JointMode.TARGET_VELOCITY:
-                            kv = joint_target_kd[ai]
-                            args["biasprm"] = [0.0, 0.0, -kv, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [kv, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                        else:
-                            # no target position or velocity, just use the default gain
-                            args["biasprm"] = [0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0]
-                            args["gainprm"] = [1.0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-
-                        # Add effort limits from Newton model
-                        effort_limit = joint_effort_limit[ai]
-                        args["forcerange"] = [-effort_limit, effort_limit]
-
-                        spec.add_actuator(target=axname, **args)
-                        axis_to_actuator[ai] = actuator_count
-                        actuator_count += 1
+                            spec.add_actuator(target=axname, **args)
+                            axis_to_actuator[ai] = actuator_count
+                            actuator_count += 1
 
             elif j_type != JointType.FIXED:
                 raise NotImplementedError(f"Joint type {j_type} is not supported yet")
