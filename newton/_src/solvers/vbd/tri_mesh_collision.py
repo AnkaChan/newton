@@ -23,7 +23,6 @@ from ...geometry.kernels import (
     init_triangle_collision_data_kernel,
     triangle_triangle_collision_detection_kernel,
     vertex_triangle_collision_detection_kernel,
-    vertex_triangle_collision_detection_no_triangle_buffers_kernel,
 )
 from ...sim import Model
 

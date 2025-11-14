@@ -95,14 +95,18 @@ def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
     return vals[offs[i] : offs[i + 1]]
 
 
-def _set_to_csr(list_of_sets, dtype=np.int32):
+def _set_to_csr(list_of_sets, dtype=np.int32, sort=True):
     offsets = np.zeros(len(list_of_sets) + 1, dtype=dtype)
     sizes = np.fromiter((len(s) for s in list_of_sets), count=len(list_of_sets), dtype=dtype)
     np.cumsum(sizes, out=offsets[1:])
     flat = np.empty(offsets[-1], dtype=dtype)
     idx = 0
     for s in list_of_sets:
-        arr = np.fromiter(sorted(s), count=len(s), dtype=dtype)
+        if sort:
+            arr = np.fromiter(sorted(s), count=len(s), dtype=dtype)
+        else:
+            arr = np.fromiter(s, count=len(s), dtype=dtype)
+
         flat[idx : idx + len(arr)] = arr
         idx += len(arr)
     return flat, offsets
@@ -167,7 +171,7 @@ def build_vertex_n_ring_tris_collision_filter(
         if n == 2:
             ring_n_minus_1 = one_ring_vertices(v, edge_indices, v_adj_edges, v_adj_edges_offsets)
         else:
-            ring_n_minus_1 = leq_n_ring_vertices(v, n-1, edge_indices, v_adj_edges, v_adj_edges_offsets)
+            ring_n_minus_1 = leq_n_ring_vertices(v, edge_indices, n-1, v_adj_edges, v_adj_edges_offsets)
 
         ring_1_tri_set = set(_csr_row(v_adj_faces, v_adj_faces_offsets, v)[::2])
 
@@ -179,16 +183,10 @@ def build_vertex_n_ring_tris_collision_filter(
 
         nei_tri_set.difference_update(ring_1_tri_set)
 
-    v_two_flat, v_two_offs = _set_to_csr(v_nei_tri_sets)
+    return v_nei_tri_sets
 
-    return (
-        v_two_flat,
-        v_two_offs,
-    )
-
-def build_vertex_n_ring_edge_collision_filter(
+def build_edge_n_ring_edge_collision_filter(
     n: int,
-    num_vertices: int,
     edge_indices: np.ndarray,
     v_adj_edges: np.ndarray,
     v_adj_edges_offsets: np.ndarray,
@@ -204,36 +202,40 @@ def build_vertex_n_ring_edge_collision_filter(
     if n <= 1:
         return None, None
 
-    v_nei_edge_sets = [set() for _ in range(num_vertices)]
+    edge_nei_edge_sets = [set() for _ in range(edge_indices.shape[0])]
 
-    for v in range(num_vertices):
+    for e_idx in range(edge_indices.shape[0]):
         # distance-1 vertices
+        v1 = edge_indices[e_idx, 2]
+        v2 = edge_indices[e_idx, 3]
 
         if n == 2:
-            ring_n_minus_1 = one_ring_vertices(v, edge_indices, v_adj_edges, v_adj_edges_offsets)
+            ring_n_minus_1_v1 = one_ring_vertices(v1, edge_indices, v_adj_edges, v_adj_edges_offsets)
+            ring_n_minus_1_v2 = one_ring_vertices(v2, edge_indices, v_adj_edges, v_adj_edges_offsets)
         else:
-            ring_n_minus_1 = leq_n_ring_vertices(v, n-1, edge_indices, v_adj_edges, v_adj_edges_offsets)
+            ring_n_minus_1_v1 = leq_n_ring_vertices(v1, edge_indices, n-1, v_adj_edges, v_adj_edges_offsets)
+            ring_n_minus_1_v2 = leq_n_ring_vertices(v2, edge_indices, n-1, v_adj_edges, v_adj_edges_offsets)
 
-        ring_1_edge_set = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v)[::2])
+        all_neighbors = set(ring_n_minus_1_v1)
+        all_neighbors.update(ring_n_minus_1_v2)
 
-        nei_tri_set = v_nei_edge_sets [v]
-        for w in ring_n_minus_1:
-            if w != v:
+        ring_1_edge_set = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v1)[::2])
+        ring_2_edge_set = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v2)[::2])
+
+        nei_edge_set = edge_nei_edge_sets[e_idx]
+        for w in all_neighbors:
+            if w != v1 and w != v2:
                 # preserve only the adjacent edge information, remove the order information
                 # nei_tri_set.update(_csr_row(v_adj_faces, v_adj_faces_offsets, w)[::2])
-                adj_edges = _csr_row(v_adj_edges, v_adj_edges_offsets, v)[::2]
-                adj_edges_order = _csr_row(v_adj_edges, v_adj_edges_offsets, v)[1::2]
+                adj_edges = _csr_row(v_adj_edges, v_adj_edges_offsets, w)[::2]
+                adj_edges_order = _csr_row(v_adj_edges, v_adj_edges_offsets, w)[1::2]
                 adj_collision_edges = adj_edges[np.where(adj_edges_order >= 2)]
-                v_nei_edge_sets.update(adj_collision_edges)
+                nei_edge_set.update(adj_collision_edges)
 
-        nei_tri_set.difference_update(ring_1_edge_set)
+        nei_edge_set.difference_update(ring_1_edge_set)
+        nei_edge_set.difference_update(ring_2_edge_set)
 
-    v_two_flat, v_two_offs = _set_to_csr(v_nei_edge_sets)
-
-    return (
-        v_two_flat,
-        v_two_offs,
-    )
+    return edge_nei_edge_sets
 
 @wp.kernel
 def vt_filter_count_kernel(
@@ -2964,8 +2966,10 @@ class SolverVBD(SolverBase):
         handle_self_contact: bool = False,
         self_contact_radius: float = 0.2,
         self_contact_margin: float = 0.2,
-        topological_collision_filter_threshold: int = 2,
-        euclidian_collision_filter_threshold: int = 2,
+        topological_contact_filter_threshold: int = 2,
+        euclidian_contact_filter_threshold: float = 0.,
+        external_vertex_contact_filtering_map: map | None = None,
+        external_edge_contact_filtering_map: map | None = None,
         self_contact_rest_filter_radius: float = 0.0,
         integrate_with_external_rigid_solver: bool = False,
         penetration_free_conservative_bound_relaxation: float = 0.42,
@@ -3014,8 +3018,8 @@ class SolverVBD(SolverBase):
         self.iterations = iterations
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
         self.collision_detection_interval = collision_detection_interval
-        self.topological_collision_filter_threshold = topological_collision_filter_threshold
-        self.euclidean_collision_filter_threshold = euclidian_collision_filter_threshold
+        self.topological_contact_filter_threshold = topological_contact_filter_threshold
+        self.euclidian_contact_filter_threshold = euclidian_contact_filter_threshold
         self.self_contact_rest_filter_radius = self_contact_rest_filter_radius
 
         # add new attributes for VBD solve
@@ -3029,6 +3033,8 @@ class SolverVBD(SolverBase):
         self.handle_self_contact = handle_self_contact
         self.self_contact_radius = self_contact_radius
         self.self_contact_margin = self_contact_margin
+
+        self.rest_shape = model.particle_q
 
         if model.device.is_cpu and use_tile_solve:
             warnings.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.", stacklevel=2)
@@ -3054,13 +3060,13 @@ class SolverVBD(SolverBase):
                 edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
             )
 
-            self.compute_contact_filtering_list()
+            self.compute_contact_filtering_list(external_vertex_contact_filtering_map, external_edge_contact_filtering_map)
 
             self.trimesh_collision_detector.set_collision_filter_list(
-                self.vertex_triangle_filtering_list,
-                self.vertex_triangle_filtering_list_offsets,
-                self.ee_filtering_list,
-                self.ee_filtering_list_offsets,
+                self.vertex_triangle_contact_filtering_list,
+                self.vertex_triangle_contact_filtering_list_offsets,
+                self.edge_edge_contact_filtering_list,
+                self.edge_edge_contact_filtering_list_offsets,
             )
 
             self.trimesh_collision_info = wp.array(
@@ -3211,22 +3217,12 @@ class SolverVBD(SolverBase):
 
         return adjacency
 
-    def compute_contact_filtering_list(self):
-        # num_vertices: int,
-        # faces: np.ndarray,  # (F, 3) int; only F is used for sizing/inverse
-        # edge_indices: np.ndarray,  # (M, 2) int; undirected edges (u, v)
-        # v_adj_edges: np.ndarray,  # CSR flat: incident edge ids per vertex
-        # v_adj_edges_offsets: np.ndarray,  # CSR offs: len = V+1
-        # v_adj_faces: np.ndarray,  # CSR flat: incident face ids per vertex
-        # v_adj_faces_offsets: np.ndarray,  # CSR offs: len = V+1
-        # dtype = np.int32
-
-        import numpy as np
-
-
-        if self.topological_collision_filter_threshold >=2:
-            v_2_ring_flat, v_2_ring_offs = build_vertex_n_ring_tris(
-                self.topological_collision_filter_threshold,
+    def compute_contact_filtering_list(self, external_vertex_contact_filtering_map, external_edge_contact_filtering_map):
+        v_tri_filter_sets = None
+        edge_edge_filter_sets = None
+        if self.topological_contact_filter_threshold >=2:
+            v_tri_filter_sets = build_vertex_n_ring_tris_collision_filter(
+                self.topological_contact_filter_threshold,
                 self.model.particle_count,
                 self.model.edge_indices.numpy(),
                 self.adjacency.v_adj_edges.numpy(),
@@ -3235,42 +3231,43 @@ class SolverVBD(SolverBase):
                 self.adjacency.v_adj_faces_offsets.numpy(),
             )
 
-            self.vertex_triangle_filtering_list = wp.array(v_2_ring_flat)
-            self.vertex_triangle_filtering_list_offsets = wp.array(v_2_ring_offs)
 
+            edge_edge_filter_sets =  build_edge_n_ring_edge_collision_filter(
+                self.topological_contact_filter_threshold,
+                self.model.edge_indices.numpy(),
+                self.adjacency.v_adj_edges.numpy(),
+                self.adjacency.v_adj_edges_offsets.numpy(),
+            )
+
+        if external_vertex_contact_filtering_map is not None:
+            if v_tri_filter_sets is None:
+                v_tri_filter_sets = [set() for _ in range(self.model.particle_count)]
+            for vertex_id, filter_set in external_vertex_contact_filtering_map.items():
+                v_tri_filter_sets[vertex_id].update(filter_set)
+
+        if external_edge_contact_filtering_map is not None:
+            if edge_edge_filter_sets is None:
+                edge_edge_filter_sets = [set() for _ in range(self.model.edge_count)]
+            for edge_idx, filter_set in external_edge_contact_filtering_map.items():
+                edge_edge_filter_sets[edge_idx].update(filter_set)
+
+        if v_tri_filter_sets is None:
+            self.vertex_triangle_contact_filtering_list = None
+            self.vertex_triangle_contact_filtering_list_offsets = None
         else:
-            self.vertex_triangle_filtering_list = None
-            self.vertex_triangle_filtering_list_offsets = None
+            self.vertex_triangle_contact_filtering_list, self.vertex_triangle_contact_filtering_list_offsets = _set_to_csr(v_tri_filter_sets)
+            self.vertex_triangle_contact_filtering_list = wp.array(self.vertex_triangle_contact_filtering_list, dtype=int, device=self.device)
+            self.vertex_triangle_contact_filtering_list_offsets = wp.array(self.vertex_triangle_contact_filtering_list_offsets,  dtype=int, device=self.device)
 
-        # if self.self_contact_rest_filter_radius > 0:
-        #     self.vertex_triangle_filtering_list, self.vertex_triangle_filtering_list_offsets = (
-        #         build_vertex_triangle_filtering_csr(
-        #             self.self_contact_rest_filter_radius,
-        #             self.trimesh_collision_detector.bvh_tris.id,
-        #             self.model.particle_q,
-        #             self.model.tri_indices,
-        #             self.device,
-        #         )
-        #     )
-        #
-        #     # query_radius: float,
-        #     #     bvh_id: int,
-        #     #     pos: wp.array,                 # wp.array(vec3)
-        #     #     edge_indices: wp.array,        # (E,2)
-        #     #     device: str = "cuda",
-        #     #     edge_edge_parallel_epsilon: float = 1e-5,
-        #     self.ee_filtering_list, self.ee_filtering_list_offsets = build_edge_edge_filtering_csr(
-        #         self.self_contact_rest_filter_radius,
-        #         self.trimesh_collision_detector.bvh_edges.id,
-        #         self.model.particle_q,
-        #         self.model.edge_indices,
-        #         self.device,
-        #     )
-        # else:
-        #     self.vertex_triangle_filtering_list = None
-        #     self.vertex_triangle_filtering_list_offsets = None
-        #     self.ee_filtering_list = None
-        #     self.ee_filtering_list_offsets = None
+        if edge_edge_filter_sets is None:
+            self.edge_edge_contact_filtering_list = None
+            self.edge_edge_contact_filtering_list_offsets = None
+        else:
+            self.edge_edge_contact_filtering_list, self.edge_edge_contact_filtering_list_offsets = _set_to_csr(edge_edge_filter_sets)
+            self.edge_edge_contact_filtering_list = wp.array(self.edge_edge_contact_filtering_list, dtype=int, device=self.device)
+            self.edge_edge_contact_filtering_list_offsets = wp.array(self.edge_edge_contact_filtering_list_offsets, dtype=int, device=self.device)
+
+
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
