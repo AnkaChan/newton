@@ -69,12 +69,13 @@ class Example:
                 hz=extents[2],
             )
         elif self.collider != "none":
-            extents = (0.5, 2.0, 0.8)
             if self.collider == "cube":
+                extents = (0.5, 2.0, 0.8)
                 xform = wp.transform(wp.vec3(0.75, 0.0, 0.8), wp.quat_identity())
             elif self.collider == "wedge":
+                extents = (0.5, 2.0, 0.5)
                 xform = wp.transform(
-                    wp.vec3(0.0, 0.0, 0.9), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
+                    wp.vec3(0.1, 0.0, 0.5), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
                 )
 
             builder.add_shape_box(
@@ -114,6 +115,7 @@ class Example:
 
         self.viewer.show_particles = True
         self.show_normals = False
+        self.show_stress = False
 
         self.capture()
 
@@ -130,7 +132,7 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.solver.step(self.state_0, self.state_1, None, None, self.sim_dt)
-            self.solver.project_outside(self.state_1, self.state_1, self.sim_dt)
+            # self.solver.project_outside(self.state_1, self.state_1, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -195,10 +197,106 @@ class Example:
             self.viewer.log_lines("/normal_roots", None, None, None)
             self.viewer.log_lines("/normal_tips", None, None, None)
 
+        if self.show_stress:
+            # for debugging purposes, we can visualize the collider normals
+
+            stresses = self.state_0.ws_stress_field.dof_values
+            pos = self.state_0.ws_stress_field.space.node_positions()
+
+            pressure = stresses.numpy()[:, 0]
+
+            # map pressure to color using a colormap
+            # Map pressure to colors using a simple colormap: blue (min) -> green (mid) -> red (max)
+            pressure_min = np.min(pressure)
+            pressure_max = np.max(pressure)
+            pressure_range = pressure_max - pressure_min if pressure_max > pressure_min else 1.0
+            # Normalize pressure to [0, 1]
+            pressure_norm = (pressure - pressure_min) / pressure_range
+
+            # Blue (low), Green (mid), Red (high)
+            # mid point at 0.5, so interpolate <0.5 blue->green, >=0.5 green->red
+            colors_np = np.zeros((pressure.shape[0], 3), dtype=np.float32)
+            for i, v in enumerate(pressure_norm):
+                if v < 0.5:
+                    # blue to green
+                    t = v / 0.5
+                    colors_np[i] = (
+                        0.0 * (1 - t) + 0.0 * t,  # R: blue->green: 0->0
+                        0.0 * (1 - t) + 1.0 * t,  # G: blue->green: 0->1
+                        1.0 * (1 - t) + 0.0 * t,
+                    )  # B: blue->green: 1->0
+                else:
+                    # green to red
+                    t = (v - 0.5) / 0.5
+                    colors_np[i] = (
+                        0.0 * (1 - t) + 1.0 * t,  # R: green->red: 0->1
+                        1.0 * (1 - t) + 0.0 * t,  # G: green->red: 1->0
+                        0.0,
+                    )  # B: green->red: 0->0
+
+            colors = wp.array(colors_np, dtype=wp.vec3)
+
+            # draw two segments per normal so we can visualize direction (red roots, orange tips)
+            self.viewer.log_lines(
+                "/stress",
+                starts=pos,
+                ends=pos + wp.vec3(0.0, 0.0, 0.01),
+                colors=colors,
+            )
+        else:
+            self.viewer.log_lines("/stress", None, None, None)
+
+
+        # self.particle_colors = wp.full(
+        #     shape=self.model.particle_count, value=wp.vec3(0.1, 0.1, 0.2), device=self.model.device
+        # )
+
+
+        # Jp = self.state_0.particle_Jp.numpy()
+        # Jp_min = 0.01
+        # Jp_max = 4.0
+        # Jp_range = Jp_max - Jp_min if Jp_max > Jp_min else 1.0
+        # Jp_norm = (Jp - Jp_min) / Jp_range
+
+        # colors_np = np.zeros((Jp.shape[0], 3), dtype=np.float32)
+        # for i, v in enumerate(Jp_norm):
+        #     if v < 0.5:
+        #         # blue to green
+        #         t = v / 0.5
+        #         colors_np[i] = (
+        #             0.0 * (1 - t) + 0.0 * t,  # R: blue->green: 0->0
+        #             0.0 * (1 - t) + 1.0 * t,  # G: blue->green: 0->1
+        #             1.0 * (1 - t) + 0.0 * t,
+        #         )  # B: blue->green: 1->0
+        #     else:
+        #         # green to red
+        #         t = (v - 0.5) / 0.5
+        #         colors_np[i] = (
+        #             0.0 * (1 - t) + 1.0 * t,  # R: green->red: 0->1
+        #             1.0 * (1 - t) + 0.0 * t,  # G: green->red: 1->0
+        #             0.0,
+        #         )  # B: green->red: 0->0
+
+        # self.particle_colors = wp.array(colors_np, dtype=wp.vec3)
+
+
+        # # Jp_colors = Jp_norm * wp.vec3(1.0, 0.0, 0.0) + (1.0 - Jp_norm) * wp.vec3(0.0, 1.0, 0.0)
+
+
+
+        # self.viewer.log_points(
+        #     name="/model/particles",
+        #     points=self.state_0.particle_q,
+        #     radii=self.model.particle_radius,
+        #     colors=self.particle_colors,
+        #     hidden=False,
+        # )
+
         self.viewer.end_frame()
 
     def render_ui(self, imgui):
         _changed, self.show_normals = imgui.checkbox("Show Normals", self.show_normals)
+        _changed, self.show_stress = imgui.checkbox("Show Stress", self.show_stress)
 
     @staticmethod
     def emit_particles(builder: newton.ModelBuilder, args):
@@ -267,8 +365,9 @@ if __name__ == "__main__":
     parser.add_argument("--solver", "-s", type=str, default="gauss-seidel", choices=["gauss-seidel", "jacobi"])
     parser.add_argument("--transfer-scheme", "-ts", type=str, default="apic", choices=["apic", "pic"])
 
-    parser.add_argument("--strain-basis", "-sb", type=str, default="P0", choices=["P0", "Q1"])
+    parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
     parser.add_argument("--collider-basis", "-cb", type=str, default="Q1")
+    parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
 
     parser.add_argument("--max-iterations", "-it", type=int, default=250)
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
