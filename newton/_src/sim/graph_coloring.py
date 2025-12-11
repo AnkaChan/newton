@@ -125,7 +125,16 @@ def convert_to_color_groups(num_colors, particle_colors, return_wp_array=False, 
     return color_groups
 
 
-def construct_trimesh_graph_edges(trimesh_edge_indices, return_wp_array=False):
+def _canonicalize_edges_np(edges_np: np.ndarray) -> np.ndarray:
+    """Sort edge endpoints and drop duplicate edges."""
+    if edges_np.size == 0:
+        return np.empty((0, 2), dtype=int)
+    edges_sorted = np.sort(edges_np, axis=1)
+    edges_unique = np.unique(edges_sorted, axis=0)
+    return edges_unique.astype(int)
+
+
+def construct_trimesh_graph_edges(trimesh_edge_indices, include_bending=True, return_wp_array=False):
     if isinstance(trimesh_edge_indices, np.ndarray):
         trimesh_edge_indices = wp.array(trimesh_edge_indices, dtype=int, device="cpu")
 
@@ -137,7 +146,7 @@ def construct_trimesh_graph_edges(trimesh_edge_indices, return_wp_array=False):
         kernel=construct_trimesh_graph_edges_kernel,
         inputs=[
             trimesh_edge_indices.to("cpu"),
-            True,
+            include_bending,
         ],
         outputs=[graph_edge_indices, graph_num_edges],
         dim=1,
@@ -151,6 +160,42 @@ def construct_trimesh_graph_edges(trimesh_edge_indices, return_wp_array=False):
         graph_edge_indices_true_size = wp.array(graph_edge_indices_true_size, dtype=int, device="cpu")
 
     return graph_edge_indices_true_size
+
+
+def construct_tetmesh_graph_edges(tet_indices, return_wp_array: bool = False):
+    """
+    Convert tet connectivity (n_tets x 4) into unique graph edges (u, v).
+    """
+    if tet_indices is None:
+        edges_np = np.empty((0, 2), dtype=int)
+    else:
+        if isinstance(tet_indices, wp.array):
+            tet_np = tet_indices.numpy()
+        else:
+            tet_np = np.asarray(tet_indices, dtype=int)
+        if tet_np.size == 0:
+            edges_np = np.empty((0, 2), dtype=int)
+        else:
+            v0 = tet_np[:, 0]
+            v1 = tet_np[:, 1]
+            v2 = tet_np[:, 2]
+            v3 = tet_np[:, 3]
+            edges_np = np.stack(
+                [
+                    np.stack([v0, v1], axis=1),
+                    np.stack([v0, v2], axis=1),
+                    np.stack([v0, v3], axis=1),
+                    np.stack([v1, v2], axis=1),
+                    np.stack([v1, v3], axis=1),
+                    np.stack([v2, v3], axis=1),
+                ],
+                axis=0,
+            ).reshape(-1, 2)
+    edges_np = _canonicalize_edges_np(edges_np)
+
+    if return_wp_array:
+        return wp.array(edges_np, dtype=int, device="cpu")
+    return edges_np
 
 
 def color_trimesh(
@@ -184,6 +229,33 @@ def color_trimesh(
 
     color_groups = color_graph(num_nodes, graph_edge_indices, balance_colors, target_max_min_color_ratio, algorithm)
     return color_groups
+
+
+def color_trimesh_and_tetmesh(
+    num_nodes,
+    trimesh_edge_indices,
+    tet_indices,
+    include_bending_energy,
+    balance_colors=True,
+    target_max_min_color_ratio=1.1,
+    algorithm: ColoringAlgorithm = ColoringAlgorithm.MCS,
+):
+    """
+    Generate a coloring that accounts for both triangle mesh edges (with optional bending diagonals)
+    and tet mesh edges. All edges are deduplicated before coloring.
+    """
+    tri_edges_np = construct_trimesh_graph_edges(
+        trimesh_edge_indices, include_bending=include_bending_energy, return_wp_array=False
+    )
+    tet_edges_np = construct_tetmesh_graph_edges(tet_indices, return_wp_array=False)
+
+    if tri_edges_np.size == 0 and tet_edges_np.size == 0:
+        return []
+
+    merged_edges = _canonicalize_edges_np(np.vstack([tri_edges_np, tet_edges_np]))
+    graph_edge_indices = wp.array(merged_edges, dtype=int, device="cpu")
+
+    return color_graph(num_nodes, graph_edge_indices, balance_colors, target_max_min_color_ratio, algorithm)
 
 
 def color_graph(

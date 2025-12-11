@@ -57,7 +57,12 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
+from .graph_coloring import (
+    ColoringAlgorithm,
+    color_trimesh,
+    color_trimesh_and_tetmesh,
+    combine_independent_particle_coloring,
+)
 from .joints import (
     JOINT_LIMIT_UNLIMITED,
     EqType,
@@ -5245,17 +5250,28 @@ class ModelBuilder:
             Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
 
         """
-        # ignore bending energy if it is too small
-        edge_indices = np.array(self.edge_indices)
+        edge_indices = np.array(self.edge_indices, dtype=np.int32)
+        tet_indices = np.array(self.tet_indices, dtype=np.int32)
 
-        self.particle_color_groups = color_trimesh(
-            len(self.particle_q),
-            edge_indices,
-            include_bending,
-            algorithm=coloring_algorithm,
-            balance_colors=balance_colors,
-            target_max_min_color_ratio=target_max_min_color_ratio,
-        )
+        if tet_indices.size > 0:
+            self.particle_color_groups = color_trimesh_and_tetmesh(
+                len(self.particle_q),
+                edge_indices,
+                tet_indices,
+                include_bending,
+                algorithm=coloring_algorithm,
+                balance_colors=balance_colors,
+                target_max_min_color_ratio=target_max_min_color_ratio,
+            )
+        else:
+            self.particle_color_groups = color_trimesh(
+                len(self.particle_q),
+                edge_indices,
+                include_bending,
+                algorithm=coloring_algorithm,
+                balance_colors=balance_colors,
+                target_max_min_color_ratio=target_max_min_color_ratio,
+            )
 
     def _validate_world_ordering(self):
         """Validate that world indices are monotonic, contiguous, and properly ordered.
