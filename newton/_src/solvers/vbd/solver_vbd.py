@@ -1689,49 +1689,20 @@ def forward_step(
     inv_mass: wp.array(dtype=float),
     external_force: wp.array(dtype=wp.vec3),
     particle_flags: wp.array(dtype=wp.int32),
-    inertia: wp.array(dtype=wp.vec3),
+    inertia_out: wp.array(dtype=wp.vec3),
+    displacements_out: wp.array(dtype=wp.vec3),
 ):
     particle = wp.tid()
 
     pos_prev[particle] = pos[particle]
     if not particle_flags[particle] & ParticleFlags.ACTIVE:
-        inertia[particle] = pos_prev[particle]
+        inertia_out[particle] = pos_prev[particle]
         return
     vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
-    pos[particle] = pos[particle] + vel_new * dt
-    inertia[particle] = pos[particle]
-
-
-@wp.kernel
-def forward_step_penetration_free(
-    dt: float,
-    gravity: wp.array(dtype=wp.vec3),
-    pos_prev: wp.array(dtype=wp.vec3),
-    pos: wp.array(dtype=wp.vec3),
-    vel: wp.array(dtype=wp.vec3),
-    inv_mass: wp.array(dtype=float),
-    external_force: wp.array(dtype=wp.vec3),
-    particle_flags: wp.array(dtype=wp.int32),
-    pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-    particle_conservative_bounds: wp.array(dtype=float),
-    inertia: wp.array(dtype=wp.vec3),
-    truncation_mode: wp.int32,
-):
-    particle_index = wp.tid()
-
-    pos_prev[particle_index] = pos[particle_index]
-    if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
-        inertia[particle_index] = pos_prev[particle_index]
-        return
-    vel_new = vel[particle_index] + (gravity[0] + external_force[particle_index] * inv_mass[particle_index]) * dt
-    pos_inertia = pos[particle_index] + vel_new * dt
-    inertia[particle_index] = pos_inertia
-    if truncation_mode == 0:
-        pos[particle_index] = apply_conservative_bound_truncation(
-            particle_index, pos_inertia, pos_prev_collision_detection, particle_conservative_bounds
-        )
-    else:
-        pos[particle_index] = pos_inertia
+    inertia = pos[particle] + vel_new * dt
+    inertia_out[particle] = inertia
+    if displacements_out:
+        displacements_out[particle] = vel_new * dt
 
 
 @wp.kernel
@@ -2248,27 +2219,24 @@ def validate_conservative_bound(
         )
 
 
-@wp.func
+@wp.kernel
 def apply_conservative_bound_truncation(
-    v_index: wp.int32,
-    pos_new: wp.vec3,
+    particle_displacements: wp.array(dtype=wp.vec3),
     pos_prev_collision_detection: wp.array(dtype=wp.vec3),
     particle_conservative_bounds: wp.array(dtype=float),
+    particle_q_out: wp.array(dtype=wp.vec3),
 ):
-    particle_pos_prev_collision_detection = pos_prev_collision_detection[v_index]
-    accumulated_displacement = pos_new - particle_pos_prev_collision_detection
-    conservative_bound = particle_conservative_bounds[v_index]
+    particle_idx = wp.tid()
+
+    particle_pos_prev_collision_detection = pos_prev_collision_detection[particle_idx]
+    accumulated_displacement = particle_displacements[particle_idx]
+    conservative_bound = particle_conservative_bounds[particle_idx]
 
     accumulated_displacement_norm = wp.length(accumulated_displacement)
-    if accumulated_displacement_norm > conservative_bound and conservative_bound > 1e-5:
-        accumulated_displacement_norm_truncated = conservative_bound
-        accumulated_displacement = accumulated_displacement * (
-            accumulated_displacement_norm_truncated / accumulated_displacement_norm
-        )
-
-        return particle_pos_prev_collision_detection + accumulated_displacement
-    else:
-        return pos_new
+    if accumulated_displacement_norm > conservative_bound and conservative_bound > 1e-6:
+        accumulated_displacement = accumulated_displacement * (conservative_bound / accumulated_displacement_norm)
+    particle_displacements[particle_idx] = accumulated_displacement
+    particle_q_out[particle_idx] = particle_pos_prev_collision_detection + accumulated_displacement
 
 
 @wp.kernel
@@ -3209,9 +3177,7 @@ def solve_trimesh(
 
     if abs(wp.determinant(h)) > 1e-8:
         h_inv = wp.inverse(h)
-        particle_displacements[particle_index] = h_inv * f
-    else:
-        particle_displacements[particle_index] = wp.vec3(0.)
+        particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f
 
 
 @wp.kernel
@@ -3342,9 +3308,7 @@ def solve_trimesh_tile(
                 + particle_forces[particle_index]
             )
             if abs(wp.determinant(h)) > 1e-8:
-                particle_displacements[particle_index] = h_inv * f_total
-            else:
-                particle_displacements[particle_index] = wp.vec3(0.0)
+                particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
 
 
 class SolverVBD(SolverBase):
@@ -3398,7 +3362,7 @@ class SolverVBD(SolverBase):
         collision_detection_interval: int = 0,
         edge_edge_parallel_epsilon: float = 1e-5,
         use_tile_solve: bool = True,
-        truncation_mode: int = 1,  # 0 for isometric truncation, 1 for planar truncation
+        truncation_mode: int = 0,  # 0 for isometric truncation, 1 for planar truncation
     ):
         """
         Args:
@@ -3799,7 +3763,10 @@ class SolverVBD(SolverBase):
                 self.model.particle_inv_mass,
                 state_in.particle_f,
                 self.model.particle_flags,
+            ],
+            outputs=[
                 self.inertia,
+                state_in.particle_q,
             ],
             dim=self.model.particle_count,
             device=self.device,
@@ -3955,12 +3922,12 @@ class SolverVBD(SolverBase):
         # 0: compute conservative bounds
         # 1: compute division planes
         # which is determined by the truncation_mode
-        self.collision_detection_penetration_free(state_in, dt)
+        self.collision_detection_penetration_free(state_in)
 
         model = self.model
 
         wp.launch(
-            kernel=forward_step_penetration_free,
+            kernel=forward_step,
             inputs=[
                 dt,
                 model.gravity,
@@ -3970,37 +3937,23 @@ class SolverVBD(SolverBase):
                 self.model.particle_inv_mass,
                 state_in.particle_f,
                 self.model.particle_flags,
-                self.pos_prev_collision_detection,
-                self.particle_conservative_bounds,
+            ],
+            outputs=[
                 self.inertia,
-                self.truncation_mode,
+                self.particle_displacements,
             ],
             dim=self.model.particle_count,
             device=self.device,
         )
-        if self.truncation_mode == 1:
-            wp.launch(
-                kernel=run_penetration_free_truncation_v2,
-                inputs=[
-                    self.particle_q_prev,
-                    state_in.particle_q,
-                    1e-8,
-                    self.conservative_bound_relaxation,
-                    self.self_contact_radius * 0.45,
-                    self.vertex_division_plane_buffer_offsets,
-                    self.division_plane_nds,
-                    self.division_num_planes,
-                ],
-                dim=self.model.particle_count,
-                device=self.device,
-            )
+
+        self.penetration_free_truncation(self.particle_displacements, state_in.particle_q)
 
         for _iter in range(self.iterations):
             # after initialization, we need new collision detection to update the bounds
             if (self.collision_detection_interval == 0 and _iter == 0) or (
                 self.collision_detection_interval >= 1 and _iter % self.collision_detection_interval == 0
             ):
-                self.collision_detection_penetration_free(state_in, dt)
+                self.collision_detection_penetration_free(state_in)
 
             self.particle_forces.zero_()
             self.particle_hessians.zero_()
@@ -4127,28 +4080,10 @@ class SolverVBD(SolverBase):
                         device=self.device,
                     )
 
-                wp.launch(
-                    kernel=copy_particle_positions_back,
-                    inputs=[self.model.particle_color_groups[color], state_in.particle_q, state_out.particle_q],
-                    dim=self.model.particle_color_groups[color].size,
-                    device=self.device,
-                )
-        if self.truncation_mode == 1:
-            wp.launch(
-                kernel=run_penetration_free_truncation_v2,
-                inputs=[
-                    self.particle_q_prev,
-                    state_in.particle_q,
-                    1e-8,
-                    self.conservative_bound_relaxation,
-                    self.self_contact_radius * 0.45,
-                    self.vertex_division_plane_buffer_offsets,
-                    self.division_plane_nds,
-                    self.division_num_planes,
-                ],
-                dim=self.model.particle_count,
-                device=self.device,
-            )
+                self.penetration_free_truncation(self.particle_displacements, state_in.particle_q)
+
+        wp.copy(state_out.particle_q, state_in.particle_q)
+
         wp.launch(
             kernel=update_velocity,
             inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
@@ -4156,9 +4091,9 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-    def collision_detection_penetration_free(
-        self, current_state: State, particle_displacements: wp.array(dtype=wp.vec3)
-    ):
+    def collision_detection_penetration_free(self, current_state: State):
+        self.particle_displacements.zero_()
+
         self.trimesh_collision_detector.refit(current_state.particle_q)
         self.trimesh_collision_detector.vertex_triangle_collision_detection(
             self.self_contact_margin,
@@ -4192,7 +4127,7 @@ class SolverVBD(SolverBase):
                 kernel=initialize_truncation_planes,
                 inputs=[
                     current_state.particle_q,
-                    particle_displacements,  # these are velocities not displacements, we need to account for that
+                    self.particle_displacements,  # these are velocities not displacements, we need to account for that
                     self.model.tri_indices,
                     self.model.edge_indices,
                     self.adjacency,
@@ -4219,9 +4154,23 @@ class SolverVBD(SolverBase):
         if self.handle_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)
 
-    def penetration_free_truncation(self):
+    def penetration_free_truncation(self, displacements_in, particle_q=None):
+        """
+        Modify displacements_in in-place, also modify particle_q if its not None
+
+        """
         if self.truncation_mode == 0:
-            pass
+            wp.launch(
+                kernel=apply_conservative_bound_truncation,
+                inputs=[
+                    displacements_in,  # particle_displacements: wp.array(dtype=wp.vec3),
+                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
+                    self.particle_conservative_bounds,  # particle_conservative_bounds: wp.array(dtype=float),
+                    particle_q,  # particle_q_out: wp.array(dtype=wp.vec3),
+                ],
+                dim=self.model.particle_count,
+                device=self.device,
+            )
         else:
             pass
 
