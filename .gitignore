@@ -29,6 +29,7 @@ rspec.xml
 .vscode/
 .history/
 .idea/
+.vs
 
 # Documentation
 docs/_build/
