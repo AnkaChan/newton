@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Common definitions for types and constants."""
-
 import gc
 import math
 from typing import Any
@@ -516,7 +514,6 @@ def solve_local_stress_jacobi(
 @wp.func
 def apply_stress_delta(
     tau_i: int,
-    D: vec6,
     delta_stress: vec6,
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
@@ -531,14 +528,16 @@ def apply_stress_delta(
 
     for b in range(block_beg, block_end):
         u_i = strain_mat_columns[b]
-        delta_vel = inv_mass_matrix[u_i] * wp.cw_div(delta_stress, D) @ local_strain_mat_values[b]
-        velocities[u_i] += delta_vel
+        delta_impulse = delta_stress @ local_strain_mat_values[b]
+        velocities[u_i] += inv_mass_matrix[u_i] * delta_impulse
 
 
 @wp.kernel
 def apply_stress_gs(
-    color_offset: int,
+    color: int,
+    launch_dim: int,
     color_nodes_per_element: int,
+    color_offsets: wp.array(dtype=int),
     color_indices: wp.array(dtype=int),
     strain_mat_offsets: wp.array(dtype=int),
     strain_mat_columns: wp.array(dtype=int),
@@ -554,29 +553,34 @@ def apply_stress_gs(
     strain matrix is not assembled
     """
 
-    base_index = color_indices[wp.tid() + color_offset]
-    beg = base_index * color_nodes_per_element
-    end = beg + color_nodes_per_element
-    for tau_i in range(beg, end):
-        D = delassus_diagonal[tau_i]
-        cur_stress = local_stress[tau_i]
+    i = wp.tid()
+    color_beg = color_offsets[color] + i
+    color_end = color_offsets[color + 1]
 
-        apply_stress_delta(
-            tau_i,
-            D,
-            cur_stress,
-            strain_mat_offsets,
-            strain_mat_columns,
-            local_strain_mat_values,
-            inv_mass_matrix,
-            velocities,
-        )
+    for color_offset in range(color_beg, color_end, launch_dim):
+        beg = color_indices[color_offset]
+        end = beg + color_nodes_per_element
+        for tau_i in range(beg, end):
+            D = delassus_diagonal[tau_i]
+            cur_stress = local_stress[tau_i]
+
+            apply_stress_delta(
+                tau_i,
+                wp.cw_div(cur_stress, D),
+                strain_mat_offsets,
+                strain_mat_columns,
+                local_strain_mat_values,
+                inv_mass_matrix,
+                velocities,
+            )
 
 
 @wp.kernel
 def solve_local_stress_gs(
-    color_offset: int,
+    color: int,
+    launch_dim: int,
     color_nodes_per_element: int,
+    color_offsets: wp.array(dtype=int),
     color_indices: wp.array(dtype=int),
     yield_params: wp.array(dtype=YieldParamVec),
     compliance_mat_offsets: wp.array(dtype=int),
@@ -599,69 +603,51 @@ def solve_local_stress_gs(
     delta to particle velocities, using a coloring approach
     to avoid avoid race conditions.
     """
-    base_index = color_indices[wp.tid() + color_offset]
-    beg = base_index * color_nodes_per_element
-    end = beg + color_nodes_per_element
-    for tau_i in range(beg, end):
-        D = delassus_diagonal[tau_i]
-        local_strain = compute_local_strain(
-            tau_i,
-            compliance_mat_offsets,
-            compliance_mat_columns,
-            local_compliance_mat_values,
-            strain_mat_offsets,
-            strain_mat_columns,
-            local_strain_mat_values,
-            local_strain_rhs,
-            velocities,
-            local_stress,
-        )
 
-        delta_stress = solve_local_stress(
-            tau_i,
-            D,
-            local_strain,
-            yield_params,
-            delassus_normal,
-            unilateral_strain_offset,
-            local_stress,
-        )
-
-        apply_stress_delta(
-            tau_i,
-            D,
-            delta_stress,
-            strain_mat_offsets,
-            strain_mat_columns,
-            local_strain_mat_values,
-            inv_mass_matrix,
-            velocities,
-        )
-
-        local_stress[tau_i] += delta_stress
-        delta_correction[tau_i] = delta_stress  # for residual evaluation
-
-
-@wp.kernel
-def apply_collider_impulse(
-    collider_impulse: wp.array(dtype=wp.vec3),
-    collider_friction: wp.array(dtype=float),
-    inv_mass: wp.array(dtype=float),
-    collider_inv_mass: wp.array(dtype=float),
-    velocities: wp.array(dtype=wp.vec3),
-    collider_velocities: wp.array(dtype=wp.vec3),
-):
-    """
-    Applies pre-computed impulses to particles and colliders.
-    """
     i = wp.tid()
+    color_beg = color_offsets[color] + i
+    color_end = color_offsets[color + 1]
 
-    friction_coeff = collider_friction[i]
-    if friction_coeff < 0.0:
-        collider_impulse[i] = wp.vec3(0.0)
-    else:
-        velocities[i] += inv_mass[i] * collider_impulse[i]
-        collider_velocities[i] -= collider_inv_mass[i] * collider_impulse[i]
+    for color_offset in range(color_beg, color_end, launch_dim):
+        beg = color_indices[color_offset]
+        end = beg + color_nodes_per_element
+        for tau_i in range(beg, end):
+            local_strain = compute_local_strain(
+                tau_i,
+                compliance_mat_offsets,
+                compliance_mat_columns,
+                local_compliance_mat_values,
+                strain_mat_offsets,
+                strain_mat_columns,
+                local_strain_mat_values,
+                local_strain_rhs,
+                velocities,
+                local_stress,
+            )
+
+            D = delassus_diagonal[tau_i]
+            delta_stress = solve_local_stress(
+                tau_i,
+                D,
+                local_strain,
+                yield_params,
+                delassus_normal,
+                unilateral_strain_offset,
+                local_stress,
+            )
+
+            local_stress[tau_i] += delta_stress
+            delta_correction[tau_i] = delta_stress  # for residual evaluation
+
+            apply_stress_delta(
+                tau_i,
+                wp.cw_div(delta_stress, D),
+                strain_mat_offsets,
+                strain_mat_columns,
+                local_strain_mat_values,
+                inv_mass_matrix,
+                velocities,
+            )
 
 
 @wp.func
@@ -685,6 +671,28 @@ def solve_coulomb_isotropic(
             u *= 1.0 + mu * u_n / wp.sqrt(tau)
 
     return u
+
+
+@wp.kernel
+def apply_nodal_impulse(
+    collider_impulse: wp.array(dtype=wp.vec3),
+    collider_friction: wp.array(dtype=float),
+    inv_mass: wp.array(dtype=float),
+    collider_inv_mass: wp.array(dtype=float),
+    velocities: wp.array(dtype=wp.vec3),
+    collider_velocities: wp.array(dtype=wp.vec3),
+):
+    """
+    Applies pre-computed impulses to particles and colliders.
+    """
+    i = wp.tid()
+
+    friction_coeff = collider_friction[i]
+    if friction_coeff < 0.0:
+        collider_impulse[i] = wp.vec3(0.0)
+    else:
+        velocities[i] += inv_mass[i] * collider_impulse[i]
+        collider_velocities[i] -= collider_inv_mass[i] * collider_impulse[i]
 
 
 @wp.kernel
@@ -733,6 +741,120 @@ def solve_nodal_friction(
     collider_velocities[i] -= collider_inv_mass[i] * delta_impulse
 
 
+@wp.kernel
+def apply_subgrid_impulse(
+    tr_collider_mat_offsets: wp.array(dtype=int),
+    tr_collider_mat_columns: wp.array(dtype=int),
+    tr_collider_mat_values: wp.array(dtype=float),
+    inv_mass: wp.array(dtype=float),
+    impulses: wp.array(dtype=wp.vec3),
+    velocities: wp.array(dtype=wp.vec3),
+):
+    """
+    Applies pre-computed impulses to particles and colliders.
+    """
+
+    u_i = wp.tid()
+    block_beg = tr_collider_mat_offsets[u_i]
+    block_end = tr_collider_mat_offsets[u_i + 1]
+
+    delta_f = wp.vec3(0.0)
+    for b in range(block_beg, block_end):
+        delta_f += tr_collider_mat_values[b] * impulses[tr_collider_mat_columns[b]]
+
+    velocities[u_i] += inv_mass[u_i] * delta_f
+
+
+@wp.kernel
+def apply_subgrid_impulse_warmstart(
+    collider_inv_mass: wp.array(dtype=float),
+    collider_friction: wp.array(dtype=float),
+    impulse: wp.array(dtype=wp.vec3),
+    delta_impulse: wp.array(dtype=wp.vec3),
+    collider_velocities: wp.array(dtype=wp.vec3),
+):
+    i = wp.tid()
+
+    friction_coeff = collider_friction[i]
+    if friction_coeff < 0.0:
+        impulse[i] = wp.vec3(0.0)
+
+    delta_lambda = impulse[i]
+    delta_impulse[i] = delta_lambda
+    collider_velocities[i] -= collider_inv_mass[i] * delta_lambda
+
+
+@wp.kernel
+def compute_collider_delassus_diagonal(
+    collider_mat_offsets: wp.array(dtype=int),
+    collider_mat_columns: wp.array(dtype=int),
+    collider_mat_values: wp.array(dtype=float),
+    collider_inv_mass: wp.array(dtype=float),
+    transposed_collider_mat_offsets: wp.array(dtype=int),
+    inv_volume: wp.array(dtype=float),
+    delassus_diagonal: wp.array(dtype=float),
+):
+    i = wp.tid()
+
+    block_beg = collider_mat_offsets[i]
+    block_end = collider_mat_offsets[i + 1]
+
+    inv_mass = collider_inv_mass[i]
+    w = inv_mass
+
+    for b in range(block_beg, block_end):
+        u_i = collider_mat_columns[b]
+        weight = collider_mat_values[b]
+
+        multiplicity = transposed_collider_mat_offsets[u_i + 1] - transposed_collider_mat_offsets[u_i]
+
+        w += weight * weight * inv_volume[u_i] * float(multiplicity)
+
+    delassus_diagonal[i] = w
+
+
+@wp.kernel
+def solve_subgrid_friction(
+    velocity: wp.array(dtype=wp.vec3),
+    collider_mat_offsets: wp.array(dtype=int),
+    collider_mat_columns: wp.array(dtype=int),
+    collider_mat_values: wp.array(dtype=float),
+    collider_friction: wp.array(dtype=float),
+    collider_adhesion: wp.array(dtype=float),
+    collider_normals: wp.array(dtype=wp.vec3),
+    collider_inv_mass: wp.array(dtype=float),
+    collider_delassus_diagonal: wp.array(dtype=float),
+    collider_velocities: wp.array(dtype=wp.vec3),
+    impulse: wp.array(dtype=wp.vec3),
+    delta_impulse: wp.array(dtype=wp.vec3),
+):
+    i = wp.tid()
+
+    w = collider_delassus_diagonal[i]
+    friction_coeff = collider_friction[i]
+    if w <= 0.0 or friction_coeff < 0.0:
+        return
+
+    beg = collider_mat_offsets[i]
+    end = collider_mat_offsets[i + 1]
+
+    u0 = -collider_velocities[i]
+    for b in range(beg, end):
+        u_i = collider_mat_columns[b]
+        u0 += collider_mat_values[b] * velocity[u_i]
+
+    n = collider_normals[i]
+
+    u = solve_coulomb_isotropic(friction_coeff, n, u0 - (impulse[i] + collider_adhesion[i] * n) * w)
+
+    delta_u = u - u0
+    delta_lambda = delta_u / w
+
+    impulse[i] += delta_lambda
+    delta_impulse[i] = delta_lambda
+    collider_velocities[i] -= collider_inv_mass[i] * delta_lambda
+
+
 _TILED_SUM_BLOCK_DIM = 512
 
 
@@ -773,9 +895,9 @@ class ArraySquaredNorm:
             dim=(num_blocks, self.tile_size),
             inputs=(
                 square_input,
-                self.partial_sums_a.array,
+                self.partial_sums_a,
             ),
-            outputs=(self.partial_sums_b.array,),
+            outputs=(self.partial_sums_b,),
             block_dim=self.tile_size,
             record_cmd=True,
         )
@@ -792,7 +914,7 @@ class ArraySquaredNorm:
         flip_flop = False
         while True:
             num_blocks = (array_length + self.tile_size - 1) // self.tile_size
-            partial_sums = (self.partial_sums_a if flip_flop else self.partial_sums_b).array[:num_blocks]
+            partial_sums = (self.partial_sums_a if flip_flop else self.partial_sums_b)[:num_blocks]
 
             self.sum_launch.set_param_at_index(0, square_input)
             self.sum_launch.set_param_at_index(1, data)
@@ -811,6 +933,17 @@ class ArraySquaredNorm:
 
         return data[:1]
 
+    def release(self):
+        """Return borrowed temporaries to their pool."""
+        for attr in ("partial_sums_a", "partial_sums_b"):
+            temporary = getattr(self, attr, None)
+            if temporary is not None:
+                temporary.release()
+                setattr(self, attr, None)
+
+    def __del__(self):
+        self.release()
+
 
 @wp.kernel
 def update_condition(
@@ -822,13 +955,13 @@ def update_condition(
     condition: wp.array(dtype=int),
 ):
     cur_it = iteration[0] + 1
-    stop = (wp.sqrt(residual[0]) < residual_threshold and cur_it >= min_iterations) or cur_it >= max_iterations
+    stop = (wp.sqrt(residual[0]) < residual_threshold and cur_it > min_iterations) or cur_it > max_iterations
 
     iteration[0] = cur_it
     condition[0] = wp.where(stop, 0, 1)
 
 
-def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocity):
+def apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_velocity, delta_body_qd):
     """Apply collider rigidity feedback to the current collider velocities.
 
     Computes and applies a velocity correction induced by the rigid coupling
@@ -840,29 +973,44 @@ def apply_rigidity_matrix(rigidity_mat, prev_collider_velocity, collider_velocit
     for the next iteration.
 
     Args:
-        rigidity_mat: Block-sparse rigidity matrix returned by
-            ``build_rigidity_matrix``.
+        rigidity_mat: Block-sparse rigidity operator (D + J @ IJtm) returned by
+            ``build_rigidity_operator``.
         prev_collider_velocity: Velocity vector from the previous iteration
             (updated in place at the end of the call).
         collider_velocity: Current collider velocity vector to be corrected in place.
     """
-    # velocity delta
+
+    D, J, IJtm = rigidity_operator
+
+    # compute velocity delta, store in prev_collider_velocity
     fem.utils.array_axpy(
         y=prev_collider_velocity,
         x=collider_velocity,
         alpha=1.0,
         beta=-1.0,
     )
-    # rigidity contribution to new velocity
-    sp.bsr_mv(
-        A=rigidity_mat,
-        x=prev_collider_velocity,
-        y=collider_velocity,
-        alpha=1.0,
-        beta=1.0,
-    )
+    delta_velocity = prev_collider_velocity
+
+    sp.bsr_mv(D, x=delta_velocity, y=collider_velocity, alpha=1.0, beta=1.0)
+    sp.bsr_mv(IJtm, x=delta_velocity, y=delta_body_qd, alpha=1.0, beta=0.0)
+    sp.bsr_mv(J, x=delta_body_qd, y=collider_velocity, alpha=1.0, beta=1.0)
+
     # save for next iterations
     wp.copy(dest=prev_collider_velocity, src=collider_velocity)
+
+
+class _ScopedDisableGC:
+    """Context manager to disable automatic garbage collection during graph capture.
+    Avoids capturing deallocations of arrays exterior to the capture scope.
+    """
+
+    def __enter__(self):
+        self.was_enabled = gc.isenabled()
+        gc.disable()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.was_enabled:
+            gc.enable()
 
 
 def solve_rheology(
@@ -870,7 +1018,7 @@ def solve_rheology(
     tolerance: float,
     strain_mat: sp.BsrMatrix,
     transposed_strain_mat: sp.BsrMatrix,
-    compliance_mat: sp.BsrMatrix | None,
+    compliance_mat: sp.BsrMatrix,
     inv_volume,
     node_volume,
     yield_params,
@@ -879,6 +1027,8 @@ def solve_rheology(
     plastic_strain_delta,
     stress,
     velocity,
+    collider_mat: sp.BsrMatrix,
+    transposed_collider_mat: sp.BsrMatrix,
     collider_friction,
     collider_adhesion,
     collider_normals,
@@ -888,7 +1038,7 @@ def solve_rheology(
     color_offsets,
     color_indices: wp.array | None = None,
     color_nodes_per_element: int = 1,
-    rigidity_mat: sp.BsrMatrix | None = None,
+    rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix, sp.BsrMatrix] | None = None,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph=True,
     verbose=wp.config.verbose,
@@ -916,7 +1066,7 @@ def solve_rheology(
         tolerance: Solver tolerance for the stress residual (L2 norm).
         strain_mat: Strain-to-velocity block-sparse matrix (B).
         transposed_strain_mat: BSR matrix container for assembling B^T. Used for Jacobi only.
-        compliance_mat: Optional compliance matrix for elastic materials.
+        compliance_mat: Compliance matrix for elastic materials.
         inv_volume: Per-velocity-node inverse mass (or volume scaling) used in
             the solver updates.
         node_volume: Per-strain-node particle volume measure.
@@ -930,16 +1080,15 @@ def solve_rheology(
         velocity: Grid velocity degrees of freedom to be updated in place.
         collider_friction: Per-velocity-node collider friction coefficients; <0
             disables contact at that node.
-        collider_adhesion: Per-velocity-node adhesion coefficients scaled by
-            dt and voxel size.
+        collider_adhesion: Per-velocity-node adhesion coefficients, same unit as impulse (N.s / V0) .
         collider_normals: Per-velocity-node contact normals.
         collider_velocities: Per-velocity-node collider rigid velocities.
         collider_inv_mass: Per-velocity-node collider inverse masses.
-        collider_impulse: In/out stored collider impulses (warm start).
+        collider_impulse: In/out stored collider impulses (warm start, N.s/V0).
         color_offsets: Optional coloring offsets for Gauss-Seidel.
         color_indices: Optional coloring indices for Gauss-Seidel.
         color_nodes_per_element: Number of nodes per colored element.
-        rigidity_mat: Optional rigidity matrix coupling nodes to collider DOFs.
+        rigidity_operator: Optional rigidity operator coupling nodes to collider DOFs.
         temporary_store: Temporary storage arena for intermediate arrays.
         use_graph: If True, uses conditional CUDA graphs for the iteration loop.
         verbose: If True, prints residuals/iteration counts.
@@ -948,11 +1097,17 @@ def solve_rheology(
         A captured execution graph handle when ``use_graph`` is True and the
         device supports it; otherwise ``None``.
     """
-    delta_stress = fem.borrow_temporary_like(stress, temporary_store)
+    borrowed_temporaries: list[Any] = []
 
-    delassus_rotation = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66)
-    delassus_diagonal = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6)
-    delassus_normal = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6)
+    def _register_temp(temp):
+        borrowed_temporaries.append(temp)
+        return temp
+
+    delta_stress = _register_temp(fem.borrow_temporary_like(stress, temporary_store))
+
+    delassus_rotation = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66))
+    delassus_diagonal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6))
+    delassus_normal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=vec6))
 
     # If coloring is provided, use Gauss-Seidel, otherwise Jacobi with mass splitting
     color_count = 0 if color_offsets is None else len(color_offsets) - 1
@@ -964,23 +1119,11 @@ def solve_rheology(
     if not gs:
         sp.bsr_set_transpose(dest=transposed_strain_mat, src=strain_mat)
 
-    if compliance_mat is None:
+    if compliance_mat.nnz == 0:
         compliance_mat_diagonal = None
-        compliance_mat_values = None
-        compliance_mat_columns = None
-        # make a zero-stride array for compliance_mat_offsets
-        compliance_mat_offsets_tmp = fem.borrow_temporary(temporary_store, shape=1, dtype=int)
-        compliance_mat_offsets_tmp.array.zero_()
-        compliance_mat_offsets = wp.array(
-            ptr=compliance_mat_offsets_tmp.array.ptr, shape=stress.shape[0] + 1, strides=(0,), dtype=int
-        )
     else:
-        compliance_mat_diagonal_temp = fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66)
-        compliance_mat_diagonal = compliance_mat_diagonal_temp.array
+        compliance_mat_diagonal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66))
         sp.bsr_get_diag(compliance_mat, out=compliance_mat_diagonal)
-        compliance_mat_values = compliance_mat.values
-        compliance_mat_offsets = compliance_mat.offsets
-        compliance_mat_columns = compliance_mat.columns
 
     # Project initial stress on yield surface
     wp.launch(
@@ -995,7 +1138,7 @@ def solve_rheology(
     # Compute and factorize diagonal blacks, rotate strain matrix to diagonal basis
     # NOTE: we reuse the same memory for local versions of the variables
     local_strain_mat_values = strain_mat.values
-    local_compliance_mat_values = compliance_mat_values
+    local_compliance_mat_values = compliance_mat.values
     local_strain_rhs = strain_rhs
     local_stress = stress
 
@@ -1014,9 +1157,9 @@ def solve_rheology(
             stress,
         ],
         outputs=[
-            delassus_rotation.array,
-            delassus_diagonal.array,
-            delassus_normal.array,
+            delassus_rotation,
+            delassus_diagonal,
+            delassus_normal,
             local_strain_mat_values,
             local_strain_rhs,
             local_stress,
@@ -1028,59 +1171,71 @@ def solve_rheology(
             kernel=rotate_and_scale_compliance_mat,
             dim=stress.shape[0],
             inputs=[
-                compliance_mat_offsets,
-                compliance_mat_columns,
-                compliance_mat_values,
-                delassus_rotation.array,
-                delassus_diagonal.array,
+                compliance_mat.offsets,
+                compliance_mat.columns,
+                compliance_mat.values,
+                delassus_rotation,
+                delassus_diagonal,
             ],
         )
 
     if gs:
+        device = velocity.device
+        if device.is_cuda:
+            color_block_count = device.sm_count * 2
+        else:
+            color_block_count = 1
+        color_block_dim = 64
+        color_launch_dim = color_block_count * color_block_dim
+
         apply_stress_launch = wp.launch(
             kernel=apply_stress_gs,
-            dim=1,
+            dim=color_launch_dim,
             inputs=[
-                0,  # color offset
+                0,  # color
+                color_launch_dim,
                 color_nodes_per_element,
+                color_offsets,
                 color_indices,
                 strain_mat.offsets,
                 strain_mat.columns,
                 local_strain_mat_values,
-                delassus_diagonal.array,
+                delassus_diagonal,
                 inv_volume,
                 local_stress,
             ],
             outputs=[
                 velocity,
             ],
-            block_dim=64,
+            block_dim=color_block_dim,
+            max_blocks=color_block_count,
             record_cmd=True,
         )
 
         # Apply initial guess
-        for k in range(color_count):
-            apply_stress_launch.set_param_at_index(0, color_offsets[k])
-            apply_stress_launch.set_dim((int(color_offsets[k + 1] - color_offsets[k]),))
+        for color in range(color_count):
+            apply_stress_launch.set_param_at_index(0, color)
             apply_stress_launch.launch()
 
         # Solve kernel
         solve_local_launch = wp.launch(
             kernel=solve_local_stress_gs,
-            dim=1,
+            dim=color_launch_dim,
             inputs=[
-                0,  # color offset
+                0,  # color
+                color_launch_dim,
                 color_nodes_per_element,
+                color_offsets,
                 color_indices,
                 yield_params,
-                compliance_mat_offsets,
-                compliance_mat_columns,
+                compliance_mat.offsets,
+                compliance_mat.columns,
                 local_compliance_mat_values,
                 strain_mat.offsets,
                 strain_mat.columns,
                 strain_mat.values,
-                delassus_diagonal.array,
-                delassus_normal.array,
+                delassus_diagonal,
+                delassus_normal,
                 inv_volume,
                 strain_rhs,
                 unilateral_strain_offset,
@@ -1088,9 +1243,10 @@ def solve_rheology(
             outputs=[
                 velocity,
                 local_stress,
-                delta_stress.array,
+                delta_stress,
             ],
-            block_dim=64,
+            block_dim=color_block_dim,
+            max_blocks=color_block_count,
             record_cmd=True,
         )
 
@@ -1104,8 +1260,8 @@ def solve_rheology(
                 transposed_strain_mat.columns,
                 transposed_strain_mat.values,
                 inv_volume,
-                delassus_rotation.array,
-                delassus_diagonal.array,
+                delassus_rotation,
+                delassus_diagonal,
             ],
         )
 
@@ -1118,86 +1274,170 @@ def solve_rheology(
             dim=stress.shape[0],
             inputs=[
                 yield_params,
-                compliance_mat_offsets,
-                compliance_mat_columns,
+                compliance_mat.offsets,
+                compliance_mat.columns,
                 local_compliance_mat_values,
                 strain_mat.offsets,
                 strain_mat.columns,
                 local_strain_mat_values,
-                delassus_diagonal.array,
-                delassus_normal.array,
+                delassus_diagonal,
+                delassus_normal,
                 local_strain_rhs,
                 unilateral_strain_offset,
                 velocity,
                 local_stress,
             ],
             outputs=[
-                delta_stress.array,
+                delta_stress,
             ],
             record_cmd=True,
         )
 
+    # Setup rigidity correction
+    if rigidity_operator is not None:
+        prev_collider_velocity = _register_temp(fem.borrow_temporary_like(collider_velocities, temporary_store))
+        prev_collider_velocity.assign(collider_velocities)
+
+        _D, J, _IJtm = rigidity_operator
+        delta_body_qd = _register_temp(fem.borrow_temporary(temporary_store, shape=J.shape[1], dtype=float))
+
     # Collider contacts
+    subgrid_collisions = collider_mat.nnz > 0
+    if subgrid_collisions:
+        sp.bsr_set_transpose(dest=transposed_collider_mat, src=collider_mat)
 
-    if rigidity_mat is None:
-        prev_collider_velocity = fem.borrow_temporary_like(collider_velocities, temporary_store)
-        wp.copy(dest=prev_collider_velocity.array, src=collider_velocities)
+        collider_delassus_diagonal = _register_temp(fem.borrow_temporary_like(collider_inv_mass, temporary_store))
+        wp.launch(
+            compute_collider_delassus_diagonal,
+            dim=collider_impulse.shape[0],
+            inputs=[
+                collider_mat.offsets,
+                collider_mat.columns,
+                collider_mat.values,
+                collider_inv_mass,
+                transposed_collider_mat.offsets,
+                inv_volume,
+            ],
+            outputs=[
+                collider_delassus_diagonal,
+            ],
+        )
 
-    # Apply initial impulse guess
-    wp.launch(
-        kernel=apply_collider_impulse,
-        dim=collider_impulse.shape[0],
-        inputs=[
-            collider_impulse,
-            collider_friction,
-            inv_volume,
-            collider_inv_mass,
-            velocity,
-            collider_velocities,
-        ],
-    )
-    if rigidity_mat is not None:
-        apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities)
+        # define solve operation
+        delta_impulse = _register_temp(fem.borrow_temporary_like(collider_impulse, temporary_store))
+        apply_collider_impulse_launch = wp.launch(
+            apply_subgrid_impulse,
+            dim=velocity.shape[0],
+            inputs=[
+                transposed_collider_mat.offsets,
+                transposed_collider_mat.columns,
+                transposed_collider_mat.values,
+                inv_volume,
+                delta_impulse,
+                velocity,
+            ],
+            record_cmd=True,
+        )
 
-    solve_collider_launch = wp.launch(
-        kernel=solve_nodal_friction,
-        dim=collider_impulse.shape[0],
-        inputs=[
-            inv_volume,
-            collider_friction,
-            collider_adhesion,
-            collider_normals,
-            collider_inv_mass,
-            velocity,
-            collider_velocities,
-            collider_impulse,
-        ],
-        record_cmd=True,
-    )
+        solve_collider_launch = wp.launch(
+            kernel=solve_subgrid_friction,
+            dim=collider_impulse.shape[0],
+            inputs=[
+                velocity,
+                collider_mat.offsets,
+                collider_mat.columns,
+                collider_mat.values,
+                collider_friction,
+                collider_adhesion,
+                collider_normals,
+                collider_inv_mass,
+                collider_delassus_diagonal,
+                collider_velocities,
+                collider_impulse,
+                delta_impulse,
+            ],
+            record_cmd=True,
+        )
+
+        def solve_collider():
+            solve_collider_launch.launch()
+            apply_collider_impulse_launch.launch()
+
+        # Apply initial impulse guess
+        wp.launch(
+            apply_subgrid_impulse_warmstart,
+            dim=delta_impulse.shape[0],
+            inputs=[
+                collider_inv_mass,
+                collider_friction,
+                collider_impulse,
+                delta_impulse,
+                collider_velocities,
+            ],
+        )
+        apply_collider_impulse_launch.launch()
+
+    else:
+        # define solve operation
+        solve_collider_launch = wp.launch(
+            kernel=solve_nodal_friction,
+            dim=collider_impulse.shape[0],
+            inputs=[
+                inv_volume,
+                collider_friction,
+                collider_adhesion,
+                collider_normals,
+                collider_inv_mass,
+                velocity,
+                collider_velocities,
+                collider_impulse,
+            ],
+            record_cmd=True,
+        )
+
+        def solve_collider():
+            solve_collider_launch.launch()
+
+        # Apply initial impulse guess
+        wp.launch(
+            kernel=apply_nodal_impulse,
+            dim=collider_impulse.shape[0],
+            inputs=[
+                collider_impulse,
+                collider_friction,
+                inv_volume,
+                collider_inv_mass,
+                velocity,
+                collider_velocities,
+            ],
+        )
+
+    # Apply rigidity correction
+    if rigidity_operator is not None:
+        apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_velocities, delta_body_qd)
 
     def do_iteration():
         # solve contacts
-        solve_collider_launch.launch()
-        if rigidity_mat is not None:
-            apply_rigidity_matrix(rigidity_mat, prev_collider_velocity.array, collider_velocities)
+        solve_collider()
+        if rigidity_operator is not None:
+            apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_velocities, delta_body_qd)
 
         # solve stress
         if gs:
-            for k in range(color_count):
-                solve_local_launch.set_param_at_index(0, color_offsets[k])
-                solve_local_launch.set_dim((int(color_offsets[k + 1] - color_offsets[k]),))
+            for color in range(color_count):
+                solve_local_launch.set_param_at_index(0, color)
                 solve_local_launch.launch()
         else:
             solve_local_launch.launch()
             # Add jacobi delta
             sp.bsr_mv(
                 A=transposed_strain_mat,
-                x=delta_stress.array,
+                x=delta_stress,
                 y=velocity,
                 alpha=1.0,
                 beta=1.0,
             )
-            fem.utils.array_axpy(x=delta_stress.array, y=local_stress, alpha=1.0, beta=1.0)
+            fem.utils.array_axpy(x=delta_stress, y=local_stress, alpha=1.0, beta=1.0)
 
     # Run solver loop
 
@@ -1205,19 +1445,23 @@ def solve_rheology(
 
     # Utility to compute the squared norm of the residual
     residual_squared_norm_computer = ArraySquaredNorm(
-        max_length=delta_stress.array.shape[0] * 6,
-        device=delta_stress.array.device,
+        max_length=delta_stress.shape[0] * 6,
+        device=delta_stress.device,
         temporary_store=temporary_store,
     )
 
+    solve_graph = None
     if use_graph:
         min_iterations = 5
-        iteration_and_condition = fem.borrow_temporary(temporary_store, shape=(2,), dtype=int)
+        iteration_and_condition = _register_temp(fem.borrow_temporary(temporary_store, shape=(2,), dtype=int))
+        iteration_and_condition.fill_(1)
 
-        gc.disable()
-        with wp.ScopedCapture(force_module_load=False) as iteration_capture:
+        iteration = iteration_and_condition[:1]
+        condition = iteration_and_condition[1:]
+
+        def do_iteration_with_condition():
             do_iteration()
-            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
+            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress)
             wp.launch(
                 update_condition,
                 dim=1,
@@ -1226,38 +1470,37 @@ def solve_rheology(
                     min_iterations,
                     max_iterations,
                     residual,
-                    iteration_and_condition.array[:1],
-                    iteration_and_condition.array[1:],
+                    iteration,
+                    condition,
                 ],
             )
-        iteration_graph = iteration_capture.graph
 
-        with wp.ScopedCapture(force_module_load=False) as capture:
-            wp.capture_while(
-                condition=iteration_and_condition.array[1:],
-                while_body=iteration_graph,
-            )
-        solve_graph = capture.graph
-        gc.enable()
+        device = delta_stress.device
+        if device.is_capturing:
+            with _ScopedDisableGC():
+                wp.capture_while(condition, do_iteration_with_condition)
+        else:
+            with _ScopedDisableGC():
+                with wp.ScopedCapture(force_module_load=False) as capture:
+                    wp.capture_while(condition, do_iteration_with_condition)
+            solve_graph = capture.graph
+            wp.capture_launch(solve_graph)
 
-        iteration_and_condition.array.assign([0, 1])
-        wp.capture_launch(solve_graph)
-
-        if verbose:
-            res = math.sqrt(residual.numpy()[0]) / residual_scale
-            print(
-                f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after "
-                f"{iteration_and_condition.array.numpy()[0]} iterations with residual {res}"
-            )
+            if verbose:
+                residual = residual_squared_norm_computer.compute_squared_norm(delta_stress)
+                res = math.sqrt(residual.numpy()[0]) / residual_scale
+                print(
+                    f"{'Gauss-Seidel' if gs else 'Jacobi'} terminated after "
+                    f"{iteration_and_condition.numpy()[0]} iterations with residual {res}"
+                )
     else:
-        solve_graph = None
         solve_granularity = 25 if gs else 50
 
         for batch in range(max_iterations // solve_granularity):
             for _k in range(solve_granularity):
                 do_iteration()
 
-            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress.array)
+            residual = residual_squared_norm_computer.compute_squared_norm(delta_stress)
             res = math.sqrt(residual.numpy()[0]) / residual_scale
 
             if verbose:
@@ -1270,21 +1513,21 @@ def solve_rheology(
     # Convert stress back to world space,
     # and compute final elastic strain
 
-    delta_stress.array.assign(local_stress)
+    delta_stress.assign(local_stress)
     wp.launch(
         kernel=postprocess_stress_and_strain,
         dim=stress.shape[0],
         inputs=[
-            delassus_rotation.array,
-            delassus_diagonal.array,
-            compliance_mat_offsets,
-            compliance_mat_columns,
+            delassus_rotation,
+            delassus_diagonal,
+            compliance_mat.offsets,
+            compliance_mat.columns,
             local_compliance_mat_values,
             strain_mat.offsets,
             strain_mat.columns,
             local_strain_mat_values,
             node_volume,
-            delta_stress.array,
+            delta_stress,
             velocity,
         ],
         outputs=[
@@ -1293,5 +1536,10 @@ def solve_rheology(
             plastic_strain_delta,
         ],
     )
+
+    residual_squared_norm_computer.release()
+
+    for temp in borrowed_temporaries:
+        temp.release()
 
     return solve_graph

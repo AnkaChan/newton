@@ -34,6 +34,7 @@ from ._src.utils.mesh import (
     create_capsule_mesh,
     create_cone_mesh,
     create_cylinder_mesh,
+    create_ellipsoid_mesh,
     create_plane_mesh,
     create_sphere_mesh,
 )
@@ -43,6 +44,7 @@ __all__ += [
     "create_capsule_mesh",
     "create_cone_mesh",
     "create_cylinder_mesh",
+    "create_ellipsoid_mesh",
     "create_plane_mesh",
     "create_sphere_mesh",
 ]
@@ -83,6 +85,7 @@ __all__ += [
 # ==================================================================================
 from ._src.utils import (  # noqa: E402
     boltzmann,
+    compute_world_offsets,
     leaky_max,
     leaky_min,
     smooth_max,
@@ -98,6 +101,7 @@ from ._src.utils import (  # noqa: E402
 
 __all__ += [
     "boltzmann",
+    "compute_world_offsets",
     "leaky_max",
     "leaky_min",
     "smooth_max",
@@ -134,8 +138,20 @@ __all__ += [
 # run benchmark
 # ==================================================================================
 
-from ._src.utils.benchmark import run_benchmark  # noqa: E402
+from ._src.utils.benchmark import EventTracer, event_scope, run_benchmark  # noqa: E402
 
 __all__ += [
+    "EventTracer",
+    "event_scope",
     "run_benchmark",
+]
+
+# ==================================================================================
+# import utils
+# ==================================================================================
+
+from ._src.utils.import_utils import parse_warp_value_from_string  # noqa: E402
+
+__all__ += [
+    "parse_warp_value_from_string",
 ]

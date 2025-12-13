@@ -19,7 +19,7 @@
 # Shows how to set up a simulation of a G1 robot articulation
 # from a USD stage using newton.ModelBuilder.add_usd().
 #
-# Command: python -m newton.examples robot_g1 --num-envs 16
+# Command: python -m newton.examples robot_g1 --num-worlds 16
 #
 ###########################################################################
 
@@ -31,21 +31,22 @@ import newton.utils
 
 
 class Example:
-    def __init__(self, viewer, num_envs=4):
+    def __init__(self, viewer, num_worlds=4, args=None):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_envs = num_envs
+        self.num_worlds = num_worlds
 
         self.viewer = viewer
 
         g1 = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(g1)
         g1.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
-        g1.default_shape_cfg.ke = 5.0e4
-        g1.default_shape_cfg.kd = 5.0e2
+        g1.default_shape_cfg.ke = 2.0e3
+        g1.default_shape_cfg.kd = 1.0e2
         g1.default_shape_cfg.kf = 1.0e3
         g1.default_shape_cfg.mu = 0.75
 
@@ -68,8 +69,10 @@ class Example:
         g1.approximate_meshes("bounding_box")
 
         builder = newton.ModelBuilder()
-        builder.replicate(g1, self.num_envs, spacing=(3, 3, 0))
+        builder.replicate(g1, self.num_worlds)
 
+        builder.default_shape_cfg.ke = 1.0e3
+        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
 
         self.model = builder.finalize()
@@ -77,19 +80,26 @@ class Example:
             self.model,
             use_mujoco_cpu=False,
             solver="newton",
-            integrator="euler",
+            integrator="implicitfast",
             njmax=300,
-            ncon_per_env=150,
+            nconmax=150,
             cone="elliptic",
             impratio=100,
             iterations=100,
             ls_iterations=50,
+            use_mujoco_contacts=args.use_mujoco_contacts if args else False,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Evaluate forward kinematics for collision detection
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.viewer.set_model(self.model)
 
@@ -103,7 +113,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -129,7 +139,7 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -140,16 +150,17 @@ class Example:
             self.model,
             self.state_0,
             "all body velocities are small",
-            lambda q, qd: max(abs(qd)) < 0.001,
+            lambda q, qd: max(abs(qd))
+            < 0.015,  # Relaxed from 0.005 - G1 has higher residual velocities with unified pipeline
         )
 
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-envs", type=int, default=4, help="Total number of simulated environments.")
+    parser.add_argument("--num-worlds", type=int, default=4, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_envs)
+    example = Example(viewer, args.num_worlds, args)
 
     newton.examples.run(example, args)

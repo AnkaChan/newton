@@ -31,8 +31,6 @@ from newton._src.geometry.raycast import (
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-wp.config.quiet = True
-
 
 class TestRaycast(unittest.TestCase):
     pass
@@ -447,22 +445,55 @@ def test_mesh_ray_intersect_via_geom(test: TestRaycast, device: str):
     test.assertAlmostEqual(out_t.numpy()[0], 2.0, delta=1e-3)  # Should hit triangle at z=0
 
 
+def test_convex_hull_ray_intersect_via_geom(test: TestRaycast, device: str):
+    """Test convex hull raycasting through the ray_intersect_geom interface (uses mesh path)."""
+    out_t = wp.zeros(1, dtype=float, device=device)
+
+    # Create a simple triangle mesh (convex by definition)
+    vertices = np.array(
+        [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+
+    indices = np.array([0, 1, 2], dtype=np.int32)
+
+    # Create and finalize mesh
+    with wp.ScopedDevice(device):
+        mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+        mesh_id = mesh.finalize(device=device)
+
+    # Test ray hitting the triangle
+    geom_to_world = wp.transform_identity()
+    size = wp.vec3(1.0, 1.0, 1.0)
+    ray_origin = wp.vec3(0.0, 0.0, 2.0)
+    ray_direction = wp.vec3(0.0, 0.0, -1.0)
+
+    wp.launch(
+        kernel_test_geom,
+        dim=1,
+        inputs=[out_t, geom_to_world, size, GeoType.CONVEX_MESH, ray_origin, ray_direction, mesh_id],
+        device=device,
+    )
+    test.assertAlmostEqual(out_t.numpy()[0], 2.0, delta=1e-3)  # Should hit triangle at z=0
+
+
 devices = get_test_devices()
-for device in devices:
-    add_function_test(TestRaycast, f"test_ray_intersect_sphere_{device}", test_ray_intersect_sphere, devices=[device])
-    add_function_test(TestRaycast, f"test_ray_intersect_box_{device}", test_ray_intersect_box, devices=[device])
-    add_function_test(TestRaycast, f"test_ray_intersect_capsule_{device}", test_ray_intersect_capsule, devices=[device])
-    add_function_test(
-        TestRaycast, f"test_ray_intersect_cylinder_{device}", test_ray_intersect_cylinder, devices=[device]
-    )
-    add_function_test(TestRaycast, f"test_ray_intersect_cone_{device}", test_ray_intersect_cone, devices=[device])
-    add_function_test(TestRaycast, f"test_geom_ray_intersect_{device}", test_geom_ray_intersect, devices=[device])
-    add_function_test(TestRaycast, f"test_ray_intersect_mesh_{device}", test_ray_intersect_mesh, devices=[device])
-    add_function_test(
-        TestRaycast, f"test_mesh_ray_intersect_via_geom_{device}", test_mesh_ray_intersect_via_geom, devices=[device]
-    )
+add_function_test(TestRaycast, "test_ray_intersect_sphere", test_ray_intersect_sphere, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_box", test_ray_intersect_box, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_capsule", test_ray_intersect_capsule, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_cylinder", test_ray_intersect_cylinder, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_cone", test_ray_intersect_cone, devices=devices)
+add_function_test(TestRaycast, "test_geom_ray_intersect", test_geom_ray_intersect, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_mesh", test_ray_intersect_mesh, devices=devices)
+add_function_test(TestRaycast, "test_mesh_ray_intersect_via_geom", test_mesh_ray_intersect_via_geom, devices=devices)
+add_function_test(
+    TestRaycast, "test_convex_hull_ray_intersect_via_geom", test_convex_hull_ray_intersect_via_geom, devices=devices
+)
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2)

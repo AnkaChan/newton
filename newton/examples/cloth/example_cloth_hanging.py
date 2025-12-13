@@ -184,9 +184,8 @@ class Example:
 
         self.sim_time += self.frame_dt
 
-    def test(self):
+    def test_final(self):
         if self.solver_type != "style3d":
-            # TODO(Style3D): handle ground collisions
             newton.examples.test_particle_state(
                 self.state_0,
                 "particles are above the ground",

@@ -27,9 +27,9 @@ from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_
 def test_fk_ik(test, device):
     builder = newton.ModelBuilder()
 
-    num_envs = 1
+    num_worlds = 1
 
-    for i in range(num_envs):
+    for i in range(num_worlds):
         builder.add_mjcf(newton.examples.get_asset("nv_ant.xml"), up_axis="Y")
 
         coord_count = 15
@@ -74,23 +74,23 @@ def test_fk_with_indices(test, device):
 
     # Create 3 simple pendulums (articulations)
     for i in range(3):
-        builder.add_articulation(key=f"pendulum_{i}")
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
-        b2 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
-        builder.add_joint_revolute(
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
+        b2 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
+        j1 = builder.add_joint_revolute(
             parent=-1,
             child=b1,
             axis=wp.vec3(0.0, 0.0, 1.0),
             parent_xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_joint_revolute(
+        j2 = builder.add_joint_revolute(
             parent=b1,
             child=b2,
             axis=wp.vec3(0.0, 0.0, 1.0),
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
+        builder.add_articulation([j1, j2], key=f"pendulum_{i}")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -152,23 +152,23 @@ def test_ik_with_indices(test, device):
 
     # Create 2 simple pendulums
     for i in range(2):
-        builder.add_articulation(key=f"pendulum_{i}")
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
-        b2 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
-        builder.add_joint_revolute(
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
+        b2 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
+        j1 = builder.add_joint_revolute(
             parent=-1,
             child=b1,
             axis=wp.vec3(0.0, 0.0, 1.0),
             parent_xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_joint_revolute(
+        j2 = builder.add_joint_revolute(
             parent=b1,
             child=b2,
             axis=wp.vec3(0.0, 0.0, 1.0),
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
+        builder.add_articulation([j1, j2], key=f"pendulum_{i}")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -205,9 +205,9 @@ def test_fk_error_mask_and_indices(test, device):
     builder = newton.ModelBuilder()
 
     # Create a simple model
-    builder.add_articulation()
-    b1 = builder.add_body()
-    builder.add_joint_revolute(parent=-1, child=b1, axis=wp.vec3(0.0, 0.0, 1.0))
+    b1 = builder.add_link()
+    j1 = builder.add_joint_revolute(parent=-1, child=b1, axis=wp.vec3(0.0, 0.0, 1.0))
+    builder.add_articulation([j1])
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -226,34 +226,34 @@ def test_fk_error_mask_and_indices(test, device):
 
 
 def test_isaac_lab_use_case(test, device):
-    """Test the Isaac Lab pattern of updating specific environment articulations"""
+    """Test the Isaac Lab pattern of updating specific world articulations"""
     builder = newton.ModelBuilder()
 
-    # Create 8 identical robots (environments)
-    num_envs = 8
-    for i in range(num_envs):
-        builder.add_articulation(key=f"env_{i}")
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(i * 3.0, 0.0, 0.0), wp.quat_identity()))
-        b2 = builder.add_body(xform=wp.transform(wp.vec3(i * 3.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
-        builder.add_joint_revolute(
+    # Create 8 identical robots (worlds)
+    num_worlds = 8
+    for i in range(num_worlds):
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(i * 3.0, 0.0, 0.0), wp.quat_identity()))
+        b2 = builder.add_link(xform=wp.transform(wp.vec3(i * 3.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
+        j1 = builder.add_joint_revolute(
             parent=-1,
             child=b1,
             axis=wp.vec3(0.0, 0.0, 1.0),
             parent_xform=wp.transform(wp.vec3(i * 3.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_joint_revolute(
+        j2 = builder.add_joint_revolute(
             parent=b1,
             child=b2,
             axis=wp.vec3(0.0, 0.0, 1.0),
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
+        builder.add_articulation([j1, j2], key=f"env_{i}")
 
     model = builder.finalize(device=device)
 
-    # Test pattern: reset specific environments
-    env_indices_to_reset = wp.array([1, 3, 5], dtype=int, device=device)
+    # Test pattern: reset specific worlds
+    world_indices_to_reset = wp.array([1, 3, 5], dtype=int, device=device)
 
     # Set all joints to some non-zero value
     joint_q = wp.full(model.joint_coord_count, 0.5, dtype=float, device=device)
@@ -267,8 +267,8 @@ def test_isaac_lab_use_case(test, device):
     state = model.state()
     newton.eval_fk(model, joint_q, joint_qd, state)
 
-    # Reset only specific environments
-    newton.eval_fk(model, reset_q, reset_qd, state, indices=env_indices_to_reset)
+    # Reset only specific worlds
+    newton.eval_fk(model, reset_q, reset_qd, state, indices=world_indices_to_reset)
 
     # Verify with IK
     recovered_q = wp.zeros_like(joint_q)
@@ -277,14 +277,14 @@ def test_isaac_lab_use_case(test, device):
 
     recovered_q_np = recovered_q.numpy()
 
-    # Check that reset environments have zero values
-    for env_idx in [1, 3, 5]:
-        joint_start = env_idx * 2
+    # Check that reset worlds have zero values
+    for world_idx in [1, 3, 5]:
+        joint_start = world_idx * 2
         assert_np_equal(np.array([0.0, 0.0]), recovered_q_np[joint_start : joint_start + 2], tol=1e-6)
 
-    # Check that non-reset environments still have original values
-    for env_idx in [0, 2, 4, 6, 7]:
-        joint_start = env_idx * 2
+    # Check that non-reset worlds still have original values
+    for world_idx in [0, 2, 4, 6, 7]:
+        joint_start = world_idx * 2
         assert_np_equal(np.array([0.5, 0.5]), recovered_q_np[joint_start : joint_start + 2], tol=1e-6)
 
 
@@ -294,9 +294,9 @@ def test_bounds_checking(test, device):
 
     # Create 2 articulations
     for _ in range(2):
-        builder.add_articulation()
-        b1 = builder.add_body()
-        builder.add_joint_revolute(parent=-1, child=b1, axis=wp.vec3(0.0, 0.0, 1.0))
+        b1 = builder.add_link()
+        j1 = builder.add_joint_revolute(parent=-1, child=b1, axis=wp.vec3(0.0, 0.0, 1.0))
+        builder.add_articulation([j1])
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -320,23 +320,23 @@ def test_ik_with_mask(test, device):
 
     # Create 3 simple pendulums
     for i in range(3):
-        builder.add_articulation()
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
-        b2 = builder.add_body(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
-        builder.add_joint_revolute(
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()))
+        b2 = builder.add_link(xform=wp.transform(wp.vec3(i * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
+        j1 = builder.add_joint_revolute(
             parent=-1,
             child=b1,
             axis=wp.vec3(0.0, 0.0, 1.0),
             parent_xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_joint_revolute(
+        j2 = builder.add_joint_revolute(
             parent=b1,
             child=b2,
             axis=wp.vec3(0.0, 0.0, 1.0),
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
+        builder.add_articulation([j1, j2])
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -375,16 +375,16 @@ def test_ik_with_mask(test, device):
 def test_ik_error_mask_and_indices(test, device):
     """Test that eval_ik raises error when both mask and indices are provided"""
     builder = newton.ModelBuilder()
-    builder.add_articulation()
-    parent = builder.add_body(xform=wp.transform((0, 0, 0), wp.quat_identity()))
-    child = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_identity()))
-    builder.add_joint_revolute(
+    parent = builder.add_link(xform=wp.transform((0, 0, 0), wp.quat_identity()))
+    child = builder.add_link(xform=wp.transform((1, 0, 0), wp.quat_identity()))
+    joint = builder.add_joint_revolute(
         parent=parent,
         child=child,
         axis=wp.vec3(0.0, 0.0, 1.0),
         parent_xform=wp.transform_identity(),
         child_xform=wp.transform_identity(),
     )
+    builder.add_articulation([joint])
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -417,5 +417,4 @@ add_function_test(TestSimKinematics, "test_ik_error_mask_and_indices", test_ik_e
 
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
     unittest.main(verbosity=2, failfast=True)

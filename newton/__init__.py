@@ -36,6 +36,7 @@ from ._src.geometry import (
     GeoType,
     Mesh,
     ParticleFlags,
+    SAPSortType,
     ShapeFlags,
 )
 
@@ -44,6 +45,7 @@ __all__ += [
     "GeoType",
     "Mesh",
     "ParticleFlags",
+    "SAPSortType",
     "ShapeFlags",
 ]
 
@@ -51,13 +53,17 @@ __all__ += [
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
+    JOINT_LIMIT_UNLIMITED,
+    BroadPhaseMode,
     CollisionPipeline,
+    CollisionPipelineUnified,
     Contacts,
     Control,
     EqType,
-    JointMode,
     JointType,
     Model,
+    ModelAttributeAssignment,
+    ModelAttributeFrequency,
     ModelBuilder,
     State,
     count_rigid_contact_points,
@@ -67,13 +73,17 @@ from ._src.sim import (  # noqa: E402
 )
 
 __all__ += [
+    "JOINT_LIMIT_UNLIMITED",
+    "BroadPhaseMode",
     "CollisionPipeline",
+    "CollisionPipelineUnified",
     "Contacts",
     "Control",
     "EqType",
-    "JointMode",
     "JointType",
     "Model",
+    "ModelAttributeAssignment",
+    "ModelAttributeFrequency",
     "ModelBuilder",
     "State",
     "count_rigid_contact_points",
