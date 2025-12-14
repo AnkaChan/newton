@@ -117,6 +117,7 @@ class Example:
         self.ps_vis_mesh2 = ps.register_surface_mesh(
             "Cloth2", self.state_0.particle_q.numpy()[num_particles:], self.faces
         )
+        ps.set_ground_plane_height(-0.2)
 
     
     def capture(self):
