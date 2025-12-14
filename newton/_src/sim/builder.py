@@ -57,12 +57,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from .graph_coloring import (
-    ColoringAlgorithm,
-    color_trimesh,
-    color_trimesh_and_tetmesh,
-    combine_independent_particle_coloring,
-)
+from .graph_coloring import ColoringAlgorithm, color_graph, construct_particle_graph
 from .joints import (
     JOINT_LIMIT_UNLIMITED,
     EqType,
@@ -446,6 +441,13 @@ class ModelBuilder:
         self.default_tri_kd = 10.0
         self.default_tri_drag = 0.0
         self.default_tri_lift = 0.0
+
+        # Default triangle soft mesh settings for surficial mesh of a soft tetmesh
+        self.default_surface_mesh_tri_ke = 0.0
+        self.default_surface_mesh_tri_ka = 0.0
+        self.default_surface_mesh_tri_kd = 0.0
+        self.default_surface_mesh_tri_drag = 0.0
+        self.default_surface_mesh_tri_lift = 0.0
 
         # Default distance constraint properties
         self.default_spring_ke = 100.0
@@ -4977,11 +4979,11 @@ class ModelBuilder:
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+        tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
+        tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
+        tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
+        tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
+        tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
 
         start_vertex = len(self.particle_q)
 
@@ -5092,11 +5094,11 @@ class ModelBuilder:
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+        tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
+        tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
+        tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
+        tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
+        tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
 
         num_tets = int(len(indices) / 4)
 
@@ -5250,28 +5252,38 @@ class ModelBuilder:
             Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
 
         """
-        edge_indices = np.array(self.edge_indices, dtype=np.int32)
-        tet_indices = np.array(self.tet_indices, dtype=np.int32)
+        num_nodes = self.particle_count
+        if num_nodes == 0:
+            self.particle_color_groups = []
+            return
 
-        if tet_indices.size > 0:
-            self.particle_color_groups = color_trimesh_and_tetmesh(
-                len(self.particle_q),
-                edge_indices,
-                tet_indices,
-                include_bending,
-                algorithm=coloring_algorithm,
-                balance_colors=balance_colors,
-                target_max_min_color_ratio=target_max_min_color_ratio,
-            )
-        else:
-            self.particle_color_groups = color_trimesh(
-                len(self.particle_q),
-                edge_indices,
-                include_bending,
-                algorithm=coloring_algorithm,
-                balance_colors=balance_colors,
-                target_max_min_color_ratio=target_max_min_color_ratio,
-            )
+        tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
+        tri_materials = np.array(self.tri_materials)
+        tet_indices = np.array(self.tet_indices, dtype=np.int32) if self.tet_indices else None
+        tet_materials = np.array(self.tet_materials)
+
+        bending_edge_indices = None
+        bending_edge_active_mask = None
+        if include_bending and self.edge_indices:
+            bending_edge_indices = np.array(self.edge_indices, dtype=np.int32)
+            bending_edge_active_mask = np.array(self.edge_bending_properties)[:, 1]
+
+        graph_edge_indices = construct_particle_graph(
+            tri_indices,
+            tri_materials[:, 0] * tri_materials[:, 1],
+            bending_edge_indices,
+            bending_edge_active_mask,
+            tet_indices,
+            tet_materials[:, 0] * tet_materials[:, 1],
+        )
+
+        self.particle_color_groups = color_graph(
+            num_nodes,
+            graph_edge_indices,
+            balance_colors,
+            target_max_min_color_ratio,
+            coloring_algorithm,
+        )
 
     def _validate_world_ordering(self):
         """Validate that world indices are monotonic, contiguous, and properly ordered.
