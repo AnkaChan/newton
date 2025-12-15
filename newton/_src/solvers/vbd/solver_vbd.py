@@ -1833,6 +1833,9 @@ def solve_trimesh_no_self_contact_tile(
     edge_rest_angles: wp.array(dtype=float),
     edge_rest_length: wp.array(dtype=float),
     edge_bending_properties: wp.array(dtype=float, ndim=2),
+    tet_indices: wp.array(dtype=wp.int32, ndim=2),
+    tet_activations: wp.array(dtype=wp.mat33),
+    tet_materials: wp.array(dtype=float, ndim=2),
     adjacency: ForceElementAdjacencyInfo,
     # contact info
     particle_forces: wp.array(dtype=wp.vec3),
@@ -1926,6 +1929,30 @@ def solve_trimesh_no_self_contact_tile(
 
             f += f_edge
             h += h_edge
+
+    # solve tet elasticity
+    batch_counter = wp.int32(0)
+    num_adj_tets = get_vertex_num_adjacent_tets(adjacency, particle_index)
+    while batch_counter + thread_idx < num_adj_tets:
+        adj_tet_counter = batch_counter + thread_idx
+        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+        nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
+            adjacency, particle_index, adj_tet_counter
+        )
+
+        f_tet, h_tet = evaluate_volumetric_neo_hooken_force_and_hessian(
+            nei_tet_index,
+            vertex_order_on_tet,
+            pos_prev,
+            pos,
+            tet_indices,
+            tet_activations,
+            tet_materials,
+            dt,
+        )
+
+        f += f_tet
+        h += h_tet
 
     f_tile = wp.tile(f, preserve_type=True)
     h_tile = wp.tile(h, preserve_type=True)
