@@ -5270,11 +5270,11 @@ class ModelBuilder:
 
         graph_edge_indices = construct_particle_graph(
             tri_indices,
-            tri_materials[:, 0] * tri_materials[:, 1],
+            tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
             bending_edge_indices,
             bending_edge_active_mask,
             tet_indices,
-            tet_materials[:, 0] * tet_materials[:, 1],
+            tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
         )
 
         self.particle_color_groups = color_graph(
