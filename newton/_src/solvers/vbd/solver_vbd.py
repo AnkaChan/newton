@@ -2109,7 +2109,7 @@ def planar_truncation(
     v: wp.vec3, delta_v: wp.vec3, n: wp.vec3, d: wp.vec3, eps: float, gamma_r: float, gamma_min: float = 1e-3
 ):
     nv = wp.dot(n, delta_v)
-    num = -wp.dot(n, v - d)
+    num = wp.dot(n, d - v)
 
     # Parallel (or nearly): do not truncate
     if wp.abs(nv) < eps:
@@ -2122,6 +2122,26 @@ def planar_truncation(
         return delta_v
     else:
         return t * delta_v
+
+
+@wp.func
+def planar_truncation_t(
+    v: wp.vec3, delta_v: wp.vec3, n: wp.vec3, d: wp.vec3, eps: float, gamma_r: float, gamma_min: float = 1e-3
+):
+    denom = wp.dot(n, delta_v)
+
+    # Parallel (or nearly parallel) → no intersection
+    if wp.abs(denom) < eps:
+        return 1.0
+
+    # Solve: dot(n, v + t*delta_v - d) = 0
+    t = wp.dot(n, d - v) / denom
+
+    if t < 0:
+        return 1.0
+
+    t = wp.clamp(wp.min(t * gamma_r, t - gamma_min), 0.0, 1.0)
+    return t
 
 
 @wp.kernel
@@ -2256,6 +2276,162 @@ def apply_planar_truncation(
     displacements_out[particle_index] = particle_displacement
     if pos_out:
         pos_out[particle_index] = pos[particle_index] + particle_displacement
+
+
+@wp.kernel
+def apply_planar_truncation_tile(
+    pos: wp.array(dtype=wp.vec3),
+    displacement_in: wp.array(dtype=wp.vec3),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    adjacency: ForceElementAdjacencyInfo,
+    collision_info_array: wp.array(dtype=TriMeshCollisionInfo),
+    parallel_eps: float,
+    gamma: float,
+    max_displacement: float,
+    displacements_out: wp.array(dtype=wp.vec3),
+    pos_out: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    block_idx = tid // TILE_SIZE_SELF_CONTACT_SOLVE
+    thread_idx = tid % TILE_SIZE_SELF_CONTACT_SOLVE
+    particle_index = block_idx
+
+    particle_pos = pos[particle_index]
+    particle_displacement = displacement_in[particle_index]
+    collision_info = collision_info_array[0]
+
+    t = float(1.0)
+
+    num_colliding_tris = get_vertex_colliding_triangles_count(collision_info, particle_index)
+    # dont need to evaluate size
+    batch_counter = wp.int32(0)
+
+    # loop through all the adjacent triangles using whole block
+    while batch_counter + thread_idx < num_colliding_tris:
+        colliding_tri_counter = thread_idx + batch_counter
+        batch_counter += TILE_SIZE_SELF_CONTACT_SOLVE
+        # elastic force and hessian
+        colliding_tri_index = get_vertex_colliding_triangles(collision_info, particle_index, colliding_tri_counter)
+
+        t1 = pos[tri_indices[colliding_tri_index, 0]]
+        t2 = pos[tri_indices[colliding_tri_index, 1]]
+        t3 = pos[tri_indices[colliding_tri_index, 2]]
+
+        delta_t1 = displacement_in[tri_indices[colliding_tri_index, 0]]
+        delta_t2 = displacement_in[tri_indices[colliding_tri_index, 1]]
+        delta_t3 = displacement_in[tri_indices[colliding_tri_index, 2]]
+
+        # n points to the vertex side
+        is_dummy, n, d = create_vertex_triangle_division_plane_closest_pt(
+            particle_pos,
+            particle_displacement,
+            t1,
+            delta_t1,
+            t2,
+            delta_t2,
+            t3,
+            delta_t3,
+        )
+
+        if not is_dummy[0]:
+            t = wp.min(planar_truncation_t(particle_pos, particle_displacement, n, d, parallel_eps, gamma), t)
+
+    for i_adj_tri in range(get_vertex_num_adjacent_faces(adjacency, particle_index)):
+        tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, i_adj_tri)
+        num_tri_colliding_vertices = get_triangle_colliding_vertices_count(collision_info, tri_index)
+
+        t1 = pos[tri_indices[tri_index, 0]]
+        t2 = pos[tri_indices[tri_index, 1]]
+        t3 = pos[tri_indices[tri_index, 2]]
+
+        delta_t1 = displacement_in[tri_indices[tri_index, 0]]
+        delta_t2 = displacement_in[tri_indices[tri_index, 1]]
+        delta_t3 = displacement_in[tri_indices[tri_index, 2]]
+
+        batch_counter = wp.int32(0)
+        while batch_counter + thread_idx < num_tri_colliding_vertices:
+            colliding_vertex_counter = thread_idx + batch_counter
+            batch_counter += TILE_SIZE_SELF_CONTACT_SOLVE
+            colliding_vertex = get_triangle_colliding_vertices(collision_info, tri_index, colliding_vertex_counter)
+
+            colliding_particle_pos = pos[colliding_vertex]
+            colliding_particle_displacement = displacement_in[colliding_vertex]
+
+            # n points to the vertex side
+            is_dummy, n, d = create_vertex_triangle_division_plane_closest_pt(
+                colliding_particle_pos,
+                colliding_particle_displacement,
+                t1,
+                delta_t1,
+                t2,
+                delta_t2,
+                t3,
+                delta_t3,
+            )
+
+            if not is_dummy[vertex_order + 1]:
+                t = wp.min(planar_truncation_t(particle_pos, particle_displacement, n, d, parallel_eps, gamma), t)
+
+    for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
+        nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(adjacency, particle_index, i_adj_edge)
+
+        if vertex_order_on_edge == 2 or vertex_order_on_edge == 3:
+            batch_counter = wp.int32(0)
+            num_e_colliding_e = get_edge_colliding_edges_count(collision_info, nei_edge_index)
+            while batch_counter + thread_idx < num_e_colliding_e:
+                colliding_edge_counter = thread_idx + batch_counter
+                batch_counter += TILE_SIZE_SELF_CONTACT_SOLVE
+                colliding_edge = get_edge_colliding_edges(collision_info, nei_edge_index, colliding_edge_counter)
+
+                e1_v1 = edge_indices[nei_edge_index, 2]
+                e1_v2 = edge_indices[nei_edge_index, 3]
+
+                e1_v1_pos = pos[e1_v1]
+                e1_v2_pos = pos[e1_v2]
+
+                delta_e1_v1 = displacement_in[e1_v1]
+                delta_e1_v2 = displacement_in[e1_v2]
+
+                e2_v1 = edge_indices[colliding_edge, 2]
+                e2_v2 = edge_indices[colliding_edge, 3]
+
+                e2_v1_pos = pos[e2_v1]
+                e2_v2_pos = pos[e2_v2]
+
+                delta_e2_v1 = displacement_in[e2_v1]
+                delta_e2_v2 = displacement_in[e2_v2]
+
+                # n points to the edge 1 side
+                is_dummy, n, d = create_edge_edge_division_plane_closest_pt(
+                    e1_v1_pos,
+                    delta_e1_v1,
+                    e1_v2_pos,
+                    delta_e1_v2,
+                    e2_v1_pos,
+                    delta_e2_v1,
+                    e2_v2_pos,
+                    delta_e2_v2,
+                )
+                vertex_order_on_edge_2_v1_v2_only = vertex_order_on_edge - 2
+
+                if not is_dummy[vertex_order_on_edge_2_v1_v2_only]:
+                    t = wp.min(planar_truncation_t(particle_pos, particle_displacement, n, d, parallel_eps, gamma), t)
+
+    t_tile = wp.tile(t)
+
+    if thread_idx == 0:
+        t_min = wp.tile_reduce(wp.min, t_tile)[0]
+
+        particle_displacement = particle_displacement * t_min
+
+        len_displacement = wp.length(particle_displacement)
+        if len_displacement > max_displacement:
+            particle_displacement = particle_displacement * max_displacement / len_displacement
+
+        displacements_out[particle_index] = particle_displacement
+        if pos_out:
+            pos_out[particle_index] = pos[particle_index] + particle_displacement
 
 
 @wp.kernel
@@ -4144,7 +4320,7 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-        self.penetration_free_truncation(state_in.particle_q)
+        self.penetration_free_truncation_tile(state_in.particle_q)
 
         for _iter in range(self.iterations):
             # after initialization, we need new collision detection to update the bounds
@@ -4272,7 +4448,7 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
-                self.penetration_free_truncation(state_in.particle_q)
+                self.penetration_free_truncation_tile(state_in.particle_q)
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
@@ -4363,6 +4539,46 @@ class SolverVBD(SolverBase):
                     particle_q_out,
                 ],
                 dim=self.model.particle_count,
+                device=self.device,
+            )
+
+    def penetration_free_truncation_tile(self, particle_q_out=None):
+        """
+        Modify displacements_in in-place, also modify particle_q if its not None
+
+        """
+        if self.truncation_mode == 0:
+            wp.launch(
+                kernel=apply_conservative_bound_truncation,
+                inputs=[
+                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
+                    self.particle_conservative_bounds,  # particle_conservative_bounds: wp.array(dtype=float),
+                    particle_q_out,  # particle_q_out: wp.array(dtype=wp.vec3),
+                ],
+                dim=self.model.particle_count,
+                device=self.device,
+            )
+        else:
+            wp.launch(
+                kernel=apply_planar_truncation_tile,
+                inputs=[
+                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
+                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                    self.model.tri_indices,
+                    self.model.edge_indices,
+                    self.adjacency,
+                    self.trimesh_collision_info,
+                    self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                    self.conservative_bound_relaxation * 2,
+                    self.self_contact_margin * self.conservative_bound_relaxation,
+                ],
+                outputs=[
+                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                    particle_q_out,
+                ],
+                dim=self.model.particle_count * TILE_SIZE_SELF_CONTACT_SOLVE,
+                block_dim=TILE_SIZE_SELF_CONTACT_SOLVE,
                 device=self.device,
             )
 
