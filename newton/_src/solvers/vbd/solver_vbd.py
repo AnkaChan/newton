@@ -2419,10 +2419,9 @@ def apply_planar_truncation_tile(
                     t = wp.min(planar_truncation_t(particle_pos, particle_displacement, n, d, parallel_eps, gamma), t)
 
     t_tile = wp.tile(t)
+    t_min = wp.tile_reduce(wp.min, t_tile)[0]
 
     if thread_idx == 0:
-        t_min = wp.tile_reduce(wp.min, t_tile)[0]
-
         particle_displacement = particle_displacement * t_min
 
         len_displacement = wp.length(particle_displacement)
