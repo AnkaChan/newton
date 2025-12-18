@@ -783,10 +783,10 @@ class Simulator:
                 resolver_mgr=R,
                 prim=self.physics_prim,
                 prim_type=PrimType.SCENE,
-                solver_cls=newton.solvers.VBDIntegrator,
+                solver_cls=newton.solvers.SolverVBD,
                 defaults={"iterations": self.integrator_iterations},
             )
-            self.integrator = newton.solvers.VBDIntegrator(self.model, **solver_args)
+            self.integrator = newton.solvers.SolverVBD(self.model, **solver_args)
 
         # Iterate resolver-defined keys (these are your internal integrator attribute names)
         var_map = res.mapping.get(PrimType.SCENE, {})
