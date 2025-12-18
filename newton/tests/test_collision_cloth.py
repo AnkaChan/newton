@@ -33,6 +33,8 @@ from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector
 from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
 
+COLLISION_BUFFER_PRE_ALLOC = 512
+
 
 @wp.kernel
 def eval_triangles_contact(
@@ -918,6 +920,62 @@ def validate_edge_collisions_distance_filter(
             wp.expect_eq(edge_colliding_edges[2 * (offset + col)] == -1, True)
 
 
+@wp.kernel
+def validate_vertex_triangle_filtering_exclusion(
+    vertex_colliding_triangles: wp.array(dtype=wp.int32),
+    vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
+    vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
+    vertex_triangle_filtering_list: wp.array(dtype=wp.int32),
+    vertex_triangle_filtering_list_offsets: wp.array(dtype=wp.int32),
+):
+    """Validate that no filtered triangle appears in collision results for each vertex."""
+    v_index = wp.tid()
+
+    num_collisions = wp.min(vertex_colliding_triangles_count[v_index], COLLISION_BUFFER_PRE_ALLOC)
+    collision_offset = vertex_colliding_triangles_offsets[v_index]
+
+    filter_start = vertex_triangle_filtering_list_offsets[v_index]
+    filter_end = vertex_triangle_filtering_list_offsets[v_index + 1]
+
+    # Check each collision result
+    for col_idx in range(num_collisions):
+        tri_index = vertex_colliding_triangles[2 * (collision_offset + col_idx) + 1]
+
+        # Check if this triangle is in the filtering list (it shouldn't be)
+        for filter_idx in range(filter_start, filter_end):
+            filtered_tri = vertex_triangle_filtering_list[filter_idx]
+            # If we find the collision triangle in the filter list, the test should fail
+            wp.expect_eq(tri_index == filtered_tri, False)
+
+
+@wp.kernel
+def validate_edge_edge_filtering_exclusion(
+    edge_colliding_edges: wp.array(dtype=wp.int32),
+    edge_colliding_edges_count: wp.array(dtype=wp.int32),
+    edge_colliding_edges_offsets: wp.array(dtype=wp.int32),
+    edge_edge_filtering_list: wp.array(dtype=wp.int32),
+    edge_edge_filtering_list_offsets: wp.array(dtype=wp.int32),
+):
+    """Validate that no filtered edge appears in collision results for each edge."""
+    e_index = wp.tid()
+
+    num_collisions = wp.min(edge_colliding_edges_count[e_index], COLLISION_BUFFER_PRE_ALLOC)
+    collision_offset = edge_colliding_edges_offsets[e_index]
+
+    filter_start = edge_edge_filtering_list_offsets[e_index]
+    filter_end = edge_edge_filtering_list_offsets[e_index + 1]
+
+    # Check each collision result
+    for col_idx in range(num_collisions):
+        colliding_edge = edge_colliding_edges[2 * (collision_offset + col_idx) + 1]
+
+        # Check if this edge is in the filtering list (it shouldn't be)
+        for filter_idx in range(filter_start, filter_end):
+            filtered_edge = edge_edge_filtering_list[filter_idx]
+            # If we find the collision edge in the filter list, the test should fail
+            wp.expect_eq(colliding_edge == filtered_edge, False)
+
+
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 def test_collision_filtering(test, device):
     vertices, faces = get_data()
@@ -928,6 +986,8 @@ def test_collision_filtering(test, device):
     faces = faces.reshape(-1, 3)
 
     edges = model.edge_indices.numpy()
+
+    query_radius = 0.1
 
     for ring in range(1, 4):
         v_t_collision_filtering_map = {}
@@ -946,6 +1006,8 @@ def test_collision_filtering(test, device):
             rest_shape_contact_exclusion_radius=0.0,
             external_vertex_contact_filtering_map=v_t_collision_filtering_map,
             external_edge_contact_filtering_map=e_e_collision_filtering_map,
+            vertex_collision_buffer_pre_alloc=COLLISION_BUFFER_PRE_ALLOC,
+            edge_collision_buffer_pre_alloc=COLLISION_BUFFER_PRE_ALLOC,
         )
 
         v_adj_edges = vbd.adjacency.v_adj_edges.numpy()
@@ -1012,6 +1074,39 @@ def test_collision_filtering(test, device):
                 u, v = edges[e2, 2:]
                 test.assertTrue((u in v0_n_ring) or (u in v1_n_ring) or (v in v0_n_ring) or (v in v1_n_ring))
 
+            # Perform collision detection to validate that filtered pairs don't appear in results
+            vbd.trimesh_collision_detector.refit(model.particle_q)
+            vbd.trimesh_collision_detector.vertex_triangle_collision_detection(query_radius)
+            vbd.trimesh_collision_detector.edge_edge_collision_detection(query_radius)
+
+        # Validate that no filtered vertex-triangle pair appears in collision results
+        wp.launch(
+            kernel=validate_vertex_triangle_filtering_exclusion,
+            dim=model.particle_count,
+            inputs=[
+                vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles,
+                vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles_count,
+                vbd.trimesh_collision_detector.collision_info.vertex_colliding_triangles_offsets,
+                vbd.vertex_triangle_contact_filtering_list,
+                vbd.vertex_triangle_contact_filtering_list_offsets,
+            ],
+            device=device,
+        )
+
+        # Validate that no filtered edge-edge pair appears in collision results
+        wp.launch(
+            kernel=validate_edge_edge_filtering_exclusion,
+            dim=model.edge_count,
+            inputs=[
+                vbd.trimesh_collision_detector.collision_info.edge_colliding_edges,
+                vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_count,
+                vbd.trimesh_collision_detector.collision_info.edge_colliding_edges_offsets,
+                vbd.edge_edge_contact_filtering_list,
+                vbd.edge_edge_contact_filtering_list_offsets,
+            ],
+            device=device,
+        )
+
     vbd = SolverVBD(
         model,
         handle_self_contact=True,
@@ -1019,8 +1114,8 @@ def test_collision_filtering(test, device):
         rest_shape_contact_exclusion_radius=0.05,
         external_vertex_contact_filtering_map=None,
         external_edge_contact_filtering_map=None,
-        vertex_collision_buffer_pre_alloc=512,
-        edge_collision_buffer_pre_alloc=512,
+        vertex_collision_buffer_pre_alloc=COLLISION_BUFFER_PRE_ALLOC,
+        edge_collision_buffer_pre_alloc=COLLISION_BUFFER_PRE_ALLOC,
     )
     max_query_radius = 0.15
     min_query_radius = 0.05
