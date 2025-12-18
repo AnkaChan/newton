@@ -321,9 +321,9 @@ class Example:
 
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
-    wp.clear_kernel_cache()
+    # wp.clear_kernel_cache()
     parser = newton.examples.create_parser()
-    parser.set_defaults(num_frames=300)
+    parser.set_defaults(num_frames=1200)
     parser.set_defaults(viewer="null")
 
     viewer, args = newton.examples.init(parser)
