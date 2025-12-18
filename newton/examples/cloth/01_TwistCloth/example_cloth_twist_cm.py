@@ -297,7 +297,7 @@ class Example:
         #
         # # Render model-driven content (ground plane)
         # self.viewer.log_state(self.state_0)
-        # self.viewer.end_frame()
+        self.viewer.end_frame()
 
         self.verts_for_vis = self.state_0.particle_q.numpy()
         # print(self.verts_for_vis)

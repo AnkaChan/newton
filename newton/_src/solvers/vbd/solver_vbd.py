@@ -4364,7 +4364,7 @@ class SolverVBD(SolverBase):
                         ],
                         outputs=[self.particle_forces, self.particle_hessians],
                         device=self.device,
-                        max_blocks=self.model.device.sm_count,
+                        # max_blocks=self.model.device.sm_count,
                     )
 
                 if model.spring_count:
@@ -4388,20 +4388,47 @@ class SolverVBD(SolverBase):
                     )
 
                 if self.handle_self_contact:
+                    # wp.launch(
+                    #     kernel=accumulate_self_contact_force_and_hessian_tile,
+                    #     dim=self.model.particle_color_groups[color].size * TILE_SIZE_SELF_CONTACT_SOLVE,
+                    #     block_dim=TILE_SIZE_SELF_CONTACT_SOLVE,
+                    #     inputs=[
+                    #         dt,
+                    #         self.model.particle_color_groups[color],
+                    #         self.particle_q_prev,
+                    #         state_in.particle_q,
+                    #         self.model.particle_flags,
+                    #         self.model.tri_indices,
+                    #         self.model.edge_indices,
+                    #         self.adjacency,
+                    #         # self contact
+                    #         self.trimesh_collision_info,
+                    #         self.self_contact_radius,
+                    #         self.model.soft_contact_ke,
+                    #         self.model.soft_contact_kd,
+                    #         self.model.soft_contact_mu,
+                    #         self.friction_epsilon,
+                    #         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                    #         # outputs: particle force and hessian
+                    #         self.particle_forces,
+                    #         self.particle_hessians,
+                    #     ],
+                    #     device=self.device,
+                    #     max_blocks=self.model.device.sm_count,
+                    # )
+
                     wp.launch(
-                        kernel=accumulate_self_contact_force_and_hessian_tile,
-                        dim=self.model.particle_color_groups[color].size * TILE_SIZE_SELF_CONTACT_SOLVE,
-                        block_dim=TILE_SIZE_SELF_CONTACT_SOLVE,
+                        kernel=accumulate_self_contact_force_and_hessian,
+                        dim=self.collision_evaluation_kernel_launch_size,
                         inputs=[
                             dt,
-                            self.model.particle_color_groups[color],
+                            color,
                             self.particle_q_prev,
                             state_in.particle_q,
-                            self.model.particle_flags,
+                            self.model.particle_colors,
                             self.model.tri_indices,
                             self.model.edge_indices,
-                            self.adjacency,
-                            # self contact
+                            # self-contact
                             self.trimesh_collision_info,
                             self.self_contact_radius,
                             self.model.soft_contact_ke,
@@ -4409,10 +4436,8 @@ class SolverVBD(SolverBase):
                             self.model.soft_contact_mu,
                             self.friction_epsilon,
                             self.trimesh_collision_detector.edge_edge_parallel_epsilon,
-                            # outputs: particle force and hessian
-                            self.particle_forces,
-                            self.particle_hessians,
                         ],
+                        outputs=[self.particle_forces, self.particle_hessians],
                         device=self.device,
                         max_blocks=self.model.device.sm_count,
                     )
@@ -4579,6 +4604,7 @@ class SolverVBD(SolverBase):
                 dim=self.model.particle_count * TILE_SIZE_SELF_CONTACT_SOLVE,
                 block_dim=TILE_SIZE_SELF_CONTACT_SOLVE,
                 device=self.device,
+                # max_blocks=self.model.device.sm_count,
             )
 
     @wp.kernel
