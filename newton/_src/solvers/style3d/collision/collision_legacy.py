@@ -18,7 +18,10 @@ import warnings
 import warp as wp
 
 from newton import Contacts, Model, State
-from newton._src.solvers.vbd.solver_vbd import NUM_THREADS_PER_COLLISION_PRIMITIVE, accumulate_contact_force_and_hessian
+from newton._src.solvers.vbd.solver_vbd import (
+    NUM_THREADS_PER_COLLISION_PRIMITIVE,
+    accumulate_self_contact_force_and_hessian,
+)
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
 
 ########################################################################################################################
@@ -202,7 +205,7 @@ class CollisionHandler:
         self.contact_hessian_diags.zero_()
 
         wp.launch(
-            kernel=accumulate_contact_force_and_hessian,
+            kernel=accumulate_self_contact_force_and_hessian,
             dim=self.collision_evaluation_kernel_launch_size,
             inputs=[
                 dt,

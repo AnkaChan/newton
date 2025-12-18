@@ -57,7 +57,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from .graph_coloring import ColoringAlgorithm, color_trimesh, combine_independent_particle_coloring
+from .graph_coloring import ColoringAlgorithm, color_graph, construct_particle_graph
 from .joints import (
     JOINT_LIMIT_UNLIMITED,
     EqType,
@@ -441,6 +441,13 @@ class ModelBuilder:
         self.default_tri_kd = 10.0
         self.default_tri_drag = 0.0
         self.default_tri_lift = 0.0
+
+        # Default triangle soft mesh settings for surficial mesh of a soft tetmesh
+        self.default_surface_mesh_tri_ke = 0.0
+        self.default_surface_mesh_tri_ka = 0.0
+        self.default_surface_mesh_tri_kd = 0.0
+        self.default_surface_mesh_tri_drag = 0.0
+        self.default_surface_mesh_tri_lift = 0.0
 
         # Default distance constraint properties
         self.default_spring_ke = 100.0
@@ -5051,11 +5058,11 @@ class ModelBuilder:
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+        tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
+        tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
+        tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
+        tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
+        tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
 
         start_vertex = len(self.particle_q)
 
@@ -5166,11 +5173,11 @@ class ModelBuilder:
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+        tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
+        tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
+        tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
+        tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
+        tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
 
         num_tets = int(len(indices) / 4)
 
@@ -5324,16 +5331,37 @@ class ModelBuilder:
             Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
 
         """
-        # ignore bending energy if it is too small
-        edge_indices = np.array(self.edge_indices)
+        num_nodes = self.particle_count
+        if num_nodes == 0:
+            self.particle_color_groups = []
+            return
 
-        self.particle_color_groups = color_trimesh(
-            len(self.particle_q),
-            edge_indices,
-            include_bending,
-            algorithm=coloring_algorithm,
-            balance_colors=balance_colors,
-            target_max_min_color_ratio=target_max_min_color_ratio,
+        tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
+        tri_materials = np.array(self.tri_materials)
+        tet_indices = np.array(self.tet_indices, dtype=np.int32) if self.tet_indices else None
+        tet_materials = np.array(self.tet_materials)
+
+        bending_edge_indices = None
+        bending_edge_active_mask = None
+        if include_bending and self.edge_indices:
+            bending_edge_indices = np.array(self.edge_indices, dtype=np.int32)
+            bending_edge_active_mask = np.array(self.edge_bending_properties)[:, 1]
+
+        graph_edge_indices = construct_particle_graph(
+            tri_indices,
+            tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
+            bending_edge_indices,
+            bending_edge_active_mask,
+            tet_indices,
+            tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
+        )
+
+        self.particle_color_groups = color_graph(
+            num_nodes,
+            graph_edge_indices,
+            balance_colors,
+            target_max_min_color_ratio,
+            coloring_algorithm,
         )
 
     def _validate_world_ordering(self):
@@ -5483,6 +5511,11 @@ class ModelBuilder:
         ms = np.array(self.particle_mass, dtype=np.float32)
         # static particles (with zero mass) have zero inverse mass
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
+
+        def _to_wp_array(data, dtype, requires_grad):
+            if len(data) == 0:
+                return None
+            return wp.array(data, dtype=dtype, requires_grad=requires_grad)
 
         with wp.ScopedDevice(device):
             # -------------------------------------
@@ -5690,38 +5723,38 @@ class ModelBuilder:
             # ---------------------
             # springs
 
-            m.spring_indices = wp.array(self.spring_indices, dtype=wp.int32)
-            m.spring_rest_length = wp.array(self.spring_rest_length, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_stiffness = wp.array(self.spring_stiffness, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_damping = wp.array(self.spring_damping, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_control = wp.array(self.spring_control, dtype=wp.float32, requires_grad=requires_grad)
+            m.spring_indices = _to_wp_array(self.spring_indices, wp.int32, requires_grad=False)
+            m.spring_rest_length = _to_wp_array(self.spring_rest_length, wp.float32, requires_grad=requires_grad)
+            m.spring_stiffness = _to_wp_array(self.spring_stiffness, wp.float32, requires_grad=requires_grad)
+            m.spring_damping = _to_wp_array(self.spring_damping, wp.float32, requires_grad=requires_grad)
+            m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
             # triangles
 
-            m.tri_indices = wp.array(self.tri_indices, dtype=wp.int32)
-            m.tri_poses = wp.array(self.tri_poses, dtype=wp.mat22, requires_grad=requires_grad)
-            m.tri_activations = wp.array(self.tri_activations, dtype=wp.float32, requires_grad=requires_grad)
-            m.tri_materials = wp.array(self.tri_materials, dtype=wp.float32, requires_grad=requires_grad)
-            m.tri_areas = wp.array(self.tri_areas, dtype=wp.float32, requires_grad=requires_grad)
+            m.tri_indices = _to_wp_array(self.tri_indices, wp.int32, requires_grad=False)
+            m.tri_poses = _to_wp_array(self.tri_poses, wp.mat22, requires_grad=requires_grad)
+            m.tri_activations = _to_wp_array(self.tri_activations, wp.float32, requires_grad=requires_grad)
+            m.tri_materials = _to_wp_array(self.tri_materials, wp.float32, requires_grad=requires_grad)
+            m.tri_areas = _to_wp_array(self.tri_areas, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
             # edges
 
-            m.edge_indices = wp.array(self.edge_indices, dtype=wp.int32)
-            m.edge_rest_angle = wp.array(self.edge_rest_angle, dtype=wp.float32, requires_grad=requires_grad)
-            m.edge_rest_length = wp.array(self.edge_rest_length, dtype=wp.float32, requires_grad=requires_grad)
-            m.edge_bending_properties = wp.array(
-                self.edge_bending_properties, dtype=wp.float32, requires_grad=requires_grad
+            m.edge_indices = _to_wp_array(self.edge_indices, wp.int32, requires_grad=False)
+            m.edge_rest_angle = _to_wp_array(self.edge_rest_angle, wp.float32, requires_grad=requires_grad)
+            m.edge_rest_length = _to_wp_array(self.edge_rest_length, wp.float32, requires_grad=requires_grad)
+            m.edge_bending_properties = _to_wp_array(
+                self.edge_bending_properties, wp.float32, requires_grad=requires_grad
             )
 
             # ---------------------
             # tetrahedra
 
-            m.tet_indices = wp.array(self.tet_indices, dtype=wp.int32)
-            m.tet_poses = wp.array(self.tet_poses, dtype=wp.mat33, requires_grad=requires_grad)
-            m.tet_activations = wp.array(self.tet_activations, dtype=wp.float32, requires_grad=requires_grad)
-            m.tet_materials = wp.array(self.tet_materials, dtype=wp.float32, requires_grad=requires_grad)
+            m.tet_indices = _to_wp_array(self.tet_indices, wp.int32, requires_grad=False)
+            m.tet_poses = _to_wp_array(self.tet_poses, wp.mat33, requires_grad=requires_grad)
+            m.tet_activations = _to_wp_array(self.tet_activations, wp.float32, requires_grad=requires_grad)
+            m.tet_materials = _to_wp_array(self.tet_materials, wp.float32, requires_grad=requires_grad)
 
             # -----------------------
             # muscles
