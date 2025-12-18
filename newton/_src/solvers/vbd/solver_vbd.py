@@ -3971,7 +3971,7 @@ class SolverVBD(SolverBase):
                 vertex_collision_buffer_pre_alloc=vertex_collision_buffer_pre_alloc,
                 edge_collision_buffer_pre_alloc=edge_collision_buffer_pre_alloc,
                 edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
-                record_triangle_contacting_vertices=self.truncation_mode == 1,
+                # record_triangle_contacting_vertices=self.truncation_mode == 1,
             )
 
             self.compute_contact_filtering_list(

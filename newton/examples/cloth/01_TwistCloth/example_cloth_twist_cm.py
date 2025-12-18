@@ -196,7 +196,7 @@ class Example:
             handle_self_contact=True,
             self_contact_radius=0.2,
             self_contact_margin=0.35,
-            topological_contact_filter_threshold=1,
+            topological_contact_filter_threshold=2,
             # use_tile_solve=False,
             # vertex_collision_buffer_pre_alloc= 128,
             # edge_collision_buffer_pre_alloc= 256,
