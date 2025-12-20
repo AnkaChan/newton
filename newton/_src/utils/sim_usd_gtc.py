@@ -477,17 +477,17 @@ class Simulator:
 
         self.in_stage = create_stage_from_path(input_path)
 
-        builder = newton.ModelBuilder()
-        builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
-        builder.default_joint_cfg.armature = 0.001
-        builder.default_joint_cfg.friction = 0.0
-        builder.up_axis = newton.Axis.Z
-        builder.default_shape_cfg.density = 1000.0
-        builder.default_shape_cfg.ke = 1.0e4
-        builder.default_shape_cfg.kd = 5.0e1
-        builder.default_shape_cfg.thickness = 0.001
-        results = parse_usd(
-            builder,
+        self.builder = newton.ModelBuilder()
+        self.builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        self.builder.default_joint_cfg.armature = 0.001
+        self.builder.default_joint_cfg.friction = 0.0
+        self.builder.up_axis = newton.Axis.Z
+        self.builder.default_shape_cfg.density = 1000.0
+        self.builder.default_shape_cfg.ke = 1.0e4
+        self.builder.default_shape_cfg.kd = 5.0e1
+        self.builder.default_shape_cfg.thickness = 0.001
+        self.results = parse_usd(
+            self.builder,
             self.in_stage,
             collapse_fixed_joints=False,  # ! keep it disabled for the lanterns to not disrupt the USD body mapping
             # ignore_paths=[".*BDXDroid"],
@@ -504,67 +504,67 @@ class Simulator:
 
         # set up pair-wise filters for the BDX Droid shapes to disable self collisions
         droid_shapes: list[int] = []
-        for i, key in enumerate(builder.shape_key):
+        for i, key in enumerate(self.builder.shape_key):
             if "BDXDroid" in key:
                 droid_shapes.append(i)
         for shape1, shape2 in itertools.combinations(droid_shapes, 2):
-            builder.shape_collision_filter_pairs.append((shape1, shape2))
+            self.builder.shape_collision_filter_pairs.append((shape1, shape2))
 
         self._setup_solver_attributes()
         self.sim_time = max(sim_time, sim_frame * self.frame_dt)
 
         # create custom attributes for the recorder
         if self.record_path:
-            self._bdxlanterndemo_add_custom_attributes_for_recorder(builder)
+            self._bdxlanterndemo_add_custom_attributes_for_recorder(self.builder)
 
         if integrator:
             self.integrator_type = integrator
         # TODO: this is where we want people to be able to write their own code. Need to go to self.prebuilder_finalize(). Other option is to use lambda/callback function.
         # disable collisions for the lantern chains
-        chain_shapes = [i for i, key in enumerate(builder.shape_key) if "chain" in key.lower()]
-        for shape1, shape2 in itertools.product(chain_shapes, range(builder.shape_count)):
-            builder.shape_collision_filter_pairs.append((shape1, shape2))
-            builder.shape_collision_filter_pairs.append((shape2, shape1))
+        chain_shapes = [i for i, key in enumerate(self.builder.shape_key) if "chain" in key.lower()]
+        for shape1, shape2 in itertools.product(chain_shapes, range(self.builder.shape_count)):
+            self.builder.shape_collision_filter_pairs.append((shape1, shape2))
+            self.builder.shape_collision_filter_pairs.append((shape2, shape1))
         if use_unified_collision_pipeline:
             # convert all collision meshes to convex hulls but keep terrain high-res meshes (just for visualization)
             shape_indices = [
                 i
-                for i, (flags, key) in enumerate(zip(builder.shape_flags, builder.shape_key))
+                for i, (flags, key) in enumerate(zip(self.builder.shape_flags, self.builder.shape_key))
                 if flags & newton.ShapeFlags.COLLIDE_SHAPES
                 and "terrainMaincol" not in key
                 and "ground_plane" not in key
             ]
 
-            lantern_shapes = [i for i in shape_indices if "HangingLantern" in builder.shape_key[i]]
+            lantern_shapes = [i for i in shape_indices if "HangingLantern" in self.builder.shape_key[i]]
             other_shapes = [i for i in shape_indices if i not in lantern_shapes]
 
             if use_coacd:
-                builder.approximate_meshes(
+                self.builder.approximate_meshes(
                     "coacd",
                     lantern_shapes,
                     keep_visual_shapes=True,
                     threshold=0.15,
                 )
-                builder.approximate_meshes(
+                self.builder.approximate_meshes(
                     "convex_hull",
                     other_shapes,
                     keep_visual_shapes=True,
                 )
             else:
-                builder.approximate_meshes(
+                self.builder.approximate_meshes(
                     "convex_hull",
                     lantern_shapes + other_shapes,
                     keep_visual_shapes=False,
                 )
 
-        self._collect_animated_colliders(builder, results["path_body_map"])
+        self._collect_animated_colliders(self.builder, self.results["path_body_map"])
         if self.integrator_type == IntegratorType.VBD:
-            builder.color()
-        self.model = builder.finalize()
-        self.builder_results = results
+            self.builder.color()
+        self.model = self.builder.finalize()
+        self.builder_results = self.results
 
         self.path_body_map = self.builder_results["path_body_map"]
-        self.path_shape_map = results["path_shape_map"]
+        self.path_shape_map = self.results["path_shape_map"]
         self.body_path_map = {idx: path for path, idx in self.path_body_map.items()}
         self.shape_path_map = {idx: path for path, idx in self.path_shape_map.items()}
         collapse_results = self.builder_results["collapse_results"]
@@ -638,7 +638,8 @@ class Simulator:
         )
 
         # TODO: has an option to configure Newton viewer?? Have a flag to turn on/off the viewer and to support USD Camera.
-        self.show_viewer = True
+        # self.show_viewer = True
+        self.show_viewer = False
         self.render_folder = ""
         if self.show_viewer:
             self.viewer = newton.viewer.ViewerGL()
@@ -694,10 +695,10 @@ class Simulator:
         self.use_cuda_graph = wp.get_device().is_cuda
         self.is_mujoco_cpu_mode = self.integrator_type == IntegratorType.MJWARP and self.integrator.use_mujoco_cpu
         self.graph = None
-        if self.use_cuda_graph and not self.is_mujoco_cpu_mode:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        # if self.use_cuda_graph and not self.is_mujoco_cpu_mode:
+        #     with wp.ScopedCapture() as capture:
+        #         self.simulate()
+        #     self.graph = capture.graph
 
     def _setup_solver_attributes(self):
         """Apply scene attributes parsed from the stage to self."""
