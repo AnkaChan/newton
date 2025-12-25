@@ -4004,15 +4004,14 @@ def solve_elasticity_tile(
             + mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
             + particle_hessians[particle_index]
         )
-        if abs(wp.determinant(h_total)) > 1e-5:
+        if abs(wp.determinant(h_total)) > 1e-8:
             h_inv = wp.inverse(h_total)
             f_total = (
                 f_total
                 + mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
                 + particle_forces[particle_index]
             )
-            if abs(wp.determinant(h)) > 1e-8:
-                particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
+            particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
 
 
 class SolverVBD(SolverBase):
@@ -4152,7 +4151,6 @@ class SolverVBD(SolverBase):
                 )
 
             self.conservative_bound_relaxation = penetration_free_conservative_bound_relaxation
-            self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
 
             self.trimesh_collision_detector = TriMeshCollisionDetector(
                 self.model,
@@ -4193,11 +4191,11 @@ class SolverVBD(SolverBase):
                 self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
                 # soft_contact_max,
             )
-            if truncation_mode == 1:
-                # self.initialize_division_plane_buffer()
-                self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
         else:
             self.self_contact_evaluation_kernel_launch_size = soft_contact_max
+
+        self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
+        self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
 
         # spaces for particle force and hessian
         self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
@@ -4462,11 +4460,13 @@ class SolverVBD(SolverBase):
         if self.use_tile_solve:
             self.simulate_one_step_tile(state_in, state_out, control, contacts, dt)
         else:
-            self.simulate_one_step_no_self_contact(state_in, state_out, control, contacts, dt)
+            self.simulate_one_step_no_tile(state_in, state_out, control, contacts, dt)
 
-    def simulate_one_step_no_self_contact(
+    def simulate_one_step_no_tile(
         self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float
     ):
+        self.collision_detection_penetration_free(state_in)
+
         model = self.model
 
         wp.launch(
@@ -4483,50 +4483,65 @@ class SolverVBD(SolverBase):
             ],
             outputs=[
                 self.inertia,
-                state_in.particle_q,
+                self.particle_displacements,
             ],
             dim=self.model.particle_count,
             device=self.device,
         )
 
+        self.penetration_free_truncation(state_in.particle_q)
+
         for _iter in range(self.iterations):
+            # after initialization, we need new collision detection to update the bounds
+            if (self.collision_detection_interval == 0 and _iter == 0) or (
+                self.collision_detection_interval >= 1 and _iter % self.collision_detection_interval == 0
+            ):
+                self.collision_detection_penetration_free(state_in)
+
             self.particle_forces.zero_()
             self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
-                if contacts is not None:
-                    wp.launch(
-                        kernel=accumulate_particle_body_contact_force_and_hessian,
-                        dim=self.self_contact_evaluation_kernel_launch_size,
-                        inputs=[
-                            dt,
-                            color,
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            self.model.particle_colors,
-                            # body-particle contact
-                            self.model.soft_contact_ke,
-                            self.model.soft_contact_kd,
-                            self.model.soft_contact_mu,
-                            self.friction_epsilon,
-                            self.model.particle_radius,
-                            contacts.soft_contact_particle,
-                            contacts.soft_contact_count,
-                            contacts.soft_contact_max,
-                            self.model.shape_material_mu,
-                            self.model.shape_body,
-                            state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
-                            state_in.body_q if self.integrate_with_external_rigid_solver else None,
-                            self.model.body_qd,
-                            self.model.body_com,
-                            contacts.soft_contact_shape,
-                            contacts.soft_contact_body_pos,
-                            contacts.soft_contact_body_vel,
-                            contacts.soft_contact_normal,
-                        ],
-                        outputs=[self.particle_forces, self.particle_hessians],
-                        device=self.device,
-                    )
+                # if contacts is not None:
+                #     # wp.launch(
+                #     #     kernel=accumulate_contact_force_and_hessian,
+                #     #     dim=self.collision_evaluation_kernel_launch_size,
+                #     #     inputs=[
+                #     #         dt,
+                #     #         color,
+                #     #         self.particle_q_prev,
+                #     #         state_in.particle_q,
+                #     #         self.model.particle_colors,
+                #     #         self.model.tri_indices,
+                #     #         self.model.edge_indices,
+                #     #         # self-contact
+                #     #         self.trimesh_collision_info,
+                #     #         self.self_contact_radius,
+                #     #         self.model.soft_contact_ke,
+                #     #         self.model.soft_contact_kd,
+                #     #         self.model.soft_contact_mu,
+                #     #         self.friction_epsilon,
+                #     #         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                #     #         # body-particle contact
+                #     #         self.model.particle_radius,
+                #     #         contacts.soft_contact_particle,
+                #     #         contacts.soft_contact_count,
+                #     #         contacts.soft_contact_max,
+                #     #         self.model.shape_material_mu,
+                #     #         self.model.shape_body,
+                #     #         state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
+                #     #         state_in.body_q if self.integrate_with_external_rigid_solver else None,
+                #     #         self.model.body_qd,
+                #     #         self.model.body_com,
+                #     #         contacts.soft_contact_shape,
+                #     #         contacts.soft_contact_body_pos,
+                #     #         contacts.soft_contact_body_vel,
+                #     #         contacts.soft_contact_normal,
+                #     #     ],
+                #     #     outputs=[self.particle_forces, self.particle_hessians],
+                #     #     device=self.device,
+                #     #     max_blocks=self.model.device.sm_count,
+                #     # )
 
                 if model.spring_count:
                     wp.launch(
@@ -4548,86 +4563,42 @@ class SolverVBD(SolverBase):
                         device=self.device,
                     )
 
-                if self.use_tile_solve:
-                    wp.launch(
-                        kernel=solve_trimesh_no_self_contact_tile,
-                        inputs=[
-                            dt,
-                            self.model.particle_color_groups[color],
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            state_in.particle_qd,
-                            self.model.particle_mass,
-                            self.inertia,
-                            self.model.particle_flags,
-                            self.model.tri_indices,
-                            self.model.tri_poses,
-                            self.model.tri_materials,
-                            self.model.tri_areas,
-                            self.model.edge_indices,
-                            self.model.edge_rest_angle,
-                            self.model.edge_rest_length,
-                            self.model.edge_bending_properties,
-                            self.model.tet_indices,
-                            self.model.tet_poses,
-                            self.model.tet_materials,
-                            self.adjacency,
-                            self.particle_forces,
-                            self.particle_hessians,
-                        ],
-                        outputs=[
-                            state_out.particle_q,
-                        ],
-                        dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                        block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                        device=self.device,
-                    )
-                else:
-                    wp.launch(
-                        kernel=solve_trimesh_no_self_contact,
-                        inputs=[
-                            dt,
-                            self.model.particle_color_groups[color],
-                            self.particle_q_prev,
-                            state_in.particle_q,
-                            state_in.particle_qd,
-                            self.model.particle_mass,
-                            self.inertia,
-                            self.model.particle_flags,
-                            self.model.tri_indices,
-                            self.model.tri_poses,
-                            self.model.tri_materials,
-                            self.model.tri_areas,
-                            self.model.edge_indices,
-                            self.model.edge_rest_angle,
-                            self.model.edge_rest_length,
-                            self.model.edge_bending_properties,
-                            self.model.tet_indices,
-                            self.model.tet_poses,
-                            self.model.tet_materials,
-                            self.adjacency,
-                            self.particle_forces,
-                            self.particle_hessians,
-                        ],
-                        outputs=[
-                            state_out.particle_q,
-                        ],
-                        dim=self.model.particle_color_groups[color].size,
-                        device=self.device,
-                    )
-
                 wp.launch(
-                    kernel=copy_particle_positions_back,
-                    inputs=[self.model.particle_color_groups[color], state_in.particle_q],
-                    outputs=[state_out.particle_q],
+                    kernel=solve_trimesh,
                     dim=self.model.particle_color_groups[color].size,
+                    inputs=[
+                        dt,
+                        self.model.particle_color_groups[color],
+                        self.particle_q_prev,
+                        state_in.particle_q,
+                        self.model.particle_mass,
+                        self.inertia,
+                        self.model.particle_flags,
+                        self.model.tri_indices,
+                        self.model.tri_poses,
+                        self.model.tri_materials,
+                        self.model.tri_areas,
+                        self.model.edge_indices,
+                        self.model.edge_rest_angle,
+                        self.model.edge_rest_length,
+                        self.model.edge_bending_properties,
+                        self.adjacency,
+                        self.particle_forces,
+                        self.particle_hessians,
+                    ],
+                    outputs=[
+                        self.particle_displacements,
+                    ],
                     device=self.device,
                 )
 
+                self.penetration_free_truncation(state_in.particle_q)
+
+        wp.copy(state_out.particle_q, state_in.particle_q)
+
         wp.launch(
             kernel=update_velocity,
-            inputs=[dt, self.particle_q_prev, state_out.particle_q],
-            outputs=[state_out.particle_qd],
+            inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
             dim=self.model.particle_count,
             device=self.device,
         )
@@ -4761,7 +4732,6 @@ class SolverVBD(SolverBase):
                     #     device=self.device,
                     #     max_blocks=self.model.device.sm_count,
                     # )
-
                     wp.launch(
                         kernel=accumulate_self_contact_force_and_hessian,
                         dim=self.self_contact_evaluation_kernel_launch_size,
@@ -4829,36 +4799,37 @@ class SolverVBD(SolverBase):
         )
 
     def collision_detection_penetration_free(self, current_state: State):
+        self.pos_prev_collision_detection.assign(current_state.particle_q)
         self.particle_displacements.zero_()
 
-        self.trimesh_collision_detector.refit(current_state.particle_q)
-        self.trimesh_collision_detector.vertex_triangle_collision_detection(
-            self.self_contact_margin,
-            min_query_radius=self.rest_shape_contact_exclusion_radius,
-            min_distance_filtering_ref_pos=self.rest_shape,
-        )
-        self.trimesh_collision_detector.edge_edge_collision_detection(
-            self.self_contact_margin,
-            min_query_radius=self.rest_shape_contact_exclusion_radius,
-            min_distance_filtering_ref_pos=self.rest_shape,
-        )
-
-        self.pos_prev_collision_detection.assign(current_state.particle_q)
-        if self.truncation_mode == 0:
-            wp.launch(
-                kernel=compute_particle_conservative_bound,
-                inputs=[
-                    self.conservative_bound_relaxation,
-                    self.self_contact_margin,
-                    self.adjacency,
-                    self.trimesh_collision_detector.collision_info,
-                ],
-                outputs=[
-                    self.particle_conservative_bounds,
-                ],
-                dim=self.model.particle_count,
-                device=self.device,
+        if self.handle_self_contact:
+            self.trimesh_collision_detector.refit(current_state.particle_q)
+            self.trimesh_collision_detector.vertex_triangle_collision_detection(
+                self.self_contact_margin,
+                min_query_radius=self.rest_shape_contact_exclusion_radius,
+                min_distance_filtering_ref_pos=self.rest_shape,
             )
+            self.trimesh_collision_detector.edge_edge_collision_detection(
+                self.self_contact_margin,
+                min_query_radius=self.rest_shape_contact_exclusion_radius,
+                min_distance_filtering_ref_pos=self.rest_shape,
+            )
+
+            if self.truncation_mode == 0:
+                wp.launch(
+                    kernel=compute_particle_conservative_bound,
+                    inputs=[
+                        self.conservative_bound_relaxation,
+                        self.self_contact_margin,
+                        self.adjacency,
+                        self.trimesh_collision_detector.collision_info,
+                    ],
+                    outputs=[
+                        self.particle_conservative_bounds,
+                    ],
+                    dim=self.model.particle_count,
+                    device=self.device,
+                )
 
     def rebuild_bvh(self, state: State):
         """This function will rebuild the BVHs used for detecting self-contacts using the input `state`.
@@ -4877,67 +4848,8 @@ class SolverVBD(SolverBase):
         Modify displacements_in in-place, also modify particle_q if its not None
 
         """
-        if self.truncation_mode == 0:
-            wp.launch(
-                kernel=apply_conservative_bound_truncation,
-                inputs=[
-                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
-                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-                    self.particle_conservative_bounds,  # particle_conservative_bounds: wp.array(dtype=float),
-                    particle_q_out,  # particle_q_out: wp.array(dtype=wp.vec3),
-                ],
-                dim=self.model.particle_count,
-                device=self.device,
-            )
-        else:
-            # wp.launch(
-            #     kernel=apply_planar_truncation,
-            #     inputs=[
-            #         self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-            #         self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
-            #         self.model.tri_indices,
-            #         self.model.edge_indices,
-            #         self.adjacency,
-            #         self.trimesh_collision_info,
-            #         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
-            #         self.conservative_bound_relaxation * 2,
-            #         self.self_contact_margin * self.conservative_bound_relaxation,
-            #     ],
-            #     outputs=[
-            #         self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
-            #         particle_q_out,
-            #     ],
-            #     dim=self.model.particle_count,
-            #     device=self.device,
-            # )
-
-            # pos: wp.array(dtype=wp.vec3),
-            # displacement_in: wp.array(dtype=wp.vec3),
-            # tri_indices: wp.array(dtype=wp.int32, ndim=2),
-            # edge_indices: wp.array(dtype=wp.int32, ndim=2),
-            # collision_info_array: wp.array(dtype=TriMeshCollisionInfo),
-            # parallel_eps: float,
-            # gamma: float,
-            # truncation_t_out: wp.array(dtype=wp.vec3),
+        if not self.handle_self_contact:
             self.truncation_ts.fill_(1.0)
-            wp.launch(
-                kernel=apply_planar_truncation_parallel_by_collision,
-                inputs=[
-                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
-                    self.model.tri_indices,
-                    self.model.edge_indices,
-                    self.trimesh_collision_info,
-                    self.trimesh_collision_detector.edge_edge_parallel_epsilon,
-                    self.conservative_bound_relaxation * 2,
-                ],
-                outputs=[
-                    self.truncation_ts,
-                ],
-                dim=self.self_contact_evaluation_kernel_launch_size,
-                device=self.device,
-            )
-
             wp.launch(
                 kernel=apply_truncation_ts,
                 dim=self.model.particle_count,
@@ -4952,6 +4864,83 @@ class SolverVBD(SolverBase):
                 ],
                 device=self.device,
             )
+
+        else:
+            if self.truncation_mode == 0:
+                wp.launch(
+                    kernel=apply_conservative_bound_truncation,
+                    inputs=[
+                        self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                        self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
+                        self.particle_conservative_bounds,  # particle_conservative_bounds: wp.array(dtype=float),
+                        particle_q_out,  # particle_q_out: wp.array(dtype=wp.vec3),
+                    ],
+                    dim=self.model.particle_count,
+                    device=self.device,
+                )
+            else:
+                # wp.launch(
+                #     kernel=apply_planar_truncation,
+                #     inputs=[
+                #         self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
+                #         self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                #         self.model.tri_indices,
+                #         self.model.edge_indices,
+                #         self.adjacency,
+                #         self.trimesh_collision_info,
+                #         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                #         self.conservative_bound_relaxation * 2,
+                #         self.self_contact_margin * self.conservative_bound_relaxation,
+                #     ],
+                #     outputs=[
+                #         self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                #         particle_q_out,
+                #     ],
+                #     dim=self.model.particle_count,
+                #     device=self.device,
+                # )
+
+                # pos: wp.array(dtype=wp.vec3),
+                # displacement_in: wp.array(dtype=wp.vec3),
+                # tri_indices: wp.array(dtype=wp.int32, ndim=2),
+                # edge_indices: wp.array(dtype=wp.int32, ndim=2),
+                # collision_info_array: wp.array(dtype=TriMeshCollisionInfo),
+                # parallel_eps: float,
+                # gamma: float,
+                # truncation_t_out: wp.array(dtype=wp.vec3),
+                self.truncation_ts.fill_(1.0)
+                wp.launch(
+                    kernel=apply_planar_truncation_parallel_by_collision,
+                    inputs=[
+                        self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
+                        self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                        self.model.tri_indices,
+                        self.model.edge_indices,
+                        self.trimesh_collision_info,
+                        self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                        self.conservative_bound_relaxation * 2,
+                    ],
+                    outputs=[
+                        self.truncation_ts,
+                    ],
+                    dim=self.self_contact_evaluation_kernel_launch_size,
+                    device=self.device,
+                )
+
+                wp.launch(
+                    kernel=apply_truncation_ts,
+                    dim=self.model.particle_count,
+                    inputs=[
+                        self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
+                        self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                        self.truncation_ts,
+                    ],
+                    outputs=[
+                        self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
+                        particle_q_out,
+                    ],
+                    device=self.device,
+                )
 
     def penetration_free_truncation_tile(self, particle_q_out=None):
         """
