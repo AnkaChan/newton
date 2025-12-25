@@ -657,8 +657,10 @@ def evaluate_volumetric_neo_hooken_force_and_hessian_4_vertices(
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    tet_pose: wp.mat33,
+    mu: float,
+    lmbd: float,
+    damping: float,
     dt: float,
 ):
     v0_idx = tet_indices[tet_id, 0]
@@ -666,15 +668,12 @@ def evaluate_volumetric_neo_hooken_force_and_hessian_4_vertices(
     v2_idx = tet_indices[tet_id, 2]
     v3_idx = tet_indices[tet_id, 3]
 
-    mu = tet_materials[tet_id, 0]
-    lmbd = tet_materials[tet_id, 1]
-
     v0 = pos[v0_idx]
     v1 = pos[v1_idx]
     v2 = pos[v2_idx]
     v3 = pos[v3_idx]
 
-    Dm_inv = tet_poses[tet_id]
+    Dm_inv = tet_pose
     rest_volume = 1.0 / (wp.determinant(Dm_inv) * 6.0)
 
     diff_1 = v1 - v0
@@ -820,13 +819,13 @@ def evaluate_volumetric_neo_hooken_force_and_hessian_4_vertices(
     )
 
     f1, h1 = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[0, 0], ms[0, 1], ms[0, 2])
-    f1, h1 = damp_force_and_hessian(pos_prev[v0_idx], v0, f1, h1, tet_materials[tet_id, 2], dt)
+    f1, h1 = damp_force_and_hessian(pos_prev[v0_idx], v0, f1, h1, damping, dt)
     f2, h2 = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[1, 0], ms[1, 1], ms[1, 2])
-    f2, h2 = damp_force_and_hessian(pos_prev[v1_idx], v1, f2, h2, tet_materials[tet_id, 2], dt)
+    f2, h2 = damp_force_and_hessian(pos_prev[v1_idx], v1, f2, h2, damping, dt)
     f3, h3 = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[2, 0], ms[2, 1], ms[2, 2])
-    f3, h3 = damp_force_and_hessian(pos_prev[v2_idx], v2, f3, h3, tet_materials[tet_id, 2], dt)
+    f3, h3 = damp_force_and_hessian(pos_prev[v2_idx], v2, f3, h3, damping, dt)
     f4, h4 = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[3, 0], ms[3, 1], ms[3, 2])
-    f4, h4 = damp_force_and_hessian(pos_prev[v3_idx], v3, f4, h4, tet_materials[tet_id, 2], dt)
+    f4, h4 = damp_force_and_hessian(pos_prev[v3_idx], v3, f4, h4, damping, dt)
 
     return f1, f2, f3, f4, h1, h2, h3, h4
 
@@ -838,8 +837,10 @@ def evaluate_volumetric_neo_hooken_force_and_hessian(
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    tet_pose: wp.mat33,
+    mu: float,
+    lmbd: float,
+    damping: float,
     dt: float,
 ):
     v0_idx = tet_indices[tet_id, 0]
@@ -847,15 +848,12 @@ def evaluate_volumetric_neo_hooken_force_and_hessian(
     v2_idx = tet_indices[tet_id, 2]
     v3_idx = tet_indices[tet_id, 3]
 
-    mu = tet_materials[tet_id, 0]
-    lmbd = tet_materials[tet_id, 1]
-
     v0 = pos[v0_idx]
     v1 = pos[v1_idx]
     v2 = pos[v2_idx]
     v3 = pos[v3_idx]
 
-    Dm_inv = tet_poses[tet_id]
+    Dm_inv = tet_pose
     rest_volume = 1.0 / (wp.determinant(Dm_inv) * 6.0)
 
     diff_1 = v1 - v0
@@ -1001,7 +999,7 @@ def evaluate_volumetric_neo_hooken_force_and_hessian(
     )
 
     f, h = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[v_order, 0], ms[v_order, 1], ms[v_order, 2])
-    f, h = damp_force_and_hessian(pos_prev[v0_idx], v0, f, h, tet_materials[tet_id, 2], dt)
+    f, h = damp_force_and_hessian(pos_prev[v0_idx], v0, f, h, damping, dt)
 
     return f, h
 
@@ -2650,8 +2648,10 @@ def solve_trimesh_no_self_contact_tile(
                 pos_prev,
                 pos,
                 tet_indices,
-                tet_poses,
-                tet_materials,
+                tet_poses[nei_tet_index],
+                tet_materials[nei_tet_index, 0],
+                tet_materials[nei_tet_index, 1],
+                tet_materials[nei_tet_index, 2],
                 dt,
             )
 
@@ -2805,8 +2805,10 @@ def solve_trimesh_no_self_contact(
                 pos_prev,
                 pos,
                 tet_indices,
-                tet_poses,
-                tet_materials,
+                tet_poses[nei_tet_index],
+                tet_materials[nei_tet_index, 0],
+                tet_materials[nei_tet_index, 1],
+                tet_materials[nei_tet_index, 2],
                 dt,
             )
 
@@ -3886,8 +3888,10 @@ def solve_elasticity(
                     pos_prev,
                     pos,
                     tet_indices,
-                    tet_poses,
-                    tet_materials,
+                    tet_poses[nei_tet_index],
+                    tet_materials[nei_tet_index, 0],
+                    tet_materials[nei_tet_index, 1],
+                    tet_materials[nei_tet_index, 2],
                     dt,
                 )
 
@@ -4042,8 +4046,10 @@ def solve_elasticity_tile(
                     pos_prev,
                     pos,
                     tet_indices,
-                    tet_poses,
-                    tet_materials,
+                    tet_poses[nei_tet_index],
+                    tet_materials[nei_tet_index, 0],
+                    tet_materials[nei_tet_index, 1],
+                    tet_materials[nei_tet_index, 2],
                     dt,
                 )
 
