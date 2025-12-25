@@ -3773,7 +3773,7 @@ def accumulate_particle_body_contact_force_and_hessian(
 
 
 @wp.kernel
-def solve_trimesh(
+def solve_elasticity(
     dt: float,
     particle_ids_in_color: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
@@ -4502,46 +4502,40 @@ class SolverVBD(SolverBase):
             self.particle_hessians.zero_()
 
             for color in range(len(self.model.particle_color_groups)):
-                # if contacts is not None:
-                #     # wp.launch(
-                #     #     kernel=accumulate_contact_force_and_hessian,
-                #     #     dim=self.collision_evaluation_kernel_launch_size,
-                #     #     inputs=[
-                #     #         dt,
-                #     #         color,
-                #     #         self.particle_q_prev,
-                #     #         state_in.particle_q,
-                #     #         self.model.particle_colors,
-                #     #         self.model.tri_indices,
-                #     #         self.model.edge_indices,
-                #     #         # self-contact
-                #     #         self.trimesh_collision_info,
-                #     #         self.self_contact_radius,
-                #     #         self.model.soft_contact_ke,
-                #     #         self.model.soft_contact_kd,
-                #     #         self.model.soft_contact_mu,
-                #     #         self.friction_epsilon,
-                #     #         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
-                #     #         # body-particle contact
-                #     #         self.model.particle_radius,
-                #     #         contacts.soft_contact_particle,
-                #     #         contacts.soft_contact_count,
-                #     #         contacts.soft_contact_max,
-                #     #         self.model.shape_material_mu,
-                #     #         self.model.shape_body,
-                #     #         state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
-                #     #         state_in.body_q if self.integrate_with_external_rigid_solver else None,
-                #     #         self.model.body_qd,
-                #     #         self.model.body_com,
-                #     #         contacts.soft_contact_shape,
-                #     #         contacts.soft_contact_body_pos,
-                #     #         contacts.soft_contact_body_vel,
-                #     #         contacts.soft_contact_normal,
-                #     #     ],
-                #     #     outputs=[self.particle_forces, self.particle_hessians],
-                #     #     device=self.device,
-                #     #     max_blocks=self.model.device.sm_count,
-                #     # )
+                if contacts is not None:
+                    wp.launch(
+                        kernel=accumulate_particle_body_contact_force_and_hessian,
+                        dim=self.self_contact_evaluation_kernel_launch_size,
+                        inputs=[
+                            dt,
+                            color,
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            self.model.particle_colors,
+                            # body-particle contact
+                            self.model.soft_contact_ke,
+                            self.model.soft_contact_kd,
+                            self.model.soft_contact_mu,
+                            self.friction_epsilon,
+                            self.model.particle_radius,
+                            contacts.soft_contact_particle,
+                            contacts.soft_contact_count,
+                            contacts.soft_contact_max,
+                            self.model.shape_material_mu,
+                            self.model.shape_body,
+                            state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
+                            state_in.body_q if self.integrate_with_external_rigid_solver else None,
+                            self.model.body_qd,
+                            self.model.body_com,
+                            contacts.soft_contact_shape,
+                            contacts.soft_contact_body_pos,
+                            contacts.soft_contact_body_vel,
+                            contacts.soft_contact_normal,
+                        ],
+                        outputs=[self.particle_forces, self.particle_hessians],
+                        device=self.device,
+                        # max_blocks=self.model.device.sm_count,
+                    )
 
                 if model.spring_count:
                     wp.launch(
@@ -4564,7 +4558,7 @@ class SolverVBD(SolverBase):
                     )
 
                 wp.launch(
-                    kernel=solve_trimesh,
+                    kernel=solve_elasticity,
                     dim=self.model.particle_color_groups[color].size,
                     inputs=[
                         dt,
