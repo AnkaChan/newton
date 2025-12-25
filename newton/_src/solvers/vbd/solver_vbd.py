@@ -3789,6 +3789,9 @@ def solve_elasticity(
     edge_rest_angles: wp.array(dtype=float),
     edge_rest_length: wp.array(dtype=float),
     edge_bending_properties: wp.array(dtype=float, ndim=2),
+    tet_indices: wp.array(dtype=wp.int32, ndim=2),
+    tet_poses: wp.array(dtype=wp.mat33),
+    tet_materials: wp.array(dtype=float, ndim=2),
     adjacency: ForceElementAdjacencyInfo,
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
@@ -3817,55 +3820,79 @@ def solve_elasticity(
             f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
         )
 
-    # elastic force and hessian
-    for i_adj_tri in range(get_vertex_num_adjacent_faces(adjacency, particle_index)):
-        tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, i_adj_tri)
+    if tri_indices:
+        # elastic force and hessian
+        for i_adj_tri in range(get_vertex_num_adjacent_faces(adjacency, particle_index)):
+            tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, i_adj_tri)
 
-        # fmt: off
-        if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
-            wp.printf(
-                "particle: %d | num_adj_faces: %d | ",
-                particle_index,
-                get_vertex_num_adjacent_faces(particle_index, adjacency),
+            # fmt: off
+            if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
+                wp.printf(
+                    "particle: %d | num_adj_faces: %d | ",
+                    particle_index,
+                    get_vertex_num_adjacent_faces(particle_index, adjacency),
+                )
+                wp.printf("i_face: %d | face id: %d | v_order: %d | ", i_adj_tri, tri_index, vertex_order)
+                wp.printf(
+                    "face: %d %d %d\n",
+                    tri_indices[tri_index, 0],
+                    tri_indices[tri_index, 1],
+                    tri_indices[tri_index, 2],
+                )
+            # fmt: on
+
+            if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
+                f_tri, h_tri = evaluate_stvk_force_hessian(
+                    tri_index,
+                    vertex_order,
+                    pos,
+                    pos_prev,
+                    tri_indices,
+                    tri_poses[tri_index],
+                    tri_areas[tri_index],
+                    tri_materials[tri_index, 0],
+                    tri_materials[tri_index, 1],
+                    tri_materials[tri_index, 2],
+                    dt,
+                )
+
+                f = f + f_tri
+                h = h + h_tri
+
+    if edge_indices:
+        for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
+            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(adjacency, particle_index, i_adj_edge)
+            # vertex is on the edge; otherwise it only effects the bending energy n
+            if edge_bending_properties[nei_edge_index, 0] > 0.0:
+                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                    nei_edge_index, vertex_order_on_edge, pos, pos_prev, edge_indices, edge_rest_angles, edge_rest_length,
+                    edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt
+                )
+
+                f = f + f_edge
+                h = h + h_edge
+
+    if tet_indices:
+        # solve tet elasticity
+        num_adj_tets = get_vertex_num_adjacent_tets(adjacency, particle_index)
+        for adj_tet_counter in range(num_adj_tets):
+            nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
+                adjacency, particle_index, adj_tet_counter
             )
-            wp.printf("i_face: %d | face id: %d | v_order: %d | ", i_adj_tri, tri_index, vertex_order)
-            wp.printf(
-                "face: %d %d %d\n",
-                tri_indices[tri_index, 0],
-                tri_indices[tri_index, 1],
-                tri_indices[tri_index, 2],
-            )
-        # fmt: on
+            if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
+                f_tet, h_tet = evaluate_volumetric_neo_hooken_force_and_hessian(
+                    nei_tet_index,
+                    vertex_order_on_tet,
+                    pos_prev,
+                    pos,
+                    tet_indices,
+                    tet_poses,
+                    tet_materials,
+                    dt,
+                )
 
-        f_tri, h_tri = evaluate_stvk_force_hessian(
-            tri_index,
-            vertex_order,
-            pos,
-            pos_prev,
-            tri_indices,
-            tri_poses[tri_index],
-            tri_areas[tri_index],
-            tri_materials[tri_index, 0],
-            tri_materials[tri_index, 1],
-            tri_materials[tri_index, 2],
-            dt,
-        )
-
-        f = f + f_tri
-        h = h + h_tri
-
-
-    for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_index)):
-        nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(adjacency, particle_index, i_adj_edge)
-        # vertex is on the edge; otherwise it only effects the bending energy n
-        if edge_bending_properties[nei_edge_index, 0] != 0.0:
-            f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-                nei_edge_index, vertex_order_on_edge, pos, pos_prev, edge_indices, edge_rest_angles, edge_rest_length,
-                edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt
-            )
-
-            f = f + f_edge
-            h = h + h_edge
+                f += f_tet
+                h += h_tet
 
     # fmt: off
     if wp.static("overall_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
@@ -3901,6 +3928,9 @@ def solve_elasticity_tile(
     edge_rest_angles: wp.array(dtype=float),
     edge_rest_length: wp.array(dtype=float),
     edge_bending_properties: wp.array(dtype=float, ndim=2),
+    tet_indices: wp.array(dtype=wp.int32, ndim=2),
+    tet_poses: wp.array(dtype=wp.mat33),
+    tet_materials: wp.array(dtype=float, ndim=2),
     adjacency: ForceElementAdjacencyInfo,
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
@@ -3927,70 +3957,98 @@ def solve_elasticity_tile(
 
     batch_counter = wp.int32(0)
 
-    # loop through all the adjacent triangles using whole block
-    while batch_counter + thread_idx < num_adj_faces:
-        adj_tri_counter = thread_idx + batch_counter
-        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-        # elastic force and hessian
-        tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, adj_tri_counter)
+    if tri_indices:
+        # loop through all the adjacent triangles using whole block
+        while batch_counter + thread_idx < num_adj_faces:
+            adj_tri_counter = thread_idx + batch_counter
+            batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+            # elastic force and hessian
+            tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_index, adj_tri_counter)
 
-        # fmt: off
-        if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
-            wp.printf(
-                "particle: %d | num_adj_faces: %d | ",
-                particle_index,
-                get_vertex_num_adjacent_faces(particle_index, adjacency),
+            # fmt: off
+            if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
+                wp.printf(
+                    "particle: %d | num_adj_faces: %d | ",
+                    particle_index,
+                    get_vertex_num_adjacent_faces(particle_index, adjacency),
+                )
+                wp.printf("i_face: %d | face id: %d | v_order: %d | ", adj_tri_counter, tri_index, vertex_order)
+                wp.printf(
+                    "face: %d %d %d\n",
+                    tri_indices[tri_index, 0],
+                    tri_indices[tri_index, 1],
+                    tri_indices[tri_index, 2],
+                )
+            # fmt: on
+
+            if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
+                f_tri, h_tri = evaluate_stvk_force_hessian(
+                    tri_index,
+                    vertex_order,
+                    pos,
+                    pos_prev,
+                    tri_indices,
+                    tri_poses[tri_index],
+                    tri_areas[tri_index],
+                    tri_materials[tri_index, 0],
+                    tri_materials[tri_index, 1],
+                    tri_materials[tri_index, 2],
+                    dt,
+                )
+
+                f += f_tri
+                h += h_tri
+
+    if edge_indices:
+        batch_counter = wp.int32(0)
+        num_adj_edges = get_vertex_num_adjacent_edges(adjacency, particle_index)
+        while batch_counter + thread_idx < num_adj_edges:
+            adj_edge_counter = batch_counter + thread_idx
+            batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
+                adjacency, particle_index, adj_edge_counter
             )
-            wp.printf("i_face: %d | face id: %d | v_order: %d | ", adj_tri_counter, tri_index, vertex_order)
-            wp.printf(
-                "face: %d %d %d\n",
-                tri_indices[tri_index, 0],
-                tri_indices[tri_index, 1],
-                tri_indices[tri_index, 2],
+            if edge_bending_properties[nei_edge_index, 0] > 0.0:
+                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                    nei_edge_index,
+                    vertex_order_on_edge,
+                    pos,
+                    pos_prev,
+                    edge_indices,
+                    edge_rest_angles,
+                    edge_rest_length,
+                    edge_bending_properties[nei_edge_index, 0],
+                    edge_bending_properties[nei_edge_index, 1],
+                    dt,
+                )
+
+                f += f_edge
+                h += h_edge
+
+    if tet_indices:
+        # solve tet elasticity
+        batch_counter = wp.int32(0)
+        num_adj_tets = get_vertex_num_adjacent_tets(adjacency, particle_index)
+        while batch_counter + thread_idx < num_adj_tets:
+            adj_tet_counter = batch_counter + thread_idx
+            batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
+            nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
+                adjacency, particle_index, adj_tet_counter
             )
-        # fmt: on
+            if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
+                f_tet, h_tet = evaluate_volumetric_neo_hooken_force_and_hessian(
+                    nei_tet_index,
+                    vertex_order_on_tet,
+                    pos_prev,
+                    pos,
+                    tet_indices,
+                    tet_poses,
+                    tet_materials,
+                    dt,
+                )
 
-        f_tri, h_tri = evaluate_stvk_force_hessian(
-            tri_index,
-            vertex_order,
-            pos,
-            pos_prev,
-            tri_indices,
-            tri_poses[tri_index],
-            tri_areas[tri_index],
-            tri_materials[tri_index, 0],
-            tri_materials[tri_index, 1],
-            tri_materials[tri_index, 2],
-            dt,
-        )
-
-        f += f_tri
-        h += h_tri
-
-    batch_counter = wp.int32(0)
-    num_adj_edges = get_vertex_num_adjacent_edges(adjacency, particle_index)
-    while batch_counter + thread_idx < num_adj_edges:
-        adj_edge_counter = batch_counter + thread_idx
-        batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
-        nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
-            adjacency, particle_index, adj_edge_counter
-        )
-        if edge_bending_properties[nei_edge_index, 0] != 0.0:
-            f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-                nei_edge_index,
-                vertex_order_on_edge,
-                pos,
-                pos_prev,
-                edge_indices,
-                edge_rest_angles,
-                edge_rest_length,
-                edge_bending_properties[nei_edge_index, 0],
-                edge_bending_properties[nei_edge_index, 1],
-                dt,
-            )
-
-            f += f_edge
-            h += h_edge
+                f += f_tet
+                h += h_tet
 
     f_tile = wp.tile(f, preserve_type=True)
     h_tile = wp.tile(h, preserve_type=True)
@@ -4576,6 +4634,9 @@ class SolverVBD(SolverBase):
                         self.model.edge_rest_angle,
                         self.model.edge_rest_length,
                         self.model.edge_bending_properties,
+                        self.model.tet_indices,
+                        self.model.tet_poses,
+                        self.model.tet_materials,
                         self.adjacency,
                         self.particle_forces,
                         self.particle_hessians,
@@ -4771,6 +4832,9 @@ class SolverVBD(SolverBase):
                         self.model.edge_rest_angle,
                         self.model.edge_rest_length,
                         self.model.edge_bending_properties,
+                        self.model.tet_indices,
+                        self.model.tet_poses,
+                        self.model.tet_materials,
                         self.adjacency,
                         self.particle_forces,
                         self.particle_hessians,
