@@ -4122,7 +4122,7 @@ class SolverVBD(SolverBase):
         external_vertex_contact_filtering_map: dict | None = None,
         external_edge_contact_filtering_map: dict | None = None,
         integrate_with_external_rigid_solver: bool = False,
-        penetration_free_conservative_bound_relaxation: float = 0.42,
+        penetration_free_conservative_bound_relaxation: float = 0.45,
         friction_epsilon: float = 1e-2,
         vertex_collision_buffer_pre_alloc: int = 32,
         edge_collision_buffer_pre_alloc: int = 64,
@@ -4619,6 +4619,60 @@ class SolverVBD(SolverBase):
                         outputs=[self.particle_forces, self.particle_hessians],
                         dim=self.model.particle_color_groups[color].size,
                         device=self.device,
+                    )
+
+                if self.handle_self_contact:
+                    # wp.launch(
+                    #     kernel=accumulate_self_contact_force_and_hessian_tile,
+                    #     dim=self.model.particle_color_groups[color].size * TILE_SIZE_SELF_CONTACT_SOLVE,
+                    #     block_dim=TILE_SIZE_SELF_CONTACT_SOLVE,
+                    #     inputs=[
+                    #         dt,
+                    #         self.model.particle_color_groups[color],
+                    #         self.particle_q_prev,
+                    #         state_in.particle_q,
+                    #         self.model.particle_flags,
+                    #         self.model.tri_indices,
+                    #         self.model.edge_indices,
+                    #         self.adjacency,
+                    #         # self contact
+                    #         self.trimesh_collision_info,
+                    #         self.self_contact_radius,
+                    #         self.model.soft_contact_ke,
+                    #         self.model.soft_contact_kd,
+                    #         self.model.soft_contact_mu,
+                    #         self.friction_epsilon,
+                    #         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                    #         # outputs: particle force and hessian
+                    #         self.particle_forces,
+                    #         self.particle_hessians,
+                    #     ],
+                    #     device=self.device,
+                    #     max_blocks=self.model.device.sm_count,
+                    # )
+                    wp.launch(
+                        kernel=accumulate_self_contact_force_and_hessian,
+                        dim=self.self_contact_evaluation_kernel_launch_size,
+                        inputs=[
+                            dt,
+                            color,
+                            self.particle_q_prev,
+                            state_in.particle_q,
+                            self.model.particle_colors,
+                            self.model.tri_indices,
+                            self.model.edge_indices,
+                            # self-contact
+                            self.trimesh_collision_info,
+                            self.self_contact_radius,
+                            self.model.soft_contact_ke,
+                            self.model.soft_contact_kd,
+                            self.model.soft_contact_mu,
+                            self.friction_epsilon,
+                            self.trimesh_collision_detector.edge_edge_parallel_epsilon,
+                        ],
+                        outputs=[self.particle_forces, self.particle_hessians],
+                        device=self.device,
+                        max_blocks=self.model.device.sm_count,
                     )
 
                 wp.launch(
