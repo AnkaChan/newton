@@ -3141,6 +3141,8 @@ def apply_planar_truncation_parallel_by_collision(
 
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
+    # dont forget to do the final truncation based on the maximum displament allowance!
+
 
 @wp.kernel
 def apply_truncation_ts(
@@ -3149,12 +3151,20 @@ def apply_truncation_ts(
     truncation_ts: wp.array(dtype=float),
     displacement_out: wp.array(dtype=wp.vec3),
     pos_out: wp.array(dtype=wp.vec3),
+    max_displacement: float = 1e10,
 ):
     i = wp.tid()
     t = truncation_ts[i]
-    displacement_out[i] = displacement_in[i] * t
+    particle_displacement = displacement_in[i] * t
+
+    # Nuts-saving truncation: clamp displacement magnitude to max_displacement
+    len_displacement = wp.length(particle_displacement)
+    if len_displacement > max_displacement:
+        particle_displacement = particle_displacement * max_displacement / len_displacement
+
+    displacement_out[i] = particle_displacement
     if pos_out:
-        pos_out[i] = pos[i] + displacement_out[i]
+        pos_out[i] = pos[i] + particle_displacement
 
 
 @wp.kernel
@@ -4255,7 +4265,7 @@ class SolverVBD(SolverBase):
                 # soft_contact_max,
             )
         else:
-            self.self_contact_evaluation_kernel_launch_size = soft_contact_max
+            self.self_contact_evaluation_kernel_launch_size = None
 
         self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
         self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
@@ -4974,6 +4984,7 @@ class SolverVBD(SolverBase):
                     self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
                     self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
                     self.truncation_ts,
+                    wp.inf
                 ],
                 outputs=[
                     self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
@@ -4996,6 +5007,7 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
             else:
+                # ## IMIPLEMENTATION 1: parallel by vertex
                 # wp.launch(
                 #     kernel=apply_planar_truncation,
                 #     inputs=[
@@ -5025,6 +5037,8 @@ class SolverVBD(SolverBase):
                 # parallel_eps: float,
                 # gamma: float,
                 # truncation_t_out: wp.array(dtype=wp.vec3),
+
+                ## IMIPLEMENTATION 2: parallel by collision and atomic operation
                 self.truncation_ts.fill_(1.0)
                 wp.launch(
                     kernel=apply_planar_truncation_parallel_by_collision,
@@ -5048,13 +5062,12 @@ class SolverVBD(SolverBase):
                     kernel=apply_truncation_ts,
                     dim=self.model.particle_count,
                     inputs=[
-                        self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-                        self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
-                        self.truncation_ts,
-                    ],
-                    outputs=[
-                        self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
-                        particle_q_out,
+                        self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
+                        self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
+                        self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
+                        self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
+                        particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
+                        self.self_contact_margin * self.conservative_bound_relaxation,  # max_displacement: float
                     ],
                     device=self.device,
                 )
