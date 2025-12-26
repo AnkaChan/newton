@@ -6,7 +6,7 @@ def rolled_cloth_mesh(
     nu=200,
     nv=15,
     inner_radius=0.02,
-    thickness=0.002
+    thickness=0.005 
 ):
     verts = []
     faces = []
@@ -84,12 +84,16 @@ class Example:
         self.frame_dt = 1.0 / self.fps
 
         self.sim_time = 0.0
-        self.sim_substeps = 5
+        self.sim_substeps = 20
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.iterations = 10
-        self.use_cuda_graph = False
+        self.iterations = 5
+        # self.use_cuda_graph = False
+        self.use_cuda_graph = True
         self.viewer = viewer
+        
+        # Pause control
+        self.is_paused = True
 
       
         self.frame_idx = 0
@@ -105,17 +109,17 @@ class Example:
 
         # Cloth 1
         scene.add_cloth_mesh(
-            pos=wp.vec3(0.0, 400, 0.0),
+            pos=wp.vec3(0.0, 140, 0.0),
             rot=wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.0),
             scale=1.0,
             vertices=verts,
             indices=faces.flatten(),
             vel=wp.vec3(0.0, 0.0, 0.0),
-            density=0.2,
-            tri_ke = 1.0e7,
-            tri_ka = 1.0e7,
-            tri_kd=1.0e-1,
-            edge_ke=1e-3,
+            density=0.02,
+            tri_ke = 1.0e5,
+            tri_ka = 1.0e5,
+            tri_kd=1.0e-5,
+            edge_ke=1e2,
             edge_kd=0.0,
         )
         scene.add_ground_plane()
@@ -132,17 +136,17 @@ class Example:
     
 
         
-        self.model.soft_contact_ke = 1.0e2
-        self.model.soft_contact_kd = 1.0e2
-        self.model.soft_contact_mu = 1.0
+        self.model.soft_contact_ke = 1.0e5
+        self.model.soft_contact_kd = 1.0e-5
+        self.model.soft_contact_mu = 0.1
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
             self.iterations,
             handle_self_contact=True,
-            self_contact_radius=0.3,
+            self_contact_radius=0.5,
             self_contact_margin=0.8,
-            topological_contact_filter_threshold=1,
+            topological_contact_filter_threshold=2,
             truncation_mode=1,
         )
         self.state_0 = self.model.state()
@@ -163,10 +167,22 @@ class Example:
         )
 
         ps.set_ground_plane_height(0)
+        
+        # Register keyboard callback for pause/unpause
+        ps.set_user_callback(self.keyboard_callback)
 
         
         self.video_path = video_path
         self.video_writer = None
+    
+    def keyboard_callback(self):
+        """Callback function for keyboard input"""
+        if ps.imgui.IsKeyPressed(ps.imgui.GetKeyIndex(ps.imgui.ImGuiKey_Space)):
+            self.is_paused = not self.is_paused
+            if self.is_paused:
+                print("Simulation PAUSED (press Space to resume)")
+            else:
+                print("Simulation RESUMED")
     def write_ply(self, path, vertices, faces):
         with open(path, "w") as f:
             f.write("ply\n")
@@ -204,12 +220,13 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        self.simulate()
-        self.sim_time += self.frame_dt
-        self.frame_idx += 1
+        if not self.is_paused:
+            self.simulate()
+            self.sim_time += self.frame_dt
+            self.frame_idx += 1
 
-        if self.frame_idx % self.print_every == 0:
-            print(f"[INFO] Frame {self.frame_idx}")
+            if self.frame_idx % self.print_every == 0:
+                print(f"[INFO] Frame {self.frame_idx}")
 
     def render(self):
         max_frames = 300
@@ -280,7 +297,7 @@ if __name__ == "__main__":
         video_path=args.video_output,
     )
 
-    print("[INFO] Simulation started")
+    print("[INFO] Simulation started PAUSED (press Space to begin)")
 
     try:
         newton.examples.run(example, args)
