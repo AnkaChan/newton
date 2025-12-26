@@ -4122,7 +4122,7 @@ class SolverVBD(SolverBase):
         external_vertex_contact_filtering_map: dict | None = None,
         external_edge_contact_filtering_map: dict | None = None,
         integrate_with_external_rigid_solver: bool = False,
-        penetration_free_conservative_bound_relaxation: float = 0.45,
+        penetration_free_conservative_bound_relaxation: float = 0.42,
         friction_epsilon: float = 1e-2,
         vertex_collision_buffer_pre_alloc: int = 32,
         edge_collision_buffer_pre_alloc: int = 64,
@@ -4221,7 +4221,6 @@ class SolverVBD(SolverBase):
                 vertex_collision_buffer_pre_alloc=vertex_collision_buffer_pre_alloc,
                 edge_collision_buffer_pre_alloc=edge_collision_buffer_pre_alloc,
                 edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
-                # record_triangle_contacting_vertices=self.truncation_mode == 1,
             )
 
             self.compute_contact_filtering_list(
