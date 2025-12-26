@@ -31,13 +31,13 @@ import numpy as np
 import polyscope as ps
 import warp as wp
 import warp.examples
-from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
 from newton import ParticleFlags
 
 # from S01_WalkThrough import *
+
 
 def readObj(vt_path, idMinus1=True, convertFacesToOnlyPos=False):
     vts = []
