@@ -23,10 +23,9 @@
 
 import inspect
 import itertools
-import os
 from enum import Enum
 from pathlib import Path
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 import numpy as np
 import warp as wp
@@ -37,13 +36,15 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 import newton
 from newton._src.core.spatial import angvel_between_quats
-from newton._src.utils.import_usd import parse_usd
 from newton._src.usd.schema_resolver import (
-    SchemaAttribute as Attribute,
     PrimType,
     SchemaResolver,
     SchemaResolverManager,
 )
+from newton._src.usd.schema_resolver import (
+    SchemaAttribute as Attribute,
+)
+from newton._src.utils.import_usd import parse_usd
 from newton._src.utils.update_usd import UpdateUsd
 
 
@@ -453,13 +454,13 @@ class Simulator:
         input_path,
         output_path,
         num_frames: int,
-        integrator: Optional[IntegratorType] = None,
+        integrator: IntegratorType | None = None,
         sim_time: float = 0.0,
         sim_frame: int = 0,
         record_path: str = "",
         render_folder: str = "",
         usd_offset: wp.vec3 = wp.vec3(0.0, 0.0, 0.0),
-        use_unified_collision_pipeline: bool = True,
+        use_unified_collision_pipeline: bool = False,
         use_coacd: bool = False,
         enable_timers: bool = False,
         load_visual_shapes: bool = False,
@@ -478,7 +479,9 @@ class Simulator:
         self.in_stage = create_stage_from_path(input_path)
 
         self.builder = newton.ModelBuilder()
-        self.builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
+        self.builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
+            limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5
+        )
         self.builder.default_joint_cfg.armature = 0.001
         self.builder.default_joint_cfg.friction = 0.0
         self.builder.up_axis = newton.Axis.Z
@@ -529,7 +532,7 @@ class Simulator:
             # convert all collision meshes to convex hulls but keep terrain high-res meshes (just for visualization)
             shape_indices = [
                 i
-                for i, (flags, key) in enumerate(zip(self.builder.shape_flags, self.builder.shape_key))
+                for i, (flags, key) in enumerate(zip(self.builder.shape_flags, self.builder.shape_key, strict=False))
                 if flags & newton.ShapeFlags.COLLIDE_SHAPES
                 and "terrainMaincol" not in key
                 and "ground_plane" not in key
@@ -1310,4 +1313,3 @@ if __name__ == "__main__":
         print_time_profiler(simulator)
 
         simulator.save()
-
