@@ -105,7 +105,7 @@ example_config = {
     },
     # outputs
     "output_path": r"D:\Data\DAT_Sim",  # Directory to save output files
-    "output_ext": "ply",  # "ply" or "usd"
+    "output_ext": "npy",  # "ply" "npy" or "usd"
     "write_output": True,
     "write_video": True,
     "recovery_state_save_steps": 100,
@@ -364,6 +364,45 @@ class ClothDropSimulator(Simulator):
 
         # Call parent step
         super().step()
+
+    def save_initial_meshes(self):
+        """Save initial mesh topology as separate PLY files, numbered by order in particle_q."""
+        if self.output_path is None:
+            return
+
+        all_verts = self.model.particle_q.numpy()
+
+        for mesh_idx, info in enumerate(self._mesh_info):
+            v_start = info["vertex_start"]
+            v_count = info["vertex_count"]
+            faces = info["faces"]  # Local indices (0-based)
+
+            # Extract vertices for this mesh
+            verts = all_verts[v_start : v_start + v_count]
+
+            # Save as PLY with numeric index
+            out_file = os.path.join(self.output_path, f"initial_mesh_{mesh_idx:03d}.ply")
+
+            header = [
+                "ply",
+                "format ascii 1.0",
+                f"element vertex {len(verts)}",
+                "property float x",
+                "property float y",
+                "property float z",
+                f"element face {len(faces)}",
+                "property list uchar int vertex_indices",
+                "end_header",
+            ]
+
+            with open(out_file, "w") as ply_file:
+                ply_file.write("\n".join(header) + "\n")
+                for vertex in verts:
+                    ply_file.write(f"{vertex[0]} {vertex[1]} {vertex[2]}\n")
+                for face in faces:
+                    ply_file.write(f"{len(face)} {' '.join(map(str, face))}\n")
+
+            print(f"Initial mesh {mesh_idx} saved: {out_file}")
 
 
 # =============================================================================

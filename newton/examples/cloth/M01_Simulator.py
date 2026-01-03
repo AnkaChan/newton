@@ -47,7 +47,7 @@ default_config = {
     "soft_contact_mu": 0.2,  # Friction coefficient
     # Output settings
     "output_path": None,  # Directory to save output files
-    "output_ext": "ply",  # "ply" or "usd"
+    "output_ext": "ply",  # "ply", "usd", or "npy" (npy saves only positions, initial meshes saved as ply)
     "write_output": False,
     "write_video": False,
     "recovery_state_save_steps": -1,  # Save recovery state every N frames (<0 to disable)
@@ -137,6 +137,9 @@ class Simulator:
 
         # Polyscope mesh registry: name -> {"mesh": ps_mesh, "vertex_indices": slice or array, "faces": array}
         self.ps_meshes: dict = {}
+
+        # Track whether initial meshes have been saved (for npy output mode)
+        self._initial_meshes_saved = False
 
         # Initialize polyscope
         self.init_polyscope()
@@ -256,6 +259,7 @@ class Simulator:
     def simulate(self):
         """Run the full simulation loop."""
         vid_out = None
+        screenshot_dir = None
         if self.write_video and self.output_path:
             out_video_file = join(self.output_path, "video.mp4")
             pixels = ps.screenshot_to_buffer(False)
@@ -266,6 +270,9 @@ class Simulator:
                 (pixels.shape[1], pixels.shape[0]),
                 isColor=True,
             )
+            # Create screenshot subfolder
+            screenshot_dir = join(self.output_path, "screenshots")
+            os.makedirs(screenshot_dir, exist_ok=True)
 
         try:
             for frame_id in tqdm.tqdm(range(self.sim_num_frames)):
@@ -291,12 +298,16 @@ class Simulator:
                     if vid_out is not None:
                         pixels = ps.screenshot_to_buffer(False)
                         vid_out.write(pixels[:, :, [2, 1, 0]])
+                        # Save screenshot as PNG
+                        screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
+                        cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
         except KeyboardInterrupt:
             print("\nSimulation interrupted by user. Saving video...")
         finally:
             if vid_out is not None:
                 vid_out.release()
                 print(f"Video saved to: {join(self.output_path, 'video.mp4')}")
+                print(f"Screenshots saved to: {screenshot_dir}")
 
     def save_output(self, frame_id):
         """Save the current frame to a file."""
@@ -309,6 +320,14 @@ class Simulator:
         elif self.output_ext == "usd":
             out_file = join(self.output_path, f"frame_{frame_id:06d}.usd")
             self.save_usd(self.state_0, out_file)
+        elif self.output_ext == "npy":
+            # Save initial meshes once (for topology reference)
+            if not self._initial_meshes_saved:
+                self.save_initial_meshes()
+                self._initial_meshes_saved = True
+            # Save only positions as npy
+            out_file = join(self.output_path, f"frame_{frame_id:06d}.npy")
+            self.save_npy(self.state_0, out_file)
 
     def set_points_fixed(self, fixed_particles):
         """
@@ -517,6 +536,56 @@ class Simulator:
             print("Warning: pxr (USD) library not available. Falling back to PLY.")
             self.save_ply(state, filename.replace(".usd", ".ply"))
 
+    def save_npy(self, state, filename):
+        """
+        Save only particle positions to a NPY file.
+
+        This is more efficient than PLY when only positions change and topology is fixed.
+
+        Args:
+            state: The simulation state containing particle positions.
+            filename: Output file path.
+        """
+        vertices = state.particle_q.numpy()
+        np.save(filename, vertices)
+
+    def save_initial_meshes(self):
+        """
+        Save initial mesh topology as PLY files.
+
+        Override this method in subclasses to save colliders and cloths separately.
+        By default, saves a single combined mesh with all particles and faces.
+
+        This is called once when using npy output format to save the initial topology.
+        """
+        if self.output_path is None:
+            return
+
+        # Save combined mesh as initial reference
+        vertices = self.model.particle_q.numpy()
+        out_file = join(self.output_path, "initial_mesh.ply")
+
+        header = [
+            "ply",
+            "format ascii 1.0",
+            f"element vertex {len(vertices)}",
+            "property float x",
+            "property float y",
+            "property float z",
+            f"element face {len(self.faces)}",
+            "property list uchar int vertex_indices",
+            "end_header",
+        ]
+
+        with open(out_file, "w") as ply_file:
+            ply_file.write("\n".join(header) + "\n")
+            for vertex in vertices:
+                ply_file.write(f"{vertex[0]} {vertex[1]} {vertex[2]}\n")
+            for face in self.faces:
+                ply_file.write(f"{len(face)} {' '.join(map(str, face))}\n")
+
+        print(f"Initial mesh saved to: {out_file}")
+
     def save_recovery_state(self, frame_id: int):
         """
         Save a recovery state to an npz file.
@@ -615,6 +684,7 @@ class Simulator:
         print(f"Resuming simulation from frame {start_frame}, time {self.sim_time:.4f}")
 
         vid_out = None
+        screenshot_dir = None
         if self.write_video and self.output_path:
             out_video_file = join(self.output_path, "video_resumed.mp4")
             pixels = ps.screenshot_to_buffer(False)
@@ -625,6 +695,9 @@ class Simulator:
                 (pixels.shape[1], pixels.shape[0]),
                 isColor=True,
             )
+            # Create screenshot subfolder (reuse same folder)
+            screenshot_dir = join(self.output_path, "screenshots")
+            os.makedirs(screenshot_dir, exist_ok=True)
 
         try:
             for frame_id in tqdm.tqdm(range(start_frame + 1, self.sim_num_frames)):
@@ -650,12 +723,16 @@ class Simulator:
                     if vid_out is not None:
                         pixels = ps.screenshot_to_buffer(False)
                         vid_out.write(pixels[:, :, [2, 1, 0]])
+                        # Save screenshot as PNG
+                        screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
+                        cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
         except KeyboardInterrupt:
             print("\nSimulation interrupted by user. Saving video...")
         finally:
             if vid_out is not None:
                 vid_out.release()
                 print(f"Video saved to: {join(self.output_path, 'video_resumed.mp4')}")
+                print(f"Screenshots saved to: {screenshot_dir}")
 
     def load_state(self, filepath):
         """
