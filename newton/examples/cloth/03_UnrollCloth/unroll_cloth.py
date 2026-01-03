@@ -1,13 +1,7 @@
 import numpy as np
 
-def rolled_cloth_mesh(
-    length=500.0,
-    width=100.0,
-    nu=200,
-    nv=15,
-    inner_radius=10.0,
-    thickness=0.4
-):
+
+def rolled_cloth_mesh(length=500.0, width=100.0, nu=200, nv=15, inner_radius=10.0, thickness=0.4):
     verts = []
     faces = []
 
@@ -31,12 +25,14 @@ def rolled_cloth_mesh(
 
     for i in range(nu - 1):
         for j in range(nv - 1):
-            faces.append([idx(i, j), idx(i+1, j), idx(i, j+1)])
-            faces.append([idx(i+1, j), idx(i+1, j+1), idx(i, j+1)])
+            faces.append([idx(i, j), idx(i + 1, j), idx(i, j + 1)])
+            faces.append([idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)])
 
     return np.array(verts), np.array(faces)
 
+
 verts, faces = rolled_cloth_mesh()
+
 
 def save_ply(filename, verts, faces):
     with open(filename, "w") as f:
@@ -51,24 +47,22 @@ def save_ply(filename, verts, faces):
         f.write("property list uchar int vertex_indices\n")
         f.write("end_header\n")
 
-       
         for v in verts:
             f.write(f"{v[0]} {v[1]} {v[2]}\n")
 
-       
         for face in faces:
             f.write(f"3 {face[0]} {face[1]} {face[2]}\n")
+
 
 save_ply("rolled_cloth.ply", verts, faces)
 
 import math
-import os
+
+import cv2
 import numpy as np
 import polyscope as ps
 import warp as wp
 import warp.examples
-import cv2
-from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
@@ -114,11 +108,8 @@ def readObj(vt_path, idMinus1=True, convertFacesToOnlyPos=False):
     return vs, vns, vts, fs
 
 
-
 class Example:
     def __init__(self, viewer, video_path: str | None = None):
-
-    
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -130,19 +121,17 @@ class Example:
         # self.use_cuda_graph = False
         self.use_cuda_graph = True
         self.viewer = viewer
-        
+
         # Pause control
         self.is_paused = False
 
-      
         self.frame_idx = 0
         self.print_every = 50
         self.ply_dir = "ply_frames"
-        #os.makedirs(self.ply_dir, exist_ok=True)    
+        # os.makedirs(self.ply_dir, exist_ok=True)
 
-        
         verts, faces = rolled_cloth_mesh()
-       
+
         scene = newton.ModelBuilder(up_axis="Y", gravity=-1000)
 
         # Load collider mesh
@@ -152,8 +141,8 @@ class Example:
         # Add collider mesh as static geometry
         scene.add_cloth_mesh(
             pos=wp.vec3(0.0, 100.0, 0.0),
-            rot=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -math.pi/2),
-            scale=wp.vec3(80.0, 100.0, 100.),
+            rot=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -math.pi / 2),
+            scale=wp.vec3(80.0, 100.0, 100.0),
             vertices=[wp.vec3(v) for v in vs_collider],
             indices=np.array(fs_collider).reshape(-1),
             vel=wp.vec3(0.0, 0.0, 0.0),
@@ -180,12 +169,12 @@ class Example:
             indices=faces.flatten(),
             vel=wp.vec3(0.0, 0.0, 0.0),
             density=0.02,
-            tri_ke = 1.0e5,
-            tri_ka = 1.0e5,
+            tri_ke=1.0e5,
+            tri_ka=1.0e5,
             tri_kd=1.0e-5,
             edge_ke=1e2,
             edge_kd=0.0,
-            particle_radius=0.5
+            particle_radius=0.5,
         )
         scene.add_ground_plane()
         scene.color()
@@ -198,13 +187,12 @@ class Example:
         self.faces = np.vstack([self.collider_faces, num_collider_verts + self.cloth_faces])
 
         fixed_point_indices = [num_collider_verts + 15 * 199 + i for i in range(15)]
-        if len(fixed_point_indices):
+        if fixed_point_indices:
             flags = self.model.particle_flags.numpy()
             for fixed_vertex_id in fixed_point_indices:
                 flags[fixed_vertex_id] = flags[fixed_vertex_id] & ~ParticleFlags.ACTIVE
 
             self.model.particle_flags = wp.array(flags)
-    
 
         self.model.soft_contact_ke = 1.0e5
         self.model.soft_contact_kd = 1.0e-5
@@ -217,46 +205,40 @@ class Example:
             self_contact_radius=0.4,
             self_contact_margin=0.6,
             topological_contact_filter_threshold=2,
-            truncation_mode=0,
+            truncation_mode=1,
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
 
-
         self.viewer.set_model(self.model)
 
         # Capture CUDA graph
         self.capture()
-        
+
         ps.init()
-        #ps.look_at((0, 250, -150), (0,0,0))
+        # ps.look_at((0, 250, -150), (0,0,0))
 
         # Register collider mesh
         all_verts = self.state_0.particle_q.numpy()
-        collider_verts = all_verts[:self.num_collider_verts]
-        self.ps_collider_mesh = ps.register_surface_mesh(
-            "Collider", collider_verts, self.collider_faces
-        )
+        collider_verts = all_verts[: self.num_collider_verts]
+        self.ps_collider_mesh = ps.register_surface_mesh("Collider", collider_verts, self.collider_faces)
         self.ps_collider_mesh.set_color((0.3, 0.3, 0.3))  # Gray color
-        
+
         # Register cloth mesh
-        cloth_verts = all_verts[self.num_collider_verts:]
-        self.ps_cloth_mesh = ps.register_surface_mesh(
-            "Cloth", cloth_verts, self.cloth_faces
-        )
+        cloth_verts = all_verts[self.num_collider_verts :]
+        self.ps_cloth_mesh = ps.register_surface_mesh("Cloth", cloth_verts, self.cloth_faces)
         self.ps_cloth_mesh.set_color((0.8, 0.4, 0.4))  # Reddish color
 
         ps.set_ground_plane_height(0)
-        
+
         # Register keyboard callback for pause/unpause
         ps.set_user_callback(self.keyboard_callback)
 
-        
         self.video_path = video_path
         self.video_writer = None
-    
+
     def keyboard_callback(self):
         """Callback function for keyboard input"""
         if ps.imgui.IsKeyPressed(ps.imgui.GetKeyIndex(ps.imgui.ImGuiKey_Space)):
@@ -265,14 +247,14 @@ class Example:
                 print("Simulation PAUSED (press Space to resume)")
             else:
                 print("Simulation RESUMED")
-    
+
     def capture(self):
         self.graph = None
         if wp.get_device().is_cuda and self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
-    
+
     def write_ply(self, path, vertices, faces):
         with open(path, "w") as f:
             f.write("ply\n")
@@ -290,8 +272,6 @@ class Example:
 
             for face in faces:
                 f.write(f"3 {face[0]} {face[1]} {face[2]}\n")
-
-    
 
     def simulate(self):
         self.solver.rebuild_bvh(self.state_0)
@@ -323,23 +303,21 @@ class Example:
     def render(self):
         max_frames = self.viewer.num_frames
         all_verts = self.state_0.particle_q.numpy()
-        
+
         # Update collider mesh
-        collider_verts = all_verts[:self.num_collider_verts]
+        collider_verts = all_verts[: self.num_collider_verts]
         self.ps_collider_mesh.update_vertex_positions(collider_verts)
-        
+
         # Update cloth mesh
-        cloth_verts = all_verts[self.num_collider_verts:]
+        cloth_verts = all_verts[self.num_collider_verts :]
         self.ps_cloth_mesh.update_vertex_positions(cloth_verts)
-        
+
         ps.frame_tick()
-        frame_str = f"{self.frame_idx:06d}"
-        '''
-        ply1 = os.path.join(self.ply_dir, f"cloth1_{frame_str}.ply")
-        cloth1 = verts
-        
-        self.write_ply(ply1, cloth1, self.faces)
-        '''
+        # Commented out PLY export:
+        # frame_str = f"{self.frame_idx:06d}"
+        # ply1 = os.path.join(self.ply_dir, f"cloth1_{frame_str}.ply")
+        # cloth1 = verts
+        # self.write_ply(ply1, cloth1, self.faces)
 
         if self.video_path:
             frame = ps.screenshot_to_buffer()
@@ -357,9 +335,7 @@ class Example:
 
             if self.video_writer is None:
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                self.video_writer = cv2.VideoWriter(
-                    self.video_path, fourcc, self.fps, (w, h)
-                )
+                self.video_writer = cv2.VideoWriter(self.video_path, fourcc, self.fps, (w, h))
                 print(f"[INFO] Recording video to {self.video_path}")
             if self.frame_idx == max_frames:
                 example.video_writer.release()
@@ -370,10 +346,9 @@ class Example:
             print("[INFO] Simulation Complete")
             exit()
 
-            
-
     def test(self):
         pass
+
 
 # =============================================================
 
@@ -383,10 +358,7 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=250)
     parser.set_defaults(viewer="null")
-    parser.add_argument(
-        "--video-output", type=str, default=None,
-        help="Optional path to write MP4"
-    )
+    parser.add_argument("--video-output", type=str, default=None, help="Optional path to write MP4")
 
     viewer, args = newton.examples.init(parser)
 

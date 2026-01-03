@@ -1,354 +1,332 @@
-# Copyright (c) 2022 NVIDIA CORPORATION.  All rights reserved.
-# NVIDIA CORPORATION and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto.  Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION is strictly prohibited.
-import json, tqdm
+# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
 ###########################################################################
-# Example Sim Cloth
+# Reusable Cloth Simulator
 #
-# Shows a simulation of an FEM cloth model colliding against a static
-# rigid body mesh using the wp.sim.ModelBuilder().
+# A reusable simulator class for FEM cloth simulation using Newton's
+# SolverVBD. Supports collision with static meshes and self-contact.
 #
 ###########################################################################
 
-import math
 import os
-from enum import Enum
+from os.path import join
 
-import numpy as np
-from pxr import Usd, UsdGeom
-
-import warp as wp
-import warp.examples
-import warp.sim
-import warp.sim.render
-from warp.sim.model import (
-    PARTICLE_FLAG_ACTIVE,
-)
-from PyToolKit.Graphics.IO import *
-from PyToolKit.Utility.Path import *
-
-import itertools
 import cv2
+import numpy as np
 import polyscope as ps
+import tqdm
+import warp as wp
 
+import newton
+from newton import ParticleFlags
 
-example_config = {
-        "name": "example_01",
-        # Simulation timing
-        "fps": 60,
-        "sim_substeps": 10,
-        "iterations": 10,
-        "bvh_rebuild_frames": 1,
-
-        # Solver settings
-        # "use_cuda_graph": True,
-        "use_cuda_graph": False,
-        "handle_self_contact": True,
-        "use_tile_solve": True,
-        "self_contact_radius": 0.2,
-        "self_contact_margin": 0.3,
-        "topological_contact_filter_threshold": 1,
-        "rest_shape_contact_exclusion_radius": 0.0,
-        "vertex_collision_buffer_pre_alloc": 64,
-        "edge_collision_buffer_pre_alloc": 128,
-
-        # Collider
-        "colliders":[
-            "cylinder":{
-                "input_collider_mesh": r"CylinderCollider_tri.obj",
-                "collider_position": (0.0, 20.0, 0.0),
-                "collider_rotation": (1.0, 0.0, 0.0, 0.0),  # (axis, angle)
-            },
-        ],
-        "cloth":[
-            "cloth_01":{
-                "resolution": (60, 80),
-                "shape": (120, 160),
-                "cloth_density": 0.02,
-                "tri_ke": 1e4,
-                "tri_ka": 1e4,
-                "tri_kd": 1e-5,
-                "edge_ke": 10,
-                "edge_kd": 1e-2,
-                "cloth_init_position": (0.0, 80.0, 0),
-                "cloth_init_rotation": (1.0, 0.0, 0.0, 0.0),
-            },
-        ]
-
-        # Global settings
-        "up_axis": "y",
-        "gravity": -980,
-        "collision_stiffness": 2e4,
-        "collision_kd": 1e-5,
-        "collision_mu": 0.2,
-
-        # Visualization
-        "show_gui": True,
-        "is_intially_paused": True,
-        "show_ground_plane": False,
+default_config = {
+    "name": "default_cloth_sim",
+    # Simulation timing
+    "fps": 60,
+    "sim_substeps": 10,
+    "sim_num_frames": 1000,
+    "iterations": 10,
+    "bvh_rebuild_frames": 1,
+    # Solver settings (newton.solvers.SolverVBD parameters)
+    "use_cuda_graph": False,
+    "handle_self_contact": True,
+    "use_tile_solve": True,
+    "self_contact_radius": 0.2,
+    "self_contact_margin": 0.3,
+    "topological_contact_filter_threshold": 1,
+    "rest_shape_contact_exclusion_radius": 0.0,
+    "vertex_collision_buffer_pre_alloc": 64,
+    "edge_collision_buffer_pre_alloc": 128,
+    "include_bending": False,  # Include bending edges in coloring
+    # Global physics settings (newton.Model parameters)
+    "up_axis": "y",
+    "gravity": -980.0,
+    "soft_contact_ke": 2e4,  # Contact stiffness
+    "soft_contact_kd": 1e-5,  # Contact damping
+    "soft_contact_mu": 0.2,  # Friction coefficient
+    # Output settings
+    "output_path": None,  # Directory to save output files
+    "output_ext": "ply",  # "ply" or "usd"
+    "write_output": False,
+    "write_video": False,
+    # Visualization
+    "do_rendering": True,
+    "show_ground_plane": False,
+    "is_initially_paused": True,
 }
 
+
+def get_config_value(config, key):
+    """
+    Get a config value: use config[key] if it exists, otherwise fall back to default_config[key].
+    """
+    if config is not None and key in config:
+        return config[key]
+    return default_config[key]
+
+
 class Simulator:
-    def __init__(
-            self,
+    """
+    A reusable cloth simulator using Newton's SolverVBD.
 
-    ):
-        self.rebuild_frames = rebuild_frames
-        self.output_ext = output_ext
-        self.frame_dt = frame_dt
-        self.num_substeps = num_substeps
-        self.iterations = iterations
+    This class provides a flexible framework for cloth simulation with support for:
+    - Collision with static meshes
+    - Self-contact handling
+    - Multiple output formats (PLY, USD)
+    - Polyscope visualization
+    - CUDA graph acceleration
 
-        self.sim_num_frames = sim_num_frames
+    Subclass this and override `custom_init()` and `custom_finalize()` to add
+    cloth meshes and colliders to the simulation.
+    """
+
+    def __init__(self, config: dict | None = None):
+        """
+        Initialize the simulator with configuration parameters.
+
+        Args:
+            config: Configuration dictionary. Missing keys will use defaults from `default_config`.
+        """
+        self.config = config
+
+        # Helper to read from config or fall back to default
+        def cfg(key):
+            return get_config_value(config, key)
+
+        # Simulation timing
+        self.fps = cfg("fps")
+        self.frame_dt = 1.0 / self.fps
+        self.num_substeps = cfg("sim_substeps")
+        self.iterations = cfg("iterations")
+        self.sim_num_frames = cfg("sim_num_frames")
+        self.rebuild_frames = cfg("bvh_rebuild_frames")
+
+        # Solver settings
+        self.use_cuda_graph = cfg("use_cuda_graph")
+        self.handle_self_contact = cfg("handle_self_contact")
+
+        # Physics
+        self.up_axis = cfg("up_axis")
+        self.gravity = cfg("gravity")
+
+        # Output settings
+        self.output_path = cfg("output_path")
+        self.output_ext = cfg("output_ext")
+        self.write_output = cfg("write_output")
+        self.write_video = cfg("write_video")
+
+        # Visualization
+        self.do_rendering = cfg("do_rendering")
+        self.show_ground_plane = cfg("show_ground_plane")
+
+        # Runtime state
         self.sim_time = 0.0
-        self.write_output = write_output
-        self.do_rendering = do_rendering
-        # self.do_rendering = False
-        self.write_video = write_video
-
         self.profiler = {}
         self.frame_times = []
+        self.graph = None
 
-        self.outPath = output_path
-        self.stage_path = stage_path
-
-        self.input_scale_factor = input_scale_factor
-
-        self.use_cuda_graph = use_cuda_graph
-
+        # Initialize polyscope
         ps.init()
-        ps.set_ground_plane_mode('none')
+        if self.show_ground_plane:
+            ps.set_ground_plane_mode("shadow_only")
+        else:
+            ps.set_ground_plane_mode("none")
+        ps.set_up_dir(self.up_axis + "_up")
 
-        self.builder = wp.sim.ModelBuilder()
+        # Create Newton model builder
+        self.builder = newton.ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
 
+        # Allow subclasses to add meshes
         self.custom_init()
 
     def custom_init(self):
+        """Override this method to add cloth meshes and colliders to self.builder."""
         pass
 
-    def finalize(self,
-                 fixed_particles = None,
-                 collision_stiffness=1e5,
-                 soft_contact_kd=1.0e-6,
-                 friction_mu=0.2,
-                 contact_query_margin=0.5,
-                 contact_radius=0.3,
-                 handle_self_contact=True,
-                 has_ground=False,
-                 use_cuda_graph=True
-            ):
-        self.builder.color(include_bending=False)
-        # self.builder.color(include_bending=True)
+    def finalize(self, fixed_particles=None):
+        """
+        Finalize the model and create the solver.
+
+        Args:
+            fixed_particles: Optional list of particle indices to fix in place.
+        """
+
+        # Helper to read from config or fall back to default
+        def cfg(key):
+            return get_config_value(self.config, key)
+
+        # Color the mesh for VBD solver
+        self.builder.color(include_bending=cfg("include_bending"))
+
+        # Finalize the model
         self.model = self.builder.finalize()
-        self.model.gravity = wp.vec3(0,-1000.0,0)
-        self.model.ground = has_ground
 
-        self.model.soft_contact_ke = collision_stiffness
-        self.model.soft_contact_kd = soft_contact_kd
-        self.model.soft_contact_mu = friction_mu
-        self.contact_query_margin = contact_query_margin
-        self.contact_radius = contact_radius
+        # Set contact parameters
+        self.model.soft_contact_ke = cfg("soft_contact_ke")
+        self.model.soft_contact_kd = cfg("soft_contact_kd")
+        self.model.soft_contact_mu = cfg("soft_contact_mu")
 
-        self.rot_end_time = 10
+        # Create output directory if needed
+        if self.output_path is not None:
+            os.makedirs(self.output_path, exist_ok=True)
 
-        # self.outPath = r"D:\Data\Sims\Cloth_VBD_rot_gauss_newton"
-        if self.outPath is not None:
-            os.makedirs(self.outPath, exist_ok=True)
-
+        # Compute timestep
         self.dt = self.frame_dt / self.num_substeps
 
+        # Fix specified particles
         if fixed_particles is not None:
-            self.set_points_fixed(self.model, fixed_particles)
+            self.set_points_fixed(fixed_particles)
 
-        # self up contact query and contact detection distances
-        self.model.soft_contact_radius = self.contact_radius
-        self.model.soft_contact_margin = self.contact_query_margin
+        # Create the VBD solver
+        self.solver = newton.solvers.SolverVBD(
+            model=self.model,
+            iterations=self.iterations,
+            handle_self_contact=cfg("handle_self_contact"),
+            self_contact_radius=cfg("self_contact_radius"),
+            self_contact_margin=cfg("self_contact_margin"),
+            topological_contact_filter_threshold=cfg("topological_contact_filter_threshold"),
+            rest_shape_contact_exclusion_radius=cfg("rest_shape_contact_exclusion_radius"),
+            use_tile_solve=cfg("use_tile_solve"),
+            vertex_collision_buffer_pre_alloc=cfg("vertex_collision_buffer_pre_alloc"),
+            edge_collision_buffer_pre_alloc=cfg("edge_collision_buffer_pre_alloc"),
+        )
 
+        # Create simulation states and control
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
+        self.control = self.model.control()
+        self.contacts = self.model.collide(self.state_0)
 
-        self.integrator = wp.sim.VBDIntegrator(self.model, self.iterations,
-                                               handle_self_contact=handle_self_contact,
-                                                vertex_collision_buffer_pre_alloc=256,
-                                                edge_collision_buffer_pre_alloc=256,
-                                                triangle_collision_buffer_pre_alloc=256,
-                                               )
-        self.state0 = self.model.state()
-        self.state1 = self.model.state()
-        self.state_for_render = self.model.state()
-
+        # Get triangle indices for visualization
         self.faces = self.model.tri_indices.numpy()
+
+        # Set up polyscope visualization
         if self.do_rendering:
             self.verts_for_vis = self.model.particle_q.numpy().copy()
-            self.ps_vis_mesh = ps.register_surface_mesh('Sim', self.verts_for_vis, self.faces)
+            self.ps_vis_mesh = ps.register_surface_mesh("Sim", self.verts_for_vis, self.faces)
 
+        # Allow subclasses to do additional setup
         self.custom_finalize()
 
-        self.use_cuda_graph = use_cuda_graph and self.model.device == "cuda"
+        # Capture CUDA graph if enabled
+        self.use_cuda_graph = self.use_cuda_graph and wp.get_device().is_cuda
         if self.use_cuda_graph:
             self.graph = self.capture_graph()
 
-        if self.write_output and self.output_ext == 'usd' and self.stage_path is not None :
-            stage_path = join(self.outPath, self.stage_path)
-            self.renderer = wp.sim.render.SimRenderer(self.model, stage_path, scaling=0.01)
-        else:
-            self.renderer = None
-
-
-    def capture_graph(self):
-        with wp.ScopedCapture() as capture:
-            self.runStep()
-        return capture.graph
-
     def custom_finalize(self):
+        """Override this method for additional setup after model finalization."""
         pass
 
+    def capture_graph(self):
+        """Capture a CUDA graph of one simulation step for accelerated execution."""
+        with wp.ScopedCapture() as capture:
+            self.run_step()
+        return capture.graph
+
+    def run_step(self):
+        """Execute one frame of simulation (all substeps)."""
+        # Run collision detection
+        self.contacts = self.model.collide(self.state_0)
+
+        # Rebuild BVH for self-contact if needed
+        if self.handle_self_contact:
+            self.solver.rebuild_bvh(self.state_0)
+
+        # Run substeps
+        for _ in range(self.num_substeps):
+            self.state_0.clear_forces()
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.dt)
+            self.state_0, self.state_1 = self.state_1, self.state_0
+
+    def step(self):
+        """Execute one frame, using CUDA graph if available."""
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.run_step()
+        self.sim_time += self.frame_dt
+
     def simulate(self):
-        if self.write_video:
-            out_fid_file = join(self.outPath, "video.mp4")
+        """Run the full simulation loop."""
+        vid_out = None
+        if self.write_video and self.output_path:
+            out_video_file = join(self.output_path, "video.mp4")
             pixels = ps.screenshot_to_buffer(False)
-            vid_out = cv2.VideoWriter(out_fid_file, cv2.VideoWriter_fourcc(*"h264"), 60,
-                                      (pixels.shape[1], pixels.shape[0]),
-                                      isColor=True)
+            vid_out = cv2.VideoWriter(
+                out_video_file,
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                self.fps,
+                (pixels.shape[1], pixels.shape[0]),
+                isColor=True,
+            )
 
-        for frame_id in tqdm.tqdm(range(0, self.sim_num_frames)):
-            # with wp.ScopedTimer("frame", cuda_filter=wp.TIMING_ALL, dict=self.profiler) as timer:
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.runStep()
-            # wp.synchronize()
+        for frame_id in tqdm.tqdm(range(self.sim_num_frames)):
+            self.step()
 
-            # self.frame_times.append(timer.timing_results[0].elapsed)
-
-            if self.rebuild_frames is not None and frame_id % self.rebuild_frames == 0:
+            # Rebuild BVH periodically (outside of CUDA graph)
+            if not self.use_cuda_graph and self.rebuild_frames and frame_id % self.rebuild_frames == 0:
                 self.rebuild_bvh()
-
-            self.sim_time = self.sim_time + self.frame_dt
 
             if self.write_output:
                 self.save_output(frame_id)
+
             if self.do_rendering:
                 self.render()
-                if self.write_video:
+                if vid_out is not None:
                     pixels = ps.screenshot_to_buffer(False)
-                    vid_out.write(pixels[:,:,[2,1,0]])
-        if self.write_video:
+                    vid_out.write(pixels[:, :, [2, 1, 0]])
+
+        if vid_out is not None:
             vid_out.release()
 
-        if self.renderer:
-            self.renderer.save()
-
     def save_output(self, frame_id):
-        if self.output_ext == 'ply':
-            out_file = os.path.join(self.outPath, "A" + str(frame_id).zfill(6) + '.' + self.output_ext)
-            self.savePly(self.state0, out_file)
-        elif self.output_ext == 'usd' and self.renderer is not None:
-            self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state0)
-            self.renderer.end_frame()
+        """Save the current frame to a file."""
+        if self.output_path is None:
+            return
 
-    def set_points_fixed(self, model, fixed_particles):
-        if len(fixed_particles):
-            flags = model.particle_flags.numpy()
-            for fixed_v_id in fixed_particles:
-                flags[fixed_v_id] = wp.uint32(int(flags[fixed_v_id]) & ~int(PARTICLE_FLAG_ACTIVE))
+        if self.output_ext == "ply":
+            out_file = join(self.output_path, f"frame_{frame_id:06d}.ply")
+            self.save_ply(self.state_0, out_file)
+        elif self.output_ext == "usd":
+            out_file = join(self.output_path, f"frame_{frame_id:06d}.usd")
+            self.save_usd(self.state_0, out_file)
 
-            model.particle_flags = wp.array(flags, device=model.device)
+    def set_points_fixed(self, fixed_particles):
+        """
+        Fix specified particles in place (zero mass, inactive).
 
-    def runStep(self):
-        wp.sim.collide(self.model, self.state0)
+        Args:
+            fixed_particles: List of particle indices to fix.
+        """
+        if not fixed_particles:
+            return
 
-        for step in range(self.num_substeps):
-            self.integrator.simulate(self.model, self.state0, self.state1, self.dt, None)
-            (self.state0, self.state1) = (self.state1, self.state0)
+        # Set mass to zero and remove ACTIVE flag
+        for v_id in fixed_particles:
+            self.builder.particle_mass[v_id] = 0.0
+            self.builder.particle_flags[v_id] &= ~ParticleFlags.ACTIVE
 
-        # wp.synchronize()
-
-    def step(self):
-        if self.use_cuda_graph  and self.device != "cpu":
-            wp.capture_launch(self.graph)
-        else:
-            self.simulate()
-
+    def rebuild_bvh(self):
+        """Rebuild the BVH for self-contact detection."""
+        if self.handle_self_contact:
+            self.solver.rebuild_bvh(self.state_0)
 
     def render(self):
-        self.verts_for_vis = self.state0.particle_q.numpy()
+        """Update the polyscope visualization."""
+        self.verts_for_vis = self.state_0.particle_q.numpy()
         self.ps_vis_mesh.update_vertex_positions(self.verts_for_vis)
         ps.frame_tick()
 
-    def add_usd_mesh(self, usd_path, model_path_in_usd,
-                     tri_ke=1e5, tri_ka=1e5, tri_kd=1e-6, bending_ke=1e5, bending_kd=1e-6,
-                     pos=wp.vec3(0.0, 0.0, 0.0),
-                     scale=1.0
-                     ):
-        usd_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "square_cloth.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath(model_path_in_usd))
-
-        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
-
-        vertices = [wp.vec3(v) for v in mesh_points]
-        faces = mesh_indices.reshape(-1, 3)
-
-        self.builder.add_cloth_mesh(
-            pos=pos,
-            rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.0),
-            scale=scale,
-            vertices=vertices,
-            indices=mesh_indices,
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            density=0.02,
-            tri_ke=tri_ke,
-            tri_ka=tri_ka,
-            tri_kd=tri_kd,
-            edge_ke=bending_ke,
-            edge_kd=bending_kd,
-        )
-
-    def add_obj_mesh(self, obj_path, coloring,
-            tri_ke=1e5, tri_ka=1e5, tri_kd=1e-6, bending_ke=10, bending_kd=1e-6,
-            pos = wp.vec3(0.0, 0.0, 0.0),
-            scale=1.0,
-            rot_axis = wp.vec3(1.0, 0.0, 0.0),
-            rot_angle = 0.0,
-            particle_radius = 0.5,
-                     ):
-        vs, vns, vts, faces = readObj(obj_path, convertFacesToOnlyPos=True)
-        vertices = [wp.vec3(v) * self.input_scale_factor for v in vs]
-        fs_flatten = list(itertools.chain(*faces))
-
-        # print(vs)
-        # print(fs_flatten)
-
-        self.builder.add_cloth_mesh(
-            pos=pos,
-            rot=wp.quat_from_axis_angle(rot_axis, rot_angle),
-            scale=scale,
-            vertices=vertices,
-            indices=fs_flatten,
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            density=0.02,
-            tri_ke=tri_ke,
-            tri_ka=tri_ka,
-            tri_kd=tri_kd,
-            edge_ke=bending_ke,
-            edge_kd=bending_kd,
-            particle_radius=particle_radius
-        )
-
-    def savePly(self, state, filename):
+    def save_ply(self, state, filename):
         """
-        Save the vertices and faces to a PLY file.
+        Save the current state to a PLY file.
 
-        Parameters:
-        vertices (list of tuples): List of (x, y, z) coordinates.
-        faces (list of tuples): List of faces, each face is a tuple of vertex indices.
-        filename (str): The name of the output PLY file.
+        Args:
+            state: The simulation state containing particle positions.
+            filename: Output file path.
         """
         vertices = state.particle_q.numpy()
-        # Header
         header = [
             "ply",
             "format ascii 1.0",
@@ -358,40 +336,102 @@ class Simulator:
             "property float z",
             f"element face {len(self.faces)}",
             "property list uchar int vertex_indices",
-            "end_header"
+            "end_header",
         ]
 
-        # Write to file
-        with open(filename, 'w') as ply_file:
-            # Write header
+        with open(filename, "w") as ply_file:
             ply_file.write("\n".join(header) + "\n")
 
-            # Write vertex data
             for vertex in vertices:
                 ply_file.write(f"{vertex[0]} {vertex[1]} {vertex[2]}\n")
 
-            # Write face data
             for face in self.faces:
                 ply_file.write(f"{len(face)} {' '.join(map(str, face))}\n")
 
-    def recover(self, initial_state_path, frame_id=None):
-        path, stem, ext = filePart(initial_state_path)
+    def save_usd(self, state, filename):
+        """
+        Save the current state to a USD file.
 
-        if ext == "ply":
-            mesh_initial_state = PLYMesh(initial_state_path)
-            self.state0.particle_q.assign(mesh_initial_state.vertices)
-            self.state1.particle_q.assign(mesh_initial_state.vertices)
-        else:
-            raise ValueError('Unsupported simulator format: ' + ext)
+        Args:
+            state: The simulation state containing particle positions.
+            filename: Output file path.
+        """
+        # USD export requires pxr library
+        try:
+            # fmt: off
+            from pxr import Usd, UsdGeom  # noqa: PLC0415
+            # fmt: on
 
-        if frame_id is not None:
-            self.sim_time = self.dt * (frame_id + 1)
+            stage = Usd.Stage.CreateNew(filename)
+            mesh_prim = UsdGeom.Mesh.Define(stage, "/ClothMesh")
+
+            vertices = state.particle_q.numpy()
+            mesh_prim.GetPointsAttr().Set(vertices.tolist())
+            mesh_prim.GetFaceVertexCountsAttr().Set([3] * len(self.faces))
+            mesh_prim.GetFaceVertexIndicesAttr().Set(self.faces.flatten().tolist())
+
+            stage.Save()
+        except ImportError:
+            print("Warning: pxr (USD) library not available. Falling back to PLY.")
+            self.save_ply(state, filename.replace(".usd", ".ply"))
+
+    def load_state(self, filepath):
+        """
+        Load particle positions from a PLY file.
+
+        Args:
+            filepath: Path to the PLY file.
+        """
+        vertices = []
+        with open(filepath) as f:
+            in_header = True
+            vertex_count = 0
+            for raw_line in f:
+                stripped = raw_line.strip()
+                if in_header:
+                    if stripped.startswith("element vertex"):
+                        vertex_count = int(stripped.split()[-1])
+                    elif stripped == "end_header":
+                        in_header = False
+                else:
+                    if len(vertices) < vertex_count:
+                        parts = stripped.split()
+                        vertices.append([float(parts[0]), float(parts[1]), float(parts[2])])
+
+        if vertices:
+            vertices_np = np.array(vertices, dtype=np.float32)
+            self.state_0.particle_q.assign(vertices_np)
+            self.state_1.particle_q.assign(vertices_np)
 
 
-    def rebuild_bvh(self):
-        # if self.integrator.handle_self_contact:
-        #     self.integrator.trimesh_collision_detector.rebuild(self.state0.particle_q)
-        #     if self.use_cuda_graph:
-        #         self.graph = self.capture_graph()
-        #     #
-        pass
+def read_obj(filepath):
+    """
+    Read vertices and faces from an OBJ file.
+
+    Args:
+        filepath: Path to the OBJ file.
+
+    Returns:
+        Tuple of (vertices, faces) where vertices is a list of (x, y, z) tuples
+        and faces is a list of triangle index tuples.
+    """
+    vertices = []
+    faces = []
+
+    with open(filepath) as f:
+        for line in f:
+            parts = line.strip().split()
+            if not parts:
+                continue
+
+            if parts[0] == "v":
+                vertices.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            elif parts[0] == "f":
+                # Handle various face formats: v, v/vt, v/vt/vn, v//vn
+                face_indices = []
+                for p in parts[1:]:
+                    idx = p.split("/")[0]
+                    face_indices.append(int(idx) - 1)  # OBJ is 1-indexed
+                faces.append(tuple(face_indices))
+
+    return vertices, faces
