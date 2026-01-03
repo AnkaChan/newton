@@ -238,12 +238,13 @@ class Simulator:
 
     def run_step(self):
         """Execute one frame of simulation (all substeps)."""
-        # Run collision detection (check shape_count, not body_count, since ground plane has no body)
-        if self.model.shape_count:
-            self.contacts = self.model.collide(self.state_0)
 
         # Run substeps
         for _ in range(self.num_substeps):
+            # Run collision detection (check shape_count, not body_count, since ground plane has no body)
+            if self.model.shape_count:
+                self.contacts = self.model.collide(self.state_0)
+
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.dt)
             self.state_0, self.state_1 = self.state_1, self.state_0

@@ -39,9 +39,9 @@ example_config = {
     **default_config,  # Start with defaults
     # Simulation timing
     "fps": 60,
-    "sim_substeps": 20,
-    "sim_num_frames": 2000,
-    "iterations": 5,
+    "sim_substeps": 10,
+    "sim_num_frames": 400,
+    "iterations": 10,
     "bvh_rebuild_frames": 1,
     # Solver settings
     "use_cuda_graph": True,
@@ -49,7 +49,7 @@ example_config = {
     "use_tile_solve": True,
     "self_contact_radius": 0.25,
     "self_contact_margin": 0.36,
-    "topological_contact_filter_threshold": 2,
+    "topological_contact_filter_threshold": 1,
     "rest_shape_contact_exclusion_radius": 0.0,
     "vertex_collision_buffer_pre_alloc": 64,
     "edge_collision_buffer_pre_alloc": 128,
@@ -57,7 +57,7 @@ example_config = {
     "up_axis": "y",
     "gravity": -980.0,
     "soft_contact_ke": 2e4,
-    "soft_contact_kd": 1e-5,
+    "soft_contact_kd": 1e-7,
     "soft_contact_mu": 0.1,
     # Visualization
     "do_rendering": True,
@@ -75,12 +75,12 @@ example_config = {
             "rotation_axis": (1.0, 0.0, 0.0),
             "rotation_angle": 0.0,
             "scale": 30.0,
-            "density": 0.02,
+            "density": 0.2,
             "tri_ke": 1e4,
             "tri_ka": 1e4,
             "tri_kd": 1e-5,
             "edge_ke": 10.0,
-            "edge_kd": 1e-2,
+            "edge_kd": 1e-1,
         },
     },
     # Cloths configuration (dict of name -> cloth params)
@@ -88,7 +88,7 @@ example_config = {
         "main_cloth": {
             "resolution": (60, 80),  # (Nx, Ny) vertices
             "size": (120.0, 160.0),  # Physical size (size_x, size_y)
-            "position": (10.0, 80.0, 0.0),
+            "position": (10.0, 66.0, 0.0),
             "rotation_axis": (1.0, 0.0, 0.0),
             "rotation_angle": 0.0,
             "scale": 1.0,
@@ -97,15 +97,16 @@ example_config = {
             "tri_ka": 1e4,
             "tri_kd": 1e-5,
             "edge_ke": 10.0,
-            "edge_kd": 1e-2,
+            "edge_kd": 1e-1,
             # Multi-layer settings
-            "num_layers": 5,  # Number of cloth layers
+            "num_layers": 100,  # Number of cloth layers
             "layer_spacing": 0.25,  # Distance between layers (in up_axis direction)
         },
     },
     # outputs
     "output_path": r"D:\Data\DAT_Sim",  # Directory to save output files
     "output_ext": "npy",  # "ply" "npy" or "usd"
+    # "output_ext": "ply",  # "ply" "npy" or "usd"
     "write_output": True,
     "write_video": True,
     "recovery_state_save_steps": 100,
@@ -373,6 +374,7 @@ class ClothDropSimulator(Simulator):
         all_verts = self.model.particle_q.numpy()
 
         for mesh_idx, info in enumerate(self._mesh_info):
+            name = info["name"]
             v_start = info["vertex_start"]
             v_count = info["vertex_count"]
             faces = info["faces"]  # Local indices (0-based)
@@ -380,8 +382,8 @@ class ClothDropSimulator(Simulator):
             # Extract vertices for this mesh
             verts = all_verts[v_start : v_start + v_count]
 
-            # Save as PLY with numeric index
-            out_file = os.path.join(self.output_path, f"initial_mesh_{mesh_idx:03d}.ply")
+            # Save as PLY with numeric index and name
+            out_file = os.path.join(self.output_path, f"initial_mesh_{mesh_idx:03d}_{name}.ply")
 
             header = [
                 "ply",
@@ -447,16 +449,7 @@ def save_config(config: dict, output_path: str):
 if __name__ == "__main__":
     from datetime import datetime
 
-    import newton
-    import newton.examples
-
     # wp.clear_kernel_cache()
-
-    parser = newton.examples.create_parser()
-    parser.set_defaults(num_frames=12000)
-    parser.set_defaults(viewer="null")
-
-    viewer, args = newton.examples.init(parser)
 
     # Create output folder with date/time and layer count
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
