@@ -3503,9 +3503,10 @@ class ModelBuilder:
         if xform is None:
             assert plane is not None, "Either xform or plane must be provided"
             # compute position and rotation from plane equation
+            # For plane equation ax + by + cz + d = 0, the closest point to origin is -d * normal
             normal = np.array(plane[:3])
             normal /= np.linalg.norm(normal)
-            pos = plane[3] * normal
+            pos = -plane[3] * normal
             # compute rotation from local +Z axis to plane normal
             rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
             xform = wp.transform(pos, rot)
@@ -3525,6 +3526,7 @@ class ModelBuilder:
 
     def add_ground_plane(
         self,
+        height,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
@@ -3538,7 +3540,7 @@ class ModelBuilder:
             int: The index of the newly added shape.
         """
         return self.add_shape_plane(
-            plane=(*self.up_vector, 0.0),
+            plane=(*self.up_vector, -height),
             width=0.0,
             length=0.0,
             cfg=cfg,

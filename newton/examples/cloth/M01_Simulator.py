@@ -50,10 +50,14 @@ default_config = {
     "output_ext": "ply",  # "ply" or "usd"
     "write_output": False,
     "write_video": False,
+    "recovery_state_save_steps": -1,  # Save recovery state every N frames (<0 to disable)
     # Visualization
     "do_rendering": True,
     "show_ground_plane": False,
     "is_initially_paused": True,
+    # Ground plane
+    "has_ground": False,  # Add ground collision plane to simulation
+    "ground_height": 0.0,  # Height of the ground plane
 }
 
 
@@ -115,10 +119,15 @@ class Simulator:
         self.output_ext = cfg("output_ext")
         self.write_output = cfg("write_output")
         self.write_video = cfg("write_video")
+        self.recovery_state_save_steps = cfg("recovery_state_save_steps")
 
         # Visualization
         self.do_rendering = cfg("do_rendering")
         self.show_ground_plane = cfg("show_ground_plane")
+
+        # Ground plane
+        self.has_ground = cfg("has_ground")
+        self.ground_height = cfg("ground_height")
 
         # Runtime state
         self.sim_time = 0.0
@@ -126,13 +135,11 @@ class Simulator:
         self.frame_times = []
         self.graph = None
 
+        # Polyscope mesh registry: name -> {"mesh": ps_mesh, "vertex_indices": slice or array, "faces": array}
+        self.ps_meshes: dict = {}
+
         # Initialize polyscope
-        ps.init()
-        if self.show_ground_plane:
-            ps.set_ground_plane_mode("shadow_only")
-        else:
-            ps.set_ground_plane_mode("none")
-        ps.set_up_dir(self.up_axis + "_up")
+        self.init_polyscope()
 
         # Create Newton model builder
         self.builder = newton.ModelBuilder(up_axis=self.up_axis, gravity=self.gravity)
@@ -155,6 +162,10 @@ class Simulator:
         # Helper to read from config or fall back to default
         def cfg(key):
             return get_config_value(self.config, key)
+
+        # Add ground plane if enabled
+        if self.has_ground:
+            self.builder.add_ground_plane(self.ground_height)
 
         # Color the mesh for VBD solver
         self.builder.color(include_bending=cfg("include_bending"))
@@ -201,13 +212,11 @@ class Simulator:
         # Get triangle indices for visualization
         self.faces = self.model.tri_indices.numpy()
 
-        # Set up polyscope visualization
-        if self.do_rendering:
-            self.verts_for_vis = self.model.particle_q.numpy().copy()
-            self.ps_vis_mesh = ps.register_surface_mesh("Sim", self.verts_for_vis, self.faces)
-
-        # Allow subclasses to do additional setup
+        # Allow subclasses to do additional setup (before polyscope setup)
         self.custom_finalize()
+
+        # Set up polyscope visualization
+        self.setup_polyscope_meshes()
 
         # Capture CUDA graph if enabled
         self.use_cuda_graph = self.use_cuda_graph and wp.get_device().is_cuda
@@ -226,12 +235,9 @@ class Simulator:
 
     def run_step(self):
         """Execute one frame of simulation (all substeps)."""
-        # Run collision detection
-        self.contacts = self.model.collide(self.state_0)
-
-        # Rebuild BVH for self-contact if needed
-        if self.handle_self_contact:
-            self.solver.rebuild_bvh(self.state_0)
+        # Run collision detection (check shape_count, not body_count, since ground plane has no body)
+        if self.model.shape_count:
+            self.contacts = self.model.collide(self.state_0)
 
         # Run substeps
         for _ in range(self.num_substeps):
@@ -261,24 +267,36 @@ class Simulator:
                 isColor=True,
             )
 
-        for frame_id in tqdm.tqdm(range(self.sim_num_frames)):
-            self.step()
+        try:
+            for frame_id in tqdm.tqdm(range(self.sim_num_frames)):
+                self.step()
 
-            # Rebuild BVH periodically (outside of CUDA graph)
-            if not self.use_cuda_graph and self.rebuild_frames and frame_id % self.rebuild_frames == 0:
-                self.rebuild_bvh()
+                # Rebuild BVH periodically (outside of CUDA graph)
+                if self.rebuild_frames and frame_id % self.rebuild_frames == 0:
+                    self.rebuild_bvh()
 
-            if self.write_output:
-                self.save_output(frame_id)
+                if self.write_output:
+                    self.save_output(frame_id)
 
-            if self.do_rendering:
-                self.render()
-                if vid_out is not None:
-                    pixels = ps.screenshot_to_buffer(False)
-                    vid_out.write(pixels[:, :, [2, 1, 0]])
+                # Save recovery state periodically
+                if (
+                    self.recovery_state_save_steps > 0
+                    and self.output_path
+                    and frame_id % self.recovery_state_save_steps == 0
+                ):
+                    self.save_recovery_state(frame_id)
 
-        if vid_out is not None:
-            vid_out.release()
+                if self.do_rendering:
+                    self.render()
+                    if vid_out is not None:
+                        pixels = ps.screenshot_to_buffer(False)
+                        vid_out.write(pixels[:, :, [2, 1, 0]])
+        except KeyboardInterrupt:
+            print("\nSimulation interrupted by user. Saving video...")
+        finally:
+            if vid_out is not None:
+                vid_out.release()
+                print(f"Video saved to: {join(self.output_path, 'video.mp4')}")
 
     def save_output(self, frame_id):
         """Save the current frame to a file."""
@@ -312,10 +330,134 @@ class Simulator:
         if self.handle_self_contact:
             self.solver.rebuild_bvh(self.state_0)
 
+    # =========================================================================
+    # Polyscope Visualization Methods (Override these for custom rendering)
+    # =========================================================================
+
+    def init_polyscope(self):
+        """
+        Initialize polyscope. Override to customize polyscope settings.
+        """
+        ps.init()
+        ps.set_up_dir(self.up_axis + "_up")
+
+        if self.show_ground_plane or self.has_ground:
+            # Set ground plane to match simulation
+            ps.set_ground_plane_mode("tile_reflection")
+            ps.set_ground_plane_height(self.ground_height)
+        else:
+            ps.set_ground_plane_mode("none")
+
+    def setup_polyscope_meshes(self):
+        """
+        Set up polyscope meshes for visualization. Override to register custom meshes.
+
+        By default, registers a single mesh with all particles and faces.
+        Subclasses can override to register separate meshes for colliders and cloths.
+        """
+        if not self.do_rendering:
+            return
+
+        verts = self.model.particle_q.numpy()
+        self.register_ps_mesh(
+            name="Sim",
+            vertices=verts,
+            faces=self.faces,
+            vertex_indices=None,  # Use all vertices
+        )
+
+    def register_ps_mesh(
+        self,
+        name: str,
+        vertices: np.ndarray,
+        faces: np.ndarray,
+        vertex_indices: np.ndarray | slice | None = None,
+        color: tuple | None = None,
+        edge_width: float = 0.0,
+        smooth_shade: bool = True,
+        enabled: bool = True,
+    ):
+        """
+        Register a polyscope surface mesh.
+
+        Args:
+            name: Unique name for the mesh.
+            vertices: Vertex positions (Nx3 array).
+            faces: Face indices (Mx3 array), indices into vertices array.
+            vertex_indices: Indices into the global particle array for updates.
+                           If None, uses all particles. Can be a slice or array.
+            color: Optional RGB color tuple (0-1 range).
+            edge_width: Edge line width (0 to disable).
+            smooth_shade: Enable smooth shading.
+            enabled: Whether the mesh is initially visible.
+        """
+        ps_mesh = ps.register_surface_mesh(name, vertices, faces, enabled=enabled)
+
+        if smooth_shade:
+            ps_mesh.set_smooth_shade(True)
+        if color is not None:
+            ps_mesh.set_color(color)
+        if edge_width > 0:
+            ps_mesh.set_edge_width(edge_width)
+
+        self.ps_meshes[name] = {
+            "mesh": ps_mesh,
+            "vertex_indices": vertex_indices,
+            "faces": faces,
+        }
+
+        return ps_mesh
+
+    def configure_ps_mesh(self, name: str, **kwargs):
+        """
+        Configure an existing polyscope mesh.
+
+        Args:
+            name: Name of the registered mesh.
+            **kwargs: Properties to set (color, edge_width, smooth_shade, enabled, transparency, etc.)
+        """
+        if name not in self.ps_meshes:
+            return
+
+        ps_mesh = self.ps_meshes[name]["mesh"]
+
+        if "color" in kwargs:
+            ps_mesh.set_color(kwargs["color"])
+        if "edge_width" in kwargs:
+            ps_mesh.set_edge_width(kwargs["edge_width"])
+        if "smooth_shade" in kwargs:
+            ps_mesh.set_smooth_shade(kwargs["smooth_shade"])
+        if "enabled" in kwargs:
+            ps_mesh.set_enabled(kwargs["enabled"])
+        if "transparency" in kwargs:
+            ps_mesh.set_transparency(kwargs["transparency"])
+        if "material" in kwargs:
+            ps_mesh.set_material(kwargs["material"])
+
+    def update_ps_meshes(self):
+        """
+        Update all registered polyscope meshes with current particle positions.
+        Override to customize mesh updates.
+        """
+        all_verts = self.state_0.particle_q.numpy()
+
+        for _name, mesh_info in self.ps_meshes.items():
+            ps_mesh = mesh_info["mesh"]
+            vertex_indices = mesh_info["vertex_indices"]
+
+            if vertex_indices is None:
+                # Use all vertices
+                verts = all_verts
+            elif isinstance(vertex_indices, slice):
+                verts = all_verts[vertex_indices]
+            else:
+                verts = all_verts[vertex_indices]
+
+            ps_mesh.update_vertex_positions(verts)
+
     def render(self):
         """Update the polyscope visualization."""
-        self.verts_for_vis = self.state_0.particle_q.numpy()
-        self.ps_vis_mesh.update_vertex_positions(self.verts_for_vis)
+        self.update_ps_meshes()
         ps.frame_tick()
 
     def save_ply(self, state, filename):
@@ -374,6 +516,146 @@ class Simulator:
         except ImportError:
             print("Warning: pxr (USD) library not available. Falling back to PLY.")
             self.save_ply(state, filename.replace(".usd", ".ply"))
+
+    def save_recovery_state(self, frame_id: int):
+        """
+        Save a recovery state to an npz file.
+
+        The recovery state contains:
+        - particle_q: Particle positions
+        - particle_qd: Particle velocities
+        - frame_id: Current frame number
+        - sim_time: Current simulation time
+
+        Args:
+            frame_id: Current frame number.
+        """
+        if self.output_path is None:
+            return
+
+        recovery_file = join(self.output_path, f"recovery_state_{frame_id:06d}.npz")
+
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
+
+        np.savez(
+            recovery_file,
+            particle_q=particle_q,
+            particle_qd=particle_qd,
+            frame_id=frame_id,
+            sim_time=self.sim_time,
+        )
+
+    def load_recovery_state(self, filepath: str) -> int:
+        """
+        Load a recovery state from an npz file and restore the simulation.
+
+        Args:
+            filepath: Path to the recovery state npz file.
+
+        Returns:
+            The frame_id from the recovery state.
+        """
+        data = np.load(filepath)
+
+        particle_q = data["particle_q"]
+        particle_qd = data["particle_qd"]
+        frame_id = int(data["frame_id"])
+        sim_time = float(data["sim_time"])
+
+        # Restore state
+        self.state_0.particle_q.assign(particle_q)
+        self.state_0.particle_qd.assign(particle_qd)
+        self.state_1.particle_q.assign(particle_q)
+        self.state_1.particle_qd.assign(particle_qd)
+        self.sim_time = sim_time
+
+        return frame_id
+
+    def get_latest_recovery_state(self) -> str | None:
+        """
+        Find the latest recovery state file in the output directory.
+
+        Returns:
+            Path to the latest recovery state file, or None if not found.
+        """
+        if self.output_path is None:
+            return None
+
+        import glob  # noqa: PLC0415
+
+        pattern = join(self.output_path, "recovery_state_*.npz")
+        files = glob.glob(pattern)
+
+        if not files:
+            return None
+
+        # Sort by frame number (extracted from filename)
+        files.sort(key=lambda f: int(os.path.basename(f).split("_")[-1].split(".")[0]))
+        return files[-1]
+
+    def simulate_from_recovery(self, recovery_filepath: str | None = None):
+        """
+        Resume simulation from a recovery state file.
+
+        Args:
+            recovery_filepath: Path to the recovery state npz file.
+                              If None, uses the latest recovery state in output_path.
+        """
+        # Find recovery file if not specified
+        if recovery_filepath is None:
+            recovery_filepath = self.get_latest_recovery_state()
+            if recovery_filepath is None:
+                print("No recovery state found. Starting from beginning.")
+                self.simulate()
+                return
+
+        # Load the recovery state
+        start_frame = self.load_recovery_state(recovery_filepath)
+        print(f"Resuming simulation from frame {start_frame}, time {self.sim_time:.4f}")
+
+        vid_out = None
+        if self.write_video and self.output_path:
+            out_video_file = join(self.output_path, "video_resumed.mp4")
+            pixels = ps.screenshot_to_buffer(False)
+            vid_out = cv2.VideoWriter(
+                out_video_file,
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                self.fps,
+                (pixels.shape[1], pixels.shape[0]),
+                isColor=True,
+            )
+
+        try:
+            for frame_id in tqdm.tqdm(range(start_frame + 1, self.sim_num_frames)):
+                self.step()
+
+                # Rebuild BVH periodically (outside of CUDA graph)
+                if not self.use_cuda_graph and self.rebuild_frames and frame_id % self.rebuild_frames == 0:
+                    self.rebuild_bvh()
+
+                if self.write_output:
+                    self.save_output(frame_id)
+
+                # Save recovery state periodically
+                if (
+                    self.recovery_state_save_steps > 0
+                    and self.output_path
+                    and frame_id % self.recovery_state_save_steps == 0
+                ):
+                    self.save_recovery_state(frame_id)
+
+                if self.do_rendering:
+                    self.render()
+                    if vid_out is not None:
+                        pixels = ps.screenshot_to_buffer(False)
+                        vid_out.write(pixels[:, :, [2, 1, 0]])
+        except KeyboardInterrupt:
+            print("\nSimulation interrupted by user. Saving video...")
+        finally:
+            if vid_out is not None:
+                vid_out.release()
+                print(f"Video saved to: {join(self.output_path, 'video_resumed.mp4')}")
 
     def load_state(self, filepath):
         """
