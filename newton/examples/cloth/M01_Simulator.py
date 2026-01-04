@@ -225,6 +225,10 @@ class Simulator:
         # Set up polyscope visualization
         self.setup_polyscope_meshes()
 
+        # Run initial warmup to size collision buffers before capturing CUDA graph
+        if self.collision_buffer_resize_frames > 0 and self.handle_self_contact:
+            self.warmup_collision_buffers()
+
         # Capture CUDA graph if enabled
         self.use_cuda_graph = self.use_cuda_graph and wp.get_device().is_cuda
         if self.use_cuda_graph:
@@ -357,6 +361,29 @@ class Simulator:
         """Rebuild the BVH for self-contact detection."""
         if self.handle_self_contact:
             self.solver.rebuild_bvh(self.state_0)
+
+    def warmup_collision_buffers(self):
+        """
+        Run initial collision detection and resize buffers before capturing CUDA graph.
+
+        This ensures the CUDA graph is captured with properly sized buffers from the start,
+        avoiding the need to recapture after the first resize during simulation.
+        """
+        print("Warming up collision buffers...")
+
+        # Run collision detection only (no simulation step)
+        self.solver.collision_detection_penetration_free(self.state_0)
+
+        # Resize based on actual collision counts
+        resized = self.solver.resize_collision_buffers(
+            shrink_to_fit=False,
+            growth_ratio=self.collision_buffer_growth_ratio,
+        )
+
+        if resized:
+            print("Collision buffers resized during warmup")
+        else:
+            print("Collision buffers already properly sized")
 
     def resize_collision_buffers(self, shrink_to_fit: bool = False) -> bool:
         """

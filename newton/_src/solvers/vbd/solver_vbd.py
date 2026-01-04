@@ -4216,7 +4216,6 @@ class SolverVBD(SolverBase):
 
         self.use_tile_solve = use_tile_solve and model.device.is_cuda
 
-        soft_contact_max = model.shape_count * model.particle_count
         if handle_self_contact:
             if self_contact_margin < self_contact_radius:
                 raise ValueError(
@@ -4970,6 +4969,53 @@ class SolverVBD(SolverBase):
         if self.handle_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)
 
+    def resize_collision_buffers(self, shrink_to_fit: bool = False, growth_ratio: float = 1.5) -> bool:
+        """Resize collision buffers based on actual collision counts from the last detection pass.
+
+        This function analyzes the collision counts and resizes buffers that overflowed
+        (or shrinks oversized buffers if shrink_to_fit=True). Use this after collision
+        detection if you observe buffer overflow warnings or want to optimize memory usage.
+
+        Buffer sizes are:
+        - Multiplied by growth_ratio to provide headroom and reduce resize frequency
+        - Rounded up to the next multiple of 4 for memory alignment
+        - Clamped between pre_alloc and max_alloc settings
+
+        Note:
+            After resizing, you should re-run collision detection before the next simulation
+            step to populate the new buffers.
+
+        Args:
+            shrink_to_fit: If True, also shrink buffers that are larger than needed.
+                          If False (default), only grow buffers that overflowed.
+            growth_ratio: Multiplier for collision counts to provide headroom. Default is 1.5
+                         (50% extra space). Set to 1.0 for exact fit (no headroom).
+
+        Returns:
+            True if any buffer was resized, False otherwise.
+
+        Example:
+            .. code-block:: python
+
+                # After running simulation and observing overflow
+                if solver.resize_collision_buffers():
+                    # Buffers were resized, re-run collision detection
+                    solver.rebuild_bvh(state)
+
+                # To reclaim memory after simulation settles
+                solver.resize_collision_buffers(shrink_to_fit=True)
+        """
+        if not self.handle_self_contact:
+            return False
+        resized = self.trimesh_collision_detector.resize_collision_buffer_to_fit(shrink_to_fit, growth_ratio)
+        if resized:
+            # Update the collision_info array with new buffer references
+            # This is critical - the old array contains stale pointers to deallocated memory
+            self.trimesh_collision_info = wp.array(
+                [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
+            )
+        return resized
+
     def penetration_free_truncation(self, particle_q_out=None):
         """
         Modify displacements_in in-place, also modify particle_q if its not None
@@ -4984,7 +5030,7 @@ class SolverVBD(SolverBase):
                     self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
                     self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
                     self.truncation_ts,
-                    wp.inf
+                    wp.inf,
                 ],
                 outputs=[
                     self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),

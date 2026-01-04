@@ -294,6 +294,9 @@ class TriMeshCollisionDetector:
 
         offsets.assign(offsets_np)
 
+    # Maximum total buffer size (int32 max, accounting for 2x factor in some buffers)
+    MAX_BUFFER_TOTAL_SIZE = (2**31 - 1) // 2
+
     @staticmethod
     def _compute_aligned_buffer_sizes(
         counts: np.ndarray, pre_alloc: int, max_alloc: int, growth_ratio: float = 1.0
@@ -393,8 +396,13 @@ class TriMeshCollisionDetector:
         if not shrink_to_fit:
             new_sizes = np.maximum(new_sizes, current_sizes)
 
-        # Reallocate buffer
+        # Check total size limit (int32 max, with 2x factor for buffer layout)
         total_size = int(np.sum(new_sizes))
+        if total_size > self.MAX_BUFFER_TOTAL_SIZE:
+            print(f"Warning: vertex-triangle buffer resize skipped, total size {total_size} exceeds limit")
+            return False
+
+        # Reallocate buffer
         self.vertex_colliding_triangles = wp.zeros(shape=(2 * total_size,), dtype=wp.int32, device=self.device)
         self.vertex_colliding_triangles_buffer_sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
         self.compute_collision_buffer_offsets(
@@ -426,7 +434,12 @@ class TriMeshCollisionDetector:
         if not shrink_to_fit:
             new_sizes = np.maximum(new_sizes, current_sizes)
 
+        # Check total size limit (int32 max)
         total_size = int(np.sum(new_sizes))
+        if total_size > self.MAX_BUFFER_TOTAL_SIZE:
+            print(f"Warning: triangle-vertex buffer resize skipped, total size {total_size} exceeds limit")
+            return False
+
         self.triangle_colliding_vertices = wp.zeros(shape=(total_size,), dtype=wp.int32, device=self.device)
         self.triangle_colliding_vertices_buffer_sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
         self.compute_collision_buffer_offsets(
@@ -455,7 +468,12 @@ class TriMeshCollisionDetector:
         if not shrink_to_fit:
             new_sizes = np.maximum(new_sizes, current_sizes)
 
+        # Check total size limit (int32 max, with 2x factor for buffer layout)
         total_size = int(np.sum(new_sizes))
+        if total_size > self.MAX_BUFFER_TOTAL_SIZE:
+            print(f"Warning: edge-edge buffer resize skipped, total size {total_size} exceeds limit")
+            return False
+
         self.edge_colliding_edges = wp.zeros(shape=(2 * total_size,), dtype=wp.int32, device=self.device)
         self.edge_colliding_edges_buffer_sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
         self.compute_collision_buffer_offsets(self.edge_colliding_edges_buffer_sizes, self.edge_colliding_edges_offsets)
@@ -492,7 +510,12 @@ class TriMeshCollisionDetector:
         if not shrink_to_fit:
             new_sizes = np.maximum(new_sizes, current_sizes)
 
+        # Check total size limit (int32 max)
         total_size = int(np.sum(new_sizes))
+        if total_size > self.MAX_BUFFER_TOTAL_SIZE:
+            print(f"Warning: triangle-triangle buffer resize skipped, total size {total_size} exceeds limit")
+            return False
+
         self.triangle_intersecting_triangles = wp.zeros(shape=(total_size,), dtype=wp.int32, device=self.device)
 
         # Recompute offsets
