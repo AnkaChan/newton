@@ -294,6 +294,214 @@ class TriMeshCollisionDetector:
 
         offsets.assign(offsets_np)
 
+    @staticmethod
+    def _compute_aligned_buffer_sizes(
+        counts: np.ndarray, pre_alloc: int, max_alloc: int, growth_ratio: float = 1.0
+    ) -> np.ndarray:
+        """
+        Compute buffer sizes aligned to 4, clamped between pre_alloc and max_alloc.
+
+        Args:
+            counts: Actual collision counts per primitive.
+            pre_alloc: Minimum buffer size per primitive.
+            max_alloc: Maximum buffer size per primitive.
+            growth_ratio: Multiplier for counts to provide headroom (e.g., 1.5 = 50% extra).
+
+        Returns:
+            Buffer sizes rounded up to next multiple of 4, clamped to [pre_alloc, max_alloc].
+        """
+        # Apply growth ratio
+        grown = (counts * growth_ratio).astype(np.int32)
+        # Round up to next multiple of 4
+        aligned = ((grown + 3) // 4) * 4
+        # Clamp to valid range
+        return np.clip(aligned, pre_alloc, max_alloc).astype(np.int32)
+
+    def resize_collision_buffer_to_fit(self, shrink_to_fit: bool = False, growth_ratio: float = 1.5) -> bool:
+        """
+        Resize collision buffers based on actual collision counts.
+
+        This function analyzes the collision counts from the last detection pass and
+        resizes buffers that overflowed (or shrinks oversized buffers if shrink_to_fit=True).
+
+        Buffer sizes are:
+        - Multiplied by growth_ratio to provide headroom
+        - Rounded up to the next multiple of 4 for memory alignment
+        - Clamped between pre_alloc and max_alloc settings
+
+        Args:
+            shrink_to_fit: If True, also shrink buffers that are larger than needed.
+                          If False (default), only grow buffers that overflowed.
+            growth_ratio: Multiplier for collision counts to provide headroom and reduce
+                         resize frequency. Default is 1.5 (50% extra space).
+                         Set to 1.0 for exact fit (no headroom).
+
+        Returns:
+            True if any buffer was resized, False otherwise.
+        """
+        flags = self.resize_flags.numpy()
+        any_resized = False
+
+        # === Vertex-Triangle Buffer (flag index 0) ===
+        if flags[0] or shrink_to_fit:
+            resized = self._resize_vertex_triangle_buffer(shrink_to_fit, growth_ratio)
+            any_resized = any_resized or resized
+
+        # === Triangle-Vertex Buffer (flag index 1) ===
+        if self.record_triangle_contacting_vertices and (flags[1] or shrink_to_fit):
+            resized = self._resize_triangle_vertex_buffer(shrink_to_fit, growth_ratio)
+            any_resized = any_resized or resized
+
+        # === Edge-Edge Buffer (flag index 2) ===
+        if flags[2] or shrink_to_fit:
+            resized = self._resize_edge_edge_buffer(shrink_to_fit, growth_ratio)
+            any_resized = any_resized or resized
+
+        # === Triangle-Triangle Buffer (flag index 3) ===
+        if self.triangle_intersecting_triangles is not None and (flags[3] or shrink_to_fit):
+            resized = self._resize_triangle_triangle_buffer(shrink_to_fit, growth_ratio)
+            any_resized = any_resized or resized
+
+        # Reset resize flags
+        if any_resized:
+            self.resize_flags.zero_()
+            # Update collision_info struct with new buffer references
+            self.collision_info = self.get_collision_data()
+
+        return any_resized
+
+    def _resize_vertex_triangle_buffer(self, shrink_to_fit: bool, growth_ratio: float) -> bool:
+        """Resize vertex-triangle collision buffer. Returns True if resized."""
+        counts = self.vertex_colliding_triangles_count.numpy()
+        current_sizes = self.vertex_colliding_triangles_buffer_sizes.numpy()
+
+        new_sizes = self._compute_aligned_buffer_sizes(
+            counts, self.vertex_collision_buffer_pre_alloc, self.vertex_collision_buffer_max_alloc, growth_ratio
+        )
+
+        # Determine if resize is needed
+        if shrink_to_fit:
+            needs_resize = not np.array_equal(new_sizes, current_sizes)
+        else:
+            # Only grow: resize if any new_size > current_size
+            needs_resize = np.any(new_sizes > current_sizes)
+
+        if not needs_resize:
+            return False
+
+        # When only growing, take max of current and new
+        if not shrink_to_fit:
+            new_sizes = np.maximum(new_sizes, current_sizes)
+
+        # Reallocate buffer
+        total_size = int(np.sum(new_sizes))
+        self.vertex_colliding_triangles = wp.zeros(shape=(2 * total_size,), dtype=wp.int32, device=self.device)
+        self.vertex_colliding_triangles_buffer_sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
+        self.compute_collision_buffer_offsets(
+            self.vertex_colliding_triangles_buffer_sizes, self.vertex_colliding_triangles_offsets
+        )
+
+        return True
+
+    def _resize_triangle_vertex_buffer(self, shrink_to_fit: bool, growth_ratio: float) -> bool:
+        """Resize triangle-vertex collision buffer. Returns True if resized."""
+        if self.triangle_colliding_vertices_count is None or self.triangle_colliding_vertices_buffer_sizes is None:
+            return False
+
+        counts = self.triangle_colliding_vertices_count.numpy()
+        current_sizes = self.triangle_colliding_vertices_buffer_sizes.numpy()
+
+        new_sizes = self._compute_aligned_buffer_sizes(
+            counts, self.triangle_collision_buffer_pre_alloc, self.triangle_collision_buffer_max_alloc, growth_ratio
+        )
+
+        if shrink_to_fit:
+            needs_resize = not np.array_equal(new_sizes, current_sizes)
+        else:
+            needs_resize = np.any(new_sizes > current_sizes)
+
+        if not needs_resize:
+            return False
+
+        if not shrink_to_fit:
+            new_sizes = np.maximum(new_sizes, current_sizes)
+
+        total_size = int(np.sum(new_sizes))
+        self.triangle_colliding_vertices = wp.zeros(shape=(total_size,), dtype=wp.int32, device=self.device)
+        self.triangle_colliding_vertices_buffer_sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
+        self.compute_collision_buffer_offsets(
+            self.triangle_colliding_vertices_buffer_sizes, self.triangle_colliding_vertices_offsets
+        )
+
+        return True
+
+    def _resize_edge_edge_buffer(self, shrink_to_fit: bool, growth_ratio: float) -> bool:
+        """Resize edge-edge collision buffer. Returns True if resized."""
+        counts = self.edge_colliding_edges_count.numpy()
+        current_sizes = self.edge_colliding_edges_buffer_sizes.numpy()
+
+        new_sizes = self._compute_aligned_buffer_sizes(
+            counts, self.edge_collision_buffer_pre_alloc, self.edge_collision_buffer_max_alloc, growth_ratio
+        )
+
+        if shrink_to_fit:
+            needs_resize = not np.array_equal(new_sizes, current_sizes)
+        else:
+            needs_resize = np.any(new_sizes > current_sizes)
+
+        if not needs_resize:
+            return False
+
+        if not shrink_to_fit:
+            new_sizes = np.maximum(new_sizes, current_sizes)
+
+        total_size = int(np.sum(new_sizes))
+        self.edge_colliding_edges = wp.zeros(shape=(2 * total_size,), dtype=wp.int32, device=self.device)
+        self.edge_colliding_edges_buffer_sizes = wp.array(new_sizes, dtype=wp.int32, device=self.device)
+        self.compute_collision_buffer_offsets(self.edge_colliding_edges_buffer_sizes, self.edge_colliding_edges_offsets)
+
+        return True
+
+    def _resize_triangle_triangle_buffer(self, shrink_to_fit: bool, growth_ratio: float) -> bool:
+        """Resize triangle-triangle intersection buffer. Returns True if resized."""
+        if self.triangle_intersecting_triangles_count is None or self.triangle_intersecting_triangles_offsets is None:
+            return False
+
+        counts = self.triangle_intersecting_triangles_count.numpy()
+
+        # Compute new sizes
+        new_sizes = self._compute_aligned_buffer_sizes(
+            counts,
+            self.triangle_triangle_collision_buffer_pre_alloc,
+            self.triangle_triangle_collision_buffer_max_alloc,
+            growth_ratio,
+        )
+
+        # Get current sizes from offsets (since we don't store per-primitive sizes for tri-tri)
+        offsets = self.triangle_intersecting_triangles_offsets.numpy()
+        current_sizes = np.diff(offsets)
+
+        if shrink_to_fit:
+            needs_resize = not np.array_equal(new_sizes, current_sizes)
+        else:
+            needs_resize = np.any(new_sizes > current_sizes)
+
+        if not needs_resize:
+            return False
+
+        if not shrink_to_fit:
+            new_sizes = np.maximum(new_sizes, current_sizes)
+
+        total_size = int(np.sum(new_sizes))
+        self.triangle_intersecting_triangles = wp.zeros(shape=(total_size,), dtype=wp.int32, device=self.device)
+
+        # Recompute offsets
+        new_offsets = np.zeros((len(new_sizes) + 1,), dtype=np.int32)
+        new_offsets[1:] = np.cumsum(new_sizes)
+        self.triangle_intersecting_triangles_offsets = wp.array(new_offsets, dtype=wp.int32, device=self.device)
+
+        return True
+
     def rebuild(self, new_pos=None):
         if new_pos is not None:
             self.vertex_positions = new_pos
