@@ -38,6 +38,8 @@ default_config = {
     "rest_shape_contact_exclusion_radius": 0.0,
     "vertex_collision_buffer_pre_alloc": 64,
     "edge_collision_buffer_pre_alloc": 128,
+    "collision_buffer_resize_frames": -1,  # Check and resize collision buffers every N frames (<0 to disable)
+    "collision_buffer_growth_ratio": 1.5,  # Growth ratio for collision buffer resize (1.5 = 50% headroom)
     "include_bending": False,  # Include bending edges in coloring
     # Global physics settings (newton.Model parameters)
     "up_axis": "y",
@@ -109,6 +111,8 @@ class Simulator:
         # Solver settings
         self.use_cuda_graph = cfg("use_cuda_graph")
         self.handle_self_contact = cfg("handle_self_contact")
+        self.collision_buffer_resize_frames = cfg("collision_buffer_resize_frames")
+        self.collision_buffer_growth_ratio = cfg("collision_buffer_growth_ratio")
 
         # Physics
         self.up_axis = cfg("up_axis")
@@ -283,6 +287,10 @@ class Simulator:
                 if self.rebuild_frames and frame_id % self.rebuild_frames == 0:
                     self.rebuild_bvh()
 
+                # Resize collision buffers periodically if enabled
+                if self.collision_buffer_resize_frames > 0 and frame_id % self.collision_buffer_resize_frames == 0:
+                    self.resize_collision_buffers()
+
                 if self.write_output:
                     self.save_output(frame_id)
 
@@ -349,6 +357,35 @@ class Simulator:
         """Rebuild the BVH for self-contact detection."""
         if self.handle_self_contact:
             self.solver.rebuild_bvh(self.state_0)
+
+    def resize_collision_buffers(self, shrink_to_fit: bool = False) -> bool:
+        """
+        Resize collision buffers based on actual collision counts.
+
+        If buffers are resized and CUDA graph is enabled, the graph will be recaptured
+        since it references the old buffer memory addresses.
+
+        Args:
+            shrink_to_fit: If True, also shrink oversized buffers. Default is False.
+
+        Returns:
+            True if any buffer was resized, False otherwise.
+        """
+        if not self.handle_self_contact:
+            return False
+
+        resized = self.solver.resize_collision_buffers(
+            shrink_to_fit=shrink_to_fit,
+            growth_ratio=self.collision_buffer_growth_ratio,
+        )
+
+        if resized:
+            # Recapture CUDA graph since buffer memory addresses changed
+            if self.use_cuda_graph and self.graph is not None:
+                print("Collision buffers resized, recapturing CUDA graph...")
+                self.graph = self.capture_graph()
+
+        return resized
 
     # =========================================================================
     # Polyscope Visualization Methods (Override these for custom rendering)
@@ -707,6 +744,10 @@ class Simulator:
                 # Rebuild BVH periodically (outside of CUDA graph)
                 if not self.use_cuda_graph and self.rebuild_frames and frame_id % self.rebuild_frames == 0:
                     self.rebuild_bvh()
+
+                # Resize collision buffers periodically if enabled
+                if self.collision_buffer_resize_frames > 0 and frame_id % self.collision_buffer_resize_frames == 0:
+                    self.resize_collision_buffers()
 
                 if self.write_output:
                     self.save_output(frame_id)
