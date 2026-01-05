@@ -422,6 +422,7 @@ class Simulator:
         """
         Initialize polyscope. Override to customize polyscope settings.
         """
+        ps.set_allow_headless_backends(True)
         ps.init()
         ps.set_up_dir(self.up_axis + "_up")
 

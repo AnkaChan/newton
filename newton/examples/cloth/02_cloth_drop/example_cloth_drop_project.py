@@ -25,9 +25,11 @@ import itertools
 import os
 
 import numpy as np
+import polyscope as ps
 import tqdm
 import warp as wp
 
+import newton
 from newton import ParticleFlags
 from newton.examples.cloth.M01_Simulator import Simulator, default_config, get_config_value, read_obj
 
@@ -39,8 +41,8 @@ example_config = {
     **default_config,  # Start with defaults
     # Simulation timing
     "fps": 60,
-    "sim_substeps": 10,
-    "sim_num_frames": 400,
+    "sim_substeps": 20,
+    "sim_num_frames": 2000,
     "iterations": 10,
     "bvh_rebuild_frames": 1,
     # Solver settings
@@ -48,15 +50,19 @@ example_config = {
     "handle_self_contact": True,
     "use_tile_solve": True,
     "self_contact_radius": 0.25,
-    "self_contact_margin": 0.36,
+    "self_contact_margin": 0.35,
     "topological_contact_filter_threshold": 1,
     "rest_shape_contact_exclusion_radius": 0.0,
-    "vertex_collision_buffer_pre_alloc": 64,
-    "edge_collision_buffer_pre_alloc": 128,
+    # Collision buffer settings - start small, let resize grow as needed
+    # Based on 100-layer analysis: 99th percentile ~32 vertex, ~64 edge collisions
+    "vertex_collision_buffer_pre_alloc": 16,  # Start conservative, will grow
+    "edge_collision_buffer_pre_alloc": 32,  # Start conservative, will grow
+    "collision_buffer_resize_frames": 5,  # Check and resize every 5 frames
+    "collision_buffer_growth_ratio": 1.5,  # 50% headroom when growing
     # Global physics settings
     "up_axis": "y",
     "gravity": -980.0,
-    "soft_contact_ke": 2e4,
+    "soft_contact_ke": 5e4,
     "soft_contact_kd": 1e-7,
     "soft_contact_mu": 0.1,
     # Visualization
@@ -67,39 +73,44 @@ example_config = {
     # Ground plane
     "has_ground": True,
     "ground_height": -30.0,
-    # Colliders configuration (dict of name -> collider params)
-    "colliders": {
+    # Static shape colliders (proper collision shapes, not cloth meshes)
+    "static_colliders": {
         "cylinder": {
-            "mesh_path": "CylinderCollider_tri.obj",
+            "type": "cylinder",
             "position": (0.0, 20.0, 0.0),
-            "rotation_axis": (1.0, 0.0, 0.0),
-            "rotation_angle": 0.0,
-            "scale": 30.0,
-            "density": 0.2,
-            "tri_ke": 1e4,
-            "tri_ka": 1e4,
-            "tri_kd": 1e-5,
-            "edge_ke": 10.0,
-            "edge_kd": 1e-1,
+            # No rotation needed - mesh is already vertical (Y-up), so rotate shape to match
+            # Cylinder axis is Z in local frame; rotate -90° around X to align with Y-up mesh
+            "rotation_axis": (0.0, 0.0, 1.0),
+            "rotation_angle": -1.5708,  # -pi/2 radians = -90 degrees (Z->Y)
+            "radius": 30.0,
+            "half_height": 30.0,
+            # Shape material properties
+            "mu": 0.1,  # Friction coefficient
+            # Optional: mesh for visualization (no rotation applied to mesh)
+            "vis_mesh_path": "CylinderCollider_tri.obj",
+            "vis_mesh_scale": 30.0,
         },
     },
+    # Legacy mesh-based colliders (cloth meshes with zero mass) - now empty
+    "colliders": {},
     # Cloths configuration (dict of name -> cloth params)
     "cloths": {
         "main_cloth": {
             "resolution": (60, 80),  # (Nx, Ny) vertices
             "size": (120.0, 160.0),  # Physical size (size_x, size_y)
-            "position": (10.0, 66.0, 0.0),
+            "position": (30.0, 66.0, 0.0),
             "rotation_axis": (1.0, 0.0, 0.0),
             "rotation_angle": 0.0,
             "scale": 1.0,
             "density": 0.02,
+            "particle_radius": 0.5,  # Particle radius for collision handling
             "tri_ke": 1e4,
             "tri_ka": 1e4,
             "tri_kd": 1e-5,
             "edge_ke": 10.0,
             "edge_kd": 1e-1,
             # Multi-layer settings
-            "num_layers": 100,  # Number of cloth layers
+            "num_layers": 10,  # Number of cloth layers
             "layer_spacing": 0.25,  # Distance between layers (in up_axis direction)
         },
     },
@@ -178,8 +189,80 @@ class ClothDropSimulator(Simulator):
         self._mesh_info: list = []
         self._collider_names: list = []
         self._cloth_names: list = []
+        # Store static collider visualization data (vertices and faces for polyscope only)
+        self._static_collider_vis: list = []
 
-        # --- Add Colliders ---
+        # --- Add Static Shape Colliders ---
+        static_colliders = cfg("static_colliders") or {}
+        for name, sc_cfg in static_colliders.items():
+            collider_type = sc_cfg["type"]
+            position = wp.vec3(sc_cfg["position"])
+            rotation_axis = wp.vec3(sc_cfg.get("rotation_axis", (0.0, 0.0, 1.0)))
+            rotation_angle = sc_cfg.get("rotation_angle", 0.0)
+            xform = wp.transform(position, wp.quat_from_axis_angle(rotation_axis, rotation_angle))
+
+            # Create ShapeConfig with material properties
+            shape_cfg = newton.ModelBuilder.ShapeConfig(
+                mu=sc_cfg.get("mu", 0.5),  # Friction coefficient
+            )
+
+            # Add the static shape (body=-1 means static/world-attached)
+            if collider_type == "cylinder":
+                self.builder.add_shape_cylinder(
+                    body=-1,
+                    xform=xform,
+                    radius=sc_cfg["radius"],
+                    half_height=sc_cfg["half_height"],
+                    cfg=shape_cfg,
+                )
+            elif collider_type == "box":
+                self.builder.add_shape_box(
+                    body=-1,
+                    xform=xform,
+                    hx=sc_cfg["hx"],
+                    hy=sc_cfg["hy"],
+                    hz=sc_cfg["hz"],
+                    cfg=shape_cfg,
+                )
+            elif collider_type == "sphere":
+                self.builder.add_shape_sphere(
+                    body=-1,
+                    xform=xform,
+                    radius=sc_cfg["radius"],
+                    cfg=shape_cfg,
+                )
+            elif collider_type == "capsule":
+                self.builder.add_shape_capsule(
+                    body=-1,
+                    xform=xform,
+                    radius=sc_cfg["radius"],
+                    half_height=sc_cfg["half_height"],
+                    cfg=shape_cfg,
+                )
+
+            # Load visualization mesh if provided (mesh stays as-is, no rotation)
+            vis_mesh_path = sc_cfg.get("vis_mesh_path")
+            if vis_mesh_path:
+                if not os.path.isabs(vis_mesh_path):
+                    vis_mesh_path = os.path.join(os.path.dirname(__file__), vis_mesh_path)
+                vs_vis, fs_vis = read_obj(vis_mesh_path)
+                vis_scale = sc_cfg.get("vis_mesh_scale", 1.0)
+
+                # Transform vertices to world space (scale and translate only)
+                vs_vis = np.array(vs_vis) * vis_scale
+                pos_np = np.array([float(position[0]), float(position[1]), float(position[2])])
+                vs_vis = vs_vis + pos_np
+
+                self._static_collider_vis.append(
+                    {
+                        "name": f"static_collider_{name}",
+                        "vertices": vs_vis,
+                        "faces": np.array(fs_vis),
+                    }
+                )
+            self._collider_names.append(f"static_collider_{name}")
+
+        # --- Add Legacy Mesh Colliders (cloth meshes with zero mass) ---
         colliders = cfg("colliders") or {}
         for name, collider_cfg in colliders.items():
             collider_path = collider_cfg["mesh_path"]
@@ -266,6 +349,7 @@ class ClothDropSimulator(Simulator):
                     indices=faces_cloth.reshape(-1),
                     vel=wp.vec3(0.0, 0.0, 0.0),
                     density=cloth_cfg["density"],
+                    particle_radius=cloth_cfg.get("particle_radius"),
                     tri_ke=cloth_cfg["tri_ke"],
                     tri_ka=cloth_cfg["tri_ka"],
                     tri_kd=cloth_cfg["tri_kd"],
@@ -294,7 +378,10 @@ class ClothDropSimulator(Simulator):
         for info in self._mesh_info:
             global_faces = info["faces"] + info["vertex_start"]
             face_arrays.append(global_faces)
-        self.faces = np.vstack(face_arrays)
+        if face_arrays:
+            self.faces = np.vstack(face_arrays)
+        else:
+            self.faces = np.array([], dtype=np.int32).reshape(0, 3)
 
     def setup_polyscope_meshes(self):
         """Register each collider and cloth as a separate polyscope mesh."""
@@ -340,6 +427,16 @@ class ClothDropSimulator(Simulator):
                 color=color,
                 smooth_shade=True,
             )
+
+        # Register static collider visualization meshes (these don't update with simulation)
+        for vis_info in self._static_collider_vis:
+            ps.register_surface_mesh(
+                vis_info["name"],
+                vis_info["vertices"],
+                vis_info["faces"],
+                smooth_shade=True,
+                color=(0.6, 0.6, 0.6),  # Gray for colliders
+            ).set_transparency(0.3)
 
         # Apply any additional polyscope configuration
         self.configure_polyscope()
