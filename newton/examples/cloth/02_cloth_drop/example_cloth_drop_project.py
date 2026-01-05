@@ -98,7 +98,7 @@ example_config = {
         "main_cloth": {
             "resolution": (60, 80),  # (Nx, Ny) vertices
             "size": (120.0, 160.0),  # Physical size (size_x, size_y)
-            "position": (30.0, 66.0, 0.0),
+            "position": (20.0, 66.0, 0.0),
             "rotation_axis": (1.0, 0.0, 0.0),
             "rotation_angle": 0.0,
             "scale": 1.0,
@@ -110,7 +110,7 @@ example_config = {
             "edge_ke": 10.0,
             "edge_kd": 1e-1,
             # Multi-layer settings
-            "num_layers": 10,  # Number of cloth layers
+            "num_layers": 100,  # Number of cloth layers
             "layer_spacing": 0.25,  # Distance between layers (in up_axis direction)
         },
     },
