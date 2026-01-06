@@ -42,8 +42,8 @@ example_config = {
     # Simulation timing
     "fps": 60,
     "sim_substeps": 20,
-    "sim_num_frames": 2000,
-    "iterations": 10,
+    "sim_num_frames": 1200,
+    "iterations": 20,
     "bvh_rebuild_frames": 1,
     # Solver settings
     "use_cuda_graph": True,
@@ -59,6 +59,7 @@ example_config = {
     "edge_collision_buffer_pre_alloc": 32,  # Start conservative, will grow
     "collision_buffer_resize_frames": 5,  # Check and resize every 5 frames
     "collision_buffer_growth_ratio": 1.5,  # 50% headroom when growing
+    "collision_detection_interval": 5,
     # Global physics settings
     "up_axis": "y",
     "gravity": -980.0,
