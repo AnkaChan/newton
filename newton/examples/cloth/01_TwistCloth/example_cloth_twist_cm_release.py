@@ -145,7 +145,7 @@ class Example:
         self.rot_end_time = 10
 
         self.use_cuda_graph = True
-        self.truncation_mode = 1
+        self.truncation_mode = 0
         self.collision_detection_interval = 5
 
         # save a reference to the viewer
