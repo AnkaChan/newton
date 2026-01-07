@@ -58,7 +58,7 @@ default_config = {
     # Visualization
     "do_rendering": True,
     "show_ground_plane": False,
-    "is_initially_paused": True,
+    "is_initially_paused": False,
     # Ground plane
     "has_ground": False,  # Add ground collision plane to simulation
     "ground_height": 0.0,  # Height of the ground plane

@@ -95,14 +95,16 @@ def rolled_cloth_mesh(
     nv=15,
     inner_radius=10.0,
     thickness=0.4,
-    extension_length=0.0,
+    target_x=None,
+    target_y=None,
     extension_segments=10,
 ):
     """
-    Create a rolled cloth mesh with optional straight extension.
+    Create a rolled cloth mesh with optional extension to a target point.
 
     Args:
-        extension_length: Length of straight extension from outer edge
+        target_x, target_y: Target position in local coords (before rotation).
+                           If provided, extension goes directly to this point.
         extension_segments: Number of rows for extension
     """
     verts = []
@@ -121,29 +123,30 @@ def rolled_cloth_mesh(
             z = v
             verts.append([x, y, z])
 
-    # Get outer edge position and direction for extension
+    # Get outer edge position
     last_theta = length / inner_radius
     last_r = inner_radius + (thickness / (2.0 * np.pi)) * last_theta
     outer_x = last_r * np.cos(last_theta)
     outer_y = last_r * np.sin(last_theta)
 
-    # Extension direction: tangent to spiral (perpendicular to radius)
-    # For a spiral, tangent direction at angle theta is (-sin(theta), cos(theta))
-    ext_dir_x = -np.sin(last_theta)
-    ext_dir_y = np.cos(last_theta)
-
-    # Add extension rows if requested
+    # Add extension rows if target is provided
     ext_rows = 0
-    if extension_length > 0:
-        ext_rows = extension_segments
-        for i in range(1, ext_rows + 1):
-            t = i / ext_rows
-            ext_x = outer_x + t * extension_length * ext_dir_x
-            ext_y = outer_y + t * extension_length * ext_dir_y
+    if target_x is not None and target_y is not None:
+        # Direction from outer edge to target
+        dx = target_x - outer_x
+        dy = target_y - outer_y
+        dist = np.sqrt(dx * dx + dy * dy)
 
-            for j in range(nv):
-                v = width * j / (nv - 1)
-                verts.append([ext_x, ext_y, v])
+        if dist > 1.0:
+            ext_rows = extension_segments
+            for i in range(1, ext_rows + 1):
+                t = i / ext_rows
+                ext_x = outer_x + t * dx
+                ext_y = outer_y + t * dy
+
+                for j in range(nv):
+                    v = width * j / (nv - 1)
+                    verts.append([ext_x, ext_y, v])
 
     total_rows = nu + ext_rows
 
@@ -230,14 +233,27 @@ class TreadmillSimulator(Simulator):
         self.cyl1_center = (-27.2, 7.4)  # (X, Z)
         self.cyl2_center = (40.0, 0.0)  # (X, Z) - moved further right
 
-        # Calculate extension length to reach cylinder 2
-        # Extension goes from spiral outer edge towards cylinder 2's left side
-        extension_length = self.config.get("extension_length", 50.0)
+        # Cloth position offset
+        cloth_offset_x = self.cyl1_center[0]  # -27.2
+        cloth_offset_z = self.cyl1_center[1]  # 7.4
 
-        # Generate cloth mesh with extension
+        # Calculate target position for extension (cylinder 2's left side)
+        # in LOCAL coordinates (before 90° rotation around X)
+        # World target: (cyl2_x - radius - offset, cyl2_z)
+        # Local coords: local_x = world_x - cloth_offset_x, local_y = world_z - cloth_offset_z
+        self_contact_radius = self.config.get("self_contact_radius", 0.4)
+        attach_offset = self.cloth_thickness + self_contact_radius
+        target_world_x = self.cyl2_center[0] - self.cyl2_radius - attach_offset
+        target_world_z = self.cyl2_center[1]
+
+        target_local_x = target_world_x - cloth_offset_x
+        target_local_y = target_world_z - cloth_offset_z
+
+        # Generate cloth mesh with extension going directly to target
         self.cloth_verts, self.cloth_faces, self.spiral_rows, self.ext_rows = rolled_cloth_mesh(
             thickness=self.cloth_thickness,
-            extension_length=extension_length,
+            target_x=target_local_x,
+            target_y=target_local_y,
             extension_segments=20,
         )
         self.cloth_faces_flat = self.cloth_faces.reshape(-1)
@@ -520,7 +536,6 @@ if __name__ == "__main__":
         "up_axis": "y",
         "gravity": 0,  # No gravity in this simulation
         "cloth_thickness": 0.4,  # Thickness of rolled cloth mesh
-        "extension_length": 50.0,  # Length of straight extension to reach cylinder 2
         "handle_self_contact": True,
         "self_contact_radius": 0.4,  # attach_offset = cloth_thickness + self_contact_radius
         "self_contact_margin": 0.6,
@@ -534,7 +549,7 @@ if __name__ == "__main__":
         "write_video": False,
         "do_rendering": True,
         "has_ground": False,
-        "is_initially_paused": True,
+        "is_initially_paused": False,
     }
 
     sim = TreadmillSimulator(config)
