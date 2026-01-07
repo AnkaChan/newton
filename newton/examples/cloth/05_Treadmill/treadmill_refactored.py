@@ -161,33 +161,78 @@ def rolled_cloth_mesh(
     return np.array(verts, dtype=np.float32), np.array(faces, dtype=np.int32), nu, ext_rows
 
 
-def cylinder_mesh(radius=9.5, height=120.0, segments=64):
+def cylinder_mesh(radius=9.5, height=120.0, segments=64, caps=False):
+    """Create a cylinder mesh.
+
+    Args:
+        radius: Cylinder radius
+        height: Cylinder height
+        segments: Number of segments around the circumference
+        caps: If True, add top and bottom caps; if False, side walls only
+    """
     verts = []
     faces = []
 
-    for i in range(segments):
-        t0 = 2 * math.pi * i / segments
-        t1 = 2 * math.pi * (i + 1) / segments
+    y_bottom = -height * 0.5
+    y_top = height * 0.5
 
-        x0, z0 = radius * math.cos(t0), radius * math.sin(t0)
-        x1, z1 = radius * math.cos(t1), radius * math.sin(t1)
+    if caps:
+        # Efficient vertex layout for capped cylinder
+        # Bottom ring, then top ring
+        for i in range(segments):
+            t = 2 * math.pi * i / segments
+            x, z = radius * math.cos(t), radius * math.sin(t)
+            verts.append([x, y_bottom, z])
+        for i in range(segments):
+            t = 2 * math.pi * i / segments
+            x, z = radius * math.cos(t), radius * math.sin(t)
+            verts.append([x, y_top, z])
 
-        y0 = -height * 0.5
-        y1 = height * 0.5
+        # Side faces
+        for i in range(segments):
+            i_next = (i + 1) % segments
+            b0, b1 = i, i_next
+            t0, t1 = segments + i, segments + i_next
+            faces.append([b0, b1, t1])
+            faces.append([b0, t1, t0])
 
-        base = len(verts)
+        # Cap centers
+        bottom_center = len(verts)
+        verts.append([0.0, y_bottom, 0.0])
+        top_center = len(verts)
+        verts.append([0.0, y_top, 0.0])
 
-        verts += [
-            [x0, y0, z0],
-            [x1, y0, z1],
-            [x1, y1, z1],
-            [x0, y1, z0],
-        ]
+        # Bottom cap (fan)
+        for i in range(segments):
+            i_next = (i + 1) % segments
+            faces.append([bottom_center, i_next, i])
 
-        faces += [
-            [base + 0, base + 1, base + 2],
-            [base + 0, base + 2, base + 3],
-        ]
+        # Top cap (fan)
+        for i in range(segments):
+            i_next = (i + 1) % segments
+            faces.append([top_center, segments + i, segments + i_next])
+    else:
+        # Original layout: 4 verts per segment
+        for i in range(segments):
+            t0 = 2 * math.pi * i / segments
+            t1 = 2 * math.pi * (i + 1) / segments
+
+            x0, z0 = radius * math.cos(t0), radius * math.sin(t0)
+            x1, z1 = radius * math.cos(t1), radius * math.sin(t1)
+
+            base = len(verts)
+
+            verts += [
+                [x0, y_bottom, z0],
+                [x1, y_bottom, z1],
+                [x1, y_top, z1],
+                [x0, y_top, z0],
+            ]
+
+            faces += [
+                [base + 0, base + 1, base + 2],
+                [base + 0, base + 2, base + 3],
+            ]
 
     return (
         np.array(verts, np.float32),
@@ -249,8 +294,14 @@ class TreadmillSimulator(Simulator):
         target_local_x = target_world_x - cloth_offset_x
         target_local_y = target_world_z - cloth_offset_z
 
+        # Cloth spiral parameters (more length = more wraps)
+        cloth_length = self.config.get("cloth_length", 800.0)  # Increased for more wraps
+        cloth_nu = self.config.get("cloth_nu", 300)  # More rows for denser mesh
+
         # Generate cloth mesh with extension going directly to target
         self.cloth_verts, self.cloth_faces, self.spiral_rows, self.ext_rows = rolled_cloth_mesh(
+            length=cloth_length,
+            nu=cloth_nu,
             thickness=self.cloth_thickness,
             target_x=target_local_x,
             target_y=target_local_y,
@@ -261,8 +312,9 @@ class TreadmillSimulator(Simulator):
         self.total_rows = self.spiral_rows + self.ext_rows
 
         # Generate cylinder meshes
-        self.cyl1_verts, self.cyl1_faces = cylinder_mesh(radius=self.cyl1_radius)
-        self.cyl2_verts, self.cyl2_faces = cylinder_mesh(radius=self.cyl2_radius)
+        cylinder_caps = self.config.get("cylinder_caps", False)
+        self.cyl1_verts, self.cyl1_faces = cylinder_mesh(radius=self.cyl1_radius, caps=cylinder_caps)
+        self.cyl2_verts, self.cyl2_faces = cylinder_mesh(radius=self.cyl2_radius, caps=cylinder_caps)
         self.num_cyl1_verts = len(self.cyl1_verts)
         self.num_cyl2_verts = len(self.cyl2_verts)
 
@@ -320,11 +372,11 @@ class TreadmillSimulator(Simulator):
 
         # Rotation parameters - match linear velocity at surface
         # v = omega * r, so for same v: omega2 = omega1 * r1 / r2
-        self.angular_speed = -np.pi  # rad/sec (base speed for cloth)
+        self.angular_speed = -4 * np.pi  # rad/sec (base speed for cloth)
         linear_velocity = abs(self.angular_speed) * self.cyl1_radius
         self.angular_speed_cyl1 = -linear_velocity / self.cyl1_radius  # = angular_speed
         self.angular_speed_cyl2 = -linear_velocity / self.cyl2_radius  # slower due to larger radius
-        self.spin_duration = 10.0  # seconds
+        self.spin_duration = 15.0  # seconds
 
     def custom_finalize(self):
         """Fix outer edge of cloth to cylinder 2 and set up cylinder rotation."""
@@ -521,7 +573,7 @@ class TreadmillSimulator(Simulator):
 
 if __name__ == "__main__":
     # Configuration
-    truncation_mode = 1
+    truncation_mode = 0
     iterations = 10
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = f"output_treadmill_trunc{truncation_mode}_iter{iterations}_{timestamp}"
@@ -530,12 +582,15 @@ if __name__ == "__main__":
         "name": "treadmill_cloth",
         "fps": 60,
         "sim_substeps": 10,
-        "sim_num_frames": 500,
+        "sim_num_frames": 1000,
         "iterations": iterations,
         "truncation_mode": truncation_mode,
         "up_axis": "y",
         "gravity": 0,  # No gravity in this simulation
+        "cloth_length": 800.0,  # Length of cloth spiral (more = more wraps)
+        "cloth_nu": 300,  # Number of rows along cloth length
         "cloth_thickness": 0.4,  # Thickness of rolled cloth mesh
+        "cylinder_caps": False,  # Whether to add top/bottom caps to cylinders
         "handle_self_contact": True,
         "self_contact_radius": 0.4,  # attach_offset = cloth_thickness + self_contact_radius
         "self_contact_margin": 0.6,
