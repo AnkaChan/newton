@@ -141,6 +141,11 @@ class Simulator:
         self.frame_times = []
         self.graph = None
 
+        # Pause control
+        self.is_paused = cfg("is_initially_paused")
+        if self.is_paused:
+            print("[INFO] Simulation started PAUSED (press Space to begin)")
+
         # Polyscope mesh registry: name -> {"mesh": ps_mesh, "vertex_indices": slice or array, "faces": array}
         self.ps_meshes: dict = {}
 
@@ -262,15 +267,19 @@ class Simulator:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        """Execute one frame, using CUDA graph if available."""
+        """Execute one frame, using CUDA graph if available. Returns True if frame was executed."""
+        if self.is_paused:
+            return False
+
         if self.graph:
             wp.capture_launch(self.graph)
         else:
             self.run_step()
         self.sim_time += self.frame_dt
+        return True
 
     def simulate(self):
-        """Run the full simulation loop."""
+        """Run the full simulation loop with pause support."""
         vid_out = None
         screenshot_dir = None
         if self.write_video and self.output_path:
@@ -287,40 +296,50 @@ class Simulator:
             screenshot_dir = join(self.output_path, "screenshots")
             os.makedirs(screenshot_dir, exist_ok=True)
 
+        frame_id = 0
+        pbar = tqdm.tqdm(total=self.sim_num_frames)
+
         try:
-            for frame_id in tqdm.tqdm(range(self.sim_num_frames)):
-                self.step()
+            while frame_id < self.sim_num_frames:
+                # Step only advances if not paused
+                if self.step():
+                    # Rebuild BVH periodically (outside of CUDA graph)
+                    if self.rebuild_frames and frame_id % self.rebuild_frames == 0:
+                        self.rebuild_bvh()
 
-                # Rebuild BVH periodically (outside of CUDA graph)
-                if self.rebuild_frames and frame_id % self.rebuild_frames == 0:
-                    self.rebuild_bvh()
+                    # Resize collision buffers periodically if enabled
+                    if self.collision_buffer_resize_frames > 0 and frame_id % self.collision_buffer_resize_frames == 0:
+                        self.resize_collision_buffers()
 
-                # Resize collision buffers periodically if enabled
-                if self.collision_buffer_resize_frames > 0 and frame_id % self.collision_buffer_resize_frames == 0:
-                    self.resize_collision_buffers()
+                    if self.write_output:
+                        self.save_output(frame_id)
 
-                if self.write_output:
-                    self.save_output(frame_id)
+                    # Save recovery state periodically
+                    if (
+                        self.recovery_state_save_steps > 0
+                        and self.output_path
+                        and frame_id % self.recovery_state_save_steps == 0
+                    ):
+                        self.save_recovery_state(frame_id)
 
-                # Save recovery state periodically
-                if (
-                    self.recovery_state_save_steps > 0
-                    and self.output_path
-                    and frame_id % self.recovery_state_save_steps == 0
-                ):
-                    self.save_recovery_state(frame_id)
-
-                if self.do_rendering:
-                    self.render()
                     if vid_out is not None:
                         pixels = ps.screenshot_to_buffer(False)
                         vid_out.write(pixels[:, :, [2, 1, 0]])
                         # Save screenshot as PNG
                         screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
                         cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
+
+                    frame_id += 1
+                    pbar.update(1)
+
+                # Always render (needed for keyboard callback to detect Space)
+                if self.do_rendering:
+                    self.render()
+
         except KeyboardInterrupt:
             print("\nSimulation interrupted by user. Saving video...")
         finally:
+            pbar.close()
             if vid_out is not None:
                 vid_out.release()
                 print(f"Video saved to: {join(self.output_path, 'video.mp4')}")
@@ -436,6 +455,19 @@ class Simulator:
             ps.set_ground_plane_height(self.ground_height)
         else:
             ps.set_ground_plane_mode("none")
+
+        # Register keyboard callback for pause/unpause
+        ps.set_user_callback(self.keyboard_callback)
+
+    def keyboard_callback(self):
+        """Callback function for keyboard input (called during Polyscope render)."""
+        # Use ImGuiKey enum for Space
+        if ps.imgui.IsKeyPressed(ps.imgui.ImGuiKey_Space):
+            self.is_paused = not self.is_paused
+            if self.is_paused:
+                print("Simulation PAUSED (press Space to resume)")
+            else:
+                print("Simulation RESUMED")
 
     def setup_polyscope_meshes(self):
         """

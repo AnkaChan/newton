@@ -95,10 +95,20 @@ def rolled_cloth_mesh(
     nv=15,
     inner_radius=10.0,
     thickness=0.4,
+    extension_length=0.0,
+    extension_segments=10,
 ):
+    """
+    Create a rolled cloth mesh with optional straight extension.
+
+    Args:
+        extension_length: Length of straight extension from outer edge
+        extension_segments: Number of rows for extension
+    """
     verts = []
     faces = []
 
+    # Create the spiral part
     for i in range(nu):
         u = length * i / (nu - 1)
         theta = u / inner_radius
@@ -111,15 +121,41 @@ def rolled_cloth_mesh(
             z = v
             verts.append([x, y, z])
 
+    # Get outer edge position and direction for extension
+    last_theta = length / inner_radius
+    last_r = inner_radius + (thickness / (2.0 * np.pi)) * last_theta
+    outer_x = last_r * np.cos(last_theta)
+    outer_y = last_r * np.sin(last_theta)
+
+    # Extension direction: tangent to spiral (perpendicular to radius)
+    # For a spiral, tangent direction at angle theta is (-sin(theta), cos(theta))
+    ext_dir_x = -np.sin(last_theta)
+    ext_dir_y = np.cos(last_theta)
+
+    # Add extension rows if requested
+    ext_rows = 0
+    if extension_length > 0:
+        ext_rows = extension_segments
+        for i in range(1, ext_rows + 1):
+            t = i / ext_rows
+            ext_x = outer_x + t * extension_length * ext_dir_x
+            ext_y = outer_y + t * extension_length * ext_dir_y
+
+            for j in range(nv):
+                v = width * j / (nv - 1)
+                verts.append([ext_x, ext_y, v])
+
+    total_rows = nu + ext_rows
+
     def idx(i, j):
         return i * nv + j
 
-    for i in range(nu - 1):
+    for i in range(total_rows - 1):
         for j in range(nv - 1):
             faces.append([idx(i, j), idx(i + 1, j), idx(i, j + 1)])
             faces.append([idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)])
 
-    return np.array(verts, dtype=np.float32), np.array(faces, dtype=np.int32)
+    return np.array(verts, dtype=np.float32), np.array(faces, dtype=np.int32), nu, ext_rows
 
 
 def cylinder_mesh(radius=9.5, height=120.0, segments=64):
@@ -186,18 +222,27 @@ class TreadmillSimulator(Simulator):
         """Add rolled cloth and cylinder meshes."""
         # Cloth parameters
         self.cloth_thickness = self.config.get("cloth_thickness", 0.4)
-
-        # Generate cloth mesh
-        self.cloth_verts, self.cloth_faces = rolled_cloth_mesh(thickness=self.cloth_thickness)
-        self.cloth_faces_flat = self.cloth_faces.reshape(-1)
-        self.num_cloth_verts = len(self.cloth_verts)
         self.nv = 15  # vertices per row
 
-        # Cylinder properties
+        # Cylinder properties - cylinders are now further apart
         self.cyl1_radius = 9.9
         self.cyl2_radius = 14.9
         self.cyl1_center = (-27.2, 7.4)  # (X, Z)
-        self.cyl2_center = (0.0, 0.0)  # (X, Z)
+        self.cyl2_center = (40.0, 0.0)  # (X, Z) - moved further right
+
+        # Calculate extension length to reach cylinder 2
+        # Extension goes from spiral outer edge towards cylinder 2's left side
+        extension_length = self.config.get("extension_length", 50.0)
+
+        # Generate cloth mesh with extension
+        self.cloth_verts, self.cloth_faces, self.spiral_rows, self.ext_rows = rolled_cloth_mesh(
+            thickness=self.cloth_thickness,
+            extension_length=extension_length,
+            extension_segments=20,
+        )
+        self.cloth_faces_flat = self.cloth_faces.reshape(-1)
+        self.num_cloth_verts = len(self.cloth_verts)
+        self.total_rows = self.spiral_rows + self.ext_rows
 
         # Generate cylinder meshes
         self.cyl1_verts, self.cyl1_faces = cylinder_mesh(radius=self.cyl1_radius)
@@ -267,8 +312,9 @@ class TreadmillSimulator(Simulator):
 
     def custom_finalize(self):
         """Fix outer edge of cloth to cylinder 2 and set up cylinder rotation."""
-        # Outer edge = row 199, attached to cylinder 2's leftmost line
-        self.fixed_point_indices = [199 * self.nv + i for i in range(self.nv)]
+        # Outer edge = last row (end of extension), attached to cylinder 2's leftmost line
+        last_row = self.total_rows - 1
+        self.fixed_point_indices = [last_row * self.nv + i for i in range(self.nv)]
 
         # Position the outer edge at cylinder 2's leftmost line
         # This avoids penetration by placing cloth on the surface facing the spiral
@@ -321,6 +367,9 @@ class TreadmillSimulator(Simulator):
         ps.set_ground_plane_height(0.0)
         ps.init()
         # Note: NOT calling ps.set_up_dir() to match original
+
+        # Register keyboard callback for pause/unpause
+        ps.set_user_callback(self.keyboard_callback)
 
     def run_step(self):
         """Execute one frame of simulation with rotation applied."""
@@ -425,7 +474,8 @@ class TreadmillSimulator(Simulator):
             vertex_indices=slice(cyl2_start, cyl2_end),
         )
 
-        ps.look_at((-20.0, 250.0, 20.0), (-0.1, 0.0, 0.1))
+        # Wider view for extended cloth between cylinders
+        ps.look_at((10.0, 300.0, 50.0), (10.0, 0.0, 0.0))
 
     def save_initial_meshes(self):
         """Save initial meshes for cloth and cylinders."""
@@ -455,7 +505,7 @@ class TreadmillSimulator(Simulator):
 
 if __name__ == "__main__":
     # Configuration
-    truncation_mode = 0
+    truncation_mode = 1
     iterations = 10
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = f"output_treadmill_trunc{truncation_mode}_iter{iterations}_{timestamp}"
@@ -470,6 +520,7 @@ if __name__ == "__main__":
         "up_axis": "y",
         "gravity": 0,  # No gravity in this simulation
         "cloth_thickness": 0.4,  # Thickness of rolled cloth mesh
+        "extension_length": 50.0,  # Length of straight extension to reach cylinder 2
         "handle_self_contact": True,
         "self_contact_radius": 0.4,  # attach_offset = cloth_thickness + self_contact_radius
         "self_contact_margin": 0.6,
@@ -483,6 +534,7 @@ if __name__ == "__main__":
         "write_video": False,
         "do_rendering": True,
         "has_ground": False,
+        "is_initially_paused": True,
     }
 
     sim = TreadmillSimulator(config)
