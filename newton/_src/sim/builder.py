@@ -3526,7 +3526,7 @@ class ModelBuilder:
 
     def add_ground_plane(
         self,
-        height,
+        height=0.0,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:

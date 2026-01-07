@@ -49,6 +49,45 @@ def apply_rotation(
     q1[particle_index] = q0[particle_index]
 
 
+@wp.kernel
+def rotate_cylinder(
+    angular_speed: float,
+    dt: float,
+    t: float,
+    center_x: float,
+    center_z: float,
+    q0: wp.array(dtype=wp.vec3),
+    indices: wp.array(dtype=wp.int64),
+    q1: wp.array(dtype=wp.vec3),
+):
+    """Rotate cylinder vertices around their center axis."""
+    i = wp.tid()
+    particle_index = indices[i]
+    c0 = math.cos(-angular_speed * (t - dt))
+    s0 = math.sin(-angular_speed * (t - dt))
+    c1 = math.cos(angular_speed * t)
+    s1 = math.sin(angular_speed * t)
+
+    # Translate to center, rotate, translate back
+    x0 = q0[particle_index][0] - center_x
+    y0 = q0[particle_index][1]
+    z0 = q0[particle_index][2] - center_z
+
+    # Undo previous rotation
+    rx = c0 * x0 + s0 * z0
+    rz = -s0 * x0 + c0 * z0
+
+    # Apply new rotation
+    x1 = c1 * rx + s1 * rz
+    z1 = -s1 * rx + c1 * rz
+
+    # Translate back
+    q0[particle_index][0] = x1 + center_x
+    q0[particle_index][1] = y0
+    q0[particle_index][2] = z1 + center_z
+    q1[particle_index] = q0[particle_index]
+
+
 def rolled_cloth_mesh(
     length=500.0,
     width=100.0,
@@ -151,9 +190,15 @@ class TreadmillSimulator(Simulator):
         self.num_cloth_verts = len(self.cloth_verts)
         self.nv = 15  # vertices per row
 
+        # Cylinder properties
+        self.cyl1_radius = 9.9
+        self.cyl2_radius = 14.9
+        self.cyl1_center = (-27.2, 7.4)  # (X, Z)
+        self.cyl2_center = (0.0, 0.0)  # (X, Z)
+
         # Generate cylinder meshes
-        self.cyl1_verts, self.cyl1_faces = cylinder_mesh(radius=9.9)
-        self.cyl2_verts, self.cyl2_faces = cylinder_mesh(radius=14.9)
+        self.cyl1_verts, self.cyl1_faces = cylinder_mesh(radius=self.cyl1_radius)
+        self.cyl2_verts, self.cyl2_faces = cylinder_mesh(radius=self.cyl2_radius)
         self.num_cyl1_verts = len(self.cyl1_verts)
         self.num_cyl2_verts = len(self.cyl2_verts)
 
@@ -176,7 +221,7 @@ class TreadmillSimulator(Simulator):
 
         # Add first cylinder
         self.builder.add_cloth_mesh(
-            pos=wp.vec3(-27.2, 50.0, 7.4),
+            pos=wp.vec3(self.cyl1_center[0], 50.0, self.cyl1_center[1]),
             rot=wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 0.0),
             scale=1.0,
             vertices=self.cyl1_verts,
@@ -192,7 +237,7 @@ class TreadmillSimulator(Simulator):
 
         # Add second cylinder
         self.builder.add_cloth_mesh(
-            pos=wp.vec3(0.0, 50.0, 0.0),
+            pos=wp.vec3(self.cyl2_center[0], 50.0, self.cyl2_center[1]),
             rot=wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 0.0),
             scale=1.0,
             vertices=self.cyl2_verts,
@@ -209,12 +254,16 @@ class TreadmillSimulator(Simulator):
         # Add ground plane
         self.builder.add_ground_plane()
 
-        # Rotation parameters
-        self.angular_speed = -np.pi  # rad/sec
+        # Rotation parameters - match linear velocity at surface
+        # v = omega * r, so for same v: omega2 = omega1 * r1 / r2
+        self.angular_speed = -np.pi  # rad/sec (base speed for cloth)
+        linear_velocity = abs(self.angular_speed) * self.cyl1_radius
+        self.angular_speed_cyl1 = -linear_velocity / self.cyl1_radius  # = angular_speed
+        self.angular_speed_cyl2 = -linear_velocity / self.cyl2_radius  # slower due to larger radius
         self.spin_duration = 10.0  # seconds
 
     def custom_finalize(self):
-        """Fix inner seam of cloth and make cylinders static."""
+        """Fix inner seam of cloth and set up cylinder rotation."""
         # Inner seam = kinematic rotation handle (last row of vertices)
         self.fixed_point_indices = [199 * self.nv + i for i in range(self.nv)]
 
@@ -227,7 +276,16 @@ class TreadmillSimulator(Simulator):
 
         self.fixed_point_indices = wp.array(self.fixed_point_indices)
 
-        # Make all cylinder vertices static
+        # Store cylinder vertex indices for rotation
+        cyl1_start = self.num_cloth_verts
+        cyl1_end = cyl1_start + self.num_cyl1_verts
+        cyl2_start = cyl1_end
+        cyl2_end = cyl2_start + self.num_cyl2_verts
+
+        self.cyl1_indices = wp.array(list(range(cyl1_start, cyl1_end)), dtype=wp.int64)
+        self.cyl2_indices = wp.array(list(range(cyl2_start, cyl2_end)), dtype=wp.int64)
+
+        # Make all cylinder vertices static (kinematic, not simulated)
         flags = self.model.particle_flags.numpy()
         for id in range(self.num_cloth_verts, len(self.builder.particle_q)):
             flags[id] = flags[id] & ~ParticleFlags.ACTIVE
@@ -249,8 +307,9 @@ class TreadmillSimulator(Simulator):
         for _ in range(self.num_substeps):
             self.state_0.clear_forces()
 
-            # Apply rotation to fixed points during spin duration
+            # Apply rotation during spin duration
             if self.sim_time < self.spin_duration:
+                # Rotate cloth fixed points (around origin)
                 wp.launch(
                     kernel=apply_rotation,
                     dim=len(self.fixed_point_indices),
@@ -260,6 +319,38 @@ class TreadmillSimulator(Simulator):
                         self.sim_time,
                         self.state_0.particle_q,
                         self.fixed_point_indices,
+                        self.state_1.particle_q,
+                    ],
+                )
+
+                # Rotate cylinder 1 (around its center, matching surface velocity)
+                wp.launch(
+                    kernel=rotate_cylinder,
+                    dim=len(self.cyl1_indices),
+                    inputs=[
+                        self.angular_speed_cyl1,
+                        self.dt,
+                        self.sim_time,
+                        self.cyl1_center[0],
+                        self.cyl1_center[1],
+                        self.state_0.particle_q,
+                        self.cyl1_indices,
+                        self.state_1.particle_q,
+                    ],
+                )
+
+                # Rotate cylinder 2 (around its center, slower due to larger radius)
+                wp.launch(
+                    kernel=rotate_cylinder,
+                    dim=len(self.cyl2_indices),
+                    inputs=[
+                        self.angular_speed_cyl2,
+                        self.dt,
+                        self.sim_time,
+                        self.cyl2_center[0],
+                        self.cyl2_center[1],
+                        self.state_0.particle_q,
+                        self.cyl2_indices,
                         self.state_1.particle_q,
                     ],
                 )
