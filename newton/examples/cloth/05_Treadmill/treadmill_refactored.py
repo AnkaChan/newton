@@ -184,8 +184,11 @@ class TreadmillSimulator(Simulator):
 
     def custom_init(self):
         """Add rolled cloth and cylinder meshes."""
+        # Cloth parameters
+        self.cloth_thickness = self.config.get("cloth_thickness", 0.4)
+
         # Generate cloth mesh
-        self.cloth_verts, self.cloth_faces = rolled_cloth_mesh()
+        self.cloth_verts, self.cloth_faces = rolled_cloth_mesh(thickness=self.cloth_thickness)
         self.cloth_faces_flat = self.cloth_faces.reshape(-1)
         self.num_cloth_verts = len(self.cloth_verts)
         self.nv = 15  # vertices per row
@@ -263,11 +266,30 @@ class TreadmillSimulator(Simulator):
         self.spin_duration = 10.0  # seconds
 
     def custom_finalize(self):
-        """Fix inner seam of cloth and set up cylinder rotation."""
-        # Inner seam = kinematic rotation handle (last row of vertices)
+        """Fix outer edge of cloth to cylinder 2 and set up cylinder rotation."""
+        # Outer edge = row 199, attached to cylinder 2's leftmost line
         self.fixed_point_indices = [199 * self.nv + i for i in range(self.nv)]
 
-        # Fix the inner seam vertices
+        # Position the outer edge at cylinder 2's leftmost line
+        # This avoids penetration by placing cloth on the surface facing the spiral
+        # Offset = cloth thickness + self_contact_radius to allow air gap
+        positions = self.model.particle_q.numpy()
+        self_contact_radius = self.config.get("self_contact_radius", 0.4)
+        attach_offset = self.cloth_thickness + self_contact_radius
+        left_x = self.cyl2_center[0] - self.cyl2_radius - attach_offset
+        for idx in self.fixed_point_indices:
+            positions[idx][0] = left_x
+            positions[idx][2] = self.cyl2_center[1]  # Align Z with cylinder center
+        self.model.particle_q = wp.array(positions, dtype=wp.vec3)
+
+        # Also update state_0 positions
+        state_positions = self.state_0.particle_q.numpy()
+        for idx in self.fixed_point_indices:
+            state_positions[idx][0] = left_x
+            state_positions[idx][2] = self.cyl2_center[1]
+        self.state_0.particle_q = wp.array(state_positions, dtype=wp.vec3)
+
+        # Fix the outer edge vertices (kinematic, attached to cylinder 2)
         if len(self.fixed_point_indices):
             flags = self.model.particle_flags.numpy()
             for fixed_vertex_id in self.fixed_point_indices:
@@ -309,14 +331,16 @@ class TreadmillSimulator(Simulator):
 
             # Apply rotation during spin duration
             if self.sim_time < self.spin_duration:
-                # Rotate cloth fixed points (around origin)
+                # Rotate cloth outer edge (attached to cylinder 2's left side)
                 wp.launch(
-                    kernel=apply_rotation,
+                    kernel=rotate_cylinder,
                     dim=len(self.fixed_point_indices),
                     inputs=[
-                        self.angular_speed,
+                        self.angular_speed_cyl2,  # Same speed as cylinder 2
                         self.dt,
                         self.sim_time,
+                        self.cyl2_center[0],  # Rotate around cylinder 2's center
+                        self.cyl2_center[1],
                         self.state_0.particle_q,
                         self.fixed_point_indices,
                         self.state_1.particle_q,
@@ -431,7 +455,7 @@ class TreadmillSimulator(Simulator):
 
 if __name__ == "__main__":
     # Configuration
-    truncation_mode = 1
+    truncation_mode = 0
     iterations = 10
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = f"output_treadmill_trunc{truncation_mode}_iter{iterations}_{timestamp}"
@@ -445,8 +469,9 @@ if __name__ == "__main__":
         "truncation_mode": truncation_mode,
         "up_axis": "y",
         "gravity": 0,  # No gravity in this simulation
+        "cloth_thickness": 0.4,  # Thickness of rolled cloth mesh
         "handle_self_contact": True,
-        "self_contact_radius": 0.4,
+        "self_contact_radius": 0.4,  # attach_offset = cloth_thickness + self_contact_radius
         "self_contact_margin": 0.6,
         "topological_contact_filter_threshold": 1,
         "soft_contact_ke": 1.0e5,
