@@ -9,6 +9,7 @@
 ###########################################################################
 
 import math
+import os
 import sys
 from datetime import datetime
 from os.path import join
@@ -161,78 +162,34 @@ def rolled_cloth_mesh(
     return np.array(verts, dtype=np.float32), np.array(faces, dtype=np.int32), nu, ext_rows
 
 
-def cylinder_mesh(radius=9.5, height=120.0, segments=64, caps=False):
-    """Create a cylinder mesh.
-
-    Args:
-        radius: Cylinder radius
-        height: Cylinder height
-        segments: Number of segments around the circumference
-        caps: If True, add top and bottom caps; if False, side walls only
-    """
+def cylinder_mesh(radius=9.5, height=120.0, segments=64):
+    """Create a cylinder mesh (side walls only)."""
     verts = []
     faces = []
 
-    y_bottom = -height * 0.5
-    y_top = height * 0.5
+    for i in range(segments):
+        t0 = 2 * math.pi * i / segments
+        t1 = 2 * math.pi * (i + 1) / segments
 
-    if caps:
-        # Efficient vertex layout for capped cylinder
-        # Bottom ring, then top ring
-        for i in range(segments):
-            t = 2 * math.pi * i / segments
-            x, z = radius * math.cos(t), radius * math.sin(t)
-            verts.append([x, y_bottom, z])
-        for i in range(segments):
-            t = 2 * math.pi * i / segments
-            x, z = radius * math.cos(t), radius * math.sin(t)
-            verts.append([x, y_top, z])
+        x0, z0 = radius * math.cos(t0), radius * math.sin(t0)
+        x1, z1 = radius * math.cos(t1), radius * math.sin(t1)
 
-        # Side faces
-        for i in range(segments):
-            i_next = (i + 1) % segments
-            b0, b1 = i, i_next
-            t0, t1 = segments + i, segments + i_next
-            faces.append([b0, b1, t1])
-            faces.append([b0, t1, t0])
+        y0 = -height * 0.5
+        y1 = height * 0.5
 
-        # Cap centers
-        bottom_center = len(verts)
-        verts.append([0.0, y_bottom, 0.0])
-        top_center = len(verts)
-        verts.append([0.0, y_top, 0.0])
+        base = len(verts)
 
-        # Bottom cap (fan)
-        for i in range(segments):
-            i_next = (i + 1) % segments
-            faces.append([bottom_center, i_next, i])
+        verts += [
+            [x0, y0, z0],
+            [x1, y0, z1],
+            [x1, y1, z1],
+            [x0, y1, z0],
+        ]
 
-        # Top cap (fan)
-        for i in range(segments):
-            i_next = (i + 1) % segments
-            faces.append([top_center, segments + i, segments + i_next])
-    else:
-        # Original layout: 4 verts per segment
-        for i in range(segments):
-            t0 = 2 * math.pi * i / segments
-            t1 = 2 * math.pi * (i + 1) / segments
-
-            x0, z0 = radius * math.cos(t0), radius * math.sin(t0)
-            x1, z1 = radius * math.cos(t1), radius * math.sin(t1)
-
-            base = len(verts)
-
-            verts += [
-                [x0, y_bottom, z0],
-                [x1, y_bottom, z1],
-                [x1, y_top, z1],
-                [x0, y_top, z0],
-            ]
-
-            faces += [
-                [base + 0, base + 1, base + 2],
-                [base + 0, base + 2, base + 3],
-            ]
+        faces += [
+            [base + 0, base + 1, base + 2],
+            [base + 0, base + 2, base + 3],
+        ]
 
     return (
         np.array(verts, np.float32),
@@ -312,9 +269,9 @@ class TreadmillSimulator(Simulator):
         self.total_rows = self.spiral_rows + self.ext_rows
 
         # Generate cylinder meshes
-        cylinder_caps = self.config.get("cylinder_caps", False)
-        self.cyl1_verts, self.cyl1_faces = cylinder_mesh(radius=self.cyl1_radius, caps=cylinder_caps)
-        self.cyl2_verts, self.cyl2_faces = cylinder_mesh(radius=self.cyl2_radius, caps=cylinder_caps)
+        cylinder_segments = self.config.get("cylinder_segments", 64)
+        self.cyl1_verts, self.cyl1_faces = cylinder_mesh(radius=self.cyl1_radius, segments=cylinder_segments)
+        self.cyl2_verts, self.cyl2_faces = cylinder_mesh(radius=self.cyl2_radius, segments=cylinder_segments)
         self.num_cyl1_verts = len(self.cyl1_verts)
         self.num_cyl2_verts = len(self.cyl2_verts)
 
@@ -363,8 +320,8 @@ class TreadmillSimulator(Simulator):
             tri_ke=1.0e5,
             tri_ka=1.0e5,
             tri_kd=1.0e-5,
-            edge_ke=1e2,
-            edge_kd=0.0,
+            edge_ke=1e1,
+            edge_kd=0.1,
         )
 
         # Add ground plane
@@ -372,7 +329,7 @@ class TreadmillSimulator(Simulator):
 
         # Rotation parameters - match linear velocity at surface
         # v = omega * r, so for same v: omega2 = omega1 * r1 / r2
-        self.angular_speed = -4 * np.pi  # rad/sec (base speed for cloth)
+        self.angular_speed = -2 * np.pi  # rad/sec (base speed for cloth)
         linear_velocity = abs(self.angular_speed) * self.cyl1_radius
         self.angular_speed_cyl1 = -linear_velocity / self.cyl1_radius  # = angular_speed
         self.angular_speed_cyl2 = -linear_velocity / self.cyl2_radius  # slower due to larger radius
@@ -389,7 +346,7 @@ class TreadmillSimulator(Simulator):
         # Offset = cloth thickness + self_contact_radius to allow air gap
         positions = self.model.particle_q.numpy()
         self_contact_radius = self.config.get("self_contact_radius", 0.4)
-        attach_offset = self.cloth_thickness + self_contact_radius
+        attach_offset = self_contact_radius * 1.2
         left_x = self.cyl2_center[0] - self.cyl2_radius - attach_offset
         for idx in self.fixed_point_indices:
             positions[idx][0] = left_x
@@ -573,10 +530,11 @@ class TreadmillSimulator(Simulator):
 
 if __name__ == "__main__":
     # Configuration
-    truncation_mode = 0
+    truncation_mode = 1
     iterations = 10
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = f"output_treadmill_trunc{truncation_mode}_iter{iterations}_{timestamp}"
+    base_output_dir = r"D:\Data\DAT_Sim\treadmill"
+    output_dir = os.path.join(base_output_dir, f"trunc{truncation_mode}_iter{iterations}_{timestamp}")
 
     config = {
         "name": "treadmill_cloth",
@@ -590,12 +548,12 @@ if __name__ == "__main__":
         "cloth_length": 800.0,  # Length of cloth spiral (more = more wraps)
         "cloth_nu": 300,  # Number of rows along cloth length
         "cloth_thickness": 0.4,  # Thickness of rolled cloth mesh
-        "cylinder_caps": False,  # Whether to add top/bottom caps to cylinders
+        "cylinder_segments": 64,  # Number of segments around circumference
         "handle_self_contact": True,
         "self_contact_radius": 0.4,  # attach_offset = cloth_thickness + self_contact_radius
         "self_contact_margin": 0.6,
         "topological_contact_filter_threshold": 1,
-        "soft_contact_ke": 1.0e5,
+        "soft_contact_ke": 4.0e5,
         "soft_contact_kd": 1.0e-5,
         "soft_contact_mu": 0.1,
         "output_path": output_dir,
