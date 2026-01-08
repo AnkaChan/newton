@@ -40,6 +40,8 @@ default_config = {
     "edge_collision_buffer_pre_alloc": 128,
     "collision_buffer_resize_frames": -1,  # Check and resize collision buffers every N frames (<0 to disable)
     "collision_buffer_growth_ratio": 1.5,  # Growth ratio for collision buffer resize (1.5 = 50% headroom)
+    "collision_detection_interval": 0,  # How often to run collision detection during solver iterations (0=after init, N=every N iters)
+    "truncation_mode": 1,
     "include_bending": False,  # Include bending edges in coloring
     # Global physics settings (newton.Model parameters)
     "up_axis": "y",
@@ -208,6 +210,8 @@ class Simulator:
             use_tile_solve=cfg("use_tile_solve"),
             vertex_collision_buffer_pre_alloc=cfg("vertex_collision_buffer_pre_alloc"),
             edge_collision_buffer_pre_alloc=cfg("edge_collision_buffer_pre_alloc"),
+            collision_detection_interval=cfg("collision_detection_interval"),
+            truncation_mode=cfg("truncation_mode"),
         )
 
         # Create simulation states and control

@@ -126,11 +126,12 @@ def main():
     # video_b = r"D:\Data\VBD_cloth_Results\Divide_and_truncate\Twist_and_release/planar.mp4"
     # output_path = r"D:\Data\VBD_cloth_Results\Divide_and_truncate\Twist_and_release\combined.mp4"
 
-    video_a = r"D:\Data\SIGGRAPH_2026_DAT\unroll\isometric_DAT.mp4"
-    video_b = r"D:\Data\SIGGRAPH_2026_DAT\unroll\planar_DAT.mp4"
-    output_path = r"D:\Data\SIGGRAPH_2026_DAT\unroll\combined.mp4"
-    caption_a = "Isometric Truncation"
-    caption_b = "Planar Truncation"
+    video_a = r"D:\Data\DAT_Sim\cloth_twist_release\truncation_1_iter_10_20260105_150357\video.mp4"
+    video_b = r"D:\Data\DAT_Sim\cloth_twist_release\truncation_0_iter_10_20260105_154924\video.mp4"
+    output_path = r"D:\Data\DAT_Sim\cloth_twist_release\combined_truncation_comparison.mp4"
+
+    caption_a = "Truncation Mode 1"
+    caption_b = "Truncation Mode 0"
 
     # Optional start frames
     start_a = 0
@@ -138,8 +139,6 @@ def main():
 
     # Optional limit on frames to write (None = run until either video ends)
     max_frames = None
-
-
 
     combine_side_by_side(
         video_a=video_a,
