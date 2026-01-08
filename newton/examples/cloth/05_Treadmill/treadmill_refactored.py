@@ -283,13 +283,13 @@ class TreadmillSimulator(Simulator):
             vertices=self.cloth_verts,
             indices=self.cloth_faces_flat,
             vel=wp.vec3(0.0, 0.0, 0.0),
-            density=0.02,
-            tri_ke=1.0e5,
-            tri_ka=1.0e5,
-            tri_kd=1.0e-5,
-            edge_ke=1e2,
-            edge_kd=0.0,
-            particle_radius=0.5,
+            density=self.config.get("cloth_density", 0.02),
+            tri_ke=self.config.get("cloth_tri_ke", 1.0e5),
+            tri_ka=self.config.get("cloth_tri_ka", 1.0e5),
+            tri_kd=self.config.get("cloth_tri_kd", 1.0e-5),
+            edge_ke=self.config.get("cloth_edge_ke", 1e2),
+            edge_kd=self.config.get("cloth_edge_kd", 0.0),
+            particle_radius=self.config.get("cloth_particle_radius", 0.5),
         )
 
         # Add first cylinder
@@ -320,8 +320,8 @@ class TreadmillSimulator(Simulator):
             tri_ke=1.0e5,
             tri_ka=1.0e5,
             tri_kd=1.0e-5,
-            edge_ke=1e1,
-            edge_kd=0.1,
+            edge_ke=1,
+            edge_kd=0.01,
         )
 
         # Add ground plane
@@ -329,11 +329,15 @@ class TreadmillSimulator(Simulator):
 
         # Rotation parameters - match linear velocity at surface
         # v = omega * r, so for same v: omega2 = omega1 * r1 / r2
-        self.angular_speed = -2 * np.pi  # rad/sec (base speed for cloth)
+        self.angular_speed = self.config.get("angular_speed", -2 * np.pi)  # rad/sec
         linear_velocity = abs(self.angular_speed) * self.cyl1_radius
         self.angular_speed_cyl1 = -linear_velocity / self.cyl1_radius  # = angular_speed
         self.angular_speed_cyl2 = -linear_velocity / self.cyl2_radius  # slower due to larger radius
-        self.spin_duration = 15.0  # seconds
+        self.spin_duration = self.config.get("spin_duration", 15.0)  # seconds
+
+        print(f"Cylinder 1: radius={self.cyl1_radius}, angular_speed={self.angular_speed_cyl1:.3f} rad/s")
+        print(f"Cylinder 2: radius={self.cyl2_radius}, angular_speed={self.angular_speed_cyl2:.3f} rad/s")
+        print(f"Linear velocity at surface: {linear_velocity:.3f} units/s")
 
     def custom_finalize(self):
         """Fix outer edge of cloth to cylinder 2 and set up cylinder rotation."""
@@ -375,8 +379,12 @@ class TreadmillSimulator(Simulator):
         cyl2_start = cyl1_end
         cyl2_end = cyl2_start + self.num_cyl2_verts
 
-        self.cyl1_indices = wp.array(list(range(cyl1_start, cyl1_end)), dtype=wp.int64)
-        self.cyl2_indices = wp.array(list(range(cyl2_start, cyl2_end)), dtype=wp.int64)
+        cyl1_idx_list = list(range(cyl1_start, cyl1_end))
+        cyl2_idx_list = list(range(cyl2_start, cyl2_end))
+        self.num_cyl1_indices = len(cyl1_idx_list)
+        self.num_cyl2_indices = len(cyl2_idx_list)
+        self.cyl1_indices = wp.array(cyl1_idx_list, dtype=wp.int64)
+        self.cyl2_indices = wp.array(cyl2_idx_list, dtype=wp.int64)
 
         # Make all cylinder vertices static (kinematic, not simulated)
         flags = self.model.particle_flags.numpy()
@@ -421,10 +429,10 @@ class TreadmillSimulator(Simulator):
                     ],
                 )
 
-                # Rotate cylinder 1 (around its center, matching surface velocity)
+                # Rotate cylinder 1 (around its center, faster due to smaller radius)
                 wp.launch(
                     kernel=rotate_cylinder,
-                    dim=len(self.cyl1_indices),
+                    dim=self.num_cyl1_indices,
                     inputs=[
                         self.angular_speed_cyl1,
                         self.dt,
@@ -440,7 +448,7 @@ class TreadmillSimulator(Simulator):
                 # Rotate cylinder 2 (around its center, slower due to larger radius)
                 wp.launch(
                     kernel=rotate_cylinder,
-                    dim=len(self.cyl2_indices),
+                    dim=self.num_cyl2_indices,
                     inputs=[
                         self.angular_speed_cyl2,
                         self.dt,
@@ -530,7 +538,7 @@ class TreadmillSimulator(Simulator):
 
 if __name__ == "__main__":
     # Configuration
-    truncation_mode = 1
+    truncation_mode = 0
     iterations = 10
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_output_dir = r"D:\Data\DAT_Sim\treadmill"
@@ -540,7 +548,7 @@ if __name__ == "__main__":
         "name": "treadmill_cloth",
         "fps": 60,
         "sim_substeps": 10,
-        "sim_num_frames": 1000,
+        "sim_num_frames": 1200,
         "iterations": iterations,
         "truncation_mode": truncation_mode,
         "up_axis": "y",
@@ -548,18 +556,30 @@ if __name__ == "__main__":
         "cloth_length": 800.0,  # Length of cloth spiral (more = more wraps)
         "cloth_nu": 300,  # Number of rows along cloth length
         "cloth_thickness": 0.4,  # Thickness of rolled cloth mesh
-        "cylinder_segments": 64,  # Number of segments around circumference
+        "cloth_density": 0.02,
+        "cloth_tri_ke": 1.0e5,
+        "cloth_tri_ka": 1.0e5,
+        "cloth_tri_kd": 1.0e-5,
+        "cloth_edge_ke": 10,
+        "cloth_edge_kd": 0.0,
+        "cloth_particle_radius": 0.5,
+        "angular_speed": -2 * np.pi,  # rad/sec (base rotation speed)
+        "spin_duration": 20.0,  # seconds of spinning
+        "cylinder_segments": 128,  # Number of segments around circumference
         "handle_self_contact": True,
-        "self_contact_radius": 0.4,  # attach_offset = cloth_thickness + self_contact_radius
+        "self_contact_radius": 0.40,  # attach_offset = cloth_thickness + self_contact_radius
         "self_contact_margin": 0.6,
+        "vertex_collision_buffer_pre_alloc": 64,
+        "edge_collision_buffer_pre_alloc": 128,
+        "collision_detection_interval": 5,
         "topological_contact_filter_threshold": 1,
-        "soft_contact_ke": 4.0e5,
+        "soft_contact_ke": 2.0e5,
         "soft_contact_kd": 1.0e-5,
         "soft_contact_mu": 0.1,
         "output_path": output_dir,
         "output_ext": "npy",
-        "write_output": False,
-        "write_video": False,
+        "write_output": True,
+        "write_video": True,
         "do_rendering": True,
         "has_ground": False,
         "is_initially_paused": False,

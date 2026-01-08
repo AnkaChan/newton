@@ -136,22 +136,22 @@ example_config = {
     "fps": 60,
     "sim_substeps": 10,
     "sim_num_frames": 1000,
-    "iterations": 100,
+    "iterations": 10,
     "bvh_rebuild_frames": 10,
     # Solver settings
     "use_cuda_graph": True,
     "handle_self_contact": True,
     "use_tile_solve": False,
-    "self_contact_radius": 0.20,
-    "self_contact_margin": 0.35,
-    "topological_contact_filter_threshold": 1,
+    "self_contact_radius": 0.25,
+    "self_contact_margin": 0.30,
+    "topological_contact_filter_threshold": 2,
     "rest_shape_contact_exclusion_radius": 0.0,
     "vertex_collision_buffer_pre_alloc": 64,
     "edge_collision_buffer_pre_alloc": 128,
     "collision_buffer_resize_frames": 5,  # Check and resize every 5 frames
     "collision_buffer_growth_ratio": 1.5,  # 50% headroom when growing
     "collision_detection_interval": 5,
-    "include_bending": False,
+    "include_bending": True,
     # Global physics settings
     "up_axis": "y",
     "gravity": -0.0,  # cm/s² (Earth gravity)
@@ -171,7 +171,7 @@ example_config = {
     "cloth_tri_ka": 1.0e5,
     "cloth_tri_kd": 0.0,
     "cloth_edge_ke": 1,
-    "cloth_edge_kd": 0,
+    "cloth_edge_kd": 1e-3,
     # Twist-specific parameters
     "rot_angular_velocity": math.pi / 3,
     "rot_end_time": 10.0,
@@ -180,10 +180,10 @@ example_config = {
     "output_path": r"D:\Data\DAT_Sim\cloth_twist_release",  # Directory to save output files
     "output_ext": "npy",  # "ply" "npy" or "usd"
     # "output_ext": "ply",  # "ply" "npy" or "usd"
-    "write_output": True,
-    # "write_output": False,
-    "write_video": True,
-    # "write_video": False,
+    # "write_output": True,
+    "write_output": False,
+    # "write_video": True,
+    "write_video": False,
     "recovery_state_save_steps": 100,
 }
 
@@ -343,7 +343,7 @@ class TwistClothSimulator(Simulator):
 # =============================================================================
 
 if __name__ == "__main__":
-    wp.clear_kernel_cache()
+    # wp.clear_kernel_cache()
 
     # Create output subfolder with truncation mode, iterations, and timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
