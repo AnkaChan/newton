@@ -124,6 +124,12 @@ class BulletSimulatorShape(Simulator):
             val = get_config_value(config, key) if config else default
             return val if val is not None else default
 
+        # Velocity tracking
+        self.prev_centroid = None
+        self.sim_fps = cfg("fps", 60000)  # Simulation FPS (for velocity calc)
+        self.video_fps = cfg("video_fps", 60)  # Playback FPS for video
+        self.frame_count = 0
+
         # Store bullet params for later use
         self.bullet_density = cfg("density", 11.34)
         self.bullet_k_mu = cfg("k_mu", 1.0e6)
@@ -137,17 +143,18 @@ class BulletSimulatorShape(Simulator):
         self.bullet_color = tuple(cfg("color", [0.8, 0.6, 0.2]))
 
         # Load bullet tetmesh
-        bullet_scale = cfg("scale", 100.0)
+        bullet_scale = cfg("bullet_scale", 100.0)
         tetmesh_file = cfg("tetmesh_file", "bullet_tetmesh.npz")
         tetmesh_path = self.script_dir / tetmesh_file
         self.bullet_verts, self.bullet_tets = load_tetmesh_npz(tetmesh_path)
         self.bullet_verts = self.bullet_verts * bullet_scale
 
-        # Load barrel mesh
+        # Load barrel mesh (separate scale)
+        barrel_scale = cfg("barrel_scale", 100.0)
         barrel_file = cfg("mesh_file", "rifled_barrel.ply")
         barrel_path = self.script_dir / barrel_file
         self.barrel_verts, self.barrel_faces = load_ply_mesh(barrel_path)
-        self.barrel_verts = self.barrel_verts * bullet_scale
+        self.barrel_verts = self.barrel_verts * barrel_scale
 
         self.bullet_vert_count = len(self.bullet_verts)
 
@@ -278,6 +285,46 @@ class BulletSimulatorShape(Simulator):
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
+    def step(self):
+        """Override step to print velocity after each frame."""
+        result = super().step()
+        if result:
+            # Compute and print velocity every 10 frames
+            self.frame_count += 1
+            if self.frame_count % 10 == 0:
+                self.print_velocity()
+        return result
+
+    def print_velocity(self):
+        """Compute and print bullet velocity in m/s."""
+        bullet_positions = self.state_0.particle_q.numpy()[: self.bullet_vert_count]
+        current_centroid = bullet_positions.mean(axis=0)
+
+        speed_m_s = 0.0
+        if self.prev_centroid is not None:
+            # Displacement in cm over 10 frames
+            displacement_cm = current_centroid - self.prev_centroid
+            time_s = 10.0 / self.sim_fps  # Use simulation FPS, not video FPS
+            velocity_cm_s = displacement_cm / time_s
+            velocity_m_s = velocity_cm_s / 100.0  # cm to m
+            speed_m_s = np.linalg.norm(velocity_m_s)
+        
+        print(f"Frame {self.frame_count:4d}: z={current_centroid[2]:6.1f} cm, speed={speed_m_s:6.1f} m/s", flush=True)
+        self.prev_centroid = current_centroid.copy()
+
+    def simulate(self):
+        """Override simulate to use video_fps for video output."""
+        # Temporarily set fps to video_fps for video writer
+        original_fps = self.fps
+        video_fps = getattr(self, 'video_fps', 60)
+        self.fps = video_fps
+        
+        # Call parent simulate
+        super().simulate()
+        
+        # Restore original fps
+        self.fps = original_fps
+
     def setup_polyscope_meshes(self):
         """Register meshes for visualization."""
         if not self.do_rendering:
@@ -320,26 +367,30 @@ if __name__ == "__main__":
         "name": "bullet_out_of_barrel_shape",
         # Simulation timing
         "up_axis": "z",
-        "gravity": -980.0,
-        "fps": 1000,
-        "sim_substeps": 5,
-        "iterations": 10,
-        "sim_num_frames": 5000,
+        "gravity": -0.0,
+        "fps": 60000,
+        "sim_substeps": 30,
+        "sim_num_frames": 120,
+        # "fps": 600000,
+        # "sim_substeps": 3,
+        # "sim_num_frames": 1200,
+        "iterations": 20,
         # Solver
         "use_tile_solve": True,
         "use_cuda_graph": True,
         # Contact (no self-contact needed for collision shape approach)
         "handle_self_contact": False,
-        "soft_contact_ke": 1.0e7,
-        "soft_contact_kd": 1e-6,
-        "soft_contact_mu": 0.05,  # Low friction for smooth sliding
+        "soft_contact_ke": 2.0e10,
+        "soft_contact_kd": 0,
+        "soft_contact_mu": 0.0 ,  # Low friction for smooth sliding
         # Ground
         "has_ground": False,
         "show_ground_plane": False,
-        # Output
-        "output_path": "bullet_frames_shape",
+        # Output (subfolder will be created with FPS)
+        "output_base_path": r"D:\Data\DAT_Sim\bullet_out_of_barrel",
         "write_output": False,
-        "write_video": False,
+        "write_video": True,
+        "video_fps": 60,  # Playback FPS for video (separate from sim fps)
         # Visualization
         "do_rendering": True,
         "is_initially_paused": True,
@@ -347,25 +398,32 @@ if __name__ == "__main__":
         "camera_target": [0.0, 0.0, 15.0],
         # Bullet parameters
         "tetmesh_file": "bullet_tetmesh.npz",
-        "scale": 100.0,
+        "bullet_scale": 100.0,  # Bullet scale (separate from barrel)
         "density": 11.34,
-        "k_mu": 1.0e7,
-        "k_lambda": 1.0e8,
-        "k_damp": 1e-8 ,
-        "particle_radius": 0.13,
-        "force_magnitude": 1e6,
+        "k_mu": 5.0e9,
+        "k_lambda": 2.0e10,
+        "k_damp": 1e-12 ,
+        "particle_radius": 0.1,
+        "force_magnitude": 2e9,
         "force_direction": [0.0, 0.0, 1.0], 
         "bottom_threshold_cm": 0.5,
-        "color": [0.8, 0.6, 0.2],
+        "color": [0.8, 0.6, 0.2],  
         # Barrel parameters
         "mesh_file": "rifled_barrel.ply",
-        "shape_friction": 0.0,  # Zero friction for barrel collision shape
+        "barrel_scale": 100.0,  # Barrel scale (separate from bullet)
+        "shape_friction": 0.0,  # Some friction so rifling can grip and spin the bullet
     }
+
+    # Create output subfolder with FPS
+    fps = config["fps"]
+    base_path = config.get("output_base_path", "bullet_frames")
+    config["output_path"] = f"{base_path}/fps_{fps}"
 
     print("=" * 60)
     print("🔫 BULLET OUT OF BARREL (Collision Shape) 🔫")
     print("=" * 60)
-    print("\nLoading meshes...")
+    print(f"\nOutput path: {config['output_path']}")
+    print("Loading meshes...")
 
     # Create simulator
     sim = BulletSimulatorShape(config)
