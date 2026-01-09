@@ -62,6 +62,8 @@ default_config = {
     # Ground plane
     "has_ground": False,  # Add ground collision plane to simulation
     "ground_height": 0.0,  # Height of the ground plane
+    # Force handling
+    "clear_forces_each_substep": True,  # Clear external forces at start of each substep
 }
 
 
@@ -134,6 +136,9 @@ class Simulator:
         # Ground plane
         self.has_ground = cfg("has_ground")
         self.ground_height = cfg("ground_height")
+
+        # Force handling
+        self.clear_forces_each_substep = cfg("clear_forces_each_substep")
 
         # Runtime state
         self.sim_time = 0.0
@@ -262,7 +267,8 @@ class Simulator:
             if self.model.shape_count:
                 self.contacts = self.model.collide(self.state_0)
 
-            self.state_0.clear_forces()
+            if self.clear_forces_each_substep:
+                self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

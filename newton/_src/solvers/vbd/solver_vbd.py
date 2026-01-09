@@ -4264,7 +4264,10 @@ class SolverVBD(SolverBase):
                 # soft_contact_max,
             )
         else:
-            self.self_contact_evaluation_kernel_launch_size = None
+            # Still need a valid size for body-particle contact evaluation
+            self.self_contact_evaluation_kernel_launch_size = (
+                self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE
+            )
 
         self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
         self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
@@ -4577,7 +4580,7 @@ class SolverVBD(SolverBase):
                 if contacts is not None:
                     wp.launch(
                         kernel=accumulate_particle_body_contact_force_and_hessian,
-                        dim=self.self_contact_evaluation_kernel_launch_size,
+                        dim=contacts.soft_contact_max,
                         inputs=[
                             dt,
                             color,
@@ -4774,7 +4777,7 @@ class SolverVBD(SolverBase):
                 if contacts is not None:
                     wp.launch(
                         kernel=accumulate_particle_body_contact_force_and_hessian,
-                        dim=self.self_contact_evaluation_kernel_launch_size,
+                        dim=contacts.soft_contact_max,
                         inputs=[
                             dt,
                             color,
@@ -5027,14 +5030,14 @@ class SolverVBD(SolverBase):
                 kernel=apply_truncation_ts,
                 dim=self.model.particle_count,
                 inputs=[
-                    self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array(dtype=wp.vec3),
-                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
-                    self.truncation_ts,
-                    wp.inf,
+                    self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
+                    self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
+                    self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
                 ],
                 outputs=[
-                    self.particle_displacements,  # particle_displacements: wp.array(dtype=wp.vec3),
-                    particle_q_out,
+                    self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
+                    particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
+                    wp.inf,  # max_displacement: float
                 ],
                 device=self.device,
             )
