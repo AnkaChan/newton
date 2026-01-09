@@ -305,6 +305,17 @@ class Simulator:
         frame_id = 0
         pbar = tqdm.tqdm(total=self.sim_num_frames)
 
+        # Save initial frame (frame 0) before simulation starts
+        if self.write_output:
+            self.save_output(frame_id)
+        if vid_out is not None:
+            pixels = ps.screenshot_to_buffer(False)
+            vid_out.write(pixels[:, :, [2, 1, 0]])
+            screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
+            cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
+        frame_id += 1
+        pbar.update(1)
+
         try:
             while frame_id < self.sim_num_frames:
                 # Step only advances if not paused

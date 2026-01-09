@@ -368,12 +368,12 @@ if __name__ == "__main__":
         # Simulation timing
         "up_axis": "z",
         "gravity": -0.0,
-        "fps": 60000,
-        "sim_substeps": 30,
-        "sim_num_frames": 120,
-        # "fps": 600000,
-        # "sim_substeps": 3,
-        # "sim_num_frames": 1200,
+        # "fps": 60000,
+        # "sim_substeps": 30,
+        # "sim_num_frames": 120,
+        "fps": 600000,
+        "sim_substeps": 3,
+        "sim_num_frames": 1200,
         "iterations": 20,
         # Solver
         "use_tile_solve": True,
@@ -388,7 +388,8 @@ if __name__ == "__main__":
         "show_ground_plane": False,
         # Output (subfolder will be created with FPS)
         "output_base_path": r"D:\Data\DAT_Sim\bullet_out_of_barrel",
-        "write_output": False,
+        "output_ext": "npy",  # Save positions only (faster than ply)
+        "write_output": True,
         "write_video": True,
         "video_fps": 60,  # Playback FPS for video (separate from sim fps)
         # Visualization
