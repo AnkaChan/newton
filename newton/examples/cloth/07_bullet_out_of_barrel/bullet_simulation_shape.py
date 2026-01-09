@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Bullet Out of Barrel Demo 🎉
+Bullet Out of Barrel Demo - Collision Shape Version 🎉
 
-A soft body bullet being pushed out of a rifled barrel by a massive force!
+A soft body bullet being pushed out of a rifled barrel.
+Barrel is a static collision shape (particle-shape collision).
 Everything in centimeters.
 """
 
@@ -43,7 +44,6 @@ def load_tetmesh_npz(filepath):
 
 def compute_tet_volume(v0, v1, v2, v3):
     """Compute volume of a tetrahedron given 4 vertices."""
-    # Volume = |det([v1-v0, v2-v0, v3-v0])| / 6
     a = v1 - v0
     b = v2 - v0
     c = v3 - v0
@@ -57,7 +57,6 @@ def compute_vertex_volumes(vertices, tetrahedra):
     for tet in tetrahedra:
         v0, v1, v2, v3 = vertices[tet[0]], vertices[tet[1]], vertices[tet[2]], vertices[tet[3]]
         tet_volume = compute_tet_volume(v0, v1, v2, v3)
-        # Each vertex gets 1/4 of the tet volume
         for idx in tet:
             vertex_volumes[idx] += tet_volume / 4.0
 
@@ -107,13 +106,14 @@ def load_ply_mesh(filepath):
 
 
 # =============================================================================
-# Bullet Simulation
+# Bullet Simulation with Collision Shape Barrel
 # =============================================================================
 
 
-class BulletSimulator(Simulator):
+class BulletSimulatorShape(Simulator):
     """
     Simulation of a soft bullet being pushed out of a rifled barrel.
+    Barrel is a static collision shape (faster, simpler collision).
     """
 
     def __init__(self, config: dict | None = None):
@@ -130,6 +130,7 @@ class BulletSimulator(Simulator):
         self.bullet_k_lambda = cfg("k_lambda", 1.0e6)
         self.bullet_k_damp = cfg("k_damp", 1e-4)
         self.particle_radius = cfg("particle_radius", 0.1)
+        self.shape_friction = cfg("shape_friction", 0.05)  # Barrel friction
         self.force_magnitude = cfg("force_magnitude", 1e2)
         self.force_direction = cfg("force_direction", [0.0, 0.0, 1.0])
         self.bottom_threshold_cm = cfg("bottom_threshold_cm", 0.5)
@@ -146,7 +147,7 @@ class BulletSimulator(Simulator):
         barrel_file = cfg("mesh_file", "rifled_barrel.ply")
         barrel_path = self.script_dir / barrel_file
         self.barrel_verts, self.barrel_faces = load_ply_mesh(barrel_path)
-        self.barrel_verts = self.barrel_verts * bullet_scale  # Use same scale
+        self.barrel_verts = self.barrel_verts * bullet_scale
 
         self.bullet_vert_count = len(self.bullet_verts)
 
@@ -158,13 +159,13 @@ class BulletSimulator(Simulator):
         super().__init__(config)
 
     def custom_init(self):
-        """Add bullet soft body and barrel as fixed cloth mesh."""
-        from newton import ParticleFlags
+        """Add bullet soft body and barrel as static collision shape."""
+        import newton
 
         # Set particle radius for collision detection
         self.builder.default_particle_radius = self.particle_radius
 
-        # Add bullet as soft body (using config params)
+        # Add bullet as soft body
         self.builder.add_soft_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
             rot=wp.quat_identity(),
@@ -178,33 +179,23 @@ class BulletSimulator(Simulator):
             k_damp=self.bullet_k_damp,
         )
 
-        # Track barrel vertex start index
-        self.barrel_vert_start = len(self.builder.particle_q)
-
-        # Add barrel as cloth mesh (will be fixed in place)
-        self.builder.add_cloth_mesh(
-            pos=wp.vec3(0.0, 0.0, 0.0),
-            rot=wp.quat_identity(),
-            scale=1.0,
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            vertices=self.barrel_verts.tolist(),
-            indices=self.barrel_faces.flatten().tolist(),
-            density=1.0,  # Doesn't matter since we fix all vertices
+        # Add barrel as static collision mesh (body=-1 means static/world)
+        barrel_mesh = newton.Mesh(self.barrel_verts, self.barrel_faces.flatten())
+        
+        # Configure barrel shape with low friction
+        barrel_cfg = newton.ModelBuilder.ShapeConfig(
+            mu=self.shape_friction,  # Low friction for smooth sliding
         )
-
-        # Fix all barrel vertices (set mass=0, remove ACTIVE flag)
-        barrel_vert_end = len(self.builder.particle_q)
-        for i in range(self.barrel_vert_start, barrel_vert_end):
-            self.builder.particle_mass[i] = 0.0
-            self.builder.particle_flags[i] &= ~ParticleFlags.ACTIVE
-
-        self.barrel_vert_count = barrel_vert_end - self.barrel_vert_start
-        print(f"Barrel: {self.barrel_vert_count} vertices (all fixed)")
+        self.builder.add_shape_mesh(
+            body=-1,
+            mesh=barrel_mesh,
+            cfg=barrel_cfg,
+        )
+        print(f"Barrel: {len(self.barrel_verts)} vertices as collision shape (mu={self.shape_friction})")
 
     def custom_finalize(self):
         """Setup after model is built."""
         # Get bullet vertex indices for force application
-        # Bottom vertices are those with smallest z
         bullet_positions = self.model.particle_q.numpy()[: self.bullet_vert_count]
         z_coords = bullet_positions[:, 2]
         z_min = z_coords.min()
@@ -218,10 +209,7 @@ class BulletSimulator(Simulator):
         vertex_volumes = compute_vertex_volumes(bullet_positions, self.bullet_tets)
         bottom_volumes = vertex_volumes[bottom_indices]
 
-        # Normalize volumes so total force equals force_magnitude * total_bottom_volume
-        # Force per vertex = force_magnitude * (vertex_volume / total_volume) * total_volume
-        #                  = force_magnitude * vertex_volume
-        # This means force_magnitude is effectively "pressure" (force per unit volume)
+        # Force per vertex = pressure * vertex_volume
         force_magnitudes = (self.force_magnitude * bottom_volumes).astype(np.float32)
         self.force_magnitudes = wp.array(force_magnitudes, dtype=wp.float32)
 
@@ -240,10 +228,9 @@ class BulletSimulator(Simulator):
         print(f"Force magnitude (pressure): {self.force_magnitude}")
         print(f"Total force: {total_force:.2f} dynes")
 
-        # Store for visualization
+        # Extract surface faces for visualization
         self.bullet_surface_faces = None
         if hasattr(self, "bullet_tets"):
-            # Extract surface faces from tetrahedra
             face_count = {}
             for tet in self.bullet_tets:
                 faces_of_tet = [
@@ -264,7 +251,7 @@ class BulletSimulator(Simulator):
             print(f"Extracted {len(self.bullet_surface_faces)} surface faces")
 
     def apply_bullet_force(self):
-        """Apply force to bottom of bullet, proportional to vertex volume (GPU kernel)."""
+        """Apply force to bottom of bullet, proportional to vertex volume."""
         wp.launch(
             kernel=apply_force_to_particles,
             dim=len(self.bottom_vertex_indices),
@@ -279,7 +266,7 @@ class BulletSimulator(Simulator):
     def run_step(self):
         """Override run_step to apply force at start of each substep."""
         for _ in range(self.num_substeps):
-            # Run collision detection
+            # Run collision detection (particle-shape collision)
             if self.model.shape_count:
                 self.contacts = self.model.collide(self.state_0)
 
@@ -298,13 +285,8 @@ class BulletSimulator(Simulator):
 
         import polyscope as ps
 
-        # Register barrel as surface mesh (transparent)
-        # Get barrel vertices from particle positions
-        all_verts = self.model.particle_q.numpy()
-        barrel_verts = all_verts[self.barrel_vert_start : self.barrel_vert_start + self.barrel_vert_count]
-        # Remap barrel faces to local indices (0-based)
-        barrel_faces_local = self.barrel_faces.copy()
-        barrel_mesh = ps.register_surface_mesh("Barrel", barrel_verts, barrel_faces_local)
+        # Register barrel as surface mesh (transparent) - use original vertices
+        barrel_mesh = ps.register_surface_mesh("Barrel", self.barrel_verts, self.barrel_faces)
         barrel_mesh.set_transparency(0.18)
 
         # Register bullet
@@ -335,7 +317,7 @@ if __name__ == "__main__":
     # Configuration - all parameters in one place
     config = {
         **default_config,
-        "name": "bullet_out_of_barrel",
+        "name": "bullet_out_of_barrel_shape",
         # Simulation timing
         "up_axis": "z",
         "gravity": -980.0,
@@ -346,20 +328,16 @@ if __name__ == "__main__":
         # Solver
         "use_tile_solve": True,
         "use_cuda_graph": True,
-        # Contact
-        "handle_self_contact": True,
-        "self_contact_radius": 0.1,  # Collision detection radius in cm
-        "self_contact_margin": 0.15,  # Should be > self_contact_radius
-        "topological_contact_filter_threshold":1  ,
-        "rest_shape_contact_exclusion_radius": 0.2,
+        # Contact (no self-contact needed for collision shape approach)
+        "handle_self_contact": False,
         "soft_contact_ke": 1.0e7,
         "soft_contact_kd": 1e-6,
-        "soft_contact_mu": 0.3,
+        "soft_contact_mu": 0.05,  # Low friction for smooth sliding
         # Ground
         "has_ground": False,
         "show_ground_plane": False,
         # Output
-        "output_path": "bullet_frames",
+        "output_path": "bullet_frames_shape",
         "write_output": False,
         "write_video": False,
         # Visualization
@@ -372,24 +350,25 @@ if __name__ == "__main__":
         "scale": 100.0,
         "density": 11.34,
         "k_mu": 1.0e7,
-        "k_lambda": 1.0e7,
-        "k_damp": 1e-4,
-        "particle_radius": 0.10 ,  # Collision radius in cm
-        "force_magnitude": 2e7,
-        "force_direction": [0.0, 0.0, 1.0],
-        "bottom_threshold_cm": 0.5,  # Increased to capture more bottom vertices
+        "k_lambda": 1.0e8,
+        "k_damp": 1e-8 ,
+        "particle_radius": 0.13,
+        "force_magnitude": 1e6,
+        "force_direction": [0.0, 0.0, 1.0], 
+        "bottom_threshold_cm": 0.5,
         "color": [0.8, 0.6, 0.2],
         # Barrel parameters
         "mesh_file": "rifled_barrel.ply",
+        "shape_friction": 0.0,  # Zero friction for barrel collision shape
     }
 
     print("=" * 60)
-    print("🔫 BULLET OUT OF BARREL SIMULATION 🔫")
+    print("🔫 BULLET OUT OF BARREL (Collision Shape) 🔫")
     print("=" * 60)
     print("\nLoading meshes...")
 
     # Create simulator
-    sim = BulletSimulator(config)
+    sim = BulletSimulatorShape(config)
     sim.finalize()
 
     # Set camera from config
