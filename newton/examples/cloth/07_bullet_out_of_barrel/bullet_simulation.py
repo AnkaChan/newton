@@ -364,7 +364,7 @@ if __name__ == "__main__":
         "write_video": False,
         # Visualization
         "do_rendering": True,
-        "is_initially_paused": True,
+        "is_initially_paused": False,
         "camera_position": [0.0, -50.0, 0.0],
         "camera_target": [0.0, 0.0, 15.0],
         # Bullet parameters

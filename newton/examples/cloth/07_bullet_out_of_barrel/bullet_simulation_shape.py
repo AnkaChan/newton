@@ -394,11 +394,12 @@ if __name__ == "__main__":
         "video_fps": 60,  # Playback FPS for video (separate from sim fps)
         # Visualization
         "do_rendering": True,
-        "is_initially_paused": True,
+        "is_initially_paused": False,
         "camera_position": [0.0, -50.0, 0.0],
         "camera_target": [0.0, 0.0, 15.0],
         # Bullet parameters
         "tetmesh_file": "bullet_tetmesh.npz",
+
         "bullet_scale": 100.0,  # Bullet scale (separate from barrel)
         "density": 11.34,
         "k_mu": 5.0e9,
