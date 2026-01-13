@@ -43,7 +43,7 @@ example_config = {
     "fps": 60,
     "sim_substeps": 20,
     "sim_num_frames": 1200,
-    "iterations": 20,
+    "iterations": 40,
     "bvh_rebuild_frames": 1,
     # Solver settings
     "use_cuda_graph": True,
@@ -55,9 +55,9 @@ example_config = {
     "rest_shape_contact_exclusion_radius": 0.0,
     # Collision buffer settings - start small, let resize grow as needed
     # Based on 100-layer analysis: 99th percentile ~32 vertex, ~64 edge collisions
-    "vertex_collision_buffer_pre_alloc": 16,  # Start conservative, will grow
-    "edge_collision_buffer_pre_alloc": 32,  # Start conservative, will grow
-    "collision_buffer_resize_frames": 5,  # Check and resize every 5 frames
+    "vertex_collision_buffer_pre_alloc": 32,  # Start conservative, will grow
+    "edge_collision_buffer_pre_alloc": 40,  # Start conservative, will grow
+    "collision_buffer_resize_frames": 1,  # Check and resize every 5 frames
     "collision_buffer_growth_ratio": 1.5,  # 50% headroom when growing
     "collision_detection_interval": 5,
     # Global physics settings

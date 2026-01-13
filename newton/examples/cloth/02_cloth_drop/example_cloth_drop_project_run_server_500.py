@@ -37,7 +37,7 @@ from example_cloth_drop_project import *
 
 example_config["cloths"]["main_cloth"]["num_layers"] = 500
 example_config["self_contact_margin"] = 0.32
-example_config["output_path"] = "/home/horde/Code/Output/ClothDrop"
+example_config["output_path"] = "/home/horde/Code/Outputs/ClothDrop"
 
 if __name__ == "__main__":
     from datetime import datetime

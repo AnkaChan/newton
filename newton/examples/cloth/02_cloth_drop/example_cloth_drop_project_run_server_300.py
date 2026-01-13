@@ -35,7 +35,7 @@ from example_cloth_drop_project import *
 # Configuration
 # =============================================================================
 
-example_config["cloths"]["main_cloth"]["num_layers"] = 200
+example_config["cloths"]["main_cloth"]["num_layers"] = 300
 example_config["self_contact_margin"] = 0.32
 example_config["output_path"] = "/home/horde/Code/Outputs/ClothDrop"
 
