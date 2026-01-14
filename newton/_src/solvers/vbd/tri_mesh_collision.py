@@ -693,3 +693,367 @@ class TriMeshCollisionDetector:
             dim=self.model.tri_count,
             device=self.model.device,
         )
+
+
+# ==============================================================================
+# Continuous Collision Detection (CCD)
+# ==============================================================================
+
+from .polynomial_solver import cubic_roots_bounded
+
+
+@wp.func
+def vertex_triangle_ccd(
+    v0: wp.vec3, v1: wp.vec3,  # Vertex start and end positions
+    a0: wp.vec3, a1: wp.vec3,  # Triangle vertex A start and end
+    b0: wp.vec3, b1: wp.vec3,  # Triangle vertex B start and end
+    c0: wp.vec3, c1: wp.vec3,  # Triangle vertex C start and end
+) -> float:
+    """
+    Continuous collision detection for vertex vs triangle.
+    Returns collision time t in [0, 1], or -1.0 if no collision.
+    
+    At time t:
+        v(t) = v0 + t * (v1 - v0)
+        a(t) = a0 + t * (a1 - a0), etc.
+    
+    Collision occurs when v lies on the plane of triangle abc,
+    i.e., when the signed volume of tetrahedron (v, a, b, c) is zero:
+        det([v-a, b-a, c-a]) = 0
+    
+    This is a cubic polynomial in t.
+    """
+    # Displacement vectors
+    dv = v1 - v0
+    da = a1 - a0
+    db = b1 - b0
+    dc = c1 - c0
+    
+    # At time t:
+    # v(t) - a(t) = (v0 - a0) + t * (dv - da)
+    # b(t) - a(t) = (b0 - a0) + t * (db - da)
+    # c(t) - a(t) = (c0 - a0) + t * (dc - da)
+    
+    # Let's define:
+    # p = v0 - a0,  dp = dv - da
+    # q = b0 - a0,  dq = db - da
+    # r = c0 - a0,  dr = dc - da
+    
+    p = v0 - a0
+    dp = dv - da
+    q = b0 - a0
+    dq = db - da
+    r = c0 - a0
+    dr = dc - da
+    
+    # Signed volume = det([p + t*dp, q + t*dq, r + t*dr])
+    # = (p + t*dp) · ((q + t*dq) × (r + t*dr))
+    #
+    # Expanding the cross product:
+    # (q + t*dq) × (r + t*dr) = q×r + t*(dq×r + q×dr) + t²*(dq×dr)
+    #
+    # Full expansion:
+    # = p · (q×r) + t * [p · (dq×r + q×dr) + dp · (q×r)]
+    #   + t² * [p · (dq×dr) + dp · (dq×r + q×dr)]
+    #   + t³ * [dp · (dq×dr)]
+    
+    # Cross products
+    q_cross_r = wp.cross(q, r)
+    dq_cross_r = wp.cross(dq, r)
+    q_cross_dr = wp.cross(q, dr)
+    dq_cross_dr = wp.cross(dq, dr)
+    
+    # Polynomial coefficients: coef0 + coef1*t + coef2*t² + coef3*t³
+    coef0 = wp.dot(p, q_cross_r)
+    coef1 = wp.dot(p, dq_cross_r + q_cross_dr) + wp.dot(dp, q_cross_r)
+    coef2 = wp.dot(p, dq_cross_dr) + wp.dot(dp, dq_cross_r + q_cross_dr)
+    coef3 = wp.dot(dp, dq_cross_dr)
+    
+    # Find first root in [0, 1]
+    t = cubic_roots_bounded(coef0, coef1, coef2, coef3, 0.0, 1.0)
+    
+    if t < 0.0:
+        return -1.0
+    
+    # Verify the point is inside the triangle at collision time
+    # Compute barycentric coordinates
+    v_t = v0 + t * dv
+    a_t = a0 + t * da
+    b_t = b0 + t * db
+    c_t = c0 + t * dc
+    
+    # Check if point is inside triangle using barycentric coords
+    v0_ab = b_t - a_t
+    v0_ac = c_t - a_t
+    v0_ap = v_t - a_t
+    
+    dot00 = wp.dot(v0_ac, v0_ac)
+    dot01 = wp.dot(v0_ac, v0_ab)
+    dot02 = wp.dot(v0_ac, v0_ap)
+    dot11 = wp.dot(v0_ab, v0_ab)
+    dot12 = wp.dot(v0_ab, v0_ap)
+    
+    inv_denom = 1.0 / (dot00 * dot11 - dot01 * dot01 + 1e-12)
+    u = (dot11 * dot02 - dot01 * dot12) * inv_denom
+    v = (dot00 * dot12 - dot01 * dot02) * inv_denom
+    
+    # Check if point is in triangle
+    if u >= -1e-6 and v >= -1e-6 and u + v <= 1.0 + 1e-6:
+        return t
+    
+    return -1.0
+
+
+@wp.func
+def edge_edge_ccd(
+    a0: wp.vec3, a1: wp.vec3,  # Edge A vertex 0: start and end positions
+    b0: wp.vec3, b1: wp.vec3,  # Edge A vertex 1: start and end positions
+    c0: wp.vec3, c1: wp.vec3,  # Edge B vertex 0: start and end positions
+    d0: wp.vec3, d1: wp.vec3,  # Edge B vertex 1: start and end positions
+) -> float:
+    """
+    Continuous collision detection for edge vs edge.
+    Returns collision time t in [0, 1], or -1.0 if no collision.
+    
+    Edges: A-B and C-D
+    At time t, edges are coplanar when det([b-a, d-c, c-a]) = 0
+    This is a cubic polynomial in t.
+    """
+    # Displacement vectors
+    da = a1 - a0
+    db = b1 - b0
+    dc = c1 - c0
+    dd = d1 - d0
+    
+    # At time t:
+    # b(t) - a(t) = (b0 - a0) + t * (db - da)
+    # d(t) - c(t) = (d0 - c0) + t * (dd - dc)
+    # c(t) - a(t) = (c0 - a0) + t * (dc - da)
+    
+    p = b0 - a0
+    dp = db - da
+    q = d0 - c0
+    dq = dd - dc
+    r = c0 - a0
+    dr = dc - da
+    
+    # Signed volume = det([p + t*dp, q + t*dq, r + t*dr])
+    q_cross_r = wp.cross(q, r)
+    dq_cross_r = wp.cross(dq, r)
+    q_cross_dr = wp.cross(q, dr)
+    dq_cross_dr = wp.cross(dq, dr)
+    
+    coef0 = wp.dot(p, q_cross_r)
+    coef1 = wp.dot(p, dq_cross_r + q_cross_dr) + wp.dot(dp, q_cross_r)
+    coef2 = wp.dot(p, dq_cross_dr) + wp.dot(dp, dq_cross_r + q_cross_dr)
+    coef3 = wp.dot(dp, dq_cross_dr)
+    
+    t = cubic_roots_bounded(coef0, coef1, coef2, coef3, 0.0, 1.0)
+    
+    if t < 0.0:
+        return -1.0
+    
+    # Verify edges actually intersect at time t (check parametric coordinates)
+    a_t = a0 + t * da
+    b_t = b0 + t * db
+    c_t = c0 + t * dc
+    d_t = d0 + t * dd
+    
+    # Find closest points on the two edges
+    e1 = b_t - a_t  # Edge 1 direction
+    e2 = d_t - c_t  # Edge 2 direction
+    r_vec = a_t - c_t
+    
+    len1_sq = wp.dot(e1, e1)
+    len2_sq = wp.dot(e2, e2)
+    e1_dot_e2 = wp.dot(e1, e2)
+    e1_dot_r = wp.dot(e1, r_vec)
+    e2_dot_r = wp.dot(e2, r_vec)
+    
+    denom = len1_sq * len2_sq - e1_dot_e2 * e1_dot_e2
+    
+    if wp.abs(denom) < 1e-12:
+        # Parallel edges
+        return -1.0
+    
+    s = (e1_dot_e2 * e2_dot_r - len2_sq * e1_dot_r) / denom
+    u = (e1_dot_e2 * e1_dot_r - len1_sq * e2_dot_r) / (-denom)
+    
+    # Check if closest points are within edge segments
+    if s >= -1e-6 and s <= 1.0 + 1e-6 and u >= -1e-6 and u <= 1.0 + 1e-6:
+        return t
+    
+    return -1.0
+
+
+@wp.kernel
+def compute_swept_tri_aabbs(
+    vertex_positions: wp.array(dtype=wp.vec3),
+    vertex_displacements: wp.array(dtype=wp.vec3),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    lower_bounds: wp.array(dtype=wp.vec3),
+    upper_bounds: wp.array(dtype=wp.vec3),
+):
+    """Compute AABBs for triangles that cover the swept volume from start to end position."""
+    tid = wp.tid()
+    
+    i0 = tri_indices[tid, 0]
+    i1 = tri_indices[tid, 1]
+    i2 = tri_indices[tid, 2]
+    
+    # Start positions
+    p0_start = vertex_positions[i0]
+    p1_start = vertex_positions[i1]
+    p2_start = vertex_positions[i2]
+    
+    # End positions (start + displacement)
+    p0_end = p0_start + vertex_displacements[i0]
+    p1_end = p1_start + vertex_displacements[i1]
+    p2_end = p2_start + vertex_displacements[i2]
+    
+    # AABB that covers all 6 points (3 vertices × 2 time steps)
+    lower = wp.vec3(
+        wp.min(wp.min(wp.min(wp.min(wp.min(p0_start[0], p1_start[0]), p2_start[0]), p0_end[0]), p1_end[0]), p2_end[0]),
+        wp.min(wp.min(wp.min(wp.min(wp.min(p0_start[1], p1_start[1]), p2_start[1]), p0_end[1]), p1_end[1]), p2_end[1]),
+        wp.min(wp.min(wp.min(wp.min(wp.min(p0_start[2], p1_start[2]), p2_start[2]), p0_end[2]), p1_end[2]), p2_end[2]),
+    )
+    upper = wp.vec3(
+        wp.max(wp.max(wp.max(wp.max(wp.max(p0_start[0], p1_start[0]), p2_start[0]), p0_end[0]), p1_end[0]), p2_end[0]),
+        wp.max(wp.max(wp.max(wp.max(wp.max(p0_start[1], p1_start[1]), p2_start[1]), p0_end[1]), p1_end[1]), p2_end[1]),
+        wp.max(wp.max(wp.max(wp.max(wp.max(p0_start[2], p1_start[2]), p2_start[2]), p0_end[2]), p1_end[2]), p2_end[2]),
+    )
+    
+    lower_bounds[tid] = lower
+    upper_bounds[tid] = upper
+
+
+@wp.kernel
+def compute_swept_edge_aabbs(
+    vertex_positions: wp.array(dtype=wp.vec3),
+    vertex_displacements: wp.array(dtype=wp.vec3),
+    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    lower_bounds: wp.array(dtype=wp.vec3),
+    upper_bounds: wp.array(dtype=wp.vec3),
+):
+    """Compute AABBs for edges that cover the swept volume from start to end position."""
+    eid = wp.tid()
+    
+    i0 = edge_indices[eid, 0]
+    i1 = edge_indices[eid, 1]
+    
+    # Start positions
+    p0_start = vertex_positions[i0]
+    p1_start = vertex_positions[i1]
+    
+    # End positions (start + displacement)
+    p0_end = p0_start + vertex_displacements[i0]
+    p1_end = p1_start + vertex_displacements[i1]
+    
+    # AABB that covers all 4 points (2 vertices × 2 time steps)
+    lower = wp.vec3(
+        wp.min(wp.min(wp.min(p0_start[0], p1_start[0]), p0_end[0]), p1_end[0]),
+        wp.min(wp.min(wp.min(p0_start[1], p1_start[1]), p0_end[1]), p1_end[1]),
+        wp.min(wp.min(wp.min(p0_start[2], p1_start[2]), p0_end[2]), p1_end[2]),
+    )
+    upper = wp.vec3(
+        wp.max(wp.max(wp.max(p0_start[0], p1_start[0]), p0_end[0]), p1_end[0]),
+        wp.max(wp.max(wp.max(p0_start[1], p1_start[1]), p0_end[1]), p1_end[1]),
+        wp.max(wp.max(wp.max(p0_start[2], p1_start[2]), p0_end[2]), p1_end[2]),
+    )
+    
+    lower_bounds[eid] = lower
+    upper_bounds[eid] = upper
+
+
+class TriMeshContinuousCollisionDetector:
+    """
+    Continuous Collision Detection (CCD) for triangle meshes.
+    
+    This detector builds BVHs using swept volumes (from vertex_positions to 
+    vertex_positions + vertex_displacements) to detect potential collisions
+    along the motion trajectory.
+    """
+    
+    def __init__(
+        self,
+        collision_detector: TriMeshCollisionDetector,
+        vertex_positions: wp.array,
+        vertex_displacements: wp.array,
+    ):
+        """
+        Initialize CCD detector.
+        
+        Args:
+            collision_detector: An existing TriMeshCollisionDetector to get model and buffer settings from
+            vertex_positions: Start positions of vertices (wp.array of vec3)
+            vertex_displacements: Displacement vectors for each vertex (wp.array of vec3)
+        """
+        # Get model and settings from existing collision detector
+        self.model = collision_detector.model
+        self.device = collision_detector.device
+        self.collision_detector = collision_detector
+        
+        # Store position and displacement references
+        self.vertex_positions = vertex_positions
+        self.vertex_displacements = vertex_displacements
+        
+        # Allocate AABB buffers for swept volumes
+        self.lower_bounds_tris = wp.array(
+            shape=(self.model.tri_count,), dtype=wp.vec3, device=self.device
+        )
+        self.upper_bounds_tris = wp.array(
+            shape=(self.model.tri_count,), dtype=wp.vec3, device=self.device
+        )
+        
+        self.lower_bounds_edges = wp.array(
+            shape=(self.model.edge_count,), dtype=wp.vec3, device=self.device
+        )
+        self.upper_bounds_edges = wp.array(
+            shape=(self.model.edge_count,), dtype=wp.vec3, device=self.device
+        )
+        
+        # Build initial BVHs
+        self.bvh_tris = None
+        self.bvh_edges = None
+        self.rebuild_bvh()
+    
+    def rebuild_bvh(self):
+        """Rebuild BVHs using current positions and displacements."""
+        # Compute swept AABBs for triangles
+        wp.launch(
+            kernel=compute_swept_tri_aabbs,
+            inputs=[
+                self.vertex_positions,
+                self.vertex_displacements,
+                self.model.tri_indices,
+                self.lower_bounds_tris,
+                self.upper_bounds_tris,
+            ],
+            dim=self.model.tri_count,
+            device=self.device,
+        )
+        
+        # Build triangle BVH
+        self.bvh_tris = wp.Bvh(self.lower_bounds_tris, self.upper_bounds_tris)
+        
+        # Compute swept AABBs for edges
+        wp.launch(
+            kernel=compute_swept_edge_aabbs,
+            inputs=[
+                self.vertex_positions,
+                self.vertex_displacements,
+                self.model.edge_indices,
+                self.lower_bounds_edges,
+                self.upper_bounds_edges,
+            ],
+            dim=self.model.edge_count,
+            device=self.device,
+        )
+        
+        # Build edge BVH
+        self.bvh_edges = wp.Bvh(self.lower_bounds_edges, self.upper_bounds_edges)
+    
+    def update_displacements(self, vertex_displacements: wp.array):
+        """Update displacement vectors and rebuild BVH."""
+        self.vertex_displacements = vertex_displacements
+        self.rebuild_bvh()
