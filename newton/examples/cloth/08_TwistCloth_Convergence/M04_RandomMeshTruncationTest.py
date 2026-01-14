@@ -13,6 +13,7 @@ import warp as wp
 import json
 import time
 import os
+from datetime import datetime
 
 from newton import ModelBuilder
 from newton._src.solvers.vbd.tri_mesh_collision import (
@@ -275,7 +276,9 @@ config = {
 }
 
 # Build output directory name with displacement_scale
-config["output_dir"] = rf"D:\Data\DAT_Sim\Truncation_Scheme_Evaluation\Random_disp{config['displacement_scale']}"
+# Build output directory name with displacement_scale and timestamp
+_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+config["output_dir"] = rf"D:\Data\DAT_Sim\Truncation_Scheme_Evaluation\Random_disp{config['displacement_scale']}_{_timestamp}"
 
 
 def run_truncation_test(vs, ts, displacements, truncator_type: str, cfg: dict):
