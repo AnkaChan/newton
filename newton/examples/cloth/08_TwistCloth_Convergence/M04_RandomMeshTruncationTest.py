@@ -374,10 +374,9 @@ def run_vertex_comparison(mesh_gen, cfg: dict):
     all_planar_norms = []
     all_isometric_norms = []
     
-    # CCD vs others
+    # Planar vs CCD (how much Planar improves over CCD)
     all_ccd_norms = []
-    all_ccd_vs_iso_ratios = []
-    all_ccd_vs_planar_ratios = []
+    all_planar_vs_ccd_ratios = []
     all_ccd_global_t = []
     
     # For full evaluation reports
@@ -438,18 +437,12 @@ def run_vertex_comparison(mesh_gen, cfg: dict):
                 all_planar_norms.extend(norms_planar[valid_mask_iso].tolist())
                 all_isometric_norms.extend(norms_iso[valid_mask_iso].tolist())
             
-            # --- CCD vs Isometric ---
-            ccd_vs_iso = np.zeros_like(norms_iso)
-            if valid_mask_iso.sum() > 0:
-                ccd_vs_iso[valid_mask_iso] = (norms_ccd[valid_mask_iso] - norms_iso[valid_mask_iso]) / norms_iso[valid_mask_iso]
-                all_ccd_vs_iso_ratios.extend(ccd_vs_iso[valid_mask_iso].tolist())
-            
-            # --- CCD vs Planar ---
-            valid_mask_planar = norms_planar > eps
-            ccd_vs_planar = np.zeros_like(norms_planar)
-            if valid_mask_planar.sum() > 0:
-                ccd_vs_planar[valid_mask_planar] = (norms_ccd[valid_mask_planar] - norms_planar[valid_mask_planar]) / norms_planar[valid_mask_planar]
-                all_ccd_vs_planar_ratios.extend(ccd_vs_planar[valid_mask_planar].tolist())
+            # --- Planar vs CCD (how much Planar improves over CCD) ---
+            valid_mask_ccd = norms_ccd > eps
+            planar_vs_ccd = np.zeros_like(norms_ccd)
+            if valid_mask_ccd.sum() > 0:
+                planar_vs_ccd[valid_mask_ccd] = (norms_planar[valid_mask_ccd] - norms_ccd[valid_mask_ccd]) / norms_ccd[valid_mask_ccd]
+                all_planar_vs_ccd_ratios.extend(planar_vs_ccd[valid_mask_ccd].tolist())
             
             # Track CCD norms
             all_ccd_norms.extend(norms_ccd.tolist())
@@ -458,7 +451,7 @@ def run_vertex_comparison(mesh_gen, cfg: dict):
             iso_zero_planar_not = (norms_iso <= eps) & (norms_planar > eps)
             
             mean_planar_vs_iso = planar_vs_iso[valid_mask_iso].mean() * 100 if valid_mask_iso.sum() > 0 else 0.0
-            mean_ccd_vs_iso = ccd_vs_iso[valid_mask_iso].mean() * 100 if valid_mask_iso.sum() > 0 else 0.0
+            mean_planar_vs_ccd = planar_vs_ccd[valid_mask_ccd].mean() * 100 if valid_mask_ccd.sum() > 0 else 0.0
             
             # Build evaluation dict
             evaluation = {
@@ -484,9 +477,9 @@ def run_vertex_comparison(mesh_gen, cfg: dict):
                 },
                 "comparison": {
                     "planar_vs_iso_pct": float(mean_planar_vs_iso),
-                    "ccd_vs_iso_pct": float(mean_ccd_vs_iso),
+                    "planar_vs_ccd_pct": float(mean_planar_vs_ccd),
                     "fraction_planar_better_than_iso": float((planar_vs_iso[valid_mask_iso] > 0).mean()) if valid_mask_iso.sum() > 0 else 0.0,
-                    "fraction_ccd_better_than_iso": float((ccd_vs_iso[valid_mask_iso] > 0).mean()) if valid_mask_iso.sum() > 0 else 0.0,
+                    "fraction_planar_better_than_ccd": float((planar_vs_ccd[valid_mask_ccd] > 0).mean()) if valid_mask_ccd.sum() > 0 else 0.0,
                     "iso_zeroed_planar_kept": int(iso_zero_planar_not.sum()),
                 },
             }
@@ -518,7 +511,7 @@ def run_vertex_comparison(mesh_gen, cfg: dict):
             if sample_idx % 10 == 0 or cfg.get("print_per_sample", False):
                 print(f"[{sample_idx+1}/{cfg['data_set_size']}] Mesh {mesh_idx}, Disp {disp_idx}: "
                       f"iso={norms_iso.mean():.4f}, planar={norms_planar.mean():.4f}, ccd={norms_ccd.mean():.4f}, "
-                      f"planar_vs_iso={mean_planar_vs_iso:+.1f}%, ccd_vs_iso={mean_ccd_vs_iso:+.1f}%")
+                      f"planar_vs_iso={mean_planar_vs_iso:+.1f}%, planar_vs_ccd={mean_planar_vs_ccd:+.1f}%")
             
         except Exception as e:
             print(f"Sample {sample_idx}: Error - {e}")
@@ -529,8 +522,7 @@ def run_vertex_comparison(mesh_gen, cfg: dict):
     # Aggregate statistics
     if all_planar_vs_iso_ratios:
         planar_vs_iso_arr = np.array(all_planar_vs_iso_ratios)
-        ccd_vs_iso_arr = np.array(all_ccd_vs_iso_ratios) if all_ccd_vs_iso_ratios else np.array([])
-        ccd_vs_planar_arr = np.array(all_ccd_vs_planar_ratios) if all_ccd_vs_planar_ratios else np.array([])
+        planar_vs_ccd_arr = np.array(all_planar_vs_ccd_ratios) if all_planar_vs_ccd_ratios else np.array([])
         
         print("\n" + "-" * 80)
         print("VERTEX-BY-VERTEX IMPROVEMENT STATISTICS")
@@ -548,29 +540,17 @@ def run_vertex_comparison(mesh_gen, cfg: dict):
             print(f"    {p}th: {np.percentile(planar_vs_iso_arr, p)*100:+.2f}%")
         print(f"  Fraction where Planar > Isometric: {(planar_vs_iso_arr > 0).mean()*100:.2f}%")
         
-        # --- CCD vs Isometric ---
-        if len(ccd_vs_iso_arr) > 0:
-            print(f"\n  === CCD vs Isometric ===")
-            print(f"  Improvement Ratio (ccd_norm - iso_norm) / iso_norm:")
-            print(f"    Mean:   {ccd_vs_iso_arr.mean()*100:+.2f}%")
-            print(f"    Median: {np.median(ccd_vs_iso_arr)*100:+.2f}%")
-            print(f"    Max:    {ccd_vs_iso_arr.max()*100:+.2f}%")
+        # --- Planar vs CCD (how much Planar improves over CCD) ---
+        if len(planar_vs_ccd_arr) > 0:
+            print(f"\n  === Planar vs CCD (Planar's improvement over CCD) ===")
+            print(f"  Improvement Ratio (planar_norm - ccd_norm) / ccd_norm:")
+            print(f"    Mean:   {planar_vs_ccd_arr.mean()*100:+.2f}%")
+            print(f"    Median: {np.median(planar_vs_ccd_arr)*100:+.2f}%")
+            print(f"    Max:    {planar_vs_ccd_arr.max()*100:+.2f}%")
             print(f"  Percentiles:")
             for p in [25, 50, 75, 90, 95, 99]:
-                print(f"    {p}th: {np.percentile(ccd_vs_iso_arr, p)*100:+.2f}%")
-            print(f"  Fraction where CCD > Isometric: {(ccd_vs_iso_arr > 0).mean()*100:.2f}%")
-        
-        # --- CCD vs Planar ---
-        if len(ccd_vs_planar_arr) > 0:
-            print(f"\n  === CCD vs Planar ===")
-            print(f"  Improvement Ratio (ccd_norm - planar_norm) / planar_norm:")
-            print(f"    Mean:   {ccd_vs_planar_arr.mean()*100:+.2f}%")
-            print(f"    Median: {np.median(ccd_vs_planar_arr)*100:+.2f}%")
-            print(f"    Max:    {ccd_vs_planar_arr.max()*100:+.2f}%")
-            print(f"  Percentiles:")
-            for p in [25, 50, 75, 90, 95, 99]:
-                print(f"    {p}th: {np.percentile(ccd_vs_planar_arr, p)*100:+.2f}%")
-            print(f"  Fraction where CCD > Planar: {(ccd_vs_planar_arr > 0).mean()*100:.2f}%")
+                print(f"    {p}th: {np.percentile(planar_vs_ccd_arr, p)*100:+.2f}%")
+            print(f"  Fraction where Planar > CCD: {(planar_vs_ccd_arr > 0).mean()*100:.2f}%")
         
         print("-" * 80)
         
@@ -637,19 +617,12 @@ def run_vertex_comparison(mesh_gen, cfg: dict):
                     "percentiles": {str(p): float(np.percentile(planar_vs_iso_arr, p)) for p in [25, 50, 75, 90, 95, 99]},
                     "fraction_planar_better": float((planar_vs_iso_arr > 0).mean()),
                 },
-                "ccd_vs_iso": {
-                    "mean": float(ccd_vs_iso_arr.mean()) if len(ccd_vs_iso_arr) > 0 else None,
-                    "median": float(np.median(ccd_vs_iso_arr)) if len(ccd_vs_iso_arr) > 0 else None,
-                    "max": float(ccd_vs_iso_arr.max()) if len(ccd_vs_iso_arr) > 0 else None,
-                    "percentiles": {str(p): float(np.percentile(ccd_vs_iso_arr, p)) for p in [25, 50, 75, 90, 95, 99]} if len(ccd_vs_iso_arr) > 0 else {},
-                    "fraction_ccd_better": float((ccd_vs_iso_arr > 0).mean()) if len(ccd_vs_iso_arr) > 0 else None,
-                },
-                "ccd_vs_planar": {
-                    "mean": float(ccd_vs_planar_arr.mean()) if len(ccd_vs_planar_arr) > 0 else None,
-                    "median": float(np.median(ccd_vs_planar_arr)) if len(ccd_vs_planar_arr) > 0 else None,
-                    "max": float(ccd_vs_planar_arr.max()) if len(ccd_vs_planar_arr) > 0 else None,
-                    "percentiles": {str(p): float(np.percentile(ccd_vs_planar_arr, p)) for p in [25, 50, 75, 90, 95, 99]} if len(ccd_vs_planar_arr) > 0 else {},
-                    "fraction_ccd_better": float((ccd_vs_planar_arr > 0).mean()) if len(ccd_vs_planar_arr) > 0 else None,
+                "planar_vs_ccd": {
+                    "mean": float(planar_vs_ccd_arr.mean()) if len(planar_vs_ccd_arr) > 0 else None,
+                    "median": float(np.median(planar_vs_ccd_arr)) if len(planar_vs_ccd_arr) > 0 else None,
+                    "max": float(planar_vs_ccd_arr.max()) if len(planar_vs_ccd_arr) > 0 else None,
+                    "percentiles": {str(p): float(np.percentile(planar_vs_ccd_arr, p)) for p in [25, 50, 75, 90, 95, 99]} if len(planar_vs_ccd_arr) > 0 else {},
+                    "fraction_planar_better": float((planar_vs_ccd_arr > 0).mean()) if len(planar_vs_ccd_arr) > 0 else None,
                 },
                 "total_vertices": len(planar_vs_iso_arr),
             },
