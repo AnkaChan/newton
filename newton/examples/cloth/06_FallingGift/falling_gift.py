@@ -1,15 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""
+Falling Gift Demo
+
+Four stacked soft body blocks with two cloth straps wrapped around them.
+Refactored to use the M01_Simulator utility for simulation management.
+"""
+
 import numpy as np
 import warp as wp
 
-import newton
-import newton.examples
-import cv2
-import numpy as np
-import polyscope as ps
-import os
+from os.path import join
+
+import sys
+from pathlib import Path
+
+# Add parent directory to path for M01_Simulator import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from M01_Simulator import Simulator, default_config
+
+
+# =============================================================================
+# Geometry Helpers
+# =============================================================================
 
 def cloth_loop_around_box(
     hx=1.6,            # half-size in X (box width / 2)
@@ -24,7 +38,6 @@ def cloth_loop_around_box(
     Loop lies in X-Z plane, strap width is along Y.
     Z is up.
     """
-
     verts = []
     faces = []
 
@@ -115,36 +128,45 @@ PYRAMID_PARTICLES = [
     (2.0, 2.0, 1.0),
 ]
 
+# Number of vertices per soft body block
+VERTS_PER_BLOCK = len(PYRAMID_PARTICLES)  # 18
 
-class Example:
-    def __init__(self, viewer, video_path: str | None = None):
-        self.viewer = viewer
-      
 
-        self.sim_time = 0.0
-        self.fps = 60
-        self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 10
-        self.iterations = 15
-        self.sim_dt = self.frame_dt / self.sim_substeps
+# =============================================================================
+# Falling Gift Simulator
+# =============================================================================
 
-        self.frame_idx = 0
-        self.print_every = 50
-        self.ply_dir = "ply_frames"
-        os.makedirs(self.ply_dir, exist_ok=True)   
+class FallingGiftSimulator(Simulator):
+    """
+    Simulation of four stacked soft body blocks with two cloth straps.
+    """
 
-        builder = newton.ModelBuilder(up_axis="Z", gravity=-10)
-        builder.add_ground_plane()
+    def __init__(self, config: dict | None = None):
+        # Store geometry for later use
+        self.base_height = 30.0
+        self.spacing = 1.01  # small gap to avoid initial penetration
+        
+        # Generate cloth geometry
+        self.strap1_verts, self.strap1_faces = cloth_loop_around_box(
+            hx=1.01, hz=2.02, width=0.6
+        )
+        self.strap2_verts, self.strap2_faces = cloth_loop_around_box(
+            hx=1.015, hz=2.025, width=0.6
+        )
+        
+        self.strap1_count = len(self.strap1_verts)
+        self.strap2_count = len(self.strap2_verts)
+        
+        # Call parent init (this calls custom_init)
+        super().__init__(config)
 
-        # ----------------------------------------------------
-        # FOUR STACKED SOFT BODY BLOCKS
-        # ----------------------------------------------------
-        base_height = 30.0
-        spacing = 1.01  # small gap to avoid initial penetration
-
+    def custom_init(self):
+        """Add soft body blocks and cloth straps to the simulation."""
+        
+        # Add 4 stacked soft body blocks
         for i in range(4):
-            builder.add_soft_mesh(
-                pos=wp.vec3(0.0, 0.0, base_height + i * spacing),
+            self.builder.add_soft_mesh(
+                pos=wp.vec3(0.0, 0.0, self.base_height + i * self.spacing),
                 rot=wp.quat_identity(),
                 scale=1.0,
                 vel=wp.vec3(0.0),
@@ -156,23 +178,14 @@ class Example:
                 k_damp=1e-5,
             )
         
-        # ----------------------------------------------------
-        # CLOTH STRAP AROUND THE STACK
-        # ----------------------------------------------------
-        
-        strap_verts, strap_faces = cloth_loop_around_box(
-            hx = 1.01,
-            hz = 2.02,
-            width=0.6,
-        )
-        
-        builder.add_cloth_mesh(
-            pos=wp.vec3(1.0, 1.0, base_height + 1.5 * spacing + 0.5),
+        # Add first cloth strap
+        self.builder.add_cloth_mesh(
+            pos=wp.vec3(1.0, 1.0, self.base_height + 1.5 * self.spacing + 0.5),
             rot=wp.quat_identity(),
             scale=1.0,
             vel=wp.vec3(0.0),
-            vertices=strap_verts,
-            indices=strap_faces.flatten().tolist(),
+            vertices=self.strap1_verts,
+            indices=self.strap1_faces.flatten().tolist(),
             density=0.02,
             tri_ke=1e5,
             tri_ka=1e5,
@@ -181,18 +194,15 @@ class Example:
             edge_kd=1e-2,
             particle_radius=0.05,
         )
-        strap2_verts, strap2_faces = cloth_loop_around_box(
-            hx = 1.015,
-            hz = 2.025,
-            width=0.6,
-        )
-        builder.add_cloth_mesh(
-            pos=wp.vec3(1.0, 1.0, base_height + 1.5 * spacing + 0.5),
-            rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -np.pi/2),
+        
+        # Add second cloth strap (rotated 90 degrees)
+        self.builder.add_cloth_mesh(
+            pos=wp.vec3(1.0, 1.0, self.base_height + 1.5 * self.spacing + 0.5),
+            rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -np.pi / 2),
             scale=1.0,
             vel=wp.vec3(0.0),
-            vertices=strap2_verts,
-            indices=strap2_faces.flatten().tolist(),
+            vertices=self.strap2_verts,
+            indices=self.strap2_faces.flatten().tolist(),
             density=0.02,
             tri_ke=1e5,
             tri_ka=1e5,
@@ -201,66 +211,38 @@ class Example:
             edge_kd=1e-2,
             particle_radius=0.05,
         )
-        # ----------------------------------------------------
-        # CLOTH
-        # ----------------------------------------------------
-        '''
-        builder.add_cloth_grid(
-            pos=wp.vec3(-1.0, -1.0, 1.0),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(0.0),
-            fix_left=True,
-            fix_right=True,
-            dim_x=40,
-            dim_y=40,
-            cell_x=0.25,
-            cell_y=0.25,
-            mass=0.0025,
-            tri_ke=1e5,
-            tri_ka=1e5,
-            tri_kd=1e-5,
-            edge_ke=0.01,
-            edge_kd=1e-2,
-            particle_radius=0.05,
-        )
-        '''
-        builder.color(include_bending=True)
 
-        self.model = builder.finalize()
-
-        self.model.soft_contact_ke = 1.0e5
-        self.model.soft_contact_kd = 1e-5
-        self.model.soft_contact_mu = 1.0
-
-        self.solver = newton.solvers.SolverVBD(
-            model=self.model,
-            iterations=self.iterations,
-            self_contact_radius=0.04,
-            self_contact_margin=0.06,
-            topological_contact_filter_threshold=1,
-            handle_self_contact=True,
-            truncation_mode=1,
-        )
-        self.state_0 = self.model.state()
-        self.state_1 = self.model.state()
-        self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+    def custom_finalize(self):
+        """Extract face indices for each mesh type."""
+        # Get box faces (first portion of tri_indices, excluding cloth)
+        all_faces = self.model.tri_indices.numpy()
+        cloth_face_count = len(self.strap1_faces) + len(self.strap2_faces)
+        box_faces_all = all_faces[:len(all_faces) - cloth_face_count]
         
-        self.box_faces = self.model.tri_indices.numpy()[0:len(self.model.tri_indices) - 2 * len(strap_faces)]
-        self.box_faces = self.box_faces[0:len(self.box_faces) // 4]
-        self.strap_faces = strap_faces
-        self.strap2_faces = strap2_faces
-        self.capture()
-        ps.init()
-        ps.set_up_dir("z_up")
-        ps.look_at((-10.0, 0.0, 20.0), (0.0,0.0,0.0))
-        self.ps_cloth1_mesh = ps.register_surface_mesh(
-            "Cloth1", strap_verts, strap_faces
-        )
-        self.ps_cloth2_mesh = ps.register_surface_mesh(
-            "Cloth2", strap2_verts, strap2_faces
-        )
+        # Each box has the same faces (just first quarter)
+        self.box_faces = box_faces_all[:len(box_faces_all) // 4]
+        
+        # Vertex layout:
+        # [0:18]    - Box 1
+        # [18:36]   - Box 2
+        # [36:54]   - Box 3
+        # [54:72]   - Box 4
+        # [72:72+strap1_count] - Strap 1
+        # [72+strap1_count:]   - Strap 2
+        self.box_start = 0
+        self.strap1_start = 4 * VERTS_PER_BLOCK
+        self.strap2_start = self.strap1_start + self.strap1_count
+
+    def setup_polyscope_meshes(self):
+        """Register individual meshes for visualization."""
+        if not self.do_rendering:
+            return
+        
+        import polyscope as ps
+        
         all_verts = self.model.particle_q.numpy()
+        
+        # Register boxes as volume meshes
         self.ps_box1 = ps.register_volume_mesh(
             "Box1", all_verts[0:18], tets=PYRAMID_TET_INDICES
         )
@@ -273,151 +255,135 @@ class Example:
         self.ps_box4 = ps.register_volume_mesh(
             "Box4", all_verts[54:72], tets=PYRAMID_TET_INDICES
         )
-        ps.set_ground_plane_height(0)
-        self.ps_cloth1_mesh.set_color((1.0, 0.0, 0.0))  
-        self.ps_cloth2_mesh.set_color((1.0, 0.0, 0.0))
-        self.ps_box1.set_color((0.0, 0.2, 0.125))
-        self.ps_box2.set_color((0.0, 0.2, 0.125))
-        self.ps_box3.set_color((0.0, 0.2, 0.125))
-        self.ps_box4.set_color((0.0, 0.2, 0.125))
-        self.video_path = video_path
-        self.video_writer = None
-        self.strap1_count = len(strap_verts)
-    
+        
+        # Register cloth straps as surface meshes
+        self.register_ps_mesh(
+            name="Strap1",
+            vertices=all_verts[self.strap1_start:self.strap1_start + self.strap1_count],
+            faces=self.strap1_faces,
+            vertex_indices=slice(self.strap1_start, self.strap1_start + self.strap1_count),
+            color=(1.0, 0.0, 0.0),
+        )
+        self.register_ps_mesh(
+            name="Strap2",
+            vertices=all_verts[self.strap2_start:],
+            faces=self.strap2_faces,
+            vertex_indices=slice(self.strap2_start, None),
+            color=(1.0, 0.0, 0.0),
+        )
+        
+        # Set box colors
+        box_color = (0.0, 0.2, 0.125)
+        self.ps_box1.set_color(box_color)
+        self.ps_box2.set_color(box_color)
+        self.ps_box3.set_color(box_color)
+        self.ps_box4.set_color(box_color)
 
-    def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
-    def write_ply(self, path, vertices, faces):
-        with open(path, "w") as f:
-            f.write("ply\n")
-            f.write("format ascii 1.0\n")
-            f.write(f"element vertex {len(vertices)}\n")
-            f.write("property float x\n")
-            f.write("property float y\n")
-            f.write("property float z\n")
-            f.write(f"element face {len(faces)}\n")
-            f.write("property list uchar int vertex_indices\n")
-            f.write("end_header\n")
-
-            for v in vertices:
-                f.write(f"{v[0]} {v[1]} {v[2]}\n")
-
-            for face in faces:
-                f.write(f"3 {face[0]} {face[1]} {face[2]}\n")
-    def simulate(self):
-        for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
-            self.viewer.apply_forces(self.state_0)
-            self.contacts = self.model.collide(self.state_0)
-            self.solver.step(
-                self.state_0,
-                self.state_1,
-                self.control,
-                self.contacts,
-                self.sim_dt,
-            )
-            self.state_0, self.state_1 = self.state_1, self.state_0
-
-    def step(self):
-        if self.graph:
-            wp.capture_launch(self.graph)
-        else:
-            self.simulate()
-        self.sim_time += self.frame_dt
-
-    def render(self):
-        max_frames = self.viewer.num_frames
+    def update_ps_meshes(self):
+        """Update all meshes with current positions."""
         all_verts = self.state_0.particle_q.numpy()
         
+        # Update boxes
         self.ps_box1.update_vertex_positions(all_verts[0:18])
         self.ps_box2.update_vertex_positions(all_verts[18:36])
         self.ps_box3.update_vertex_positions(all_verts[36:54])
         self.ps_box4.update_vertex_positions(all_verts[54:72])
-        self.ps_cloth1_mesh.update_vertex_positions(all_verts[72:72 + self.strap1_count])
-        self.ps_cloth2_mesh.update_vertex_positions(all_verts[72 + self.strap1_count:])
-
         
-        ps.frame_tick()
-        frame_str = f"{self.frame_idx:06d}"
-        
-        ply1 = os.path.join(self.ply_dir, f"cloth1_{frame_str}.ply")
-        ply2 = os.path.join(self.ply_dir, f"cloth2_{frame_str}.ply")
-        ply3 = os.path.join(self.ply_dir, f"box1_{frame_str}.ply")
-        ply4 = os.path.join(self.ply_dir, f"box2_{frame_str}.ply")
-        ply5 = os.path.join(self.ply_dir, f"box3_{frame_str}.ply")
-        ply6 = os.path.join(self.ply_dir, f"box4_{frame_str}.ply")
-        
-        self.frame_idx += 1
-        self.write_ply(ply1, all_verts[72:72 + self.strap1_count], self.strap_faces)
-        self.write_ply(ply2, all_verts[72 + self.strap1_count:], self.strap2_faces)
-        self.write_ply(ply3, all_verts[0:18], self.box_faces)
-        self.write_ply(ply4, all_verts[18:36], self.box_faces)
-        self.write_ply(ply5, all_verts[36:54], self.box_faces)
-        self.write_ply(ply6, all_verts[54:72], self.box_faces)
-        
-        if self.frame_idx % self.print_every == 0:
-            print("Completed:", self.frame_idx, "frames.")
-        
-        if self.video_path:
-            frame = ps.screenshot_to_buffer()
-            if frame is None:
-                return
+        # Update cloth straps (handled by parent class via ps_meshes registry)
+        super().update_ps_meshes()
 
-            if frame.dtype != np.uint8:
-                frame = (np.clip(frame, 0.0, 1.0) * 255).astype(np.uint8)
+    def save_initial_meshes(self):
+        """Save initial mesh topology for each component separately."""
+        if self.output_path is None:
+            return
+        
+        all_verts = self.model.particle_q.numpy()
+        
+        def write_ply(path, vertices, faces):
+            with open(path, "w") as f:
+                f.write("ply\n")
+                f.write("format ascii 1.0\n")
+                f.write(f"element vertex {len(vertices)}\n")
+                f.write("property float x\n")
+                f.write("property float y\n")
+                f.write("property float z\n")
+                f.write(f"element face {len(faces)}\n")
+                f.write("property list uchar int vertex_indices\n")
+                f.write("end_header\n")
+                for v in vertices:
+                    f.write(f"{v[0]} {v[1]} {v[2]}\n")
+                for face in faces:
+                    f.write(f"3 {face[0]} {face[1]} {face[2]}\n")
+        
+        # Save each mesh separately
+        write_ply(join(self.output_path, "initial_cloth1.ply"),
+                  all_verts[self.strap1_start:self.strap1_start + self.strap1_count],
+                  self.strap1_faces)
+        write_ply(join(self.output_path, "initial_cloth2.ply"),
+                  all_verts[self.strap2_start:],
+                  self.strap2_faces)
+        write_ply(join(self.output_path, "initial_box1.ply"), all_verts[0:18], self.box_faces)
+        write_ply(join(self.output_path, "initial_box2.ply"), all_verts[18:36], self.box_faces)
+        write_ply(join(self.output_path, "initial_box3.ply"), all_verts[36:54], self.box_faces)
+        write_ply(join(self.output_path, "initial_box4.ply"), all_verts[54:72], self.box_faces)
+        
+        print(f"Initial meshes saved to: {self.output_path}")
 
-            if frame.shape[-1] == 4:
-                frame = frame[..., :3]
 
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            h, w, _ = frame_bgr.shape
-
-            if self.video_writer is None:
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                self.video_writer = cv2.VideoWriter(
-                    self.video_path, fourcc, self.fps, (w, h)
-                )
-                print(f"[INFO] Recording video to {self.video_path}")
-            if self.frame_idx == max_frames:
-                example.video_writer.release()
-                print("[INFO] Video file finalized")
-                exit()
-            self.video_writer.write(frame_bgr)
-        elif self.frame_idx == max_frames:
-            print("[INFO] Simulation Complete")
-            exit()
+# =============================================================================
+# Main
+# =============================================================================
 
 if __name__ == "__main__":
-    # wp.clear_kernel_cache()
-
-    parser = newton.examples.create_parser()
-    parser.set_defaults(num_frames=800)
-    parser.set_defaults(viewer="null")
-    parser.add_argument(
-        "--video-output", type=str, default=None,
-        help="Optional path to write MP4"
-    )
-
-    viewer, args = newton.examples.init(parser)
-
-    example = Example(
-        newton.viewer.ViewerNull(num_frames=args.num_frames),
-        video_path=args.video_output,
-    )
-
-    print("[INFO] Simulation started PAUSED (press Space to begin)")
-
+    import polyscope as ps
+    
+    # Configuration
+    config = {
+        **default_config,
+        "name": "falling_gift",
+        "up_axis": "z",
+        "gravity": -10,
+        "fps": 60,
+        "sim_substeps": 10,
+        "iterations": 15,
+        "sim_num_frames": 800,
+        # Self-contact settings
+        "handle_self_contact": True,
+        "self_contact_radius": 0.04,
+        "self_contact_margin": 0.06,
+        "topological_contact_filter_threshold": 1,
+        "truncation_mode": 1,
+        # Contact physics
+        "soft_contact_ke": 1.0e5,
+        "soft_contact_kd": 1e-5,
+        "soft_contact_mu": 1.0,
+        # Ground
+        "has_ground": True,
+        "ground_height": 0.0,
+        "show_ground_plane": True,
+        # Output
+        "output_path": "ply_frames",
+        "output_ext": "npy",
+        "write_output": False,
+        "write_video": False,
+        # Visualization
+        "do_rendering": True,
+        "is_initially_paused": False,
+    }
+    
+    # Create and run simulator
+    sim = FallingGiftSimulator(config)
+    sim.finalize()
+    
+    # Set camera
+    ps.look_at((-10.0, 0.0, 20.0), (0.0, 0.0, 0.0))
+    
+    print("[INFO] Simulation starting...")
+    
     try:
-        newton.examples.run(example, args)
+        sim.simulate()
+    except KeyboardInterrupt:
+        print("\n[INFO] Interrupted by user")
     finally:
-        if example.video_writer is not None:
-            example.video_writer.release()
-            print("[INFO] Video file finalized")
-
         ps.shutdown()
         print("[INFO] Simulation finished")

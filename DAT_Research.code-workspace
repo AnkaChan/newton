@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../warp-dev-demos"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../BlenderRenderers"
+		}
+	],
+	"settings": {}
+}
