@@ -935,11 +935,16 @@ def compute_swept_edge_aabbs(
     lower_bounds: wp.array(dtype=wp.vec3),
     upper_bounds: wp.array(dtype=wp.vec3),
 ):
-    """Compute AABBs for edges that cover the swept volume from start to end position."""
+    """
+    Compute AABBs for edges that cover the swept volume from start to end position.
+    
+    Note: edge_indices has shape (num_edges, 4) with format [bend_v, marker, v0, v1].
+    """
     eid = wp.tid()
     
-    i0 = edge_indices[eid, 0]
-    i1 = edge_indices[eid, 1]
+    # Edge vertices are in columns 2 and 3
+    i0 = edge_indices[eid, 2]
+    i1 = edge_indices[eid, 3]
     
     # Start positions
     p0_start = vertex_positions[i0]
@@ -1012,13 +1017,27 @@ class TriMeshContinuousCollisionDetector:
             shape=(self.model.edge_count,), dtype=wp.vec3, device=self.device
         )
         
+        # Allocate collision time buffers
+        self.vertex_collision_times = wp.array(
+            shape=(self.model.particle_count,), dtype=float, device=self.device
+        )
+        self.edge_collision_times = wp.array(
+            shape=(self.model.edge_count,), dtype=float, device=self.device
+        )
+        
+        # Use filter lists from the existing collision detector
+        self.vertex_triangle_filter_list = collision_detector.vertex_triangle_filtering_list
+        self.vertex_triangle_filter_offsets = collision_detector.vertex_triangle_filtering_list_offsets
+        self.edge_filter_list = collision_detector.edge_filtering_list
+        self.edge_filter_offsets = collision_detector.edge_filtering_list_offsets
+        
         # Build initial BVHs
         self.bvh_tris = None
         self.bvh_edges = None
         self.rebuild_bvh()
     
-    def rebuild_bvh(self):
-        """Rebuild BVHs using current positions and displacements."""
+    def _compute_swept_aabbs(self):
+        """Compute swept AABBs for triangles and edges."""
         # Compute swept AABBs for triangles
         wp.launch(
             kernel=compute_swept_tri_aabbs,
@@ -1033,9 +1052,6 @@ class TriMeshContinuousCollisionDetector:
             device=self.device,
         )
         
-        # Build triangle BVH
-        self.bvh_tris = wp.Bvh(self.lower_bounds_tris, self.upper_bounds_tris)
-        
         # Compute swept AABBs for edges
         wp.launch(
             kernel=compute_swept_edge_aabbs,
@@ -1049,11 +1065,440 @@ class TriMeshContinuousCollisionDetector:
             dim=self.model.edge_count,
             device=self.device,
         )
+    
+    def rebuild_bvh(self):
+        """
+        Full rebuild of BVHs from scratch.
         
-        # Build edge BVH
+        Use when:
+        - First initialization
+        - After significant motion that makes tree structure suboptimal
+        - Periodically to maintain query performance
+        """
+        # Compute swept AABBs
+        self._compute_swept_aabbs()
+        
+        # Build new BVH structures (optimal tree for current configuration)
+        self.bvh_tris = wp.Bvh(self.lower_bounds_tris, self.upper_bounds_tris)
         self.bvh_edges = wp.Bvh(self.lower_bounds_edges, self.upper_bounds_edges)
     
-    def update_displacements(self, vertex_displacements: wp.array):
-        """Update displacement vectors and rebuild BVH."""
+    def refit(self):
+        """
+        Refit BVHs in-place (faster than rebuild).
+        
+        Updates AABBs and refits the existing tree structure.
+        Tree topology remains the same, only bounds are updated.
+        
+        Use when:
+        - Small incremental motion between frames
+        - Performance is critical
+        - Tree structure is still reasonable
+        
+        Note: After many refits, tree quality may degrade. 
+              Call rebuild() periodically to restore optimal performance.
+        """
+        # Compute new swept AABBs
+        self._compute_swept_aabbs()
+        
+        # Refit existing BVH structures (keeps tree topology, updates bounds)
+        if self.bvh_tris is not None:
+            self.bvh_tris.refit()
+        else:
+            self.bvh_tris = wp.Bvh(self.lower_bounds_tris, self.upper_bounds_tris)
+            
+        if self.bvh_edges is not None:
+            self.bvh_edges.refit()
+        else:
+            self.bvh_edges = wp.Bvh(self.lower_bounds_edges, self.upper_bounds_edges)
+    
+    def update(self, vertex_positions: wp.array = None, vertex_displacements: wp.array = None, refit: bool = True):
+        """
+        Update positions and/or displacements, then update BVH.
+        
+        Args:
+            vertex_positions: New vertex positions (optional)
+            vertex_displacements: New displacement vectors (optional)
+            refit: If True, use fast refit. If False, do full rebuild.
+        """
+        if vertex_positions is not None:
+            self.vertex_positions = vertex_positions
+        if vertex_displacements is not None:
+            self.vertex_displacements = vertex_displacements
+        
+        if refit:
+            self.refit()
+        else:
+            self.rebuild_bvh()
+    
+    def update_displacements(self, vertex_displacements: wp.array, refit: bool = True):
+        """
+        Update displacement vectors and update BVH.
+        
+        Args:
+            vertex_displacements: New displacement vectors
+            refit: If True, use fast refit. If False, do full rebuild.
+        """
         self.vertex_displacements = vertex_displacements
-        self.rebuild_bvh()
+        if refit:
+            self.refit()
+        else:
+            self.rebuild_bvh()
+    
+    def detect_vertex_triangle_ccd(self):
+        """
+        Run vertex-triangle CCD detection.
+        
+        Updates self.vertex_collision_times with the minimum collision time
+        for each vertex (1.0 = no collision, <1.0 = collision at time t).
+        """
+        # Initialize collision times to 1.0 (no collision)
+        self.vertex_collision_times.fill_(1.0)
+        
+        # Skip if no filter list (need adjacency info)
+        if self.vertex_triangle_filter_list is None:
+            # Create dummy empty filter
+            filter_list = wp.zeros(1, dtype=wp.int32, device=self.device)
+            filter_offsets = wp.zeros(self.model.particle_count + 1, dtype=wp.int32, device=self.device)
+        else:
+            filter_list = self.vertex_triangle_filter_list
+            filter_offsets = self.vertex_triangle_filter_offsets
+        
+        wp.launch(
+            kernel=vertex_triangle_ccd_kernel,
+            dim=self.model.particle_count,
+            inputs=[
+                self.bvh_tris.id,
+                self.vertex_positions,
+                self.vertex_displacements,
+                self.model.tri_indices,
+                filter_list,
+                filter_offsets,
+            ],
+            outputs=[
+                self.vertex_collision_times,
+            ],
+            device=self.device,
+        )
+    
+    def detect_edge_edge_ccd(self):
+        """
+        Run edge-edge CCD detection.
+        
+        Updates self.edge_collision_times with the minimum collision time
+        for each edge (1.0 = no collision, <1.0 = collision at time t).
+        """
+        # Initialize collision times to 1.0 (no collision)
+        self.edge_collision_times.fill_(1.0)
+        
+        # Skip if no filter list (need adjacency info)
+        if self.edge_filter_list is None:
+            # Create dummy empty filter
+            filter_list = wp.zeros(1, dtype=wp.int32, device=self.device)
+            filter_offsets = wp.zeros(self.model.edge_count + 1, dtype=wp.int32, device=self.device)
+        else:
+            filter_list = self.edge_filter_list
+            filter_offsets = self.edge_filter_offsets
+        
+        wp.launch(
+            kernel=edge_edge_ccd_kernel,
+            dim=self.model.edge_count,
+            inputs=[
+                self.bvh_edges.id,
+                self.vertex_positions,
+                self.vertex_displacements,
+                self.model.edge_indices,
+                filter_list,
+                filter_offsets,
+            ],
+            outputs=[
+                self.edge_collision_times,
+            ],
+            device=self.device,
+        )
+    
+    def propagate_edge_collisions_to_vertices(self):
+        """
+        Propagate edge collision times to vertices.
+        
+        Each vertex's collision time is updated to the minimum of:
+        - Its current collision time (from V-T CCD)
+        - The collision times of all edges containing it (from E-E CCD)
+        """
+        wp.launch(
+            kernel=propagate_edge_collision_to_vertices_kernel,
+            dim=self.model.edge_count,
+            inputs=[
+                self.model.edge_indices,
+                self.edge_collision_times,
+            ],
+            outputs=[
+                self.vertex_collision_times,
+            ],
+            device=self.device,
+        )
+    
+    def detect_all(self):
+        """
+        Run full CCD detection (V-T + E-E) and return per-vertex collision times.
+        
+        Returns:
+            wp.array: Minimum collision time for each vertex (1.0 = no collision)
+        """
+        self.detect_vertex_triangle_ccd()
+        self.detect_edge_edge_ccd()
+        self.propagate_edge_collisions_to_vertices()
+        return self.vertex_collision_times
+    
+    def truncate_displacements(self, safety_margin: float = 0.99):
+        """
+        Truncate displacements based on CCD collision times.
+        
+        Scales each vertex's displacement by its collision time (with safety margin)
+        to prevent penetration.
+        
+        Args:
+            safety_margin: Factor to multiply collision time by (default 0.99)
+                          Use <1.0 to stop slightly before collision.
+        
+        Returns:
+            wp.array: Truncated displacement vectors
+        """
+        # Run full CCD detection
+        self.detect_all()
+        
+        # Truncate displacements
+        truncated = wp.zeros_like(self.vertex_displacements)
+        
+        wp.launch(
+            kernel=_truncate_displacements_by_time_kernel,
+            dim=self.model.particle_count,
+            inputs=[
+                self.vertex_displacements,
+                self.vertex_collision_times,
+                safety_margin,
+            ],
+            outputs=[
+                truncated,
+            ],
+            device=self.device,
+        )
+        
+        return truncated
+
+
+@wp.kernel
+def _truncate_displacements_by_time_kernel(
+    displacements: wp.array(dtype=wp.vec3),
+    collision_times: wp.array(dtype=float),
+    safety_margin: float,
+    truncated: wp.array(dtype=wp.vec3),
+):
+    """Scale displacements by collision time."""
+    vid = wp.tid()
+    t = collision_times[vid] * safety_margin
+    truncated[vid] = displacements[vid] * t
+
+
+# ==============================================================================
+# CCD Detection Kernels
+# ==============================================================================
+
+
+@wp.func
+def is_in_filter_list(
+    idx: int,
+    filter_list: wp.array(dtype=wp.int32),
+    filter_start: int,
+    filter_end: int,
+) -> bool:
+    """Check if idx is in the filter list."""
+    for f in range(filter_start, filter_end):
+        if filter_list[f] == idx:
+            return True
+    return False
+
+
+@wp.kernel
+def vertex_triangle_ccd_kernel(
+    bvh_id: wp.uint64,
+    vertex_positions: wp.array(dtype=wp.vec3),
+    vertex_displacements: wp.array(dtype=wp.vec3),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    # Filtering: list of triangles to skip for each vertex (e.g., adjacent triangles)
+    filter_list: wp.array(dtype=wp.int32),
+    filter_offsets: wp.array(dtype=wp.int32),
+    # Output: minimum collision time for each vertex (1.0 = no collision)
+    min_collision_time: wp.array(dtype=float),
+):
+    """
+    Vertex-Triangle CCD detection kernel.
+    
+    For each vertex, query the BVH for candidate triangles and compute
+    the earliest collision time using vertex_triangle_ccd.
+    """
+    vid = wp.tid()
+    
+    # Vertex trajectory
+    v0 = vertex_positions[vid]
+    dv = vertex_displacements[vid]
+    v1 = v0 + dv
+    
+    # Query BVH with vertex's swept AABB
+    lower = wp.vec3(
+        wp.min(v0[0], v1[0]),
+        wp.min(v0[1], v1[1]),
+        wp.min(v0[2], v1[2]),
+    )
+    upper = wp.vec3(
+        wp.max(v0[0], v1[0]),
+        wp.max(v0[1], v1[1]),
+        wp.max(v0[2], v1[2]),
+    )
+    
+    # Filter range for this vertex
+    filter_start = filter_offsets[vid]
+    filter_end = filter_offsets[vid + 1]
+    
+    min_t = float(1.0)
+    
+    # Query BVH for overlapping triangles
+    query = wp.bvh_query_aabb(bvh_id, lower, upper)
+    tri_idx = int(0)
+    
+    while wp.bvh_query_next(query, tri_idx):
+        # Check if this triangle should be filtered (e.g., adjacent to vertex)
+        if is_in_filter_list(tri_idx, filter_list, filter_start, filter_end):
+            continue
+        
+        # Get triangle vertices
+        i0 = tri_indices[tri_idx, 0]
+        i1 = tri_indices[tri_idx, 1]
+        i2 = tri_indices[tri_idx, 2]
+        
+        # Triangle vertex positions and displacements
+        a0 = vertex_positions[i0]
+        b0 = vertex_positions[i1]
+        c0 = vertex_positions[i2]
+        
+        a1 = a0 + vertex_displacements[i0]
+        b1 = b0 + vertex_displacements[i1]
+        c1 = c0 + vertex_displacements[i2]
+        
+        # Compute collision time
+        t = vertex_triangle_ccd(v0, v1, a0, a1, b0, b1, c0, c1)
+        
+        if t >= 0.0 and t < min_t:
+            min_t = t
+    
+    min_collision_time[vid] = min_t
+
+
+@wp.kernel
+def edge_edge_ccd_kernel(
+    bvh_id: wp.uint64,
+    vertex_positions: wp.array(dtype=wp.vec3),
+    vertex_displacements: wp.array(dtype=wp.vec3),
+    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    # Filtering: list of edges to skip for each edge (e.g., adjacent edges)
+    filter_list: wp.array(dtype=wp.int32),
+    filter_offsets: wp.array(dtype=wp.int32),
+    # Output: minimum collision time for each edge (1.0 = no collision)
+    min_collision_time: wp.array(dtype=float),
+):
+    """
+    Edge-Edge CCD detection kernel.
+    
+    For each edge, query the BVH for candidate edges and compute
+    the earliest collision time using edge_edge_ccd.
+    
+    Note: edge_indices has shape (num_edges, 4) with format [bend_v, marker, v0, v1].
+    The actual edge vertices are in columns 2 and 3.
+    """
+    eid = wp.tid()
+    
+    # Edge vertices (columns 2 and 3 of edge_indices)
+    i0 = edge_indices[eid, 2]
+    i1 = edge_indices[eid, 3]
+    
+    # Edge trajectory (start and end positions)
+    a0 = vertex_positions[i0]
+    b0 = vertex_positions[i1]
+    da = vertex_displacements[i0]
+    db = vertex_displacements[i1]
+    a1 = a0 + da
+    b1 = b0 + db
+    
+    # Query BVH with edge's swept AABB
+    lower = wp.vec3(
+        wp.min(wp.min(wp.min(a0[0], b0[0]), a1[0]), b1[0]),
+        wp.min(wp.min(wp.min(a0[1], b0[1]), a1[1]), b1[1]),
+        wp.min(wp.min(wp.min(a0[2], b0[2]), a1[2]), b1[2]),
+    )
+    upper = wp.vec3(
+        wp.max(wp.max(wp.max(a0[0], b0[0]), a1[0]), b1[0]),
+        wp.max(wp.max(wp.max(a0[1], b0[1]), a1[1]), b1[1]),
+        wp.max(wp.max(wp.max(a0[2], b0[2]), a1[2]), b1[2]),
+    )
+    
+    # Filter range for this edge
+    filter_start = filter_offsets[eid]
+    filter_end = filter_offsets[eid + 1]
+    
+    min_t = float(1.0)
+    
+    # Query BVH for overlapping edges
+    query = wp.bvh_query_aabb(bvh_id, lower, upper)
+    other_eid = int(0)
+    
+    while wp.bvh_query_next(query, other_eid):
+        # Skip self
+        if other_eid == eid:
+            continue
+        
+        # Check if this edge should be filtered (e.g., shares a vertex)
+        if is_in_filter_list(other_eid, filter_list, filter_start, filter_end):
+            continue
+        
+        # Get other edge vertices (columns 2 and 3)
+        j0 = edge_indices[other_eid, 2]
+        j1 = edge_indices[other_eid, 3]
+        
+        # Other edge trajectory
+        c0 = vertex_positions[j0]
+        d0 = vertex_positions[j1]
+        c1 = c0 + vertex_displacements[j0]
+        d1 = d0 + vertex_displacements[j1]
+        
+        # Compute collision time
+        t = edge_edge_ccd(a0, a1, b0, b1, c0, c1, d0, d1)
+        
+        if t >= 0.0 and t < min_t:
+            min_t = t
+    
+    min_collision_time[eid] = min_t
+
+
+@wp.kernel
+def propagate_edge_collision_to_vertices_kernel(
+    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    edge_collision_times: wp.array(dtype=float),
+    vertex_collision_times: wp.array(dtype=float),
+):
+    """
+    Propagate edge collision times to vertices.
+    Each vertex takes the minimum of its current collision time and
+    the collision times of all edges containing it.
+    
+    Note: edge_indices has shape (num_edges, 4) with format [bend_v, marker, v0, v1].
+    """
+    eid = wp.tid()
+    
+    t = edge_collision_times[eid]
+    if t < 1.0:
+        # Edge vertices are in columns 2 and 3
+        i0 = edge_indices[eid, 2]
+        i1 = edge_indices[eid, 3]
+        
+        # Atomically update vertex collision times
+        wp.atomic_min(vertex_collision_times, i0, t)
+        wp.atomic_min(vertex_collision_times, i1, t)
