@@ -2143,6 +2143,42 @@ def planar_truncation_t(
     return t
 
 
+
+@wp.func
+def hessian_weighted_projection_onto_halfspace(
+    x: wp.vec3, n: wp.vec3, p: wp.vec3, H_inv: wp.mat33, eps: float = 1e-8
+):
+    """
+    Project x onto half-space {y : n^T (y - p) >= 0} using the hessian-weighted metric H.
+    
+    Args:
+        x: Point to project
+        n: Normal vector of the half-space (should be normalized)
+        p: Point on the half-space boundary
+        H_inv: Inverse of the hessian matrix H
+        eps: Small epsilon for numerical stability
+    
+    Returns:
+        Projected point
+    """
+    # Check if x is in the half-space: n^T (x - p) >= 0
+    n_dot_x_minus_p = wp.dot(n, x - p)
+    
+    if n_dot_x_minus_p >= -eps:
+        # x is already in the half-space
+        return x
+    
+    # Compute projection: x - H^{-1} n * (n^T (x - p)) / (n^T H^{-1} n)
+    H_inv_n = H_inv * n
+    n_dot_H_inv_n = wp.dot(n, H_inv_n)
+    
+    if wp.abs(n_dot_H_inv_n) < eps:
+        # Degenerate case: n is in null space of H
+        return x
+    
+    lambda_proj = n_dot_x_minus_p / n_dot_H_inv_n
+    return x - H_inv_n * lambda_proj
+
 @wp.kernel
 def apply_planar_truncation(
     pos: wp.array(dtype=wp.vec3),
@@ -3169,6 +3205,170 @@ def apply_truncation_ts(
 
 
 @wp.kernel
+def hessian_dykstra_projection( # Anka's Dykstra Function, We use it here except that division planes are not precomputed and projections are hessian weighted
+        max_iter:int,
+        pos: wp.array(dtype=wp.vec3),
+        displacement_in: wp.array(dtype=wp.vec3),
+        particle_hessians: wp.array(dtype=wp.mat33),
+        tri_indices: wp.array(dtype=wp.int32, ndim=2),
+        edge_indices: wp.array(dtype=wp.int32, ndim=2),
+        adjacency: ForceElementAdjacencyInfo,
+        collision_info_arr: wp.array(dtype=TriMeshCollisionInfo),
+        parallel_eps: float,
+        #division_plane_nds_vt: wp.array(dtype=wp.vec3),             # shape = vertex_colliding_triangles.shape
+        projection_t_vt: wp.array(dtype=float),                      # shape = (vertex_colliding_triangles.shape // 2)
+        #division_plane_is_dummy_vt: wp.array(dtype=wp.bool),        # shape = vertex_colliding_triangles.shape // 2
+        #division_plane_nds_ee: wp.array(dtype=wp.vec3),             # shape = edge_colliding_edges.shape
+        projection_t_ee: wp.array(dtype=float),                      # shape = (edge_colliding_edges.shape, one for per vertex on the edge)
+        #division_plane_is_dummy_ee: wp.array(dtype=wp.bool),        # shape = edge_colliding_edges.shape, one for per vertex on the edge
+        #division_plane_nds_tv: wp.array(dtype=wp.vec3),             # self.collision_detector.collision_info.triangle_colliding_vertices.shape[0] * 2
+        projection_t_tv: wp.array(dtype=float),                      # shape = (triangle_colliding_vertices.shape[0] * 3, one for per vertex on the triangle)
+        #division_plane_is_dummy_tv: wp.array(dtype=wp.bool),        # shape = triangle_colliding_vertices.shape[0] * 3, one for per vertex on the triangle
+        displacements_out: wp.array(dtype=wp.vec3),
+):
+    particle_idx = wp.tid()
+    particle_pos = pos[particle_idx]
+    particle_displacement = displacement_in[particle_idx]
+    x = pos[particle_idx] + particle_displacement
+    delta_x_k = particle_displacement
+    H_v = particle_hessians[particle_idx]
+    det_H = wp.determinant(H_v)
+    collision_info = collision_info_arr[0]
+    '''
+    if wp.abs(det_H) < 1e-8:
+        # Degenerate case: fall back to no projection
+        displacements_out[particle_idx] = particle_displacement
+        return
+    else:
+    '''
+    H_v_inv = wp.inverse(H_v)
+    for iter in range(max_iter):
+
+        for i_v_collision in range(get_vertex_colliding_triangles_count(collision_info, particle_idx)):
+            offset_v_t = collision_info.vertex_colliding_triangles_offsets[particle_idx]
+            colliding_tri_index = get_vertex_colliding_triangles(collision_info, particle_idx, i_v_collision)
+            t1 = pos[tri_indices[colliding_tri_index, 0]]
+            t2 = pos[tri_indices[colliding_tri_index, 1]]
+            t3 = pos[tri_indices[colliding_tri_index, 2]]
+            
+            delta_t1 = displacement_in[tri_indices[colliding_tri_index, 0]]
+            delta_t2 = displacement_in[tri_indices[colliding_tri_index, 1]]
+            delta_t3 = displacement_in[tri_indices[colliding_tri_index, 2]]
+            
+            is_dummy, n, d = create_vertex_triangle_division_plane_closest_pt(
+                particle_pos,
+                delta_x_k,
+                t1,
+                delta_t1,
+                t2,
+                delta_t2,
+                t3,
+                delta_t3,
+            )
+            
+            if not is_dummy[0]:
+                # Simplified: no dual variable storage (y_{v,t} = 0 for now)
+                # Full implementation: x* = delta_x_k - y_{v,t}
+                t = projection_t_vt[offset_v_t + i_v_collision]
+                x_star = delta_x_k - t * n
+                delta_x_k = hessian_weighted_projection_onto_halfspace(
+                    particle_pos + x_star, n, d, H_v_inv, parallel_eps
+                ) - particle_pos
+                # Full implementation: y_{v,t} = x_star - delta_x_k
+                t_new = wp.dot(x_star - delta_x_k, n)
+                projection_t_vt[offset_v_t + i_v_collision] = t_new
+                
+
+
+        for i_adj_tri in range(get_vertex_num_adjacent_faces(adjacency, particle_idx)):
+            tri_index, vertex_order = get_vertex_adjacent_face_id_order(adjacency, particle_idx, i_adj_tri)
+            t1 = pos[tri_indices[tri_index, 0]]
+            t2 = pos[tri_indices[tri_index, 1]]
+            t3 = pos[tri_indices[tri_index, 2]]
+            
+            delta_t1 = displacement_in[tri_indices[tri_index, 0]]
+            delta_t2 = displacement_in[tri_indices[tri_index, 1]]
+            delta_t3 = displacement_in[tri_indices[tri_index, 2]]
+
+            for i_t_collision in range(get_triangle_colliding_vertices_count(collision_info, tri_index)):
+                offset_t_v = collision_info.triangle_colliding_vertices_offsets[tri_index]
+                colliding_v = get_triangle_colliding_vertices(collision_info, tri_index, i_t_collision)
+                colliding_particle_pos = pos[colliding_v]
+                colliding_particle_displacement = displacement_in[colliding_v]
+                
+                is_dummy, n, d = create_vertex_triangle_division_plane_closest_pt(
+                    colliding_particle_pos,
+                    colliding_particle_displacement,
+                    t1,
+                    delta_t1,
+                    t2,
+                    delta_t2,
+                    t3,
+                    delta_t3,
+                )
+                
+                if not is_dummy[vertex_order + 1]:
+                    t = projection_t_tv[3 * (offset_t_v + i_t_collision) + vertex_order]
+                    x_star = delta_x_k - t * n
+                    delta_x_k = hessian_weighted_projection_onto_halfspace(
+                        particle_pos + x_star, n, d, H_v_inv, parallel_eps
+                    ) - particle_pos
+                    t_new = wp.dot(x_star - delta_x_k, n)
+                    projection_t_tv[3 * (offset_t_v + i_t_collision) + vertex_order] = t_new
+                    
+                    
+
+        for i_adj_edge in range(get_vertex_num_adjacent_edges(adjacency, particle_idx)):
+            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(adjacency, particle_idx,
+                                                                                    i_adj_edge)
+
+            if vertex_order_on_edge == 2 or vertex_order_on_edge == 3:
+                vertex_order_on_edge_2_v1_v2_only = vertex_order_on_edge - 2
+                for i_e_collision in range(get_edge_colliding_edges_count(collision_info, nei_edge_index)):
+                    offset_e_e = collision_info.edge_colliding_edges_offsets[nei_edge_index]
+                    colliding_e = get_edge_colliding_edges(collision_info, nei_edge_index, i_e_collision)
+                    
+                    e1_v1 = edge_indices[nei_edge_index, 2]
+                    e1_v2 = edge_indices[nei_edge_index, 3]
+                    
+                    e1_v1_pos = pos[e1_v1]
+                    e1_v2_pos = pos[e1_v2]
+                    
+                    delta_e1_v1 = displacement_in[e1_v1]
+                    delta_e1_v2 = displacement_in[e1_v2]
+                    
+                    e2_v1 = edge_indices[colliding_e, 2]
+                    e2_v2 = edge_indices[colliding_e, 3]
+                    
+                    e2_v1_pos = pos[e2_v1]
+                    e2_v2_pos = pos[e2_v2]
+                    
+                    delta_e2_v1 = displacement_in[e2_v1]
+                    delta_e2_v2 = displacement_in[e2_v2]
+                    
+                    is_dummy, n, d = create_edge_edge_division_plane_closest_pt(
+                        e1_v1_pos,
+                        delta_e1_v1,
+                        e1_v2_pos,
+                        delta_e1_v2,
+                        e2_v1_pos,
+                        delta_e2_v1,
+                        e2_v2_pos,
+                        delta_e2_v2,
+                    )
+                    vertex_order_on_edge_2_v1_v2_only = vertex_order_on_edge - 2
+                    
+                    if not is_dummy[vertex_order_on_edge_2_v1_v2_only]:
+                        t = projection_t_ee[2 * (offset_e_e + i_e_collision) + vertex_order_on_edge_2_v1_v2_only]
+                        x_star = delta_x_k - t * n
+                        delta_x_k = hessian_weighted_projection_onto_halfspace(
+                            particle_pos + x_star, n, d, H_v_inv, parallel_eps
+                        ) - particle_pos
+                        projection_t_ee[2 * (offset_e_e + i_e_collision) + vertex_order_on_edge_2_v1_v2_only] = t_new
+                        
+    displacements_out[particle_idx] = delta_x_k
+
+@wp.kernel
 def accumulate_self_contact_force_and_hessian_tile(
     # inputs
     dt: float,
@@ -4142,6 +4342,7 @@ class SolverVBD(SolverBase):
         edge_edge_parallel_epsilon: float = 1e-10,
         use_tile_solve: bool = True,
         truncation_mode: int = 1,  # 0: isometric, 1: planar (DAT), 2: CCD (global min t)
+        dykstra_iterations: int = 20,  # Number of Dykstra iterations for mode 2
     ):
         """
         Args:
@@ -4212,6 +4413,7 @@ class SolverVBD(SolverBase):
         self.rest_shape = model.particle_q
         self.particle_conservative_bounds = wp.full((self.model.particle_count,), dtype=float, device=self.device)
         self.truncation_mode = truncation_mode
+        self.dykstra_iterations = dykstra_iterations
         self.ccd_detector = None  # Initialized lazily when truncation_mode == 2
 
         if model.device.is_cpu and use_tile_solve:
@@ -4235,6 +4437,7 @@ class SolverVBD(SolverBase):
                 vertex_collision_buffer_pre_alloc=vertex_collision_buffer_pre_alloc,
                 edge_collision_buffer_pre_alloc=edge_collision_buffer_pre_alloc,
                 edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
+                record_triangle_contacting_vertices=True,
             )
 
             self.compute_contact_filtering_list(
@@ -4294,6 +4497,11 @@ class SolverVBD(SolverBase):
         # wp.launch(kernel=_test_compute_force_element_adjacency,
         #           inputs=[self.adjacency, model.edge_indices, model.tri_indices],
         #           dim=1, device=self.device)
+        if self.truncation_mode == 3:
+            self.project_t_vt = wp.zeros(dtype=float, shape=(len(self.trimesh_collision_detector.collision_info.vertex_colliding_triangles) // 2,), device=self.device)
+            self.project_t_ee = wp.zeros(dtype=float, shape=self.trimesh_collision_detector.collision_info.edge_colliding_edges.shape, device=self.device)
+            self.project_t_tv = wp.zeros(dtype=float, shape=(len(self.trimesh_collision_detector.collision_info.triangle_colliding_vertices) * 3,), device=self.device)
+            self.dis_out = wp.zeros_like(self.particle_displacements, device=self.device)
 
     def compute_force_element_adjacency(self, model):
         adjacency = ForceElementAdjacencyInfo()
@@ -4722,7 +4930,32 @@ class SolverVBD(SolverBase):
                     ],
                     device=self.device,
                 )
-
+                if self.truncation_mode == 3:
+                    # initialize dykstra arrays
+                    # call the dykstra kernel
+                    
+                    wp.launch(
+                        kernel=hessian_dykstra_projection,
+                        inputs=[
+                            self.dykstra_iterations,
+                            self.pos_prev_collision_detection,
+                            self.particle_displacements,
+                            self.particle_hessians,
+                            self.model.tri_indices,
+                            self.model.edge_indices,
+                            self.adjacency,
+                            self.trimesh_collision_info,
+                            1e-7,
+                            self.project_t_vt,
+                            self.project_t_ee,
+                            self.project_t_tv,
+                        ],
+                        outputs=[
+                            self.dis_out,
+                        ],
+                        dim=self.model.particle_count,
+                        device=self.device,
+                    )
                 self.penetration_free_truncation(state_in.particle_q)
 
         wp.copy(state_out.particle_q, state_in.particle_q)
@@ -4920,6 +5153,32 @@ class SolverVBD(SolverBase):
                     ],
                     device=self.device,
                 )
+                if self.truncation_mode == 3:
+                    # initialize dykstra arrays
+                    # call the dykstra kernel
+                    
+                    wp.launch(
+                        kernel=hessian_dykstra_projection,
+                        inputs=[
+                            self.dykstra_iterations,
+                            self.pos_prev_collision_detection,
+                            self.particle_displacements,
+                            self.particle_hessians,
+                            self.model.tri_indices,
+                            self.model.edge_indices,
+                            self.adjacency,
+                            self.trimesh_collision_info,
+                            1e-7,
+                            self.project_t_vt,
+                            self.project_t_ee,
+                            self.project_t_tv,
+                        ],
+                        outputs=[
+                            self.dis_out,
+                        ],
+                        dim=self.model.particle_count,
+                        device=self.device,
+                    )
 
                 self.penetration_free_truncation(state_in.particle_q)
 
