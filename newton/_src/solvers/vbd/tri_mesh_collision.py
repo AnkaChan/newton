@@ -984,6 +984,8 @@ class TriMeshContinuousCollisionDetector:
         collision_detector: TriMeshCollisionDetector,
         vertex_positions: wp.array,
         vertex_displacements: wp.array,
+        adjacency=None,  # ForceElementAdjacencyInfo for building filter lists
+        filter_threshold: int = 2,  # Always filter n-ring neighbors (independent of DCD)
     ):
         """
         Initialize CCD detector.
@@ -992,6 +994,9 @@ class TriMeshContinuousCollisionDetector:
             collision_detector: An existing TriMeshCollisionDetector to get model and buffer settings from
             vertex_positions: Start positions of vertices (wp.array of vec3)
             vertex_displacements: Displacement vectors for each vertex (wp.array of vec3)
+            adjacency: ForceElementAdjacencyInfo for building filter lists (optional, but recommended)
+            filter_threshold: Filter out n-ring neighbors (default 2). CCD builds its own filter lists
+                              independently of DCD settings.
         """
         # Get model and settings from existing collision detector
         self.model = collision_detector.model
@@ -1025,16 +1030,77 @@ class TriMeshContinuousCollisionDetector:
             shape=(self.model.edge_count,), dtype=float, device=self.device
         )
         
-        # Use filter lists from the existing collision detector
-        self.vertex_triangle_filter_list = collision_detector.vertex_triangle_filtering_list
-        self.vertex_triangle_filter_offsets = collision_detector.vertex_triangle_filtering_list_offsets
-        self.edge_filter_list = collision_detector.edge_filtering_list
-        self.edge_filter_offsets = collision_detector.edge_filtering_list_offsets
+        # Build CCD's own filter lists (independent of DCD settings)
+        self._build_filter_lists(adjacency, filter_threshold)
         
         # Build initial BVHs
         self.bvh_tris = None
         self.bvh_edges = None
         self.rebuild_bvh()
+    
+    def _build_filter_lists(self, adjacency, filter_threshold: int):
+        """
+        Build CCD's own filter lists for adjacent element filtering.
+        
+        CCD MUST filter out adjacent elements to avoid false positives at t=0.
+        This is independent of DCD's filter settings.
+        """
+        # Try to use provided adjacency, otherwise fall back to DCD's filter lists
+        if adjacency is not None and filter_threshold >= 2:
+            # Build our own filter lists from adjacency info
+            from newton._src.solvers.vbd.solver_vbd import (
+                build_vertex_n_ring_tris_collision_filter,
+                build_edge_n_ring_edge_collision_filter,
+                _set_to_csr,
+            )
+            
+            # Build vertex-triangle filter
+            if hasattr(adjacency, 'v_adj_faces_offsets') and adjacency.v_adj_faces_offsets.size > 0:
+                v_tri_filter_sets = build_vertex_n_ring_tris_collision_filter(
+                    filter_threshold,
+                    self.model.particle_count,
+                    self.model.edge_indices.numpy(),
+                    adjacency.v_adj_edges.numpy(),
+                    adjacency.v_adj_edges_offsets.numpy(),
+                    adjacency.v_adj_faces.numpy(),
+                    adjacency.v_adj_faces_offsets.numpy(),
+                )
+                filter_list, filter_offsets = _set_to_csr(v_tri_filter_sets)
+                self.vertex_triangle_filter_list = wp.array(filter_list, dtype=int, device=self.device)
+                self.vertex_triangle_filter_offsets = wp.array(filter_offsets, dtype=int, device=self.device)
+            else:
+                self.vertex_triangle_filter_list = None
+                self.vertex_triangle_filter_offsets = None
+            
+            # Build edge-edge filter
+            if hasattr(adjacency, 'v_adj_edges_offsets') and adjacency.v_adj_edges_offsets.size > 0:
+                edge_edge_filter_sets = build_edge_n_ring_edge_collision_filter(
+                    filter_threshold,
+                    self.model.edge_indices.numpy(),
+                    adjacency.v_adj_edges.numpy(),
+                    adjacency.v_adj_edges_offsets.numpy(),
+                )
+                filter_list, filter_offsets = _set_to_csr(edge_edge_filter_sets)
+                self.edge_filter_list = wp.array(filter_list, dtype=int, device=self.device)
+                self.edge_filter_offsets = wp.array(filter_offsets, dtype=int, device=self.device)
+            else:
+                self.edge_filter_list = None
+                self.edge_filter_offsets = None
+        else:
+            # Fall back to using DCD's filter lists (may be None if DCD threshold < 2)
+            self.vertex_triangle_filter_list = self.collision_detector.vertex_triangle_filtering_list
+            self.vertex_triangle_filter_offsets = self.collision_detector.vertex_triangle_filtering_list_offsets
+            self.edge_filter_list = self.collision_detector.edge_filtering_list
+            self.edge_filter_offsets = self.collision_detector.edge_filtering_list_offsets
+            
+            # Warn if filter lists are None
+            if self.vertex_triangle_filter_list is None:
+                import warnings
+                warnings.warn(
+                    "CCD: No vertex-triangle filter list available. "
+                    "Pass adjacency info to build filter lists, or set DCD topological_contact_filter_threshold >= 2. "
+                    "Without filtering, CCD may detect false collisions between adjacent elements."
+                )
     
     def _compute_swept_aabbs(self):
         """Compute swept AABBs for triangles and edges."""
@@ -1375,6 +1441,10 @@ def vertex_triangle_ccd_kernel(
         i1 = tri_indices[tri_idx, 1]
         i2 = tri_indices[tri_idx, 2]
         
+        # Skip if vertex belongs to this triangle (fundamental check)
+        if vid == i0 or vid == i1 or vid == i2:
+            continue
+        
         # Triangle vertex positions and displacements
         a0 = vertex_positions[i0]
         b0 = vertex_positions[i1]
@@ -1462,6 +1532,10 @@ def edge_edge_ccd_kernel(
         # Get other edge vertices (columns 2 and 3)
         j0 = edge_indices[other_eid, 2]
         j1 = edge_indices[other_eid, 3]
+        
+        # Skip if edges share a vertex (fundamental check)
+        if i0 == j0 or i0 == j1 or i1 == j0 or i1 == j1:
+            continue
         
         # Other edge trajectory
         c0 = vertex_positions[j0]

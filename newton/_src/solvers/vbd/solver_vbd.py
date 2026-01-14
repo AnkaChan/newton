@@ -3925,6 +3925,7 @@ def solve_elasticity(
         h_inv = wp.inverse(h)
         particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f
 
+    particle_forces[particle_index] = f
 
 @wp.kernel
 def solve_elasticity_tile(
@@ -4141,7 +4142,6 @@ class SolverVBD(SolverBase):
         edge_edge_parallel_epsilon: float = 1e-10,
         use_tile_solve: bool = True,
         truncation_mode: int = 1,  # 0: isometric, 1: planar (DAT), 2: CCD (global min t)
-        ccd_safety_margin: float = 0.99,  # Safety margin for CCD truncation
     ):
         """
         Args:
@@ -4212,7 +4212,6 @@ class SolverVBD(SolverBase):
         self.rest_shape = model.particle_q
         self.particle_conservative_bounds = wp.full((self.model.particle_count,), dtype=float, device=self.device)
         self.truncation_mode = truncation_mode
-        self.ccd_safety_margin = ccd_safety_margin
         self.ccd_detector = None  # Initialized lazily when truncation_mode == 2
 
         if model.device.is_cpu and use_tile_solve:
@@ -4228,6 +4227,8 @@ class SolverVBD(SolverBase):
                 )
 
             self.conservative_bound_relaxation = penetration_free_conservative_bound_relaxation
+            # CCD safety margin: 2x the conservative bound relaxation (e.g., 0.42 -> 0.84)
+            self.ccd_safety_margin = 2.0 * self.conservative_bound_relaxation
 
             self.trimesh_collision_detector = TriMeshCollisionDetector(
                 self.model,
@@ -5139,16 +5140,20 @@ class SolverVBD(SolverBase):
         """
         # Create or update CCD detector
         if self.ccd_detector is None:
+            # CCD builds its own filter lists using the adjacency info
+            # This is independent of DCD's topological_contact_filter_threshold
             self.ccd_detector = TriMeshContinuousCollisionDetector(
                 self.trimesh_collision_detector,
                 self.pos_prev_collision_detection,
                 self.particle_displacements,
+                adjacency=self.adjacency,  # Pass adjacency for building CCD's own filter lists
+                filter_threshold=2,  # Always filter 2-ring neighbors for CCD
             )
         else:
-            # Update positions and displacements
+            # Update positions and displacements, then refit BVH (faster than rebuild)
             wp.copy(self.ccd_detector.vertex_positions, self.pos_prev_collision_detection)
             wp.copy(self.ccd_detector.vertex_displacements, self.particle_displacements)
-            self.ccd_detector.rebuild_bvh()
+            self.ccd_detector.refit()
         
         # Run V-T and E-E CCD detection
         self.ccd_detector.detect_vertex_triangle_ccd()
@@ -5164,6 +5169,11 @@ class SolverVBD(SolverBase):
         
         # Apply safety margin and clamp
         global_t = max(0.0, min(1.0, global_min_t * self.ccd_safety_margin))
+        
+        # Debug: print statistics (uncomment to debug CCD)
+        # num_vt_collisions = int(np.sum(vt_times < 1.0))
+        # num_ee_collisions = int(np.sum(ee_times < 1.0))
+        # print(f"CCD Debug: min_vt={min_vt:.6f} ({num_vt_collisions} VT), min_ee={min_ee:.6f} ({num_ee_collisions} EE), global_t={global_t:.6f}")
         
         # Fill truncation_ts with global_t and apply
         self.truncation_ts.fill_(global_t)

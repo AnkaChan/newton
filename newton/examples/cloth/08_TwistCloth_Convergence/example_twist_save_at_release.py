@@ -379,6 +379,26 @@ class TwistClothSimulator(Simulator):
 # Main
 # =============================================================================
 
+def save_config(config: dict, output_dir: str):
+    """Save the configuration to a JSON file for reproducibility."""
+    import json
+    config_path = os.path.join(output_dir, "run_config.json")
+    
+    # Convert non-JSON-serializable values
+    config_to_save = {}
+    for k, v in config.items():
+        if isinstance(v, (int, float, str, bool, list, dict, type(None))):
+            config_to_save[k] = v
+        else:
+            config_to_save[k] = str(v)  # Convert to string for non-serializable types
+    
+    with open(config_path, "w") as f:
+        json.dump(config_to_save, f, indent=2)
+    
+    print(f"Configuration saved to: {config_path}")
+    return config_path
+
+
 if __name__ == "__main__":
     # wp.clear_kernel_cache()
 
@@ -407,6 +427,11 @@ if __name__ == "__main__":
     # Create simulator and run
     sim = TwistClothSimulator(example_config)
     sim.finalize()
+    
+    # Create output directory and save config BEFORE simulation
+    os.makedirs(output_dir, exist_ok=True)
+    save_config(example_config, output_dir)
+    
     sim.simulate()
 
     # Save recovery state at the release point

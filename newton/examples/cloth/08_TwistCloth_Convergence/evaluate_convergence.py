@@ -24,12 +24,39 @@ import warp as wp
 import matplotlib.pyplot as plt
 
 # Import from the save_at_release script
-from example_twist_save_at_release import TwistClothSimulator, example_config
+from example_twist_save_at_release import TwistClothSimulator, example_config as default_config
 
 # Import kernels from the VBD solver module (internal)
 import newton._src.solvers.vbd.solver_vbd as vbd_module
 from newton import ParticleFlags
 from newton.solvers import SolverVBD
+
+
+def load_run_config(recovery_state_dir: str) -> dict:
+    """
+    Load the run configuration from the recovery state directory.
+    
+    Args:
+        recovery_state_dir: Directory containing the recovery state and config
+        
+    Returns:
+        dict: The loaded configuration, merged with defaults
+    """
+    config_path = os.path.join(recovery_state_dir, "run_config.json")
+    
+    if os.path.exists(config_path):
+        print(f"Loading config from: {config_path}")
+        with open(config_path, "r") as f:
+            saved_config = json.load(f)
+        
+        # Merge with defaults (saved config takes precedence)
+        config = {**default_config, **saved_config}
+        print(f"  Loaded {len(saved_config)} config values from file")
+        return config
+    else:
+        print(f"Warning: No config file found at {config_path}")
+        print("  Using default config instead")
+        return default_config.copy()
 
 
 def compute_force_residual(solver: SolverVBD, state, dt: float) -> dict:
@@ -44,30 +71,24 @@ def compute_force_residual(solver: SolverVBD, state, dt: float) -> dict:
     """
     model = solver.model
     
-    # Get current state
-    positions = state.particle_q.numpy()
-    velocities = state.particle_qd.numpy()
-    masses = model.particle_mass.numpy()
+    # Get flags to identify active particles
     flags = model.particle_flags.numpy()
     
-    # Compute force residual as: ||m * a|| where a = (v_new - v_old) / dt
-    # For VBD, we can approximate this from the displacement
-    displacements = solver.particle_displacements.numpy()
-    
-    # Force = mass * displacement / dt^2 (from Newton's 2nd law in implicit form)
-    forces = masses[:, np.newaxis] * displacements / (dt * dt)
+    # Read forces directly from solver.particle_forces (already computed by the solver)
+    forces = solver.particle_forces.numpy()
     
     # Only consider active particles
     active_mask = (flags & int(ParticleFlags.ACTIVE)) != 0
     active_forces = forces[active_mask]
     
-    # Compute various norms
+    # Compute per-vertex force norms
     force_norms = np.linalg.norm(active_forces, axis=1)
     
+    # Return per-vertex average as main metric
     return {
+        "mean_norm": float(np.mean(force_norms)) if len(force_norms) > 0 else 0.0,  # Per-vertex average
         "l2_norm": float(np.sqrt(np.sum(force_norms**2))),
         "linf_norm": float(np.max(force_norms)) if len(force_norms) > 0 else 0.0,
-        "mean_norm": float(np.mean(force_norms)) if len(force_norms) > 0 else 0.0,
         "num_active": int(np.sum(active_mask)),
     }
 
@@ -78,6 +99,7 @@ def run_vbd_iterations_with_residuals(
     dt: float,
     num_iterations: int,
     truncation_mode: int,
+    collision_detection_interval: int = -1,  # -1 = no redo, 0 = once at start, N = every N iterations
 ) -> list:
     """
     Run VBD iterations and collect force residuals after each iteration.
@@ -97,27 +119,27 @@ def run_vbd_iterations_with_residuals(
     model = solver.model
     state_in = sim.state_0
     
-    # Set truncation mode
+    # Save original mode
     original_mode = solver.truncation_mode
-    solver.truncation_mode = truncation_mode
     
     residuals = []
     
     # =========================================================================
-    # Collision detection BEFORE forward_step
+    # Initialization phase: ALWAYS use mode 1 (Planar) for fair comparison
     # =========================================================================
+    solver.truncation_mode = 1  # Use Planar for initialization
+    
+    # Collision detection BEFORE forward_step
     solver.collision_detection_penetration_free(state_in)
     
-    # =========================================================================
     # Forward step (initialization)
-    # =========================================================================
     wp.launch(
         kernel=vbd_module.forward_step,
         inputs=[
             dt,
             model.gravity,
             solver.particle_q_prev,
-            state_in.particle_q,
+            state_in.particle_q, 
             state_in.particle_qd,
             model.particle_inv_mass,
             state_in.particle_f,
@@ -131,26 +153,23 @@ def run_vbd_iterations_with_residuals(
         device=solver.device,
     )
     
-    # =========================================================================
-    # Initial truncation (after forward_step)
-    # =========================================================================
+    # Initial truncation (after forward_step) - using mode 1
     solver.penetration_free_truncation(state_in.particle_q)
     
-    # Record initial residual (after initialization)
-    wp.synchronize()
-    init_residual = compute_force_residual(solver, state_in, dt)
-    init_residual["iteration"] = 0
-    init_residual["phase"] = "init"
-    residuals.append(init_residual)
+    # NOTE: We don't record init residual here because particle_forces hasn't been
+    # computed yet - forces are only populated inside the iteration loop.
+    
+    # =========================================================================
+    # Now switch to the actual truncation mode for iterations
+    # =========================================================================
+    solver.truncation_mode = truncation_mode
     
     # =========================================================================
     # VBD iterations
     # =========================================================================
     for _iter in range(num_iterations):
-        # Collision detection at appropriate intervals
-        if (solver.collision_detection_interval == 0 and _iter == 0) or (
-            solver.collision_detection_interval >= 1 and _iter % solver.collision_detection_interval == 0
-        ):
+        # Collision detection at appropriate intervals (controlled by collision_detection_interval)
+        if collision_detection_interval >= 1 and _iter % collision_detection_interval == 0:
             solver.collision_detection_penetration_free(state_in)
         
         # Clear forces and hessians
@@ -226,8 +245,7 @@ def run_vbd_iterations_with_residuals(
         # Record residual after this iteration (all colors processed)
         wp.synchronize()
         iter_residual = compute_force_residual(solver, state_in, dt)
-        iter_residual["iteration"] = _iter + 1
-        iter_residual["phase"] = "solve"
+        iter_residual["iteration"] = _iter + 1  # 1-indexed
         residuals.append(iter_residual)
     
     # Restore original truncation mode
@@ -242,6 +260,7 @@ def run_convergence_comparison(
     dt: float,
     num_iterations: int,
     recovery_state_path: str,
+    collision_detection_interval: int = -1,
 ) -> dict:
     """
     Run convergence comparison for all three truncation modes.
@@ -257,7 +276,7 @@ def run_convergence_comparison(
     results = {}
     mode_names = {0: "Isometric", 1: "Planar", 2: "CCD"}
     
-    for mode in [0, 1, 2]:
+    for mode in [0, 1, 2]:  # Include CCD
         print(f"\n{'='*60}")
         print(f"Running convergence test: Mode {mode} ({mode_names[mode]})")
         print(f"{'='*60}")
@@ -277,7 +296,8 @@ def run_convergence_comparison(
         
         # Run iterations and collect residuals
         residuals = run_vbd_iterations_with_residuals(
-            sim, solver, dt, num_iterations, truncation_mode=mode
+            sim, solver, dt, num_iterations, truncation_mode=mode,
+            collision_detection_interval=collision_detection_interval,
         )
         
         results[mode_names[mode]] = {
@@ -285,11 +305,11 @@ def run_convergence_comparison(
             "residuals": residuals,
         }
         
-        # Print summary
-        print(f"  Initial L2 residual: {residuals[0]['l2_norm']:.6e}")
-        print(f"  Final L2 residual:   {residuals[-1]['l2_norm']:.6e}")
-        reduction = residuals[0]['l2_norm'] / residuals[-1]['l2_norm'] if residuals[-1]['l2_norm'] > 0 else float('inf')
-        print(f"  Reduction factor:    {reduction:.2f}x")
+        # Print summary (per-vertex average force)
+        print(f"  Initial avg force: {residuals[0]['mean_norm']:.6e}")
+        print(f"  Final avg force:   {residuals[-1]['mean_norm']:.6e}")
+        reduction = residuals[0]['mean_norm'] / residuals[-1]['mean_norm'] if residuals[-1]['mean_norm'] > 0 else float('inf')
+        print(f"  Reduction factor:  {reduction:.2f}x")
     
     return results
 
@@ -306,10 +326,10 @@ def plot_convergence(results: dict, output_path: str = None):
     for mode_name, data in results.items():
         residuals = data["residuals"]
         iterations = [r["iteration"] for r in residuals]
-        l2_norms = [r["l2_norm"] for r in residuals]
+        mean_norms = [r["mean_norm"] for r in residuals]
         
         plt.semilogy(
-            iterations, l2_norms,
+            iterations, mean_norms,
             label=mode_name,
             color=colors.get(mode_name, "black"),
             marker=markers.get(mode_name, "x"),
@@ -318,8 +338,8 @@ def plot_convergence(results: dict, output_path: str = None):
         )
     
     plt.xlabel("Iteration", fontsize=12)
-    plt.ylabel("Force Residual (L2 Norm)", fontsize=12)
-    plt.title("VBD Convergence: Force Residual vs Iteration", fontsize=14)
+    plt.ylabel("Force Residual (Per-Vertex Average)", fontsize=12)
+    plt.title("VBD Convergence: Per-Vertex Average Force vs Iteration", fontsize=14)
     plt.legend(fontsize=11)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -333,7 +353,7 @@ def plot_convergence(results: dict, output_path: str = None):
 
 def main():
     # Hardcoded recovery state path
-    recovery_state_dir = r"D:\Data\DAT_Sim\cloth_twist_convergence\res_100x100_truncation_1_iter_10_20260113_225325"
+    recovery_state_dir = r"D:\Data\DAT_Sim\cloth_twist_convergence\res_100x100_truncation_1_iter_10_20260114_140115"
     recovery_state_path = os.path.join(recovery_state_dir, "recovery_state_000600.npz")
 
     if not os.path.exists(recovery_state_path):
@@ -343,12 +363,16 @@ def main():
 
     print(f"Loading recovery state from: {recovery_state_path}")
 
+    # Load the run config from the recovery state directory
+    loaded_config = load_run_config(recovery_state_dir)
+
     # Configuration
-    num_iterations = 20  # Number of VBD iterations to run
+    num_iterations = 500  # Number of VBD iterations to run
+    collision_detection_interval = 20  # -1 = no redo during iterations, N = redo every N iterations
     
-    # Create config for evaluation
+    # Create config for evaluation (use loaded config as base)
     eval_config = {
-        **example_config,
+        **loaded_config,
         "do_rendering": False,
         "write_output": False,
         "write_video": False,
@@ -371,12 +395,14 @@ def main():
     print(f"\nConfiguration:")
     print(f"  dt = {dt}")
     print(f"  num_iterations = {num_iterations}")
+    print(f"  collision_detection_interval = {collision_detection_interval}")
     print(f"  Total particles: {solver.model.particle_count}")
     print(f"  Total colors: {len(solver.model.particle_color_groups)}")
 
     # Run convergence comparison
     results = run_convergence_comparison(
-        sim, solver, dt, num_iterations, recovery_state_path
+        sim, solver, dt, num_iterations, recovery_state_path,
+        collision_detection_interval=collision_detection_interval,
     )
 
     # Save results
@@ -389,23 +415,53 @@ def main():
         json.dump(results, f, indent=2)
     print(f"\nResults saved to: {json_path}")
     
+    # Save error curves as CSV for easy plotting
+    csv_path = os.path.join(output_dir, f"convergence_curves_{timestamp}.csv")
+    with open(csv_path, "w") as f:
+        # Header
+        mode_names = list(results.keys())
+        f.write("iteration," + ",".join(mode_names) + "\n")
+        # Data rows
+        max_iters = max(len(data["residuals"]) for data in results.values())
+        for i in range(max_iters):
+            row = [str(i + 1)]  # 1-indexed iteration
+            for mode_name in mode_names:
+                residuals = results[mode_name]["residuals"]
+                if i < len(residuals):
+                    row.append(f"{residuals[i]['mean_norm']:.6e}")
+                else:
+                    row.append("")
+            f.write(",".join(row) + "\n")
+    print(f"Error curves saved to: {csv_path}")
+    
+    # Also save as NumPy arrays
+    npz_path = os.path.join(output_dir, f"convergence_curves_{timestamp}.npz")
+    arrays = {}
+    for mode_name, data in results.items():
+        residuals = data["residuals"]
+        arrays[f"{mode_name}_iterations"] = np.array([r["iteration"] for r in residuals])
+        arrays[f"{mode_name}_mean_norm"] = np.array([r["mean_norm"] for r in residuals])
+        arrays[f"{mode_name}_l2_norm"] = np.array([r["l2_norm"] for r in residuals])
+    np.savez(npz_path, **arrays)
+    print(f"NumPy arrays saved to: {npz_path}")
+    
     # Plot convergence
-    plot_path = os.path.join(output_dir, f"convergence_plot_{timestamp}.png")
+    plot_path = os.path.join(output_dir, f"convergence_plot_{timestamp}.pdf")
     plot_convergence(results, plot_path)
     
     # Print final comparison table
     print("\n" + "="*70)
-    print("CONVERGENCE SUMMARY")
+    print("CONVERGENCE SUMMARY (Per-Vertex Average Force)")
     print("="*70)
-    print(f"{'Mode':<15} {'Initial L2':>15} {'Final L2':>15} {'Reduction':>12}")
+    print(f"{'Mode':<15} {'Initial Avg':>15} {'Final Avg':>15} {'Reduction':>12}")
     print("-"*70)
     
     for mode_name, data in results.items():
         residuals = data["residuals"]
-        init_l2 = residuals[0]["l2_norm"]
-        final_l2 = residuals[-1]["l2_norm"]
-        reduction = init_l2 / final_l2 if final_l2 > 0 else float('inf')
-        print(f"{mode_name:<15} {init_l2:>15.6e} {final_l2:>15.6e} {reduction:>11.2f}x")
+        init_avg = residuals[0]["mean_norm"]
+        final_avg = residuals[-1]["mean_norm"]
+        reduction = init_avg / final_avg if final_avg > 0 else float('inf')
+        print(f"{mode_name:<15} {init_avg:>15.6e} {final_avg:>15.6e} {reduction:>11.2f}x")
     
     print("="*70)
 

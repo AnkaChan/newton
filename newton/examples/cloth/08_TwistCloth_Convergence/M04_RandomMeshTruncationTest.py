@@ -252,8 +252,8 @@ config = {
     "data_set_size": 100,           # Total samples: 10 meshes × 100 displacements = 1000
     
     # Solver/Collision settings (used by SolverVBD)
-    "self_contact_radius": 0.2,                           # Collision detection radius
-    "self_contact_margin": 0.4,                           # Collision detection margin (should be > radius)
+    "self_contact_radius": 0.4,                           # Collision detection radius
+    "self_contact_margin": 0.5,                           # Collision detection margin (should be > radius)
     "penetration_free_conservative_bound_relaxation": 0.42,  # Relaxation factor for truncation
     "vertex_collision_buffer_pre_alloc": 64,              # Collision buffer pre-allocation
     "edge_collision_buffer_pre_alloc": 128,               # Edge collision buffer
