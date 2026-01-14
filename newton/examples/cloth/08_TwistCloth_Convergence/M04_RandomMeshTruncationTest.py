@@ -242,7 +242,7 @@ config = {
     "edge_tol_low": 0.1,             # Lower tolerance for edge length acceptance
     "edge_tol_high": 3.0,            # Upper tolerance for edge length acceptance
     "k_neighbors": 16,               # K nearest neighbors for mesh generation
-    "displacement_scale": 0.1,       # Scale of random displacements
+    "displacement_scale": 0.5,       # Scale of random displacements
     "shrink_ratio": 0.95,            # Shrink triangles to avoid self-intersection
     "displacements_per_mesh": 10,   # Number of displacement samples per mesh (100 per mesh × 10 meshes)
     "mesh_seed": 42,                 # Random seed for reproducibility

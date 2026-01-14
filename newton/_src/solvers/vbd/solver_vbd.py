@@ -29,6 +29,7 @@ from ..solver import SolverBase
 from .tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
+    TriMeshContinuousCollisionDetector,
     get_edge_colliding_edges,
     get_edge_colliding_edges_count,
     get_triangle_colliding_vertices,
@@ -4139,7 +4140,8 @@ class SolverVBD(SolverBase):
         collision_detection_interval: int = 0,
         edge_edge_parallel_epsilon: float = 1e-10,
         use_tile_solve: bool = True,
-        truncation_mode: int = 1,  # 0 for isometric truncation, 1 for planar truncation
+        truncation_mode: int = 1,  # 0: isometric, 1: planar (DAT), 2: CCD (global min t)
+        ccd_safety_margin: float = 0.99,  # Safety margin for CCD truncation
     ):
         """
         Args:
@@ -4210,6 +4212,8 @@ class SolverVBD(SolverBase):
         self.rest_shape = model.particle_q
         self.particle_conservative_bounds = wp.full((self.model.particle_count,), dtype=float, device=self.device)
         self.truncation_mode = truncation_mode
+        self.ccd_safety_margin = ccd_safety_margin
+        self.ccd_detector = None  # Initialized lazily when truncation_mode == 2
 
         if model.device.is_cpu and use_tile_solve:
             warnings.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.", stacklevel=2)
@@ -5044,6 +5048,7 @@ class SolverVBD(SolverBase):
 
         else:
             if self.truncation_mode == 0:
+                # Mode 0: Isometric truncation (conservative bounds)
                 wp.launch(
                     kernel=apply_conservative_bound_truncation,
                     inputs=[
@@ -5055,6 +5060,9 @@ class SolverVBD(SolverBase):
                     dim=self.model.particle_count,
                     device=self.device,
                 )
+            elif self.truncation_mode == 2:
+                # Mode 2: CCD truncation (global min t)
+                self.penetration_free_truncation_ccd(particle_q_out)
             else:
                 # ## IMIPLEMENTATION 1: parallel by vertex
                 # wp.launch(
@@ -5121,12 +5129,65 @@ class SolverVBD(SolverBase):
                     device=self.device,
                 )
 
+    def penetration_free_truncation_ccd(self, particle_q_out=None):
+        """
+        CCD-based truncation: finds the GLOBAL minimum collision time across all
+        vertex-triangle and edge-edge pairs, then scales ALL displacements uniformly.
+        
+        This is the most conservative approach - if ANY primitive collides at time t,
+        ALL vertices are scaled to stop at time t.
+        """
+        # Create or update CCD detector
+        if self.ccd_detector is None:
+            self.ccd_detector = TriMeshContinuousCollisionDetector(
+                self.trimesh_collision_detector,
+                self.pos_prev_collision_detection,
+                self.particle_displacements,
+            )
+        else:
+            # Update positions and displacements
+            wp.copy(self.ccd_detector.vertex_positions, self.pos_prev_collision_detection)
+            wp.copy(self.ccd_detector.vertex_displacements, self.particle_displacements)
+            self.ccd_detector.rebuild_bvh()
+        
+        # Run V-T and E-E CCD detection
+        self.ccd_detector.detect_vertex_triangle_ccd()
+        self.ccd_detector.detect_edge_edge_ccd()
+        
+        # Find GLOBAL minimum collision time
+        vt_times = self.ccd_detector.vertex_collision_times.numpy()
+        ee_times = self.ccd_detector.edge_collision_times.numpy()
+        
+        min_vt = float(vt_times.min()) if len(vt_times) > 0 else 1.0
+        min_ee = float(ee_times.min()) if len(ee_times) > 0 else 1.0
+        global_min_t = min(min_vt, min_ee)
+        
+        # Apply safety margin and clamp
+        global_t = max(0.0, min(1.0, global_min_t * self.ccd_safety_margin))
+        
+        # Fill truncation_ts with global_t and apply
+        self.truncation_ts.fill_(global_t)
+        wp.launch(
+            kernel=apply_truncation_ts,
+            dim=self.model.particle_count,
+            inputs=[
+                self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
+                self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
+                self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
+                self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
+                particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
+                wp.inf,  # max_displacement: float (no additional clamping for CCD)
+            ],
+            device=self.device,
+        )
+
     def penetration_free_truncation_tile(self, particle_q_out=None):
         """
         Modify displacements_in in-place, also modify particle_q if its not None
 
         """
         if self.truncation_mode == 0:
+            # Mode 0: Isometric truncation
             wp.launch(
                 kernel=apply_conservative_bound_truncation,
                 inputs=[
@@ -5138,7 +5199,11 @@ class SolverVBD(SolverBase):
                 dim=self.model.particle_count,
                 device=self.device,
             )
+        elif self.truncation_mode == 2:
+            # Mode 2: CCD truncation (global min t) - same as non-tile version
+            self.penetration_free_truncation_ccd(particle_q_out)
         else:
+            # Mode 1: Planar truncation (DAT)
             wp.launch(
                 kernel=apply_planar_truncation_tile,
                 inputs=[
