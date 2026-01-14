@@ -225,7 +225,7 @@ example_config = {
     "rot_end_time": 10.0,  # Twist for 10 seconds
     "truncation_mode": 1,
     # outputs
-    "output_path": r"C:\Data\DAT_Sim\cloth_twist_convergence",
+    "output_path": r"D:\Data\DAT_Sim\cloth_twist_convergence",
     "output_ext": "npy",
     "write_output": False,
     "write_video": False,

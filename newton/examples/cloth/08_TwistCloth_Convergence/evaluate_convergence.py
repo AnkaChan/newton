@@ -333,7 +333,7 @@ def plot_convergence(results: dict, output_path: str = None):
 
 def main():
     # Hardcoded recovery state path
-    recovery_state_dir = r"C:\Data\DAT_Sim\cloth_twist_convergence\res_100x100_truncation_1_iter_10_20260113_151401"
+    recovery_state_dir = r"D:\Data\DAT_Sim\cloth_twist_convergence\res_100x100_truncation_1_iter_10_20260113_225325"
     recovery_state_path = os.path.join(recovery_state_dir, "recovery_state_000600.npz")
 
     if not os.path.exists(recovery_state_path):
