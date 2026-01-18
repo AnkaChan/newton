@@ -4125,8 +4125,6 @@ def solve_elasticity(
         h_inv = wp.inverse(h)
         particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f
 
-    particle_forces[particle_index] = f
-
 @wp.kernel
 def solve_elasticity_tile(
     dt: float,
@@ -4342,7 +4340,7 @@ class SolverVBD(SolverBase):
         edge_edge_parallel_epsilon: float = 1e-10,
         use_tile_solve: bool = True,
         truncation_mode: int = 1,  # 0: isometric, 1: planar (DAT), 2: CCD (global min t)
-        dykstra_iterations: int = 20,  # Number of Dykstra iterations for mode 2
+        dykstra_iterations: int = 10,  # Number of Dykstra iterations for mode 2
     ):
         """
         Args:
