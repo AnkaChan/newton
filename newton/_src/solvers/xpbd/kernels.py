@@ -282,7 +282,7 @@ def solve_particle_particle_contacts(
 
                 # friction
                 vn = wp.dot(n, vrel)
-                vt = v - n * vn
+                vt = vrel - n * vn
 
                 lambda_f = wp.max(k_mu * lambda_n, -wp.length(vt) * dt)
                 delta_f = wp.normalize(vt) * lambda_f
@@ -1121,7 +1121,7 @@ def solve_simple_body_joints(
     body_inv_m: wp.array(dtype=float),
     body_inv_I: wp.array(dtype=wp.mat33),
     joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -1144,7 +1144,7 @@ def solve_simple_body_joints(
     tid = wp.tid()
     type = joint_type[tid]
 
-    if joint_enabled[tid] == 0:
+    if not joint_enabled[tid]:
         return
     if type == JointType.FREE:
         return
@@ -1438,7 +1438,7 @@ def solve_body_joints(
     body_inv_m: wp.array(dtype=float),
     body_inv_I: wp.array(dtype=wp.mat33),
     joint_type: wp.array(dtype=int),
-    joint_enabled: wp.array(dtype=int),
+    joint_enabled: wp.array(dtype=bool),
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
@@ -1462,7 +1462,7 @@ def solve_body_joints(
     tid = wp.tid()
     type = joint_type[tid]
 
-    if joint_enabled[tid] == 0:
+    if not joint_enabled[tid]:
         return
     if type == JointType.FREE:
         return
@@ -1887,7 +1887,8 @@ def solve_body_joints(
             damping = 0.0
 
             target_vel = axis_target_vel[dim]
-            derr_rel = derr - target_vel
+            angular_c_len = wp.length(angular_c)
+            derr_rel = derr - target_vel * angular_c_len
 
             # consider joint limits irrespective of mode
             lower = axis_limits_lower[dim]
@@ -2307,6 +2308,7 @@ def apply_rigid_restitution(
     body_com: wp.array(dtype=wp.vec3),
     body_m_inv: wp.array(dtype=float),
     body_I_inv: wp.array(dtype=wp.mat33),
+    body_world: wp.array(dtype=wp.int32),
     shape_body: wp.array(dtype=int),
     contact_count: wp.array(dtype=int),
     contact_normal: wp.array(dtype=wp.vec3),
@@ -2402,7 +2404,9 @@ def apply_rigid_restitution(
     rxn_a = wp.vec3(0.0)
     rxn_b = wp.vec3(0.0)
     if body_a >= 0:
-        v_a = velocity_at_point(body_qd_prev[body_a], r_a) + gravity[0] * dt
+        world_idx_a = body_world[body_a]
+        world_a_g = gravity[wp.max(world_idx_a, 0)]
+        v_a = velocity_at_point(body_qd_prev[body_a], r_a) + world_a_g * dt
         v_a_new = velocity_at_point(body_qd[body_a], r_a)
         q_a = wp.transform_get_rotation(X_wb_a_prev)
         rxn_a = wp.quat_rotate_inv(q_a, wp.cross(r_a, n))
@@ -2413,7 +2417,9 @@ def apply_rigid_restitution(
         #         inv_mass_a *= contact_inv_weight[body_a]
         inv_mass += inv_mass_a
     if body_b >= 0:
-        v_b = velocity_at_point(body_qd_prev[body_b], r_b) + gravity[0] * dt
+        world_idx_b = body_world[body_b]
+        world_b_g = gravity[wp.max(world_idx_b, 0)]
+        v_b = velocity_at_point(body_qd_prev[body_b], r_b) + world_b_g * dt
         v_b_new = velocity_at_point(body_qd[body_b], r_b)
         q_b = wp.transform_get_rotation(X_wb_b_prev)
         rxn_b = wp.quat_rotate_inv(q_b, wp.cross(r_b, n))

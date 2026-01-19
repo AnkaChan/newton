@@ -142,10 +142,10 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
             iterations=self.iterations,
-            self_contact_radius=0.01,
-            self_contact_margin=0.02,
-            handle_self_contact=True,
-            use_tile_solve=True,
+            particle_self_contact_radius=0.01,
+            particle_self_contact_margin=0.02,
+            particle_enable_self_contact=True,
+            particle_enable_tile_solve=True,
         )
 
         self.state_0 = self.model.state()

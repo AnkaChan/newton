@@ -70,6 +70,8 @@ class ModelAttributeFrequency(IntEnum):
     """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
     EQUALITY_CONSTRAINT = 7
     """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
+    WORLD = 8
+    """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
 
 
 class AttributeNamespace:
@@ -154,13 +156,13 @@ class Model:
         """Particle cohesion strength."""
         self.particle_adhesion = 0.0
         """Particle adhesion strength."""
-        self.particle_grid = None
+        self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
-        self.particle_flags = None
+        self.particle_flags: wp.array | None = None
         """Particle enabled state, shape [particle_count], int."""
-        self.particle_max_velocity = 1e5
+        self.particle_max_velocity: float = 1e5
         """Maximum particle velocity (to prevent instability)."""
-        self.particle_world = None
+        self.particle_world: wp.array | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
 
         self.shape_key = []
@@ -191,6 +193,8 @@ class Model:
         """Shape torsional friction coefficient (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_rolling_friction = None
         """Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_k_hydro = None
+        """Shape hydroelastic stiffness coefficient, shape [shape_count], float."""
         self.shape_contact_margin = None
         """Shape contact margin for collision detection, shape [shape_count], float."""
 
@@ -317,6 +321,8 @@ class Model:
         """Generalized joint velocity targets, shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
+        self.joint_articulation = None
+        """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
         self.joint_parent = None
         """Joint parent body indices, shape [joint_count], int."""
         self.joint_child = None
@@ -344,7 +350,7 @@ class Model:
         self.joint_dof_dim = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
         self.joint_enabled = None
-        """Controls which joint is simulated (bodies become disconnected if False), shape [joint_count], int."""
+        """Controls which joint is simulated (bodies become disconnected if False, only supported by :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
         self.joint_limit_lower = None
         """Joint lower position limits, shape [joint_dof_count], float."""
         self.joint_limit_upper = None
@@ -453,15 +459,26 @@ class Model:
         self.particle_colors = None
         """Color assignment for every particle."""
 
+        self.body_color_groups = []
+        """Coloring of all rigid bodies for Gauss-Seidel iteration (see :class:`~newton.solvers.SolverVBD`). Each array contains indices of bodies sharing the same color."""
+        self.body_colors = None
+        """Color assignment for every rigid body."""
+
         self.device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
-        self.attribute_frequency = {}
-        """Classifies each attribute using ModelAttributeFrequency enum values (per body, per joint, per DOF, etc.)."""
+        self.attribute_frequency: dict[str, ModelAttributeFrequency | str] = {}
+        """Classifies each attribute using ModelAttributeFrequency enum values (per body, per joint, per DOF, etc.)
+        or custom frequencies for custom entity types (e.g., ``"mujoco:pair"``)."""
 
-        self.attribute_assignment = {}
+        self.custom_frequency_counts: dict[str, int] = {}
+        """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
+
+        self.attribute_assignment: dict[str, ModelAttributeAssignment] = {}
         """Assignment for custom attributes using ModelAttributeAssignment enum values.
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=ModelAttributeAssignment.MODEL)."""
+
+        self._requested_state_attributes: set[str] = set()
 
         # attributes per body
         self.attribute_frequency["body_q"] = ModelAttributeFrequency.BODY
@@ -478,6 +495,7 @@ class Model:
         self.attribute_frequency["joint_parent"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_child"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_ancestor"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_articulation"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_X_p"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_X_c"] = ModelAttributeFrequency.JOINT
         self.attribute_frequency["joint_dof_dim"] = ModelAttributeFrequency.JOINT
@@ -517,6 +535,8 @@ class Model:
         self.attribute_frequency["shape_material_restitution"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_torsional_friction"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_rolling_friction"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_k_hydro"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_contact_margin"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = ModelAttributeFrequency.SHAPE
         self.attribute_frequency["shape_thickness"] = ModelAttributeFrequency.SHAPE
@@ -537,6 +557,9 @@ class Model:
         Returns:
             State: The state object
         """
+
+        requested = self.get_requested_state_attributes()
+
         s = State()
         if requires_grad is None:
             requires_grad = self.requires_grad
@@ -557,6 +580,12 @@ class Model:
         if self.joint_count:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
+
+        if "body_qdd" in requested:
+            s.body_qdd = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
+
+        if "body_parent_f" in requested:
+            s.body_parent_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, ModelAttributeAssignment.STATE, requires_grad=requires_grad)
@@ -604,27 +633,40 @@ class Model:
         )
         return c
 
-    def set_gravity(self, gravity: tuple[float, float, float] | list[float] | wp.vec3) -> None:
+    def set_gravity(
+        self,
+        gravity: tuple[float, float, float] | list | wp.vec3 | np.ndarray,
+        world: int | None = None,
+    ) -> None:
         """
         Set gravity for runtime modification.
 
         Args:
-            gravity: Gravity vector as a tuple, list, or wp.vec3.
-                    Common values: (0, 0, -9.81) for Z-up, (0, -9.81, 0) for Y-up.
+            gravity: Gravity vector (3,) or per-world array (num_worlds, 3).
+            world: If provided, set gravity only for this world.
 
         Note:
-            After calling this method, you should notify solvers via
-            `solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`.
-        """
-        if self.gravity is None:
-            raise RuntimeError(
-                "Model gravity not initialized. Ensure the model was created via ModelBuilder.finalize()"
-            )
+            Call ``solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`` after.
 
-        if isinstance(gravity, tuple | list):
-            self.gravity.assign([wp.vec3(gravity[0], gravity[1], gravity[2])])
+            Global entities (particles/bodies not assigned to a specific world) use
+            gravity from world 0.
+        """
+        gravity_np = np.asarray(gravity, dtype=np.float32)
+
+        if world is not None:
+            if gravity_np.shape != (3,):
+                raise ValueError("Expected single gravity vector (3,) when world is specified")
+            if world < 0 or world >= self.num_worlds:
+                raise IndexError(f"world {world} out of range [0, {self.num_worlds})")
+            current = self.gravity.numpy()
+            current[world] = gravity_np
+            self.gravity.assign(current)
+        elif gravity_np.ndim == 1:
+            self.gravity.fill_(gravity_np)
         else:
-            self.gravity.assign([gravity])
+            if len(gravity_np) != self.num_worlds:
+                raise ValueError(f"Expected {self.num_worlds} gravity vectors, got {len(gravity_np)}")
+            self.gravity.assign(gravity_np)
 
     def collide(
         self: Model,
@@ -689,6 +731,18 @@ class Model:
         self._add_custom_attributes(contacts, ModelAttributeAssignment.CONTACT, requires_grad=requires_grad)
         return contacts
 
+    def request_state_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific state attributes be allocated when creating a State object.
+
+        See :ref:`extended_state_attributes` for details and usage.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        State.validate_extended_state_attributes(attributes)
+        self._requested_state_attributes.update(attributes)
+
     def _add_custom_attributes(
         self,
         destination: object,
@@ -748,7 +802,7 @@ class Model:
         self,
         name: str,
         attrib: wp.array,
-        frequency: ModelAttributeFrequency,
+        frequency: ModelAttributeFrequency | str,
         assignment: ModelAttributeAssignment | None = None,
         namespace: str | None = None,
     ):
@@ -758,7 +812,8 @@ class Model:
         Args:
             name (str): Name of the attribute.
             attrib (wp.array): The array to add as an attribute.
-            frequency (ModelAttributeFrequency): The frequency of the attribute using ModelAttributeFrequency enum.
+            frequency (ModelAttributeFrequency | str): The frequency of the attribute.
+                Can be a ModelAttributeFrequency enum value or a string for custom frequencies.
             assignment (ModelAttributeAssignment, optional): The assignment category using ModelAttributeAssignment enum.
                 Determines which object will hold the attribute.
             namespace (str, optional): Namespace for the attribute.
@@ -797,7 +852,7 @@ class Model:
         if assignment is not None:
             self.attribute_assignment[full_name] = assignment
 
-    def get_attribute_frequency(self, name: str) -> ModelAttributeFrequency:
+    def get_attribute_frequency(self, name: str) -> ModelAttributeFrequency | str:
         """
         Get the frequency of an attribute.
 
@@ -805,12 +860,63 @@ class Model:
             name (str): Name of the attribute.
 
         Returns:
-            ModelAttributeFrequency: The frequency of the attribute as an enum value.
+            ModelAttributeFrequency | str: The frequency of the attribute.
+                Either a ModelAttributeFrequency enum value or a string for custom frequencies.
 
         Raises:
-            AttributeError: If the attribute frequency is not known.
+            KeyError: If the attribute frequency is not known.
         """
         frequency = self.attribute_frequency.get(name)
         if frequency is None:
-            raise AttributeError(f"Attribute frequency of '{name}' is not known")
+            raise KeyError(f"Attribute frequency of '{name}' is not known")
         return frequency
+
+    def get_custom_frequency_count(self, frequency: str) -> int:
+        """
+        Get the count for a custom frequency.
+
+        Args:
+            frequency (str): The custom frequency (e.g., ``"mujoco:pair"``).
+
+        Returns:
+            int: The count of elements with this frequency.
+
+        Raises:
+            KeyError: If the frequency is not known.
+        """
+        if frequency not in self.custom_frequency_counts:
+            raise KeyError(f"Custom frequency '{frequency}' is not known")
+        return self.custom_frequency_counts[frequency]
+
+    def get_requested_state_attributes(self) -> list[str]:
+        """
+        Get the list of requested state attribute names that have been requested on the model.
+
+        See :ref:`extended_state_attributes` for details.
+
+        Returns:
+            list[str]: The list of requested state attributes.
+        """
+        attributes = []
+
+        if self.particle_count:
+            attributes.extend(
+                (
+                    "particle_q",
+                    "particle_qd",
+                    "particle_f",
+                )
+            )
+        if self.body_count:
+            attributes.extend(
+                (
+                    "body_q",
+                    "body_qd",
+                    "body_f",
+                )
+            )
+        if self.joint_count:
+            attributes.extend(("joint_q", "joint_qd"))
+
+        attributes.extend(self._requested_state_attributes.difference(attributes))
+        return attributes

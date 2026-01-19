@@ -393,6 +393,7 @@ class SolverFeatherstone(SolverBase):
                         state_in.body_q,
                         state_aug.body_q_com,
                         model.joint_X_p,
+                        model.body_world,
                         model.gravity,
                     ],
                     outputs=[
@@ -427,6 +428,9 @@ class SolverFeatherstone(SolverBase):
                             contacts.rigid_contact_shape1,
                             contacts.rigid_contact_thickness0,
                             contacts.rigid_contact_thickness1,
+                            contacts.rigid_contact_stiffness,
+                            contacts.rigid_contact_damping,
+                            contacts.rigid_contact_friction,
                             True,
                             self.friction_smoothing,
                         ],

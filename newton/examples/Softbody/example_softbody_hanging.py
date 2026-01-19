@@ -121,7 +121,7 @@ class Example:
         self.model.soft_contact_mu = 1.0
 
         self.solver = newton.solvers.SolverVBD(
-            model=self.model, iterations=self.iterations, handle_self_contact=False, use_tile_solve=False
+            model=self.model, iterations=self.iterations, particle_enable_self_contact=False, particle_enable_tile_solve=False
         )
 
         self.state_0 = self.model.state()
