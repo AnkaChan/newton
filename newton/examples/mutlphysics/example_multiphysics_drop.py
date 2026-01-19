@@ -28,7 +28,6 @@
 #
 ###########################################################################
 
-import argparse
 import os
 
 import numpy as np
@@ -343,7 +342,7 @@ config = {
     # Simulation timing
     "fps": 60,
     "sim_substeps": 20,
-    "sim_num_frames": 1000,
+    "sim_num_frames": 300,
     "iterations": 5,
     # Solver settings
     "use_cuda_graph": True,
@@ -353,7 +352,7 @@ config = {
     "self_contact_margin": 0.5,  # cm
     "include_bending": True,
     "topological_contact_filter_threshold": 2,
-    "rest_shape_contact_exclusion_radius": 0.5,
+    "rest_shape_contact_exclusion_radius": 1.5,
     # Physics (using centimeters)
     "up_axis": "z",
     "gravity": -980.0,  # cm/s²
@@ -364,10 +363,10 @@ config = {
     "has_ground": True,
     "ground_height": 0.0,
     # Shared soft body material parameters
-    "softbody_density": 0.0005,  # g/cm³ (same as 500 kg/m³)
+    "softbody_density": 0.0003,  # g/cm³ (same as 500 kg/m³)
     "softbody_k_mu": 5.0e4,
     "softbody_k_lambda": 5.0e4,
-    "softbody_k_damp": 1e-7,
+    "softbody_k_damp": 1e-9,
     # Soft body hippo (mesh-specific)
     "hippo_enabled": True,
     "hippo_vtk_path": "hippo.vtk",
@@ -379,6 +378,7 @@ config = {
     "bunny_pos": (-30.0, 30.0, 250.0),  # cm
     "bunny_scale": 5.0,  # cm
     # Rigid body box parameters
+    "box_enabled": True,
     "box_pos": (-30.0, -30.0, 220.0),  # cm
     "box_half_extents": (15.0, 15.0, 15.0),  # cm (30cm cube)
     "box_density": 0.0005,  # g/cm³ (same as 500 kg/m³)
@@ -400,13 +400,13 @@ config = {
     "gear_mu": 0.5,
     # Cloth parameters
     "cloth_pos": (-100.0, -100.0, 100.0),  # cm
-    "cloth_dim_x": 40,
-    "cloth_dim_y": 40,
-    "cloth_cell_x": 5.0,  # cm (200cm total width)
-    "cloth_cell_y": 5.0,  # cm
+    "cloth_dim_x": 80,
+    "cloth_dim_y": 80,
+    "cloth_cell_x": 3.0,  # cm (200cm total width)
+    "cloth_cell_y": 3.0,  # cm
     "cloth_mass": 0.05,  # g per particle
-    "cloth_tri_ke": 1e5,
-    "cloth_tri_ka": 1e5,
+    "cloth_tri_ke": 5e5,
+    "cloth_tri_ka": 5e5,
     "cloth_tri_kd": 1e-5,
     "cloth_edge_ke": 0.01,
     "cloth_edge_kd": 1e-2,
@@ -414,7 +414,9 @@ config = {
     "cloth_fix_left": True,
     "cloth_fix_right": True,
     # Output settings
-    "output_path": None,
+    "output_path": r"D:\Data\DAT_Sim\multiphysics_drop",  # Parent directory
+    "experiment_name": "run",  # Folder name prefix
+    "output_timestamp": True,  # Append timestamp to experiment folder
     "write_output": False,
     "write_video": False,
     # Visualization
@@ -747,21 +749,6 @@ class MultiphysicsDropSimulator(Simulator):
 
 def main():
     """Main entry point for running the example."""
-    parser = argparse.ArgumentParser(description="Multiphysics Drop Simulation")
-    parser.add_argument("--num-frames", type=int, default=1000, help="Number of frames to simulate")
-    parser.add_argument("--no-render", action="store_true", help="Disable rendering")
-    parser.add_argument("--output-path", type=str, default=None, help="Output directory for frames")
-    parser.add_argument("--write-video", action="store_true", help="Write video output")
-    args = parser.parse_args()
-
-    # Update config from command line arguments
-    config["sim_num_frames"] = args.num_frames
-    config["do_rendering"] = not args.no_render
-    config["output_path"] = args.output_path
-    config["write_output"] = args.output_path is not None
-    config["write_video"] = args.write_video
-
-    # Create and run the simulator
     sim = MultiphysicsDropSimulator(config)
     sim.finalize()
     sim.simulate()

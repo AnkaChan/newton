@@ -9,6 +9,7 @@
 ###########################################################################
 
 import os
+from datetime import datetime
 from os.path import join
 
 import cv2
@@ -50,7 +51,9 @@ default_config = {
     "soft_contact_kd": 1e-5,  # Contact damping
     "soft_contact_mu": 0.2,  # Friction coefficient
     # Output settings
-    "output_path": None,  # Directory to save output files
+    "output_path": None,  # Parent directory for output (actual folder: output_path/experiment_name_timestamp/)
+    "experiment_name": "run",  # Experiment name prefix for output folder
+    "output_timestamp": True,  # Append timestamp to experiment folder (e.g., run_20260118_143052)
     "output_ext": "ply",  # "ply", "usd", or "npy" (npy saves only positions, initial meshes saved as ply)
     "write_output": False,
     "write_video": False,
@@ -123,11 +126,28 @@ class Simulator:
         self.gravity = cfg("gravity")
 
         # Output settings
-        self.output_path = cfg("output_path")
+        output_base = cfg("output_path")
+        self.experiment_name = cfg("experiment_name")
+        self.output_timestamp = cfg("output_timestamp")
         self.output_ext = cfg("output_ext")
         self.write_output = cfg("write_output")
         self.write_video = cfg("write_video")
         self.recovery_state_save_steps = cfg("recovery_state_save_steps")
+
+        # Construct output path: output_path/experiment_name_timestamp/
+        if output_base is not None:
+            if self.output_timestamp:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                folder_name = f"{self.experiment_name}_{timestamp}"
+            else:
+                folder_name = self.experiment_name
+            self.output_path = join(output_base, folder_name)
+
+            # Create output directory if it doesn't exist
+            os.makedirs(self.output_path, exist_ok=True)
+            print(f"Output folder: {self.output_path}")
+        else:
+            self.output_path = None
 
         # Visualization
         self.do_rendering = cfg("do_rendering")
@@ -196,10 +216,6 @@ class Simulator:
         self.model.soft_contact_ke = cfg("soft_contact_ke")
         self.model.soft_contact_kd = cfg("soft_contact_kd")
         self.model.soft_contact_mu = cfg("soft_contact_mu")
-
-        # Create output directory if needed
-        if self.output_path is not None:
-            os.makedirs(self.output_path, exist_ok=True)
 
         # Compute timestep
         self.dt = self.frame_dt / self.num_substeps
