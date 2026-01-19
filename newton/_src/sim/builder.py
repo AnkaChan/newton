@@ -5747,6 +5747,7 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
+        particle_radius: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
 
@@ -5787,7 +5788,7 @@ class ModelBuilder:
         for v in vertices:
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
 
-            self.add_particle(p, vel, 0.0)
+            self.add_particle(p, vel, 0.0, particle_radius)
 
         # add tetrahedra
         for t in range(num_tets):

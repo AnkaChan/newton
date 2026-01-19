@@ -367,6 +367,7 @@ config = {
     "softbody_k_mu": 5.0e4,
     "softbody_k_lambda": 5.0e4,
     "softbody_k_damp": 1e-9,
+    "softbody_particle_radius": 1,
     # Soft body hippo (mesh-specific)
     "hippo_enabled": True,
     "hippo_vtk_path": "hippo.vtk",
@@ -466,6 +467,7 @@ class MultiphysicsDropSimulator(Simulator):
                 k_mu=cfg("softbody_k_mu"),
                 k_lambda=cfg("softbody_k_lambda"),
                 k_damp=cfg("softbody_k_damp"),
+                particle_radius=cfg("softbody_particle_radius")
             )
 
         # Add soft body bunny (from VTK file)
@@ -491,6 +493,7 @@ class MultiphysicsDropSimulator(Simulator):
                 k_mu=cfg("softbody_k_mu"),
                 k_lambda=cfg("softbody_k_lambda"),
                 k_damp=cfg("softbody_k_damp"),
+                particle_radius=cfg("softbody_particle_radius")
             )
 
         # Track particle count before adding cloth (for visualization separation)
