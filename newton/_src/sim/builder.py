@@ -5942,45 +5942,41 @@ class ModelBuilder:
 
         """
         num_nodes = self.particle_count
-        if num_nodes == 0:
-            self.particle_color_groups = []
-            return
+        if num_nodes != 0:
 
-        tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
-        tri_materials = np.array(self.tri_materials)
-        tet_indices = np.array(self.tet_indices, dtype=np.int32) if self.tet_indices else None
-        tet_materials = np.array(self.tet_materials)
+            tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
+            tri_materials = np.array(self.tri_materials)
+            tet_indices = np.array(self.tet_indices, dtype=np.int32) if self.tet_indices else None
+            tet_materials = np.array(self.tet_materials)
 
-        bending_edge_indices = None
-        bending_edge_active_mask = None
-        if include_bending and self.edge_indices:
-            bending_edge_indices = np.array(self.edge_indices, dtype=np.int32)
-            bending_edge_active_mask = np.array(self.edge_bending_properties)[:, 1]
+            bending_edge_indices = None
+            bending_edge_active_mask = None
+            if include_bending and self.edge_indices:
+                bending_edge_indices = np.array(self.edge_indices, dtype=np.int32)
+                bending_edge_active_mask = np.array(self.edge_bending_properties)[:, 1]
 
-        graph_edge_indices = construct_particle_graph(
-            tri_indices,
-            tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
-            bending_edge_indices,
-            bending_edge_active_mask,
-            tet_indices,
-            tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
-        )
-
-        if len(self.edge_indices) > 0:
-            self.particle_color_groups = color_graph(
-                num_nodes,
-                graph_edge_indices,
-                balance_colors,
-                target_max_min_color_ratio,
-                coloring_algorithm,
+            graph_edge_indices = construct_particle_graph(
+                tri_indices,
+                tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
+                bending_edge_indices,
+                bending_edge_active_mask,
+                tet_indices,
+                tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
             )
 
-        else:
-            # No edges to color - assign all particles to single color group
-            if len(self.particle_q) > 0:
-                self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
+            if len(self.edge_indices) > 0:
+                self.particle_color_groups = color_graph(
+                    num_nodes,
+                    graph_edge_indices,
+                    balance_colors,
+                    target_max_min_color_ratio,
+                    coloring_algorithm,
+                )
+
             else:
-                self.particle_color_groups = []
+                # No edges to color - assign all particles to single color group
+                if len(self.particle_q) > 0:
+                    self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
 
         # Also color rigid bodies based on joint connectivity
         self.body_color_groups = color_rigid_bodies(
