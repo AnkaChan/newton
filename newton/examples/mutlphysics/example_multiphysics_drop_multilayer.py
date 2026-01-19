@@ -319,9 +319,12 @@ config = {
     "soft_contact_ke": 1.0e5,
     "soft_contact_kd": 1e-5,
     "soft_contact_mu": 0.2,
-    # Ground plane
-    "has_ground": True,
+    # Ground plane (created manually with friction)
+    "has_ground": False,  # We create ground manually with friction
     "ground_height": 0.0,
+    "ground_ke": 1.0e5,
+    "ground_kd": 1e-5,
+    "ground_mu": 0.5,  # Ground friction
     # Shared soft body material parameters
     "softbody_density": 0.0003,  # g/cm³ (same as 500 kg/m³)
     "softbody_k_mu": 5.0e4,
@@ -330,7 +333,7 @@ config = {
     "softbody_particle_radius": 1,
     # Mass drop configuration (3 layers, 4 objects each, shuffled)
     "mass_drop_seed": 42,  # Random seed for reproducibility
-    "mass_drop_layers": 3,
+    "mass_drop_layers": 5,
     "mass_drop_objects_per_layer": 4,  # hippo, bunny, box, gear
     "mass_drop_base_height": 140.0,  # cm
     "mass_drop_layer_spacing": 50.0,  # cm between layers
@@ -377,9 +380,10 @@ config = {
     "cloth_fix_right": True,
     # Output settings
     "output_path": r"D:\Data\DAT_Sim\multiphysics_drop",  # Parent directory
-    "experiment_name": "run",  # Folder name prefix
+    "experiment_name": "4x5",  # NxM: N objects per layer, M layers
     "output_timestamp": True,  # Append timestamp to experiment folder
-    "write_output": False,
+    "output_ext": "npy",  # Output format
+    "write_output": True,
     "write_video": False,
     # Visualization
     "do_rendering": True,
@@ -404,6 +408,13 @@ class MultiphysicsDropSimulator(Simulator):
         # Helper to read from config or fall back to default
         def cfg(key):
             return get_config_value(self.config, key)
+
+        # Add ground plane with friction
+        ground_cfg = newton.ModelBuilder.ShapeConfig()
+        ground_cfg.ke = cfg("ground_ke")
+        ground_cfg.kd = cfg("ground_kd")
+        ground_cfg.mu = cfg("ground_mu")
+        self.builder.add_ground_plane(height=cfg("ground_height"), cfg=ground_cfg)
 
         # Set random seed for reproducibility
         np.random.seed(cfg("mass_drop_seed"))
@@ -454,6 +465,8 @@ class MultiphysicsDropSimulator(Simulator):
         # Track rigid bodies for visualization
         self.mass_drop_boxes = []
         self.mass_drop_gears = []
+        # Track soft bodies with their particle ranges and mesh data
+        self.mass_drop_softbodies = []  # [(start_idx, num_verts, type_name, local_verts, tet_indices)]
 
         # Object types: 0=hippo, 1=bunny, 2=box, 3=gear
         object_types = [0, 1, 2, 3]
@@ -482,6 +495,7 @@ class MultiphysicsDropSimulator(Simulator):
 
                 if obj_type == 0:
                     # Hippo (soft body)
+                    start_idx = self.builder.particle_count
                     self.builder.add_soft_mesh(
                         pos=wp.vec3(x_pos, y_pos, z_height),
                         rot=wp.quat_identity(),
@@ -495,8 +509,15 @@ class MultiphysicsDropSimulator(Simulator):
                         k_damp=cfg("softbody_k_damp"),
                         particle_radius=cfg("softbody_particle_radius"),
                     )
+                    num_verts = self.builder.particle_count - start_idx
+                    self.mass_drop_softbodies.append((
+                        start_idx, num_verts, "hippo",
+                        np.array(hippo_vertices, dtype=np.float32),
+                        np.array(hippo_tets, dtype=np.int32),
+                    ))
                 elif obj_type == 1:
                     # Bunny (soft body)
+                    start_idx = self.builder.particle_count
                     self.builder.add_soft_mesh(
                         pos=wp.vec3(x_pos, y_pos, z_height),
                         rot=wp.quat_identity(),
@@ -510,6 +531,12 @@ class MultiphysicsDropSimulator(Simulator):
                         k_damp=cfg("softbody_k_damp"),
                         particle_radius=cfg("softbody_particle_radius"),
                     )
+                    num_verts = self.builder.particle_count - start_idx
+                    self.mass_drop_softbodies.append((
+                        start_idx, num_verts, "bunny",
+                        np.array(bunny_vertices, dtype=np.float32),
+                        np.array(bunny_tets, dtype=np.int32),
+                    ))
                 elif obj_type == 2:
                     # Box (rigid body)
                     box_half = cfg("box_half_extents")
@@ -577,6 +604,7 @@ class MultiphysicsDropSimulator(Simulator):
 
         # Track particle count before adding cloth
         self.softbody_particle_count = self.builder.particle_count
+        self.cloth_particle_start = self.builder.particle_count  # Same as softbody_particle_count
 
         # Add cloth grid
         cloth_pos = cfg("cloth_pos")
@@ -600,8 +628,152 @@ class MultiphysicsDropSimulator(Simulator):
         )
 
     def custom_finalize(self):
-        """Store rigid body info for visualization."""
-        pass
+        """Store rigid body info and save initial meshes."""
+        self._save_initial_meshes()
+
+    def _save_initial_meshes(self):
+        """Save all initial meshes separately with their transformations."""
+        def cfg(key):
+            return get_config_value(self.config, key)
+
+        mesh_dir = os.path.join(self.output_path, "initial_meshes")
+        os.makedirs(mesh_dir, exist_ok=True)
+
+        # Get initial states
+        particle_q = self.model.particle_q.numpy()
+        body_q = self.state_0.body_q.numpy() if self.model.body_count > 0 else np.array([])
+
+        # Track mesh info for metadata
+        mesh_info = {
+            "soft_bodies": [],
+            "rigid_bodies": [],
+            "cloth": None,
+        }
+
+        # Save each soft body mesh separately
+        for idx, (start_idx, num_verts, type_name, local_verts, tet_indices) in enumerate(self.mass_drop_softbodies):
+            # Get world-space vertices for this soft body
+            world_verts = particle_q[start_idx:start_idx + num_verts]
+
+            # Get faces for this soft body (faces that use these vertex indices)
+            softbody_faces = []
+            for face in self.faces:
+                if all(start_idx <= f_idx < start_idx + num_verts for f_idx in face):
+                    # Remap to local indices
+                    softbody_faces.append([f_idx - start_idx for f_idx in face])
+
+            if len(softbody_faces) > 0:
+                softbody_faces = np.array(softbody_faces, dtype=np.int32)
+                name = f"{type_name}_{idx}"
+
+                self._save_ply(os.path.join(mesh_dir, f"{name}.ply"), world_verts, softbody_faces)
+                np.save(os.path.join(mesh_dir, f"{name}_vertices_local.npy"), local_verts)
+                np.save(os.path.join(mesh_dir, f"{name}_vertices_world.npy"), world_verts)
+                np.save(os.path.join(mesh_dir, f"{name}_faces.npy"), softbody_faces)
+                np.save(os.path.join(mesh_dir, f"{name}_tet_indices.npy"), tet_indices)
+
+                mesh_info["soft_bodies"].append({
+                    "name": name,
+                    "type": type_name,
+                    "particle_start": start_idx,
+                    "num_vertices": num_verts,
+                    "num_faces": len(softbody_faces),
+                })
+
+        # Save cloth mesh
+        if self.softbody_particle_count < len(particle_q):
+            cloth_verts = particle_q[self.softbody_particle_count:]
+            cloth_faces = []
+            for face in self.faces:
+                if all(idx >= self.softbody_particle_count for idx in face):
+                    # Remap indices to cloth-local
+                    cloth_faces.append([idx - self.softbody_particle_count for idx in face])
+            if len(cloth_faces) > 0:
+                cloth_faces = np.array(cloth_faces)
+                self._save_ply(os.path.join(mesh_dir, "cloth.ply"), cloth_verts, cloth_faces)
+                np.save(os.path.join(mesh_dir, "cloth_vertices.npy"), cloth_verts)
+                np.save(os.path.join(mesh_dir, "cloth_faces.npy"), cloth_faces)
+                mesh_info["cloth"] = {
+                    "name": "cloth",
+                    "particle_start": self.cloth_particle_start,
+                    "num_vertices": len(cloth_verts),
+                    "num_faces": len(cloth_faces),
+                }
+
+        # Save rigid body boxes with transforms
+        for i, (body_idx, local_verts, faces) in enumerate(self.mass_drop_boxes):
+            if body_idx < len(body_q):
+                transform = body_q[body_idx]
+                pos = transform[:3]
+                quat = transform[3:7]
+                world_verts = self._transform_vertices(local_verts, pos, quat)
+
+                name = f"box_{i}"
+                self._save_ply(os.path.join(mesh_dir, f"{name}.ply"), world_verts, faces)
+                np.save(os.path.join(mesh_dir, f"{name}_vertices_local.npy"), local_verts)
+                np.save(os.path.join(mesh_dir, f"{name}_vertices_world.npy"), world_verts)
+                np.save(os.path.join(mesh_dir, f"{name}_faces.npy"), faces)
+                np.save(os.path.join(mesh_dir, f"{name}_transform.npy"), transform)
+
+                mesh_info["rigid_bodies"].append({
+                    "name": name,
+                    "type": "box",
+                    "body_idx": body_idx,
+                    "position": pos.tolist(),
+                    "quaternion": quat.tolist(),  # [qx, qy, qz, qw]
+                })
+
+        # Save rigid body gears with transforms
+        for i, (body_idx, local_verts, faces) in enumerate(self.mass_drop_gears):
+            if body_idx < len(body_q):
+                transform = body_q[body_idx]
+                pos = transform[:3]
+                quat = transform[3:7]
+                world_verts = self._transform_vertices(local_verts, pos, quat)
+
+                name = f"gear_{i}"
+                self._save_ply(os.path.join(mesh_dir, f"{name}.ply"), world_verts, faces)
+                np.save(os.path.join(mesh_dir, f"{name}_vertices_local.npy"), local_verts)
+                np.save(os.path.join(mesh_dir, f"{name}_vertices_world.npy"), world_verts)
+                np.save(os.path.join(mesh_dir, f"{name}_faces.npy"), faces)
+                np.save(os.path.join(mesh_dir, f"{name}_transform.npy"), transform)
+
+                mesh_info["rigid_bodies"].append({
+                    "name": name,
+                    "type": "gear",
+                    "body_idx": body_idx,
+                    "position": pos.tolist(),
+                    "quaternion": quat.tolist(),
+                })
+
+        # Save mesh info as JSON
+        import json
+        with open(os.path.join(mesh_dir, "mesh_info.json"), "w") as f:
+            json.dump(mesh_info, f, indent=2)
+
+        print(f"Saved initial meshes to {mesh_dir}/")
+        print(f"  - Soft bodies: {len(mesh_info['soft_bodies'])} meshes")
+        print(f"  - Rigid bodies: {len(mesh_info['rigid_bodies'])} meshes")
+        print(f"  - Cloth: {'yes' if mesh_info['cloth'] else 'no'}")
+
+    def _save_ply(self, filepath, vertices, faces):
+        """Save mesh to PLY format."""
+        with open(filepath, "w") as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {len(vertices)}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            f.write(f"element face {len(faces)}\n")
+            f.write("property list uchar int vertex_indices\n")
+            f.write("end_header\n")
+
+            for v in vertices:
+                f.write(f"{v[0]} {v[1]} {v[2]}\n")
+
+            for face in faces:
+                f.write(f"3 {face[0]} {face[1]} {face[2]}\n")
 
     def setup_polyscope_meshes(self):
         """Override to set up separate meshes for cloth and rigid bodies."""
@@ -682,6 +854,17 @@ class MultiphysicsDropSimulator(Simulator):
                         quat = transform[3:7]
                         transformed_verts = self._transform_vertices(local_verts, pos, quat)
                         ps_mesh.update_vertex_positions(transformed_verts)
+
+    def save_output(self, frame_id):
+        """Override to also save rigid body transforms."""
+        # Call parent to save particle positions
+        super().save_output(frame_id)
+
+        # Also save body_q for rigid bodies (if we have any)
+        if self.model.body_count > 0 and self.output_ext == "npy":
+            body_q = self.state_0.body_q.numpy()
+            out_file = os.path.join(self.output_path, f"body_q_{frame_id:06d}.npy")
+            np.save(out_file, body_q)
 
     def _transform_vertices(self, verts, pos, quat):
         """Transform vertices by quaternion rotation and translation."""
