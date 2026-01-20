@@ -5812,12 +5812,33 @@ class ModelBuilder:
                 add_face(v0, v1, v3)
                 add_face(v0, v3, v2)
 
-        # add triangles
+        # add surface triangles
+        start_tri = len(self.tri_indices)
         for _k, v in faces.items():
             try:
                 self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
             except np.linalg.LinAlgError:
                 continue
+        end_tri = len(self.tri_indices)
+
+        # add surface mesh edges (for graph coloring and optional bending)
+        if end_tri > start_tri:
+            adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+            edge_indices = np.fromiter(
+                (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+                int,
+            ).reshape(-1, 4)
+            if len(edge_indices) > 0:
+                # Add edges with zero stiffness by default (just for graph coloring)
+                # User can enable bending by setting edge_ke/edge_kd in color() call
+                self.add_edges(
+                    edge_indices[:, 0],
+                    edge_indices[:, 1],
+                    edge_indices[:, 2],
+                    edge_indices[:, 3],
+                    edge_ke=[0.0] * len(edge_indices),
+                    edge_kd=[0.0] * len(edge_indices),
+                )
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i, m, I, p, q):
@@ -5965,7 +5986,7 @@ class ModelBuilder:
                 tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
             )
 
-            if len(self.edge_indices) > 0:
+            if len(graph_edge_indices) > 0:
                 self.particle_color_groups = color_graph(
                     num_nodes,
                     graph_edge_indices,
