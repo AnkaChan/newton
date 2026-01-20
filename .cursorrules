@@ -1,0 +1,65 @@
+# Newton Project Rules
+
+## Python Environment
+When running Python scripts in this workspace, use the conda environment interpreter:
+```
+C:\Users\ankac\AppData\Local\anaconda3\envs\warp-build\python.exe script.py
+```
+
+Do NOT use `python`, `py`, or `python3` directly — they won't find the correct environment.
+
+## Unit System
+- **Cloth examples**: Use centimeters (cm) for length
+- **Everything else**: Use meters (m) for length
+
+## Creating New Demos
+Always inherit from `Simulator` in `newton/examples/cloth/M01_Simulator.py`.
+
+### Config Dict is the Single Source of Truth
+**Every experiment must be 100% reproducible solely from the config dict.**
+
+- ALL parameters go in the config: physics, mesh paths, solver settings, output paths, EVERYTHING
+- NEVER hardcode ANY value in the code — if it affects the simulation, it's in the config
+- The config dict should fully define the experiment
+
+```python
+config = {
+    # Identity
+    "name": "my_demo",
+    
+    # Mesh paths
+    "mesh_path": "path/to/mesh.ply",
+    "collider_path": "path/to/collider.obj",
+    
+    # Timing
+    "fps": 60,
+    "sim_substeps": 10,
+    "sim_num_frames": 1000,
+    
+    # Physics
+    "gravity": -980.0,
+    "density": 0.001,
+    "k_mu": 1e5,
+    "k_lambda": 1e5,
+    "k_damp": 0.0,
+    
+    # Collision
+    "particle_radius": 0.1,
+    "self_contact_radius": 0.2,
+    
+    # Forces
+    "force_magnitude": 1e6,
+    "force_direction": [0, 0, 1],
+    
+    # Output
+    "output_path": "path/to/output",
+    "write_output": True,
+    # ... EVERY parameter that affects the experiment
+}
+
+class MySimulator(Simulator):
+    def __init__(self):
+        super().__init__(config)
+```
+
+**If someone has only the config dict, they must be able to reproduce the exact experiment.**

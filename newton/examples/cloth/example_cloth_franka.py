@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
+import newton.usd
 import newton.utils
 from newton import Model, ModelBuilder, State, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
@@ -44,13 +45,13 @@ def compute_ee_delta(
     body_q: wp.array(dtype=wp.transform),
     offset: wp.transform,
     body_id: int,
-    bodies_per_env: int,
+    bodies_per_world: int,
     target: wp.transform,
     # outputs
     ee_delta: wp.array(dtype=wp.spatial_vector),
 ):
-    env_id = wp.tid()
-    tf = body_q[bodies_per_env * env_id + body_id] * offset
+    world_id = wp.tid()
+    tf = body_q[bodies_per_world * world_id + body_id] * offset
     pos = wp.transform_get_translation(tf)
     pos_des = wp.transform_get_translation(target)
     pos_diff = pos_des - pos
@@ -58,7 +59,7 @@ def compute_ee_delta(
     rot_des = wp.transform_get_rotation(target)
     ang_diff = rot_des * wp.quat_inverse(rot)
     # compute pose difference between end effector and target
-    ee_delta[env_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
+    ee_delta[world_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
 
 
 def compute_body_jacobian(
@@ -173,10 +174,10 @@ class Example:
             franka = ModelBuilder()
             self.create_articulation(franka)
 
-            self.scene.add_builder(franka)
-            self.bodies_per_env = franka.body_count
-            self.dof_q_per_env = franka.joint_coord_count
-            self.dof_qd_per_env = franka.joint_dof_count
+            self.scene.add_world(franka)
+            self.bodies_per_world = franka.body_count
+            self.dof_q_per_world = franka.joint_coord_count
+            self.dof_qd_per_world = franka.joint_dof_count
 
         # add a table
         self.scene.add_shape_box(
@@ -192,9 +193,11 @@ class Example:
 
         # add the T-shirt
         usd_stage = Usd.Stage.Open(newton.examples.get_asset("unisex_shirt.usd"))
-        usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/shirt"))
-        mesh_points = np.array(usd_geom.GetPointsAttr().Get())
-        mesh_indices = np.array(usd_geom.GetFaceVertexIndicesAttr().Get())
+        usd_prim = usd_stage.GetPrimAtPath("/root/shirt")
+
+        shirt_mesh = newton.usd.get_mesh(usd_prim)
+        mesh_points = shirt_mesh.vertices
+        mesh_indices = shirt_mesh.indices
         vertices = [wp.vec3(v) for v in mesh_points]
 
         if self.add_cloth:
@@ -439,7 +442,7 @@ class Example:
                 state_in.body_q,
                 self.endeffector_offset,
                 self.endeffector_id,
-                self.bodies_per_env,
+                self.bodies_per_world,
                 wp.transform(*self.target[:7]),
             ],
             outputs=[self.ee_delta],
@@ -538,7 +541,7 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
-    def test(self):
+    def test_final(self):
         p_lower = wp.vec3(-0.34, -0.9, 0.0)
         p_upper = wp.vec3(0.34, 0.0, 0.51)
         newton.examples.test_particle_state(

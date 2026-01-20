@@ -46,13 +46,17 @@ class State:
         """Rigid body velocities (spatial), shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear velocity; last three: angular velocity."""
 
+        self.body_q_prev: wp.array | None = None
+        """Previous rigid body transforms for finite-difference velocity computation."""
+
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force; last three: torque.
 
         Note:
-            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass
-            for all solvers except :class:`~newton.solvers.SolverFeatherstone`, which expects wrenches at the world origin.
+            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass (COM).
+            The linear force component is applied at the COM, and the torque is about the COM.
+            This convention is consistent across all solvers (XPBD, SemiImplicit, Featherstone, MuJoCo, VBD).
         """
 
         self.joint_q: wp.array | None = None
@@ -73,6 +77,39 @@ class State:
 
             if self.body_count:
                 self.body_f.zero_()
+
+    def assign(self, other: State) -> None:
+        """
+        Copies the array attributes of another State object into this one.
+
+        Args:
+            other: The source State object to copy from.
+
+        Raises:
+            ValueError: If the states have mismatched attributes (one has an array where the other is None).
+        """
+        attributes = set(self.__dict__).union(other.__dict__)
+
+        for attr in attributes:
+            val_self = getattr(self, attr, None)
+            val_other = getattr(other, attr, None)
+
+            if val_self is None and val_other is None:
+                continue
+
+            array_self = isinstance(val_self, wp.array)
+            array_other = isinstance(val_other, wp.array)
+
+            if not array_self and not array_other:
+                continue
+
+            if val_self is None or not array_self:
+                raise ValueError(f"State is missing array for '{attr}' which is present in the other state.")
+
+            if val_other is None or not array_other:
+                raise ValueError(f"Other state is missing array for '{attr}' which is present in this state.")
+
+            val_self.assign(val_other)
 
     @property
     def requires_grad(self) -> bool:

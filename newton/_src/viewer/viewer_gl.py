@@ -46,7 +46,7 @@ class ViewerGL(ViewerBase):
 
     Key Features:
         - Real-time 3D rendering of Newton models and simulation states.
-        - Camera navigation with WASD and mouse controls.
+        - Camera navigation with WASD/QE and mouse controls.
         - Object picking and manipulation via mouse.
         - Visualization toggles for joints, contacts, particles, springs, etc.
         - Wind force controls and visualization.
@@ -111,7 +111,12 @@ class ViewerGL(ViewerBase):
         # initialize viewer-local timer for per-frame integration
         self._last_time = time.perf_counter()
 
-        self.ui = UI(self.renderer.window)
+        # Only create UI in non-headless mode to avoid OpenGL context dependency
+        if not headless:
+            self.ui = UI(self.renderer.window)
+        else:
+            self.ui = None
+        self._gizmo_log = None
 
         # Performance tracking
         self._fps_history = []
@@ -166,7 +171,7 @@ class ViewerGL(ViewerBase):
         points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
         normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-        indices = wp.array(indices, dtype=wp.uint32, device=self.device)
+        indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
         self._point_mesh.update(points, indices, normals, uvs)
 
@@ -189,14 +194,34 @@ class ViewerGL(ViewerBase):
         """
         super().set_model(model)
 
-        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0)
+        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0, world_offsets=self.world_offsets)
         self.wind = Wind(model)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
 
     @override
+    def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
+        """Set world offsets and update the picking system.
+
+        Args:
+            spacing: Spacing between worlds along each axis.
+        """
+        super().set_world_offsets(spacing)
+        # Update picking system with new world offsets
+        if hasattr(self, "picking") and self.picking is not None:
+            self.picking.world_offsets = self.world_offsets
+
+    @override
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
+        """
+        Set the camera position, pitch, and yaw.
+
+        Args:
+            pos: The camera position.
+            pitch: The camera pitch.
+            yaw: The camera yaw.
+        """
         self.camera.pos = pos
         self.camera.pitch = pitch
         self.camera.yaw = yaw
@@ -259,11 +284,22 @@ class ViewerGL(ViewerBase):
         if not isinstance(self.objects[mesh], MeshGL):
             raise RuntimeError(f"Path {mesh} is not a Mesh object")
 
-        needs_update = not hidden
-        if name not in self.objects:
-            self.objects[name] = MeshInstancerGL(len(xforms), self.objects[mesh])
-            needs_update = True
+        instancer = self.objects.get(name, None)
+        transform_count = len(xforms) if xforms is not None else 0
+        resized = False
 
+        if instancer is None:
+            capacity = max(transform_count, 1)
+            instancer = MeshInstancerGL(capacity, self.objects[mesh])
+            self.objects[name] = instancer
+            resized = True
+        elif transform_count > instancer.num_instances:
+            new_capacity = max(transform_count, instancer.num_instances * 2)
+            instancer = MeshInstancerGL(new_capacity, self.objects[mesh])
+            self.objects[name] = instancer
+            resized = True
+
+        needs_update = resized or not hidden
         if needs_update:
             self.objects[name].update_from_transforms(xforms, scales, colors, materials)
 
@@ -342,8 +378,15 @@ class ViewerGL(ViewerBase):
         if self._point_mesh is None:
             self._create_point_mesh()
 
+        num_points = len(points)
         if name not in self.objects:
-            self.objects[name] = MeshInstancerGL(len(points), self._point_mesh)
+            # Start with a reasonable default.
+            initial_capacity = max(num_points, 256)
+            self.objects[name] = MeshInstancerGL(initial_capacity, self._point_mesh)
+        elif num_points > self.objects[name].num_instances:
+            old = self.objects[name]
+            new_capacity = max(num_points, old.num_instances * 2)
+            self.objects[name] = MeshInstancerGL(new_capacity, self._point_mesh)
 
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
@@ -395,14 +438,25 @@ class ViewerGL(ViewerBase):
             self.log_lines("picking_line", None, None, None)
             return
 
-        # Get the pick target and current picked point on geometry
+        # Get the pick target and current picked point on geometry (in physics space)
         pick_state = self.picking.pick_state.numpy()
-        pick_target = wp.vec3(pick_state[8], pick_state[9], pick_state[10])
-        picked_point = wp.vec3(pick_state[11], pick_state[12], pick_state[13])
+        pick_target = np.array([pick_state[8], pick_state[9], pick_state[10]], dtype=np.float32)
+        picked_point = np.array([pick_state[11], pick_state[12], pick_state[13]], dtype=np.float32)
+
+        # Apply world offset to convert from physics space to visual space
+        if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
+            if self.model.body_world is not None:
+                body_world_idx = self.model.body_world.numpy()[pick_body_idx]
+                if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
+                    world_offset = self.world_offsets.numpy()[body_world_idx]
+                    pick_target = pick_target + world_offset
+                    picked_point = picked_point + world_offset
 
         # Create line data
-        starts = wp.array([picked_point], dtype=wp.vec3, device=self.device)
-        ends = wp.array([pick_target], dtype=wp.vec3, device=self.device)
+        starts = wp.array(
+            [wp.vec3(picked_point[0], picked_point[1], picked_point[2])], dtype=wp.vec3, device=self.device
+        )
+        ends = wp.array([wp.vec3(pick_target[0], pick_target[1], pick_target[2])], dtype=wp.vec3, device=self.device)
         colors = wp.array([wp.vec3(0.0, 1.0, 1.0)], dtype=wp.vec3, device=self.device)
 
         # Render the line
@@ -470,7 +524,7 @@ class ViewerGL(ViewerBase):
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
 
-        if self.ui.is_available and self.show_ui:
+        if self.ui and self.ui.is_available and self.show_ui:
             self.ui.begin_frame()
 
             # Render the UI
@@ -481,7 +535,7 @@ class ViewerGL(ViewerBase):
 
         self.renderer.present()
 
-    def get_frame(self, target_image: wp.array | None = None) -> wp.array:
+    def get_frame(self, target_image: wp.array | None = None, render_ui: bool = False) -> wp.array:
         """
         Retrieve the last rendered frame.
 
@@ -492,6 +546,7 @@ class ViewerGL(ViewerBase):
             target_image (wp.array, optional):
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
+            render_ui (bool): Whether to render the UI.
 
         Returns:
             wp.array: GPU array containing RGB image data with shape `(height, width, 3)`
@@ -526,6 +581,13 @@ class ViewerGL(ViewerBase):
         assert self.renderer._frame_fbo is not None
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.renderer._frame_fbo)
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self._pbo)
+
+        if render_ui and self.ui:
+            self.ui.begin_frame()
+            self._render_ui()
+            self.ui.end_frame()
+            self.ui.render()
+
         gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
@@ -673,7 +735,7 @@ class ViewerGL(ViewerBase):
             x, y: Mouse position.
             scroll_x, scroll_y: Scroll deltas.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         fov_delta = scroll_y * 2.0
@@ -689,7 +751,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         import pyglet  # noqa: PLC0415
@@ -721,7 +783,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         import pyglet  # noqa: PLC0415
@@ -756,7 +818,7 @@ class ViewerGL(ViewerBase):
             symbol: Key symbol.
             modifiers: Modifier keys.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         try:
@@ -769,8 +831,11 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.SPACE:
             # Toggle pause with space key
             self._paused = not self._paused
-        elif symbol == pyglet.window.key.ESCAPE or symbol == pyglet.window.key.Q:
-            # Exit with Escape or Q key
+        elif symbol == pyglet.window.key.F:
+            # Frame camera around model bounds
+            self._frame_camera_on_model()
+        elif symbol == pyglet.window.key.ESCAPE:
+            # Exit with Escape key
             self.renderer.close()
 
     def on_key_release(self, symbol, modifiers):
@@ -779,6 +844,61 @@ class ViewerGL(ViewerBase):
         """
         pass
 
+    def _frame_camera_on_model(self):
+        """
+        Frame the camera to show all visible objects in the scene.
+        """
+        if self.model is None:
+            return
+
+        # Compute bounds from all visible objects
+        min_bounds = np.array([float("inf")] * 3)
+        max_bounds = np.array([float("-inf")] * 3)
+        found_objects = False
+
+        # Check body positions if available
+        if hasattr(self, "_last_state") and self._last_state is not None:
+            if hasattr(self._last_state, "body_q") and self._last_state.body_q is not None:
+                body_q = self._last_state.body_q.numpy()
+                # body_q is an array of transforms (7 values: 3 pos + 4 quat)
+                # Extract positions (first 3 values of each transform)
+                for i in range(len(body_q)):
+                    pos = body_q[i, :3]
+                    min_bounds = np.minimum(min_bounds, pos)
+                    max_bounds = np.maximum(max_bounds, pos)
+                    found_objects = True
+
+        # If no objects found, use default bounds
+        if not found_objects:
+            min_bounds = np.array([-5.0, -5.0, -5.0])
+            max_bounds = np.array([5.0, 5.0, 5.0])
+
+        # Calculate center and size of bounding box
+        center = (min_bounds + max_bounds) * 0.5
+        size = max_bounds - min_bounds
+        max_extent = np.max(size)
+
+        # Ensure minimum size to avoid camera being too close
+        if max_extent < 1.0:
+            max_extent = 1.0
+
+        # Calculate camera distance based on field of view
+        # Distance = extent / tan(fov/2) with some padding
+        fov_rad = np.radians(self.camera.fov)
+        padding = 1.5
+        distance = max_extent / (2.0 * np.tan(fov_rad / 2.0)) * padding
+
+        # Position camera at distance from current viewing direction, looking at center
+        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+
+        front = self.camera.get_front()
+        new_pos = PyVec3(
+            center[0] - front.x * distance,
+            center[1] - front.y * distance,
+            center[2] - front.z * distance,
+        )
+        self.camera.pos = new_pos
+
     def _update_camera(self, dt: float):
         """
         Update the camera position and orientation based on user input.
@@ -786,7 +906,7 @@ class ViewerGL(ViewerBase):
         Args:
             dt (float): Time delta since last update.
         """
-        if self.ui.is_capturing():
+        if self.ui and self.ui.is_capturing():
             return
 
         # camera-relative basis
@@ -816,6 +936,10 @@ class ViewerGL(ViewerBase):
             desired -= right  # strafe left
         if self.renderer.is_key_down(pyglet.window.key.D) or self.renderer.is_key_down(pyglet.window.key.RIGHT):
             desired += right  # strafe right
+        if self.renderer.is_key_down(pyglet.window.key.Q):
+            desired -= up  # pan down
+        if self.renderer.is_key_down(pyglet.window.key.E):
+            desired += up  # pan up
 
         dn = float(np.linalg.norm(desired))
         if dn > 1.0e-6:
@@ -841,7 +965,8 @@ class ViewerGL(ViewerBase):
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera.update_screen_size(fb_w, fb_h)
 
-        self.ui.resize(width, height)
+        if self.ui:
+            self.ui.resize(width, height)
 
     def _update_fps(self):
         """
@@ -864,7 +989,7 @@ class ViewerGL(ViewerBase):
             self._frame_count = 0
 
     def _render_gizmos(self):
-        if not self._gizmo_log:
+        if not self._gizmo_log or not self.ui:
             return
 
         giz = self.ui.giz
@@ -908,7 +1033,7 @@ class ViewerGL(ViewerBase):
         """
         Render the complete ImGui interface (left panel, stats overlay, and custom UI).
         """
-        if not self.ui.is_available:
+        if not self.ui or not self.ui.is_available:
             return
 
         # Render gizmos
@@ -952,7 +1077,7 @@ class ViewerGL(ViewerBase):
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
                     imgui.separator()
-                    imgui.text(f"Environments: {self.model.num_envs}")
+                    imgui.text(f"Worlds: {self.model.num_worlds}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
                     gravity = self.model.gravity.numpy()[0]
@@ -998,6 +1123,10 @@ class ViewerGL(ViewerBase):
                     # Visual geometry toggle
                     show_visual = self.show_visual
                     changed, self.show_visual = imgui.checkbox("Show Visual", show_visual)
+
+                    # Inertia boxes toggle
+                    show_inertia_boxes = self.show_inertia_boxes
+                    changed, self.show_inertia_boxes = imgui.checkbox("Show Inertia Boxes", show_inertia_boxes)
 
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Example Options"):
@@ -1075,11 +1204,13 @@ class ViewerGL(ViewerBase):
                 imgui.text("Controls:")
                 imgui.pop_style_color()
                 imgui.text("WASD - Move camera")
+                imgui.text("QE - Pan up/down")
                 imgui.text("Left Click - Look around")
                 imgui.text("Right Click - Pick objects")
                 imgui.text("Scroll - Zoom")
                 imgui.text("Space - Pause/Resume")
                 imgui.text("H - Toggle UI")
+                imgui.text("F - Frame camera around model")
 
             # Selection API section
             self._render_selection_panel()
@@ -1351,7 +1482,7 @@ class ViewerGL(ViewerBase):
             if len(values.shape) == 2:
                 batch_size = values.shape[0]
                 imgui.spacing()
-                imgui.text("Batch/Environment Selection:")
+                imgui.text("Batch/World Selection:")
                 imgui.push_item_width(100)
 
                 # Ensure selected batch index is valid
@@ -1362,7 +1493,7 @@ class ViewerGL(ViewerBase):
                 )
                 imgui.pop_item_width()
                 imgui.same_line()
-                text = f"Environment {state['selected_batch_idx']} / {batch_size}"
+                text = f"World {state['selected_batch_idx']} / {batch_size}"
                 imgui.text(text)
 
             # Display values as sliders in a scrollable region
@@ -1398,7 +1529,7 @@ class ViewerGL(ViewerBase):
                 if len(values.shape) == 2:
                     batch_idx = state["selected_batch_idx"]
                     stats_data = values[batch_idx]
-                    imgui.text(f"Statistics for Environment {batch_idx}:")
+                    imgui.text(f"Statistics for World {batch_idx}:")
                 else:
                     stats_data = values
                     imgui.text("Statistics:")

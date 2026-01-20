@@ -134,6 +134,38 @@ def compute_cone_inertia(density: float, r: float, h: float) -> tuple[float, wp.
     return (m, com, I)
 
 
+def compute_ellipsoid_inertia(density: float, a: float, b: float, c: float) -> tuple[float, wp.vec3, wp.mat33]:
+    """Helper to compute mass and inertia of a solid ellipsoid
+
+    The ellipsoid is centered at the origin with semi-axes a, b, c along the x, y, z axes respectively.
+
+    Args:
+        density: The ellipsoid density
+        a: The semi-axis along the x-axis
+        b: The semi-axis along the y-axis
+        c: The semi-axis along the z-axis
+
+    Returns:
+
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
+    """
+    # Volume of ellipsoid: V = (4/3) * pi * a * b * c
+    v = (4.0 / 3.0) * wp.pi * a * b * c
+    m = density * v
+
+    # Inertia tensor for a solid ellipsoid about its center of mass:
+    # Ixx = (1/5) * m * (b² + c²)
+    # Iyy = (1/5) * m * (a² + c²)
+    # Izz = (1/5) * m * (a² + b²)
+    Ixx = (1.0 / 5.0) * m * (b * b + c * c)
+    Iyy = (1.0 / 5.0) * m * (a * a + c * c)
+    Izz = (1.0 / 5.0) * m * (a * a + b * b)
+
+    I = wp.mat33([[Ixx, 0.0, 0.0], [0.0, Iyy, 0.0], [0.0, 0.0, Izz]])
+
+    return (m, wp.vec3(), I)
+
+
 def compute_box_inertia_from_mass(mass: float, w: float, h: float, d: float) -> wp.mat33:
     """Helper to compute 3x3 inertia matrix of a solid box with given mass
     and dimensions.
@@ -491,8 +523,17 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
             hollow = compute_cone_inertia(density, r - thickness, h - 2.0 * thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
-    elif type == GeoType.MESH or type == GeoType.SDF:
-        assert src is not None, "src must be provided for mesh or SDF shapes"
+    elif type == GeoType.ELLIPSOID:
+        a, b, c = scale[0], scale[1], scale[2]
+        solid = compute_ellipsoid_inertia(density, a, b, c)
+        if is_solid:
+            return solid
+        else:
+            assert isinstance(thickness, float), "thickness must be a float for a hollow ellipsoid geom"
+            hollow = compute_ellipsoid_inertia(density, a - thickness, b - thickness, c - thickness)
+            return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
+    elif type == GeoType.MESH or type == GeoType.SDF or type == GeoType.CONVEX_MESH:
+        assert src is not None, "src must be provided for mesh, SDF, or convex hull shapes"
         if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:
             m, c, I = src.mass, src.com, src.I
             scale = wp.vec3(scale)
@@ -513,8 +554,8 @@ def compute_shape_inertia(
             I_new = wp.mat33([[Ixx, Ixy, Ixz], [Ixy, Iyy, Iyz], [Ixz, Iyz, Izz]])
 
             return m_new, c_new, I_new
-        elif type == GeoType.MESH:
-            assert isinstance(src, Mesh), "src must be a Mesh for mesh shapes"
+        elif type == GeoType.MESH or type == GeoType.CONVEX_MESH:
+            assert isinstance(src, Mesh), "src must be a Mesh for mesh or convex hull shapes"
             # fall back to computing inertia from mesh geometry
             vertices = np.array(src.vertices) * np.array(scale)
             m, c, I, _vol = compute_mesh_inertia(density, vertices, src.indices, is_solid, thickness)
