@@ -20,7 +20,9 @@
 # The rollers are rigid bodies controlled externally via
 # integrate_with_external_rigid_solver=True.
 #
-# Command: python -m newton.examples.mutlphysics.example_crusher_simulation
+# Command:
+#   Newton viewer:   python -m newton.examples.mutlphysics.example_crusher_simulation
+#   Polyscope:       python -m newton.examples.mutlphysics.example_crusher_simulation --viewer polyscope
 #
 ###########################################################################
 
@@ -171,6 +173,8 @@ def create_gear_cylinder_mesh(
 # Configuration - Single Source of Truth (all units in meters, kg, seconds)
 # =============================================================================
 config = {
+    # Viewer: "newton" or "polyscope"
+    "viewer": "polyscope",
     # Timing
     "fps": 60,
     "sim_substeps": 10,
@@ -185,24 +189,26 @@ config = {
     "roller_outer_radius": 0.40,  # m
     "roller_length": 1.6,  # m
     "roller_num_teeth": 16,
-    "roller_gap": 0.24,  # m
+    "roller_gap": 0.08,  # m
     "roller_rotation_speed": 1.0,  # rad/s
-    "roller_ke": 1.0e5,
-    "roller_kd": 1e-4,
-    "roller_mu": 0.8,
+    "roller_ke": 1.0e6,
+    "roller_kd": 1e-7,
+    "roller_mu": 0.2,
     # Soft body
-    "softbody_vtk_path": "bunny_small.vtk",
+    "softbody_vtk_path": "Armadilo_15K.1.vtk",
     "softbody_position": (0.0, 0.0, 1.0),  # m
-    "softbody_scale": 0.1,  # m
+    "softbody_rotation_axis": (1.0, 0.0, 0.0),  # rotate around X
+    "softbody_rotation_angle": 1.5708,  # 90 degrees in radians (π/2)
+    "softbody_scale": 1.,  # m
     "softbody_density": 1000.0,  # kg/m³
     "softbody_k_mu": 1.0e5,
     "softbody_k_lambda": 1.0e6,
     "softbody_k_damp": 1e-7,
-    "softbody_particle_radius": 0.01,  # m
+    "softbody_particle_radius": 0.005,  # m
     # Contact parameters
-    "soft_contact_ke": 1.0e5,
-    "soft_contact_kd": 1e-5,
-    "soft_contact_mu": 0.5,
+    "soft_contact_ke": 1.0e6,
+    "soft_contact_kd": 1e-7,
+    "soft_contact_mu": 0.2,
     "soft_contact_max": 64 * 1024,
     "soft_contact_margin": 0.01,  # m
     # VBD Solver - self contact
@@ -214,19 +220,38 @@ config = {
     "particle_enable_tile_solve": True,
     "particle_vertex_contact_buffer_size": 16,
     "particle_edge_contact_buffer_size": 32,
+    # Output
+    "output_path": r"D:\Data\DAT_Sim\Crusher",
+    "write_output": True,
+    "sim_num_frames": 600,
 }
 
 
 class Example:
     """
     Crusher simulation with two counter-rotating gear rollers crushing a soft body.
-    Uses Newton's built-in viewer for visualization.
+    Supports both Newton's built-in viewer and Polyscope for visualization.
     """
 
-    def __init__(self, viewer, cfg: dict = None):
+    def __init__(self, viewer=None, cfg: dict = None):
+        self.cfg = cfg if cfg is not None else config
         self.viewer = viewer
         self.sim_time = 0.0
-        self.cfg = cfg if cfg is not None else config
+        self.use_polyscope = self.cfg.get("viewer", "newton") == "polyscope"
+        self.paused = False
+        self.frame_count = 0
+
+        # Output setup with timestamped subfolder
+        self.write_output = self.cfg.get("write_output", False)
+        base_output_path = self.cfg.get("output_path", "")
+        if self.write_output and base_output_path:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            self.output_path = os.path.join(base_output_path, timestamp)
+            os.makedirs(self.output_path, exist_ok=True)
+            print(f"Output will be saved to: {self.output_path}")
+        else:
+            self.output_path = ""
 
         # Timing
         self.fps = self.cfg["fps"]
@@ -264,6 +289,10 @@ class Example:
             length=roller_length,
             num_teeth=num_teeth,
         )
+
+        # Store for polyscope visualization
+        self.roller_verts = roller_verts
+        self.roller_faces = roller_faces
 
         # Create Newton mesh for rollers
         roller_mesh = newton.Mesh(
@@ -328,9 +357,12 @@ class Example:
 
         # Add soft body
         pos = self.cfg["softbody_position"]
+        rot_axis = self.cfg.get("softbody_rotation_axis", (0.0, 0.0, 1.0))
+        rot_angle = self.cfg.get("softbody_rotation_angle", 0.0)
+        rot = wp.quat_from_axis_angle(wp.vec3(rot_axis[0], rot_axis[1], rot_axis[2]), rot_angle)
         builder.add_soft_mesh(
             pos=wp.vec3(pos[0], pos[1], pos[2]),
-            rot=wp.quat_identity(),
+            rot=rot,
             scale=self.cfg["softbody_scale"],
             vel=wp.vec3(0.0, 0.0, 0.0),
             vertices=softbody_vertices,
@@ -347,6 +379,9 @@ class Example:
 
         # Finalize the model
         self.model = builder.finalize()
+
+        # Store triangle faces for visualization
+        self.tri_faces = self.model.tri_indices.numpy()
 
         # Set contact parameters
         self.model.soft_contact_ke = self.cfg["soft_contact_ke"]
@@ -375,8 +410,82 @@ class Example:
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
 
-        # Set model on viewer
-        self.viewer.set_model(self.model)
+        # Set up visualization
+        if self.use_polyscope:
+            self._setup_polyscope()
+        else:
+            self.viewer.set_model(self.model)
+
+        # Save static mesh data and initial state
+        if self.write_output and self.output_path:
+            # Static mesh data
+            np.save(os.path.join(self.output_path, "roller_verts.npy"), self.roller_verts)
+            np.save(os.path.join(self.output_path, "roller_faces.npy"), self.roller_faces)
+            np.save(os.path.join(self.output_path, "tri_faces.npy"), self.tri_faces)
+            # Initial particle positions
+            np.save(os.path.join(self.output_path, "particles_initial.npy"), self.state_0.particle_q.numpy())
+            np.save(os.path.join(self.output_path, "body_q_initial.npy"), self.state_0.body_q.numpy())
+            # Metadata (fps, num_frames, etc.)
+            metadata = {
+                "fps": self.fps,
+                "sim_substeps": self.sim_substeps,
+                "sim_num_frames": self.cfg.get("sim_num_frames", 600),
+                "frame_dt": self.frame_dt,
+                "num_particles": self.model.particle_count,
+                "num_bodies": self.model.body_count,
+            }
+            np.save(os.path.join(self.output_path, "metadata.npy"), metadata)
+            print(f"Saved static mesh data and initial state to {self.output_path}")
+
+    def _setup_polyscope(self):
+        """Initialize Polyscope visualization."""
+        import polyscope as ps
+        import polyscope.imgui as psim
+
+        self.ps = ps
+        self.psim = psim
+
+        ps.init()
+        ps.set_up_dir("z_up")
+        ps.set_ground_plane_mode("shadow_only")
+        ps.set_ground_plane_height_factor(self.cfg["ground_height"])
+
+        # Register soft body mesh
+        verts = self.state_0.particle_q.numpy()
+        self.ps_softbody = ps.register_surface_mesh("SoftBody", verts, self.tri_faces)
+        self.ps_softbody.set_color((0.8, 0.5, 0.3))
+        self.ps_softbody.set_smooth_shade(True)
+
+        # Register roller meshes
+        body_q = self.state_0.body_q.numpy()
+
+        transform1 = body_q[self.body_roller1]
+        roller1_world = self._transform_vertices(self.roller_verts, transform1[:3], transform1[3:7])
+        self.ps_roller1 = ps.register_surface_mesh("Roller_1", roller1_world, self.roller_faces)
+        self.ps_roller1.set_color((0.5, 0.5, 0.55))
+        self.ps_roller1.set_smooth_shade(False)
+
+        transform2 = body_q[self.body_roller2]
+        roller2_world = self._transform_vertices(self.roller_verts, transform2[:3], transform2[3:7])
+        self.ps_roller2 = ps.register_surface_mesh("Roller_2", roller2_world, self.roller_faces)
+        self.ps_roller2.set_color((0.5, 0.5, 0.55))
+        self.ps_roller2.set_smooth_shade(False)
+
+    def _transform_vertices(self, verts, pos, quat):
+        """Transform vertices by quaternion rotation and translation."""
+        qx, qy, qz, qw = quat
+
+        # Build rotation matrix from quaternion
+        rot_mat = np.array(
+            [
+                [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+                [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+                [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+            ]
+        )
+
+        transformed = verts @ rot_mat.T + pos
+        return transformed.astype(np.float32)
 
     def update_roller_transforms(self):
         """Update roller positions based on rotation angles.
@@ -418,6 +527,9 @@ class Example:
 
     def step(self):
         """Execute one frame with external rigid body updates."""
+        if self.paused:
+            return
+
         for _ in range(self.sim_substeps):
             # Update roller rotations
             self.update_roller_transforms()
@@ -434,8 +546,9 @@ class Example:
 
             self.state_0.clear_forces()
 
-            # Apply viewer forces (for interactive dragging)
-            self.viewer.apply_forces(self.state_0)
+            # Apply viewer forces (for interactive dragging) - Newton viewer only
+            if not self.use_polyscope:
+                self.viewer.apply_forces(self.state_0)
 
             # Step simulation
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
@@ -443,12 +556,60 @@ class Example:
 
         self.sim_time += self.frame_dt
 
+        # Save output
+        if self.write_output:
+            self.save_output()
+        self.frame_count += 1
+
+    def save_output(self):
+        """Save particle positions and roller transforms to npy files."""
+        if not self.output_path:
+            return
+
+        # Save particle positions
+        particle_q = self.state_0.particle_q.numpy()
+        particle_file = os.path.join(self.output_path, f"particles_{self.frame_count:06d}.npy")
+        np.save(particle_file, particle_q)
+
+        # Save roller transforms (body_q contains [px, py, pz, qx, qy, qz, qw] for each body)
+        body_q = self.state_0.body_q.numpy()
+        body_file = os.path.join(self.output_path, f"body_q_{self.frame_count:06d}.npy")
+        np.save(body_file, body_q)
+
+
+        if self.frame_count % 60 == 0:
+            print(f"Saved frame {self.frame_count}, time={self.sim_time:.3f}s")
+
     def render(self):
-        """Render current state using Newton's viewer."""
+        """Render current state."""
+        if self.use_polyscope:
+            self._render_polyscope()
+        else:
+            self._render_newton()
+
+    def _render_newton(self):
+        """Render using Newton's viewer."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+    def _render_polyscope(self):
+        """Render using Polyscope."""
+        # Update soft body mesh
+        verts = self.state_0.particle_q.numpy()
+        self.ps_softbody.update_vertex_positions(verts)
+
+        # Update roller meshes
+        body_q = self.state_0.body_q.numpy()
+
+        transform1 = body_q[self.body_roller1]
+        roller1_world = self._transform_vertices(self.roller_verts, transform1[:3], transform1[3:7])
+        self.ps_roller1.update_vertex_positions(roller1_world)
+
+        transform2 = body_q[self.body_roller2]
+        roller2_world = self._transform_vertices(self.roller_verts, transform2[:3], transform2[3:7])
+        self.ps_roller2.update_vertex_positions(roller2_world)
 
     def test_final(self):
         """Test that simulation completed reasonably."""
@@ -459,14 +620,47 @@ class Example:
         )
 
 
+def run_polyscope(example):
+    """Run simulation loop with Polyscope."""
+    import polyscope as ps
+    import polyscope.imgui as psim
+
+    max_frames = example.cfg.get("sim_num_frames", 600)
+
+    def callback():
+        # UI controls
+        changed, example.paused = psim.Checkbox("Paused", example.paused)
+
+        psim.TextUnformatted(f"Frame: {example.frame_count} / {max_frames}")
+        psim.TextUnformatted(f"Time: {example.sim_time:.3f}s")
+
+        # Get particle positions for info display
+        verts = example.state_0.particle_q.numpy()
+        psim.TextUnformatted(f"Min Z: {verts[:, 2].min():.4f}")
+        psim.TextUnformatted(f"Max Z: {verts[:, 2].max():.4f}")
+
+        # Check if simulation is complete
+        if example.frame_count >= max_frames:
+            example.paused = True
+            psim.TextUnformatted("SIMULATION COMPLETE")
+            return
+
+        # Step and render
+        example.step()
+        example.render()
+
+    ps.set_user_callback(callback)
+    ps.show()
+
+
 if __name__ == "__main__":
-    # Create parser with base arguments
-    parser = newton.examples.create_parser()
-
-    # Parse arguments and initialize viewer
-    viewer, args = newton.examples.init(parser)
-
-    # Create example and run
-    example = Example(viewer=viewer, cfg=config)
-
-    newton.examples.run(example, args)
+    if config["viewer"] == "polyscope":
+        # Use Polyscope
+        example = Example(cfg=config)
+        run_polyscope(example)
+    else:
+        # Use Newton's viewer
+        parser = newton.examples.create_parser()
+        viewer, args = newton.examples.init(parser)
+        example = Example(viewer=viewer, cfg=config)
+        newton.examples.run(example, args)
