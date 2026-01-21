@@ -9,7 +9,7 @@
 # VBD iteration.
 #
 # Truncation modes:
-#   0: Isometric (conservative bound)
+#   0: Isotropic (conservative bound)
 #   1: Planar (DAT - Divide and Truncate)
 #   2: CCD (Continuous Collision Detection - global min t)
 #   3: Dykstra (Hessian-weighted Dykstra alternating projection)
@@ -55,7 +55,7 @@ def solve_elasticity_tile_measure_force(
     tet_indices: wp.array(dtype=wp.int32, ndim=2),
     tet_poses: wp.array(dtype=wp.mat33),
     tet_materials: wp.array(dtype=float, ndim=2),
-    adjacency: ForceElementAdjacencyInfo,
+    adjacency: RigidForceElementAdjacencyInfo,
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
     # output
@@ -513,7 +513,7 @@ def run_convergence_comparison(
         Dict with results for each mode
     """
     results = {}
-    mode_names = {0: "Isometric", 1: "Planar", 2: "CCD", 3: "Dykstra"}
+    mode_names = {0: "Isotropic", 1: "Planar", 2: "CCD", 3: "Dykstra"}
     
     for mode in [0, 1, 2, 3]:  # Include all truncation modes
         print(f"\n{'='*60}")
@@ -562,8 +562,8 @@ def plot_convergence(results: dict, output_path: str = None):
     """
     plt.figure(figsize=(12, 8))
     
-    colors = {"Isometric": "blue", "Planar": "green", "CCD": "red", "Dykstra": "purple"}
-    markers = {"Isometric": "o", "Planar": "s", "CCD": "^", "Dykstra": "d"}
+    colors = {"Isotropic": "blue", "Planar": "green", "CCD": "red", "Dykstra": "purple"}
+    markers = {"Isotropic": "o", "Planar": "s", "CCD": "^", "Dykstra": "d"}
     
     for mode_name, data in results.items():
         residuals = data["residuals"]

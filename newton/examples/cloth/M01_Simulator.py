@@ -30,7 +30,7 @@ default_config = {
     "iterations": 10,
     "bvh_rebuild_frames": 1,
     # Solver settings (newton.solvers.SolverVBD parameters)
-    "use_cuda_graph": False,
+    "use_cuda_graph": True,
     "handle_self_contact": True,
     "use_tile_solve": True,
     "self_contact_radius": 0.2,
@@ -57,11 +57,18 @@ default_config = {
     "output_ext": "ply",  # "ply", "usd", or "npy" (npy saves only positions, initial meshes saved as ply)
     "write_output": False,
     "write_video": False,
+    "write_screenshots": False,  # Save individual frame screenshots when writing video
     "recovery_state_save_steps": -1,  # Save recovery state every N frames (<0 to disable)
     # Visualization
     "do_rendering": True,
     "show_ground_plane": False,
     "is_initially_paused": False,
+    # Camera settings (None = use Polyscope defaults)
+    "camera_position": None,  # (x, y, z) camera position
+    "camera_target": None,  # (x, y, z) look-at target
+    "camera_up": None,  # (x, y, z) up direction (optional, uses scene up if None)
+    "camera_fov": None,  # Vertical FOV in degrees (optional)
+    "camera_json": None,  # Polyscope camera JSON (from Ctrl+C) - overrides other camera settings
     # Ground plane
     "has_ground": False,  # Add ground collision plane to simulation
     "ground_height": 0.0,  # Height of the ground plane
@@ -132,6 +139,7 @@ class Simulator:
         self.output_ext = cfg("output_ext")
         self.write_output = cfg("write_output")
         self.write_video = cfg("write_video")
+        self.write_screenshots = cfg("write_screenshots")
         self.recovery_state_save_steps = cfg("recovery_state_save_steps")
 
         # Construct output path: output_path/experiment_name_timestamp/
@@ -170,6 +178,12 @@ class Simulator:
         self.is_paused = cfg("is_initially_paused")
         if self.is_paused:
             print("[INFO] Simulation started PAUSED (press Space to begin)")
+
+        # Camera settings
+        self.camera_position = cfg("camera_position")
+        self.camera_target = cfg("camera_target")
+        self.camera_up = cfg("camera_up")
+        self.camera_fov = cfg("camera_fov")
 
         # Polyscope mesh registry: name -> {"mesh": ps_mesh, "vertex_indices": slice or array, "faces": array}
         self.ps_meshes: dict = {}
@@ -314,9 +328,10 @@ class Simulator:
                 (pixels.shape[1], pixels.shape[0]),
                 isColor=True,
             )
-            # Create screenshot subfolder
-            screenshot_dir = join(self.output_path, "screenshots")
-            os.makedirs(screenshot_dir, exist_ok=True)
+            # Create screenshot subfolder only if screenshots are enabled
+            if self.write_screenshots:
+                screenshot_dir = join(self.output_path, "screenshots")
+                os.makedirs(screenshot_dir, exist_ok=True)
 
         frame_id = 0
         pbar = tqdm.tqdm(total=self.sim_num_frames)
@@ -327,8 +342,9 @@ class Simulator:
         if vid_out is not None:
             pixels = ps.screenshot_to_buffer(False)
             vid_out.write(pixels[:, :, [2, 1, 0]])
-            screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
-            cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
+            if screenshot_dir is not None:
+                screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
+                cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
         frame_id += 1
         pbar.update(1)
 
@@ -358,9 +374,10 @@ class Simulator:
                     if vid_out is not None:
                         pixels = ps.screenshot_to_buffer(False)
                         vid_out.write(pixels[:, :, [2, 1, 0]])
-                        # Save screenshot as PNG
-                        screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
-                        cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
+                        # Save screenshot as PNG if enabled
+                        if screenshot_dir is not None:
+                            screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
+                            cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
 
                     frame_id += 1
                     pbar.update(1)
@@ -376,7 +393,8 @@ class Simulator:
             if vid_out is not None:
                 vid_out.release()
                 print(f"Video saved to: {join(self.output_path, 'video.mp4')}")
-                print(f"Screenshots saved to: {screenshot_dir}")
+                if screenshot_dir is not None:
+                    print(f"Screenshots saved to: {screenshot_dir}")
 
     def save_output(self, frame_id):
         """Save the current frame to a file."""
@@ -489,12 +507,56 @@ class Simulator:
         else:
             ps.set_ground_plane_mode("none")
 
+        # Set up camera from config
+        self.setup_camera()
+
         # Register keyboard callback for pause/unpause
         ps.set_user_callback(self.keyboard_callback)
 
+    def setup_camera(self):
+        """
+        Set up camera from config settings.
+        Call this after ps.init() to configure camera position and FOV.
+        
+        Note: Press Ctrl+C in Polyscope to copy current camera parameters to clipboard.
+        You can paste the JSON directly into config["camera_json"].
+        """
+        # Helper to read from config
+        def cfg(key):
+            return get_config_value(self.config, key)
+        
+        # Option 1: Use camera_json (from Polyscope Ctrl+C)
+        camera_json = cfg("camera_json")
+        if camera_json is not None:
+            self._apply_camera_json(camera_json)
+            return
+        
+        # Option 2: Use position/target
+        if self.camera_position is not None and self.camera_target is not None:
+            if self.camera_up is not None:
+                ps.look_at_dir(self.camera_position, self.camera_target, self.camera_up)
+            else:
+                ps.look_at(self.camera_position, self.camera_target)
+
+        if self.camera_fov is not None:
+            ps.set_vertical_fov_degrees(self.camera_fov)
+
+    def _apply_camera_json(self, camera_json: dict):
+        """
+        Apply camera settings from Polyscope JSON format (from Ctrl+C).
+        
+        Args:
+            camera_json: Dict with keys like "viewMat", "fov", "projectionMode", etc.
+        """
+        import json
+        # Convert dict to JSON string and use Polyscope's built-in function
+        json_str = json.dumps(camera_json)
+        ps.set_view_from_json(json_str)
+
     def keyboard_callback(self):
         """Callback function for keyboard input (called during Polyscope render)."""
-        # Use ImGuiKey enum for Space
+        # Use ImGuiKey enum for Space to pause/resume
+        # Note: Press Ctrl+C in Polyscope to copy camera parameters to clipboard
         if ps.imgui.IsKeyPressed(ps.imgui.ImGuiKey_Space):
             self.is_paused = not self.is_paused
             if self.is_paused:
@@ -830,9 +892,10 @@ class Simulator:
                 (pixels.shape[1], pixels.shape[0]),
                 isColor=True,
             )
-            # Create screenshot subfolder (reuse same folder)
-            screenshot_dir = join(self.output_path, "screenshots")
-            os.makedirs(screenshot_dir, exist_ok=True)
+            # Create screenshot subfolder only if screenshots are enabled
+            if self.write_screenshots:
+                screenshot_dir = join(self.output_path, "screenshots")
+                os.makedirs(screenshot_dir, exist_ok=True)
 
         try:
             for frame_id in tqdm.tqdm(range(start_frame + 1, self.sim_num_frames)):
@@ -862,16 +925,18 @@ class Simulator:
                     if vid_out is not None:
                         pixels = ps.screenshot_to_buffer(False)
                         vid_out.write(pixels[:, :, [2, 1, 0]])
-                        # Save screenshot as PNG
-                        screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
-                        cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
+                        # Save screenshot as PNG if enabled
+                        if screenshot_dir is not None:
+                            screenshot_file = join(screenshot_dir, f"frame_{frame_id:06d}.png")
+                            cv2.imwrite(screenshot_file, pixels[:, :, [2, 1, 0]])
         except KeyboardInterrupt:
             print("\nSimulation interrupted by user. Saving video...")
         finally:
             if vid_out is not None:
                 vid_out.release()
                 print(f"Video saved to: {join(self.output_path, 'video_resumed.mp4')}")
-                print(f"Screenshots saved to: {screenshot_dir}")
+                if screenshot_dir is not None:
+                    print(f"Screenshots saved to: {screenshot_dir}")
 
     def load_state(self, filepath):
         """

@@ -3964,3 +3964,143 @@ def solve_elasticity_tile(
                 + particle_forces[particle_index]
             )
             particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
+
+@wp.kernel
+def solve_elasticity(
+    dt: float,
+    particle_ids_in_color: wp.array(dtype=wp.int32),
+    pos_prev: wp.array(dtype=wp.vec3),
+    pos: wp.array(dtype=wp.vec3),
+    mass: wp.array(dtype=float),
+    inertia: wp.array(dtype=wp.vec3),
+    particle_flags: wp.array(dtype=wp.int32),
+    tri_indices: wp.array(dtype=wp.int32, ndim=2),
+    tri_poses: wp.array(dtype=wp.mat22),
+    tri_materials: wp.array(dtype=float, ndim=2),
+    tri_areas: wp.array(dtype=float),
+    edge_indices: wp.array(dtype=wp.int32, ndim=2),
+    edge_rest_angles: wp.array(dtype=float),
+    edge_rest_length: wp.array(dtype=float),
+    edge_bending_properties: wp.array(dtype=float, ndim=2),
+    tet_indices: wp.array(dtype=wp.int32, ndim=2),
+    tet_poses: wp.array(dtype=wp.mat33),
+    tet_materials: wp.array(dtype=float, ndim=2),
+    particle_adjacency: ParticleForceElementAdjacencyInfo,
+    particle_forces: wp.array(dtype=wp.vec3),
+    particle_hessians: wp.array(dtype=wp.mat33),
+    # output
+    particle_displacements: wp.array(dtype=wp.vec3),
+):
+    t_id = wp.tid()
+
+    particle_index = particle_ids_in_color[t_id]
+
+    if not particle_flags[particle_index] & ParticleFlags.ACTIVE:
+        particle_displacements[particle_index] = wp.vec3(0.0)
+        return
+
+    dt_sqr_reciprocal = 1.0 / (dt * dt)
+
+    # inertia force and hessian
+    f = mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * (dt_sqr_reciprocal)
+    h = mass[particle_index] * dt_sqr_reciprocal * wp.identity(n=3, dtype=float)
+
+    # fmt: off
+    if wp.static("inertia_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
+        wp.printf(
+            "particle: %d after accumulate inertia\nforce:\n %f %f %f, \nhessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
+            particle_index,
+            f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
+        )
+
+    if tri_indices:
+        # elastic force and hessian
+        for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
+            tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
+
+            # fmt: off
+            if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
+                wp.printf(
+                    "particle: %d | num_adj_faces: %d | ",
+                    particle_index,
+                    get_vertex_num_adjacent_faces(particle_index, particle_adjacency),
+                )
+                wp.printf("i_face: %d | face id: %d | v_order: %d | ", i_adj_tri, tri_index, vertex_order)
+                wp.printf(
+                    "face: %d %d %d\n",
+                    tri_indices[tri_index, 0],
+                    tri_indices[tri_index, 1],
+                    tri_indices[tri_index, 2],
+                )
+            # fmt: on
+
+            if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
+                f_tri, h_tri = evaluate_stvk_force_hessian(
+                    tri_index,
+                    vertex_order,
+                    pos,
+                    pos_prev,
+                    tri_indices,
+                    tri_poses[tri_index],
+                    tri_areas[tri_index],
+                    tri_materials[tri_index, 0],
+                    tri_materials[tri_index, 1],
+                    tri_materials[tri_index, 2],
+                    dt,
+                )
+
+                f = f + f_tri
+                h = h + h_tri
+
+    if edge_indices:
+        for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
+            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(particle_adjacency, particle_index, i_adj_edge)
+            # vertex is on the edge; otherwise it only effects the bending energy n
+            if edge_bending_properties[nei_edge_index, 0] > 0.0:
+                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                    nei_edge_index, vertex_order_on_edge, pos, pos_prev, edge_indices, edge_rest_angles, edge_rest_length,
+                    edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt
+                )
+
+                f = f + f_edge
+                h = h + h_edge
+
+    if tet_indices:
+        # solve tet elasticity
+        num_adj_tets = get_vertex_num_adjacent_tets(particle_adjacency, particle_index)
+        for adj_tet_counter in range(num_adj_tets):
+            nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
+                particle_adjacency, particle_index, adj_tet_counter
+            )
+            if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
+                f_tet, h_tet = evaluate_volumetric_neo_hooken_force_and_hessian(
+                    nei_tet_index,
+                    vertex_order_on_tet,
+                    pos_prev,
+                    pos,
+                    tet_indices,
+                    tet_poses[nei_tet_index],
+                    tet_materials[nei_tet_index, 0],
+                    tet_materials[nei_tet_index, 1],
+                    tet_materials[nei_tet_index, 2],
+                    dt,
+                )
+
+                f += f_tet
+                h += h_tet
+
+    # fmt: off
+    if wp.static("overall_force_hessian" in VBD_DEBUG_PRINTING_OPTIONS):
+        wp.printf(
+            "vertex: %d final\noverall force:\n %f %f %f, \noverall hessian:, \n%f %f %f, \n%f %f %f, \n%f %f %f\n",
+            particle_index,
+            f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
+        )
+
+    # # fmt: on
+    h = h + particle_hessians[particle_index]
+    f = f + particle_forces[particle_index]
+
+    if abs(wp.determinant(h)) > 1e-8:
+        h_inv = wp.inverse(h)
+        particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f

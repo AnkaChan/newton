@@ -144,7 +144,7 @@ def plot_convergence(results: dict, output_path: str = None, title: str = None,
         scale_iso_planar: If True, scale Isometric and Planar using the same factor
                           (computed so Planar drops exactly 10x)
     """
-    plt.figure(figsize=(10, 7))
+    plt.figure(figsize=(10, 4))
     
     # Style configuration
     colors = {"Isometric": "#2563eb", "Planar": "#16a34a", "CCD": "#dc2626", "Dykstra": "#9333ea"}
@@ -232,7 +232,7 @@ def plot_convergence_vs_time(results: dict, time_per_iter_ms: dict, output_path:
         scale_iso_planar: If True, scale Isometric and Planar using the same factor
         time_scale: Scale factor for time (0.1 = 10x smaller)
     """
-    plt.figure(figsize=(10, 7))
+    plt.figure(figsize=(10, 4))
     
     # Style configuration
     colors = {"Isometric": "#2563eb", "Planar": "#16a34a", "CCD": "#dc2626", "Dykstra": "#9333ea"}
@@ -343,11 +343,11 @@ def plot_paper_figure(results: dict, time_per_iter_ms: dict, output_path: str,
     """
     Create a two-panel figure for the paper showing convergence vs iteration and vs time.
     """
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 5))
     
     # Style configuration
     colors = {"Isometric": "#2563eb", "Planar": "#16a34a", "CCD": "#dc2626", "Dykstra": "#9333ea"}
-    labels = {"Isometric": "Isometric-DAT", "Planar": "Planar-DAT", "CCD": "CCD", "Dykstra": "DAP"}
+    labels = {"Isometric": "Isotropic-DAT", "Planar": "Planar-DAT", "CCD": "CCD", "Dykstra": "DAP"}
     linewidths = {"Isometric": 1, "Planar": 1, "CCD": 1, "Dykstra": 1}
     linestyles = {"Isometric": "-", "Planar": "-", "CCD": "-", "Dykstra": "-"}
     
@@ -447,8 +447,8 @@ def main():
     # Data directory
     data_dir = r"D:\Data\DAT_Sim\cloth_twist_convergence\curves"
     
-    # Paper figure output directory
-    paper_fig_dir = r"D:\Dropbox\01_MyDocuments\06_Papers\Siggraph_2026_DAT\_SIGGRAPH_2026__Divide_and_Truncate\Figures\ConvergencePlot"
+    # Paper figure output directory (Overleaf folder)
+    paper_fig_dir = r"D:\Dropbox\Apps\Overleaf\[SIGGRAPH 2026] Divide and Truncate\Figures\ConvergencePlot"
     
     if not os.path.exists(data_dir):
         print(f"Error: Directory not found: {data_dir}")
@@ -485,11 +485,11 @@ def main():
     data_output = os.path.join(data_dir, "convergence_plot.pdf")
     plot_paper_figure(results, time_per_iter_ms, output_path=data_output, time_scale=0.1)
     
-    # Also save individual plots to data directory
-    output_path = os.path.join(data_dir, "convergence_comparison.pdf")
+    # Also save individual plots to paper figure directory
+    output_path = os.path.join(paper_fig_dir, "convergence_comparison.pdf")
     plot_convergence(results, output_path=output_path)
     
-    output_path_time = os.path.join(data_dir, "convergence_vs_time.pdf")
+    output_path_time = os.path.join(paper_fig_dir, "convergence_vs_time.pdf")
     print("\n" + "="*60)
     print("Plotting convergence vs time (time scaled 10x smaller)")
     print("="*60)

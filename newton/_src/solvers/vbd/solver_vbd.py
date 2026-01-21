@@ -66,7 +66,8 @@ from .particle_vbd_kernels import (
     hessian_weighted_projection_onto_halfspace,
     accumulate_particle_body_contact_force_and_hessian,
     accumulate_self_contact_force_and_hessian,
-    solve_elasticity_tile
+    solve_elasticity_tile,
+    solve_elasticity
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
@@ -1457,39 +1458,73 @@ class SolverVBD(SolverBase):
                     device=self.device,
                     max_blocks=self.model.device.sm_count,
                 )
+            if self.use_particle_tile_solve:
+                wp.launch(
+                    kernel=solve_elasticity_tile,
+                    dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                    block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+                    inputs=[
+                        dt,
+                        self.model.particle_color_groups[color],
+                        self.particle_q_prev,
+                        state_in.particle_q,
+                        self.model.particle_mass,
+                        self.inertia,
+                        self.model.particle_flags,
+                        self.model.tri_indices,
+                        self.model.tri_poses,
+                        self.model.tri_materials,
+                        self.model.tri_areas,
+                        self.model.edge_indices,
+                        self.model.edge_rest_angle,
+                        self.model.edge_rest_length,
+                        self.model.edge_bending_properties,
+                        self.model.tet_indices,
+                        self.model.tet_poses,
+                        self.model.tet_materials,
+                        self.particle_adjacency,
+                        self.particle_forces,
+                        self.particle_hessians,
+                    ],
+                    outputs=[
+                        self.particle_displacements,
+                    ],
+                    device=self.device,
+                )
+            else:
+                
+                wp.launch(
+                    kernel=solve_elasticity,
+                    dim=self.model.particle_color_groups[color].size,
+                    inputs=[
+                        dt,
+                        self.model.particle_color_groups[color],
+                        self.particle_q_prev,
+                        state_in.particle_q,
+                        self.model.particle_mass,
+                        self.inertia,
+                        self.model.particle_flags,
+                        self.model.tri_indices,
+                        self.model.tri_poses,
+                        self.model.tri_materials,
+                        self.model.tri_areas,
+                        self.model.edge_indices,
+                        self.model.edge_rest_angle,
+                        self.model.edge_rest_length,
+                        self.model.edge_bending_properties,
+                        self.model.tet_indices,
+                        self.model.tet_poses,
+                        self.model.tet_materials,
+                        self.particle_adjacency,
+                        self.particle_forces,
+                        self.particle_hessians,
+                    ],
+                    outputs=[
+                        self.particle_displacements,
+                    ],
+                    device=self.device,
+                )
 
-            wp.launch(
-                kernel=solve_elasticity_tile,
-                dim=self.model.particle_color_groups[color].size * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                block_dim=TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-                inputs=[
-                    dt,
-                    self.model.particle_color_groups[color],
-                    self.particle_q_prev,
-                    state_in.particle_q,
-                    self.model.particle_mass,
-                    self.inertia,
-                    self.model.particle_flags,
-                    self.model.tri_indices,
-                    self.model.tri_poses,
-                    self.model.tri_materials,
-                    self.model.tri_areas,
-                    self.model.edge_indices,
-                    self.model.edge_rest_angle,
-                    self.model.edge_rest_length,
-                    self.model.edge_bending_properties,
-                    self.model.tet_indices,
-                    self.model.tet_poses,
-                    self.model.tet_materials,
-                    self.particle_adjacency,
-                    self.particle_forces,
-                    self.particle_hessians,
-                ],
-                outputs=[
-                    self.particle_displacements,
-                ],
-                device=self.device,
-            )
             if self.truncation_mode == 3:
                 # initialize dykstra arrays
                 # call the dykstra kernel
