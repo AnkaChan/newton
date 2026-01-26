@@ -29,6 +29,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import (
+    MAXVAL,
     Axis,
     AxisType,
     Devicelike,
@@ -60,9 +61,9 @@ from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
 from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, combine_independent_particle_coloring, color_graph, construct_particle_graph
 from .joints import (
-    JOINT_LIMIT_UNLIMITED,
     EqType,
     JointType,
+    get_joint_constraint_count,
     get_joint_dof_count,
 )
 from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
@@ -291,8 +292,8 @@ class ModelBuilder:
         def __init__(
             self,
             axis: AxisType | Vec3 = Axis.X,
-            limit_lower: float = -JOINT_LIMIT_UNLIMITED,
-            limit_upper: float = JOINT_LIMIT_UNLIMITED,
+            limit_lower: float = -MAXVAL,
+            limit_upper: float = MAXVAL,
             limit_ke: float = 1e4,
             limit_kd: float = 1e1,
             target_pos: float = 0.0,
@@ -305,11 +306,11 @@ class ModelBuilder:
             friction: float = 0.0,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
-            """The 3D axis that this JointDofConfig object describes."""
+            """The 3D joint axis in the joint parent anchor frame."""
             self.limit_lower = limit_lower
-            """The lower position limit of the joint axis. Defaults to -JOINT_LIMIT_UNLIMITED (unlimited)."""
+            """The lower position limit of the joint axis. Defaults to -MAXVAL (unlimited)."""
             self.limit_upper = limit_upper
-            """The upper position limit of the joint axis. Defaults to JOINT_LIMIT_UNLIMITED (unlimited)."""
+            """The upper position limit of the joint axis. Defaults to MAXVAL (unlimited)."""
             self.limit_ke = limit_ke
             """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
             self.limit_kd = limit_kd
@@ -341,8 +342,8 @@ class ModelBuilder:
             """Creates a JointDofConfig with no limits."""
             return ModelBuilder.JointDofConfig(
                 axis=axis,
-                limit_lower=-JOINT_LIMIT_UNLIMITED,
-                limit_upper=JOINT_LIMIT_UNLIMITED,
+                limit_lower=-MAXVAL,
+                limit_upper=MAXVAL,
                 target_pos=0.0,
                 target_vel=0.0,
                 target_ke=0.0,
@@ -681,6 +682,7 @@ class ModelBuilder:
         self.body_q = []
         self.body_qd = []
         self.body_key = []
+        self.body_lock_inertia = []
         self.body_shapes = {-1: []}  # mapping from body to shapes
         self.body_world = []  # world index for each body
         self.body_color_groups: list[nparray] = []
@@ -689,7 +691,7 @@ class ModelBuilder:
         self.joint_parent = []  # index of the parent body                      (constant)
         self.joint_parents = {}  # mapping from joint to parent bodies
         self.joint_child = []  # index of the child body                       (constant)
-        self.joint_axis = []  # joint axis in child joint frame               (constant)
+        self.joint_axis = []  # joint axis in joint parent anchor frame        (constant)
         self.joint_X_p = []  # frame of joint in parent                      (constant)
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
@@ -718,6 +720,7 @@ class ModelBuilder:
 
         self.joint_q_start = []
         self.joint_qd_start = []
+        self.joint_cts_start = []
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
         self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
@@ -728,6 +731,7 @@ class ModelBuilder:
 
         self.joint_dof_count = 0
         self.joint_coord_count = 0
+        self.joint_constraint_count = 0
 
         # current world index for entities being added to this builder.
         # set to -1 to create global entities shared across all worlds.
@@ -735,6 +739,10 @@ class ModelBuilder:
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
+
+        # Per-world gravity vectors, populated when worlds are created via begin_world()
+        # Each entry is a tuple (gx, gy, gz) representing the gravity vector for that world
+        self.world_gravity: list[tuple[float, float, float]] = []
 
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
@@ -1096,6 +1104,54 @@ class ModelBuilder:
                             expected_frequency=ModelAttributeFrequency.JOINT_COORD,
                         )
 
+            elif custom_attr.frequency == ModelAttributeFrequency.JOINT_CONSTRAINT:
+                # Values per constraint - can be list or dict
+                cts_start = self.joint_cts_start[joint_index]
+                if joint_index + 1 < len(self.joint_cts_start):
+                    cts_end = self.joint_cts_start[joint_index + 1]
+                else:
+                    cts_end = self.joint_constraint_count
+
+                cts_count = cts_end - cts_start
+
+                # Check if value is a dict (mapping cts index to value)
+                if isinstance(value, dict):
+                    # Dict format: only specified cts indices have values, rest use defaults
+                    for cts_offset, cts_value in value.items():
+                        if not isinstance(cts_offset, int):
+                            raise TypeError(
+                                f"JOINT_CONSTRAINT attribute '{attr_key}' dict keys must be integers (constraint indices), got {type(cts_offset)}"
+                            )
+                        if cts_offset < 0 or cts_offset >= cts_count:
+                            raise ValueError(
+                                f"JOINT_CONSTRAINT attribute '{attr_key}' has invalid constraint index {cts_offset} (joint has {cts_count} constraints)"
+                            )
+                        single_attr = {attr_key: cts_value}
+                        self._process_custom_attributes(
+                            entity_index=cts_start + cts_offset,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_CONSTRAINT,
+                        )
+                else:
+                    # List format or single value for single-constraint joints
+                    value_sanitized = value
+                    if not isinstance(value_sanitized, (list, tuple)) and cts_count == 1:
+                        value_sanitized = [value_sanitized]
+
+                    if len(value_sanitized) != cts_count:
+                        raise ValueError(
+                            f"JOINT_CONSTRAINT attribute '{attr_key}' has {len(value_sanitized)} values but joint has {cts_count} constraints"
+                        )
+
+                    # Apply each value to its corresponding constraint
+                    for i, cts_value in enumerate(value_sanitized):
+                        single_attr = {attr_key: cts_value}
+                        self._process_custom_attributes(
+                            entity_index=cts_start + i,
+                            custom_attrs=single_attr,
+                            expected_frequency=ModelAttributeFrequency.JOINT_CONSTRAINT,
+                        )
+
             else:
                 raise ValueError(
                     f"Custom attribute '{attr_key}' has unsupported frequency {custom_attr.frequency} for joints"
@@ -1437,8 +1493,7 @@ class ModelBuilder:
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
     ) -> dict[str, Any]:
-        """
-        Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
+        """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -1463,8 +1518,8 @@ class ModelBuilder:
             load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
-            mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-            schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is no schema resolution.
+            mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
+            schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
                 These include namespaced attributes such as ``newton:*``, ``physx*``
                 (e.g., ``physxScene:*``, ``physxRigidBody:*``, ``physxSDFMeshCollision:*``), and ``mjc:*`` that
@@ -1481,36 +1536,38 @@ class ModelBuilder:
             .. list-table::
                 :widths: 25 75
 
-                * - "fps"
+                * - ``"fps"``
                   - USD stage frames per second
-                * - "duration"
+                * - ``"duration"``
                   - Difference between end time code and start time code of the USD stage
-                * - "up_axis"
+                * - ``"up_axis"``
                   - :class:`Axis` representing the stage's up axis ("X", "Y", or "Z")
-                * - "path_shape_map"
-                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`ModelBuilder`
-                * - "path_body_map"
-                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`ModelBuilder`
-                * - "path_shape_scale"
+                * - ``"path_body_map"``
+                  - Mapping from prim path (str) of a rigid body prim (e.g. that implements the PhysicsRigidBodyAPI) to the respective body index in :class:`~newton.ModelBuilder`
+                * - ``"path_joint_map"``
+                  - Mapping from prim path (str) of a joint prim (e.g. that implements the PhysicsJointAPI) to the respective joint index in :class:`~newton.ModelBuilder`
+                * - ``"path_shape_map"``
+                  - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
+                * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
-                * - "mass_unit"
+                * - ``"mass_unit"``
                   - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
-                * - "linear_unit"
+                * - ``"linear_unit"``
                   - The stage's Meters Per Unit (MPU) definition (1.0 by default)
-                * - "scene_attributes"
+                * - ``"scene_attributes"``
                   - Dictionary of all attributes applied to the PhysicsScene prim
-                * - "collapse_results"
-                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if `collapse_fixed_joints` is True, otherwise None.
-                * - "physics_dt"
+                * - ``"collapse_results"``
+                  - Dictionary returned by :meth:`newton.ModelBuilder.collapse_fixed_joints` if ``collapse_fixed_joints`` is True, otherwise None.
+                * - ``"physics_dt"``
                   - The resolved physics scene time step (float or None)
-                * - "schema_attrs"
+                * - ``"schema_attrs"``
                   - Dictionary of collected per-prim schema attributes (dict)
-                * - "max_solver_iterations"
+                * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
-                * - "path_body_relative_transform"
-                  - Mapping from prim path to relative transform for bodies merged via `collapse_fixed_joints`
-                * - "path_original_body_map"
-                  - Mapping from prim path to original body index before `collapse_fixed_joints`
+                * - ``"path_body_relative_transform"``
+                  - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
+                * - ``"path_original_body_map"``
+                  - Mapping from prim path to original body index before ``collapse_fixed_joints``
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
@@ -1571,6 +1628,7 @@ class ModelBuilder:
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
+        MuJoCo-specific custom attributes are registered on the builder automatically.
 
         Args:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -1601,8 +1659,10 @@ class ModelBuilder:
             convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         """
+        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
+        SolverMuJoCo.register_custom_attributes(self)
         return parse_mjcf(
             self,
             source,
@@ -1638,7 +1698,12 @@ class ModelBuilder:
 
     # region World management methods
 
-    def begin_world(self, key: str | None = None, attributes: dict[str, Any] | None = None):
+    def begin_world(
+        self,
+        key: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        gravity: Vec3 | None = None,
+    ):
         """Begin a new world context for adding entities.
 
         This method starts a new world scope where all subsequently added entities
@@ -1653,6 +1718,9 @@ class ModelBuilder:
                 a default key "world_{index}" will be generated.
             attributes (dict[str, Any] | None): Optional custom attributes to associate
                 with this world for later use.
+            gravity (Vec3 | None): Optional gravity vector for this world. If None,
+                the world will use the builder's default gravity (computed from
+                ``self.gravity`` and ``self.up_vector``).
 
         Raises:
             RuntimeError: If called when already inside a world context (current_world != -1).
@@ -1664,14 +1732,14 @@ class ModelBuilder:
             # Add global ground plane
             builder.add_ground_plane()  # Added to world -1 (global)
 
-            # Create world 0
+            # Create world 0 with default gravity
             builder.begin_world(key="robot_0")
             builder.add_body(...)  # Added to world 0
             builder.add_shape_box(...)  # Added to world 0
             builder.end_world()
 
-            # Create world 1
-            builder.begin_world(key="robot_1")
+            # Create world 1 with custom zero gravity
+            builder.begin_world(key="robot_1", gravity=(0.0, 0.0, 0.0))
             builder.add_body(...)  # Added to world 1
             builder.add_shape_box(...)  # Added to world 1
             builder.end_world()
@@ -1689,6 +1757,12 @@ class ModelBuilder:
         # Store world metadata if needed (for future use)
         # Note: We might want to add world_key and world_attributes lists in __init__ if needed
         # For now, we just track the world index
+
+        # Initialize this world's gravity
+        if gravity is not None:
+            self.world_gravity.append(tuple(gravity))
+        else:
+            self.world_gravity.append(tuple(g * self.gravity for g in self.up_vector))
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -1782,6 +1856,14 @@ class ModelBuilder:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
 
+        # Copy gravity from source builder
+        if self.current_world >= 0 and self.current_world < len(self.world_gravity):
+            # We're in a world context, update this world's gravity vector
+            self.world_gravity[self.current_world] = tuple(g * builder.gravity for g in builder.up_vector)
+        elif self.current_world < 0:
+            # No world context (add_builder called directly), copy scalar gravity
+            self.gravity = builder.gravity
+
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
         # explicitly resolve the transform multiplication function to avoid
@@ -1874,6 +1956,7 @@ class ModelBuilder:
 
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
+            self.joint_cts_start.extend([c + self.joint_constraint_count for c in builder.joint_cts_start])
 
         if xform is not None:
             for i in range(builder.body_count):
@@ -1953,6 +2036,7 @@ class ModelBuilder:
             "body_inv_inertia",
             "body_inv_mass",
             "body_com",
+            "body_lock_inertia",
             "body_qd",
             "body_key",
             "joint_type",
@@ -2179,6 +2263,7 @@ class ModelBuilder:
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        lock_inertia: bool = False,
     ) -> int:
         """Adds a link (rigid body) to the model within an articulation.
 
@@ -2196,6 +2281,9 @@ class ModelBuilder:
             mass: Mass of the body.
             key: Key of the body (optional).
             custom_attributes: Dictionary of custom attribute names to values.
+            lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
+                center of mass, or inertia. This does not affect merging behavior in
+                :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
 
         Returns:
             The index of the body in the model.
@@ -2227,6 +2315,7 @@ class ModelBuilder:
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
+        self.body_lock_inertia.append(lock_inertia)
 
         if mass > 0.0:
             self.body_inv_mass.append(1.0 / mass)
@@ -2263,6 +2352,7 @@ class ModelBuilder:
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        lock_inertia: bool = False,
     ) -> int:
         """Adds a stand-alone free-floating rigid body to the model.
 
@@ -2285,6 +2375,9 @@ class ModelBuilder:
             key: Key of the body. When provided, the auto-created free joint and articulation
                 are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
             custom_attributes: Dictionary of custom attribute names to values.
+            lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
+                center of mass, or inertia. This does not affect merging behavior in
+                :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
 
         Returns:
             The index of the body in the model.
@@ -2302,6 +2395,7 @@ class ModelBuilder:
             mass=mass,
             key=key,
             custom_attributes=custom_attributes,
+            lock_inertia=lock_inertia,
         )
 
         # Add a free joint to make it float
@@ -2339,11 +2433,15 @@ class ModelBuilder:
             joint_type (JointType): The type of joint to add (see :ref:`Joint types`).
             parent (int): The index of the parent body (-1 is the world).
             child (int): The index of the child body.
-            linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint.
-            angular_axes (list(:class:`JointDofConfig`)): The angular axes (see :class:`JointDofConfig`) of the joint.
+            linear_axes (list(:class:`JointDofConfig`)): The linear axes (see :class:`JointDofConfig`) of the joint,
+                defined in the joint parent anchor frame.
+            angular_axes (list(:class:`JointDofConfig`)): The angular axes (see :class:`JointDofConfig`) of the joint,
+                defined in the joint parent anchor frame.
             key (str): The key of the joint (optional).
-            parent_xform (Transform): The transform of the joint in the parent body's local frame. If None, the identity transform is used.
-            child_xform (Transform): The transform of the joint in the child body's local frame. If None, the identity transform is used.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+                If None, the identity transform is used.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
+                If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
             custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
@@ -2413,11 +2511,11 @@ class ModelBuilder:
             if np.isfinite(dim.limit_lower):
                 self.joint_limit_lower.append(dim.limit_lower)
             else:
-                self.joint_limit_lower.append(-JOINT_LIMIT_UNLIMITED)
+                self.joint_limit_lower.append(-MAXVAL)
             if np.isfinite(dim.limit_upper):
                 self.joint_limit_upper.append(dim.limit_upper)
             else:
-                self.joint_limit_upper.append(JOINT_LIMIT_UNLIMITED)
+                self.joint_limit_upper.append(MAXVAL)
 
         for dim in linear_axes:
             add_axis_dim(dim)
@@ -2425,6 +2523,7 @@ class ModelBuilder:
             add_axis_dim(dim)
 
         dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
+        cts_count = get_joint_constraint_count(joint_type, len(linear_axes) + len(angular_axes))
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
@@ -2438,9 +2537,11 @@ class ModelBuilder:
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
+        self.joint_cts_start.append(self.joint_constraint_count)
 
         self.joint_dof_count += dof_count
         self.joint_coord_count += coord_count
+        self.joint_constraint_count += cts_count
 
         if collision_filter_parent and parent > -1:
             for child_shape in self.body_shapes[child]:
@@ -2496,9 +2597,11 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
-            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
+            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the joint parent anchor frame, which is
+                the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
+                whose settings will be used instead of the other arguments.
             target_pos: The target position of the joint.
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
@@ -2584,9 +2687,11 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
-            axis (AxisType | Vec3 | JointDofConfig): The axis of rotation in the parent body's local frame, can be a :class:`JointDofConfig` object whose settings will be used instead of the other arguments.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
+            axis (AxisType | Vec3 | JointDofConfig): The axis of translation in the joint parent anchor frame, which is
+                the parent body's local frame transformed by `parent_xform`. It can be a :class:`JointDofConfig` object
+                whose settings will be used instead of the other arguments.
             target_pos: The target position of the joint.
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
@@ -2660,8 +2765,8 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame.
-            child_xform (Transform): The transform of the joint in the child body's local frame.
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
             friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
             key: The key of the joint.
@@ -2893,8 +2998,8 @@ class ModelBuilder:
             linear_axes: A list of linear axes.
             angular_axes: A list of angular axes.
             key: The key of the joint.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame
-            child_xform (Transform): The transform of the joint in the child body's local frame
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -2954,14 +3059,19 @@ class ModelBuilder:
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
-            parent_xform (Transform): The transform of the joint in the parent body's local frame; its
+            parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame; its
                 translation is the attachment point.
-            child_xform (Transform): The transform of the joint in the child body's local frame; its
+            child_xform (Transform): The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
-            stretch_stiffness: Linear stretch stiffness. If None, defaults to 1.0e9.
-            stretch_damping: Linear stretch damping. If None, defaults to 0.0.
-            bend_stiffness: Angular bend/twist stiffness. If None, defaults to 0.0.
-            bend_damping: Angular bend/twist damping. If None, defaults to 0.0.
+            stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e9.
+            stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
+                this is a dimensionless (Rayleigh-style) coefficient. If None,
+                defaults to 0.0.
+            bend_stiffness: Cable bend/twist stiffness (stored as ``target_ke``) [N*m] (torque per radian). If None,
+                defaults to 0.0.
+            bend_damping: Cable bend/twist damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
+                this is a dimensionless (Rayleigh-style) coefficient. If None,
+                defaults to 0.0.
             key: The key of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
@@ -3326,6 +3436,7 @@ class ModelBuilder:
                 "inv_mass": self.body_inv_mass[i],
                 "inv_inertia": self.body_inv_inertia[i],
                 "com": wp.vec3(*self.body_com[i]),
+                "lock_inertia": self.body_lock_inertia[i],
                 "key": key,
                 "original_id": i,
             }
@@ -3341,6 +3452,7 @@ class ModelBuilder:
 
             q_start = self.joint_q_start[i]
             qd_start = self.joint_qd_start[i]
+            cts_start = self.joint_cts_start[i]
             if i < self.joint_count - 1:
                 q_dim = self.joint_q_start[i + 1] - q_start
                 qd_dim = self.joint_qd_start[i + 1] - qd_start
@@ -3355,6 +3467,7 @@ class ModelBuilder:
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,
+                "cts_start": cts_start,
                 "key": key,
                 "parent_xform": wp.transform_expand(self.joint_X_p[i]),
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
@@ -3505,6 +3618,7 @@ class ModelBuilder:
         self.body_mass.clear()
         self.body_inertia.clear()
         self.body_com.clear()
+        self.body_lock_inertia.clear()
         self.body_inv_mass.clear()
         self.body_inv_inertia.clear()
         self.body_world.clear()  # Clear body groups
@@ -3524,6 +3638,7 @@ class ModelBuilder:
             self.body_mass.append(m)
             self.body_inertia.append(inertia)
             self.body_com.append(body["com"])
+            self.body_lock_inertia.append(body["lock_inertia"])
             if body["inv_mass"] is None:
                 # recompute inverse mass and inertia
                 if m > 0.0:
@@ -3841,7 +3956,7 @@ class ModelBuilder:
                     for parent_shape in self.body_shapes[parent_body]:
                         self.shape_collision_filter_pairs.append((parent_shape, shape))
 
-        if not is_static and cfg.density > 0.0:
+        if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, I, com_body, xform.q)
@@ -4609,6 +4724,9 @@ class ModelBuilder:
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
                 self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
+                # mark convex_hull result as convex mesh type for efficient collision detection
+                if method == "convex_hull":
+                    self.shape_type[shape] = GeoType.CONVEX_MESH
                 remeshed_shapes.add(shape)
 
         if method == "bounding_box":
@@ -4673,10 +4791,18 @@ class ModelBuilder:
                 align the capsule's local +Z with the segment direction ``positions[i+1] - positions[i]``.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Stretch stiffness for the cable joints. If None, defaults to 1.0e9.
-            stretch_damping: Stretch damping for the cable joints. If None, defaults to 0.0.
-            bend_stiffness: Bend/twist stiffness for the cable joints. If None, defaults to 0.0.
-            bend_damping: Bend/twist damping for the cable joints. If None, defaults to 0.0.
+            stretch_stiffness: Stretch stiffness for the cable joints. For rods, this is treated as a
+                material-like axial/shear stiffness (commonly interpreted as EA)
+                with units [N] and is internally converted to an effective point stiffness [N/m] by dividing by
+                segment length. If None, defaults to 1.0e9.
+            stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
+            bend_stiffness: Bend/twist stiffness for the cable joints. For rods, this is treated as a
+                material-like bending/twist stiffness (e.g., EI) with units [N*m^2] and is internally converted to
+                an effective per-joint stiffness [N*m] (torque per radian) by dividing by segment length. If None,
+                defaults to 0.0.
+            bend_damping: Bend/twist damping for the cable joints (applied per-joint; not length-normalized). If None,
+                defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
             key: Optional key prefix for bodies, shapes, and joints.
@@ -4701,6 +4827,9 @@ class ModelBuilder:
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to a high
               stiffness (1.0e9), which keeps neighboring capsules closely coupled (approximately inextensible).
+            - Internally, stretch and bend stiffnesses are pre-scaled by dividing by segment length so solver kernels
+              do not need per-segment length normalization.
+            - Damping values are passed through as provided (per joint) and are not length-normalized.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
               placed at the start point ``positions[i]`` with a local center-of-mass offset of
               ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
@@ -4718,6 +4847,11 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         # Input validation
+        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
+            raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
+
+        # Guard against near-zero lengths: segment length is used to normalize stiffness later (EA/L, EI/L).
+        min_segment_length = 1.0e-9
         num_segments = len(quaternions)
         if len(positions) != num_segments + 1:
             raise ValueError(
@@ -4744,10 +4878,10 @@ class ModelBuilder:
 
             # Calculate segment properties
             segment_length = wp.length(p1 - p0)
-            if segment_length <= 0.0:
+            if segment_length <= min_segment_length:
                 raise ValueError(
-                    f"add_rod: segment {i} has zero or negative length; "
-                    "positions must form strictly positive-length segments"
+                    f"add_rod: segment {i} has a too-small length (length={float(segment_length):.3e}); "
+                    f"segment length must be > {min_segment_length:.1e}"
                 )
             segment_lengths.append(float(segment_length))
             half_height = 0.5 * segment_length
@@ -4817,14 +4951,25 @@ class ModelBuilder:
             # Joint key: numbered 1 through num_joints
             joint_key = f"{key}_cable_{i + 1}" if key else None
 
+            # Pre-scale rod stiffnesses here so solver kernels do not need per-segment length normalization.
+            # Use the parent segment length L.
+            #
+            # - Stretch: treat the user input as a material-like axial/shear stiffness (commonly EA) [N]
+            #   and store an effective per-joint (point-to-point) spring stiffness k_eff = EA / L [N/m].
+            # - Bend/twist: treat the user input as a material-like bending/twist stiffness (commonly EI) [N*m^2]
+            #   and store an effective per-joint angular stiffness k_eff = EI / L [N*m].
+            seg_len = segment_lengths[parent_idx]
+            stretch_ke_eff = stretch_stiffness / seg_len
+            bend_ke_eff = bend_stiffness / seg_len
+
             joint = self.add_joint_cable(
                 parent=parent_body,
                 child=child_body,
                 parent_xform=parent_xform,
                 child_xform=child_xform,
-                bend_stiffness=bend_stiffness,
+                bend_stiffness=bend_ke_eff,
                 bend_damping=bend_damping,
-                stretch_stiffness=stretch_stiffness,
+                stretch_stiffness=stretch_ke_eff,
                 stretch_damping=stretch_damping,
                 key=joint_key,
                 collision_filter_parent=True,
@@ -6113,38 +6258,15 @@ class ModelBuilder:
                     f"Found worlds: {world_list}. Worlds must form a continuous sequence starting from 0."
                 )
 
-    def finalize(self, device: Devicelike | None = None, requires_grad: bool = False) -> Model:
+    def _validate_joints(self):
+        """Validate that all joints belong to an articulation, except for "loop joints".
+
+        Loop joints connect two bodies that are already reachable via articulated joints
+        (used to create kinematic loops, converted to equality constraints by MuJoCo solver).
+
+        Raises:
+            ValueError: If any validation check fails.
         """
-        Finalize the builder and create a concrete Model for simulation.
-
-        This method transfers all simulation data from the builder to device memory,
-        returning a Model object ready for simulation. It should be called after all
-        elements (particles, bodies, shapes, joints, etc.) have been added to the builder.
-
-        Args:
-            device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
-            requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
-
-        Returns:
-            Model: A fully constructed Model object containing all simulation data on the specified device.
-
-        Notes:
-            - Performs validation and correction of rigid body inertia and mass properties.
-            - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
-            - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
-              joints, springs, muscles, constraints, and collision/contact data.
-        """
-        from .collide import count_rigid_contact_points  # noqa: PLC0415
-
-        # ensure the world count is set correctly
-        self.num_worlds = max(1, self.num_worlds)
-
-        # validate world ordering and contiguity
-        self._validate_world_ordering()
-
-        # validate all joints belong to an articulation, except for "loop joints"
-        # Loop joints connect two bodies that are already reachable via articulated joints
-        # (used to create kinematic loops, converted to equality constraints by MuJoCo solver)
         if self.joint_count > 0:
             # First, find all bodies reachable via articulated joints
             articulated_bodies = set()
@@ -6173,12 +6295,23 @@ class ModelBuilder:
                     + ("..." if len(orphan_joints) > 5 else "")
                 )
 
-        # warn if any shape has thickness > contact_margin (causes unstable contact behavior)
-        # Thickness is an outward offset from each shape's surface. AABBs are expanded by contact_margin.
-        # For proper broad phase detection, each shape must have contact_margin >= thickness.
-        # This ensures that when thickened surfaces are close (sum of thicknesses),
-        # the AABBs overlap (sum of margins >= sum of thicknesses).
-        # Only check shapes that participate in collisions (have COLLIDE_SHAPES or COLLIDE_PARTICLES flag).
+    def _validate_shapes(self) -> bool:
+        """Validate shape contact margins against thickness for stable broad phase detection.
+
+        Thickness is an outward offset from a shape's surface, while AABBs are expanded
+        by `contact_margin`. For reliable broad phase detection, each colliding shape
+        should satisfy `contact_margin >= thickness` so that thickened surfaces produce
+        overlapping AABBs.
+
+        This check only considers shapes that participate in collisions (with the
+        `COLLIDE_SHAPES` or `COLLIDE_PARTICLES` flag).
+
+        Warns:
+            UserWarning: If any colliding shape has `thickness > contact_margin`.
+
+        Returns:
+            bool: True if no shapes with thickness > contact_margin, False otherwise.
+        """
         collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
         shapes_with_bad_margin = []
         for i in range(self.shape_count):
@@ -6200,6 +6333,55 @@ class ModelBuilder:
                 f"Affected shapes: {example_shapes}" + ("..." if len(shapes_with_bad_margin) > 5 else ""),
                 stacklevel=2,
             )
+        return len(shapes_with_bad_margin) == 0
+
+    def finalize(
+        self,
+        device: Devicelike | None = None,
+        requires_grad: bool = False,
+        skip_validation_worlds: bool = False,
+        skip_validation_joints: bool = False,
+        skip_validation_shapes: bool = False,
+    ) -> Model:
+        """
+        Finalize the builder and create a concrete :class:`~newton.Model` for simulation.
+
+        This method transfers all simulation data from the builder to device memory,
+        returning a Model object ready for simulation. It should be called after all
+        elements (particles, bodies, shapes, joints, etc.) have been added to the builder.
+
+        Args:
+            device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
+            requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
+            skip_validation_joints: If True, skips validation of joints belonging to an articulation. Default is False.
+            skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+
+        Returns:
+            Model: A fully constructed Model object containing all simulation data on the specified device.
+
+        Notes:
+            - Performs validation and correction of rigid body inertia and mass properties.
+            - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
+            - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
+              joints, springs, muscles, constraints, and collision/contact data.
+        """
+        from .collide import count_rigid_contact_points  # noqa: PLC0415
+
+        # ensure the world count is set correctly
+        self.num_worlds = max(1, self.num_worlds)
+
+        # validate world ordering and contiguity
+        if not skip_validation_worlds:
+            self._validate_world_ordering()
+
+        # validate joints belong to an articulation
+        if not skip_validation_joints:
+            self._validate_joints()
+
+        # validate shapes have valid contact margins
+        if not skip_validation_shapes:
+            self._validate_shapes()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
@@ -6302,6 +6484,78 @@ class ModelBuilder:
 
             m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
+
+            # ---------------------
+            # Compute local AABBs and voxel resolutions for contact reduction
+            local_aabb_lower = []
+            local_aabb_upper = []
+            voxel_resolution = []
+            voxel_budget = 100  # Maximum voxels per shape for contact reduction
+
+            # Cache per unique (mesh_id, scale) to avoid redundant AABB computation
+            # for instanced meshes (e.g., 256 robots sharing the same mesh sources)
+            mesh_aabb_cache = {}
+
+            for shape_type, shape_src, shape_scale in zip(
+                self.shape_type, self.shape_source, self.shape_scale, strict=True
+            ):
+                if shape_type == GeoType.MESH and shape_src is not None:
+                    # Use mesh id and scale as cache key
+                    cache_key = (id(shape_src), tuple(shape_scale))
+
+                    if cache_key in mesh_aabb_cache:
+                        # Reuse cached result
+                        aabb_lower, aabb_upper, nx, ny, nz = mesh_aabb_cache[cache_key]
+                    else:
+                        # Compute local AABB from mesh vertices
+                        vertices = shape_src.vertices
+                        aabb_lower = vertices.min(axis=0)
+                        aabb_upper = vertices.max(axis=0)
+
+                        # Apply scale to get the actual local-space bounds
+                        aabb_lower = aabb_lower * np.array(shape_scale)
+                        aabb_upper = aabb_upper * np.array(shape_scale)
+
+                        # Compute voxel resolution
+                        size = aabb_upper - aabb_lower
+                        size = np.maximum(size, 1e-6)  # Avoid division by zero
+
+                        # Target voxel size for approximately cubic voxels
+                        volume = size[0] * size[1] * size[2]
+                        v = (volume / voxel_budget) ** (1.0 / 3.0)
+                        v = max(v, 1e-6)
+
+                        # Initial resolution
+                        nx = max(1, round(size[0] / v))
+                        ny = max(1, round(size[1] / v))
+                        nz = max(1, round(size[2] / v))
+
+                        # Reduce until under budget (reduce largest axis first for more cubic voxels)
+                        while nx * ny * nz > voxel_budget:
+                            if nx >= ny and nx >= nz and nx > 1:
+                                nx -= 1
+                            elif ny >= nz and ny > 1:
+                                ny -= 1
+                            elif nz > 1:
+                                nz -= 1
+                            else:
+                                break
+
+                        # Cache the result
+                        mesh_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
+                else:
+                    # Non-mesh shapes: use a default 1x1x1 voxel grid (effectively no voxel binning)
+                    aabb_lower = np.array([-1.0, -1.0, -1.0])
+                    aabb_upper = np.array([1.0, 1.0, 1.0])
+                    nx, ny, nz = 1, 1, 1
+
+                local_aabb_lower.append(aabb_lower)
+                local_aabb_upper.append(aabb_upper)
+                voxel_resolution.append([nx, ny, nz])
+
+            m.shape_local_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
+            m.shape_local_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+            m.shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
@@ -6687,6 +6941,7 @@ class ModelBuilder:
             m.joint_count = self.joint_count
             m.joint_dof_count = self.joint_dof_count
             m.joint_coord_count = self.joint_coord_count
+            m.joint_constraint_count = self.joint_constraint_count
             m.particle_count = len(self.particle_q)
             m.body_count = self.body_count
             m.shape_count = len(self.shape_type)
@@ -6706,9 +6961,15 @@ class ModelBuilder:
             m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             # set gravity - create per-world gravity array for multi-world support
-            gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
+            if self.world_gravity:
+                # Use per-world gravity from world_gravity list
+                gravity_vecs = [wp.vec3(*g) for g in self.world_gravity]
+            else:
+                # Fallback: use scalar gravity for all worlds
+                gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
+                gravity_vecs = [gravity_vec] * self.num_worlds
             m.gravity = wp.array(
-                [gravity_vec] * self.num_worlds,
+                gravity_vecs,
                 dtype=wp.vec3,
                 device=device,
                 requires_grad=requires_grad,
@@ -6777,6 +7038,8 @@ class ModelBuilder:
                     count = m.joint_dof_count
                 elif freq_key == ModelAttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
+                elif freq_key == ModelAttributeFrequency.JOINT_CONSTRAINT:
+                    count = m.joint_constraint_count
                 elif freq_key == ModelAttributeFrequency.ARTICULATION:
                     count = m.articulation_count
                 elif freq_key == ModelAttributeFrequency.WORLD:
