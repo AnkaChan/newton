@@ -149,9 +149,29 @@ class FallingGiftSimulator(Simulator):
     """
 
     def __init__(self, config: dict | None = None):
-        # Store geometry for later use
-        self.base_height = 30.0
-        self.spacing = 1.01  # small gap to avoid initial penetration
+        # Helper to read from config with defaults
+        def cfg(key, default=None):
+            if config is not None and key in config:
+                return config[key]
+            return default
+        
+        # Store geometry parameters from config
+        self.base_height = cfg("base_height", 30.0)
+        self.spacing = cfg("box_spacing", 1.01)
+        
+        # Store material parameters from config
+        self.box_density = cfg("box_density", 100)
+        self.box_k_mu = cfg("box_k_mu", 1.0e5)
+        self.box_k_lambda = cfg("box_k_lambda", 1.0e5)
+        self.box_k_damp = cfg("box_k_damp", 1e-5)
+        
+        self.cloth_density = cfg("cloth_density", 0.02)
+        self.cloth_tri_ke = cfg("cloth_tri_ke", 1e5)
+        self.cloth_tri_ka = cfg("cloth_tri_ka", 1e5)
+        self.cloth_tri_kd = cfg("cloth_tri_kd", 1e-5)
+        self.cloth_edge_ke = cfg("cloth_edge_ke", 0.01)
+        self.cloth_edge_kd = cfg("cloth_edge_kd", 1e-2)
+        self.cloth_particle_radius = cfg("cloth_particle_radius", 0.05)
         
         # Generate cloth geometry
         self.strap1_verts, self.strap1_faces = cloth_loop_around_box(
@@ -179,10 +199,10 @@ class FallingGiftSimulator(Simulator):
                 vel=wp.vec3(0.0),
                 vertices=PYRAMID_PARTICLES,
                 indices=PYRAMID_TET_INDICES.flatten().tolist(),
-                density=100,
-                k_mu=1.0e5,
-                k_lambda=1.0e5,
-                k_damp=1e-5,
+                density=self.box_density,
+                k_mu=self.box_k_mu,
+                k_lambda=self.box_k_lambda,
+                k_damp=self.box_k_damp,
             )
         
         # Add first cloth strap
@@ -193,13 +213,13 @@ class FallingGiftSimulator(Simulator):
             vel=wp.vec3(0.0),
             vertices=self.strap1_verts,
             indices=self.strap1_faces.flatten().tolist(),
-            density=0.02,
-            tri_ke=1e5,
-            tri_ka=1e5,
-            tri_kd=1e-5,
-            edge_ke=0.01,
-            edge_kd=1e-2,
-            particle_radius=0.05,
+            density=self.cloth_density,
+            tri_ke=self.cloth_tri_ke,
+            tri_ka=self.cloth_tri_ka,
+            tri_kd=self.cloth_tri_kd,
+            edge_ke=self.cloth_edge_ke,
+            edge_kd=self.cloth_edge_kd,
+            particle_radius=self.cloth_particle_radius,
         )
         
         # Add second cloth strap (rotated 90 degrees)
@@ -210,13 +230,13 @@ class FallingGiftSimulator(Simulator):
             vel=wp.vec3(0.0),
             vertices=self.strap2_verts,
             indices=self.strap2_faces.flatten().tolist(),
-            density=0.02,
-            tri_ke=1e5,
-            tri_ka=1e5,
-            tri_kd=1e-5,
-            edge_ke=0.01,
-            edge_kd=1e-2,
-            particle_radius=0.05,
+            density=self.cloth_density,
+            tri_ke=self.cloth_tri_ke,
+            tri_ka=self.cloth_tri_ka,
+            tri_kd=self.cloth_tri_kd,
+            edge_ke=self.cloth_edge_ke,
+            edge_kd=self.cloth_edge_kd,
+            particle_radius=self.cloth_particle_radius,
         )
 
     def custom_finalize(self):
@@ -334,7 +354,31 @@ class FallingGiftSimulator(Simulator):
         write_ply(join(self.output_path, "initial_box3.ply"), all_verts[36:54], self.box_faces)
         write_ply(join(self.output_path, "initial_box4.ply"), all_verts[54:72], self.box_faces)
         
+        # Create subdirectories for per-component npy output
+        for subdir in ["box1", "box2", "box3", "box4", "cloth1", "cloth2"]:
+            os.makedirs(join(self.output_path, subdir), exist_ok=True)
+        
         print(f"Initial meshes saved to: {self.output_path}")
+
+    def save_npy(self, state, filename):
+        """Save particle positions as separate npy files for each component."""
+        if self.output_path is None:
+            return
+        
+        all_verts = state.particle_q.numpy()
+        
+        # Extract frame number from filename (e.g., "frame_000123.npy" -> "000123")
+        frame_str = filename.split("_")[-1].replace(".npy", "")
+        
+        # Save each component to its subdirectory
+        np.save(join(self.output_path, "box1", f"frame_{frame_str}.npy"), all_verts[0:18])
+        np.save(join(self.output_path, "box2", f"frame_{frame_str}.npy"), all_verts[18:36])
+        np.save(join(self.output_path, "box3", f"frame_{frame_str}.npy"), all_verts[36:54])
+        np.save(join(self.output_path, "box4", f"frame_{frame_str}.npy"), all_verts[54:72])
+        np.save(join(self.output_path, "cloth1", f"frame_{frame_str}.npy"), 
+                all_verts[self.strap1_start:self.strap1_start + self.strap1_count])
+        np.save(join(self.output_path, "cloth2", f"frame_{frame_str}.npy"), 
+                all_verts[self.strap2_start:])
 
 
 # =============================================================================
@@ -360,12 +404,28 @@ def get_base_config():
         "truncation_mode": 1,
         # Contact physics
         "soft_contact_ke": 1.0e5,
-        "soft_contact_kd": 1e-5,
+        "soft_contact_kd": 1e-6,
         "soft_contact_mu": 0.5,
         # Ground
         "has_ground": True,
         "ground_height": 0.0,
         "show_ground_plane": True,
+        # Scene layout
+        "base_height": 30.0,  # Z height where boxes start
+        "box_spacing": 1.01,  # Gap between stacked boxes
+        # Soft body (box) material
+        "box_density": 100,
+        "box_k_mu": 1.0e5,
+        "box_k_lambda": 1.0e6,
+        "box_k_damp": 1e-7,
+        # Cloth (strap) material
+        "cloth_density": 0.02,
+        "cloth_tri_ke": 1e5,
+        "cloth_tri_ka": 1e5,
+        "cloth_tri_kd": 1e-7,
+        "cloth_edge_ke": 0.01,
+        "cloth_edge_kd": 1e-2,
+        "cloth_particle_radius": 0.05,
         # Camera (from Polyscope Ctrl+C)
         "camera_json": {
             "farClipRatio": 20.0,
@@ -382,7 +442,7 @@ def get_base_config():
         # Output (will be configured per experiment)
         "output_path": None,
         "output_ext": "npy",
-        "write_output": False,  # Disabled for now
+        "write_output": True,  # Export per-component npy files
         "write_video": True,
         # Visualization
         "do_rendering": True,
@@ -589,11 +649,12 @@ def run_comparison_study(output_dir: str, write_results: bool = False):
             }
         },
         {
-            "name": "no_collision",
-            "label": "No Collision",
+            "name": "truncation_mode_1_100iter",
+            "label": "Planar-DAT (100 iter)",
             "config": {
-                "handle_self_contact": False,
-                "truncation_mode": 1,  # Doesn't matter when collision is off
+                "handle_self_contact": True,
+                "truncation_mode": 1,
+                "iterations": 100,
                 "write_output": write_results,
             }
         },
@@ -661,7 +722,7 @@ if __name__ == "__main__":
         type=int,
         choices=[0, 1, 2],
         default=None,
-        help="Run only a single experiment (0=isotropic, 1=planar, 2=no collision)"
+        help="Run only a single experiment (0=isotropic 15iter, 1=planar 15iter, 2=planar 100iter)"
     )
     
     args = parser.parse_args()
@@ -674,7 +735,7 @@ if __name__ == "__main__":
         experiments = [
             ("truncation_mode_0", {"handle_self_contact": True, "truncation_mode": 0}),
             ("truncation_mode_1", {"handle_self_contact": True, "truncation_mode": 1}),
-            ("no_collision", {"handle_self_contact": False, "truncation_mode": 1}),
+            ("truncation_mode_1_100iter", {"handle_self_contact": True, "truncation_mode": 1, "iterations": 100}),
         ]
         
         name, config = experiments[args.single]
