@@ -74,6 +74,8 @@ class ImplicitMPMOptions:
     """Maximum number of active cells to use for active subsets of dense grids. -1 means unlimited."""
     transfer_scheme: str = "apic"
     """Transfer scheme to use for particle-grid transfers. May be one of apic, pic."""
+    integration_scheme: str = "pic"
+    """Transfer scheme to use for particle-grid transfers. May be one of pic, gimp."""
 
     # material / background
     critical_fraction: float = 0.0
@@ -86,6 +88,8 @@ class ImplicitMPMOptions:
     """Compute collider normals from sdf gradient rather than closest point"""
     collider_basis: str = "Q1"
     """Collider basis function string. Examples: P0 (piecewise constant), Q1 (trilinear), S2 (quadratic serendipity), pic8 (particle-based with max 8 points per cell)"""
+    velocity_basis: str = "Q1"
+    """Velocity basis function string. Examples: B2 (cubic b-spline), Q1 (trilinear)"""
 
 
 def _particle_parameter(
