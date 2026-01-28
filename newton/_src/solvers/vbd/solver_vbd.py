@@ -56,7 +56,7 @@ from .particle_vbd_kernels import (
     fill_adjacent_tets,
     get_vertex_num_adjacent_tets,
     get_vertex_adjacent_tet_id_order,
-    evaluate_volumetric_neo_hooken_force_and_hessian,
+    evaluate_volumetric_neo_hookean_force_and_hessian,
     # Solver kernels (particle VBD)
     forward_step,
     forward_step_penetration_free,

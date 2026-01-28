@@ -67,6 +67,8 @@ class mat32(wp.types.matrix(shape=(3, 2), dtype=wp.float32)):
 class mat99(wp.types.matrix(shape=(9, 9), dtype=wp.float32)):
     pass
 
+class mat93(wp.types.matrix(shape=(9, 3), dtype=wp.float32)):
+    pass
 
 class mat43(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
     pass
@@ -253,177 +255,149 @@ def damp_force_and_hessian(
 
 
 @wp.func
-def evaluate_volumetric_neo_hooken_force_and_hessian(
+def evaluate_volumetric_neo_hookean_force_and_hessian(
     tet_id: int,
     v_order: int,
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_pose: wp.mat33,
+    Dm_inv: wp.mat33,
     mu: float,
     lmbd: float,
     damping: float,
     dt: float,
-):
-    v0_idx = tet_indices[tet_id, 0]
-    v1_idx = tet_indices[tet_id, 1]
-    v2_idx = tet_indices[tet_id, 2]
-    v3_idx = tet_indices[tet_id, 3]
+) -> tuple[wp.vec3, wp.mat33]:
+    
+    # ============ Get Vertices ============
+    v0 = pos[tet_indices[tet_id, 0]]
+    v1 = pos[tet_indices[tet_id, 1]]
+    v2 = pos[tet_indices[tet_id, 2]]
+    v3 = pos[tet_indices[tet_id, 3]]
 
-    v0 = pos[v0_idx]
-    v1 = pos[v1_idx]
-    v2 = pos[v2_idx]
-    v3 = pos[v3_idx]
-
-    Dm_inv = tet_pose
+    # ============ Compute rest volume from Dm_inv ============
     rest_volume = 1.0 / (wp.determinant(Dm_inv) * 6.0)
 
-    diff_1 = v1 - v0
-    diff_2 = v2 - v0
-    diff_3 = v3 - v0
-    Ds = wp.mat33(
-        diff_1[0],
-        diff_2[0],
-        diff_3[0],
-        diff_1[1],
-        diff_2[1],
-        diff_3[1],
-        diff_1[2],
-        diff_2[2],
-        diff_3[2],
-    )
-
+    # ============ Deformation Gradient ============
+    Ds = wp.mat33(v1 - v0, v2 - v0, v3 - v0)
     F = Ds * Dm_inv
 
-    a = 1.0 + mu / lmbd
-    det_F = wp.determinant(F)
-
-    F1_1 = F[0, 0]
-    F2_1 = F[1, 0]
-    F3_1 = F[2, 0]
-    F1_2 = F[0, 1]
-    F2_2 = F[1, 1]
-    F3_2 = F[2, 1]
-    F1_3 = F[0, 2]
-    F2_3 = F[1, 2]
-    F3_3 = F[2, 2]
-
-    dPhi_D_dF = vec9(
-        F1_1,
-        F2_1,
-        F3_1,
-        F1_2,
-        F2_2,
-        F3_2,
-        F1_3,
-        F2_3,
-        F3_3,
+    # ============ Flatten F to vec9 ============
+    f = vec9(
+        F[0,0], F[1,0], F[2,0],
+        F[0,1], F[1,1], F[2,1],
+        F[0,2], F[1,2], F[2,2],
     )
 
-    ddetF_dF = vec9(
-        F2_2 * F3_3 - F2_3 * F3_2,
-        F1_3 * F3_2 - F1_2 * F3_3,
-        F1_2 * F2_3 - F1_3 * F2_2,
-        F2_3 * F3_1 - F2_1 * F3_3,
-        F1_1 * F3_3 - F1_3 * F3_1,
-        F1_3 * F2_1 - F1_1 * F2_3,
-        F2_1 * F3_2 - F2_2 * F3_1,
-        F1_2 * F3_1 - F1_1 * F3_2,
-        F1_1 * F2_2 - F1_2 * F2_1,
+    # ============ Useful Quantities ============
+    J = wp.determinant(F)
+    alpha = 1.0 + mu / lmbd
+    F_inv = wp.inverse(F)
+    cof = J * wp.transpose(F_inv)
+    
+    cof_vec = vec9(
+        cof[0,0], cof[1,0], cof[2,0],
+        cof[0,1], cof[1,1], cof[2,1],
+        cof[0,2], cof[1,2], cof[2,2],
     )
 
-    d2E_dF_dF = wp.outer(ddetF_dF, ddetF_dF)
-    k = det_F - a
-    d2E_dF_dF[0, 4] += k * F3_3
-    d2E_dF_dF[4, 0] += k * F3_3
-    d2E_dF_dF[0, 5] += k * -F2_3
-    d2E_dF_dF[5, 0] += k * -F2_3
-    d2E_dF_dF[0, 7] += k * -F3_2
-    d2E_dF_dF[7, 0] += k * -F3_2
-    d2E_dF_dF[0, 8] += k * F2_2
-    d2E_dF_dF[8, 0] += k * F2_2
+    # ============ Stress ============
+    P_vec = rest_volume * (mu * f + lmbd * (J - alpha) * cof_vec)
 
-    d2E_dF_dF[1, 3] += k * -F3_3
-    d2E_dF_dF[3, 1] += k * -F3_3
-    d2E_dF_dF[1, 5] += k * F1_3
-    d2E_dF_dF[5, 1] += k * F1_3
-    d2E_dF_dF[1, 6] += k * F3_2
-    d2E_dF_dF[6, 1] += k * F3_2
-    d2E_dF_dF[1, 8] += k * -F1_2
-    d2E_dF_dF[8, 1] += k * -F1_2
+    # ============ Hessian ============
+    H = (mu * wp.identity(n=9, dtype=float) 
+         + lmbd * wp.outer(cof_vec, cof_vec) 
+         + compute_cofactor_derivative(F, lmbd * (J - alpha)))
+    H = rest_volume * H
 
-    d2E_dF_dF[2, 3] += k * F2_3
-    d2E_dF_dF[3, 2] += k * F2_3
-    d2E_dF_dF[2, 4] += k * -F1_3
-    d2E_dF_dF[4, 2] += k * -F1_3
-    d2E_dF_dF[2, 6] += k * -F2_2
-    d2E_dF_dF[6, 2] += k * -F2_2
-    d2E_dF_dF[2, 7] += k * F1_2
-    d2E_dF_dF[7, 2] += k * F1_2
+    # ============ G_i ============
+    G_i = compute_G_matrix(Dm_inv, v_order)
 
-    d2E_dF_dF[3, 7] += k * F3_1
-    d2E_dF_dF[7, 3] += k * F3_1
-    d2E_dF_dF[3, 8] += k * -F2_1
-    d2E_dF_dF[8, 3] += k * -F2_1
+    # ============ Force & Hessian ============
+    force = -wp.transpose(G_i) * P_vec
+    hessian = wp.transpose(G_i) * H * G_i
 
-    d2E_dF_dF[4, 6] += k * -F3_1
-    d2E_dF_dF[6, 4] += k * -F3_1
-    d2E_dF_dF[4, 8] += k * F1_1
-    d2E_dF_dF[8, 4] += k * F1_1
+    # ============ Damping ============
+    if damping > 0.0:
+        inv_dt = 1.0 / dt
+        
+        v0_prev = pos_prev[tet_indices[tet_id, 0]]
+        v1_prev = pos_prev[tet_indices[tet_id, 1]]
+        v2_prev = pos_prev[tet_indices[tet_id, 2]]
+        v3_prev = pos_prev[tet_indices[tet_id, 3]]
+        
+        Ds_dot = wp.mat33(
+            (v1 - v1_prev) - (v0 - v0_prev),
+            (v2 - v2_prev) - (v0 - v0_prev),
+            (v3 - v3_prev) - (v0 - v0_prev),
+        ) * inv_dt
+        F_dot = Ds_dot * Dm_inv
+        
+        f_dot = vec9(
+            F_dot[0,0], F_dot[1,0], F_dot[2,0],
+            F_dot[0,1], F_dot[1,1], F_dot[2,1],
+            F_dot[0,2], F_dot[1,2], F_dot[2,2],
+        )
+        
+        P_damp = damping * (H * f_dot)
+        
+        force = force - wp.transpose(G_i) * P_damp
+        hessian = hessian + (damping * inv_dt) * wp.transpose(G_i) * H * G_i
 
-    d2E_dF_dF[5, 6] += k * F2_1
-    d2E_dF_dF[6, 5] += k * F2_1
-    d2E_dF_dF[5, 7] += k * -F1_1
-    d2E_dF_dF[7, 5] += k * -F1_1
+    return force, hessian
 
-    d2E_dF_dF = d2E_dF_dF * lmbd
 
-    d2E_dF_dF[0, 0] += mu
-    d2E_dF_dF[1, 1] += mu
-    d2E_dF_dF[2, 2] += mu
-    d2E_dF_dF[3, 3] += mu
-    d2E_dF_dF[4, 4] += mu
-    d2E_dF_dF[5, 5] += mu
-    d2E_dF_dF[6, 6] += mu
-    d2E_dF_dF[7, 7] += mu
-    d2E_dF_dF[8, 8] += mu
+# ============ Helper Functions ============
 
-    d2E_dF_dF = d2E_dF_dF * rest_volume
-
-    dPhi_D_dF = dPhi_D_dF * mu
-    dPhi_H_dF = ddetF_dF * lmbd * k
-
-    dE_dF = (dPhi_D_dF + dPhi_H_dF) * rest_volume
-
-    Dm_inv_1_1 = Dm_inv[0, 0]
-    Dm_inv_2_1 = Dm_inv[1, 0]
-    Dm_inv_3_1 = Dm_inv[2, 0]
-    Dm_inv_1_2 = Dm_inv[0, 1]
-    Dm_inv_2_2 = Dm_inv[1, 1]
-    Dm_inv_3_2 = Dm_inv[2, 1]
-    Dm_inv_1_3 = Dm_inv[0, 2]
-    Dm_inv_2_3 = Dm_inv[1, 2]
-    Dm_inv_3_3 = Dm_inv[2, 2]
-
-    ms = mat43(
-        -Dm_inv_1_1 - Dm_inv_2_1 - Dm_inv_3_1,
-        -Dm_inv_1_2 - Dm_inv_2_2 - Dm_inv_3_2,
-        -Dm_inv_1_3 - Dm_inv_2_3 - Dm_inv_3_3,
-        Dm_inv_1_1,
-        Dm_inv_1_2,
-        Dm_inv_1_3,
-        Dm_inv_2_1,
-        Dm_inv_2_2,
-        Dm_inv_2_3,
-        Dm_inv_3_1,
-        Dm_inv_3_2,
-        Dm_inv_3_3,
+@wp.func
+def compute_G_matrix(Dm_inv: wp.mat33, v_order: int) -> mat93:
+    """G_i = ∂vec(F)/∂x_i"""
+    
+    if v_order == 0:
+        m = wp.vec3(
+            -(Dm_inv[0,0] + Dm_inv[1,0] + Dm_inv[2,0]),
+            -(Dm_inv[0,1] + Dm_inv[1,1] + Dm_inv[2,1]),
+            -(Dm_inv[0,2] + Dm_inv[1,2] + Dm_inv[2,2]),
+        )
+    elif v_order == 1:
+        m = wp.vec3(Dm_inv[0,0], Dm_inv[0,1], Dm_inv[0,2])
+    elif v_order == 2:
+        m = wp.vec3(Dm_inv[1,0], Dm_inv[1,1], Dm_inv[1,2])
+    else:
+        m = wp.vec3(Dm_inv[2,0], Dm_inv[2,1], Dm_inv[2,2])
+    
+    # G = [m[0]*I₃, m[1]*I₃, m[2]*I₃]ᵀ (stacked vertically)
+    return mat93(
+        m[0], 0.0,  0.0,
+        0.0,  m[0], 0.0,
+        0.0,  0.0,  m[0],
+        m[1], 0.0,  0.0,
+        0.0,  m[1], 0.0,
+        0.0,  0.0,  m[1],
+        m[2], 0.0,  0.0,
+        0.0,  m[2], 0.0,
+        0.0,  0.0,  m[2],
     )
 
-    f, h = assemble_tet_vertex_force_and_hessian(dE_dF, d2E_dF_dF, ms[v_order, 0], ms[v_order, 1], ms[v_order, 2])
-    f, h = damp_force_and_hessian(pos_prev[v0_idx], v0, f, h, damping, dt)
 
-    return f, h
+@wp.func
+def compute_cofactor_derivative(F: wp.mat33, scale: float) -> mat99:
+    """scale * ∂cof(F)/∂F"""
+    
+    F11, F21, F31 = F[0,0], F[1,0], F[2,0]
+    F12, F22, F32 = F[0,1], F[1,1], F[2,1]
+    F13, F23, F33 = F[0,2], F[1,2], F[2,2]
+    
+    return mat99(
+        0.0,         0.0,         0.0,         0.0,          scale*F33,  -scale*F23, 0.0,         -scale*F32,  scale*F22,
+        0.0,         0.0,         0.0,        -scale*F33,    0.0,         scale*F13,  scale*F32,   0.0,        -scale*F12,
+        0.0,         0.0,         0.0,         scale*F23,   -scale*F13,   0.0,       -scale*F22,   scale*F12,   0.0,
+        0.0,        -scale*F33,   scale*F23,   0.0,          0.0,         0.0,        0.0,          scale*F31, -scale*F21,
+        scale*F33,   0.0,        -scale*F13,   0.0,          0.0,         0.0,       -scale*F31,   0.0,         scale*F11,
+       -scale*F23,   scale*F13,   0.0,         0.0,          0.0,         0.0,        scale*F21,  -scale*F11,   0.0,
+        0.0,         scale*F32,  -scale*F22,   0.0,         -scale*F31,   scale*F21,  0.0,          0.0,         0.0,
+       -scale*F32,   0.0,         scale*F12,   scale*F31,    0.0,        -scale*F11,  0.0,          0.0,         0.0,
+        scale*F22,  -scale*F12,   0.0,        -scale*F21,    scale*F11,   0.0,        0.0,          0.0,         0.0,
+    )
 
 
 @wp.kernel
@@ -2414,14 +2388,60 @@ def evaluate_spring_force_and_hessian(
     return spring_force, spring_hessian
 
 
+@wp.func
+def evaluate_spring_force_and_hessian_both_vertices(
+    spring_idx: int,
+    dt: float,
+    pos: wp.array(dtype=wp.vec3),
+    pos_anchor: wp.array(dtype=wp.vec3),
+    spring_indices: wp.array(dtype=int),
+    spring_rest_length: wp.array(dtype=float),
+    spring_stiffness: wp.array(dtype=float),
+    spring_damping: wp.array(dtype=float),
+):
+    """Evaluate spring force and hessian for both vertices of a spring.
+
+    Returns forces and hessians for v0 and v1 respectively.
+    """
+    v0 = spring_indices[spring_idx * 2]
+    v1 = spring_indices[spring_idx * 2 + 1]
+
+    diff = pos[v0] - pos[v1]
+    l = wp.length(diff)
+    l0 = spring_rest_length[spring_idx]
+
+    # Base spring force for v0 (v1 gets the opposite)
+    base_force = spring_stiffness[spring_idx] * (l0 - l) / l * diff
+
+    # Hessian is the same for both vertices (symmetric)
+    spring_hessian = spring_stiffness[spring_idx] * (
+        wp.identity(3, float) - (l0 / l) * (wp.identity(3, float) - wp.outer(diff, diff) / (l * l))
+    )
+
+    # Compute damping hessian contribution
+    h_d = spring_hessian * (spring_damping[spring_idx] / dt)
+
+    # Damping force for each vertex
+    f_d_v0 = h_d * (pos_anchor[v0] - pos[v0])
+    f_d_v1 = h_d * (pos_anchor[v1] - pos[v1])
+
+    # Total force and hessian for each vertex
+    force_v0 = base_force + f_d_v0
+    force_v1 = -base_force + f_d_v1  # Opposite direction for v1
+    hessian_total = spring_hessian + h_d
+
+    return v0, v1, force_v0, force_v1, hessian_total
+
+
 @wp.kernel
 def accumulate_spring_force_and_hessian(
     # inputs
     dt: float,
+    current_color: int,
     pos_anchor: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
-    particle_ids_in_color: wp.array(dtype=int),
-    adjacency: ParticleForceElementAdjacencyInfo,
+    particle_colors: wp.array(dtype=int),
+    num_springs: int,
     # spring constraints
     spring_indices: wp.array(dtype=int),
     spring_rest_length: wp.array(dtype=float),
@@ -2431,27 +2451,40 @@ def accumulate_spring_force_and_hessian(
     particle_forces: wp.array(dtype=wp.vec3),
     particle_hessians: wp.array(dtype=wp.mat33),
 ):
-    t_id = wp.tid()
+    """Accumulate spring forces and hessians, parallelized by springs.
 
-    particle_index = particle_ids_in_color[t_id]
+    Each thread handles one spring and uses atomic operations to add
+    forces and hessians to vertices with the current color.
+    """
+    spring_idx = wp.tid()
 
-    num_adj_springs = get_vertex_num_adjacent_springs(adjacency, particle_index)
-    for spring_counter in range(num_adj_springs):
-        spring_index = get_vertex_adjacent_spring_id(adjacency, particle_index, spring_counter)
-        spring_force, spring_hessian = evaluate_spring_force_and_hessian(
-            particle_index,
-            spring_index,
-            dt,
-            pos,
-            pos_anchor,
-            spring_indices,
-            spring_rest_length,
-            spring_stiffness,
-            spring_damping,
-        )
+    if spring_idx < num_springs:
+        v0 = spring_indices[spring_idx * 2]
+        v1 = spring_indices[spring_idx * 2 + 1]
 
-        particle_forces[particle_index] = particle_forces[particle_index] + spring_force
-        particle_hessians[particle_index] = particle_hessians[particle_index] + spring_hessian
+        c_v0 = particle_colors[v0]
+        c_v1 = particle_colors[v1]
+
+        # Only evaluate if at least one vertex has the current color
+        if c_v0 == current_color or c_v1 == current_color:
+            _, _, force_v0, force_v1, hessian = evaluate_spring_force_and_hessian_both_vertices(
+                spring_idx,
+                dt,
+                pos,
+                pos_anchor,
+                spring_indices,
+                spring_rest_length,
+                spring_stiffness,
+                spring_damping,
+            )
+
+            # Only add to vertices with the current color
+            if c_v0 == current_color:
+                wp.atomic_add(particle_forces, v0, force_v0)
+                wp.atomic_add(particle_hessians, v0, hessian)
+            if c_v1 == current_color:
+                wp.atomic_add(particle_forces, v1, force_v1)
+                wp.atomic_add(particle_hessians, v1, hessian)
 
 
 @wp.kernel
@@ -3928,7 +3961,7 @@ def solve_elasticity_tile(
                 particle_adjacency, particle_index, adj_tet_counter
             )
             if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
-                f_tet, h_tet = evaluate_volumetric_neo_hooken_force_and_hessian(
+                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
                     nei_tet_index,
                     vertex_order_on_tet,
                     pos_prev,
@@ -4073,7 +4106,7 @@ def solve_elasticity(
                 particle_adjacency, particle_index, adj_tet_counter
             )
             if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
-                f_tet, h_tet = evaluate_volumetric_neo_hooken_force_and_hessian(
+                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
                     nei_tet_index,
                     vertex_order_on_tet,
                     pos_prev,

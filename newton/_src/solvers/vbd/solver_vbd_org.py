@@ -3364,6 +3364,7 @@ def hessian_dykstra_projection( # Anka's Dykstra Function, We use it here except
                         delta_x_k = hessian_weighted_projection_onto_halfspace(
                             particle_pos + x_star, n, d, H_v_inv, parallel_eps
                         ) - particle_pos
+                        t_new = wp.dot(x_star - delta_x_k, n)
                         projection_t_ee[2 * (offset_e_e + i_e_collision) + vertex_order_on_edge_2_v1_v2_only] = t_new
                         
     displacements_out[particle_idx] = delta_x_k
