@@ -77,7 +77,6 @@ class ImplicitMPMOptions:
     integration_scheme: str = "pic"
     """Transfer scheme to use for particle-grid transfers. May be one of pic, gimp."""
 
-    # material / background
     critical_fraction: float = 0.0
     """Fraction for particles under which the yield surface collapses."""
     air_drag: float = 1.0
@@ -243,8 +242,7 @@ class MaterialParameters:
     """Poisson's ratio for the material."""
     damping: wp.array(dtype=float)
     """Damping for the material."""
-    hardening: wp.array(dtype=float)
-    """Hardening for the material."""
+
     friction: wp.array(dtype=float)
     """Friction for the material."""
     yield_pressure: wp.array(dtype=float)
@@ -253,6 +251,15 @@ class MaterialParameters:
     """Tensile yield ratio for the material."""
     yield_stress: wp.array(dtype=float)
     """Yield stress for the material."""
+
+    hardening: wp.array(dtype=float)
+    """Hardening for the material."""
+    hardening_rate: wp.array(dtype=float)
+    """Hardening rate for the material."""
+    softening_rate: wp.array(dtype=float)
+    """Softening rate for the material."""
+    dilatancy: wp.array(dtype=float)
+    """Dilatancy for the material."""
 
 
 class ImplicitMPMModel:
@@ -356,11 +363,14 @@ class ImplicitMPMModel:
         self.material_parameters.young_modulus = model.mpm.young_modulus
         self.material_parameters.poisson_ratio = model.mpm.poisson_ratio
         self.material_parameters.damping = model.mpm.damping
-        self.material_parameters.hardening = model.mpm.hardening
         self.material_parameters.friction = model.mpm.friction
         self.material_parameters.yield_pressure = model.mpm.yield_pressure
         self.material_parameters.tensile_yield_ratio = model.mpm.tensile_yield_ratio
         self.material_parameters.yield_stress = model.mpm.yield_stress
+        self.material_parameters.hardening = model.mpm.hardening
+        self.material_parameters.hardening_rate = model.mpm.hardening_rate
+        self.material_parameters.softening_rate = model.mpm.softening_rate
+        self.material_parameters.dilatancy = model.mpm.dilatancy
 
         self.notify_particle_material_changed()
 
