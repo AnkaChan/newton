@@ -1896,8 +1896,7 @@ class SolverImplicitMPM(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int):
-        if flags & newton.SolverNotifyFlags.PARTICLE_PROPERTIES:
-            self._mpm_model.notify_particle_material_changed()
+        self._mpm_model.notify_particle_material_changed()
 
     def project_outside(
         self, state_in: newton.State, state_out: newton.State, dt: float, max_dist: float | None = None
