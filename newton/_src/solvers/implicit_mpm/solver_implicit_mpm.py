@@ -29,7 +29,6 @@ from ...core.types import override
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel, ImplicitMPMOptions, MaterialParameters
 from .rasterized_collisions import (
-    allot_collider_mass,
     build_rigidity_operator,
     interpolate_collider_normals,
     project_outside_collider,
@@ -939,7 +938,6 @@ class ImplicitMPMScratchpad:
         self.collider_velocity = None
         self.collider_friction = None
         self.collider_adhesion = None
-        self.collider_inv_mass_matrix = None
 
         self.collider_matrix = wps.bsr_zeros(0, 0, block_type=float)
         self.transposed_collider_matrix = wps.bsr_zeros(0, 0, block_type=float)
@@ -1250,7 +1248,6 @@ class ImplicitMPMScratchpad:
         self.collider_velocity = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=wp.vec3)
         self.collider_friction = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=float)
         self.collider_adhesion = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=float)
-        self.collider_inv_mass_matrix = fem.borrow_temporary(temporary_store, shape=(collider_node_count,), dtype=float)
         self.collider_node_volume = fem.borrow_temporary(temporary_store, shape=collider_node_count, dtype=float)
 
         self.strain_node_particle_volume = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
@@ -1278,7 +1275,6 @@ class ImplicitMPMScratchpad:
         self.collider_velocity.release()
         self.collider_friction.release()
         self.collider_adhesion.release()
-        self.collider_inv_mass_matrix.release()
         self.collider_node_volume.release()
         self.strain_node_particle_volume.release()
         self.unilateral_strain_offset.release()
@@ -2587,20 +2583,9 @@ class SolverImplicitMPM(SolverBase):
         has_compliant_colliders = self._mpm_model.min_collider_mass < _INFINITY
 
         if not has_compliant_colliders:
-            scratch.collider_inv_mass_matrix.zero_()
             return None
 
         with self._timer("Collider compliance"):
-            allot_collider_mass(
-                cell_volume=cell_volume,
-                node_volumes=scratch.collider_node_volume,
-                collider=self._mpm_model.collider,
-                body_mass=self._mpm_model.collider_body_mass,
-                collider_ids=scratch.collider_ids,
-                collider_total_volumes=scratch.collider_total_volumes,
-                collider_inv_mass_matrix=scratch.collider_inv_mass_matrix,
-            )
-
             rigidity_operator = build_rigidity_operator(
                 cell_volume=cell_volume,
                 node_volumes=scratch.collider_node_volume,
@@ -2610,7 +2595,6 @@ class SolverImplicitMPM(SolverBase):
                 body_mass=self._mpm_model.collider_body_mass,
                 body_inv_inertia=self._mpm_model.collider_body_inv_inertia,
                 collider_ids=scratch.collider_ids,
-                collider_total_volumes=scratch.collider_total_volumes,
             )
 
         return rigidity_operator
@@ -3003,7 +2987,6 @@ class SolverImplicitMPM(SolverBase):
                 collider_adhesion=scratch.collider_adhesion,
                 collider_normals=scratch.collider_normal_field.dof_values,
                 collider_velocities=scratch.collider_velocity,
-                collider_inv_mass=scratch.collider_inv_mass_matrix,
                 rigidity_operator=rigidity_operator,
                 collider_impulse=scratch.impulse_field.dof_values,
             )
