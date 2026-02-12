@@ -114,6 +114,11 @@ class Example:
         # Initialize MPM solver
         self.solver = SolverImplicitMPM(self.model, mpm_options)
 
+        # Set particle colors to white/gray for snow
+        self.particle_colors = wp.full(
+            shape=self.model.particle_count, value=wp.vec3(0.9, 0.9, 0.95), device=self.model.device
+        )
+
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(0.0, -12.0, 2.5), pitch=0.0, yaw=-270.0)
 
@@ -205,6 +210,15 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+
+        # Override particle colors with snow colors (white/gray)
+        self.viewer.log_points(
+            name="/model/particles",
+            points=self.state_0.particle_q,
+            radii=self.model.particle_radius,
+            colors=self.particle_colors,
+            hidden=not self.viewer.show_particles,
+        )
 
         if self.show_normals:
             # for debugging purposes, we can visualize the collider normals
