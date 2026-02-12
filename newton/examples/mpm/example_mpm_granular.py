@@ -129,6 +129,15 @@ class Example:
         self.frame_dir = None
         self.frame_count = 0
         self._frame_dir_is_temp = False
+        # Store material parameters for video metadata
+        self.material_params = {
+            "density": getattr(options, "density", None),
+            "friction": getattr(options, "friction", None),
+            "yield_pressure": getattr(options, "yield_pressure", None),
+            "tensile_yield_ratio": getattr(options, "tensile_yield_ratio", None),
+            "yield_stress": getattr(options, "yield_stress", None),
+            "hardening": getattr(options, "hardening", None),
+        }
         if self.save_video and isinstance(self.viewer, newton.viewer.ViewerGL):
             if hasattr(options, "frame_dir") and options.frame_dir:
                 self.frame_dir = Path(options.frame_dir)
@@ -284,14 +293,39 @@ class Example:
             print(f"Frames saved in: {self.frame_dir}")
             return
 
-        # Build ffmpeg command
+        # Build material parameters string for overlay
+        params_str = (
+            f"density={self.material_params['density']}, "
+            f"friction={self.material_params['friction']}, "
+            f"yield_pressure={self.material_params['yield_pressure']}, "
+            f"tensile_yield_ratio={self.material_params['tensile_yield_ratio']}, "
+            f"yield_stress={self.material_params['yield_stress']}, "
+            f"hardening={self.material_params['hardening']}"
+        )
+
+        # Build ffmpeg command with text overlay
         fps = self.fps
         input_pattern = str(self.frame_dir / "frame_%06d.png")
+
+        # Escape special characters for ffmpeg drawtext filter
+        # Replace : with \:, ' with \', and \ with \\
+        escaped_text = params_str.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+        # Create drawtext filter for overlay
+        # Position at top-right with padding, white text with black border for readability
+        drawtext_filter = (
+            f"drawtext=text='{escaped_text}':"
+            f"fontcolor=white:fontsize=20:"
+            f"box=1:boxcolor=black@0.5:boxborderw=5:"
+            f"x=w-tw-10:y=10"
+        )
+
         ffmpeg_cmd = [
             "ffmpeg",
             "-y",  # Overwrite output file
             "-framerate", str(fps),
             "-i", input_pattern,
+            "-vf", drawtext_filter,
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-crf", "18",  # High quality
@@ -300,6 +334,7 @@ class Example:
 
         try:
             print(f"Creating video: {output_path}")
+            print(f"Material parameters: {params_str}")
             subprocess.run(ffmpeg_cmd, capture_output=True, check=True, text=True)
             print(f"Video saved to: {output_path.absolute()}")
             # Clean up frame directory only if it was a temporary one
@@ -354,8 +389,8 @@ if __name__ == "__main__":
 
     # Scene configuration
     parser.add_argument("--collider", default="cube", choices=["cube", "wedge", "concave", "none"], type=str)
-    parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, -1, 2.0])
-    parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 1, 4.0])
+    parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, -1, 2.1])
+    parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 1, 4.1])
     parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -10])
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--substeps", type=int, default=1)
