@@ -249,18 +249,18 @@ if __name__ == "__main__":
     parser.add_argument("--substeps", type=int, default=1)
 
     # Add MPM-specific arguments
-    parser.add_argument("--density", type=float, default=1000.0)
+    parser.add_argument("--density", type=float, default=300.0)
     parser.add_argument("--air-drag", type=float, default=1.0)
     parser.add_argument("--critical-fraction", "-cf", type=float, default=0.0)
 
     parser.add_argument("--young-modulus", "-ym", type=float, default=1.0e15)
     parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.3)
-    parser.add_argument("--friction", "-mu", type=float, default=0.68)
+    parser.add_argument("--friction", "-mu", type=float, default=0.1)
     parser.add_argument("--damping", type=float, default=0.0)
-    parser.add_argument("--yield-pressure", "-yp", type=float, default=1.0e12)
-    parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.0)
-    parser.add_argument("--yield-stress", "-ys", type=float, default=0.0)
-    parser.add_argument("--hardening", type=float, default=0.0)
+    parser.add_argument("--yield-pressure", "-yp", type=float, default=2.0e4)
+    parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.05)
+    parser.add_argument("--yield-stress", "-ys", type=float, default=1.0e3)
+    parser.add_argument("--hardening", type=float, default=10.0)
 
     parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
     parser.add_argument("--grid-padding", "-gp", type=int, default=0)
