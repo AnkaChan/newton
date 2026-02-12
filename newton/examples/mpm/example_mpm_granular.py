@@ -69,12 +69,12 @@ class Example:
                 hz=extents[2],
             )
         elif self.collider != "none":
-            extents = (0.5, 2.0, 0.8)
+            extents = (0.7, 2.0, 0.7)
             if self.collider == "cube":
                 xform = wp.transform(wp.vec3(0.75, 0.0, 0.8), wp.quat_identity())
             elif self.collider == "wedge":
                 xform = wp.transform(
-                    wp.vec3(0.0, 0.0, 0.9), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
+                    wp.vec3(0.0, 0.0, 1.1), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
                 )
 
             builder.add_shape_box(
@@ -242,8 +242,8 @@ if __name__ == "__main__":
 
     # Scene configuration
     parser.add_argument("--collider", default="cube", choices=["cube", "wedge", "concave", "none"], type=str)
-    parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, -1, 1.5])
-    parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 1, 3.5])
+    parser.add_argument("--emit-lo", type=float, nargs=3, default=[-1, -1, 2.0])
+    parser.add_argument("--emit-hi", type=float, nargs=3, default=[1, 1, 4.0])
     parser.add_argument("--gravity", type=float, nargs=3, default=[0, 0, -10])
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--substeps", type=int, default=1)
