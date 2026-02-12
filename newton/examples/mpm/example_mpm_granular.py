@@ -130,7 +130,6 @@ class Example:
 
         # Video recording setup
         self.save_video = options.save_video
-        self.video_output_path = options.video_output if hasattr(options, "video_output") else None
         self.frame_dir = None
         self.frame_count = 0
         self._frame_dir_is_temp = False
@@ -289,14 +288,15 @@ class Example:
         if not self.save_video or self.frame_dir is None or self.frame_count == 0:
             return
 
-        output_path = self.video_output_path
-        if output_path is None:
-            output_path = "output.mp4"
+        # Infer video filename from frame_dir name
+        if self._frame_dir_is_temp:
+            # For temporary directories, use a default name
+            video_name = "output.mp4"
+        else:
+            # Use the last directory name as the video filename
+            video_name = f"{self.frame_dir.name}.mp4"
 
-        output_path = Path(output_path)
-        # If output_path is not absolute and frame_dir is set, place video under frame_dir
-        if not output_path.is_absolute() and self.frame_dir is not None and not self._frame_dir_is_temp:
-            output_path = self.frame_dir / output_path.name
+        output_path = self.frame_dir / video_name
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Check if ffmpeg is available
@@ -438,8 +438,7 @@ if __name__ == "__main__":
 
     # Video recording arguments
     parser.add_argument("--save-video", action="store_true", help="Save each frame as PNG and create MP4 video")
-    parser.add_argument("--video-output", type=str, default="output.mp4", help="Output path for video file")
-    parser.add_argument("--frame-dir", type=str, default=None, help="Directory to save frames (default: temporary directory)")
+    parser.add_argument("--frame-dir", type=str, default=None, help="Directory to save frames (video filename inferred from directory name)")
 
     # Frame limit argument
     parser.add_argument("--max-frames", type=int, default=None, help="Maximum number of frames to run (default: unlimited)")
