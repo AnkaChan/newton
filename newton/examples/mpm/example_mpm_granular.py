@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import warp as wp
 
@@ -31,6 +36,8 @@ class Example:
         self.sim_time = 0.0
         self.sim_substeps = options.substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
+        self.max_frames = getattr(options, "max_frames", None)
+        self.frame_number = 0
 
         # save a reference to the viewer
         self.viewer = viewer
@@ -116,6 +123,22 @@ class Example:
         self.viewer.show_particles = True
         self.show_normals = False
 
+        # Video recording setup
+        self.save_video = options.save_video
+        self.video_output_path = options.video_output if hasattr(options, "video_output") else None
+        self.frame_dir = None
+        self.frame_count = 0
+        self._frame_dir_is_temp = False
+        if self.save_video and isinstance(self.viewer, newton.viewer.ViewerGL):
+            if hasattr(options, "frame_dir") and options.frame_dir:
+                self.frame_dir = Path(options.frame_dir)
+                self.frame_dir.mkdir(parents=True, exist_ok=True)
+                self._frame_dir_is_temp = False
+            else:
+                self.frame_dir = Path(tempfile.mkdtemp(prefix="newton_frames_"))
+                self._frame_dir_is_temp = True
+            print(f"Saving frames to: {self.frame_dir}")
+
         self.capture()
 
     def capture(self):
@@ -140,6 +163,11 @@ class Example:
         else:
             self.simulate()
         self.sim_time += self.frame_dt
+        self.frame_number += 1
+
+        # Close viewer if max_frames is reached
+        if self.max_frames is not None and self.frame_number >= self.max_frames:
+            self.viewer.close()
 
     def test_final(self):
         voxel_size = self.solver.voxel_size
@@ -198,8 +226,92 @@ class Example:
 
         self.viewer.end_frame()
 
+        # Save frame if video recording is enabled (after end_frame when rendering is complete)
+        # Use render_ui=False since UI is already rendered in end_frame
+        if self.save_video and self.frame_dir is not None and isinstance(self.viewer, newton.viewer.ViewerGL):
+            self._save_frame()
+
     def render_ui(self, imgui):
         _changed, self.show_normals = imgui.checkbox("Show Normals", self.show_normals)
+
+    def _save_frame(self):
+        """Save the current frame as a PNG file."""
+        try:
+            from PIL import Image
+        except ImportError:
+            wp.utils.warn("PIL (Pillow) is required for video recording. Install with: pip install Pillow")
+            self.save_video = False
+            return
+
+        try:
+            # Get frame from viewer (RGB, uint8, shape: height x width x 3)
+            # Use render_ui=False since UI is already rendered in end_frame()
+            # This avoids re-rendering the UI and potential OpenGL context issues
+            frame = self.viewer.get_frame(render_ui=False)
+            frame_np = frame.numpy()
+
+            # Save as PNG
+            frame_filename = self.frame_dir / f"frame_{self.frame_count:06d}.png"
+            image = Image.fromarray(frame_np, mode="RGB")
+            image.save(frame_filename)
+            self.frame_count += 1
+        except Exception as e:
+            wp.utils.warn(f"Failed to save frame: {e}")
+            # Disable save_video on persistent errors
+            if self.frame_count == 0:
+                self.save_video = False
+
+    def _create_video(self):
+        """Create MP4 video from saved frames using ffmpeg."""
+        if not self.save_video or self.frame_dir is None or self.frame_count == 0:
+            return
+
+        output_path = self.video_output_path
+        if output_path is None:
+            output_path = "output.mp4"
+
+        output_path = Path(output_path)
+        # If output_path is not absolute and frame_dir is set, place video under frame_dir
+        if not output_path.is_absolute() and self.frame_dir is not None and not self._frame_dir_is_temp:
+            output_path = self.frame_dir / output_path.name
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Check if ffmpeg is available
+        try:
+            subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            wp.utils.warn("ffmpeg not found. Install ffmpeg to create video from frames.")
+            print(f"Frames saved in: {self.frame_dir}")
+            return
+
+        # Build ffmpeg command
+        fps = self.fps
+        input_pattern = str(self.frame_dir / "frame_%06d.png")
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-y",  # Overwrite output file
+            "-framerate", str(fps),
+            "-i", input_pattern,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-crf", "18",  # High quality
+            str(output_path),
+        ]
+
+        try:
+            print(f"Creating video: {output_path}")
+            subprocess.run(ffmpeg_cmd, capture_output=True, check=True, text=True)
+            print(f"Video saved to: {output_path.absolute()}")
+            # Clean up frame directory only if it was a temporary one
+            if self._frame_dir_is_temp:
+                shutil.rmtree(self.frame_dir)
+                print(f"Cleaned up temporary frame directory: {self.frame_dir}")
+            else:
+                print(f"Frames remain in: {self.frame_dir}")
+        except subprocess.CalledProcessError as e:
+            wp.utils.warn(f"Failed to create video: {e}")
+            print(f"ffmpeg stderr: {e.stderr}")
+            print(f"Frames saved in: {self.frame_dir}")
 
     @staticmethod
     def emit_particles(builder: newton.ModelBuilder, args):
@@ -275,6 +387,14 @@ if __name__ == "__main__":
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
 
+    # Video recording arguments
+    parser.add_argument("--save-video", action="store_true", help="Save each frame as PNG and create MP4 video")
+    parser.add_argument("--video-output", type=str, default="output.mp4", help="Output path for video file")
+    parser.add_argument("--frame-dir", type=str, default=None, help="Directory to save frames (default: temporary directory)")
+
+    # Frame limit argument
+    parser.add_argument("--max-frames", type=int, default=None, help="Maximum number of frames to run (default: unlimited)")
+
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
@@ -282,3 +402,7 @@ if __name__ == "__main__":
     example = Example(viewer, args)
 
     newton.examples.run(example, args)
+
+    # Create video from frames after simulation completes
+    if hasattr(example, "_create_video"):
+        example._create_video()
