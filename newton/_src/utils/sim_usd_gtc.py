@@ -33,7 +33,7 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 import newton
 import newton.examples
-from newton._src.core.spatial import angvel_between_quats
+from newton._src.core.spatial import quat_velocity
 from newton._src.utils.import_usd import parse_usd
 from newton._src.usd.schema_resolver import (
     SchemaAttribute as Attribute,
@@ -300,14 +300,15 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         sand_model.particle_adhesion = 0.0
         sand_model.particle_cohesion = 0.0
 
-        mpm_model = newton.solvers.SolverImplicitMPM.Model(sand_model, mpm_options)
+        from newton._src.solvers.implicit_mpm.implicit_mpm_model import ImplicitMPMModel
+        mpm_model = ImplicitMPMModel(sand_model, mpm_options)
 
         self._setup_mpm_collider(model, mpm_model, particle_radius=sand_builder.particle_radius[0])
 
         return mpm_model
 
     def _setup_mpm_collider(
-        self, model: newton.Model, mpm_model: newton.solvers.SolverImplicitMPM.Model, particle_radius: float
+        self, model: newton.Model, mpm_model, particle_radius: float
     ):
         collider_body_id = np.arange(-1, model.body_count)
 
@@ -954,7 +955,7 @@ class Simulator:
             tf = wp.transform_from_matrix(mat)
             tf_next = wp.transform_from_matrix(mat_next)
             vel = (tf_next.p - tf.p) / wp.static(self.frame_dt)
-            ang = angvel_between_quats(tf.q, tf_next.q, wp.static(self.frame_dt))
+            ang = quat_velocity(tf.q, tf_next.q, wp.static(self.frame_dt))
             tf.p += usd_offset
             collider_body_q[frame, body_id] = tf
             collider_body_qd[frame, body_id] = wp.spatial_vector(vel, ang)
