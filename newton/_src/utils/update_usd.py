@@ -16,12 +16,14 @@
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import warp as wp
 
 if TYPE_CHECKING:
-    from pxr import Usd
+    from pxr import Sdf, Usd
     from ..core.types import AxisType
 
 
@@ -67,6 +69,7 @@ class UpdateUsd:
         if not self.source_stage:
             raise ValueError("source_stage must be set")
         else:
+            self.stage_path = stage
             self.stage = self._create_output_stage(self.source_stage, stage)
             self.fps = fps
             self.scaling = scaling
@@ -74,6 +77,7 @@ class UpdateUsd:
             self.path_body_map = path_body_map
             self.path_body_relative_transform = path_body_relative_transform
             self.builder_results = builder_results
+            self.particle_layer_info = {}
             self._prepare_output_stage()
             self._precompute_parents_xform_inverses()
 
@@ -514,3 +518,230 @@ class UpdateUsd:
         xform.AddTranslateOp(precision=detected_precision).Set(t)
         xform.AddOrientOp(precision=detected_precision).Set(q)
         xform.AddScaleOp(precision=detected_precision).Set(s)
+
+    @staticmethod
+    def _stitch_time_samples(stages, instancer_path, name: str):
+        from pxr import UsdGeom  # noqa: PLC0415
+
+        prim_path = f"{instancer_path}_split/{name}"
+
+        main_stage = stages[0]
+        instancer = UsdGeom.PointInstancer.Get(main_stage, prim_path)
+
+        for stage in stages[1:]:
+            other_instancer = UsdGeom.PointInstancer.Get(stage, prim_path)
+            for time in other_instancer.GetPositionsAttr().GetTimeSamples():
+                instancer.GetPositionsAttr().Set(other_instancer.GetPositionsAttr().Get(time), time)
+                instancer.GetOrientationsAttr().Set(other_instancer.GetOrientationsAttr().Get(time), time)
+
+    @dataclass
+    class ParticleLayerInfo:
+        particle_layer_names: list[str]
+        particle_layer_count: int
+        frames_per_layer: int
+        particles_per_layer: int
+
+        particle_layers: list = field(default_factory=list)
+        cur_layer_num: int = -1
+        num_written_frames: int = 0
+
+        def get_layer_name(self, chunk: int):
+            num = self.cur_layer_num
+            suffix = "" if num == 0 else f"_{num}"
+            return self.particle_layer_names[chunk] + suffix
+
+        def get_layer_path(self, stage_path, instancer_path: str, chunk: int):
+            return f"{os.path.splitext(stage_path)[0]}_{str(instancer_path).replace('/', '_')}_{self.get_layer_name(chunk)}.usdc"
+
+    def _renew_particle_sublayers(
+        self,
+        instancer_path: str,
+    ):
+        from pxr import Sdf  # noqa: PLC0415
+
+        particle_layer_info = self.particle_layer_info[instancer_path]
+        particle_layer_info.cur_layer_num += 1
+
+        out_root_layer = self.stage.GetRootLayer()
+
+        # Remove sublayer path for this instancer
+        instancer_path_key = str(instancer_path).replace("/", "_")
+        sublayer_paths = [path for path in out_root_layer.subLayerPaths if instancer_path_key not in path]
+        out_root_layer.subLayerPaths.clear()
+        for path in sublayer_paths:
+            out_root_layer.subLayerPaths.append(path)
+
+        particle_layers = [
+            Sdf.Layer.New(
+                Sdf.FileFormat.FindByExtension("usdc"),
+                particle_layer_info.get_layer_path(self.stage_path, instancer_path, chunk),
+            )
+            for chunk in range(particle_layer_info.particle_layer_count)
+        ]
+        for layer in particle_layers:
+            layer.timeCodesPerSecond = self.fps
+            out_root_layer.subLayerPaths.append(os.path.join(".", os.path.basename(layer.identifier)))
+
+        particle_layer_info.particle_layers = particle_layers
+
+        return particle_layers
+
+    def create_particle_sublayers(
+        self, instancer_path, particle_count, frame_count, has_orientations=True, has_scales=False
+    ):
+        out_point_count = particle_count
+        bytes_per_point = 12
+        if has_orientations:
+            bytes_per_point += 8
+        if has_scales:
+            bytes_per_point += 12
+
+        # 6.4GB files
+        particles_per_layer = min(particle_count, int(6.4e9 // bytes_per_point / frame_count))
+        # 24GB working memory
+        frames_per_layer = int(2.4e10 // bytes_per_point / out_point_count)
+
+        particle_layer_count = (out_point_count + particles_per_layer - 1) // particles_per_layer
+        particle_layer_names = [f"particles_{i:04d}" for i in range(particle_layer_count)]
+
+        print(
+            f"Splitting scheme for instancer {instancer_path}: {particles_per_layer} particles per layer ({particle_layer_count} layers), {frames_per_layer} frames per layer"
+        )
+
+        self.particle_layer_info[instancer_path] = UpdateUsd.ParticleLayerInfo(
+            particle_layer_names=particle_layer_names,
+            particle_layer_count=particle_layer_count,
+            frames_per_layer=frames_per_layer,
+            particles_per_layer=particles_per_layer,
+        )
+
+        self._renew_particle_sublayers(instancer_path)
+
+    def _split_instancer(self, path: str, split_path: str, slc: slice):
+        from pxr import UsdGeom  # noqa: PLC0415
+
+        split_instancer = UsdGeom.PointInstancer.Get(self.stage, split_path)
+        if split_instancer:
+            return
+
+        instancer = UsdGeom.PointInstancer.Get(self.stage, path)
+        if not instancer:
+            return
+
+        instancer_split = UsdGeom.PointInstancer.Define(self.stage, split_path)
+        instancer_split.CreatePrototypesRel().SetTargets(instancer.GetPrototypesRel().GetTargets())
+        instancer_split.CreateProtoIndicesAttr().Set(instancer.GetProtoIndicesAttr().Get()[slc])
+        instancer_split.CreateScalesAttr().Set(instancer.GetScalesAttr().Get()[slc])
+        instancer_split.CreateOrientationsAttr().Set(instancer.GetOrientationsAttr().Get()[slc])
+        instancer_split.CreatePositionsAttr().Set(instancer.GetPositionsAttr().Get()[slc])
+
+    def render_points_split(
+        self,
+        path: str,
+        points: wp.array,
+        rotations: wp.array | None = None,
+        scales: wp.array | None = None,
+        radius: float | None = None,
+    ):
+        from pxr import Usd  # noqa: PLC0415
+
+        layer_info = self.particle_layer_info[path]
+
+        frame = layer_info.num_written_frames
+        layer_info.num_written_frames += 1
+
+        # Renew layers if required
+        num = frame // layer_info.frames_per_layer
+        if num != layer_info.cur_layer_num:
+            print(f"Switching layers from {layer_info.cur_layer_num} to {num}...")
+
+            try:
+                import psutil
+                memory_info = psutil.Process().memory_info()
+                print(f"Memory usage before switching layers: {memory_info.rss / (1024 * 1024):.2f} MB")
+            except ImportError:
+                pass
+            self.stage.Save()
+            self.stage = Usd.Stage.Open(self.stage_path)
+
+            self._renew_particle_sublayers(path)
+
+            try:
+                import psutil
+                memory_info = psutil.Process().memory_info()
+                print(f"Memory usage after re-creating layers: {memory_info.rss / (1024 * 1024):.2f} MB")
+            except ImportError:
+                pass
+
+        prev_edit_target = self.stage.GetEditTarget()
+        for k in range(layer_info.particle_layer_count):
+            slc = slice(
+                k * layer_info.particles_per_layer, min((k + 1) * layer_info.particles_per_layer, points.shape[0])
+            )
+            self.stage.SetEditTarget(Usd.EditTarget(layer_info.particle_layers[k]))
+
+            self._split_instancer(path, f"{path}_split/{layer_info.particle_layer_names[k]}", slc)
+
+            self.render_points(
+                f"{path}_split/{layer_info.particle_layer_names[k]}",
+                points[slc],
+                rotations[slc] if rotations is not None else None,
+                scales[slc] if scales is not None else None,
+                radius=radius,
+            )
+        self.stage.SetEditTarget(prev_edit_target)
+
+    def stitch_time_samples(self, instancer_path: str):
+        from pxr import Usd  # noqa: PLC0415
+
+        layer_info = self.particle_layer_info[instancer_path]
+        del layer_info.particle_layers
+        cur_layer_num = layer_info.cur_layer_num
+        particle_layer_count = len(layer_info.particle_layer_names)
+
+        if cur_layer_num > 0:
+            print(f"Stitching layers {cur_layer_num}...", flush=True)
+
+            for chunk in range(particle_layer_count):
+                name = layer_info.particle_layer_names[chunk]
+
+                stages = []
+                for num in range(cur_layer_num + 1):
+                    layer_info.cur_layer_num = num
+                    stages.append(Usd.Stage.Open(layer_info.get_layer_path(self.stage_path, instancer_path, chunk)))
+
+                UpdateUsd._stitch_time_samples(stages, instancer_path, name)
+                stages[0].Save()
+
+                for stage in stages[1:]:
+                    os.remove(stage.GetRootLayer().identifier)
+
+                del stages
+                try:
+                    import psutil
+                    memory_info = psutil.Process().memory_info()
+                    print(f"Memory usage after stitching {name}: {memory_info.rss / (1024 * 1024):.2f} MB")
+                except ImportError:
+                    pass
+
+            out_stage = Usd.Stage.Open(self.stage_path)
+            out_root_layer = out_stage.GetRootLayer()
+
+            try:
+                import psutil
+                memory_info = psutil.Process().memory_info()
+                print(f"Memory usage after re-opening: {memory_info.rss / (1024 * 1024):.2f} MB")
+            except ImportError:
+                pass
+
+            instancer_path_key = str(instancer_path).replace("/", "_")
+            sublayer_paths = [path for path in out_root_layer.subLayerPaths if instancer_path_key not in path]
+            out_root_layer.subLayerPaths.clear()
+            for path in sublayer_paths:
+                out_root_layer.subLayerPaths.append(path)
+
+            layer_info.cur_layer_num = 0
+            for chunk in range(layer_info.particle_layer_count):
+                out_root_layer.subLayerPaths.append(layer_info.get_layer_path(self.stage_path, instancer_path, chunk))
+
+            out_stage.Save()

@@ -166,6 +166,12 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
             ext = tuple(geo_scale[:3])
         return newton.utils.create_box_mesh(ext)
 
+    elif geo_type == newton.GeoType.CONVEX_MESH:
+        src_mesh = model.shape_source[shape_id]
+        vertices = src_mesh.vertices * np.array(geo_scale)
+        indices = src_mesh.indices
+        return vertices, indices
+
     raise NotImplementedError(f"Shape type {geo_type} not supported")
 
 

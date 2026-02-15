@@ -198,22 +198,30 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
             else:
                 rigid_solver_kwargs[key] = value
 
-        mpm_model = self._build_mpm_model(model, mpm_options)
+        sand_model = self._build_sand_model(mpm_options)
 
-        self.mpm_solver = newton.solvers.SolverImplicitMPM(mpm_model, mpm_options)
+        # SolverImplicitMPM expects a newton.Model; it creates ImplicitMPMModel internally
+        self.mpm_solver = newton.solvers.SolverImplicitMPM(sand_model, mpm_options)
 
-        self.mpm_state_0 = mpm_model.model.state()
-        self.mpm_state_1 = mpm_model.model.state()
+        # Set up colliders on the solver's internal mpm_model
+        self._setup_mpm_collider(model, self.mpm_solver._mpm_model, particle_radius=sand_model.particle_radius.numpy()[0])
 
-        self.mpm_solver.enrich_state(self.mpm_state_0)
-        self.mpm_solver.enrich_state(self.mpm_state_1)
+        self.mpm_state_0 = sand_model.state()
+        self.mpm_state_1 = sand_model.state()
+
+        # Allocate body arrays on MPM states so the collider can read body transforms
+        if model.body_count > 0:
+            device = sand_model.device
+            for mpm_state in (self.mpm_state_0, self.mpm_state_1):
+                mpm_state.body_q = wp.zeros(model.body_count, dtype=wp.transform, device=device)
+                mpm_state.body_qd = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
 
         self.rigid_solver = newton.solvers.SolverXPBD(model, **rigid_solver_kwargs)
 
         self._initialized = False
 
         self.particle_render_colors = wp.full(
-            mpm_model.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), dtype=wp.vec3, device=mpm_model.model.device
+            sand_model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), dtype=wp.vec3, device=sand_model.device
         )
 
     def step(
@@ -276,8 +284,6 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
 
         self.mpm_solver.step(self.mpm_state_0, self.mpm_state_1, None, None, dt)
 
-        print(self.mpm_state_0.velocity_field.dof_values.shape, self.mpm_state_0.particle_q.shape)
-
         self.collect_collider_impulses(self.mpm_state_1)
 
         self.mpm_state_1.body_q.assign(self.mpm_state_0.body_q)
@@ -288,9 +294,11 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
 
         self.mpm_state_0, self.mpm_state_1 = self.mpm_state_1, self.mpm_state_0
 
-    def _build_mpm_model(self, model, mpm_options):
+    def _build_sand_model(self, mpm_options):
         sand_builder = newton.ModelBuilder()
         self._add_particles(sand_builder, mpm_options.voxel_size)
+        # Register MPM custom attributes (e.g. mpm.particle_transform) before finalize
+        newton.solvers.SolverImplicitMPM.register_custom_attributes(sand_builder)
         sand_model = sand_builder.finalize()
 
         # basic particle material params
@@ -300,21 +308,42 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         sand_model.particle_adhesion = 0.0
         sand_model.particle_cohesion = 0.0
 
-        from newton._src.solvers.implicit_mpm.implicit_mpm_model import ImplicitMPMModel
-        mpm_model = ImplicitMPMModel(sand_model, mpm_options)
-
-        self._setup_mpm_collider(model, mpm_model, particle_radius=sand_builder.particle_radius[0])
-
-        return mpm_model
+        return sand_model
 
     def _setup_mpm_collider(
         self, model: newton.Model, mpm_model, particle_radius: float
     ):
-        collider_body_id = np.arange(-1, model.body_count)
+        # Filter bodies to only include those with collision shapes that have
+        # COLLIDE_PARTICLES flag and supported shape types for the MPM collider
+        def _get_body_collision_shapes(model, body_index):
+            """Returns shape ids for a body with COLLIDE_PARTICLES flag and supported types."""
+            shape_flags = model.shape_flags.numpy()
+            shape_type = model.shape_type.numpy()
+            body_shape_ids = np.array(model.body_shapes[body_index], dtype=int)
 
-        # terrain_id =-1
-        # collider_body_id = [terrain_id]
-        # print(self.model.body_key[terrain_id[0]])
+            # Filter by COLLIDE_PARTICLES flag
+            collision_shapes = body_shape_ids[(shape_flags[body_shape_ids] & newton.ShapeFlags.COLLIDE_PARTICLES) > 0]
+
+            # Filter out unsupported shape types (e.g. CONVEX_MESH is not natively supported)
+            supported_types = {
+                newton.GeoType.PLANE,
+                newton.GeoType.SPHERE,
+                newton.GeoType.CAPSULE,
+                newton.GeoType.CYLINDER,
+                newton.GeoType.BOX,
+                newton.GeoType.MESH,
+                newton.GeoType.CONE,
+                newton.GeoType.CONVEX_MESH,
+            }
+            supported_shapes = [sid for sid in collision_shapes if shape_type[sid] in supported_types]
+
+            return np.array(supported_shapes, dtype=int)
+
+        collider_body_id = [
+            body_id
+            for body_id in range(-1, model.body_count)
+            if len(_get_body_collision_shapes(model, body_id)) > 0
+        ]
 
         collider_projection_threshold = [0.5 * particle_radius] + [0.0] * (len(collider_body_id) - 1)
 
@@ -325,8 +354,6 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
             collider_adhesion=[0.0e5 for _ in collider_body_id],
             collider_thicknesses=[particle_radius for _ in collider_body_id],
             collider_projection_threshold=collider_projection_threshold,
-            # body_mass=wp.zeros_like(self.model.body_mass),  # so that the bodies are considered as kinematic,
-            ground_height=-0.15,
         )
 
         self.collider_body_id = wp.array(collider_body_id, dtype=int)
@@ -375,6 +402,7 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         sand_builder.particle_mass = np.full(points.shape[0], mass)
         sand_builder.particle_radius = np.full(points.shape[0], radius)
         sand_builder.particle_flags = np.where(points[:, 2] < -0.15, 0, 1).astype(int)
+        sand_builder.particle_world = [0] * points.shape[0]
 
         print(f"Simulating {np.sum(sand_builder.particle_flags)} particles out of {len(points)}")
 
@@ -474,7 +502,7 @@ def extract_particle_rotation_and_scales(
         extract_rotation_and_scales,
         dim=state.particle_count,
         inputs=[
-            state.particle_transform,
+            state.mpm.particle_transform,
             particle_rest_orientation,
             particle_transform_rotation,
             particle_transform_scales,
@@ -612,6 +640,8 @@ class Simulator:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.integrator_type = IntegratorType(self.integrator_type)
         self.sim_time = max(sim_time, sim_frame * self.frame_dt)
+        self.export_start_time = self.sim_time
+        self.export_end_time = self.sim_time + self.num_frames * self.frame_dt
         # Deprecated
         # self.rigid_contact_margin = self.R.get_value(self.physics_prim, PrimType.SCENE, "contact_margin", 0.0025)
 
@@ -1060,13 +1090,15 @@ class Simulator:
                 with wp.ScopedTimer("update_usd", dict=self.profiler, active=self.enable_timers, synchronize=True):
                     self.usd_updater.update_usd(self.state_0)
                 if self.integrator_type == IntegratorType.COUPLED_MPM:
-                    rot, scale = extract_particle_rotation_and_scales(self.integrator.mpm_state_0)
+                    rot, scale = extract_particle_rotation_and_scales(
+                        self.integrator.mpm_state_0, self.integrator.particle_rest_orientations
+                    )
                     self.usd_updater.render_points(
                         path="/particles",
                         points=self.integrator.mpm_state_0.particle_q,
                         rotations=rot,
                         scales=scale,
-                        radius=float(self.integrator.mpm_solver.mpm_model.model.particle_radius.numpy()[0]),
+                        radius=float(self.integrator.mpm_solver.model.particle_radius.numpy()[0]),
                     )
                 self.usd_updater.end_frame()
 
@@ -1078,7 +1110,7 @@ class Simulator:
                     self.viewer.log_points(
                         "sand",
                         points=self.integrator.mpm_state_0.particle_q,
-                        radii=self.integrator.mpm_solver.mpm_model.model.particle_radius,
+                        radii=self.integrator.mpm_solver.model.particle_radius,
                         colors=self.integrator.particle_render_colors,
                         hidden=False,
                     )
