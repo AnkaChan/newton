@@ -35,10 +35,19 @@ simulations = {
         "-n", "260",
         "-t", "23.00",
     ],
+    "mpm_granular": [
+        "/media/andre/data/dev/newton/data/gtcdc25/mpm/Collected_20251216_to_sim_tdSimSand_01/20251216_to_sim_tdSimSand_01_physics.usd",
+        "-o", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb15/sand.usd",
+        "--integrator", "cmpm",
+        "-n", "2000",
+        "-t", "24.00",
+    ],
 }
 
 if __name__ == "__main__":
     for name, script_args in simulations.items():
+        if name != "mpm_granular":
+            continue
         cmd_pr = base_cmd + ["/media/andre/data/dev/newton_snow/newton/_src/utils/sim_usd_pr.py"] + script_args
         cmd_gtc = base_cmd + ["/media/andre/data/dev/newton_snow/newton/_src/utils/sim_usd_gtc.py"] + script_args
 
