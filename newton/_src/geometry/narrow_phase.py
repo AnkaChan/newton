@@ -35,7 +35,10 @@ from ..geometry.collision_core import (
 )
 from ..geometry.collision_primitive import (
     collide_capsule_capsule,
+    collide_plane_box,
     collide_plane_capsule,
+    collide_plane_cylinder,
+    collide_plane_ellipsoid,
     collide_plane_sphere,
     collide_sphere_box,
     collide_sphere_capsule,
@@ -64,6 +67,7 @@ from ..geometry.support_function import (
     extract_shape_data,
 )
 from ..geometry.types import GeoType
+from ..utils.heightfield import HeightfieldData, get_triangle_from_heightfield_cell
 
 
 @wp.struct
@@ -176,6 +180,9 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
         # Output: sdf-sdf hydroelastic collision pairs
         shape_pairs_sdf_sdf: wp.array(dtype=wp.vec2i),
         shape_pairs_sdf_sdf_count: wp.array(dtype=int),
+        # Output: heightfield collision pairs
+        shape_pairs_heightfield: wp.array(dtype=wp.vec2i),
+        shape_pairs_heightfield_count: wp.array(dtype=int),
     ):
         """
         Fast narrow phase kernel for primitive shape collisions.
@@ -242,6 +249,27 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             margin = margin_a + margin_b
 
             # =====================================================================
+            # Route heightfield pairs to specialized buffer
+            # =====================================================================
+            is_hfield_a = type_a == int(GeoType.HFIELD)
+            is_hfield_b = type_b == int(GeoType.HFIELD)
+
+            # Skip unsupported heightfield combinations
+            if is_hfield_a and is_hfield_b:
+                continue
+            if type_a == int(GeoType.PLANE) and is_hfield_b:
+                continue
+            if is_hfield_a and (type_b == int(GeoType.MESH) or type_b == int(GeoType.SDF)):
+                continue
+
+            # Route heightfield-convex to dedicated buffer
+            if is_hfield_a:
+                idx = wp.atomic_add(shape_pairs_heightfield_count, 0, 1)
+                if idx < shape_pairs_heightfield.shape[0]:
+                    shape_pairs_heightfield[idx] = wp.vec2i(shape_a, shape_b)
+                continue
+
+            # =====================================================================
             # Route mesh pairs to specialized buffers
             # =====================================================================
             is_mesh_a = type_a == int(GeoType.MESH)
@@ -284,6 +312,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             is_sphere_b = type_b == int(GeoType.SPHERE)
             is_capsule_a = type_a == int(GeoType.CAPSULE)
             is_capsule_b = type_b == int(GeoType.CAPSULE)
+            is_ellipsoid_b = type_b == int(GeoType.ELLIPSOID)
             is_cylinder_b = type_b == int(GeoType.CYLINDER)
             is_box_b = type_b == int(GeoType.BOX)
 
@@ -300,8 +329,12 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             num_contacts = 0
             contact_dist_0 = float(0.0)
             contact_dist_1 = float(0.0)
+            contact_dist_2 = float(0.0)
+            contact_dist_3 = float(0.0)
             contact_pos_0 = wp.vec3()
             contact_pos_1 = wp.vec3()
+            contact_pos_2 = wp.vec3()
+            contact_pos_3 = wp.vec3()
             contact_normal = wp.vec3()
 
             # -----------------------------------------------------------------
@@ -313,6 +346,42 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_dist_0, contact_pos_0 = collide_plane_sphere(plane_normal, pos_a, pos_b, sphere_radius)
                 contact_normal = plane_normal
                 num_contacts = 1
+
+            # -----------------------------------------------------------------
+            # Plane-Ellipsoid collision (type_a=PLANE=0, type_b=ELLIPSOID=4)
+            # Produces 1 contact
+            # -----------------------------------------------------------------
+            elif is_plane_a and is_ellipsoid_b:
+                plane_normal = wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0))
+                ellipsoid_rot = wp.quat_to_matrix(quat_b)
+                ellipsoid_size = scale_b
+                contact_dist_0, contact_pos_0, contact_normal = collide_plane_ellipsoid(
+                    plane_normal, pos_a, pos_b, ellipsoid_rot, ellipsoid_size
+                )
+                num_contacts = 1
+
+            # -----------------------------------------------------------------
+            # Plane-Box collision (type_a=PLANE=0, type_b=BOX=6)
+            # Produces up to 4 contacts
+            # -----------------------------------------------------------------
+            elif is_plane_a and is_box_b:
+                plane_normal = wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0))
+                box_rot = wp.quat_to_matrix(quat_b)
+                box_size = scale_b
+
+                dists4_box, positions4_box, contact_normal = collide_plane_box(
+                    plane_normal, pos_a, pos_b, box_rot, box_size, margin
+                )
+
+                contact_dist_0 = dists4_box[0]
+                contact_dist_1 = dists4_box[1]
+                contact_dist_2 = dists4_box[2]
+                contact_dist_3 = dists4_box[3]
+                contact_pos_0 = wp.vec3(positions4_box[0, 0], positions4_box[0, 1], positions4_box[0, 2])
+                contact_pos_1 = wp.vec3(positions4_box[1, 0], positions4_box[1, 1], positions4_box[1, 2])
+                contact_pos_2 = wp.vec3(positions4_box[2, 0], positions4_box[2, 1], positions4_box[2, 2])
+                contact_pos_3 = wp.vec3(positions4_box[3, 0], positions4_box[3, 1], positions4_box[3, 2])
+                num_contacts = 4
 
             # -----------------------------------------------------------------
             # Sphere-Sphere collision (type_a=SPHERE=2, type_b=SPHERE=2)
@@ -343,6 +412,30 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_pos_1 = wp.vec3(positions[1, 0], positions[1, 1], positions[1, 2])
                 contact_normal = plane_normal
                 num_contacts = 2
+
+            # -----------------------------------------------------------------
+            # Plane-Cylinder collision (type_a=PLANE=0, type_b=CYLINDER=5)
+            # Produces up to 4 contacts
+            # -----------------------------------------------------------------
+            elif is_plane_a and is_cylinder_b:
+                plane_normal = wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0))
+                cylinder_axis = wp.quat_rotate(quat_b, wp.vec3(0.0, 0.0, 1.0))
+                cylinder_radius = scale_b[0]
+                cylinder_half_height = scale_b[1]
+
+                dists4, positions4, contact_normal = collide_plane_cylinder(
+                    plane_normal, pos_a, pos_b, cylinder_axis, cylinder_radius, cylinder_half_height
+                )
+
+                contact_dist_0 = dists4[0]
+                contact_dist_1 = dists4[1]
+                contact_dist_2 = dists4[2]
+                contact_dist_3 = dists4[3]
+                contact_pos_0 = wp.vec3(positions4[0, 0], positions4[0, 1], positions4[0, 2])
+                contact_pos_1 = wp.vec3(positions4[1, 0], positions4[1, 1], positions4[1, 2])
+                contact_pos_2 = wp.vec3(positions4[2, 0], positions4[2, 1], positions4[2, 2])
+                contact_pos_3 = wp.vec3(positions4[3, 0], positions4[3, 1], positions4[3, 2])
+                num_contacts = 4
 
             # -----------------------------------------------------------------
             # Sphere-Capsule collision (type_a=SPHERE=2, type_b=CAPSULE=3)
@@ -410,7 +503,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 num_contacts = 1
 
             # =====================================================================
-            # Write all contacts (single write block for 0, 1, or 2 contacts)
+            # Write all contacts (single write block for 0 to 4 contacts)
             # =====================================================================
             if num_contacts > 0:
                 # Prepare contact data (shared fields for both contacts)
@@ -424,19 +517,33 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_data.shape_b = shape_b
                 contact_data.margin = margin
 
-                # Check margin for both contacts
-                contact_data.contact_point_center = contact_pos_0
-                contact_data.contact_distance = contact_dist_0
-                contact_0_valid = contact_passes_margin_check(contact_data)
+                # Check margin for all possible contacts
+                contact_0_valid = False
+                if contact_dist_0 < MAXVAL:
+                    contact_data.contact_point_center = contact_pos_0
+                    contact_data.contact_distance = contact_dist_0
+                    contact_0_valid = contact_passes_margin_check(contact_data)
 
                 contact_1_valid = False
-                if num_contacts > 1:
+                if num_contacts > 1 and contact_dist_1 < MAXVAL:
                     contact_data.contact_point_center = contact_pos_1
                     contact_data.contact_distance = contact_dist_1
                     contact_1_valid = contact_passes_margin_check(contact_data)
 
+                contact_2_valid = False
+                if num_contacts > 2 and contact_dist_2 < MAXVAL:
+                    contact_data.contact_point_center = contact_pos_2
+                    contact_data.contact_distance = contact_dist_2
+                    contact_2_valid = contact_passes_margin_check(contact_data)
+
+                contact_3_valid = False
+                if num_contacts > 3 and contact_dist_3 < MAXVAL:
+                    contact_data.contact_point_center = contact_pos_3
+                    contact_data.contact_distance = contact_dist_3
+                    contact_3_valid = contact_passes_margin_check(contact_data)
+
                 # Count valid contacts and allocate consecutive indices
-                num_valid = int(contact_0_valid) + int(contact_1_valid)
+                num_valid = int(contact_0_valid) + int(contact_1_valid) + int(contact_2_valid) + int(contact_3_valid)
                 if num_valid > 0:
                     base_index = wp.atomic_add(writer_data.contact_count, 0, num_valid)
 
@@ -457,6 +564,20 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_1_valid:
                         contact_data.contact_point_center = contact_pos_1
                         contact_data.contact_distance = contact_dist_1
+                        writer_func(contact_data, writer_data, base_index)
+                        base_index += 1
+
+                    # Write third contact if valid
+                    if contact_2_valid:
+                        contact_data.contact_point_center = contact_pos_2
+                        contact_data.contact_distance = contact_dist_2
+                        writer_func(contact_data, writer_data, base_index)
+                        base_index += 1
+
+                    # Write fourth contact if valid
+                    if contact_3_valid:
+                        contact_data.contact_point_center = contact_pos_3
+                        contact_data.contact_distance = contact_dist_3
                         writer_func(contact_data, writer_data, base_index)
 
                 continue
@@ -1096,6 +1217,157 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
     return narrow_phase_process_mesh_plane_contacts_reduce_kernel
 
 
+@wp.kernel(enable_backward=False)
+def heightfield_midphase_kernel(
+    shape_types: wp.array(dtype=int),
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_collision_radius: wp.array(dtype=float),
+    shape_contact_margin: wp.array(dtype=float),
+    shape_heightfield_data: wp.array(dtype=HeightfieldData),
+    shape_pairs_heightfield: wp.array(dtype=wp.vec2i),
+    shape_pairs_heightfield_count: wp.array(dtype=int),
+    total_num_threads: int,
+    # outputs
+    heightfield_cell_pairs: wp.array(dtype=wp.vec4i),
+    heightfield_cell_pairs_count: wp.array(dtype=int),
+):
+    """Find heightfield grid cells that overlap with another shape.
+
+    For each (heightfield, other) pair, projects the other shape's bounding
+    sphere onto the heightfield grid and emits (hfield_shape, other_shape, row, col)
+    for each overlapping cell.
+    """
+    tid = wp.tid()
+
+    num_pairs = shape_pairs_heightfield_count[0]
+
+    for i in range(tid, num_pairs, total_num_threads):
+        if i >= shape_pairs_heightfield.shape[0]:
+            break
+
+        pair = shape_pairs_heightfield[i]
+        shape_a = pair[0]
+        shape_b = pair[1]
+
+        # Determine which is the heightfield
+        hfield_shape = shape_a
+        other_shape = shape_b
+        if shape_types[shape_b] == int(GeoType.HFIELD):
+            hfield_shape = shape_b
+            other_shape = shape_a
+
+        hfd = shape_heightfield_data[hfield_shape]
+        if hfd.nrow <= 1 or hfd.ncol <= 1:
+            continue
+
+        # Transform other shape's position to heightfield local space
+        X_hfield_ws = shape_transform[hfield_shape]
+        X_hfield_inv = wp.transform_inverse(X_hfield_ws)
+        X_other_ws = shape_transform[other_shape]
+        pos_in_hfield = wp.transform_point(X_hfield_inv, wp.transform_get_translation(X_other_ws))
+
+        # Use bounding sphere radius for conservative AABB in heightfield-local space
+        radius = shape_collision_radius[other_shape]
+        margin = shape_contact_margin[hfield_shape] + shape_contact_margin[other_shape]
+        extent = radius + margin
+
+        aabb_lower = pos_in_hfield - wp.vec3(extent, extent, extent)
+        aabb_upper = pos_in_hfield + wp.vec3(extent, extent, extent)
+
+        # Map AABB to grid cell indices
+        dx = 2.0 * hfd.hx / wp.float32(hfd.ncol - 1)
+        dy = 2.0 * hfd.hy / wp.float32(hfd.nrow - 1)
+
+        col_min_f = (aabb_lower[0] + hfd.hx) / dx
+        col_max_f = (aabb_upper[0] + hfd.hx) / dx
+        row_min_f = (aabb_lower[1] + hfd.hy) / dy
+        row_max_f = (aabb_upper[1] + hfd.hy) / dy
+
+        col_min = wp.max(wp.int32(col_min_f), 0)
+        col_max = wp.min(wp.int32(col_max_f), hfd.ncol - 2)
+        row_min = wp.max(wp.int32(row_min_f), 0)
+        row_max = wp.min(wp.int32(row_max_f), hfd.nrow - 2)
+
+        for r in range(row_min, row_max + 1):
+            for c in range(col_min, col_max + 1):
+                out_idx = wp.atomic_add(heightfield_cell_pairs_count, 0, 1)
+                if out_idx < heightfield_cell_pairs.shape[0]:
+                    heightfield_cell_pairs[out_idx] = wp.vec4i(hfield_shape, other_shape, r, c)
+
+
+def create_heightfield_triangle_contacts_kernel(writer_func: Any):
+    """Create a kernel that processes heightfield cell pairs into triangle contacts."""
+
+    @wp.kernel(enable_backward=False)
+    def heightfield_triangle_contacts_kernel(
+        shape_types: wp.array(dtype=int),
+        shape_data: wp.array(dtype=wp.vec4),
+        shape_transform: wp.array(dtype=wp.transform),
+        shape_source: wp.array(dtype=wp.uint64),
+        shape_contact_margin: wp.array(dtype=float),
+        shape_heightfield_data: wp.array(dtype=HeightfieldData),
+        heightfield_elevation_data: wp.array(dtype=wp.float32),
+        heightfield_cell_pairs: wp.array(dtype=wp.vec4i),
+        heightfield_cell_pairs_count: wp.array(dtype=int),
+        writer_data: Any,
+        total_num_threads: int,
+    ):
+        """Process heightfield cell pairs to generate contacts via GJK/MPR.
+
+        Each cell produces 2 triangles. For each triangle, runs GJK/MPR
+        against the convex shape using the same infrastructure as mesh collisions.
+        """
+        tid = wp.tid()
+
+        num_cell_pairs = heightfield_cell_pairs_count[0]
+
+        for i in range(tid, num_cell_pairs, total_num_threads):
+            if i >= heightfield_cell_pairs.shape[0]:
+                break
+
+            quad = heightfield_cell_pairs[i]
+            hfield_shape = quad[0]
+            convex_shape = quad[1]
+            row = quad[2]
+            col = quad[3]
+
+            hfd = shape_heightfield_data[hfield_shape]
+            X_hfield_ws = shape_transform[hfield_shape]
+
+            # Extract convex shape data
+            pos_b, quat_b, shape_data_b, _scale_b, thickness_b = extract_shape_data(
+                convex_shape, shape_transform, shape_types, shape_data, shape_source
+            )
+
+            thickness_a = shape_data[hfield_shape][3]
+            margin_a = shape_contact_margin[hfield_shape]
+            margin_b = shape_contact_margin[convex_shape]
+            margin = margin_a + margin_b
+
+            # Process 2 triangles per cell
+            for tri_sub in range(2):
+                shape_data_tri, v0_world = get_triangle_from_heightfield_cell(
+                    hfd, heightfield_elevation_data, X_hfield_ws, row, col, tri_sub
+                )
+
+                wp.static(create_compute_gjk_mpr_contacts(writer_func))(
+                    shape_data_tri,
+                    shape_data_b,
+                    wp.quat_identity(),
+                    quat_b,
+                    v0_world,
+                    pos_b,
+                    margin,
+                    hfield_shape,
+                    convex_shape,
+                    thickness_a,
+                    thickness_b,
+                    writer_data,
+                )
+
+    return heightfield_triangle_contacts_kernel
+
+
 class NarrowPhase:
     def __init__(
         self,
@@ -1109,6 +1381,7 @@ class NarrowPhase:
         contact_writer_warp_func: Any | None = None,
         sdf_hydroelastic: SDFHydroelastic | None = None,
         has_meshes: bool = True,
+        has_heightfields: bool = False,
     ):
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -1127,12 +1400,15 @@ class NarrowPhase:
             has_meshes: Whether the scene contains any mesh shapes (GeoType.MESH). When False, mesh-related
                 kernel launches are skipped, improving performance for scenes with only primitive shapes.
                 Defaults to True for safety. Set to False when constructing from a model with no meshes.
+            has_heightfields: Whether the scene contains any heightfield shapes (GeoType.HFIELD). When True,
+                heightfield collision buffers and kernels are allocated. Defaults to False.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
         self.device = device
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
+        self.has_heightfields = has_heightfields
 
         # Warn when running on CPU with meshes: mesh-mesh SDF contacts require CUDA
         is_gpu_device = wp.get_device(device).is_cuda
@@ -1206,6 +1482,12 @@ class NarrowPhase:
             self.mesh_plane_contacts_kernel = None
             self.mesh_mesh_contacts_kernel = None
 
+        # Create heightfield kernels
+        if has_heightfields:
+            self.heightfield_triangle_contacts_kernel = create_heightfield_triangle_contacts_kernel(writer_func)
+        else:
+            self.heightfield_triangle_contacts_kernel = None
+
         # Create global contact reduction kernels for mesh-triangle contacts (only if has_meshes and reduce_contacts)
         if self.reduce_contacts and has_meshes:
             # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
@@ -1220,58 +1502,59 @@ class NarrowPhase:
 
         self.sdf_hydroelastic = sdf_hydroelastic
 
-        # Pre-allocate all intermediate buffers
+        # Pre-allocate all intermediate buffers.
+        # Counters live in one consolidated array for efficient zeroing.
         with wp.ScopedDevice(device):
-            # Consolidated counter array to minimize kernel launches for zeroing
-            # Layout depends on has_meshes flag to avoid allocating unused counters
-            if has_meshes:
-                # Full layout: [gjk_count, mesh_count, triangle_count, mesh_plane_count,
-                #               mesh_plane_vertex_total, mesh_mesh_count, sdf_sdf_count]
-                self._counter_array = wp.zeros(7, dtype=wp.int32, device=device)
-                self.gjk_candidate_pairs_count = self._counter_array[0:1]
-                self.shape_pairs_mesh_count = self._counter_array[1:2]
-                self.triangle_pairs_count = self._counter_array[2:3]
-                self.shape_pairs_mesh_plane_count = self._counter_array[3:4]
-                self.mesh_plane_vertex_total_count = self._counter_array[4:5]
-                self.shape_pairs_mesh_mesh_count = self._counter_array[5:6]
-                self.shape_pairs_sdf_sdf_count = self._counter_array[6:7]
-            else:
-                # Minimal layout: [gjk_count, sdf_sdf_count]
-                self._counter_array = wp.zeros(2, dtype=wp.int32, device=device)
-                self.gjk_candidate_pairs_count = self._counter_array[0:1]
-                self.shape_pairs_sdf_sdf_count = self._counter_array[1:2]
-                # Set mesh counters to None when not allocated
-                self.shape_pairs_mesh_count = None
-                self.triangle_pairs_count = None
-                self.shape_pairs_mesh_plane_count = None
-                self.mesh_plane_vertex_total_count = None
-                self.shape_pairs_mesh_mesh_count = None
+            n = 0  # counter index
+            gjk_idx = n
+            n += 1
+            sdf_sdf_idx = n
+            n += 1
+            mesh_idx = n if has_meshes else None
+            n += 5 if has_meshes else 0  # mesh, triangle, mesh_plane, mesh_plane_vtx, mesh_mesh
+            hf_pairs_idx = n
+            n += 1
+            hf_cells_idx = n
+            n += 1
+            c = wp.zeros(n, dtype=wp.int32, device=device)
+            self._counter_array = c
 
-            # Buffers for GJK/MPR candidate pairs (pairs that couldn't be handled analytically)
+            self.gjk_candidate_pairs_count = c[gjk_idx : gjk_idx + 1]
+            self.shape_pairs_sdf_sdf_count = c[sdf_sdf_idx : sdf_sdf_idx + 1]
+            self.shape_pairs_heightfield_count = c[hf_pairs_idx : hf_pairs_idx + 1]
+            self.heightfield_cell_pairs_count = c[hf_cells_idx : hf_cells_idx + 1]
+
+            self.shape_pairs_mesh_count = c[mesh_idx : mesh_idx + 1] if has_meshes else None
+            self.triangle_pairs_count = c[mesh_idx + 1 : mesh_idx + 2] if has_meshes else None
+            self.shape_pairs_mesh_plane_count = c[mesh_idx + 2 : mesh_idx + 3] if has_meshes else None
+            self.mesh_plane_vertex_total_count = c[mesh_idx + 3 : mesh_idx + 4] if has_meshes else None
+            self.shape_pairs_mesh_mesh_count = c[mesh_idx + 4 : mesh_idx + 5] if has_meshes else None
+
+            # Pair and work buffers
             self.gjk_candidate_pairs = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
 
-            # Buffers for mesh collision handling (only allocate if has_meshes=True)
-            if has_meshes:
-                self.shape_pairs_mesh = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
-                self.triangle_pairs = wp.zeros(max_triangle_pairs, dtype=wp.vec3i, device=device)
-                self.shape_pairs_mesh_plane = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
-                self.shape_pairs_mesh_plane_cumsum = wp.zeros(max_candidate_pairs, dtype=wp.int32, device=device)
-                self.shape_pairs_mesh_mesh = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
-            else:
-                self.shape_pairs_mesh = None
-                self.triangle_pairs = None
-                self.shape_pairs_mesh_plane = None
-                self.shape_pairs_mesh_plane_cumsum = None
-                self.shape_pairs_mesh_mesh = None
+            self.shape_pairs_mesh = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device) if has_meshes else None
+            self.triangle_pairs = wp.zeros(max_triangle_pairs, dtype=wp.vec3i, device=device) if has_meshes else None
+            self.shape_pairs_mesh_plane = (
+                wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device) if has_meshes else None
+            )
+            self.shape_pairs_mesh_plane_cumsum = (
+                wp.zeros(max_candidate_pairs, dtype=wp.int32, device=device) if has_meshes else None
+            )
+            self.shape_pairs_mesh_mesh = (
+                wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device) if has_meshes else None
+            )
 
-            # None values for when optional features are disabled
+            hf_n = max_candidate_pairs if has_heightfields else 1
+            self.shape_pairs_heightfield = wp.zeros(hf_n, dtype=wp.vec2i, device=device)
+            self.heightfield_cell_pairs = wp.zeros(hf_n * 20 if has_heightfields else 1, dtype=wp.vec4i, device=device)
+
             self.empty_tangent = None
-
-            if sdf_hydroelastic is not None:
-                self.shape_pairs_sdf_sdf = wp.zeros(sdf_hydroelastic.max_num_shape_pairs, dtype=wp.vec2i, device=device)
-            else:
-                # Empty arrays for when hydroelastic is disabled
-                self.shape_pairs_sdf_sdf = None
+            self.shape_pairs_sdf_sdf = (
+                wp.zeros(sdf_hydroelastic.max_num_shape_pairs, dtype=wp.vec2i, device=device)
+                if sdf_hydroelastic is not None
+                else None
+            )
 
         # Fixed thread count for kernel launches
         # Use a reasonable minimum for GPU occupancy (256 blocks = 32K threads)
@@ -1310,6 +1593,8 @@ class NarrowPhase:
         shape_local_aabb_lower: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB lower bounds
         shape_local_aabb_upper: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB upper bounds
         shape_voxel_resolution: wp.array(dtype=wp.vec3i, ndim=1),  # Voxel grid resolution per shape
+        shape_heightfield_data: wp.array(dtype=HeightfieldData, ndim=1) | None = None,
+        heightfield_elevation_data: wp.array(dtype=wp.float32, ndim=1) | None = None,
         writer_data: Any,
         device=None,  # Device to launch on
     ):
@@ -1370,6 +1655,8 @@ class NarrowPhase:
                 self.shape_pairs_mesh_mesh_count,
                 self.shape_pairs_sdf_sdf,
                 self.shape_pairs_sdf_sdf_count,
+                self.shape_pairs_heightfield,
+                self.shape_pairs_heightfield_count,
             ],
             device=device,
             block_dim=self.block_dim,
@@ -1566,6 +1853,51 @@ class NarrowPhase:
                     device=device,
                     block_dim=self.tile_size_mesh_mesh,
                 )
+
+        # Stage: Heightfield collision processing
+        if self.has_heightfields and shape_heightfield_data is not None and heightfield_elevation_data is not None:
+            # Midphase: find overlapping grid cells for each heightfield-convex pair
+            wp.launch(
+                kernel=heightfield_midphase_kernel,
+                dim=self.total_num_threads,
+                inputs=[
+                    shape_types,
+                    shape_transform,
+                    shape_collision_radius,
+                    shape_contact_margin,
+                    shape_heightfield_data,
+                    self.shape_pairs_heightfield,
+                    self.shape_pairs_heightfield_count,
+                    self.total_num_threads,
+                ],
+                outputs=[
+                    self.heightfield_cell_pairs,
+                    self.heightfield_cell_pairs_count,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+            )
+
+            # Process heightfield cell pairs into triangle contacts via GJK/MPR
+            wp.launch(
+                kernel=self.heightfield_triangle_contacts_kernel,
+                dim=self.total_num_threads,
+                inputs=[
+                    shape_types,
+                    shape_data,
+                    shape_transform,
+                    shape_source,
+                    shape_contact_margin,
+                    shape_heightfield_data,
+                    heightfield_elevation_data,
+                    self.heightfield_cell_pairs,
+                    self.heightfield_cell_pairs_count,
+                    writer_data,
+                    self.total_num_threads,
+                ],
+                device=device,
+                block_dim=self.block_dim,
+            )
 
         if self.sdf_hydroelastic is not None:
             self.sdf_hydroelastic.launch(

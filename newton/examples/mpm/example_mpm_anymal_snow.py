@@ -45,7 +45,7 @@ class Example:
         grid_type="sparse",
     ):
         # setup simulation parameters first
-        self.fps = 60
+        self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 4
@@ -86,13 +86,7 @@ class Example:
 
         builder.add_ground_plane()
 
-        self.sim_time = 0.0
         self.sim_step = 0
-        fps = 50
-        self.frame_dt = 1.0 / fps
-
-        self.sim_substeps = 4
-        self.sim_dt = self.frame_dt / self.sim_substeps
 
         # set initial joint positions
         initial_q = {
@@ -144,9 +138,11 @@ class Example:
         mpm_options.max_active_cell_count = 1 << 15 if grid_type == "fixed" else -1
 
         mpm_options.strain_basis = "P0"
-        mpm_options.max_iterations = 50
+        mpm_options.collider_basis = "S2"
+        mpm_options.max_iterations = 250
         mpm_options.critical_fraction = 0.0
-        mpm_options.air_drag = 1.0
+        mpm_options.air_drag = 10.0
+        mpm_options.warmstart_mode = "particles"
         mpm_options.collider_velocity_mode = "finite_difference"
 
         # Set per-particle hardening via custom attributes
@@ -154,30 +150,35 @@ class Example:
 
         # multi-material setup
         snow_particles = np.logical_and(
-            self.model.particle_q.numpy()[:, 1] > 0.5, self.model.particle_q.numpy()[:, 1] < 1.5
+            self.model.particle_q.numpy()[:, 1] > -5.5, self.model.particle_q.numpy()[:, 1] < 5.5
         )
         snow_particles = wp.array(np.flatnonzero(snow_particles), dtype=int, device=self.model.device)
 
-        mud_particles = self.model.particle_q.numpy()[:, 1] > 1.5
+        mud_particles = self.model.particle_q.numpy()[:, 1] > 10.5
         mud_particles = wp.array(np.flatnonzero(mud_particles), dtype=int, device=self.model.device)
 
         particle_mass = self.model.particle_mass[:1].numpy()[0]
 
         snow_density = 500.0
         self.model.particle_mass[snow_particles].fill_(particle_mass * snow_density / density)
-        self.model.mpm.yield_pressure[snow_particles].fill_(2.0e4)
-        self.model.mpm.yield_stress[snow_particles].fill_(1.0e4)
+        self.model.mpm.young_modulus[snow_particles].fill_(1.0e18)
+        self.model.mpm.damping[snow_particles].fill_(0.01)
+        self.model.mpm.poisson_ratio[snow_particles].fill_(0.3)
+        self.model.mpm.yield_pressure[snow_particles].fill_(1.0e5)
+        self.model.mpm.yield_stress[snow_particles].fill_(1.0e2)
+        self.model.mpm.friction[snow_particles].fill_(0.5)
+
         self.model.mpm.tensile_yield_ratio[snow_particles].fill_(0.5)
-        self.model.mpm.friction[snow_particles].fill_(0.1)
-        self.model.mpm.hardening[snow_particles].fill_(10.0)
+        self.model.mpm.hardening[snow_particles].fill_(3)
+        self.model.mpm.dilatancy[snow_particles].fill_(0.3)
 
         mud_density = 1500.0
         self.model.particle_mass[mud_particles].fill_(particle_mass * mud_density / density)
         self.model.mpm.yield_pressure[mud_particles].fill_(1.0e10)
         self.model.mpm.yield_stress[mud_particles].fill_(3.0e2)
         self.model.mpm.tensile_yield_ratio[mud_particles].fill_(1.0)
-        self.model.mpm.hardening[mud_particles].fill_(2.0)
         self.model.mpm.friction[mud_particles].fill_(0.0)
+        self.model.mpm.hardening[mud_particles].fill_(2.0)
 
         # Select and merge meshes for robot/sand collisions
 
@@ -199,6 +200,8 @@ class Example:
         # simulation state
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
+
+        self.state_0.mpm.particle_Jp.fill_(0.99)
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
@@ -383,7 +386,7 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, de
 if __name__ == "__main__":
     # Create parser that inherits common arguments and adds example-specific ones
     parser = newton.examples.create_parser()
-    parser.add_argument("--voxel-size", "-dx", type=float, default=0.03)
+    parser.add_argument("--voxel-size", "-dx", type=float, default=0.02)
     parser.add_argument("--particles-per-cell", "-ppc", type=float, default=3.0)
     parser.add_argument("--grid-type", "-gt", choices=["sparse", "dense", "fixed"], default="sparse")
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
