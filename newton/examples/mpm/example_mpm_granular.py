@@ -112,6 +112,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
+        self.state_0.mpm.particle_Jp.fill_(0.99)
+
         # Initialize MPM solver
         self.solver = SolverImplicitMPM(self.model, mpm_options)
 
