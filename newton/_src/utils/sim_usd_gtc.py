@@ -611,7 +611,8 @@ class Simulator:
         self._process_collider_animations(num_frames=num_frames)
         self._update_animated_colliders()
 
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.contacts()
+        self.model.collide(self.state_0, self.contacts)
 
         self._setup_integrator()
 
@@ -936,9 +937,14 @@ class Simulator:
 
                 self.animated_colliders_body_ids.append(body_id)
                 self.animated_colliders_paths.append(path)
-                joint_id = builder.joint_child.index(body_id)
-                self.animated_colliders_joint_q_start.append(builder.joint_q_start[joint_id])
-                self.animated_colliders_joint_qd_start.append(builder.joint_qd_start[joint_id])
+                if body_id in builder.joint_child:
+                    joint_id = builder.joint_child.index(body_id)
+                    self.animated_colliders_joint_q_start.append(builder.joint_q_start[joint_id])
+                    self.animated_colliders_joint_qd_start.append(builder.joint_qd_start[joint_id])
+                else:
+                    # Body has no joint — use sentinel so the kernel skips joint writes
+                    self.animated_colliders_joint_q_start.append(-1)
+                    self.animated_colliders_joint_qd_start.append(-1)
                 # Mujoco requires nonzero inertia
                 if self.integrator_type == IntegratorType.MJWARP:
                     builder.body_mass[body_id] = 9999999.0
@@ -1024,10 +1030,12 @@ class Simulator:
         # update generalized coordinates (necessary for MuJoCo)
         q_start = colliders_joint_q_start[i]
         qd_start = colliders_joint_qd_start[i]
-        for j in range(7):
-            joint_q[q_start + j] = q[j]
-        for j in range(6):
-            joint_qd[qd_start + j] = qd[j]
+        if q_start >= 0:
+            for j in range(7):
+                joint_q[q_start + j] = q[j]
+        if qd_start >= 0:
+            for j in range(6):
+                joint_qd[qd_start + j] = qd[j]
 
     @wp.kernel
     def _advance_substep_time_kernel(
@@ -1059,14 +1067,14 @@ class Simulator:
 
     def simulate(self):
         if not self.collide_on_substeps:
-            self.contacts = self.model.collide(self.state_0)
+            self.model.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             self._update_animated_colliders()
             self._advance_substep_time()
 
             if self.collide_on_substeps:
-                self.contacts = self.model.collide(self.state_0)
+                self.model.collide(self.state_0, self.contacts)
 
             self.state_0.clear_forces()
             self.integrator.step(self.state_0, self.state_1, None, self.contacts, self.sim_dt)

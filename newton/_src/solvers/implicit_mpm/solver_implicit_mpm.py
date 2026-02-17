@@ -2217,7 +2217,6 @@ class SolverImplicitMPM(SolverBase):
                 positions=particle_locations,
                 measures=self._mpm_model.particle_volume,
                 temporary_store=self.temporary_store,
-                use_domain_element_indices=True,
             )
 
         return pic
