@@ -112,7 +112,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        self.state_0.mpm.particle_Jp.fill_(0.99)
+        self.state_0.mpm.particle_Jp.fill_(options.initial_jp)
 
         # Initialize MPM solver
         self.solver = SolverImplicitMPM(self.model, mpm_options)
@@ -145,6 +145,7 @@ class Example:
             "tensile_yield_ratio": getattr(options, "tensile_yield_ratio", None),
             "yield_stress": getattr(options, "yield_stress", None),
             "hardening": getattr(options, "hardening", None),
+            "initial_jp": getattr(options, "initial_jp", 0.99),
         }
         if self.save_video and isinstance(self.viewer, newton.viewer.ViewerGL):
             if hasattr(options, "frame_dir") and options.frame_dir:
@@ -414,7 +415,8 @@ class Example:
             f"yield_pressure={self.material_params['yield_pressure']}, "
             f"tensile_yield_ratio={self.material_params['tensile_yield_ratio']}, "
             f"yield_stress={self.material_params['yield_stress']}, "
-            f"hardening={self.material_params['hardening']}"
+            f"hardening={self.material_params['hardening']}, "
+            f"initial_jp={self.material_params['initial_jp']}"
         )
 
         # Build ffmpeg command with text overlay
@@ -524,6 +526,7 @@ if __name__ == "__main__":
     parser.add_argument("--hardening", type=float, default=3.0)
     parser.add_argument("--dilatancy", type=float, default=0.3)
     parser.add_argument("--viscosity", type=float, default=0.0)
+    parser.add_argument("--initial-jp", type=float, default=0.99, help="Initial Jp (plastic deformation determinant)")
 
     parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
     parser.add_argument("--grid-padding", "-gp", type=int, default=0)
