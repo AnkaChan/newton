@@ -562,6 +562,22 @@ class Simulator:
         self.show_viewer = True
         self.use_cuda_graph = False  # wp.get_device().is_cuda
 
+        # Frame saving setup
+        self.save_frames = bool(render_folder)
+        self.frame_dir = None
+        self.frame_count = 0
+        self._frame_dir_is_temp = False
+        if self.save_frames:
+            import tempfile
+
+            if render_folder:
+                self.frame_dir = Path(render_folder)
+                self.frame_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                self.frame_dir = Path(tempfile.mkdtemp(prefix="newton_frames_"))
+                self._frame_dir_is_temp = True
+            print(f"Saving frames to: {self.frame_dir}")
+
         self.in_stage = create_stage_from_path(input_path)
         self.physics_prim = next(iter([prim for prim in self.in_stage.Traverse() if prim.IsA(UsdPhysics.Scene)]), None)
 
@@ -1147,6 +1163,82 @@ class Simulator:
                     )
                 self.viewer.end_frame()
 
+                # Save frame if frame saving is enabled (skip while paused)
+                if self.save_frames and self.frame_dir is not None and not self.viewer.is_paused():
+                    self._save_frame()
+
+    def _save_frame(self):
+        """Save the current frame as a PNG file."""
+        try:
+            from PIL import Image
+        except ImportError:
+            wp.utils.warn("PIL (Pillow) is required for frame saving. Install with: pip install Pillow")
+            self.save_frames = False
+            return
+
+        try:
+            frame = self.viewer.get_frame(render_ui=False)
+            frame_np = frame.numpy()
+
+            frame_filename = self.frame_dir / f"frame_{self.frame_count:06d}.png"
+            image = Image.fromarray(frame_np, mode="RGB")
+            image.save(frame_filename)
+            self.frame_count += 1
+        except Exception as e:
+            wp.utils.warn(f"Failed to save frame: {e}")
+            if self.frame_count == 0:
+                self.save_frames = False
+
+    def _create_video(self):
+        """Create MP4 video from saved frames using ffmpeg."""
+        import shutil
+        import subprocess
+
+        if not self.save_frames or self.frame_dir is None or self.frame_count == 0:
+            return
+
+        if self._frame_dir_is_temp:
+            video_name = "output.mp4"
+        else:
+            video_name = f"{self.frame_dir.name}.mp4"
+
+        output_path = self.frame_dir / video_name
+
+        try:
+            subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            wp.utils.warn("ffmpeg not found. Install ffmpeg to create video from frames.")
+            print(f"Frames saved in: {self.frame_dir}")
+            return
+
+        fps = self.fps
+        input_pattern = str(self.frame_dir / "frame_%06d.png")
+
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-y",
+            "-framerate", str(fps),
+            "-i", input_pattern,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-crf", "18",
+            str(output_path),
+        ]
+
+        try:
+            print(f"Creating video: {output_path}")
+            subprocess.run(ffmpeg_cmd, capture_output=True, check=True, text=True)
+            print(f"Video saved to: {output_path.absolute()}")
+            if self._frame_dir_is_temp:
+                shutil.rmtree(self.frame_dir)
+                print(f"Cleaned up temporary frame directory: {self.frame_dir}")
+            else:
+                print(f"Frames remain in: {self.frame_dir}")
+        except subprocess.CalledProcessError as e:
+            wp.utils.warn(f"Failed to create video: {e}")
+            print(f"ffmpeg stderr: {e.stderr}")
+            print(f"Frames saved in: {self.frame_dir}")
+
     def save(self):
         if self.usd_updater is not None:
             self.usd_updater.close()
@@ -1158,10 +1250,13 @@ class Simulator:
 def print_time_profiler(simulator):
     frame_times = simulator.profiler.get("step", None)
     render_times = simulator.profiler.get("render", None)
+    save_times = simulator.profiler.get("save", None)
     if frame_times:
         print(f"\nAverage frame sim time: {sum(frame_times) / len(frame_times):.2f} ms")
     if render_times:
         print(f"\nAverage frame render time: {sum(render_times) / len(render_times):.2f} ms")
+    if save_times:
+        print(f"\nUSD save time: {sum(save_times):.2f} ms")
 
 
 if __name__ == "__main__":
@@ -1316,9 +1411,11 @@ if __name__ == "__main__":
             if not (simulator.show_viewer and simulator.viewer.is_paused()):
                 i += 1
 
-        print_time_profiler(simulator)
-
         print("Saving USD stage...", flush=True)
-        simulator.save()
+        with wp.ScopedTimer("save", dict=simulator.profiler):
+            simulator.save()
         print("USD save complete.")
 
+        print_time_profiler(simulator)
+
+        simulator._create_video()
