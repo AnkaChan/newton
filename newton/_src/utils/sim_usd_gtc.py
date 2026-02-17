@@ -209,6 +209,9 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         self.mpm_state_0 = sand_model.state()
         self.mpm_state_1 = sand_model.state()
 
+        # Initialize particle Jp for snow (slightly compacted initial state)
+        self.mpm_state_0.mpm.particle_Jp.fill_(0.99)
+
         # Allocate body arrays on MPM states so the collider can read body transforms
         if model.body_count > 0:
             device = sand_model.device
@@ -302,11 +305,22 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         sand_model = sand_builder.finalize()
 
         # basic particle material params
-        sand_model.particle_mu = 0.48
+        sand_model.particle_mu = 0.5
         sand_model.particle_ke = 1.0e15
         sand_model.particle_kd = 0.0
         sand_model.particle_adhesion = 0.0
         sand_model.particle_cohesion = 0.0
+
+        # snow constitutive model parameters
+        sand_model.mpm.young_modulus.fill_(1.0e18)
+        sand_model.mpm.damping.fill_(0.01)
+        sand_model.mpm.poisson_ratio.fill_(0.3)
+        sand_model.mpm.yield_pressure.fill_(1.0e5)
+        sand_model.mpm.yield_stress.fill_(1.0e2)
+        sand_model.mpm.friction.fill_(0.5)
+        sand_model.mpm.tensile_yield_ratio.fill_(0.5)
+        sand_model.mpm.hardening.fill_(3.0)
+        sand_model.mpm.dilatancy.fill_(0.3)
 
         return sand_model
 
@@ -359,7 +373,7 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         self.collider_body_id = wp.array(collider_body_id, dtype=int)
 
     def _add_particles(self, sand_builder: newton.ModelBuilder, voxel_size: float):
-        density = 2500
+        density = 500
 
         if self.particles_dict:
             psize = voxel_size * 2.0 / 3.0
@@ -1304,5 +1318,7 @@ if __name__ == "__main__":
 
         print_time_profiler(simulator)
 
+        print("Saving USD stage...", flush=True)
         simulator.save()
+        print("USD save complete.")
 
