@@ -221,7 +221,7 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         self._initialized = False
 
         self.particle_render_colors = wp.full(
-            sand_model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), dtype=wp.vec3, device=sand_model.device
+            sand_model.particle_count, value=wp.vec3(0.9, 0.9, 0.95), dtype=wp.vec3, device=sand_model.device
         )
 
     def step(
