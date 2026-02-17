@@ -81,7 +81,6 @@ class Example:
                 extents = (0.5, 2.0, 0.8)
                 xform = wp.transform(wp.vec3(0.75, 0.0, 0.8), wp.quat_identity())
             elif self.collider == "wedge":
-                extents = (0.5, 2.0, 0.5)
                 xform = wp.transform(
                     wp.vec3(0.0, 0.0, 1.1), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 4.0)
                 )
@@ -509,19 +508,19 @@ if __name__ == "__main__":
     parser.add_argument("--substeps", type=int, default=1)
 
     # Add MPM-specific arguments
-    parser.add_argument("--density", type=float, default=300.0)
+    parser.add_argument("--density", type=float, default=500.0)
     parser.add_argument("--air-drag", type=float, default=1.0)
     parser.add_argument("--critical-fraction", "-cf", type=float, default=0.0)
 
-    parser.add_argument("--young-modulus", "-ym", type=float, default=1.0e15)
+    parser.add_argument("--young-modulus", "-ym", type=float, default=1.0e18)
     parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.3)
-    parser.add_argument("--friction", "-mu", type=float, default=0.1)
-    parser.add_argument("--damping", type=float, default=0.0)
-    parser.add_argument("--yield-pressure", "-yp", type=float, default=2.0e4)
-    parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.05)
-    parser.add_argument("--yield-stress", "-ys", type=float, default=1.0e3)
-    parser.add_argument("--hardening", type=float, default=10.0)
-    parser.add_argument("--dilatancy", type=float, default=0.0)
+    parser.add_argument("--friction", "-mu", type=float, default=0.5)
+    parser.add_argument("--damping", type=float, default=0.01)
+    parser.add_argument("--yield-pressure", "-yp", type=float, default=1.0e5)
+    parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.5)
+    parser.add_argument("--yield-stress", "-ys", type=float, default=1.0e2)
+    parser.add_argument("--hardening", type=float, default=3.0)
+    parser.add_argument("--dilatancy", type=float, default=0.3)
     parser.add_argument("--viscosity", type=float, default=0.0)
 
     parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
