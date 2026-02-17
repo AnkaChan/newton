@@ -37,10 +37,11 @@ simulations = {
     ],
     "mpm_granular": [
         "/media/andre/data/dev/newton/data/gtcdc25/mpm/Collected_20251216_to_sim_tdSimSand_01/20251216_to_sim_tdSimSand_01_physics.usd",
-        "-o", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb15/sand.usd",
+        "-o", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb16/snow1.usd",
         "--integrator", "cmpm",
-        "-n", "2000",
-        "-t", "24.00",
+        "-n", "600",
+        "-t", "31.00",
+        "-f", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb16/snow1",
     ],
 }
 
