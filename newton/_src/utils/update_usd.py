@@ -20,6 +20,7 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import numpy as np
 import warp as wp
 
 if TYPE_CHECKING:
@@ -252,11 +253,21 @@ class UpdateUsd:
         rotations: wp.array | None = None,
         scales: wp.array | None = None,
         radius: float | None = None,
+        as_instances: bool = True,
     ):
         from pxr import UsdGeom
 
         stage = self.stage
         time = self.time
+
+        if not as_instances:
+            geom_points = UsdGeom.Points.Get(stage, path)
+            if not geom_points:
+                geom_points = UsdGeom.Points.Define(stage, path)
+                geom_points.CreateWidthsAttr().Set(np.full(len(points), radius * 2.0))
+
+            geom_points.GetPointsAttr().Set(points.numpy() - self.global_offset, time)
+            return
 
         instancer_path = path
         instancer = UsdGeom.PointInstancer.Get(stage, instancer_path)
@@ -434,11 +445,10 @@ class UpdateUsd:
         if isinstance(output_stage, str):
             source_stage = Usd.Stage.Open(source_stage, Usd.Stage.LoadAll)
             flattened = source_stage.Flatten()
-            stage = Usd.Stage.Open(flattened.identifier)
-            exported = stage.ExportToString()
+            flattened.Export(output_stage)
 
-            output_stage = Usd.Stage.CreateNew(output_stage)
-            output_stage.GetRootLayer().ImportFromString(exported)
+            output_stage = Usd.Stage.Open(output_stage)
+            # output_stage.GetRootLayer().ImportFromString(exported)
             return output_stage
         elif isinstance(output_stage, Usd.Stage):
             return output_stage

@@ -1134,9 +1134,10 @@ class Simulator:
                     self.usd_updater.render_points(
                         path="/particles",
                         points=self.integrator.mpm_state_0.particle_q,
-                        rotations=rot,
-                        scales=scale,
+                        # rotations=rot,
+                        # scales=scale,
                         radius=float(self.integrator.mpm_solver.model.particle_radius.numpy()[0]),
+                        as_instances=False
                     )
                 self.usd_updater.end_frame()
 
