@@ -43,11 +43,19 @@ simulations = {
         "-t", "31.00",
         "-f", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb16/snow1",
     ],
+    "olaf": [
+        "/media/andre/data/dev/newton/data/gtcdc25/mpm/Collected_20260217_to_sim_fx_rndsnow_01/20260217_to_sim_fx_rndsnow_01_physics.usd",
+        "-o", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb17/olaf0.usd",
+        "--integrator", "xpbd",
+        "-n", "600",
+        "-t", "0.00",
+        "-f", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb17/olaf0",
+    ],
 }
 
 if __name__ == "__main__":
     for name, script_args in simulations.items():
-        if name != "mpm_granular":
+        if name != "olaf":
             continue
         cmd_pr = base_cmd + ["/media/andre/data/dev/newton_snow/newton/_src/utils/sim_usd_pr.py"] + script_args
         cmd_gtc = base_cmd + ["/media/andre/data/dev/newton_snow/newton/_src/utils/sim_usd_gtc.py"] + script_args
