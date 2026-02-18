@@ -2,8 +2,8 @@ import subprocess
 import sys
 
 wedges = [
-    {"name": "wedge1", "initial_jp": 0.96},
-    {"name": "wedge2", "initial_jp": 0.975},
+    # {"name": "wedge1", "initial_jp": 0.96},
+    # {"name": "wedge2", "initial_jp": 0.975},
     {"name": "wedge3", "initial_jp": 0.995},
 ]
 
@@ -15,9 +15,10 @@ for exp in wedges:
         "uv", "run", "-m", "newton.examples", "mpm_granular",
         "--collider", "wedge",
         "--save-video",
-        "--max-frames", "200",
+        "--max-frames", "120",
         "--frame-dir", frame_dir,
         "--initial-jp", str(exp["initial_jp"]),
+        "--save-obj",
     ]
     print(f"\n{'='*60}")
     print(f"Running experiment: {exp['name']} (initial_jp={exp['initial_jp']})")

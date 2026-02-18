@@ -132,10 +132,12 @@ class Example:
         self.show_normals = False
         self.show_stress = False
 
-        # Video recording setup
+        # Video and OBJ recording setup
         self.save_video = options.save_video
+        self.save_obj = getattr(options, "save_obj", False)
         self.frame_dir = None
         self.frame_count = 0
+        self.obj_count = 0
         self._frame_dir_is_temp = False
         # Store material parameters for video metadata
         self.material_params = {
@@ -147,7 +149,8 @@ class Example:
             "hardening": getattr(options, "hardening", None),
             "initial_jp": getattr(options, "initial_jp", 0.99),
         }
-        if self.save_video and isinstance(self.viewer, newton.viewer.ViewerGL):
+        needs_frame_dir = (self.save_video and isinstance(self.viewer, newton.viewer.ViewerGL)) or self.save_obj
+        if needs_frame_dir:
             if hasattr(options, "frame_dir") and options.frame_dir:
                 self.frame_dir = Path(options.frame_dir)
                 self.frame_dir.mkdir(parents=True, exist_ok=True)
@@ -353,6 +356,10 @@ class Example:
         if self.save_video and self.frame_dir is not None and isinstance(self.viewer, newton.viewer.ViewerGL):
             self._save_frame()
 
+        # Save particle data as OBJ
+        if self.save_obj and self.frame_dir is not None:
+            self._save_obj()
+
     def render_ui(self, imgui):
         _changed, self.show_normals = imgui.checkbox("Show Normals", self.show_normals)
         _changed, self.show_stress = imgui.checkbox("Show Stress", self.show_stress)
@@ -383,6 +390,25 @@ class Example:
             # Disable save_video on persistent errors
             if self.frame_count == 0:
                 self.save_video = False
+
+    def _save_obj(self):
+        """Save current particle positions as a Wavefront .obj file (vertices only)."""
+        positions = self.state_0.particle_q.numpy()  # (N, 3)
+
+        obj_path = self.frame_dir / f"frame_{self.obj_count:06d}.obj"
+
+        try:
+            with open(obj_path, "w") as f:
+                f.write(f"# Newton MPM particles frame {self.obj_count}\n")
+                f.write(f"# {positions.shape[0]} particles\n")
+                for i in range(positions.shape[0]):
+                    f.write(f"v {positions[i, 0]:.6f} {positions[i, 1]:.6f} {positions[i, 2]:.6f}\n")
+
+            self.obj_count += 1
+        except Exception as e:
+            wp.utils.warn(f"Failed to save obj: {e}")
+            if self.obj_count == 0:
+                self.save_obj = False
 
     def _create_video(self):
         """Create MP4 video from saved frames using ffmpeg."""
@@ -543,8 +569,9 @@ if __name__ == "__main__":
     parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
     parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
 
-    # Video recording arguments
+    # Video and OBJ recording arguments
     parser.add_argument("--save-video", action="store_true", help="Save each frame as PNG and create MP4 video")
+    parser.add_argument("--save-obj", action="store_true", help="Save particle positions as .obj files each frame")
     parser.add_argument("--frame-dir", type=str, default=None, help="Directory to save frames (video filename inferred from directory name)")
 
     # Frame limit argument
