@@ -181,6 +181,223 @@ class SchemaResolverMPM(SchemaResolver):
     }
 
 
+@wp.kernel
+def _compute_bounds(
+    points: wp.array(dtype=wp.vec3),
+    lower: wp.array(dtype=wp.vec3),
+    upper: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    p = points[tid]
+    wp.atomic_min(lower, 0, p)
+    wp.atomic_max(upper, 0, p)
+
+
+@wp.kernel
+def _is_inside(
+    mesh_id: wp.uint64,
+    candidates: wp.array(dtype=wp.vec3),
+    max_dist: float,
+    inside: wp.array(dtype=wp.int32),
+):
+    tid = wp.tid()
+    p = candidates[tid]
+    face = int(0)
+    u = float(0.0)
+    v = float(0.0)
+    sign = float(0.0)
+    result = wp.mesh_query_point_sign_normal(mesh_id, p, max_dist, sign, face, u, v)
+    if result and sign < 0.0:
+        inside[tid] = 1
+
+
+@wp.kernel
+def _dense_scatter_kernel(
+    voxel_centers: wp.array(dtype=wp.vec3),
+    voxel_size: float,
+    ppv_int: int,
+    ppv_ceil: int,
+    frac_prob: float,
+    spread: float,
+    seed: int,
+    out_points: wp.array(dtype=wp.vec3),
+    out_valid: wp.array(dtype=wp.int32),
+):
+    """Kernel for DenseUniformPointScatter.
+
+    Each thread produces one candidate point.  Thread ``tid`` maps to
+    voxel ``tid // ppv_ceil`` and sub-point ``tid % ppv_ceil``.  The last
+    sub-point per voxel (when ``ppv_ceil > ppv_int``) is accepted with
+    probability ``frac_prob``.
+    """
+    tid = wp.tid()
+    voxel_idx = tid // ppv_ceil
+    sub_idx = tid % ppv_ceil
+
+    center = voxel_centers[voxel_idx]
+    state = wp.rand_init(seed, tid)
+
+    # Fractional extra point - accept with probability frac_prob
+    valid = 1
+    if sub_idx >= ppv_int:
+        if wp.randf(state) >= frac_prob:
+            valid = 0
+
+    half = voxel_size * spread * 0.5
+    x = center[0] + wp.randf(state, -half, half)
+    y = center[1] + wp.randf(state, -half, half)
+    z = center[2] + wp.randf(state, -half, half)
+
+    out_points[tid] = wp.vec3(x, y, z)
+    out_valid[tid] = valid
+
+
+class ParticleSampler:
+    """Scatter points inside a closed mesh using dense uniform point scatter.
+
+    This class encapsulates the full pipeline: bounding-box computation,
+    interior voxel sampling via ``wp.mesh_query_point_sign_normal``, and
+    dense uniform scattering (based on OpenVDB's ``DenseUniformPointScatter``).
+
+    Args:
+        mesh: A finalized ``wp.Mesh`` (must be closed for inside/outside
+            queries).
+        voxel_size: Side length of each cubic voxel.
+        points_per_voxel: Average number of output points per interior
+            voxel (>= 0).
+        spread: Jitter range as a fraction of voxel size, clamped to [0, 1].
+        seed: Random seed for reproducibility.
+    """
+
+    def __init__(
+        self,
+        mesh: wp.Mesh,
+        voxel_size: float,
+        points_per_voxel: float = 1.0,
+        spread: float = 1.0,
+        seed: int = 42,
+    ):
+        self.mesh = mesh
+        self.voxel_size = voxel_size
+        self.points_per_voxel = points_per_voxel
+        self.spread = float(np.clip(spread, 0.0, 1.0))
+        self.seed = seed
+
+        self.bb_min, self.bb_max = self._mesh_to_bbox(mesh)
+        print(f"  bounding box min: {self.bb_min}")
+        print(f"  bounding box max: {self.bb_max}")
+
+    @staticmethod
+    def _mesh_to_bbox(mesh: wp.Mesh) -> tuple:
+        """Compute the axis-aligned bounding box of a wp.Mesh."""
+        lower = wp.array([wp.vec3(1e18, 1e18, 1e18)], dtype=wp.vec3, device=mesh.device)
+        upper = wp.array([wp.vec3(-1e18, -1e18, -1e18)], dtype=wp.vec3, device=mesh.device)
+        wp.launch(_compute_bounds, dim=len(mesh.points), inputs=[mesh.points, lower, upper], device=mesh.device)
+        return lower.numpy()[0], upper.numpy()[0]
+
+    def sample_points_inside_mesh(self) -> np.ndarray:
+        """Fill the bounding box with a regular grid and keep only interior points.
+
+        The bounding box is extended by one voxel in each direction so that
+        points near the surface are not missed.
+
+        Returns:
+            numpy array of shape (N, 3) with the interior voxel centres.
+        """
+        lo = self.bb_min - self.voxel_size
+        hi = self.bb_max + self.voxel_size
+
+        xs = np.arange(lo[0], hi[0], self.voxel_size)
+        ys = np.arange(lo[1], hi[1], self.voxel_size)
+        zs = np.arange(lo[2], hi[2], self.voxel_size)
+        grid = np.stack(np.meshgrid(xs, ys, zs, indexing="ij"), axis=-1).reshape(-1, 3)
+        print(f"  grid candidate points: {len(grid)}")
+
+        candidates = wp.array(grid, dtype=wp.vec3, device=self.mesh.device)
+        inside = wp.zeros(len(grid), dtype=wp.int32, device=self.mesh.device)
+        max_dist = float(np.linalg.norm(hi - lo))
+
+        wp.launch(
+            _is_inside,
+            dim=len(grid),
+            inputs=[self.mesh.id, candidates, max_dist, inside],
+            device=self.mesh.device,
+        )
+
+        mask = inside.numpy().astype(bool)
+        points = grid[mask]
+        print(f"  points inside mesh: {len(points)}")
+        return points
+
+    def dense_uniform_point_scatter(self, voxel_centers: wp.array) -> np.ndarray:
+        """Scatter a fixed number of points per active voxel (Warp/GPU).
+
+        This is based on OpenVDB's ``DenseUniformPointScatter``.
+        For each active voxel centre, ``floor(points_per_voxel)`` points are
+        placed at random positions inside the voxel.  When
+        ``points_per_voxel`` has a fractional part *delta*, one additional
+        point is placed with probability *delta*.
+
+        Args:
+            voxel_centers: ``wp.array(dtype=wp.vec3)`` of active voxel
+                centres.
+
+        Returns:
+            numpy array of shape ``(N, 3)`` with the scattered point
+            positions.
+        """
+        n_voxels = len(voxel_centers)
+        if n_voxels == 0 or self.points_per_voxel < 1e-6:
+            return np.empty((0, 3), dtype=np.float32)
+
+        ppv_int = int(np.floor(self.points_per_voxel))
+        frac_prob = float(self.points_per_voxel - ppv_int)
+        ppv_ceil = ppv_int + (1 if frac_prob > 1e-6 else 0)
+
+        total = n_voxels * ppv_ceil
+        device = voxel_centers.device
+        out_points = wp.zeros(total, dtype=wp.vec3, device=device)
+        out_valid = wp.zeros(total, dtype=wp.int32, device=device)
+
+        wp.launch(
+            _dense_scatter_kernel,
+            dim=total,
+            inputs=[
+                voxel_centers,
+                self.voxel_size,
+                ppv_int,
+                ppv_ceil,
+                frac_prob,
+                self.spread,
+                self.seed,
+                out_points,
+                out_valid,
+            ],
+            device=device,
+        )
+
+        pts_np = out_points.numpy()
+        valid_np = out_valid.numpy().astype(bool)
+        result = pts_np[valid_np]
+        print(f"  Dense uniform scatter: {len(result)} points from {n_voxels} voxels "
+              f"({self.points_per_voxel} ppv, spread={self.spread:.2f})")
+        return result
+
+    def scatter(self) -> np.ndarray:
+        """Run the full pipeline: interior sampling then dense scatter.
+
+        Returns:
+            numpy array of shape ``(N, 3)`` with the scattered point
+            positions.
+        """
+        voxel_centers = self.sample_points_inside_mesh()
+        print(f"  {len(voxel_centers)} interior voxel centres (voxel_size={self.voxel_size})")
+        centers_wp = wp.array(
+            voxel_centers.astype(np.float32), dtype=wp.vec3, device=self.mesh.device,
+        )
+        return self.dense_uniform_point_scatter(centers_wp)
+
+
 class CoupledMPMIntegrator(newton.solvers.SolverBase):
     """Integrator for coupled MPM and rigid body solvers."""
 
