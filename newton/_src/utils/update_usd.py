@@ -667,6 +667,7 @@ class UpdateUsd:
 
             try:
                 import psutil
+
                 memory_info = psutil.Process().memory_info()
                 print(f"Memory usage before switching layers: {memory_info.rss / (1024 * 1024):.2f} MB")
             except ImportError:
@@ -678,6 +679,7 @@ class UpdateUsd:
 
             try:
                 import psutil
+
                 memory_info = psutil.Process().memory_info()
                 print(f"Memory usage after re-creating layers: {memory_info.rss / (1024 * 1024):.2f} MB")
             except ImportError:
@@ -729,6 +731,7 @@ class UpdateUsd:
                 del stages
                 try:
                     import psutil
+
                     memory_info = psutil.Process().memory_info()
                     print(f"Memory usage after stitching {name}: {memory_info.rss / (1024 * 1024):.2f} MB")
                 except ImportError:
@@ -739,6 +742,7 @@ class UpdateUsd:
 
             try:
                 import psutil
+
                 memory_info = psutil.Process().memory_info()
                 print(f"Memory usage after re-opening: {memory_info.rss / (1024 * 1024):.2f} MB")
             except ImportError:

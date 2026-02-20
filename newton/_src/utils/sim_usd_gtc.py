@@ -176,6 +176,8 @@ class SchemaResolverMPM(SchemaResolver):
             "tolerance": Attribute("newton:mpm:tolerance", 5.0e-7),
             "grid_type": Attribute("newton:mpm:grid_type", "sparse"),
             "max_iterations": Attribute("newton:mpm:max_iterations", 250),
+            "strain_basis": Attribute("newton:mpm:strain_basis", "P1d"),
+            "air_drag": Attribute("newton:mpm:air_drag", 10.0),
             "collider_normal_from_sdf_gradient": Attribute("newton:mpm:collider_normal_from_sdf_gradient", True),
         },
     }
@@ -206,66 +208,113 @@ def _is_inside(
     u = float(0.0)
     v = float(0.0)
     sign = float(0.0)
-    result = wp.mesh_query_point_sign_normal(mesh_id, p, max_dist, sign, face, u, v)
+    result = wp.mesh_query_point_sign_winding_number(mesh_id, p, max_dist, sign, face, u, v)
     if result and sign < 0.0:
         inside[tid] = 1
 
 
 @wp.kernel
-def _dense_scatter_kernel(
+def _is_inside_or_near(
+    mesh_id: wp.uint64,
+    candidates: wp.array(dtype=wp.vec3),
+    max_dist: float,
+    margin: float,
+    selected: wp.array(dtype=wp.int32),
+):
+    """Select voxel centres that are inside the mesh or within *margin* of its surface.
+
+    This is intentionally conservative: voxels slightly outside the surface
+    are included so that the subsequent per-particle rejection pass can
+    decide at full resolution.
+    """
+    tid = wp.tid()
+    p = candidates[tid]
+    face = int(0)
+    u = float(0.0)
+    v = float(0.0)
+    sign = float(0.0)
+    result = wp.mesh_query_point_sign_winding_number(mesh_id, p, max_dist, sign, face, u, v)
+    if result:
+        if sign < 0.0:
+            # strictly inside
+            selected[tid] = 1
+        else:
+            # outside — check distance to closest surface point
+            a = wp.mesh_eval_position(mesh_id, face, u, v)
+            dist = wp.length(p - a)
+            if dist < margin:
+                selected[tid] = 1
+
+
+@wp.kernel
+def _grid_scatter_kernel(
     voxel_centers: wp.array(dtype=wp.vec3),
     voxel_size: float,
-    ppv_int: int,
-    ppv_ceil: int,
-    frac_prob: float,
+    ppd: int,
     spread: float,
     seed: int,
     out_points: wp.array(dtype=wp.vec3),
-    out_valid: wp.array(dtype=wp.int32),
 ):
-    """Kernel for DenseUniformPointScatter.
+    """Place particles on a regular sub-grid within each voxel, then jitter.
 
-    Each thread produces one candidate point.  Thread ``tid`` maps to
-    voxel ``tid // ppv_ceil`` and sub-point ``tid % ppv_ceil``.  The last
-    sub-point per voxel (when ``ppv_ceil > ppv_int``) is accepted with
-    probability ``frac_prob``.
+    For *ppd* (points-per-dimension) particles along each axis, the
+    un-jittered position along one axis is ``(k + 0.5) / ppd`` for
+    ``k = 0 .. ppd-1`` (relative to the voxel lower corner).  This
+    ensures uniform spacing that tiles seamlessly across neighbouring
+    voxels.
+
+    Each position is then offset by
+    ``randf(-0.5, 0.5) * spread * voxel_size * 0.5`` per axis.
     """
     tid = wp.tid()
-    voxel_idx = tid // ppv_ceil
-    sub_idx = tid % ppv_ceil
+    ppd3 = ppd * ppd * ppd
+    voxel_idx = tid // ppd3
+    sub_idx = tid % ppd3
+
+    # Decompose sub-index → (ix, iy, iz)
+    iz = sub_idx % ppd
+    iy = (sub_idx // ppd) % ppd
+    ix = sub_idx // (ppd * ppd)
 
     center = voxel_centers[voxel_idx]
     state = wp.rand_init(seed, tid)
 
-    # Fractional extra point - accept with probability frac_prob
-    valid = 1
-    if sub_idx >= ppv_int:
-        if wp.randf(state) >= frac_prob:
-            valid = 0
+    # Sub-grid position relative to voxel centre
+    inv_ppd = 1.0 / float(ppd)
+    ox = (float(ix) + 0.5) * inv_ppd - 0.5
+    oy = (float(iy) + 0.5) * inv_ppd - 0.5
+    oz = (float(iz) + 0.5) * inv_ppd - 0.5
 
-    half = voxel_size * spread * 0.5
-    x = center[0] + wp.randf(state, -half, half)
-    y = center[1] + wp.randf(state, -half, half)
-    z = center[2] + wp.randf(state, -half, half)
+    # Random jitter
+    jitter_scale = spread * voxel_size * 0.5
+    jx = wp.randf(state, -0.5, 0.5) * jitter_scale
+    jy = wp.randf(state, -0.5, 0.5) * jitter_scale
+    jz = wp.randf(state, -0.5, 0.5) * jitter_scale
 
-    out_points[tid] = wp.vec3(x, y, z)
-    out_valid[tid] = valid
+    out_points[tid] = wp.vec3(
+        center[0] + ox * voxel_size + jx,
+        center[1] + oy * voxel_size + jy,
+        center[2] + oz * voxel_size + jz,
+    )
 
 
 class ParticleSampler:
-    """Scatter points inside a closed mesh using dense uniform point scatter.
+    """Scatter points inside a closed mesh on a jittered sub-grid.
 
     This class encapsulates the full pipeline: bounding-box computation,
-    interior voxel sampling via ``wp.mesh_query_point_sign_normal``, and
-    dense uniform scattering (based on OpenVDB's ``DenseUniformPointScatter``).
+    conservative voxel selection (inside **or** near-surface), regular
+    sub-grid placement with random jitter, and final rejection of points
+    that fall outside the mesh.
 
     Args:
         mesh: A finalized ``wp.Mesh`` (must be closed for inside/outside
-            queries).
+            queries; pass ``supports_winding_number=True`` at construction).
         voxel_size: Side length of each cubic voxel.
-        points_per_voxel: Average number of output points per interior
-            voxel (>= 0).
-        spread: Jitter range as a fraction of voxel size, clamped to [0, 1].
+        points_per_dim: Number of particles along each axis of a voxel.
+            Total particles per voxel = ``points_per_dim ** 3``.
+        spread: Jitter amplitude as a fraction of voxel size.  Each
+            particle is offset by
+            ``randf(-0.5, 0.5) * spread * voxel_size * 0.5`` per axis.
         seed: Random seed for reproducibility.
     """
 
@@ -273,13 +322,13 @@ class ParticleSampler:
         self,
         mesh: wp.Mesh,
         voxel_size: float,
-        points_per_voxel: float = 1.0,
+        points_per_dim: int = 1,
         spread: float = 1.0,
         seed: int = 42,
     ):
         self.mesh = mesh
         self.voxel_size = voxel_size
-        self.points_per_voxel = points_per_voxel
+        self.points_per_dim = int(points_per_dim)
         self.spread = float(np.clip(spread, 0.0, 1.0))
         self.seed = seed
 
@@ -296,13 +345,16 @@ class ParticleSampler:
         return lower.numpy()[0], upper.numpy()[0]
 
     def sample_points_inside_mesh(self) -> np.ndarray:
-        """Fill the bounding box with a regular grid and keep only interior points.
+        """Fill the bounding box with a regular grid and keep voxels inside or near the surface.
 
-        The bounding box is extended by one voxel in each direction so that
-        points near the surface are not missed.
+        The bounding box is extended by one voxel in each direction.  Voxel
+        centres that are strictly inside **or** within one ``voxel_size`` of
+        the surface are kept.  This is intentionally conservative so that the
+        per-particle rejection pass (``reject_outside``) can make the precise
+        inside/outside decision at full resolution without aliasing artifacts.
 
         Returns:
-            numpy array of shape (N, 3) with the interior voxel centres.
+            numpy array of shape (N, 3) with the selected voxel centres.
         """
         lo = self.bb_min - self.voxel_size
         hi = self.bb_max + self.voxel_size
@@ -314,29 +366,33 @@ class ParticleSampler:
         print(f"  grid candidate points: {len(grid)}")
 
         candidates = wp.array(grid, dtype=wp.vec3, device=self.mesh.device)
-        inside = wp.zeros(len(grid), dtype=wp.int32, device=self.mesh.device)
+        selected = wp.zeros(len(grid), dtype=wp.int32, device=self.mesh.device)
         max_dist = float(np.linalg.norm(hi - lo))
+        margin = float(self.voxel_size)
 
         wp.launch(
-            _is_inside,
+            _is_inside_or_near,
             dim=len(grid),
-            inputs=[self.mesh.id, candidates, max_dist, inside],
+            inputs=[self.mesh.id, candidates, max_dist, margin, selected],
             device=self.mesh.device,
         )
 
-        mask = inside.numpy().astype(bool)
+        mask = selected.numpy().astype(bool)
         points = grid[mask]
-        print(f"  points inside mesh: {len(points)}")
+        print(f"  voxels selected (inside or within margin): {len(points)}")
         return points
 
-    def dense_uniform_point_scatter(self, voxel_centers: wp.array) -> np.ndarray:
-        """Scatter a fixed number of points per active voxel (Warp/GPU).
+    def grid_scatter(self, voxel_centers: wp.array) -> np.ndarray:
+        """Place particles on a jittered sub-grid within each active voxel.
 
-        This is based on OpenVDB's ``DenseUniformPointScatter``.
-        For each active voxel centre, ``floor(points_per_voxel)`` points are
-        placed at random positions inside the voxel.  When
-        ``points_per_voxel`` has a fractional part *delta*, one additional
-        point is placed with probability *delta*.
+        For ``points_per_dim`` (ppd) particles along each axis, the
+        un-jittered position of particle ``k`` along one axis is
+        ``(k + 0.5) / ppd`` (in voxel-normalised coordinates), so for
+        ``ppd = 2`` the positions are ``[0.25, 0.75]`` and the 0.5 spacing
+        is preserved across neighbouring voxels.
+
+        Each position is then jittered by
+        ``randf(-0.5, 0.5) * spread * voxel_size * 0.5`` per axis.
 
         Args:
             voxel_centers: ``wp.array(dtype=wp.vec3)`` of active voxel
@@ -347,64 +403,204 @@ class ParticleSampler:
             positions.
         """
         n_voxels = len(voxel_centers)
-        if n_voxels == 0 or self.points_per_voxel < 1e-6:
+        ppd = self.points_per_dim
+        if n_voxels == 0 or ppd < 1:
             return np.empty((0, 3), dtype=np.float32)
 
-        ppv_int = int(np.floor(self.points_per_voxel))
-        frac_prob = float(self.points_per_voxel - ppv_int)
-        ppv_ceil = ppv_int + (1 if frac_prob > 1e-6 else 0)
-
-        total = n_voxels * ppv_ceil
+        ppd3 = ppd * ppd * ppd
+        total = n_voxels * ppd3
         device = voxel_centers.device
         out_points = wp.zeros(total, dtype=wp.vec3, device=device)
-        out_valid = wp.zeros(total, dtype=wp.int32, device=device)
 
         wp.launch(
-            _dense_scatter_kernel,
+            _grid_scatter_kernel,
             dim=total,
             inputs=[
                 voxel_centers,
                 self.voxel_size,
-                ppv_int,
-                ppv_ceil,
-                frac_prob,
+                ppd,
                 self.spread,
                 self.seed,
                 out_points,
-                out_valid,
             ],
             device=device,
         )
 
-        pts_np = out_points.numpy()
-        valid_np = out_valid.numpy().astype(bool)
-        result = pts_np[valid_np]
-        print(f"  Dense uniform scatter: {len(result)} points from {n_voxels} voxels "
-              f"({self.points_per_voxel} ppv, spread={self.spread:.2f})")
+        result = out_points.numpy()
+        print(
+            f"  Grid scatter: {len(result)} points from {n_voxels} voxels "
+            f"({ppd}^3 = {ppd3} ppv, spread={self.spread:.2f})"
+        )
+        return result
+
+    def reject_outside(self, points: np.ndarray) -> np.ndarray:
+        """Discard scattered points that fall outside the mesh.
+
+        After ``grid_scatter``, some points near the surface
+        may have been jittered outside the mesh boundary.  This method runs
+        the same inside/outside test used for voxel selection and keeps only
+        the points with ``sign < 0`` (inside).
+
+        Args:
+            points: ``(N, 3)`` numpy array of candidate positions.
+
+        Returns:
+            ``(M, 3)`` numpy array of positions that are inside the mesh.
+        """
+        if len(points) == 0:
+            return points
+
+        candidates = wp.array(points.astype(np.float32), dtype=wp.vec3, device=self.mesh.device)
+        inside = wp.zeros(len(points), dtype=wp.int32, device=self.mesh.device)
+        max_dist = float(np.linalg.norm(self.bb_max - self.bb_min))
+
+        wp.launch(
+            _is_inside,
+            dim=len(points),
+            inputs=[self.mesh.id, candidates, max_dist, inside],
+            device=self.mesh.device,
+        )
+
+        mask = inside.numpy().astype(bool)
+        result = points[mask]
+        print(f"  Rejection pass: kept {len(result)}/{len(points)} points inside mesh")
         return result
 
     def scatter(self) -> np.ndarray:
-        """Run the full pipeline: interior sampling then dense scatter.
+        """Run the full pipeline: voxel selection, grid scatter, rejection.
 
         Returns:
             numpy array of shape ``(N, 3)`` with the scattered point
-            positions.
+            positions (all guaranteed to be inside the mesh).
         """
         voxel_centers = self.sample_points_inside_mesh()
-        print(f"  {len(voxel_centers)} interior voxel centres (voxel_size={self.voxel_size})")
+        print(f"  {len(voxel_centers)} selected voxel centres (voxel_size={self.voxel_size})")
         centers_wp = wp.array(
-            voxel_centers.astype(np.float32), dtype=wp.vec3, device=self.mesh.device,
+            voxel_centers.astype(np.float32),
+            dtype=wp.vec3,
+            device=self.mesh.device,
         )
-        return self.dense_uniform_point_scatter(centers_wp)
+        points = self.grid_scatter(centers_wp)
+        return self.reject_outside(points)
+
+
+def _close_surface_mesh(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    bottom_z: float = -0.001,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Close an open heightfield surface mesh with a flat bottom cap and side walls.
+
+    Creates a watertight mesh suitable for inside/outside queries by adding:
+    - A bottom layer of vertices at ``bottom_z`` (one per original vertex).
+    - Bottom faces (top faces with reversed winding, pointing downward).
+    - Side wall quads along every boundary edge.
+
+    Args:
+        verts: (N, 3) float32 vertex array.
+        faces: (M, 3) int32 face array (CCW winding, normals pointing up).
+        bottom_z: Z coordinate of the flat bottom cap.
+
+    Returns:
+        Tuple (all_verts, all_faces) for the closed mesh.
+    """
+    N = len(verts)
+
+    # Bottom vertices — same XY, fixed z
+    bot_verts = verts.copy()
+    bot_verts[:, 2] = bottom_z
+
+    # Bottom faces — reversed winding so normals point downward
+    bot_faces = faces[:, [0, 2, 1]] + N
+
+    # Find directed boundary edges (appear in only one face)
+    edge_set: set[tuple[int, int]] = set()
+    for a, b, c in faces:
+        edge_set.add((int(a), int(b)))
+        edge_set.add((int(b), int(c)))
+        edge_set.add((int(c), int(a)))
+    boundary = [(u, v) for (u, v) in edge_set if (v, u) not in edge_set]
+
+    # Side wall quads split into two CCW triangles each.
+    # For a directed edge u→v on the top (interior to the left),
+    # the outward side quad is (u_top, v_top, v_bot, u_bot):
+    #   tri1: (u, v, v+N)
+    #   tri2: (u, v+N, u+N)
+    side_faces = []
+    for u, v in boundary:
+        side_faces.append([u, v, v + N])
+        side_faces.append([u, v + N, u + N])
+
+    all_verts = np.vstack([verts, bot_verts])
+    all_faces_list = [faces, bot_faces]
+    if side_faces:
+        all_faces_list.append(np.array(side_faces, dtype=np.int32))
+    all_faces = np.vstack(all_faces_list)
+
+    return all_verts.astype(np.float32), all_faces.astype(np.int32)
+
+
+def _read_usd_mesh(
+    stage: Usd.Stage,
+    prim_path: str,
+    offset: np.ndarray = np.zeros(3),
+) -> tuple[np.ndarray, np.ndarray]:
+    """Read a UsdGeom.Mesh from the stage and return world-space (vertices, faces).
+
+    Non-triangle faces are fan-triangulated.  The prim's full
+    local-to-world transform is applied, followed by *offset*.
+
+    Args:
+        stage: The open USD stage.
+        prim_path: Absolute prim path (e.g. ``"/World/ParticleSeeding"``).
+        offset: Additional translation applied after the world transform.
+
+    Returns:
+        Tuple ``(vertices, faces)`` — float32 (N, 3) and int32 (M, 3).
+    """
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise ValueError(f"No valid prim at path: {prim_path}")
+
+    mesh = UsdGeom.Mesh(prim)
+    points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
+    face_indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
+    face_counts = np.array(mesh.GetFaceVertexCountsAttr().Get(), dtype=np.int32)
+
+    # Fan-triangulate arbitrary polygons
+    triangles = []
+    idx = 0
+    for count in face_counts:
+        for i in range(1, count - 1):
+            triangles.append([face_indices[idx], face_indices[idx + i], face_indices[idx + i + 1]])
+        idx += count
+    faces = np.array(triangles, dtype=np.int32)
+
+    # Apply the prim's local-to-world transform (USD row-vector convention)
+    xform = UsdGeom.Xform(prim)
+    mat = np.array(xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default()), dtype=np.float64)
+    points = points @ mat[:3, :3] + mat[3, :3]
+
+    # Additional translation
+    points += np.asarray(offset, dtype=np.float64)
+
+    return points.astype(np.float32), faces
 
 
 class CoupledMPMIntegrator(newton.solvers.SolverBase):
     """Integrator for coupled MPM and rigid body solvers."""
 
-    def __init__(self, model: newton.Model, particles_dict: dict[str, np.ndarray], **kwargs):
+    def __init__(
+        self,
+        model: newton.Model,
+        particles_dict: dict[str, np.ndarray],
+        particle_seeding_mesh: tuple[np.ndarray, np.ndarray] | None = None,
+        **kwargs,
+    ):
         super().__init__(model)
 
         self.particles_dict = particles_dict
+        self.particle_seeding_mesh = particle_seeding_mesh
 
         rigid_solver_kwargs = {}
 
@@ -421,13 +617,15 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         self.mpm_solver = newton.solvers.SolverImplicitMPM(sand_model, mpm_options)
 
         # Set up colliders on the solver's internal mpm_model
-        self._setup_mpm_collider(model, self.mpm_solver._mpm_model, particle_radius=sand_model.particle_radius.numpy()[0])
+        self._setup_mpm_collider(
+            model, self.mpm_solver._mpm_model, particle_radius=sand_model.particle_radius.numpy()[0]
+        )
 
         self.mpm_state_0 = sand_model.state()
         self.mpm_state_1 = sand_model.state()
 
         # Initialize particle Jp for snow (slightly compacted initial state)
-        self.mpm_state_0.mpm.particle_Jp.fill_(0.99)
+        self.mpm_state_0.mpm.particle_Jp.fill_(0.9)
 
         # Allocate body arrays on MPM states so the collider can read body transforms
         if model.body_count > 0:
@@ -516,34 +714,25 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
 
     def _build_sand_model(self, mpm_options):
         sand_builder = newton.ModelBuilder()
+        newton.solvers.SolverImplicitMPM.register_custom_attributes(sand_builder)
         self._add_particles(sand_builder, mpm_options.voxel_size)
         # Register MPM custom attributes (e.g. mpm.particle_transform) before finalize
-        newton.solvers.SolverImplicitMPM.register_custom_attributes(sand_builder)
         sand_model = sand_builder.finalize()
 
-        # basic particle material params
-        sand_model.particle_mu = 0.5
-        sand_model.particle_ke = 1.0e15
-        sand_model.particle_kd = 0.0
-        sand_model.particle_adhesion = 0.0
-        sand_model.particle_cohesion = 0.0
-
         # snow constitutive model parameters
-        sand_model.mpm.young_modulus.fill_(1.0e18)
+        sand_model.mpm.young_modulus.fill_(1.0e6)
         sand_model.mpm.damping.fill_(0.01)
         sand_model.mpm.poisson_ratio.fill_(0.3)
-        sand_model.mpm.yield_pressure.fill_(1.0e5)
+        sand_model.mpm.yield_pressure.fill_(1.0e6)
         sand_model.mpm.yield_stress.fill_(1.0e2)
         sand_model.mpm.friction.fill_(0.5)
-        sand_model.mpm.tensile_yield_ratio.fill_(0.5)
-        sand_model.mpm.hardening.fill_(3.0)
-        sand_model.mpm.dilatancy.fill_(0.3)
+        sand_model.mpm.tensile_yield_ratio.fill_(0.1)
+        sand_model.mpm.hardening.fill_(0.2)
+        sand_model.mpm.dilatancy.fill_(1.0)
 
         return sand_model
 
-    def _setup_mpm_collider(
-        self, model: newton.Model, mpm_model, particle_radius: float
-    ):
+    def _setup_mpm_collider(self, model: newton.Model, mpm_model, particle_radius: float):
         # Filter bodies to only include those with collision shapes that have
         # COLLIDE_PARTICLES flag and supported shape types for the MPM collider
         def _get_body_collision_shapes(model, body_index):
@@ -571,17 +760,18 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
             return np.array(supported_shapes, dtype=int)
 
         collider_body_id = [
-            body_id
-            for body_id in range(-1, model.body_count)
-            if len(_get_body_collision_shapes(model, body_id)) > 0
+            body_id for body_id in range(-1, model.body_count) if len(_get_body_collision_shapes(model, body_id)) > 0
         ]
 
         collider_projection_threshold = [0.5 * particle_radius] + [0.0] * (len(collider_body_id) - 1)
 
+        rb_friction = 0.5
+        static_friction = 10.0  # prevent sliding on ground
+
         mpm_model.setup_collider(
             model=self.model,
             collider_body_ids=collider_body_id,
-            collider_friction=[0.5 for _ in collider_body_id],
+            collider_friction=[rb_friction if bi >= 0 else static_friction for bi in collider_body_id],
             collider_adhesion=[0.0e5 for _ in collider_body_id],
             collider_thicknesses=[particle_radius for _ in collider_body_id],
             collider_projection_threshold=collider_projection_threshold,
@@ -590,7 +780,7 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
         self.collider_body_id = wp.array(collider_body_id, dtype=int)
 
     def _add_particles(self, sand_builder: newton.ModelBuilder, voxel_size: float):
-        density = 500
+        density = 100
 
         if self.particles_dict:
             psize = voxel_size * 2.0 / 3.0
@@ -601,9 +791,42 @@ class CoupledMPMIntegrator(newton.solvers.SolverBase):
 
             orientations = np.vstack([ori for pts, ori in self.particles_dict.values()])
             self.particle_rest_orientations = wp.array(orientations, dtype=wp.quat)
+        elif self.particle_seeding_mesh is not None:
+            # ------------------------------------------
+            # Sample particles inside a snow heap mesh via ParticleSampler
+            # ------------------------------------------
+            particles_per_cell = 3.0
+            psize = voxel_size / particles_per_cell
+            radius = float(psize * 0.5)
+            mass = float(psize**3 * density)
+
+            verts, raw_faces = self.particle_seeding_mesh
+            print(f"  Particle seeding mesh: {len(verts)} vertices, {len(raw_faces)} faces")
+
+            verts_closed, faces_closed = _close_surface_mesh(verts, raw_faces)
+            print(f"  Closed mesh: {len(verts_closed)} vertices, {len(faces_closed)} faces")
+
+            mesh = wp.Mesh(
+                points=wp.array(verts_closed, dtype=wp.vec3),
+                indices=wp.array(faces_closed.ravel(), dtype=wp.int32),
+                support_winding_number=True,
+            )
+
+            sampler = ParticleSampler(
+                mesh=mesh,
+                voxel_size=voxel_size,
+                points_per_dim=int(particles_per_cell),
+                spread=0.9,
+                seed=42,
+            )
+            points = sampler.scatter()
+            print(f"  Sampled {len(points)} particles from snow heap mesh")
+
+            self.particle_rest_orientations = wp.full(len(points), wp.quat_identity(), dtype=wp.quat)
+
         else:
             # ------------------------------------------
-            # Add sand bed (1m x 2m x 0.5m) above ground
+            # Fallback: jittered particle grid above ground
             # ------------------------------------------
             particles_per_cell = 3.0
 
@@ -760,6 +983,7 @@ class Simulator:
         enable_timers: bool = False,
         load_visual_shapes: bool = False,
         use_mesh_approximation: bool = False,
+        particle_seeding_prim_path: str = "",
     ):
         def create_stage_from_path(input_path) -> Usd.Stage:
             stage = Usd.Stage.Open(input_path, Usd.Stage.LoadAll)
@@ -774,6 +998,7 @@ class Simulator:
         self.enable_timers = enable_timers
         self.record_path = record_path
         self.use_mesh_approximation = use_mesh_approximation
+        self.particle_seeding_prim_path = particle_seeding_prim_path
         self.current_frame = 0
         self.num_frames = num_frames
         self.show_viewer = True
@@ -832,9 +1057,11 @@ class Simulator:
             self.body_merged_parent = None
             self.body_merged_transform = None
 
-        self._collect_animated_colliders(builder, self.path_body_map, self.path_shape_map) # NB: needs to be called before the builder finalize and after we set the integrator type
+        self._collect_animated_colliders(
+            builder, self.path_body_map, self.path_shape_map
+        )  # NB: needs to be called before the builder finalize and after we set the integrator type
         if self.integrator_type == IntegratorType.VBD:
-            builder.color() # NB: needs to be called before the builder finalize
+            builder.color()  # NB: needs to be called before the builder finalize
 
         self._override_pre_builder_finalize(builder)
         self.print_debug_info(builder, "ces_vase2.txt")  # Print debug info before finalize
@@ -871,8 +1098,7 @@ class Simulator:
         if self.use_cuda_graph:
             self._setup_cuda_graph()
 
-
-    def _setup_solver_attributes(self, sim_time:float, sim_frame: float, integrator: Optional[IntegratorType] = None):
+    def _setup_solver_attributes(self, sim_time: float, sim_frame: float, integrator: Optional[IntegratorType] = None):
         """Apply scene attributes parsed from the stage to self."""
 
         self.fps = self.R.get_value(self.physics_prim, PrimType.SCENE, "fps")
@@ -956,7 +1182,23 @@ class Simulator:
                         np.array(pi.GetPositionsAttr().Get()),
                         np.array(pi.GetOrientationsAttr().Get()).reshape(-1, 4),
                     )
-            self.integrator = CoupledMPMIntegrator(self.model, particles_dict, **solver_args, **mpm_solver_args)
+            # Read the snow heap mesh from the stage if a prim path was given
+            particle_seeding_mesh = None
+            if self.particle_seeding_prim_path:
+                usd_off = np.array([self.usd_offset[0], self.usd_offset[1], self.usd_offset[2]])
+                particle_seeding_mesh = _read_usd_mesh(self.in_stage, self.particle_seeding_prim_path, offset=usd_off)
+                print(
+                    f"  Read particle seeding mesh from USD prim {self.particle_seeding_prim_path}: "
+                    f"{len(particle_seeding_mesh[0])} verts, {len(particle_seeding_mesh[1])} tris"
+                )
+
+            self.integrator = CoupledMPMIntegrator(
+                self.model,
+                particles_dict,
+                particle_seeding_mesh=particle_seeding_mesh,
+                **solver_args,
+                **mpm_solver_args,
+            )
         else:  # VBD
             res = SchemaResolverVBD()
             R = _ResolverManager([res])
@@ -1032,28 +1274,30 @@ class Simulator:
             lines.append(f"  body_count:        {len(builder.body_mass)}")
             lines.append(f"  shape_count:       {len(builder.shape_transform)}")
             lines.append(f"  joint_count:       {len(builder.joint_type)}")
-            lines.append(f"  particle_count:    {len(builder.particle_q) if hasattr(builder, 'particle_q') and builder.particle_q is not None else 0}")
+            lines.append(
+                f"  particle_count:    {len(builder.particle_q) if hasattr(builder, 'particle_q') and builder.particle_q is not None else 0}"
+            )
             lines.append(f"  up_axis:           {builder.up_axis}")
             lines.append(f"  rigid_contact_margin: {builder.rigid_contact_margin}")
 
             lines.append("\n  Body keys:")
-            for i, key in enumerate(builder.body_key[:min(10, len(builder.body_key))]):
+            for i, key in enumerate(builder.body_key[: min(10, len(builder.body_key))]):
                 lines.append(f"    [{i}] {key}")
             if len(builder.body_key) > 10:
                 lines.append(f"    ... and {len(builder.body_key) - 10} more")
 
             lines.append("\n  Shape keys:")
-            for i, key in enumerate(builder.shape_key[:min(10, len(builder.shape_key))]):
+            for i, key in enumerate(builder.shape_key[: min(10, len(builder.shape_key))]):
                 lines.append(f"    [{i}] {key}")
             if len(builder.shape_key) > 10:
                 lines.append(f"    ... and {len(builder.shape_key) - 10} more")
 
             lines.append("\n  Shape flags (first 10):")
-            for i, flags in enumerate(builder.shape_flags[:min(10, len(builder.shape_flags))]):
+            for i, flags in enumerate(builder.shape_flags[: min(10, len(builder.shape_flags))]):
                 lines.append(f"    [{i}] {flags} ({builder.shape_key[i]})")
 
             lines.append("\n  Shape contact margins (first 10):")
-            for i, margin in enumerate(builder.shape_contact_margin[:min(10, len(builder.shape_contact_margin))]):
+            for i, margin in enumerate(builder.shape_contact_margin[: min(10, len(builder.shape_contact_margin))]):
                 lines.append(f"    [{i}] {margin} ({builder.shape_key[i]})")
 
             lines.append(f"\n  Collision filter pairs: {len(builder.shape_collision_filter_pairs)}")
@@ -1112,7 +1356,7 @@ class Simulator:
 
         # set up ground plane
         ground = builder.add_ground_plane()
-        builder.shape_transform[ground][2] = -.015
+        # builder.shape_transform[ground][2] = -.015
         # set up pair-wise filters for the BDX Droid shapes to disable self collisions
         droid_shapes: list[int] = []
         for i, key in enumerate(builder.shape_key):
@@ -1132,7 +1376,11 @@ class Simulator:
                 and "ground_plane" not in key
             ]
 
-            lantern_shapes = [i for i in shape_indices if any(keyword in builder.shape_key[i] for keyword in ["vase", "HangingLantern"])]
+            lantern_shapes = [
+                i
+                for i in shape_indices
+                if any(keyword in builder.shape_key[i] for keyword in ["vase", "HangingLantern"])
+            ]
             other_shapes = [i for i in shape_indices if i not in lantern_shapes]
 
             if USE_COACD:
@@ -1164,7 +1412,6 @@ class Simulator:
         builder.default_shape_cfg.thickness = 0.001
         builder.default_shape_cfg.contact_margin = 0.001
         builder.rigid_contact_margin = 0.0025  # This is the fallback when shape contact_margin is None
-
 
     def _collect_animated_colliders(self, builder, path_body_map, path_shape_map):
         """
@@ -1354,7 +1601,7 @@ class Simulator:
                         # rotations=rot,
                         # scales=scale,
                         radius=float(self.integrator.mpm_solver.model.particle_radius.numpy()[0]),
-                        as_instances=False
+                        as_instances=False,
                     )
                 self.usd_updater.end_frame()
 
@@ -1435,11 +1682,16 @@ class Simulator:
         ffmpeg_cmd = [
             "ffmpeg",
             "-y",
-            "-framerate", str(fps),
-            "-i", input_pattern,
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-crf", "18",
+            "-framerate",
+            str(fps),
+            "-i",
+            input_pattern,
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "18",
             str(output_path),
         ]
 
@@ -1579,6 +1831,14 @@ if __name__ == "__main__":
         type=bool,
         default=False,
     )
+    parser.add_argument(
+        "--particle-seeding-prim",
+        help="USD prim path of a UsdGeom.Mesh in the input stage to use as the snow "
+        "heap seeding volume (e.g., '/World/ParticleSeeding'). When provided under the "
+        "cmpm integrator, particles are sampled inside this mesh via ParticleSampler.",
+        type=str,
+        default="/World/ParticleSeeding",
+    )
 
     args = parser.parse_known_args()[0]
 
@@ -1602,8 +1862,6 @@ if __name__ == "__main__":
         args.output = str(base_path / path.name)
         print(f'Output path not specified (-o flag). Writing to "{args.output}".')
 
-    import gc
-
     with wp.ScopedDevice(args.device):
         simulator = Simulator(
             input_path=args.stage_path,
@@ -1618,6 +1876,7 @@ if __name__ == "__main__":
             use_unified_collision_pipeline=args.use_unified_collision_pipeline,
             use_coacd=args.use_coacd,
             use_mesh_approximation=args.use_mesh_approximation,
+            particle_seeding_prim_path=args.particle_seeding_prim,
         )
 
         i = 0
