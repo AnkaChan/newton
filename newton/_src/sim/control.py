@@ -31,13 +31,14 @@ class Control:
     def __init__(self):
         self.joint_f: wp.array | None = None
         """
-        Array of generalized joint forces with shape ``(joint_dof_count,)`` and type ``float``.
+        Array of generalized joint forces [N or N·m, depending on joint type] with shape ``(joint_dof_count,)``
+        and type ``float``.
 
         The degrees of freedom for free joints are included in this array and have the same
         convention as the :attr:`newton.State.body_f` array where the 6D wrench is defined as
         ``(f_x, f_y, f_z, t_x, t_y, t_z)``, where ``f_x``, ``f_y``, and ``f_z`` are the components
-        of the force vector (linear) and ``t_x``, ``t_y``, and ``t_z`` are the
-        components of the torque vector (angular). For free joints, the wrench is applied in world frame with the
+        of the force vector (linear) [N] and ``t_x``, ``t_y``, and ``t_z`` are the
+        components of the torque vector (angular) [N·m]. For free joints, the wrench is applied in world frame with the
         body's center of mass (COM) as reference point.
 
         .. note::
@@ -45,20 +46,27 @@ class Control:
             center-of-mass frame, which can lead to unexpected rotation when applying linear force to a body with a non-zero COM offset.
         """
         self.joint_target_pos: wp.array | None = None
-        """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
+        """Per-DOF position targets [m or rad, depending on joint type], shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
         self.joint_target_vel: wp.array | None = None
-        """Per-DOF velocity targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
+        """Per-DOF velocity targets [m/s or rad/s, depending on joint type], shape ``(joint_dof_count,)``, type ``float`` (optional)."""
+
+        self.joint_act: wp.array | None = None
+        """Per-DOF feedforward actuation input, shape ``(joint_dof_count,)``, type ``float`` (optional).
+
+        This is an additive feedforward term used by actuators (e.g. :class:`ActuatorPD`) in their control law
+        before PD/PID correction is applied.
+        """
 
         self.tri_activations: wp.array | None = None
-        """Array of triangle element activations with shape ``(tri_count,)`` and type ``float``."""
+        """Array of triangle element activations [dimensionless] with shape ``(tri_count,)`` and type ``float``."""
 
         self.tet_activations: wp.array | None = None
-        """Array of tetrahedral element activations with shape with shape ``(tet_count,) and type ``float``."""
+        """Array of tetrahedral element activations [dimensionless] with shape ``(tet_count,)`` and type ``float``."""
 
         self.muscle_activations: wp.array | None = None
         """
-        Array of muscle activations with shape ``(muscle_count,)`` and type ``float``.
+        Array of muscle activations [dimensionless, 0 to 1] with shape ``(muscle_count,)`` and type ``float``.
 
         .. note::
             Support for muscle dynamics is not yet implemented.
@@ -79,6 +87,8 @@ class Control:
             self.joint_target_pos.zero_()
         if self.joint_target_vel is not None:
             self.joint_target_vel.zero_()
+        if self.joint_act is not None:
+            self.joint_act.zero_()
         self._clear_namespaced_arrays()
 
     def _clear_namespaced_arrays(self) -> None:

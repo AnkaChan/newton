@@ -247,7 +247,7 @@ def _build_cable_chain(
         bend_damping=bend_damping,
         stretch_stiffness=1.0e6,
         stretch_damping=1.0e-2,
-        key="test_cable_chain",
+        label="test_cable_chain",
     )
 
     if pin_first and len(rod_bodies) > 0:
@@ -301,7 +301,7 @@ def _build_cable_loop(device, num_links: int = 6):
         stretch_stiffness=1.0e6,
         stretch_damping=1.0e-2,
         closed=True,
-        key="test_cable_loop",
+        label="test_cable_loop",
     )
 
     builder.color()
@@ -502,7 +502,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
             bend_damping=1.0e1,
             stretch_stiffness=1.0e6,
             stretch_damping=1.0e-2,
-            key=f"bend_stiffness_{k:.0e}",
+            label=f"bend_stiffness_{k:.0e}",
         )
 
         # Pin the first body of each cable.
@@ -645,7 +645,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
         bend_damping=0.0,
         stretch_stiffness=1.0e6,
         stretch_damping=1.0e-2,
-        key="twist_chain_orthogonal",
+        label="twist_chain_orthogonal",
     )
 
     # Pin the first body (anchored capsule)
@@ -854,7 +854,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
                 bend_damping=1.0e-1,
                 stretch_stiffness=1.0e6,
                 stretch_damping=1.0e-2,
-                key=f"pile_l{layer}_{lane}",
+                label=f"pile_l{layer}_{lane}",
             )
             cable_bodies.extend(rod_bodies)
 
@@ -989,7 +989,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
-        key="test_cable_ball_joint_attach",
+        label="test_cable_ball_joint_attach",
     )
 
     # `add_rod()` convention: rod body origin is at `positions[i]` (segment start), so the start endpoint is at z=0 local.
@@ -1117,7 +1117,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
-        key="test_cable_fixed_joint_attach",
+        label="test_cable_fixed_joint_attach",
     )
 
     child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
@@ -1232,7 +1232,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
     capsule_body = builder.add_body(
         xform=wp.transform(p=capsule_center, q=wp.quat_identity()),
         mass=1.0,
-        key="ut_gripper_capsule",
+        label="ut_gripper_capsule",
     )
     payload_cfg = builder.default_shape_cfg.copy()
     payload_cfg.mu = 1.0e3
@@ -1242,7 +1242,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
         radius=capsule_radius,
         half_height=capsule_half_height,
         cfg=payload_cfg,
-        key="ut_gripper_capsule_shape",
+        label="ut_gripper_capsule_shape",
     )
 
     # Kinematic box grippers
@@ -1259,12 +1259,12 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
     g_neg = builder.add_body(
         xform=wp.transform(p=anchor_p + wp.vec3(0.0, -initial_offset_mag, 0.0), q=anchor_q),
         mass=0.0,
-        key="ut_gripper_neg",
+        label="ut_gripper_neg",
     )
     g_pos = builder.add_body(
         xform=wp.transform(p=anchor_p + wp.vec3(0.0, initial_offset_mag, 0.0), q=anchor_q),
         mass=0.0,
-        key="ut_gripper_pos",
+        label="ut_gripper_pos",
     )
 
     builder.body_mass[g_neg] = 0.0
@@ -1401,7 +1401,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
         bend_damping=1.0e-2,
         stretch_stiffness=1.0e6,
         stretch_damping=1.0e-2,
-        key="ut_cable_graph_y",
+        label="ut_cable_graph_y",
         wrap_in_articulation=True,
     )
 
@@ -1520,7 +1520,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
         stretch_stiffness=1.0e6,
         stretch_damping=1.0e-2,
         closed=True,
-        key="ut_cable_rod_ring_closed",
+        label="ut_cable_rod_ring_closed",
         wrap_in_articulation=True,
     )
 
@@ -1593,7 +1593,7 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
         bend_damping=0.0,
         stretch_stiffness=1.0e6,
         stretch_damping=1.0e-2,
-        key="ut_cable_graph_quat",
+        label="ut_cable_graph_quat",
         wrap_in_articulation=True,
         quaternions=None,
     )
@@ -1652,7 +1652,7 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
         bend_damping=0.0,
         stretch_stiffness=1.0e6,
         stretch_damping=0.0,
-        key="ut_cable_graph_y_filter",
+        label="ut_cable_graph_y_filter",
         wrap_in_articulation=True,
     )
     test.assertEqual(len(rod_bodies), 3)
@@ -1682,6 +1682,58 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
     )
     for a, b in sibling_pairs:
         assert_body_pair_filtered(builder, model, a, b)
+
+
+def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
+    """VBD rigid contact-force query returns valid per-contact buffers."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e3
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 0.5
+
+    # Two overlapping dynamic boxes to guarantee rigid-rigid contact generation.
+    b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=1.0, label="box0")
+    b1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()), mass=1.0, label="box1")
+    builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+
+    state0 = model.state()
+    contacts = model.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+
+    dt = 1.0 / 60.0
+
+    # Build contacts on the current state and query them directly.
+    # This keeps the test focused on contact-force extraction, not on integration dynamics.
+    model.collide(state0, contacts)
+
+    c_b0, c_b1, c_p0w, c_p1w, c_f_b1, c_count = solver.collect_rigid_contact_forces(state0, contacts, dt)
+    count = int(c_count.numpy()[0])
+
+    # Buffer lengths must match rigid contact capacity.
+    expected_len = int(contacts.rigid_contact_shape0.shape[0])
+    test.assertEqual(int(c_b0.shape[0]), expected_len)
+    test.assertEqual(int(c_b1.shape[0]), expected_len)
+    test.assertEqual(int(c_p0w.shape[0]), expected_len)
+    test.assertEqual(int(c_p1w.shape[0]), expected_len)
+    test.assertEqual(int(c_f_b1.shape[0]), expected_len)
+
+    # We set up overlapping boxes, so at least one rigid contact should be queryable.
+    test.assertGreater(count, 0, msg="Expected at least one rigid-rigid contact")
+
+    b0_np = c_b0.numpy()
+    b1_np = c_b1.numpy()
+    f_np = c_f_b1.numpy()
+    test.assertTrue(np.all(b0_np[:count] >= 0), msg="Invalid body0 ids in active contact range")
+    test.assertTrue(np.all(b1_np[:count] >= 0), msg="Invalid body1 ids in active contact range")
+    test.assertTrue(np.isfinite(f_np[:count]).all(), msg="Non-finite contact force values in active contact range")
+
+    force_norms = np.linalg.norm(f_np[:count], axis=1)
+    test.assertTrue(np.any(force_norms > 1.0e-8), msg="Expected at least one non-zero rigid contact force")
 
 
 class TestCable(unittest.TestCase):
@@ -1764,6 +1816,12 @@ add_function_test(
     TestCable,
     "test_cable_graph_collision_filter_pairs",
     _cable_graph_collision_filter_pairs_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_collect_rigid_body_contact_forces",
+    _collect_rigid_body_contact_forces_impl,
     devices=devices,
 )
 

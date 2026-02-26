@@ -26,8 +26,6 @@
 #
 ###########################################################################
 
-import re
-
 import numpy as np
 import warp as wp
 
@@ -55,6 +53,7 @@ class Example:
             self.viewer.register_ui_callback(self.plot_window.render, "free")
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         builder.add_usd(newton.examples.get_asset("sensor_contact_scene.usda"))
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
@@ -67,9 +66,8 @@ class Example:
 
         self.plate_contact_sensor = SensorContact(
             self.model,
-            sensing_obj_shapes=".*Plate.*",
-            counterpart_shapes=".*Cube.*|.*Sphere.*",
-            match_fn=lambda string, pat: re.match(pat, string),
+            sensing_obj_shapes="*Plate*",
+            counterpart_shapes=["*Cube*", "*Sphere*"],
             include_total=False,
             verbose=True,
         )
@@ -99,12 +97,12 @@ class Example:
             "/env/Cube": [0.2, 0.4, 0.8],
             "/env/Flap": 3 * [0.8],
         }
-        self.shape_map = {key: s for s, key in enumerate(self.model.shape_key)}
+        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
 
         self.state_0 = self.model.state()
 
         self.control = self.model.control()
-        hinge_joint_idx = self.model.joint_key.index("/env/Hinge")
+        hinge_joint_idx = self.model.joint_label.index("/env/Hinge")
         self.hinge_joint_q_start = int(self.model.joint_q_start.numpy()[hinge_joint_idx])
 
         self.next_reset = 0.0
@@ -144,7 +142,7 @@ class Example:
                 self.simulate()
 
         self.solver.update_contacts(self.contacts, self.state_0)
-        self.plate_contact_sensor.eval(self.contacts)
+        self.plate_contact_sensor.update(self.state_0, self.contacts)
 
         net_force = self.plate_contact_sensor.net_force.numpy()
         for i in range(2):
@@ -156,12 +154,12 @@ class Example:
             # color newly touched plate
             plate = self.plate_contact_sensor.sensing_objs[i][0]
             obj = self.plate_contact_sensor.counterparts[i][0]
-            obj_key = self.model.shape_key[obj]
+            obj_key = self.model.shape_label[obj]
             self.plates_touched[i] = True
-            print(f"Plate {self.model.shape_key[plate]} was touched by counterpart {obj_key}")
+            print(f"Plate {self.model.shape_label[plate]} was touched by counterpart {obj_key}")
             self.viewer.update_shape_colors({plate: self.shape_colors[obj_key]})
 
-        self.flap_contact_sensor.eval(self.contacts)
+        self.flap_contact_sensor.update(self.state_0, self.contacts)
         self.plot_window.add_point(np.abs(self.flap_contact_sensor.net_force.numpy()[0, 0, 2]))
         self.sim_time += self.frame_dt
 

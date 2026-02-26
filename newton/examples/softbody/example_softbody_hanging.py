@@ -95,9 +95,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.collision_pipeline.contacts()
+        self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -118,7 +116,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -143,7 +141,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
-            lambda q, _qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+            lambda q, _qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
         )
 
     def render(self):

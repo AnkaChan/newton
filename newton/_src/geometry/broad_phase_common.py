@@ -36,7 +36,7 @@ def check_aabb_overlap(
     box2_upper: wp.vec3,
     box2_cutoff: float,
 ) -> bool:
-    cutoff_combined = max(box1_cutoff, box2_cutoff)
+    cutoff_combined = box1_cutoff + box2_cutoff
     return (
         box1_lower[0] <= box2_upper[0] + cutoff_combined
         and box1_upper[0] >= box2_lower[0] - cutoff_combined
@@ -129,10 +129,10 @@ def is_pair_excluded(
 def write_pair(
     pair: wp.vec2i,
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
     max_candidate_pair: int,
 ):
-    pairid = wp.atomic_add(num_candidate_pair, 0, 1)
+    pairid = wp.atomic_add(candidate_pair_count, 0, 1)
 
     if pairid >= max_candidate_pair:
         return
@@ -192,7 +192,7 @@ def test_world_and_group_pair(world_a: int, world_b: int, collision_group_a: int
     return test_group_pair(collision_group_a, collision_group_b)
 
 
-def precompute_world_map(shape_world: np.ndarray, shape_flags: np.ndarray | None = None):
+def precompute_world_map(shape_world: np.ndarray | list[int], shape_flags: np.ndarray | list[int] | None = None):
     """Precompute an index map that groups shapes by world ID with shared shapes.
 
     This method creates an index mapping where shapes belonging to the same world
@@ -267,22 +267,22 @@ def precompute_world_map(shape_world: np.ndarray, shape_flags: np.ndarray | None
     # Map back to original shape indices
     shared_indices = valid_indices[shared_local_indices]
 
-    # Count how many distinct positive (or zero) world IDs are in filtered set -> num_worlds
+    # Count how many distinct positive (or zero) world IDs are in filtered set -> world_count
     # Get unique positive/zero world IDs
     positive_mask = filtered_world_ids >= 0
     positive_world_ids = filtered_world_ids[positive_mask]
     unique_worlds = np.unique(positive_world_ids)
-    num_worlds = len(unique_worlds)
+    world_count = len(unique_worlds)
 
     # Calculate total size of result
     # Each world gets its own indices + all shared indices
     # Plus one additional segment at the end with only shared indices
     num_positive = np.sum(positive_mask)
-    total_size = num_positive + (num_shared * num_worlds) + num_shared
+    total_size = num_positive + (num_shared * world_count) + num_shared
 
-    # Allocate output arrays (num_worlds + 1 to include dedicated -1 segment)
+    # Allocate output arrays (world_count + 1 to include dedicated -1 segment)
     index_map = np.empty(total_size, dtype=np.int32)
-    slice_ends = np.empty(num_worlds + 1, dtype=np.int32)
+    slice_ends = np.empty(world_count + 1, dtype=np.int32)
 
     # Build the index map
     current_pos = 0
@@ -291,11 +291,11 @@ def precompute_world_map(shape_world: np.ndarray, shape_flags: np.ndarray | None
         world_local_indices = np.where(filtered_world_ids == world_id)[0]
         # Map back to original shape indices
         world_indices = valid_indices[world_local_indices]
-        num_world_shapes = len(world_indices)
+        world_shape_count = len(world_indices)
 
         # Copy world-specific indices (using original shape indices)
-        index_map[current_pos : current_pos + num_world_shapes] = world_indices
-        current_pos += num_world_shapes
+        index_map[current_pos : current_pos + world_shape_count] = world_indices
+        current_pos += world_shape_count
 
         # Append shared (negative) indices (using original shape indices)
         index_map[current_pos : current_pos + num_shared] = shared_indices
@@ -307,6 +307,6 @@ def precompute_world_map(shape_world: np.ndarray, shape_flags: np.ndarray | None
     # Add dedicated segment at the end with only world -1 objects
     index_map[current_pos : current_pos + num_shared] = shared_indices
     current_pos += num_shared
-    slice_ends[num_worlds] = current_pos
+    slice_ends[world_count] = current_pos
 
     return index_map, slice_ends

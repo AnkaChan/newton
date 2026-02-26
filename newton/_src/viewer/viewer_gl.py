@@ -17,15 +17,16 @@ from __future__ import annotations
 
 import ctypes
 import time
+from collections.abc import Callable
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
 
 import newton as nt
 from newton.selection import ArticulationView
-from newton.utils import create_sphere_mesh
 
-from ..core.types import override
+from ..core.types import nparray, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
@@ -91,6 +92,73 @@ def _capsule_build_cap_xforms_and_scales(
     out_scales[tid] = wp.vec3(r, r, r)
 
 
+@wp.kernel
+def _compute_shape_vbo_xforms(
+    shape_transform: wp.array(dtype=wp.transformf),
+    shape_body: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transformf),
+    shape_scale: wp.array(dtype=wp.vec3),
+    shape_type: wp.array(dtype=int),
+    shape_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
+    write_indices: wp.array(dtype=int),
+    out_world_xforms: wp.array(dtype=wp.transformf),
+    out_vbo_xforms: wp.array(dtype=wp.mat44),
+):
+    """Process all model shapes, write mat44 to grouped output positions."""
+    tid = wp.tid()
+    out_idx = write_indices[tid]
+    if out_idx < 0:
+        return
+
+    local_xform = shape_transform[tid]
+    parent = shape_body[tid]
+
+    if parent >= 0:
+        xform = wp.transform_multiply(body_q[parent], local_xform)
+    else:
+        xform = local_xform
+
+    if world_offsets:
+        wi = shape_world[tid]
+        if wi >= 0 and wi < world_offsets.shape[0]:
+            p = wp.transform_get_translation(xform)
+            xform = wp.transform(p + world_offsets[wi], wp.transform_get_rotation(xform))
+
+    out_world_xforms[out_idx] = xform
+
+    p = wp.transform_get_translation(xform)
+    q = wp.transform_get_rotation(xform)
+    R = wp.quat_to_matrix(q)
+
+    # Only mesh/convex_mesh shapes use model scale; other primitives have
+    # their dimensions baked into the geometry mesh, so scale is (1,1,1).
+    geo = shape_type[tid]
+    if geo == nt.GeoType.MESH or geo == nt.GeoType.CONVEX_MESH:
+        s = shape_scale[tid]
+    else:
+        s = wp.vec3(1.0, 1.0, 1.0)
+
+    out_vbo_xforms[out_idx] = wp.mat44(
+        R[0, 0] * s[0],
+        R[1, 0] * s[0],
+        R[2, 0] * s[0],
+        0.0,
+        R[0, 1] * s[1],
+        R[1, 1] * s[1],
+        R[2, 1] * s[1],
+        0.0,
+        R[0, 2] * s[2],
+        R[1, 2] * s[2],
+        R[2, 2] * s[2],
+        0.0,
+        p[0],
+        p[1],
+        p[2],
+        1.0,
+    )
+
+
 class ViewerGL(ViewerBase):
     """
     OpenGL-based interactive viewer for Newton physics models.
@@ -111,15 +179,21 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
-    def __init__(self, width=1920, height=1080, vsync=False, headless=False):
+    def __init__(
+        self,
+        width: int = 1920,
+        height: int = 1080,
+        vsync: bool = False,
+        headless: bool = False,
+    ):
         """
         Initialize the OpenGL viewer and UI.
 
         Args:
-            width (int): Window width in pixels.
-            height (int): Window height in pixels.
-            vsync (bool): Enable vertical sync.
-            headless (bool): Run in headless mode (no window).
+            width: Window width in pixels.
+            height: Window height in pixels.
+            vsync: Enable vertical sync.
+            headless: Run in headless mode (no window).
         """
         super().__init__()
 
@@ -130,6 +204,7 @@ class ViewerGL(ViewerBase):
         self.renderer.set_title("Newton Viewer")
 
         self._paused = False
+        self._packed_vbo_xforms = None
 
         # State caching for selection panel
         self._last_state = None
@@ -214,7 +289,11 @@ class ViewerGL(ViewerBase):
             gl.glDeleteBuffers(1, pbo_id)
             self._pbo = None
 
-    def register_ui_callback(self, callback, position="side"):
+    def register_ui_callback(
+        self,
+        callback: Callable[[Any], None],
+        position: Literal["side", "stats", "free"] = "side",
+    ):
         """
         Register a UI callback to be rendered during the UI phase.
 
@@ -239,27 +318,33 @@ class ViewerGL(ViewerBase):
         """
         Create a low-resolution sphere mesh for point rendering.
         """
-        vertices, indices = create_sphere_mesh(1.0, 6, 6)
-        self._point_mesh = MeshGL(len(vertices), len(indices), self.device)
+        mesh = nt.Mesh.create_sphere(1.0, num_latitudes=6, num_longitudes=6, compute_inertia=False)
+        self._point_mesh = MeshGL(len(mesh.vertices), len(mesh.indices), self.device)
 
-        points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
-        normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
-        uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-        indices = wp.array(indices, dtype=wp.int32, device=self.device)
+        points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+        normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
+        uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
+        indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
 
         self._point_mesh.update(points, indices, normals, uvs)
 
     @override
     def log_gizmo(
         self,
-        name,
-        transform,
+        name: str,
+        transform: wp.transform,
     ):
+        """Log or update a transform gizmo for the current frame.
+
+        Args:
+            name: Unique gizmo path/name.
+            transform: Gizmo world transform.
+        """
         # Store for this frame; call this every frame you want it drawn/active
         self._gizmo_log[name] = transform
 
     @override
-    def set_model(self, model, max_worlds: int | None = None):
+    def set_model(self, model: nt.Model | None, max_worlds: int | None = None):
         """
         Set the Newton model to visualize.
 
@@ -305,11 +390,70 @@ class ViewerGL(ViewerBase):
                 )
                 batch.scales = out_scales
 
-        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0, world_offsets=self.world_offsets)
+        self.picking = Picking(model, world_offsets=self.world_offsets)
         self.wind = Wind(model)
+
+        # Build packed arrays for batched GPU rendering of shape instances
+        self._build_packed_vbo_arrays()
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
+
+    def _build_packed_vbo_arrays(self):
+        """Build write-index + output arrays for batched shape transform computation.
+
+        The kernel processes all model shapes (coalesced reads), uses a write-index
+        array to scatter results into contiguous groups in the output buffer.
+        """
+        from .gl.opengl import MeshGL, MeshInstancerGL  # noqa: PLC0415
+
+        if self.model is None:
+            self._packed_groups = []
+            return
+
+        shape_count = self.model.shape_count
+        device = self.device
+
+        groups = []
+        capsule_keys = set()
+        total = 0
+
+        for key, shapes in self._shape_instances.items():
+            n = shapes.xforms.shape[0] if isinstance(shapes.xforms, wp.array) else len(shapes.xforms)
+            if n == 0:
+                continue
+            if shapes.geo_type == nt.GeoType.CAPSULE:
+                capsule_keys.add(key)
+            groups.append((key, shapes, total, n))
+            total += n
+
+        self._capsule_keys = capsule_keys
+        self._packed_groups = groups
+
+        if total == 0:
+            return
+
+        # Write-index: maps model shape index → packed output position (-1 = skip)
+        write_np = np.full(shape_count, -1, dtype=np.int32)
+        # World xforms output (capsules read these for cap sphere computation)
+        all_world_xforms = wp.empty(total, dtype=wp.transform, device=device)
+
+        for _key, shapes, offset, n in groups:
+            model_shapes = np.asarray(shapes.model_shapes, dtype=np.int32)
+            write_np[model_shapes] = np.arange(offset, offset + n, dtype=np.int32)
+
+            if _key in capsule_keys:
+                shapes.world_xforms = all_world_xforms[offset : offset + n]
+
+            if _key not in capsule_keys:
+                if shapes.name not in self.objects:
+                    if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
+                        self.objects[shapes.name] = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+
+        self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
+        self._packed_world_xforms = all_world_xforms
+        self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
+        self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=True)
 
     @override
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
@@ -340,27 +484,27 @@ class ViewerGL(ViewerBase):
     @override
     def log_mesh(
         self,
-        name,
-        points: wp.array,
-        indices: wp.array,
-        normals: wp.array | None = None,
-        uvs: wp.array | None = None,
+        name: str,
+        points: wp.array(dtype=wp.vec3),
+        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
+        normals: wp.array(dtype=wp.vec3) | None = None,
+        uvs: wp.array(dtype=wp.vec2) | None = None,
         texture: np.ndarray | str | None = None,
-        hidden=False,
-        backface_culling=True,
+        hidden: bool = False,
+        backface_culling: bool = True,
     ):
         """
         Log a mesh for rendering.
 
         Args:
-            name (str): Unique name for the mesh.
-            points (wp.array): Vertex positions.
-            indices (wp.array): Triangle indices.
-            normals (wp.array, optional): Vertex normals.
-            uvs (wp.array, optional): Vertex UVs.
-            texture (np.ndarray | str, optional): Texture path/URL or image array (H, W, C).
-            hidden (bool): Whether the mesh is hidden.
-            backface_culling (bool): Enable backface culling.
+            name: Unique name for the mesh.
+            points: Vertex positions.
+            indices: Triangle indices.
+            normals: Vertex normals.
+            uvs: Vertex UVs.
+            texture: Texture path/URL or image array (H, W, C).
+            hidden: Whether the mesh is hidden.
+            backface_culling: Enable backface culling.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -377,13 +521,22 @@ class ViewerGL(ViewerBase):
         self.objects[name].backface_culling = backface_culling
 
     @override
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
         """
         Log a batch of mesh instances for rendering.
 
         Args:
-            name (str): Unique name for the instancer.
-            mesh (str): Name of the base mesh.
+            name: Unique name for the instancer.
+            mesh: Name of the base mesh.
             xforms: Array of transforms.
             scales: Array of scales.
             colors: Array of colors.
@@ -419,7 +572,16 @@ class ViewerGL(ViewerBase):
         self.objects[name].hidden = hidden
 
     @override
-    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_capsules(
+        self,
+        name: str,
+        mesh: str,
+        xforms: wp.array(dtype=wp.transform) | None,
+        scales: wp.array(dtype=wp.vec3) | None,
+        colors: wp.array(dtype=wp.vec3) | None,
+        materials: wp.array(dtype=wp.vec4) | None,
+        hidden: bool = False,
+    ):
         """
         Render capsules using instanced cylinder bodies + instanced sphere end caps.
 
@@ -427,13 +589,13 @@ class ViewerGL(ViewerBase):
         prototype meshes (unit cylinder + unit sphere) and applying per-instance transforms/scales.
 
         Args:
-            name (str): Unique name for the capsule instancer group.
+            name: Unique name for the capsule instancer group.
             mesh: Capsule prototype mesh path from ViewerBase (unused in this backend).
             xforms: Capsule instance transforms (wp.transform), length N.
             scales: Capsule body instance scales, expected (radius, radius, half_height), length N.
             colors: Capsule instance colors (wp.vec3), length N or None (no update).
             materials: Capsule instance materials (wp.vec4), length N or None (no update).
-            hidden (bool): Whether the instances are hidden.
+            hidden: Whether the instances are hidden.
         """
         # Render capsules via instanced cylinder body + instanced sphere caps.
         sphere_mesh = "/geometry/_capsule_instancer/sphere"
@@ -504,23 +666,25 @@ class ViewerGL(ViewerBase):
     @override
     def log_lines(
         self,
-        name,
-        starts: wp.array,
-        ends: wp.array,
-        colors,
+        name: str,
+        starts: wp.array(dtype=wp.vec3) | None,
+        ends: wp.array(dtype=wp.vec3) | None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ),
         width: float = 0.01,
-        hidden=False,
+        hidden: bool = False,
     ):
         """
         Log line data for rendering.
 
         Args:
-            name (str): Unique identifier for the line batch.
-            starts (wp.array): Array of line start positions (shape: [N, 3]) or None for empty.
-            ends (wp.array): Array of line end positions (shape: [N, 3]) or None for empty.
+            name: Unique identifier for the line batch.
+            starts: Array of line start positions (shape: [N, 3]) or None for empty.
+            ends: Array of line end positions (shape: [N, 3]) or None for empty.
             colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
-            width: The width of the lines (float)
-            hidden (bool): Whether the lines are initially hidden.
+            width: The width of the lines.
+            hidden: Whether the lines are initially hidden.
         """
         # Handle empty logs by resetting the LinesGL object
         if starts is None or ends is None or colors is None:
@@ -560,59 +724,156 @@ class ViewerGL(ViewerBase):
         self.lines[name].update(starts, ends, colors)
 
     @override
-    def log_points(self, name, points, radii, colors, hidden=False):
+    def log_points(
+        self,
+        name: str,
+        points: wp.array(dtype=wp.vec3) | None,
+        radii: wp.array(dtype=wp.float32) | float | None = None,
+        colors: (
+            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
+        ) = None,
+        hidden: bool = False,
+    ):
         """
         Log a batch of points for rendering as spheres.
 
         Args:
-            name (str): Unique name for the point batch.
+            name: Unique name for the point batch.
             points: Array of point positions.
             radii: Array of point radius values.
             colors: Array of point colors.
-            hidden (bool): Whether the points are hidden.
+            hidden: Whether the points are hidden.
         """
+        if points is None:
+            if name in self.objects:
+                self.objects[name].hidden = True
+            return
+
         if self._point_mesh is None:
             self._create_point_mesh()
 
         num_points = len(points)
+        object_recreated = False
         if name not in self.objects:
             # Start with a reasonable default.
             initial_capacity = max(num_points, 256)
             self.objects[name] = MeshInstancerGL(initial_capacity, self._point_mesh)
+            object_recreated = True
         elif num_points > self.objects[name].num_instances:
             old = self.objects[name]
             new_capacity = max(num_points, old.num_instances * 2)
             self.objects[name] = MeshInstancerGL(new_capacity, self._point_mesh)
+            object_recreated = True
+
+        if radii is None:
+            radii = wp.full(num_points, 0.1, dtype=wp.float32, device=self.device)
+
+        # If a point object is first created/recreated and no colors are provided,
+        # initialize to white to avoid uninitialized instance color buffers.
+        if colors is None and object_recreated:
+            colors = wp.full(num_points, wp.vec3(1.0, 1.0, 1.0), dtype=wp.vec3, device=self.device)
 
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
     @override
-    def log_array(self, name, array):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
         """
         Log a generic array for visualization (not implemented).
-        """
-        pass
-
-    @override
-    def log_scalar(self, name, value):
-        """
-        Log a scalar value for visualization (not implemented).
-        """
-        pass
-
-    @override
-    def log_state(self, state):
-        """
-        Cache the simulation state for UI panels and call parent log_state.
 
         Args:
-            state: The current simulation state.
+            name: Unique path/name for the array signal.
+            array: Array data to visualize.
         """
-        # Cache the state for selection panel use
+        pass
+
+    @override
+    def log_scalar(self, name: str, value: int | float | bool | np.number):
+        """
+        Log a scalar value for visualization (not implemented).
+
+        Args:
+            name: Unique path/name for the scalar signal.
+            value: Scalar value to visualize.
+        """
+        pass
+
+    @override
+    def log_state(self, state: nt.State):
+        """
+        Log the current simulation state for rendering.
+
+        For shape instances on CUDA, uses a batched path: 2 kernel launches +
+        1 D2H copy to a shared pinned buffer, then uploads slices per instancer.
+        Everything else (capsules, SDF, particles, joints, …) uses the standard path.
+
+        Args:
+            state: Current simulation state for all rendered bodies/shapes.
+        """
         self._last_state = state
-        # Call parent implementation
-        super().log_state(state)
+
+        if self.model is None:
+            return
+
+        if self._packed_vbo_xforms is not None and self.device.is_cuda:
+            # ---- Single kernel over all model shapes, scatter-write to grouped output ----
+            wp.launch(
+                _compute_shape_vbo_xforms,
+                dim=self.model.shape_count,
+                inputs=[
+                    self.model.shape_transform,
+                    self.model.shape_body,
+                    state.body_q,
+                    self.model.shape_scale,
+                    self.model.shape_type,
+                    self.model.shape_world,
+                    self.world_offsets,
+                    self._packed_write_indices,
+                ],
+                outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
+                device=self.device,
+                record_tape=False,
+            )
+            wp.copy(self._packed_vbo_xforms_host, self._packed_vbo_xforms)
+            wp.synchronize()  # copy is async (pinned destination), must sync before CPU read
+
+            # ---- Upload pinned host slices to GL per instancer ----
+            host_np = self._packed_vbo_xforms_host.numpy()
+
+            for key, shapes, offset, count in self._packed_groups:
+                visible = self._should_show_shape(shapes.flags, shapes.static)
+                colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+                materials = shapes.materials if self.model_changed else None
+
+                if key in self._capsule_keys:
+                    self.log_capsules(
+                        shapes.name,
+                        shapes.mesh,
+                        shapes.world_xforms,
+                        shapes.scales,
+                        colors,
+                        materials,
+                        hidden=not visible,
+                    )
+                else:
+                    instancer = self.objects.get(shapes.name)
+                    if instancer is not None:
+                        instancer.hidden = not visible
+                        instancer.update_from_pinned(
+                            host_np[offset : offset + count],
+                            count,
+                            colors,
+                            materials,
+                        )
+
+                shapes.colors_changed = False
+
+            # ---- Non-shape rendering uses standard synchronous paths ----
+            self._log_non_shape_state(state)
+            self.model_changed = False
+        else:
+            # Fallback for CPU or when no packed data is available
+            super().log_state(state)
 
         self._render_picking_line(state)
 
@@ -636,8 +897,9 @@ class ViewerGL(ViewerBase):
 
         # Get the pick target and current picked point on geometry (in physics space)
         pick_state = self.picking.pick_state.numpy()
-        pick_target = np.array([pick_state[8], pick_state[9], pick_state[10]], dtype=np.float32)
-        picked_point = np.array([pick_state[11], pick_state[12], pick_state[13]], dtype=np.float32)
+
+        pick_target = pick_state[0]["picking_target_world"]
+        picked_point = pick_state[0]["picked_point_world"]
 
         # Apply world offset to convert from physics space to visual space
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
@@ -659,7 +921,7 @@ class ViewerGL(ViewerBase):
         self.log_lines("picking_line", starts, ends, colors, hidden=False)
 
     @override
-    def begin_frame(self, time):
+    def begin_frame(self, time: float):
         """
         Begin a new frame (calls parent implementation).
 
@@ -684,7 +946,7 @@ class ViewerGL(ViewerBase):
         self._update()
 
     @override
-    def apply_forces(self, state):
+    def apply_forces(self, state: nt.State):
         """
         Apply viewer-driven forces (picking, wind) to the model.
 
@@ -740,10 +1002,10 @@ class ViewerGL(ViewerBase):
         to transfer pixel data entirely on the GPU, avoiding expensive CPU-GPU transfers.
 
         Args:
-            target_image (wp.array, optional):
+            target_image:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
-            render_ui (bool): Whether to render the UI.
+            render_ui: Whether to render the UI.
 
         Returns:
             wp.array: GPU array containing RGB image data with shape `(height, width, 3)`
@@ -860,12 +1122,12 @@ class ViewerGL(ViewerBase):
         Set the vsync state.
 
         Args:
-            enabled (bool): Enable or disable vsync.
+            enabled: Enable or disable vsync.
         """
         self.renderer.set_vsync(enabled)
 
     @override
-    def is_key_down(self, key):
+    def is_key_down(self, key: str | int) -> bool:
         """
         Check if a key is currently pressed.
 
@@ -924,13 +1186,15 @@ class ViewerGL(ViewerBase):
 
     # events
 
-    def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
+    def on_mouse_scroll(self, x: float, y: float, scroll_x: float, scroll_y: float):
         """
         Handle mouse scroll for zooming (FOV adjustment).
 
         Args:
-            x, y: Mouse position.
-            scroll_x, scroll_y: Scroll deltas.
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
+            scroll_x: Horizontal scroll delta.
+            scroll_y: Vertical scroll delta.
         """
         if self.ui and self.ui.is_capturing():
             return
@@ -949,12 +1213,13 @@ class ViewerGL(ViewerBase):
         scale_y = fb_h / win_h
         return float(x) * scale_x, float(y) * scale_y
 
-    def on_mouse_press(self, x, y, button, modifiers):
+    def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
         """
         Handle mouse press events (object picking).
 
         Args:
-            x, y: Mouse position.
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
@@ -970,24 +1235,35 @@ class ViewerGL(ViewerBase):
             if self._last_state is not None:
                 self.picking.pick(self._last_state, ray_start, ray_dir)
 
-    def on_mouse_release(self, x, y, button, modifiers):
+    def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
         """
         Handle mouse release events to stop dragging.
 
         Args:
-            x, y: Mouse position.
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
             button: Mouse button released.
             modifiers: Modifier keys.
         """
         self.picking.release()
 
-    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+    def on_mouse_drag(
+        self,
+        x: float,
+        y: float,
+        dx: float,
+        dy: float,
+        buttons: int,
+        modifiers: int,
+    ):
         """
         Handle mouse drag events for camera and picking.
 
         Args:
-            x, y: Mouse position.
-            dx, dy: Mouse movement deltas.
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
+            dx: Mouse delta along X since previous event.
+            dy: Mouse delta along Y since previous event.
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
@@ -1013,13 +1289,19 @@ class ViewerGL(ViewerBase):
             if self.picking.is_picking():
                 self.picking.update(ray_start, ray_dir)
 
-    def on_mouse_motion(self, x, y, dx, dy):
+    def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
         """
         Handle mouse motion events (not used).
+
+        Args:
+            x: Mouse X position in window coordinates.
+            y: Mouse Y position in window coordinates.
+            dx: Mouse delta along X since previous event.
+            dy: Mouse delta along Y since previous event.
         """
         pass
 
-    def on_key_press(self, symbol, modifiers):
+    def on_key_press(self, symbol: int, modifiers: int):
         """
         Handle key press events for UI and simulation control.
 
@@ -1047,9 +1329,13 @@ class ViewerGL(ViewerBase):
             # Exit with Escape key
             self.renderer.close()
 
-    def on_key_release(self, symbol, modifiers):
+    def on_key_release(self, symbol: int, modifiers: int):
         """
         Handle key release events (not used).
+
+        Args:
+            symbol: Released key code.
+            modifiers: Active modifier bitmask for this event.
         """
         pass
 
@@ -1113,7 +1399,7 @@ class ViewerGL(ViewerBase):
         Update the camera position and orientation based on user input.
 
         Args:
-            dt (float): Time delta since last update.
+            dt: Time delta since last update.
         """
         if self.ui and self.ui.is_capturing():
             return
@@ -1163,13 +1449,13 @@ class ViewerGL(ViewerBase):
         dv = type(self.camera.pos)(*self._cam_vel)
         self.camera.pos += dv * dt
 
-    def on_resize(self, width, height):
+    def on_resize(self, width: int, height: int):
         """
         Handle window resize events.
 
         Args:
-            width (int): New window width.
-            height (int): New window height.
+            width: New window width.
+            height: New window height.
         """
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera.update_screen_size(fb_w, fb_h)
@@ -1287,7 +1573,7 @@ class ViewerGL(ViewerBase):
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Model Information", flags=header_flags):
                     imgui.separator()
-                    imgui.text(f"Worlds: {self.model.num_worlds}")
+                    imgui.text(f"Worlds: {self.model.world_count}")
                     axis_names = ["X", "Y", "Z"]
                     imgui.text(f"Up Axis: {axis_names[self.model.up_axis]}")
                     gravity = self.model.gravity.numpy()[0]
@@ -1661,8 +1947,8 @@ class ViewerGL(ViewerBase):
         Render the values of the selected attribute in the selection panel.
 
         Args:
-            view (ArticulationView): The current articulation view.
-            attribute_name (str): The attribute to display.
+            view: The current articulation view.
+            attribute_name: The attribute to display.
         """
         imgui = self.ui.imgui
         state = self._selection_ui_state
@@ -1758,8 +2044,8 @@ class ViewerGL(ViewerBase):
         Get the names associated with an attribute (joint names, link names, etc.).
 
         Args:
-            view (ArticulationView): The current articulation view.
-            attribute_name (str): The attribute to get names for.
+            view: The current articulation view.
+            attribute_name: The attribute to get names for.
 
         Returns:
             list or None: List of names or None if not available.
@@ -1779,15 +2065,15 @@ class ViewerGL(ViewerBase):
         except Exception:
             return None
 
-    def _render_value_sliders(self, values, names, attribute_name: str, state):
+    def _render_value_sliders(self, values: np.ndarray, names: list[str], attribute_name: str, state: dict):
         """
         Render values as individual sliders for each DOF.
 
         Args:
             values: Array of values to display.
             names: List of names for each value.
-            attribute_name (str): The attribute being displayed.
-            state (dict): UI state dictionary.
+            attribute_name: The attribute being displayed.
+            state: UI state dictionary.
         """
         imgui = self.ui.imgui
 

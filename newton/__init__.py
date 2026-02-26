@@ -39,7 +39,6 @@ from ._src.geometry import (
     Heightfield,
     Mesh,
     ParticleFlags,
-    SAPSortType,
     ShapeFlags,
 )
 
@@ -49,7 +48,6 @@ __all__ += [
     "Heightfield",
     "Mesh",
     "ParticleFlags",
-    "SAPSortType",
     "ShapeFlags",
 ]
 
@@ -57,12 +55,11 @@ __all__ += [
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
-    ActuatorMode,
-    BroadPhaseMode,
     CollisionPipeline,
     Contacts,
     Control,
     EqType,
+    JointTargetMode,
     JointType,
     Model,
     ModelBuilder,
@@ -74,12 +71,11 @@ from ._src.sim import (  # noqa: E402
 )
 
 __all__ += [
-    "ActuatorMode",
-    "BroadPhaseMode",
     "CollisionPipeline",
     "Contacts",
     "Control",
     "EqType",
+    "JointTargetMode",
     "JointType",
     "Model",
     "ModelBuilder",

@@ -34,6 +34,15 @@ from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     ParticleForceElementAdjacencyInfo,
+    # Adjacency building kernels
+    _count_num_adjacent_edges,
+    _count_num_adjacent_faces,
+    _count_num_adjacent_springs,
+    _count_num_adjacent_tets,
+    _fill_adjacent_edges,
+    _fill_adjacent_faces,
+    _fill_adjacent_springs,
+    _fill_adjacent_tets,
     # Topological filtering helper functions
     accumulate_particle_body_contact_force_and_hessian,
     accumulate_self_contact_force_and_hessian,
@@ -43,15 +52,6 @@ from .particle_vbd_kernels import (
     apply_truncation_ts,
     build_edge_n_ring_edge_collision_filter,
     build_vertex_n_ring_tris_collision_filter,
-    # Adjacency building kernels
-    count_num_adjacent_edges,
-    count_num_adjacent_faces,
-    count_num_adjacent_springs,
-    count_num_adjacent_tets,
-    fill_adjacent_edges,
-    fill_adjacent_faces,
-    fill_adjacent_springs,
-    fill_adjacent_tets,
     # Solver kernels (particle VBD)
     forward_step,
     set_to_csr,
@@ -62,16 +62,17 @@ from .particle_vbd_kernels import (
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     RigidForceElementAdjacencyInfo,
+    # Adjacency building kernels
+    _count_num_adjacent_joints,
+    _fill_adjacent_joints,
     # Iteration kernels
     accumulate_body_body_contacts_per_body,  # Body-body (rigid-rigid) contacts (Gauss-Seidel mode)
     accumulate_body_particle_contacts_per_body,  # Body-particle soft contacts (two-way coupling)
     build_body_body_contact_lists,  # Body-body (rigid-rigid) contact adjacency
     build_body_particle_contact_lists,  # Body-particle (rigid-particle) soft-contact adjacency
     compute_cable_dahl_parameters,  # Cable bending plasticity
+    compute_rigid_contact_forces,
     copy_rigid_body_transforms_back,
-    # Adjacency building kernels
-    count_num_adjacent_joints,
-    fill_adjacent_joints,
     # Pre-iteration kernels (rigid AVBD)
     forward_step_rigid_bodies,
     solve_rigid_body,
@@ -350,7 +351,7 @@ class SolverVBD(SolverBase):
         self.inertia = wp.zeros_like(model.particle_q, device=self.device)  # inertial target positions
 
         # Particle adjacency info
-        self.particle_adjacency = self.compute_particle_force_element_adjacency().to(self.device)
+        self.particle_adjacency = self._compute_particle_force_element_adjacency().to(self.device)
 
         # Self-contact settings
         self.particle_enable_self_contact = particle_enable_self_contact
@@ -381,7 +382,7 @@ class SolverVBD(SolverBase):
                 edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
             )
 
-            self.compute_particle_contact_filtering_list(
+            self._compute_particle_contact_filtering_list(
                 particle_external_vertex_contact_filtering_map, particle_external_edge_contact_filtering_map
             )
 
@@ -464,7 +465,7 @@ class SolverVBD(SolverBase):
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
             # Adjacency and dimensions
-            self.rigid_adjacency = self.compute_rigid_force_element_adjacency(model).to(self.device)
+            self.rigid_adjacency = self._compute_rigid_force_element_adjacency(model).to(self.device)
 
             # Force accumulation arrays
             self.body_torques = wp.zeros(self.model.body_count, dtype=wp.vec3, device=self.device)
@@ -502,8 +503,8 @@ class SolverVBD(SolverBase):
                 max_contacts = getattr(model, "rigid_contact_max", 0) or 0
                 if max_contacts <= 0:
                     # Estimate from shape contact pairs (same heuristic previously in finalize())
-                    num_pairs = model.shape_contact_pair_count if hasattr(model, "shape_contact_pair_count") else 0
-                    max_contacts = max(10000, num_pairs * 20)
+                    pair_count = model.shape_contact_pair_count if hasattr(model, "shape_contact_pair_count") else 0
+                    max_contacts = max(10000, pair_count * 20)
                 # Per-contact AVBD penalty for body-body contacts
                 self.body_body_contact_penalty_k = wp.full(
                     (max_contacts,), self.k_start_body_contact, dtype=float, device=self.device
@@ -843,7 +844,7 @@ class SolverVBD(SolverBase):
     # Adjacency Building Methods
     # =====================================================
 
-    def compute_particle_force_element_adjacency(self):
+    def _compute_particle_force_element_adjacency(self):
         particle_adjacency = ParticleForceElementAdjacencyInfo()
 
         with wp.ScopedDevice("cpu"):
@@ -853,7 +854,7 @@ class SolverVBD(SolverBase):
                 num_vertex_adjacent_edges = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
 
                 wp.launch(
-                    kernel=count_num_adjacent_edges,
+                    kernel=_count_num_adjacent_edges,
                     inputs=[edges_array, num_vertex_adjacent_edges],
                     dim=1,
                     device="cpu",
@@ -873,7 +874,7 @@ class SolverVBD(SolverBase):
                 particle_adjacency.v_adj_edges = wp.empty(shape=(edge_particle_adjacency_array_size,), dtype=wp.int32)
 
                 wp.launch(
-                    kernel=fill_adjacent_edges,
+                    kernel=_fill_adjacent_edges,
                     inputs=[
                         edges_array,
                         particle_adjacency.v_adj_edges_offsets,
@@ -893,7 +894,7 @@ class SolverVBD(SolverBase):
                 # count number of adjacent faces for each vertex
                 num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32, device="cpu")
                 wp.launch(
-                    kernel=count_num_adjacent_faces,
+                    kernel=_count_num_adjacent_faces,
                     inputs=[face_indices, num_vertex_adjacent_faces],
                     dim=1,
                     device="cpu",
@@ -914,7 +915,7 @@ class SolverVBD(SolverBase):
                 particle_adjacency.v_adj_faces = wp.empty(shape=(face_particle_adjacency_array_size,), dtype=wp.int32)
 
                 wp.launch(
-                    kernel=fill_adjacent_faces,
+                    kernel=_fill_adjacent_faces,
                     inputs=[
                         face_indices,
                         particle_adjacency.v_adj_faces_offsets,
@@ -933,7 +934,7 @@ class SolverVBD(SolverBase):
                 num_vertex_adjacent_tets = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
 
                 wp.launch(
-                    kernel=count_num_adjacent_tets,
+                    kernel=_count_num_adjacent_tets,
                     inputs=[tet_indices, num_vertex_adjacent_tets],
                     dim=1,
                     device="cpu",
@@ -951,7 +952,7 @@ class SolverVBD(SolverBase):
                 particle_adjacency.v_adj_tets = wp.empty(shape=(tet_particle_adjacency_array_size,), dtype=wp.int32)
 
                 wp.launch(
-                    kernel=fill_adjacent_tets,
+                    kernel=_fill_adjacent_tets,
                     inputs=[
                         tet_indices,
                         particle_adjacency.v_adj_tets_offsets,
@@ -971,7 +972,7 @@ class SolverVBD(SolverBase):
                 num_vertex_adjacent_spring = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
 
                 wp.launch(
-                    kernel=count_num_adjacent_springs,
+                    kernel=_count_num_adjacent_springs,
                     inputs=[spring_array, num_vertex_adjacent_spring],
                     dim=1,
                     device="cpu",
@@ -988,7 +989,7 @@ class SolverVBD(SolverBase):
                 particle_adjacency.v_adj_springs = wp.empty(shape=(num_vertex_adjacent_spring.sum(),), dtype=wp.int32)
 
                 wp.launch(
-                    kernel=fill_adjacent_springs,
+                    kernel=_fill_adjacent_springs,
                     inputs=[
                         spring_array,
                         particle_adjacency.v_adj_springs_offsets,
@@ -1005,7 +1006,7 @@ class SolverVBD(SolverBase):
 
         return particle_adjacency
 
-    def compute_particle_contact_filtering_list(
+    def _compute_particle_contact_filtering_list(
         self, external_vertex_contact_filtering_map, external_edge_contact_filtering_map
     ):
         if self.model.tri_count:
@@ -1072,7 +1073,7 @@ class SolverVBD(SolverBase):
                     self.particle_edge_edge_contact_filtering_list_offsets, dtype=int, device=self.device
                 )
 
-    def compute_rigid_force_element_adjacency(self, model):
+    def _compute_rigid_force_element_adjacency(self, model):
         """
         Build CSR adjacency between rigid bodies and joints.
 
@@ -1094,7 +1095,7 @@ class SolverVBD(SolverBase):
 
                 num_body_adjacent_joints = wp.zeros(shape=(model.body_count,), dtype=wp.int32)
                 wp.launch(
-                    kernel=count_num_adjacent_joints,
+                    kernel=_count_num_adjacent_joints,
                     inputs=[joint_parent_cpu, joint_child_cpu, num_body_adjacent_joints],
                     dim=1,
                     device="cpu",
@@ -1110,7 +1111,7 @@ class SolverVBD(SolverBase):
                 adjacency.body_adj_joints = wp.empty(shape=(num_body_adjacent_joints.sum(),), dtype=wp.int32)
 
                 wp.launch(
-                    kernel=fill_adjacent_joints,
+                    kernel=_fill_adjacent_joints,
                     inputs=[
                         joint_parent_cpu,
                         joint_child_cpu,
@@ -1177,17 +1178,17 @@ class SolverVBD(SolverBase):
         update_rigid_history = self.update_rigid_history
         self.update_rigid_history = True
 
-        self.initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history)
-        self.initialize_particles(state_in, state_out, dt)
+        self._initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history)
+        self._initialize_particles(state_in, state_out, dt)
 
         for iter_num in range(self.iterations):
-            self.solve_rigid_body_iteration(state_in, state_out, contacts, dt)
-            self.solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
+            self._solve_rigid_body_iteration(state_in, state_out, contacts, dt)
+            self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
-        self.finalize_rigid_bodies(state_out, dt)
-        self.finalize_particles(state_out, dt)
+        self._finalize_rigid_bodies(state_out, dt)
+        self._finalize_particles(state_out, dt)
 
-    def penetration_free_truncation(self, particle_q_out=None):
+    def _penetration_free_truncation(self, particle_q_out=None):
         """
         Modify displacements_in in-place, also modify particle_q if its not None
 
@@ -1249,7 +1250,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def initialize_particles(self, state_in: State, state_out: State, dt: float):
+    def _initialize_particles(self, state_in: State, state_out: State, dt: float):
         """Initialize particle positions for the VBD iteration."""
         model = self.model
 
@@ -1259,7 +1260,7 @@ class SolverVBD(SolverBase):
 
         # Collision detection before initialization to compute conservative bounds
         if self.particle_enable_self_contact:
-            self.collision_detection_penetration_free(state_in)
+            self._collision_detection_penetration_free(state_in)
         else:
             self.pos_prev_collision_detection.assign(state_in.particle_q)
             self.particle_displacements.zero_()
@@ -1286,9 +1287,9 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-        self.penetration_free_truncation(state_in.particle_q)
+        self._penetration_free_truncation(state_in.particle_q)
 
-    def initialize_rigid_bodies(
+    def _initialize_rigid_bodies(
         self,
         state_in: State,
         contacts: Contacts | None,
@@ -1324,7 +1325,6 @@ class SolverVBD(SolverBase):
                     state_in.body_qd,  # input/output
                 ],
                 outputs=[
-                    self.body_q_prev,
                     self.body_inertia_q,
                 ],
                 dim=model.body_count,
@@ -1475,7 +1475,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def solve_particle_iteration(
+    def _solve_particle_iteration(
         self, state_in: State, state_out: State, contacts: Contacts | None, dt: float, iter_num: int
     ):
         """Solve one VBD iteration for particles."""
@@ -1504,7 +1504,7 @@ class SolverVBD(SolverBase):
                 self.particle_collision_detection_interval >= 1
                 and iter_num % self.particle_collision_detection_interval == 0
             ):
-                self.collision_detection_penetration_free(state_in)
+                self._collision_detection_penetration_free(state_in)
 
         # Zero out forces and hessians
         self.particle_forces.zero_()
@@ -1659,11 +1659,11 @@ class SolverVBD(SolverBase):
                     ],
                     device=self.device,
                 )
-            self.penetration_free_truncation(state_in.particle_q)
+            self._penetration_free_truncation(state_in.particle_q)
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
-    def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
+    def _solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
         """Solve one AVBD iteration for rigid bodies (per-iteration phase).
 
         Accumulates contact and joint forces/hessians, solves 6x6 rigid body systems per color,
@@ -1795,8 +1795,8 @@ class SolverVBD(SolverBase):
                         contacts.rigid_contact_point0,
                         contacts.rigid_contact_point1,
                         contacts.rigid_contact_normal,
-                        contacts.rigid_contact_thickness0,
-                        contacts.rigid_contact_thickness1,
+                        contacts.rigid_contact_margin0,
+                        contacts.rigid_contact_margin1,
                         model.shape_body,
                         self.body_body_contact_buffer_pre_alloc,
                         self.body_body_contact_counts,
@@ -1871,8 +1871,8 @@ class SolverVBD(SolverBase):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
                     contacts.rigid_contact_normal,
-                    contacts.rigid_contact_thickness0,
-                    contacts.rigid_contact_thickness1,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
                     model.shape_body,
                     state_out.body_q,
                     self.body_body_contact_material_ke,
@@ -1927,7 +1927,133 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-    def finalize_particles(self, state_out: State, dt: float):
+    def collect_rigid_contact_forces(
+        self, state: State, contacts: Contacts | None, dt: float
+    ) -> tuple[wp.array, wp.array, wp.array, wp.array, wp.array, wp.array]:
+        """Collect per-contact rigid contact forces and world-space application points.
+
+        This produces a **contact-specific** buffer that coupling code can filter (e.g., proxy contacts only).
+
+        Args:
+            state (State): Simulation state containing rigid body transforms/velocities
+                used for contact-force evaluation.
+            contacts (Optional[Contacts]): Contact data buffers containing rigid
+                contact geometry/material references. If None, the function
+                returns default zero/sentinel outputs.
+            dt (float): Time step size [s].
+
+        Returns:
+            tuple[
+                wp.array(dtype=wp.int32),
+                wp.array(dtype=wp.int32),
+                wp.array(dtype=wp.vec3),
+                wp.array(dtype=wp.vec3),
+                wp.array(dtype=wp.vec3),
+                wp.array(dtype=wp.int32),
+            ]: Tuple of per-contact outputs:
+                - body0: Body index for shape0, int32.
+                - body1: Body index for shape1, int32.
+                - point0_world: World-space contact point on body0, wp.vec3 [m].
+                - point1_world: World-space contact point on body1, wp.vec3 [m].
+                - force_on_body1: Contact force applied to body1 in world frame, wp.vec3 [N].
+                - rigid_contact_count: Length-1 active rigid-contact count, int32.
+        """
+        # Allocate/resize persistent buffers to match contact capacity.
+        max_contacts = int(contacts.rigid_contact_shape0.shape[0]) if contacts is not None else 0
+        if not hasattr(self, "_rigid_contact_body0") or self._rigid_contact_body0 is None:
+            self._rigid_contact_body0 = None
+
+        if self._rigid_contact_body0 is None or int(self._rigid_contact_body0.shape[0]) != max_contacts:
+            self._rigid_contact_body0 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
+            self._rigid_contact_body1 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
+            self._rigid_contact_point0_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+            self._rigid_contact_point1_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+
+        missing_rigid_state = any(
+            arr is None
+            for arr in (
+                getattr(self, "body_q_prev", None),
+                getattr(self, "body_body_contact_penalty_k", None),
+                getattr(self, "body_body_contact_material_kd", None),
+                getattr(self, "body_body_contact_material_mu", None),
+            )
+        )
+        no_active_contacts = contacts is None or max_contacts == 0
+
+        if contacts is not None and contacts.rigid_contact_force is not None:
+            contacts.rigid_contact_force.zero_()
+
+        if no_active_contacts or missing_rigid_state:
+            # Keep outputs in a known default state for coupling paths where rigid AVBD
+            # internal buffers are not initialized (e.g., external rigid solver mode).
+            self._rigid_contact_body0 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
+            self._rigid_contact_body1 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
+            self._rigid_contact_point0_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+            self._rigid_contact_point1_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+
+            rigid_contact_count = (
+                contacts.rigid_contact_count
+                if contacts is not None and contacts.rigid_contact_count is not None
+                else wp.zeros(1, dtype=wp.int32, device=self.device)
+            )
+            return (
+                self._rigid_contact_body0,
+                self._rigid_contact_body1,
+                self._rigid_contact_point0_world,
+                self._rigid_contact_point1_world,
+                contacts.rigid_contact_force
+                if contacts is not None
+                else wp.zeros(0, dtype=wp.vec3, device=self.device),
+                rigid_contact_count,
+            )
+
+        # Type narrowing: remaining path requires a valid Contacts instance.
+        assert contacts is not None
+
+        # Reuse the existing per-contact force buffer in Contacts (allocated by default).
+        # Force convention: force is applied to body1, and -force is applied to body0.
+        wp.launch(
+            kernel=compute_rigid_contact_forces,
+            dim=max_contacts,
+            inputs=[
+                float(dt),
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                contacts.rigid_contact_point0,
+                contacts.rigid_contact_point1,
+                contacts.rigid_contact_normal,
+                contacts.rigid_contact_margin0,
+                contacts.rigid_contact_margin1,
+                self.model.shape_body,
+                state.body_q,
+                self.body_q_prev,
+                self.model.body_com,
+                self.body_body_contact_penalty_k,
+                self.body_body_contact_material_kd,
+                self.body_body_contact_material_mu,
+                float(self.friction_epsilon),
+            ],
+            outputs=[
+                self._rigid_contact_body0,
+                self._rigid_contact_body1,
+                self._rigid_contact_point0_world,
+                self._rigid_contact_point1_world,
+                contacts.rigid_contact_force,
+            ],
+            device=self.device,
+        )
+
+        return (
+            self._rigid_contact_body0,
+            self._rigid_contact_body1,
+            self._rigid_contact_point0_world,
+            self._rigid_contact_point1_world,
+            contacts.rigid_contact_force,
+            contacts.rigid_contact_count,
+        )
+
+    def _finalize_particles(self, state_out: State, dt: float):
         """Finalize particle velocities after VBD iterations."""
         # Early exit if no particles
         if self.model.particle_count == 0:
@@ -1940,7 +2066,7 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-    def finalize_rigid_bodies(self, state_out: State, dt: float):
+    def _finalize_rigid_bodies(self, state_out: State, dt: float):
         """Finalize rigid body velocities and Dahl friction state after AVBD iterations (post-iteration phase).
 
         Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for cable bending.
@@ -1989,7 +2115,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def collision_detection_penetration_free(self, current_state: State):
+    def _collision_detection_penetration_free(self, current_state: State):
         # particle_displacements is based on pos_prev_collision_detection
         # so reset them every time we do collision detection
         self.pos_prev_collision_detection.assign(current_state.particle_q)

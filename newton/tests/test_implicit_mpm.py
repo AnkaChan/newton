@@ -59,7 +59,7 @@ def test_sand_cube_on_plane(test, device):
     state_0: newton.State = model.state()
     state_1: newton.State = model.state()
 
-    options = SolverImplicitMPM.Options()
+    options = SolverImplicitMPM.Config()
     options.grid_type = "dense"  # use dense grid as sparse grid is GPU-only
     options.voxel_size = voxel_size
 
@@ -83,7 +83,7 @@ def test_sand_cube_on_plane(test, device):
     assert np.all(bb_max < 2 * N * voxel_size)
 
     # Checks that contact impulses are consistent
-    impulses, impulse_positions, _collider_ids = solver.collect_collider_impulses(state_0)
+    impulses, impulse_positions, _collider_ids = solver._collect_collider_impulses(state_0)
 
     impulses = impulses.numpy()
     impulse_positions = impulse_positions.numpy()
@@ -140,12 +140,20 @@ def test_finite_difference_collider_velocity(test, device):
 
         # Add a platform that particles rest on
         platform_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
-        vertices, indices = newton.utils.create_box_mesh(extents=(0.5, 0.1, 0.5))
+        platform_mesh = newton.Mesh.create_box(
+            0.5,
+            0.1,
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)  # kinematic
-        shape_cfg.thickness = 0.02
+        shape_cfg.margin = 0.02
         builder.add_shape_mesh(
             body=platform_body,
-            mesh=newton.Mesh(vertices[:, :3], indices),
+            mesh=platform_mesh,
             cfg=shape_cfg,
         )
 
@@ -154,7 +162,7 @@ def test_finite_difference_collider_velocity(test, device):
         state_0 = model.state()
         state_1 = model.state()
 
-        options = SolverImplicitMPM.Options()
+        options = SolverImplicitMPM.Config()
         options.voxel_size = voxel_size
         options.grid_type = "dense"
         options.collider_velocity_mode = velocity_mode

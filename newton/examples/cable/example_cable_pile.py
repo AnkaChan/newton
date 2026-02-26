@@ -67,7 +67,7 @@ class Example:
         layer_gap = cable_radius * 6.0
 
         builder = newton.ModelBuilder()
-        builder.rigid_contact_margin = 0.05  # Default for all shapes
+        builder.rigid_gap = 0.05  # Default for all shapes
 
         rod_bodies_all: list[int] = []
 
@@ -165,7 +165,7 @@ class Example:
                     bend_damping=5.0e-1,
                     stretch_stiffness=1.0e6,
                     stretch_damping=1.0e-4,
-                    key=f"cable_l{layer}_{lane}",
+                    label=f"cable_l{layer}_{lane}",
                 )
                 rod_bodies_all.extend(rod_bodies)
 

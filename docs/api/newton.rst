@@ -32,21 +32,19 @@ newton
    :toctree: _generated
    :nosignatures:
 
-   ActuatorMode
    Axis
-   BroadPhaseMode
    CollisionPipeline
    Contacts
    Control
    EqType
    GeoType
    Heightfield
+   JointTargetMode
    JointType
    Mesh
    Model
    ModelBuilder
    ParticleFlags
-   SAPSortType
    SDF
    ShapeFlags
    State
@@ -70,7 +68,7 @@ newton
 
    * - Name
      - Value
-   * - MAXVAL
-     - 10000000000.0
-   * - __version__
-     - 0.2.0
+   * - ``MAXVAL``
+     - ``10000000000.0``
+   * - ``__version__``
+     - ``1.1.0.dev0``

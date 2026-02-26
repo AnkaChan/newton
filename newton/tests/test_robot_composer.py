@@ -20,7 +20,7 @@ import warp as wp
 
 import newton
 import newton.utils
-from newton import ActuatorMode
+from newton import JointTargetMode
 from newton._src.utils.download_assets import download_git_folder
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import add_function_test, find_nan_members, get_cuda_test_devices
@@ -45,13 +45,13 @@ class RobotComposerSim:
     behaviour with a planar (2-linear + 1-angular) D6 joint.
     """
 
-    def __init__(self, device, do_rendering=False, num_frames=50, num_worlds=2):
+    def __init__(self, device, do_rendering=False, num_frames=50, world_count=2):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.num_worlds = num_worlds
+        self.world_count = world_count
         self.num_frames = num_frames
         self.do_rendering = do_rendering
         self.device = device
@@ -67,7 +67,7 @@ class RobotComposerSim:
 
         # Replicate for parallel simulation
         scene = newton.ModelBuilder()
-        scene.replicate(builder, self.num_worlds)
+        scene.replicate(builder, self.world_count)
         scene.add_ground_plane()
 
         self.model = scene.finalize(device=device)
@@ -208,7 +208,7 @@ class RobotComposerSim:
         ur5e_with_robotiq_gripper.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         ur5e_with_robotiq_gripper.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_robotiq_gripper.joint_target_kd[:3] = [50.0] * 3
-        ur5e_with_robotiq_gripper.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        ur5e_with_robotiq_gripper.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_robotiq_gripper.joint_q[-6:] = init_q[:6]
@@ -217,11 +217,12 @@ class RobotComposerSim:
         ur5e_with_robotiq_gripper.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_robotiq_gripper.joint_effort_limit[-6:] = [100.0] * 6
         ur5e_with_robotiq_gripper.joint_armature[-6:] = [0.2] * 6
-        ur5e_with_robotiq_gripper.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+        ur5e_with_robotiq_gripper.joint_target_mode[-6:] = [int(JointTargetMode.POSITION)] * 6
 
         # Find end effector body by searching body names
-        ee_name = "wrist_3_link"
-        ee_body_idx = ur5e_with_robotiq_gripper.body_key.index(ee_name)
+        ee_body_idx = next(
+            i for i, lbl in enumerate(ur5e_with_robotiq_gripper.body_label) if lbl.endswith("/wrist_3_link")
+        )
 
         # Attach Robotiq 2F85 gripper to end effector
         gripper_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2)
@@ -248,7 +249,7 @@ class RobotComposerSim:
             ur5e_with_robotiq_gripper.joint_target_ke[idx] = 20.0
             ur5e_with_robotiq_gripper.joint_target_kd[idx] = 1.0
             ur5e_with_robotiq_gripper.joint_target_pos[idx] = self.gripper_target_pos
-            ur5e_with_robotiq_gripper.joint_act_mode[idx] = int(ActuatorMode.POSITION)
+            ur5e_with_robotiq_gripper.joint_target_mode[idx] = int(JointTargetMode.POSITION)
 
         builder.add_builder(ur5e_with_robotiq_gripper)
 
@@ -274,7 +275,7 @@ class RobotComposerSim:
         ur5e_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         ur5e_with_hand.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_hand.joint_target_kd[:3] = [50.0] * 3
-        ur5e_with_hand.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        ur5e_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_hand.joint_q[-6:] = init_q[:6]
@@ -283,11 +284,10 @@ class RobotComposerSim:
         ur5e_with_hand.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_hand.joint_effort_limit[-6:] = [100.0] * 6
         ur5e_with_hand.joint_armature[-6:] = [0.2] * 6
-        ur5e_with_hand.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+        ur5e_with_hand.joint_target_mode[-6:] = [int(JointTargetMode.POSITION)] * 6
 
         # Find end effector body by searching body names
-        ee_name = "wrist_3_link"
-        ee_body_idx = ur5e_with_hand.body_key.index(ee_name)
+        ee_body_idx = next(i for i, lbl in enumerate(ur5e_with_hand.body_label) if lbl.endswith("/wrist_3_link"))
 
         # Attach LEAP hand left to end effector
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 2)
@@ -328,7 +328,7 @@ class RobotComposerSim:
         franka_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         franka_with_hand.joint_target_ke[:3] = [500.0] * 3
         franka_with_hand.joint_target_kd[:3] = [50.0] * 3
-        franka_with_hand.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        franka_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         # Set panda joint positions and joint targets
         init_q = [
@@ -347,11 +347,10 @@ class RobotComposerSim:
         franka_with_hand.joint_target_kd[-7:] = [450, 450, 350, 350, 200, 200, 200]
         franka_with_hand.joint_effort_limit[-7:] = [87, 87, 87, 87, 12, 12, 12]
         franka_with_hand.joint_armature[-7:] = [0.195] * 4 + [0.074] * 3
-        franka_with_hand.joint_act_mode[-7:] = [int(ActuatorMode.POSITION)] * 7
+        franka_with_hand.joint_target_mode[-7:] = [int(JointTargetMode.POSITION)] * 7
 
         # Find end effector body by searching body names
-        franka_ee_name = "fr3_link8"
-        franka_ee_idx = franka_with_hand.body_key.index(franka_ee_name)
+        franka_ee_idx = next(i for i, lbl in enumerate(franka_with_hand.body_label) if lbl.endswith("/fr3_link8"))
 
         # Attach Allegro hand with custom base joint
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -init_q[-1])
@@ -397,7 +396,7 @@ class RobotComposerSim:
         ur10_builder.joint_target_pos[:3] = [0.0, 0.0, 0.0]
         ur10_builder.joint_target_ke[:3] = [500.0] * 3
         ur10_builder.joint_target_kd[:3] = [50.0] * 3
-        ur10_builder.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+        ur10_builder.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         # Initialize arm joints to elbow down configuration (same as UR5e)
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
@@ -409,7 +408,7 @@ class RobotComposerSim:
         ur10_builder.joint_target_kd[-6:] = [450.0] * 6
         ur10_builder.joint_effort_limit[-6:] = [100.0] * 6
         ur10_builder.joint_armature[-6:] = [0.2] * 6
-        ur10_builder.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+        ur10_builder.joint_target_mode[-6:] = [int(JointTargetMode.POSITION)] * 6
 
         builder.add_builder(ur10_builder)
 
@@ -452,7 +451,7 @@ class RobotComposerSim:
             self.gripper_target_pos = value
             # The actuated joints are right_driver_joint and left_driver_joint (dof indexes 0 and 4 within gripper).
             # robotiq_gripper_dof_offset accounts for base_joint(3) + arm(6) DOFs.
-            joint_target_pos = self.joint_target_pos.reshape((self.num_worlds, -1)).numpy()
+            joint_target_pos = self.joint_target_pos.reshape((self.world_count, -1)).numpy()
             for i in self.robotiq_gripper_dofs:
                 joint_target_pos[:, self.robotiq_gripper_dof_offset + i] = value
             wp.copy(self.joint_target_pos, wp.array(joint_target_pos.flatten(), dtype=wp.float32))
@@ -483,7 +482,7 @@ class RobotComposerSim:
 
 def test_robot_composer(test, device):
     """Test that composed robots build correctly, simulate stably, and move."""
-    sim = RobotComposerSim(device, num_frames=50, num_worlds=2)
+    sim = RobotComposerSim(device, num_frames=50, world_count=2)
 
     # Model structure: at least 4 articulations (UR5e+Robotiq, UR5e+LEAP, Franka+Allegro, UR10)
     test.assertGreaterEqual(sim.model.articulation_count, 4)
