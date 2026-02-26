@@ -33,7 +33,7 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 import newton
 import newton.examples
-from newton._src.core.spatial import quat_velocity
+from newton._src.math.spatial import quat_velocity
 from newton._src.utils.import_usd import parse_usd
 from newton._src.usd.schema_resolver import (
     SchemaAttribute as Attribute,
@@ -98,7 +98,7 @@ class SchemaResolverSimUsd(SchemaResolver):
             "integrator_type": Attribute("newton:integrator", "xpbd"),
             "integrator_iterations": Attribute("newton:integrator_iterations", 200),
             "collide_on_substeps": Attribute("newton:collide_on_substeps", True),
-            "shape_contact_margin": Attribute("newton:shape_contact_margin", 0.001),
+            "shape_margin": Attribute("newton:shape_contact_margin", 0.001),
         },
         PrimType.BODY: {
             "kinematic_collider": Attribute("physics:kinematicEnabled", False),
@@ -1066,7 +1066,7 @@ class Simulator:
         self._override_pre_builder_finalize(builder)
         self.print_debug_info(builder, "ces_vase2.txt")  # Print debug info before finalize
         self.model = builder.finalize()
-        print(f"model.shape_contact_margin: {self.model.shape_contact_margin.numpy()}")
+        print(f"model.shape_margin: {self.model.shape_margin.numpy()}")
 
         self._setup_model_attributes()
 
@@ -1278,27 +1278,27 @@ class Simulator:
                 f"  particle_count:    {len(builder.particle_q) if hasattr(builder, 'particle_q') and builder.particle_q is not None else 0}"
             )
             lines.append(f"  up_axis:           {builder.up_axis}")
-            lines.append(f"  rigid_contact_margin: {builder.rigid_contact_margin}")
+            lines.append(f"  rigid_gap: {builder.rigid_gap}")
 
             lines.append("\n  Body keys:")
-            for i, key in enumerate(builder.body_key[: min(10, len(builder.body_key))]):
+            for i, key in enumerate(builder.body_label[: min(10, len(builder.body_label))]):
                 lines.append(f"    [{i}] {key}")
-            if len(builder.body_key) > 10:
-                lines.append(f"    ... and {len(builder.body_key) - 10} more")
+            if len(builder.body_label) > 10:
+                lines.append(f"    ... and {len(builder.body_label) - 10} more")
 
             lines.append("\n  Shape keys:")
-            for i, key in enumerate(builder.shape_key[: min(10, len(builder.shape_key))]):
+            for i, key in enumerate(builder.shape_label[: min(10, len(builder.shape_label))]):
                 lines.append(f"    [{i}] {key}")
-            if len(builder.shape_key) > 10:
-                lines.append(f"    ... and {len(builder.shape_key) - 10} more")
+            if len(builder.shape_label) > 10:
+                lines.append(f"    ... and {len(builder.shape_label) - 10} more")
 
             lines.append("\n  Shape flags (first 10):")
             for i, flags in enumerate(builder.shape_flags[: min(10, len(builder.shape_flags))]):
-                lines.append(f"    [{i}] {flags} ({builder.shape_key[i]})")
+                lines.append(f"    [{i}] {flags} ({builder.shape_label[i]})")
 
             lines.append("\n  Shape contact margins (first 10):")
-            for i, margin in enumerate(builder.shape_contact_margin[: min(10, len(builder.shape_contact_margin))]):
-                lines.append(f"    [{i}] {margin} ({builder.shape_key[i]})")
+            for i, margin in enumerate(builder.shape_margin[: min(10, len(builder.shape_margin))]):
+                lines.append(f"    [{i}] {margin} ({builder.shape_label[i]})")
 
             lines.append(f"\n  Collision filter pairs: {len(builder.shape_collision_filter_pairs)}")
 
@@ -1359,7 +1359,7 @@ class Simulator:
         # builder.shape_transform[ground][2] = -.015
         # set up pair-wise filters for the BDX Droid shapes to disable self collisions
         droid_shapes: list[int] = []
-        for i, key in enumerate(builder.shape_key):
+        for i, key in enumerate(builder.shape_label):
             if "BDXDroid" in key:
                 droid_shapes.append(i)
         for shape1, shape2 in itertools.combinations(droid_shapes, 2):
@@ -1370,7 +1370,7 @@ class Simulator:
             # convert all collision meshes to convex hulls but keep terrain high-res meshes (just for visualization)
             shape_indices = [
                 i
-                for i, (flags, key) in enumerate(zip(builder.shape_flags, builder.shape_key))
+                for i, (flags, key) in enumerate(zip(builder.shape_flags, builder.shape_label))
                 if flags & newton.ShapeFlags.COLLIDE_SHAPES
                 and "terrainMaincol" not in key
                 and "ground_plane" not in key
@@ -1379,7 +1379,7 @@ class Simulator:
             lantern_shapes = [
                 i
                 for i in shape_indices
-                if any(keyword in builder.shape_key[i] for keyword in ["vase", "HangingLantern"])
+                if any(keyword in builder.shape_label[i] for keyword in ["vase", "HangingLantern"])
             ]
             other_shapes = [i for i in shape_indices if i not in lantern_shapes]
 
@@ -1409,9 +1409,9 @@ class Simulator:
         builder.default_shape_cfg.density = 2500.0
         # builder.default_shape_cfg.ke = 1.0e3
         # builder.default_shape_cfg.kd = 1.0e2
-        builder.default_shape_cfg.thickness = 0.001
-        builder.default_shape_cfg.contact_margin = 0.001
-        builder.rigid_contact_margin = 0.0025  # This is the fallback when shape contact_margin is None
+        builder.default_shape_cfg.margin = 0.001
+        builder.default_shape_cfg.gap = 0.001
+        builder.rigid_gap = 0.0025  # This is the fallback when shape gap is None
 
     def _collect_animated_colliders(self, builder, path_body_map, path_shape_map):
         """
