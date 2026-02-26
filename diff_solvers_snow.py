@@ -52,7 +52,7 @@ simulations = {
         "-f", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb18/olaf0",
     ],
     "olaf2": [
-        "/media/andre/data/dev/newton/data/gtcdc25/olaf_rbd/Collected_20260220_to_sim_rdb_cloth_test_01/20260220_to_sim_rdb_cloth_test_01_physics.usd",
+        "/media/andre/data/dev/newton/data/gtcdc25/olaf_rbd/Collected_20260225_to_sim_rdb_cloth_test_01/20260225_to_sim_rdb_cloth_test_01_physics.usd",
         "-o", "/media/andre/data/dev/newton/data/gtcdc25/olaf_rbd/feb25/olafrbd.usd",
         "--integrator", "xpbd",
         "-n", "600",
