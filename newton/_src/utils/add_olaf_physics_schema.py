@@ -1,6 +1,6 @@
 import argparse
 
-from pxr import Usd, UsdPhysics
+from pxr import Usd, UsdGeom, UsdPhysics
 
 
 def apply_collision_api(prim):
@@ -46,7 +46,7 @@ if __name__ == "__main__":
             collisionAPI.CreateCollisionEnabledAttr(True)
 
         # RIGID BODIES (adjust)
-        elif len(path) == 5 and any(name in path[-1] for name in ("stoolWoodB", )):
+        elif any(name in path[-1] for name in ("stoolWoodB", "vaseG")) and prim.IsA(UsdGeom.Mesh):
             print(f"prim.GetPath(): {str(prim.GetPath())}")
             print(f"Applying RigidBodyAPI and MassAPI to {prim}")
             rigidBodyAPI = UsdPhysics.RigidBodyAPI.Apply(prim)
