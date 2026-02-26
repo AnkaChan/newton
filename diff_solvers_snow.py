@@ -47,8 +47,8 @@ simulations = {
         "/media/andre/data/dev/newton/data/gtcdc25/mpm/Collected_20260218_to_sim_fx_rndsnow_01/20260218_to_sim_fx_rndsnow_01_physics.usd",
         "-o", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb18/olaf0.usd",
         "--integrator", "xpbd",
-        "-n", "600",
-        "-t", "0.00",
+        "-n", "60",
+        "-t", "10.00",
         "-f", "/media/andre/data/dev/newton/data/gtcdc25/mpm/feb18/olaf0",
     ],
 }
