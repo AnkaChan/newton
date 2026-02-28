@@ -1377,31 +1377,35 @@ class Simulator:
                 and "ground_plane" not in key
             ]
 
-            lantern_shapes = [
-                i
-                for i in shape_indices
-                if any(keyword in builder.shape_label[i] for keyword in ["vase", "HangingLantern"])
-            ]
-            other_shapes = [i for i in shape_indices if i not in lantern_shapes]
+            # Keep vase pieces as native mesh colliders: aggressive convex proxies can heavily overlap
+            # at startup and create large physical corrections in XPBD.
+            vase_shapes = [i for i in shape_indices if "vase" in builder.shape_label[i].lower()]
+            lantern_shapes = [i for i in shape_indices if "HangingLantern" in builder.shape_label[i]]
+            approx_shapes = set(lantern_shapes)
+            other_shapes = [i for i in shape_indices if i not in approx_shapes and i not in set(vase_shapes)]
 
             if USE_COACD:
-                builder.approximate_meshes(
-                    "coacd",
-                    lantern_shapes,
-                    keep_visual_shapes=False,
-                    threshold=0.15,
-                )
-                builder.approximate_meshes(
-                    "convex_hull",
-                    other_shapes,
-                    keep_visual_shapes=False,
-                )
+                if lantern_shapes:
+                    builder.approximate_meshes(
+                        "coacd",
+                        lantern_shapes,
+                        keep_visual_shapes=False,
+                        threshold=0.15,
+                    )
+                if other_shapes:
+                    builder.approximate_meshes(
+                        "convex_hull",
+                        other_shapes,
+                        keep_visual_shapes=False,
+                    )
             else:
-                builder.approximate_meshes(
-                    "convex_hull",
-                    lantern_shapes + other_shapes,
-                    keep_visual_shapes=False,
-                )
+                to_approx = lantern_shapes + other_shapes
+                if to_approx:
+                    builder.approximate_meshes(
+                        "convex_hull",
+                        to_approx,
+                        keep_visual_shapes=False,
+                    )
 
     def _override_pre_parse_usd(self, builder):
         # builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
