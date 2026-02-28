@@ -94,7 +94,7 @@ class SchemaResolverSimUsd(SchemaResolver):
             "soft_contact_kd": Attribute("newton:soft_contact_kd", 1.0e2),
             # solver attributes
             "fps": Attribute("newton:fps", 60),
-            "sim_substeps": Attribute("newton:substeps", 2),
+            "sim_substeps": Attribute("newton:substeps", 4),
             "integrator_type": Attribute("newton:integrator", "xpbd"),
             "integrator_iterations": Attribute("newton:integrator_iterations", 200),
             "collide_on_substeps": Attribute("newton:collide_on_substeps", True),
@@ -136,9 +136,9 @@ class SchemaResolverXPBD(SchemaResolver):
             "soft_contact_relaxation": Attribute("newton:xpbd:soft_contact_relaxation", 0.9),
             "joint_linear_relaxation": Attribute("newton:xpbd:joint_linear_relaxation", 0.7),
             "joint_angular_relaxation": Attribute("newton:xpbd:joint_angular_relaxation", 0.4),
-            "rigid_contact_relaxation": Attribute("newton:xpbd:rigid_contact_relaxation", 0.8),
+            "rigid_contact_relaxation": Attribute("newton:xpbd:rigid_contact_relaxation", 0.5),
             "rigid_contact_con_weighting": Attribute("newton:xpbd:rigid_contact_con_weighting", True),
-            "angular_damping": Attribute("newton:xpbd:angular_damping", 0.0),
+            "angular_damping": Attribute("newton:xpbd:angular_damping", 0.01),
             "enable_restitution": Attribute("newton:xpbd:enable_restitution", False),
         },
     }
@@ -1143,6 +1143,7 @@ class Simulator:
                 defaults={"iterations": self.integrator_iterations},
             )
             self.integrator = newton.solvers.SolverXPBD(self.model, **solver_args)
+            self.integrator.compute_body_velocity_from_position_delta = True
 
         elif self.integrator_type == IntegratorType.MJWARP:
             res = SchemaResolverMJWarp()
