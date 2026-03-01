@@ -1462,7 +1462,7 @@ class Simulator:
         for frame in range(starting_frame, starting_frame + num_frames + 1):
             sim_time = frame * self.frame_dt
             for substep in range(self.sim_substeps):
-                time = self.fps * (sim_time + self.sim_dt / self.sim_substeps * float(substep))
+                time = self.fps * (sim_time + self.sim_dt * float(substep))
                 mats = []
                 for path in self.animated_colliders_paths:
                     prim = self.in_stage.GetPrimAtPath(path)
