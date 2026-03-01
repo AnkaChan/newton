@@ -59,11 +59,20 @@ simulations = {
         "-t", "0.00",
         "-f", "/media/andre/data/dev/newton/data/gtcdc25/olaf_rbd/feb25/olafrbd",
     ],
+    "olaf3": [
+        "/media/andre/data/dev/newton/data/gtcdc25/olaf_rbd/Collected_20260228_to_sim_fx_cartapple_01/20260228_to_sim_fx_cartapple_01_physics.usd",
+        "-o", "/media/andre/data/dev/newton/data/gtcdc25/olaf_rbd/feb28/olafapple.usd",
+        "--integrator", "xpbd",
+        "-n", "650",
+        "-s", "1450",
+        "-t", "0.00",
+        "-f", "/media/andre/data/dev/newton/data/gtcdc25/olaf_rbd/feb28/olafapple",
+    ]
 }
 
 if __name__ == "__main__":
     for name, script_args in simulations.items():
-        if "olaf2" not in name:
+        if "olaf3" not in name:
             continue
         cmd_pr = base_cmd + ["/media/andre/data/dev/newton_snow/newton/_src/utils/sim_usd_pr.py"] + script_args
         cmd_gtc = base_cmd + ["/media/andre/data/dev/newton_snow/newton/_src/utils/sim_usd_gtc.py"] + script_args
