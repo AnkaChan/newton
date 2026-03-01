@@ -24,6 +24,10 @@ if __name__ == "__main__":
 
     stage = Usd.Stage.Open(args.input_path)
 
+    # RIGID BODIES (adjust)
+    olaf_test_v1 = ("stoolWoodB", "vaseG")
+    olaf_mar1_v1 = ("colFruitBasket1", "colCartAxel", "colFruitBasket2", "colCartMid", "colCartTop", "colCartBase", "colBoxBag", "colWheels2", "colWheels1", "colWheels4", "colWheels3", "woodbeam1", "woodbeam2", "colFruitTop", "REDAPPLE_COL")
+
     for prim in stage.Traverse():
         if "cobble" in str(prim.GetPath()):
             continue
@@ -45,8 +49,7 @@ if __name__ == "__main__":
             collisionAPI = UsdPhysics.CollisionAPI.Apply(prim)
             collisionAPI.CreateCollisionEnabledAttr(True)
 
-        # RIGID BODIES (adjust)
-        elif any(name in path[-1] for name in ("stoolWoodB", "vaseG")) and prim.IsA(UsdGeom.Mesh):
+        elif any(name in path[-1] for name in olaf_test_v1 + olaf_mar1_v1) and prim.IsA(UsdGeom.Mesh):
             print(f"prim.GetPath(): {str(prim.GetPath())}")
             print(f"Applying RigidBodyAPI and MassAPI to {prim}")
             rigidBodyAPI = UsdPhysics.RigidBodyAPI.Apply(prim)
