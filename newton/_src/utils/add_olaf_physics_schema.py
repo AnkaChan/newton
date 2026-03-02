@@ -33,9 +33,9 @@ if __name__ == "__main__":
     rigid_body_exact_paths = {
         "/World/CartHero_01/geo/applesBasket",
         "/World/CartHero_01/geo/cart",
-        "/World/AppleHero_01/geo/apple_01",
-        "/World/AppleHero_02/geo/apple_02",
-        "/World/AppleHero_03/geo/apple_03",
+        "/World/AppleHero_01/geo/apple",
+        "/World/AppleHero_02/geo/apple",
+        "/World/AppleHero_03/geo/apple",
     }
 
     for prim in stage.Traverse():
