@@ -7,7 +7,7 @@ def apply_collision_api(prim):
     type_name = str(prim.GetTypeName()).lower()
 
     if type_name in ("mesh", "capsule", "sphere", "box", "cylinder", "cone"):
-        print(f"Applying CollisionAPI to {prim}")
+        # print(f"Applying CollisionAPI to {prim}")
         collisionAPI = UsdPhysics.CollisionAPI.Apply(prim)
         collisionAPI.CreateCollisionEnabledAttr(True)
 
@@ -27,11 +27,22 @@ if __name__ == "__main__":
     # RIGID BODIES (adjust)
     olaf_test_v1 = ("stoolWoodB", "vaseG")
     olaf_mar1_v1 = ("colFruitBasket1", "colCartAxel", "colFruitBasket2", "colCartMid", "colCartTop", "colCartBase", "colBoxBag", "colWheels2", "colWheels1", "colWheels4", "colWheels3", "woodbeam1", "woodbeam2", "colFruitTop", "REDAPPLE_COL")
+    # Match by prim name (last path component)
+    olaf_mar1_v2 = ("REDAPPLE_COL", "colFruitBasket1", )
+    # Match by exact full prim path
+    rigid_body_exact_paths = {
+        "/World/CartHero_01/geo/applesBasket",
+        "/World/CartHero_01/geo/cart",
+        "/World/AppleHero_01/geo",
+        "/World/AppleHero_02/geo",
+        "/World/AppleHero_03/geo",
+    }
 
     for prim in stage.Traverse():
-        if "cobble" in str(prim.GetPath()):
+        prim_path = str(prim.GetPath())
+        if "cobble" in prim_path:
             continue
-        path = str(prim.GetPath()).split("/")
+        path = prim_path.split("/")
 
         # ROBOT
         if any(name in path[-1] for name in ("PELVIS", "HIP", "KNEE", "ANKLE", "FOOT", "NECK", "SHOULDER", "ARM", "JAW", "BROW", "EYE", "HEAD")):
@@ -49,8 +60,9 @@ if __name__ == "__main__":
             collisionAPI = UsdPhysics.CollisionAPI.Apply(prim)
             collisionAPI.CreateCollisionEnabledAttr(True)
 
-        elif any(name in path[-1] for name in olaf_test_v1 + olaf_mar1_v1) and prim.IsA(UsdGeom.Mesh):
-            print(f"prim.GetPath(): {str(prim.GetPath())}")
+        elif (
+            prim_path in rigid_body_exact_paths
+        ):
             print(f"Applying RigidBodyAPI and MassAPI to {prim}")
             rigidBodyAPI = UsdPhysics.RigidBodyAPI.Apply(prim)
             massAPI = UsdPhysics.MassAPI.Apply(prim)
