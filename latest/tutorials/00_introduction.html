@@ -42,7 +42,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/documentation_options.js?v=1c471e8e"></script>
     <script src="../_static/doctools.js?v=9bcbadda"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -135,7 +135,7 @@
     <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.1.0.dev0)</span></p>
   
 </a></div>
     
@@ -840,23 +840,22 @@
 <div class="nboutput docutils container">
 <div class="prompt empty docutils container">
 </div>
-<div class="output_area docutils container">
+<div class="output_area stderr docutils container">
 <div class="highlight"><pre>
-Warp 1.12.0.dev20260218 initialized:
-   Git commit: 3d888595a61128dd17de0dbb9eb8d80391e81424
-   CUDA Toolkit 12.9, CUDA driver not available (NVRTC compilation available)
-   Devices:
-     &#34;cpu&#34;      : &#34;x86_64&#34;
-   Kernel cache:
-     /home/runner/.cache/warp/1.12.0.dev20260218
+Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.
 </pre></div></div>
 </div>
 <div class="nboutput nblast docutils container">
 <div class="prompt empty docutils container">
 </div>
-<div class="output_area stderr docutils container">
+<div class="output_area docutils container">
 <div class="highlight"><pre>
-Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.
+Warp 1.12.0rc2 initialized:
+   CUDA Toolkit 12.9, CUDA driver not available (NVRTC compilation available)
+   Devices:
+     &#34;cpu&#34;      : &#34;x86_64&#34;
+   Kernel cache:
+     /home/runner/.cache/warp/1.12.0rc2
 </pre></div></div>
 </div>
 </section>
@@ -968,7 +967,7 @@ Added 4 bodies with collision shapes
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.geometry.inertia c57c45a load on device &#39;cpu&#39; took 2424.58 ms  (compiled)
+Module newton._src.geometry.inertia c57c45a load on device &#39;cpu&#39; took 2242.20 ms  (compiled)
 Added mesh body with 6102 vertices
 </pre></div></div>
 </div>
@@ -1001,7 +1000,7 @@ Added mesh body with 6102 vertices
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module validate_and_correct_inertia_kernel_8fd4dd1e 9a64c1c load on device &#39;cpu&#39; took 2021.22 ms  (compiled)
+Module validate_and_correct_inertia_kernel_8fd4dd1e 9a64c1c load on device &#39;cpu&#39; took 1829.72 ms  (compiled)
 Model finalized for device cpu:
   Bodies: 5
   Shapes: 7
@@ -1043,7 +1042,7 @@ Model finalized for device cpu:
 </div>
 <div class="output_area stderr docutils container">
 <div class="highlight"><pre>
-/home/runner/work/newton/newton/newton/_src/sim/collide.py:567: UserWarning: NarrowPhase running on CPU: mesh-mesh contacts will be skipped (SDF-based mesh-mesh collision requires CUDA). Use a CUDA device for full mesh-mesh contact support.
+/home/runner/work/newton/newton/newton/_src/sim/collide.py:585: UserWarning: NarrowPhase running on CPU: mesh-mesh contacts will be skipped (SDF-based mesh-mesh collision requires CUDA). Use a CUDA device for full mesh-mesh contact support.
   self.narrow_phase = NarrowPhase(
 </pre></div></div>
 </div>
@@ -1215,7 +1214,7 @@ Running on CPU (no CUDA graph)
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.viewer.kernels 54803f7 load on device &#39;cpu&#39; took 3066.99 ms  (compiled)
+Module newton._src.viewer.kernels afa8b9f load on device &#39;cpu&#39; took 2743.70 ms  (compiled)
 </pre></div></div>
 </div>
 </section>
@@ -1258,15 +1257,15 @@ Module newton._src.viewer.kernels 54803f7 load on device &#39;cpu&#39; took 3066
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.sim.collide 6d5013e load on device &#39;cpu&#39; took 2952.09 ms  (compiled)
-Module newton._src.geometry.broad_phase_nxn 4d6c195 load on device &#39;cpu&#39; took 2271.24 ms  (compiled)
-Module create_narrow_phase_primitive_kernel__locals__narrow_phase_primitive_kernel_b9b83ef7 81d3438 load on device &#39;cpu&#39; took 2826.43 ms  (compiled)
-Module create_narrow_phase_kernel_gjk_mpr__locals__narrow_phase_kernel_gjk_mpr_e5dad0d0 2200e82 load on device &#39;cpu&#39; took 4417.16 ms  (compiled)
-Module create_narrow_phase_process_mesh_plane_contacts_kernel__locals__narrow_phase_process_mesh_plane_contacts_kernel_40d293bd 3dd8cb5 load on device &#39;cpu&#39; took 2168.41 ms  (compiled)
-Module newton._src.geometry.narrow_phase ffb5395 load on device &#39;cpu&#39; took 2547.42 ms  (compiled)
-Module create_narrow_phase_process_mesh_triangle_contacts_kernel__locals__narrow_phase_process_mesh_triangle_contacts_kernel_75c1a86c 52a7bb1 load on device &#39;cpu&#39; took 4812.66 ms  (compiled)
-Module newton._src.solvers.xpbd.kernels 1ef2423 load on device &#39;cpu&#39; took 11210.26 ms  (compiled)
-Module newton._src.solvers.solver 85b7f53 load on device &#39;cpu&#39; took 2450.34 ms  (compiled)
+Module newton._src.sim.collide bd35c25 load on device &#39;cpu&#39; took 2706.50 ms  (compiled)
+Module newton._src.geometry.broad_phase_nxn 99e0260 load on device &#39;cpu&#39; took 2041.96 ms  (compiled)
+Module create_narrow_phase_primitive_kernel__locals__narrow_phase_primitive_kernel_3f6445dc 47c5d6e load on device &#39;cpu&#39; took 2691.77 ms  (compiled)
+Module create_narrow_phase_kernel_gjk_mpr__locals__narrow_phase_kernel_gjk_mpr_07d9f4f5 3c68058 load on device &#39;cpu&#39; took 4031.16 ms  (compiled)
+Module create_narrow_phase_process_mesh_plane_contacts_kernel__locals__narrow_phase_process_mesh_plane_contacts_kernel_8ca3d011 9b9392c load on device &#39;cpu&#39; took 1966.28 ms  (compiled)
+Module newton._src.geometry.narrow_phase aec51da load on device &#39;cpu&#39; took 2278.32 ms  (compiled)
+Module create_narrow_phase_process_mesh_triangle_contacts_kernel__locals__narrow_phase_process_mesh_triangle_contacts_kernel_eb9766e4 7db12ea load on device &#39;cpu&#39; took 4486.62 ms  (compiled)
+Module newton._src.solvers.xpbd.kernels f72297f load on device &#39;cpu&#39; took 10629.69 ms  (compiled)
+Module newton._src.solvers.solver 85b7f53 load on device &#39;cpu&#39; took 2207.21 ms  (compiled)
 
 Simulation complete! Total time: 8.33 seconds
 </pre></div></div>
@@ -1365,17 +1364,9 @@ Simulation complete! Total time: 8.33 seconds
 
   <p class="copyright">
     
-      © Copyright 2026, The Newton Developers.
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
       <br/>
     
-  </p>
-</div>
-      
-        <div class="footer-item">
-
-  <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
-    <br/>
   </p>
 </div>
       

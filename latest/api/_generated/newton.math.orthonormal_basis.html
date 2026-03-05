@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/documentation_options.js?v=1c471e8e"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -60,7 +60,7 @@
         </script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="newton.math.safe_div" href="newton.math.safe_div.html" />
+    <link rel="next" title="newton.math.quat_between_axes" href="newton.math.quat_between_axes.html" />
     <link rel="prev" title="newton.math.normalize_with_norm" href="newton.math.normalize_with_norm.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -134,7 +134,7 @@
     <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.1.0.dev0)</span></p>
   
 </a></div>
     
@@ -813,7 +813,7 @@
 <h1>newton.math.orthonormal_basis<a class="headerlink" href="#newton-math-orthonormal-basis" title="Link to this heading">#</a></h1>
 <dl class="py function">
 <dt class="sig sig-object py" id="newton.math.orthonormal_basis">
-<span class="sig-prename descclassname"><span class="pre">newton.math.</span></span><span class="sig-name descname"><span class="pre">orthonormal_basis</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/math/__init__.py#L217"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.math.orthonormal_basis" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">newton.math.</span></span><span class="sig-name descname"><span class="pre">orthonormal_basis</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">n</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/math/__init__.py#L227"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.math.orthonormal_basis" title="Link to this definition">#</a></dt>
 <dd><p>Build an orthonormal basis from a normal vector.</p>
 <p>Given a (typically unit-length) normal vector <code class="docutils literal notranslate"><span class="pre">n</span></code>, this returns two
 tangent vectors <code class="docutils literal notranslate"><span class="pre">b1</span></code> and <code class="docutils literal notranslate"><span class="pre">b2</span></code> such that:</p>
@@ -887,17 +887,9 @@ b_1 \cdot b_2 = 0,\quad \|b_1\|=\|b_2\|=1.\]</div>
 
   <p class="copyright">
     
-      © Copyright 2026, The Newton Developers.
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
       <br/>
     
-  </p>
-</div>
-      
-        <div class="footer-item">
-
-  <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
-    <br/>
   </p>
 </div>
       

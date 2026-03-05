@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/documentation_options.js?v=1c471e8e"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -134,7 +134,7 @@
     <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.1.0.dev0)</span></p>
   
 </a></div>
     
@@ -810,7 +810,7 @@
 <h1>newton.Model<a class="headerlink" href="#newton-model" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.Model">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">Model</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/model.py#L31"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.Model" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">Model</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/model.py#L35"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.Model" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Represents the static (non-time-varying) definition of a simulation model in Newton.</p>
 <p>The Model class encapsulates all geometry, constraints, and parameters that describe a physical system
@@ -1060,9 +1060,9 @@ cached) and allocates a contacts buffer suitable for storing collision detection
 Call <a class="reference internal" href="#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> to run the collision detection and populate the contacts object.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Rigid contact margins are controlled per-shape via <a class="reference internal" href="#newton.Model.shape_contact_margin" title="newton.Model.shape_contact_margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_contact_margin</span></code></a>, which is populated
-from <code class="docutils literal notranslate"><span class="pre">ShapeConfig.contact_margin</span></code> during model building. If a shape doesn’t specify a contact margin,
-it defaults to <code class="docutils literal notranslate"><span class="pre">builder.rigid_contact_margin</span></code>. To adjust contact margins, set them before calling
+<p>Rigid contact gaps are controlled per-shape via <a class="reference internal" href="#newton.Model.shape_gap" title="newton.Model.shape_gap"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_gap</span></code></a>, which is populated
+from <code class="docutils literal notranslate"><span class="pre">ShapeConfig.gap</span></code> [m] during model building. If a shape doesn’t specify a gap [m],
+it defaults to <code class="docutils literal notranslate"><span class="pre">builder.rigid_gap</span></code> [m]. To adjust contact gaps [m], set them before calling
 <a class="reference internal" href="newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.finalize()</span></code></a>.</p>
 </div>
 <dl class="field-list simple">
@@ -1230,6 +1230,12 @@ If None, uses the model’s <a class="reference internal" href="#newton.Model.re
 <dd class="field-odd"><p><a class="reference internal" href="newton.State.html#newton.State" title="newton.State">State</a></p>
 </dd>
 </dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.actuators">
+<span class="sig-name descname"><span class="pre">actuators</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><span class="pre">Actuator</span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.Model.actuators" title="Link to this definition">#</a></dt>
+<dd><p>List of actuator instances for this model.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1593,9 +1599,9 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.joint_act_mode">
-<span class="sig-name descname"><span class="pre">joint_act_mode</span></span><a class="headerlink" href="#newton.Model.joint_act_mode" title="Link to this definition">#</a></dt>
-<dd><p>Actuator mode per DOF, see <a class="reference internal" href="newton.ActuatorMode.html#newton.ActuatorMode" title="newton.ActuatorMode"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ActuatorMode</span></code></a>. Shape [joint_dof_count], dtype int32.</p>
+<dt class="sig sig-object py" id="newton.Model.joint_act">
+<span class="sig-name descname"><span class="pre">joint_act</span></span><a class="headerlink" href="#newton.Model.joint_act" title="Link to this definition">#</a></dt>
+<dd><p>Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1797,6 +1803,12 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dt class="sig sig-object py" id="newton.Model.joint_target_ke">
 <span class="sig-name descname"><span class="pre">joint_target_ke</span></span><a class="headerlink" href="#newton.Model.joint_target_ke" title="Link to this definition">#</a></dt>
 <dd><p>Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_target_mode">
+<span class="sig-name descname"><span class="pre">joint_target_mode</span></span><a class="headerlink" href="#newton.Model.joint_target_mode" title="Link to this definition">#</a></dt>
+<dd><p>Joint target mode per DOF, see <a class="reference internal" href="newton.JointTargetMode.html#newton.JointTargetMode" title="newton.JointTargetMode"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.JointTargetMode</span></code></a>. Shape [joint_dof_count], dtype int32.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2087,16 +2099,16 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dt class="sig sig-object py" id="newton.Model.shape_collision_aabb_lower">
 <span class="sig-name descname"><span class="pre">shape_collision_aabb_lower</span></span><a class="headerlink" href="#newton.Model.shape_collision_aabb_lower" title="Link to this definition">#</a></dt>
 <dd><p>Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
-Computed from base geometry only (excludes thickness - thickness is added during contact
-margin calculations). Used for voxel-based contact reduction.</p>
+Computed from base geometry only (excludes shape margin; shape margin and gap are applied
+during contact margin calculations). Used for voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_collision_aabb_upper">
 <span class="sig-name descname"><span class="pre">shape_collision_aabb_upper</span></span><a class="headerlink" href="#newton.Model.shape_collision_aabb_upper" title="Link to this definition">#</a></dt>
 <dd><p>Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
-Computed from base geometry only (excludes thickness - thickness is added during contact
-margin calculations). Used for voxel-based contact reduction.</p>
+Computed from base geometry only (excludes shape margin; shape margin and gap are applied
+during contact margin calculations). Used for voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2120,12 +2132,6 @@ margin calculations). Used for voxel-based contact reduction.</p>
 <dt class="sig sig-object py" id="newton.Model.shape_collision_radius">
 <span class="sig-name descname"><span class="pre">shape_collision_radius</span></span><a class="headerlink" href="#newton.Model.shape_collision_radius" title="Link to this definition">#</a></dt>
 <dd><p>Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by <a class="reference internal" href="newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_contact_margin">
-<span class="sig-name descname"><span class="pre">shape_contact_margin</span></span><a class="headerlink" href="#newton.Model.shape_contact_margin" title="Link to this definition">#</a></dt>
-<dd><p>Shape contact margin for collision detection [m], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2159,6 +2165,12 @@ margin calculations). Used for voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_gap">
+<span class="sig-name descname"><span class="pre">shape_gap</span></span><a class="headerlink" href="#newton.Model.shape_gap" title="Link to this definition">#</a></dt>
+<dd><p>Shape additional contact detection gap [m], shape [shape_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_heightfield_data">
 <span class="sig-name descname"><span class="pre">shape_heightfield_data</span></span><a class="headerlink" href="#newton.Model.shape_heightfield_data" title="Link to this definition">#</a></dt>
 <dd><p>Array of HeightfieldData structs, shape [shape_count]. Contains grid metadata for collision kernels.</p>
@@ -2174,6 +2186,12 @@ margin calculations). Used for voxel-based contact reduction.</p>
 <dt class="sig sig-object py" id="newton.Model.shape_label">
 <span class="sig-name descname"><span class="pre">shape_label</span></span><a class="headerlink" href="#newton.Model.shape_label" title="Link to this definition">#</a></dt>
 <dd><p>List of labels for each shape.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_margin">
+<span class="sig-name descname"><span class="pre">shape_margin</span></span><a class="headerlink" href="#newton.Model.shape_margin" title="Link to this definition">#</a></dt>
+<dd><p>Shape surface margin [m], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2255,12 +2273,6 @@ Contact stiffness is computed as <code class="docutils literal notranslate"><spa
 <dt class="sig sig-object py" id="newton.Model.shape_source_ptr">
 <span class="sig-name descname"><span class="pre">shape_source_ptr</span></span><a class="headerlink" href="#newton.Model.shape_source_ptr" title="Link to this definition">#</a></dt>
 <dd><p>Geometry source pointer to be used inside the Warp kernels which can be generated by finalizing the geometry objects, see for example <a class="reference internal" href="newton.Mesh.html#newton.Mesh.finalize" title="newton.Mesh.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.Mesh.finalize()</span></code></a>, shape [shape_count], uint64.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_thickness">
-<span class="sig-name descname"><span class="pre">shape_thickness</span></span><a class="headerlink" href="#newton.Model.shape_thickness" title="Link to this definition">#</a></dt>
-<dd><p>Shape thickness [m], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2528,6 +2540,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.request_state_attributes"><code class="docutils literal notranslate"><span class="pre">Model.request_state_attributes()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.set_gravity"><code class="docutils literal notranslate"><span class="pre">Model.set_gravity()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.state"><code class="docutils literal notranslate"><span class="pre">Model.state()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.actuators"><code class="docutils literal notranslate"><span class="pre">Model.actuators</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_count"><code class="docutils literal notranslate"><span class="pre">Model.articulation_count</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_label"><code class="docutils literal notranslate"><span class="pre">Model.articulation_label</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_start"><code class="docutils literal notranslate"><span class="pre">Model.articulation_start</span></code></a></li>
@@ -2583,7 +2596,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.heightfield_elevation_data"><code class="docutils literal notranslate"><span class="pre">Model.heightfield_elevation_data</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_c"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_c</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_p"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_p</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_act_mode"><code class="docutils literal notranslate"><span class="pre">Model.joint_act_mode</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_act"><code class="docutils literal notranslate"><span class="pre">Model.joint_act</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_ancestor"><code class="docutils literal notranslate"><span class="pre">Model.joint_ancestor</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_armature"><code class="docutils literal notranslate"><span class="pre">Model.joint_armature</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_articulation"><code class="docutils literal notranslate"><span class="pre">Model.joint_articulation</span></code></a></li>
@@ -2613,6 +2626,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_qd_start"><code class="docutils literal notranslate"><span class="pre">Model.joint_qd_start</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_kd"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_kd</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_ke"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_ke</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_mode"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_mode</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_pos"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_pos</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_vel"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_vel</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_twist_lower"><code class="docutils literal notranslate"><span class="pre">Model.joint_twist_lower</span></code></a></li>
@@ -2662,15 +2676,16 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_filter_pairs"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_filter_pairs</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_group"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_group</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_radius"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_radius</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_contact_margin"><code class="docutils literal notranslate"><span class="pre">Model.shape_contact_margin</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_contact_pair_count"><code class="docutils literal notranslate"><span class="pre">Model.shape_contact_pair_count</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_contact_pairs"><code class="docutils literal notranslate"><span class="pre">Model.shape_contact_pairs</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_count"><code class="docutils literal notranslate"><span class="pre">Model.shape_count</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_filter"><code class="docutils literal notranslate"><span class="pre">Model.shape_filter</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_flags"><code class="docutils literal notranslate"><span class="pre">Model.shape_flags</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_gap"><code class="docutils literal notranslate"><span class="pre">Model.shape_gap</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_heightfield_data"><code class="docutils literal notranslate"><span class="pre">Model.shape_heightfield_data</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_is_solid"><code class="docutils literal notranslate"><span class="pre">Model.shape_is_solid</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_label"><code class="docutils literal notranslate"><span class="pre">Model.shape_label</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_margin"><code class="docutils literal notranslate"><span class="pre">Model.shape_margin</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_ka"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_ka</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_kd"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_kd</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_ke"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_ke</span></code></a></li>
@@ -2684,7 +2699,6 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_sdf_index"><code class="docutils literal notranslate"><span class="pre">Model.shape_sdf_index</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_source"><code class="docutils literal notranslate"><span class="pre">Model.shape_source</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_source_ptr"><code class="docutils literal notranslate"><span class="pre">Model.shape_source_ptr</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_thickness"><code class="docutils literal notranslate"><span class="pre">Model.shape_thickness</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_transform"><code class="docutils literal notranslate"><span class="pre">Model.shape_transform</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_type"><code class="docutils literal notranslate"><span class="pre">Model.shape_type</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_world"><code class="docutils literal notranslate"><span class="pre">Model.shape_world</span></code></a></li>
@@ -2744,17 +2758,9 @@ Stored per-element; kernels multiply by rest area internally.</p>
 
   <p class="copyright">
     
-      © Copyright 2026, The Newton Developers.
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
       <br/>
     
-  </p>
-</div>
-      
-        <div class="footer-item">
-
-  <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
-    <br/>
   </p>
 </div>
       

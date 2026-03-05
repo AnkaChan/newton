@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/documentation_options.js?v=1c471e8e"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -132,7 +132,7 @@
     <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.1.0.dev0)</span></p>
   
 </a></div>
     
@@ -811,7 +811,7 @@
 <h1>newton.geometry.HydroelasticSDF<a class="headerlink" href="#newton-geometry-hydroelasticsdf" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">HydroelasticSDF</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">num_shape_pairs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_num_tiles</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_num_blocks_per_shape</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_sdf_block_coords</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_sdf_shape2blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_material_kh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_shapes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">writer_func</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/sdf_hydroelastic.py#L137"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.HydroelasticSDF" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.geometry.</span></span><span class="sig-name descname"><span class="pre">HydroelasticSDF</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">num_shape_pairs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_num_tiles</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_num_blocks_per_shape</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_sdf_block_coords</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_sdf_shape2blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_material_kh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_shapes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">writer_func</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/sdf_hydroelastic.py#L116"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.geometry.HydroelasticSDF" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Hydroelastic contact generation with SDF-based collision detection.</p>
 <p>This class implements hydroelastic contact modeling between shapes represented
@@ -842,7 +842,7 @@ penetration depth and represented area.</p>
 <li><p><strong>n_shapes</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Total number of shapes in the simulation.</p></li>
 <li><p><strong>config</strong> (<a class="reference internal" href="#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><em>HydroelasticSDF.Config</em></a><em> | </em><em>None</em>) – Configuration options controlling buffer sizes, contact reduction,
 and other behavior. Defaults to <a class="reference internal" href="#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><code class="xref py py-class docutils literal notranslate"><span class="pre">HydroelasticSDF.Config</span></code></a>.</p></li>
-<li><p><strong>device</strong> (<em>Any</em>) – Warp device for GPU computation.</p></li>
+<li><p><strong>device</strong> (<em>Devicelike</em><em> | </em><em>None</em>) – Warp device for GPU computation.</p></li>
 <li><p><strong>writer_func</strong> (<em>Any</em>) – Callback for writing decoded contact data.</p></li>
 </ul>
 </dd>
@@ -978,6 +978,54 @@ When False, all generated contacts are passed through without reduction.</p>
 
 </dd></dl>
 
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ContactSurfaceData</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">contact_surface_point</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contact_surface_depth</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contact_surface_shape_pair</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">face_contact_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_num_face_contacts</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Data container for hydroelastic contact surface visualization.</p>
+<p>Contains the vertex arrays and metadata needed for rendering
+the contact surface triangles from hydroelastic collision detection.</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">contact_surface_point</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contact_surface_depth</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contact_surface_shape_pair</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">face_contact_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_num_face_contacts</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_depth">
+<span class="sig-name descname"><span class="pre">contact_surface_depth</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">float32</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_depth" title="Link to this definition">#</a></dt>
+<dd><p>Penetration depth at each face centroid.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_point">
+<span class="sig-name descname"><span class="pre">contact_surface_point</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">vec3f</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_point" title="Link to this definition">#</a></dt>
+<dd><p>World-space positions of contact surface triangle vertices (3 per face).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_shape_pair">
+<span class="sig-name descname"><span class="pre">contact_surface_shape_pair</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">vec2i</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_shape_pair" title="Link to this definition">#</a></dt>
+<dd><p>Shape pair indices (shape_a, shape_b) for each face.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.face_contact_count">
+<span class="sig-name descname"><span class="pre">face_contact_count</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">1</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">int32</span><span class="p"><span class="pre">)</span></span></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.face_contact_count" title="Link to this definition">#</a></dt>
+<dd><p>Array containing the number of face contacts.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.ContactSurfaceData.max_num_face_contacts">
+<span class="sig-name descname"><span class="pre">max_num_face_contacts</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><a class="headerlink" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.max_num_face_contacts" title="Link to this definition">#</a></dt>
+<dd><p>Maximum number of face contacts (buffer size).</p>
+</dd></dl>
+
+</dd></dl>
+
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.__init__">
 <span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">num_shape_pairs</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">total_num_tiles</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_num_blocks_per_shape</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_sdf_block_coords</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_sdf_shape2blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_material_kh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">n_shapes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">writer_func</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.HydroelasticSDF.__init__" title="Link to this definition">#</a></dt>
@@ -986,23 +1034,23 @@ When False, all generated contacts are passed through without reduction.</p>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.get_hydro_contact_surface">
-<span class="sig-name descname"><span class="pre">get_hydro_contact_surface</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.HydroelasticSDF.get_hydro_contact_surface" title="Link to this definition">#</a></dt>
-<dd><p>Get the hydroelastic contact surface data for visualization.</p>
+<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.get_contact_surface">
+<span class="sig-name descname"><span class="pre">get_contact_surface</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.HydroelasticSDF.get_contact_surface" title="Link to this definition">#</a></dt>
+<dd><p>Get hydroelastic <a class="reference internal" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData" title="newton.geometry.HydroelasticSDF.ContactSurfaceData"><code class="xref py py-class docutils literal notranslate"><span class="pre">ContactSurfaceData</span></code></a> for visualization.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p>HydroelasticContactSurfaceData containing vertex arrays and metadata for rendering,
-or None if <cite>output_contact_surface</cite> is False in the config.</p>
+<dd class="field-odd"><p>A <a class="reference internal" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData" title="newton.geometry.HydroelasticSDF.ContactSurfaceData"><code class="xref py py-class docutils literal notranslate"><span class="pre">ContactSurfaceData</span></code></a> instance containing vertex arrays and metadata for rendering,
+or None if <code class="xref py py-attr docutils literal notranslate"><span class="pre">config.output_contact_surface</span></code> is False.</p>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><em>HydroelasticContactSurfaceData</em> | None</p>
+<dd class="field-even"><p><a class="reference internal" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData" title="newton.geometry.HydroelasticSDF.ContactSurfaceData">ContactSurfaceData</a> | None</p>
 </dd>
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.launch">
-<span class="sig-name descname"><span class="pre">launch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">sdf_data</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_sdf_index</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_transform</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_contact_margin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_collision_aabb_lower</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_collision_aabb_upper</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_voxel_resolution</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_pairs_sdf_sdf</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_pairs_sdf_sdf_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">writer_data</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.HydroelasticSDF.launch" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">launch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">sdf_data</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_sdf_index</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_transform</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_gap</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_collision_aabb_lower</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_collision_aabb_upper</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_voxel_resolution</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_pairs_sdf_sdf</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_pairs_sdf_sdf_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">writer_data</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.HydroelasticSDF.launch" title="Link to this definition">#</a></dt>
 <dd><p>Run the full hydroelastic collision pipeline.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -1010,7 +1058,7 @@ or None if <cite>output_contact_surface</cite> is False in the config.</p>
 <li><p><strong>sdf_data</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=newton._src.geometry.sdf_utils.SDFData</em><em>)</em>) – Compact SDF table.</p></li>
 <li><p><strong>shape_sdf_index</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=int32</em><em>)</em>) – Per-shape SDF index into sdf_data.</p></li>
 <li><p><strong>shape_transform</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=transformf</em><em>)</em>) – World transforms for each shape.</p></li>
-<li><p><strong>shape_contact_margin</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=float32</em><em>)</em>) – Contact margin for each shape.</p></li>
+<li><p><strong>shape_gap</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=float32</em><em>)</em>) – Per-shape contact gap (detection threshold) for each shape.</p></li>
 <li><p><strong>shape_collision_aabb_lower</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=vec3f</em><em>)</em>) – Per-shape collision AABB lower bounds.</p></li>
 <li><p><strong>shape_collision_aabb_upper</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=vec3f</em><em>)</em>) – Per-shape collision AABB upper bounds.</p></li>
 <li><p><strong>shape_voxel_resolution</strong> (<em>array</em><em>(</em><em>ndim=1</em><em>, </em><em>dtype=vec3i</em><em>)</em>) – Per-shape voxel grid resolution.</p></li>
@@ -1019,18 +1067,6 @@ or None if <cite>output_contact_surface</cite> is False in the config.</p>
 <li><p><strong>writer_data</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a>) – Contact data writer for output.</p></li>
 </ul>
 </dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.geometry.HydroelasticSDF.set_output_contact_surface">
-<span class="sig-name descname"><span class="pre">set_output_contact_surface</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">enabled</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.HydroelasticSDF.set_output_contact_surface" title="Link to this definition">#</a></dt>
-<dd><p>Toggle contact surface visualization at runtime.</p>
-<p>Note: This is a no-op. When <cite>output_contact_surface=True</cite> in the config,
-the kernel always writes surface data. Display is controlled by the
-viewer’s <cite>show_hydro_contact_surface</cite> flag. This method exists for API
-compatibility with <code class="docutils literal notranslate"><span class="pre">CollisionPipeline</span></code>.</p>
-<dl class="field-list simple">
 </dl>
 </dd></dl>
 
@@ -1079,10 +1115,18 @@ compatibility with <code class="docutils literal notranslate"><span class="pre">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.Config.reduce_contacts"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.Config.reduce_contacts</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.ContactSurfaceData</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.__init__"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.ContactSurfaceData.__init__()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_depth"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.ContactSurfaceData.contact_surface_depth</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_point"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.ContactSurfaceData.contact_surface_point</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.contact_surface_shape_pair"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.ContactSurfaceData.contact_surface_shape_pair</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.face_contact_count"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.ContactSurfaceData.face_contact_count</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.ContactSurfaceData.max_num_face_contacts"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.ContactSurfaceData.max_num_face_contacts</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.__init__"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.get_hydro_contact_surface"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.get_hydro_contact_surface()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.get_contact_surface"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.get_contact_surface()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.launch"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.launch()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.geometry.HydroelasticSDF.set_output_contact_surface"><code class="docutils literal notranslate"><span class="pre">HydroelasticSDF.set_output_contact_surface()</span></code></a></li>
 </ul>
 </li>
 </ul>
@@ -1113,17 +1157,9 @@ compatibility with <code class="docutils literal notranslate"><span class="pre">
 
   <p class="copyright">
     
-      © Copyright 2026, The Newton Developers.
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
       <br/>
     
-  </p>
-</div>
-      
-        <div class="footer-item">
-
-  <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
-    <br/>
   </p>
 </div>
       

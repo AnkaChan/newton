@@ -41,7 +41,7 @@
   <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/documentation_options.js?v=1c471e8e"></script>
     <script src="../../_static/doctools.js?v=9bcbadda"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -132,7 +132,7 @@
     <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
-    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.1.0.dev0)</span></p>
   
 </a></div>
     
@@ -808,12 +808,33 @@
 <h1>newton.Mesh<a class="headerlink" href="#newton-mesh" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.Mesh">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">Mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">vertices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">uvs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compute_inertia</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_solid</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">maxhullvert</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">roughness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metallic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">texture</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/types.py#L90"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.Mesh" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">Mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">vertices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">uvs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compute_inertia</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_solid</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">maxhullvert</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">roughness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metallic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">texture</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/types.py#L92"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.Mesh" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Represents a triangle mesh for collision and simulation.</p>
 <p>This class encapsulates a triangle mesh, including its geometry, physical properties,
 and utility methods for simulation. Meshes are typically used for collision detection,
 visualization, and inertia computation in physics simulation.</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Mesh.mass">
+<span class="sig-name descname"><span class="pre">mass</span></span><span class="sig-paren">[</span><em class="sig-param"><span class="n"><span class="pre">kg</span></span></em><span class="sig-paren">]</span><a class="headerlink" href="#newton.Mesh.mass" title="Link to this definition">#</a></dt>
+<dd><p>Mesh mass in local coordinates, computed with density 1.0 when
+<code class="docutils literal notranslate"><span class="pre">compute_inertia</span></code> is <code class="docutils literal notranslate"><span class="pre">True</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Mesh.com">
+<span class="sig-name descname"><span class="pre">com</span></span><span class="sig-paren">[</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em><span class="sig-paren">]</span><a class="headerlink" href="#newton.Mesh.com" title="Link to this definition">#</a></dt>
+<dd><p>Mesh center of mass in local coordinates.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Mesh.inertia">
+<span class="sig-name descname"><span class="pre">inertia</span></span><span class="sig-paren">[</span><em class="sig-param"><span class="n"><span class="pre">kg</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">m</span></span></em><span class="sig-paren">]</span><a class="headerlink" href="#newton.Mesh.inertia" title="Link to this definition">#</a></dt>
+<dd><p>Mesh inertia tensor about <a class="reference internal" href="#newton.Mesh.com" title="newton.Mesh.com"><code class="xref py py-attr docutils literal notranslate"><span class="pre">com</span></code></a> in local coordinates.</p>
+</dd></dl>
+
 <p class="rubric">Example</p>
 <p>Load a mesh from an OBJ file using OpenMesh and create a Newton Mesh:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
@@ -826,8 +847,6 @@ visualization, and inertia computation in physics simulation.</p>
 <span class="n">mesh</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">mesh_points</span><span class="p">,</span> <span class="n">mesh_indices</span><span class="p">)</span>
 </pre></div>
 </div>
-<dl class="field-list simple">
-</dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.Mesh.create_arrow">
 <em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">create_arrow</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">base_radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_height</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">cap_radius</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cap_height</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Axis.Y</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">segments</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">32</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compute_normals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compute_uvs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compute_inertia</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Mesh.create_arrow" title="Link to this definition">#</a></dt>
@@ -986,6 +1005,55 @@ If <code class="docutils literal notranslate"><span class="pre">None</span></cod
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.Mesh.create_from_file">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">create_from_file</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">filename</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">method</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Mesh.create_from_file" title="Link to this definition">#</a></dt>
+<dd><p>Load a Mesh from a 3D model file.</p>
+<p>Supports common surface mesh formats including OBJ, PLY, STL, and
+other formats supported by trimesh, meshio, openmesh, or pcu.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>filename</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Path to the mesh file.</p></li>
+<li><p><strong>method</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Loading backend to use (<code class="docutils literal notranslate"><span class="pre">&quot;trimesh&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;meshio&quot;</span></code>,
+<code class="docutils literal notranslate"><span class="pre">&quot;pcu&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;openmesh&quot;</span></code>). If <code class="docutils literal notranslate"><span class="pre">None</span></code>, each backend is
+tried in order until one succeeds.</p></li>
+<li><p><strong>**kwargs</strong> – Additional arguments passed to the <a class="reference internal" href="#newton.Mesh" title="newton.Mesh"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mesh</span></code></a>
+constructor (e.g. <code class="docutils literal notranslate"><span class="pre">compute_inertia</span></code>, <code class="docutils literal notranslate"><span class="pre">is_solid</span></code>).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A new Mesh instance.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.Mesh" title="newton.Mesh">Mesh</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.Mesh.create_from_usd">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">create_from_usd</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">prim</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Mesh.create_from_usd" title="Link to this definition">#</a></dt>
+<dd><p>Load a Mesh from a USD prim with the <code class="docutils literal notranslate"><span class="pre">UsdGeom.Mesh</span></code> schema.</p>
+<p>This is a convenience wrapper around <a class="reference internal" href="newton.usd.get_mesh.html#newton.usd.get_mesh" title="newton.usd.get_mesh"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.usd.get_mesh()</span></code></a>.
+See that function for full documentation.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>prim</strong> – The USD prim to load the mesh from.</p></li>
+<li><p><strong>**kwargs</strong> – Additional arguments passed to <a class="reference internal" href="newton.usd.get_mesh.html#newton.usd.get_mesh" title="newton.usd.get_mesh"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.usd.get_mesh()</span></code></a>
+(e.g. <code class="docutils literal notranslate"><span class="pre">load_normals</span></code>, <code class="docutils literal notranslate"><span class="pre">load_uvs</span></code>).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A new Mesh instance.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.Mesh" title="newton.Mesh">Mesh</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.Mesh.create_heightfield">
 <em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">create_heightfield</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">heightfield</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">extent_x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">extent_y</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">center_x</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">center_y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ground_z</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">compute_inertia</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Mesh.create_heightfield" title="Link to this definition">#</a></dt>
 <dd><p>Create a watertight mesh from a 2D heightfield.</p>
@@ -1113,7 +1181,7 @@ if the mesh is closed (two-manifold).</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.Mesh.build_sdf">
-<span class="sig-name descname"><span class="pre">build_sdf</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">narrow_band_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target_voxel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_resolution</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">thickness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Mesh.build_sdf" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">build_sdf</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">narrow_band_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target_voxel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_resolution</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Mesh.build_sdf" title="Link to this definition">#</a></dt>
 <dd><p>Build and attach an SDF for this mesh.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -1126,11 +1194,10 @@ takes precedence over <code class="docutils literal notranslate"><span class="pr
 <code class="docutils literal notranslate"><span class="pre">target_voxel_size</span></code> is not provided.</p></li>
 <li><p><strong>margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Extra AABB padding [m] added before discretization. Uses
 <code class="docutils literal notranslate"><span class="pre">0.05</span></code> when not provided.</p></li>
-<li><p><strong>thickness</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Thickness offset [m] to subtract from SDF values. When
-non-zero, the SDF surface is effectively shrunk inward by this
-amount. Useful for modeling compliant layers in hydroelastic
-collision. Defaults to <code class="docutils literal notranslate"><span class="pre">0.0</span></code> (no offset, thickness applied
-at runtime).</p></li>
+<li><p><strong>shape_margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Shape margin offset [m] to subtract from SDF values.
+When non-zero, the SDF surface is effectively shrunk inward by
+this amount. Useful for modeling compliant layers in hydroelastic
+collision. Defaults to <code class="docutils literal notranslate"><span class="pre">0.0</span></code>.</p></li>
 <li><p><strong>scale</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Scale factors <code class="docutils literal notranslate"><span class="pre">(sx,</span> <span class="pre">sy,</span> <span class="pre">sz)</span></code> to bake into the SDF. When
 provided, the mesh vertices are scaled before SDF generation
 and <code class="docutils literal notranslate"><span class="pre">scale_baked</span></code> is set to <code class="docutils literal notranslate"><span class="pre">True</span></code> in the resulting SDF.
@@ -1254,12 +1321,17 @@ If False, return a new Mesh for the convex hull.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh"><code class="docutils literal notranslate"><span class="pre">Mesh</span></code></a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.mass"><code class="docutils literal notranslate"><span class="pre">Mesh.mass</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.com"><code class="docutils literal notranslate"><span class="pre">Mesh.com</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.inertia"><code class="docutils literal notranslate"><span class="pre">Mesh.inertia</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_arrow"><code class="docutils literal notranslate"><span class="pre">Mesh.create_arrow()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_box"><code class="docutils literal notranslate"><span class="pre">Mesh.create_box()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_capsule"><code class="docutils literal notranslate"><span class="pre">Mesh.create_capsule()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_cone"><code class="docutils literal notranslate"><span class="pre">Mesh.create_cone()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_cylinder"><code class="docutils literal notranslate"><span class="pre">Mesh.create_cylinder()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_ellipsoid"><code class="docutils literal notranslate"><span class="pre">Mesh.create_ellipsoid()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_from_file"><code class="docutils literal notranslate"><span class="pre">Mesh.create_from_file()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_from_usd"><code class="docutils literal notranslate"><span class="pre">Mesh.create_from_usd()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_heightfield"><code class="docutils literal notranslate"><span class="pre">Mesh.create_heightfield()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_plane"><code class="docutils literal notranslate"><span class="pre">Mesh.create_plane()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_sphere"><code class="docutils literal notranslate"><span class="pre">Mesh.create_sphere()</span></code></a></li>
@@ -1301,17 +1373,9 @@ If False, return a new Mesh for the convex hull.</p>
 
   <p class="copyright">
     
-      © Copyright 2026, The Newton Developers.
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
       <br/>
     
-  </p>
-</div>
-      
-        <div class="footer-item">
-
-  <p class="sphinx-version">
-    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
-    <br/>
   </p>
 </div>
       
