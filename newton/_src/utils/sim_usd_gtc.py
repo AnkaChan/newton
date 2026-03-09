@@ -1061,7 +1061,7 @@ class Simulator:
             builder, self.path_body_map, self.path_shape_map
         )  # NB: needs to be called before the builder finalize and after we set the integrator type
         if self.integrator_type == IntegratorType.VBD:
-            builder.color()  # NB: needs to be called before the builder finalize
+            builder.color(include_bending=True)  # NB: needs to be called before the builder finalize
 
         self._override_pre_builder_finalize(builder)
         self.print_debug_info(builder, "ces_vase2.txt")  # Print debug info before finalize
