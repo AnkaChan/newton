@@ -192,6 +192,7 @@ class ViewerGL(ViewerBase):
         height: int = 1080,
         vsync: bool = False,
         headless: bool = False,
+        shading_style: Literal["classic", "studio"] = "studio",
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -201,6 +202,10 @@ class ViewerGL(ViewerBase):
             height: Window height in pixels.
             vsync: Enable vertical sync.
             headless: Run in headless mode (no window).
+            shading_style: Visual rendering style. ``"classic"`` uses Newton's default
+                rendering with sky, shadows, fog, and environment reflections.
+                ``"studio"`` uses a clean studio look with soft hemisphere lighting,
+                no shadows or fog, and a neutral light-gray background.
         """
         # Pre-initialize callback registry; clear_model() (called from
         # super().__init__()) resets the "side" slot on each model change.
@@ -208,7 +213,9 @@ class ViewerGL(ViewerBase):
 
         super().__init__()
 
-        self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
+        self.renderer = RendererGL(
+            vsync=vsync, screen_width=width, screen_height=height, headless=headless, shading_style=shading_style
+        )
         self.renderer.set_title("Newton Viewer")
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
@@ -327,7 +334,7 @@ class ViewerGL(ViewerBase):
         """
         Create a low-resolution sphere mesh for point rendering.
         """
-        mesh = nt.Mesh.create_sphere(1.0, num_latitudes=6, num_longitudes=6, compute_inertia=False)
+        mesh = nt.Mesh.create_sphere(1.0, num_latitudes=16, num_longitudes=24, compute_inertia=False)
         self._point_mesh = MeshGL(len(mesh.vertices), len(mesh.indices), self.device)
 
         points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
@@ -855,7 +862,16 @@ class ViewerGL(ViewerBase):
         if colors is None and object_recreated:
             colors = wp.full(num_points, wp.vec3(1.0, 1.0, 1.0), dtype=wp.vec3, device=self.device)
 
-        self.objects[name].update_from_points(points, radii, colors)
+        # Set a physically sensible default material (roughness=0.45) the first time
+        # a point batch is created. The zero-initialized buffer (roughness=0, mirror-like)
+        # produces a specular footprint far too narrow to be visible on sphere geometry,
+        # making all particles appear completely flat/matte.
+        materials = None
+        if object_recreated:
+            capacity = self.objects[name].num_instances
+            materials = wp.full(capacity, wp.vec4(0.45, 0.0, 0.0, 0.0), dtype=wp.vec4, device=self.device)
+
+        self.objects[name].update_from_points(points, radii, colors, materials=materials)
         self.objects[name].hidden = hidden
 
     _SH_C0 = 0.28209479177387814
@@ -1966,6 +1982,13 @@ class ViewerGL(ViewerBase):
             if imgui.collapsing_header("Rendering Options"):
                 imgui.separator()
 
+                # Shading style dropdown
+                shading_styles = ["classic", "studio"]
+                current_style_idx = shading_styles.index(self.renderer.shading_style)
+                changed, current_style_idx = imgui.combo("Shading", current_style_idx, shading_styles)
+                if changed:
+                    self.renderer.shading_style = shading_styles[current_style_idx]
+
                 # VSync
                 changed, vsync = imgui.checkbox("VSync", self.vsync)
                 if changed:
@@ -1979,6 +2002,17 @@ class ViewerGL(ViewerBase):
 
                 # Wireframe mode
                 changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
+
+                # Edge overlay
+                changed, self.renderer.draw_edges = imgui.checkbox("Edges", self.renderer.draw_edges)
+                if self.renderer.draw_edges:
+                    imgui.same_line()
+                    r, g, b, a = self.renderer._edge_color
+                    changed, (r, g, b, a) = imgui.color_edit4(
+                        "##edge_color", (r, g, b, a), imgui.ColorEditFlags_.no_label.value
+                    )
+                    if changed:
+                        self.renderer._edge_color = (r, g, b, a)
 
                 def _edit_color3(
                     label: str, color: tuple[float, float, float]

@@ -723,6 +723,231 @@ class FrameShader(ShaderGL):
             self._gl.glUniform1i(self.loc_texture, texture_unit)
 
 
+shape_fragment_shader_studio = """
+#version 330 core
+out vec4 FragColor;
+
+in vec3 Normal;
+in vec3 FragPos;
+in vec3 LocalPos;
+in vec2 TexCoord;
+in vec3 ObjectColor;
+in vec4 FragPosLightSpace;  // unused in studio mode
+in vec4 Material;
+
+uniform vec3 view_pos;
+uniform vec3 light_color;
+uniform vec3 sky_color;
+uniform vec3 ground_color;
+uniform vec3 sun_direction;
+uniform sampler2D albedo_map;
+uniform int up_axis;
+
+const float PI = 3.14159265359;
+
+float filterwidth(vec2 v)
+{
+    vec2 fw = max(abs(dFdx(v)), abs(dFdy(v)));
+    return max(fw.x, fw.y);
+}
+
+vec2 bump(vec2 x)
+{
+    return (floor(x / 2.0) + 2.0 * max(x / 2.0 - floor(x / 2.0) - 0.5, 0.0));
+}
+
+float checker(vec2 uv)
+{
+    float width = filterwidth(uv);
+    vec2 p0 = uv - 0.5 * width;
+    vec2 p1 = uv + 0.5 * width;
+    vec2 i = (bump(p1) - bump(p0)) / width;
+    return i.x * i.y + (1.0 - i.x) * (1.0 - i.y);
+}
+
+void main()
+{
+    float roughness = clamp(Material.x, 0.0, 1.0);
+    float metallic  = clamp(Material.y, 0.0, 1.0);
+    float checker_enable = Material.z;
+    float texture_enable = Material.w;
+    float checker_scale = 1.0;
+
+    // convert to linear space
+    vec3 albedo = pow(ObjectColor, vec3(2.2));
+    if (texture_enable > 0.5)
+    {
+        vec3 tex_color = texture(albedo_map, TexCoord).rgb;
+        albedo *= pow(tex_color, vec3(2.2));
+    }
+
+    if (checker_enable > 0.0)
+    {
+        vec2 uv = LocalPos.xy * checker_scale;
+        float cb = checker(uv);
+        vec3 albedo2 = albedo * 0.7;
+        albedo = mix(albedo, albedo2, cb);
+    }
+
+    vec3 N = normalize(Normal);
+    if (!gl_FrontFacing)
+        N = -N;
+    vec3 V = normalize(view_pos - FragPos);
+    vec3 L = normalize(sun_direction);
+    vec3 H = normalize(V + L);
+
+    // Up axis
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    if (up_axis == 0) up = vec3(1.0, 0.0, 0.0);
+    if (up_axis == 2) up = vec3(0.0, 0.0, 1.0);
+
+    // Soft hemisphere ambient — reduced so the directional key light has contrast.
+    // A fully-bright hemisphere washes out all directional shading.
+    float sky_fac = dot(N, up) * 0.5 + 0.5;
+    vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo * 0.35;
+
+    // Key directional light (primary source of contrast / shape definition)
+    float NdotL = max(dot(N, L), 0.0);
+    vec3 diffuse = albedo * light_color * NdotL * 1.10;
+
+    // Fill light: perpendicular to key in the horizontal plane, slightly elevated.
+    // This softly illuminates faces that are in shadow of the key without
+    // collapsing them to pure black, while still preserving contrast.
+    vec3 fill_dir = normalize(cross(up, L) + up * 0.20);
+    float NdotFill = max(dot(N, fill_dir), 0.0) * 0.28;
+    diffuse += albedo * light_color * NdotFill;
+
+    // Soft back fill (opposite key) to prevent pitch-black rear faces
+    float NdotBack = max(dot(N, -L), 0.0) * 0.10;
+    diffuse += albedo * light_color * NdotBack;
+
+    diffuse *= (1.0 - metallic);
+
+    // Specular — studio style.
+    // Physical dielectric reflectance F0=0.04 combined with energy-conserving
+    // normFactor produces ~1% brightness at typical angles, which is invisible.
+    // Instead use a boosted reflectance (0.30 for dielectrics, albedo for metals)
+    // without normFactor so the highlight is clearly visible at moderate roughness.
+    float gloss     = clamp(1.0 - roughness, 0.0, 1.0);
+    float shininess = 4.0 + pow(gloss, 2.0) * 60.0;  // range [4, 64]: soft but defined
+    float NdotH = max(dot(N, H), 0.0);
+    float spec_reflectance = mix(0.30, 1.0, metallic);
+    vec3  spec_color = mix(vec3(spec_reflectance), albedo, metallic);
+    vec3  spec = spec_color * light_color * pow(NdotH, shininess) * NdotL;
+
+    // Studio-style rim highlight
+    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.07;
+    vec3 rim_color = sky_color * rim;
+
+    // Camera-space catch light — places a soft highlight on surfaces facing the viewer.
+    // This is the characteristic studio catch-light "sphere pop": regardless of world-space light
+    // direction, spheres and curved surfaces always show a visible bright region near their
+    // silhouette-facing centre, giving them instant 3D depth.
+    float NdotV_clamp = max(dot(N, V), 0.0);
+    vec3 catch_light = albedo * light_color * 0.18 * pow(NdotV_clamp, 3.0);
+
+    // No shadows, no fog
+    vec3 color = ambient + diffuse + spec + rim_color + catch_light;
+
+    // gamma correction (sRGB)
+    color = pow(color, vec3(1.0 / 2.2));
+    FragColor = vec4(color, 1.0);
+}
+"""
+
+
+class ShaderShapeStudio(ShaderShape):
+    """Shader for studio-style rendering: soft hemisphere lighting, no shadows or fog."""
+
+    def __init__(self, gl):
+        ShaderGL.__init__(self)
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(shape_vertex_shader, "vertex"), Shader(shape_fragment_shader_studio, "fragment")
+        )
+
+        # Query the same uniform locations as ShaderShape; unused ones will return -1
+        # and glUniform* calls with location -1 are silently ignored by OpenGL.
+        with self:
+            self.loc_view = self._get_uniform_location("view")
+            self.loc_projection = self._get_uniform_location("projection")
+            self.loc_view_pos = self._get_uniform_location("view_pos")
+            self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
+            self.loc_shadow_map = self._get_uniform_location("shadow_map")
+            self.loc_albedo_map = self._get_uniform_location("albedo_map")
+            self.loc_env_map = self._get_uniform_location("env_map")
+            self.loc_env_intensity = self._get_uniform_location("env_intensity")
+            self.loc_fog_color = self._get_uniform_location("fogColor")
+            self.loc_up_axis = self._get_uniform_location("up_axis")
+            self.loc_sun_direction = self._get_uniform_location("sun_direction")
+            self.loc_light_color = self._get_uniform_location("light_color")
+            self.loc_ground_color = self._get_uniform_location("ground_color")
+            self.loc_sky_color = self._get_uniform_location("sky_color")
+            self.loc_shadow_radius = self._get_uniform_location("shadow_radius")
+            self.loc_diffuse_scale = self._get_uniform_location("diffuse_scale")
+            self.loc_specular_scale = self._get_uniform_location("specular_scale")
+            self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
+            self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
+
+
+edge_fragment_shader = """
+#version 330 core
+out vec4 FragColor;
+uniform vec4 edge_color;
+void main()
+{
+    FragColor = edge_color;
+}
+"""
+
+
+class ShaderEdge(ShaderGL):
+    """Flat-color shader used for the edge/wireframe overlay pass.
+
+    Reuses the instanced shape vertex shader so the second geometry pass
+    is correctly positioned, then ignores all lighting and outputs a single
+    uniform ``edge_color``.
+    """
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(shape_vertex_shader, "vertex"), Shader(edge_fragment_shader, "fragment")
+        )
+
+        with self:
+            self.loc_view = self._get_uniform_location("view")
+            self.loc_projection = self._get_uniform_location("projection")
+            self.loc_edge_color = self._get_uniform_location("edge_color")
+            # light_space_matrix is referenced in the vertex shader; set to identity
+            # so gl_Position is computed correctly even though it is not used here.
+            self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
+
+    def update(
+        self,
+        view_matrix: np.ndarray,
+        projection_matrix: np.ndarray,
+        edge_color: tuple[float, float, float, float] = (0.05, 0.05, 0.05, 1.0),
+        light_space_matrix: np.ndarray | None = None,
+    ):
+        """Update shader uniforms for the edge pass."""
+        with self:
+            self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
+            self._gl.glUniformMatrix4fv(
+                self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix)
+            )
+            self._gl.glUniform4f(self.loc_edge_color, *edge_color)
+            lsm = light_space_matrix if light_space_matrix is not None else np.eye(4, dtype=np.float32)
+            self._gl.glUniformMatrix4fv(
+                self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(lsm)
+            )
+
+
 class ShaderLine(ShaderGL):
     """Simple shader for rendering lines with per-vertex colors."""
 

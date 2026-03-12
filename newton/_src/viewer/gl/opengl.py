@@ -15,11 +15,28 @@ from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from .shaders import (
     FrameShader,
+    ShaderEdge,
     ShaderLine,
     ShaderShape,
+    ShaderShapeStudio,
     ShaderSky,
     ShadowShader,
 )
+
+# Default colors for the studio shading style.
+_STUDIO_BG_COLOR = (0.93, 0.93, 0.95)
+_STUDIO_SKY_COLOR = (0.72, 0.82, 0.98)
+_STUDIO_GROUND_COLOR = (0.50, 0.45, 0.38)
+_STUDIO_LIGHT_COLOR = (0.92, 0.90, 0.86)
+
+# Per-up-axis key-light directions for studio mode.
+# Each vector points "from above and slightly to the side" for its up axis,
+# ensuring NdotL > 0 on horizontal (floor/cloth) surfaces regardless of convention.
+_STUDIO_SUN = {
+    0: np.array([1.2, 0.4, 0.6], dtype=np.float32),  # X-up
+    1: np.array([0.4, 1.2, 0.6], dtype=np.float32),  # Y-up
+    2: np.array([0.4, 0.6, 1.2], dtype=np.float32),  # Z-up (default)
+}
 
 ENABLE_CUDA_INTEROP = False
 ENABLE_GL_CHECKS = False
@@ -763,7 +780,7 @@ class MeshInstancerGL:
         self._update_vbo(self.world_xforms, colors, materials)
 
     # helper to update instance transforms from points
-    def update_from_points(self, points, widths, colors):
+    def update_from_points(self, points, widths, colors, materials=None):
         if points is None:
             active = 0
         else:
@@ -789,7 +806,7 @@ class MeshInstancerGL:
                 record_tape=False,
             )
 
-        self._update_vbo(self.world_xforms, colors, None)
+        self._update_vbo(self.world_xforms, colors, materials)
 
     # upload to vbo
     def _update_vbo(self, xforms, colors, materials):
@@ -892,11 +909,23 @@ class RendererGL:
             cls._fallback_texture = tex
         return cls._fallback_texture
 
-    def __init__(self, title="Newton", screen_width=1920, screen_height=1080, vsync=True, headless=None, device=None):
+    def __init__(
+        self,
+        title="Newton",
+        screen_width=1920,
+        screen_height=1080,
+        vsync=True,
+        headless=None,
+        device=None,
+        shading_style="classic",
+    ):
+        self.shading_style = shading_style
         self.draw_sky = True
         self.draw_fps = True
         self.draw_shadows = True
         self.draw_wireframe = False
+        self.draw_edges = False
+        self._edge_color = (0.05, 0.05, 0.05, 1.0)  # RGBA dark near-black
 
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
@@ -1015,6 +1044,7 @@ class RendererGL:
         self._shadow_shader = None
         self._shadow_width = 4096
         self._shadow_height = 4096
+        self._light_space_matrix = np.eye(4, dtype=np.float32)
 
         self._frame_texture = None
         self._frame_depth_texture = None
@@ -1050,6 +1080,8 @@ class RendererGL:
 
         self._shadow_shader = ShadowShader(gl)
         self._shape_shader = ShaderShape(gl)
+        self._shape_shader_studio = ShaderShapeStudio(gl)
+        self._edge_shader = ShaderEdge(gl)
         self._frame_shader = FrameShader(gl)
         self._sky_shader = ShaderSky(gl)
         self._line_shader = ShaderLine(gl)
@@ -1118,7 +1150,11 @@ class RendererGL:
         gl = RendererGL.gl
         self._make_current()
 
-        gl.glClearColor(*self.sky_upper, 1)
+        if self.shading_style == "studio":
+            bg = _STUDIO_BG_COLOR
+        else:
+            bg = self.sky_upper
+        gl.glClearColor(*bg, 1)
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDepthMask(True)
         gl.glDepthRange(0.0, 1.0)
@@ -1152,7 +1188,7 @@ class RendererGL:
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._shadow_fbo)
         gl.glClear(gl.GL_DEPTH_BUFFER_BIT)
 
-        if self.draw_shadows:
+        if self.draw_shadows and self.shading_style != "studio":
             # Note: lines are skipped during shadow pass since they don't cast shadows
             self._render_shadow_map(objects)
 
@@ -1168,7 +1204,7 @@ class RendererGL:
         gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, target_fbo)
         gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
 
-        gl.glClearColor(*self.sky_upper, 1)
+        gl.glClearColor(*bg, 1)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glBindVertexArray(0)
 
@@ -1710,39 +1746,89 @@ class RendererGL:
     def _render_scene(self, objects):
         gl = RendererGL.gl
 
-        if self.draw_sky:
-            self._draw_sky()
+        if self.shading_style == "studio":
+            # Flat background: skip sky sphere, use solid clear color instead.
+            # Choose a key-light direction that is always "above" for this up axis
+            # (the default sun_direction is tuned for Z-up and gives NdotL≈0 for
+            # upward-facing surfaces in Y-up scenes, making everything look flat).
+            sun = _STUDIO_SUN.get(self.camera.up_axis, _STUDIO_SUN[2])
+            sun = sun / np.linalg.norm(sun)
 
-        if self.draw_wireframe:
-            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+            if self.draw_wireframe:
+                gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
 
-        self._shape_shader.update(
-            view_matrix=self._view_matrix,
-            projection_matrix=self._projection_matrix,
-            view_pos=self.camera.pos,
-            fog_color=self.sky_lower,
-            up_axis=self.camera.up_axis,
-            sun_direction=self._sun_direction,
-            enable_shadows=self.draw_shadows,
-            shadow_texture=self._shadow_texture,
-            light_space_matrix=self._light_space_matrix,
-            light_color=self._light_color,
-            sky_color=self.ambient_sky,
-            ground_color=self.ambient_ground,
-            env_texture=self._env_texture,
-            env_intensity=self._env_intensity,
-            shadow_radius=self.shadow_radius,
-            diffuse_scale=self.diffuse_scale,
-            specular_scale=self.specular_scale,
-            spotlight_enabled=self.spotlight_enabled,
-            shadow_extents=self.shadow_extents,
-            exposure=self.exposure,
-        )
+            self._shape_shader_studio.update(
+                view_matrix=self._view_matrix,
+                projection_matrix=self._projection_matrix,
+                view_pos=self.camera.pos,
+                fog_color=_STUDIO_BG_COLOR,
+                up_axis=self.camera.up_axis,
+                sun_direction=tuple(sun),
+                enable_shadows=False,
+                shadow_texture=self._shadow_texture,
+                light_space_matrix=self._light_space_matrix,
+                light_color=_STUDIO_LIGHT_COLOR,
+                sky_color=_STUDIO_SKY_COLOR,
+                ground_color=_STUDIO_GROUND_COLOR,
+                env_texture=None,
+                env_intensity=0.0,
+            )
 
-        with self._shape_shader:
-            self._draw_objects(objects)
+            with self._shape_shader_studio:
+                self._draw_objects(objects)
+        else:
+            if self.draw_sky:
+                self._draw_sky()
+
+            if self.draw_wireframe:
+                gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+
+            self._shape_shader.update(
+                view_matrix=self._view_matrix,
+                projection_matrix=self._projection_matrix,
+                view_pos=self.camera.pos,
+                fog_color=self.sky_lower,
+                up_axis=self.camera.up_axis,
+                sun_direction=self._sun_direction,
+                enable_shadows=self.draw_shadows,
+                shadow_texture=self._shadow_texture,
+                light_space_matrix=self._light_space_matrix,
+                light_color=self._light_color,
+                sky_color=self.sky_upper,
+                ground_color=self.sky_lower,
+                env_texture=self._env_texture,
+                env_intensity=self._env_intensity,
+                shadow_radius=self.shadow_radius,
+                diffuse_scale=self.diffuse_scale,
+                specular_scale=self.specular_scale,
+                spotlight_enabled=self.spotlight_enabled,
+                shadow_extents=self.shadow_extents,
+            )
+
+            with self._shape_shader:
+                self._draw_objects(objects)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+
+        # Edge overlay pass — draw the same geometry a second time as lines.
+        # GL_LEQUAL lets edges pass the depth test against their own solid surface
+        # (same geometry → same interpolated depths) while correctly hiding edges of
+        # objects that are occluded (their depth > buffer value from the solid pass).
+        # No polygon offset is needed or wanted: factor-based offsets shift depths on
+        # steep surfaces enough to let occluded edges bleed through other objects.
+        if self.draw_edges:
+            self._edge_shader.update(
+                view_matrix=self._view_matrix,
+                projection_matrix=self._projection_matrix,
+                edge_color=self._edge_color,
+                light_space_matrix=self._light_space_matrix,
+            )
+            gl.glDepthFunc(gl.GL_LEQUAL)
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+            with self._edge_shader:
+                self._draw_objects(objects)
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+            gl.glDepthFunc(gl.GL_LESS)
 
         check_gl_error()
 
