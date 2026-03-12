@@ -732,7 +732,7 @@ in vec3 FragPos;
 in vec3 LocalPos;
 in vec2 TexCoord;
 in vec3 ObjectColor;
-in vec4 FragPosLightSpace;  // unused in studio mode
+in vec4 FragPosLightSpace;
 in vec4 Material;
 
 uniform vec3 view_pos;
@@ -741,9 +741,73 @@ uniform vec3 sky_color;
 uniform vec3 ground_color;
 uniform vec3 sun_direction;
 uniform sampler2D albedo_map;
+uniform sampler2D shadow_map;
+uniform mat4 light_space_matrix;
+uniform float shadow_radius;
+uniform float shadow_extents;
 uniform int up_axis;
 
 const float PI = 3.14159265359;
+
+vec2 poissonDisk[16] = vec2[](
+   vec2( -0.94201624, -0.39906216 ),
+   vec2( 0.94558609, -0.76890725 ),
+   vec2( -0.094184101, -0.92938870 ),
+   vec2( 0.34495938, 0.29387760 ),
+   vec2( -0.91588581, 0.45771432 ),
+   vec2( -0.81544232, -0.87912464 ),
+   vec2( -0.38277543, 0.27676845 ),
+   vec2( 0.97484398, 0.75648379 ),
+   vec2( 0.44323325, -0.97511554 ),
+   vec2( 0.53742981, -0.47373420 ),
+   vec2( -0.26496911, -0.41893023 ),
+   vec2( 0.79197514, 0.19090188 ),
+   vec2( -0.24188840, 0.99706507 ),
+   vec2( -0.81409955, 0.91437590 ),
+   vec2( 0.19984126, 0.78641367 ),
+   vec2( 0.14383161, -0.14100790 )
+);
+
+float rand(vec2 co) {
+    return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+float ShadowCalculation()
+{
+    vec3 normal = normalize(Normal);
+    if (!gl_FrontFacing) normal = -normal;
+
+    float worldTexel = (shadow_extents * 2.0) / float(4096);
+    float normalBias = 2.0 * worldTexel;
+    vec4 light_space_pos = light_space_matrix * vec4(FragPos + normal * normalBias, 1.0);
+    vec3 projCoords = light_space_pos.xyz / light_space_pos.w;
+    projCoords = projCoords * 0.5 + 0.5;
+    if (projCoords.z > 1.0) return 0.0;
+
+    float frag_depth = projCoords.z;
+    float fade = 1.0;
+    float margin = 0.15;
+    fade *= smoothstep(0.0, margin, projCoords.x);
+    fade *= smoothstep(0.0, margin, 1.0 - projCoords.x);
+    fade *= smoothstep(0.0, margin, projCoords.y);
+    fade *= smoothstep(0.0, margin, 1.0 - projCoords.y);
+
+    float NdotL_bias = max(dot(normal, normalize(sun_direction)), 0.0);
+    float depthBias = mix(0.0003, 0.00002, NdotL_bias);
+    float biased_depth = frag_depth - depthBias;
+
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadow_map, 0);
+    float angle = rand(gl_FragCoord.xy) * 2.0 * PI;
+    float s = sin(angle); float c = cos(angle);
+    mat2 rot = mat2(c, -s, s, c);
+    for (int i = 0; i < 16; i++) {
+        vec2 offset = rot * poissonDisk[i];
+        float pcf_depth = texture(shadow_map, projCoords.xy + offset * shadow_radius * texelSize).r;
+        if (pcf_depth < biased_depth) shadow += 1.0;
+    }
+    return (shadow / 16.0) * fade;
+}
 
 float filterwidth(vec2 v)
 {
@@ -846,8 +910,8 @@ void main()
     float NdotV_clamp = max(dot(N, V), 0.0);
     vec3 catch_light = albedo * light_color * 0.18 * pow(NdotV_clamp, 3.0);
 
-    // No shadows, no fog
-    vec3 color = ambient + diffuse + spec + rim_color + catch_light;
+    float shadow = ShadowCalculation();
+    vec3 color = ambient + (1.0 - shadow) * (diffuse + spec) + rim_color + catch_light;
 
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));

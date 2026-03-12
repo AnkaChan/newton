@@ -30,12 +30,12 @@ _STUDIO_GROUND_COLOR = (0.50, 0.45, 0.38)
 _STUDIO_LIGHT_COLOR = (0.92, 0.90, 0.86)
 
 # Per-up-axis key-light directions for studio mode.
-# Each vector points "from above and slightly to the side" for its up axis,
-# ensuring NdotL > 0 on horizontal (floor/cloth) surfaces regardless of convention.
+# ~45° elevation so the floor gets moderate (not maximum) direct light.
+# Each vector is un-normalized; normalisation happens at use time.
 _STUDIO_SUN = {
-    0: np.array([1.2, 0.4, 0.6], dtype=np.float32),  # X-up
-    1: np.array([0.4, 1.2, 0.6], dtype=np.float32),  # Y-up
-    2: np.array([0.4, 0.6, 1.2], dtype=np.float32),  # Z-up (default)
+    0: np.array([1.0, 0.6, 0.8], dtype=np.float32),  # X-up  (~45° from horizontal)
+    1: np.array([0.6, 1.0, 0.8], dtype=np.float32),  # Y-up  (~45° from horizontal)
+    2: np.array([0.8, 0.6, 1.0], dtype=np.float32),  # Z-up  (~45° from horizontal)
 }
 
 ENABLE_CUDA_INTEROP = False
@@ -1161,8 +1161,11 @@ class RendererGL:
 
         self.camera = camera
 
-        # Lazy-init sun direction based on camera up axis
-        if self._sun_direction is None:
+        # Set sun direction for this frame (studio uses its own per-up-axis key light).
+        if self.shading_style == "studio":
+            d = _STUDIO_SUN.get(camera.up_axis, _STUDIO_SUN[2])
+            self._sun_direction = d / np.linalg.norm(d)
+        elif self._sun_direction is None:
             _sun_dirs = {
                 0: np.array((0.8, 0.2, -0.3)),  # X-up
                 1: np.array((0.2, 0.8, -0.3)),  # Y-up
@@ -1188,7 +1191,7 @@ class RendererGL:
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._shadow_fbo)
         gl.glClear(gl.GL_DEPTH_BUFFER_BIT)
 
-        if self.draw_shadows and self.shading_style != "studio":
+        if self.draw_shadows:
             # Note: lines are skipped during shadow pass since they don't cast shadows
             self._render_shadow_map(objects)
 
@@ -1764,7 +1767,7 @@ class RendererGL:
                 fog_color=_STUDIO_BG_COLOR,
                 up_axis=self.camera.up_axis,
                 sun_direction=tuple(sun),
-                enable_shadows=False,
+                enable_shadows=self.draw_shadows,
                 shadow_texture=self._shadow_texture,
                 light_space_matrix=self._light_space_matrix,
                 light_color=_STUDIO_LIGHT_COLOR,
