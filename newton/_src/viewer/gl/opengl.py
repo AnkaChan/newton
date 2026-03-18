@@ -1,10 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import ctypes
 import io
 import os
 import sys
+from dataclasses import dataclass, field
 
 import numpy as np
 import warp as wp
@@ -23,20 +36,74 @@ from .shaders import (
     ShadowShader,
 )
 
-# Default colors for the studio shading style.
-_STUDIO_BG_COLOR = (0.93, 0.93, 0.95)
-_STUDIO_SKY_COLOR = (0.72, 0.82, 0.98)
-_STUDIO_GROUND_COLOR = (0.50, 0.45, 0.38)
-_STUDIO_LIGHT_COLOR = (0.92, 0.90, 0.86)
+# ---------------------------------------------------------------------------
+# Shading style registry
+# ---------------------------------------------------------------------------
 
-# Per-up-axis key-light directions for studio mode.
-# ~45° elevation so the floor gets moderate (not maximum) direct light.
-# Each vector is un-normalized; normalisation happens at use time.
-_STUDIO_SUN = {
-    0: np.array([1.0, 0.6, 0.8], dtype=np.float32),  # X-up  (~45° from horizontal)
-    1: np.array([0.6, 1.0, 0.8], dtype=np.float32),  # Y-up  (~45° from horizontal)
-    2: np.array([0.8, 0.6, 1.0], dtype=np.float32),  # Z-up  (~45° from horizontal)
+
+@dataclass(frozen=True)
+class ShadingStyleConfig:
+    """Immutable descriptor for a named shading style.
+
+    Args:
+        name: Style identifier used in the registry.
+        shader_class: ShaderShape subclass to instantiate for this style.
+        draw_sky: Whether to render the sky sphere background.
+        sun_directions: Per-up-axis key-light direction (un-normalized).
+            Keys: 0=X-up, 1=Y-up, 2=Z-up.
+        overrides: Shader parameter overrides applied on top of live renderer
+            state. Keys absent here fall back to the renderer's own values,
+            so a style only needs to declare what it changes.
+    """
+
+    name: str
+    shader_class: type[ShaderShape]
+    draw_sky: bool
+    sun_directions: dict
+    overrides: dict = field(default_factory=dict)
+
+
+#: Global registry mapping style name -> config.
+#: Register new styles here; no other code needs to change.
+STYLE_REGISTRY: dict[str, ShadingStyleConfig] = {
+    "classic": ShadingStyleConfig(
+        name="classic",
+        shader_class=ShaderShape,
+        draw_sky=True,
+        sun_directions={
+            0: np.array((0.8, 0.2, -0.3), dtype=np.float32),  # X-up
+            1: np.array((0.2, 0.8, -0.3), dtype=np.float32),  # Y-up
+            2: np.array((0.2, -0.3, 0.8), dtype=np.float32),  # Z-up
+        },
+        # No overrides — classic defers entirely to live renderer state.
+    ),
+    "studio": ShadingStyleConfig(
+        name="studio",
+        shader_class=ShaderShapeStudio,
+        draw_sky=False,
+        # ~45° elevation so the floor gets moderate (not maximum) direct light.
+        sun_directions={
+            0: np.array([1.0, 0.6, 0.8], dtype=np.float32),  # X-up
+            1: np.array([0.6, 1.0, 0.8], dtype=np.float32),  # Y-up
+            2: np.array([0.8, 0.6, 1.0], dtype=np.float32),  # Z-up
+        },
+        overrides={
+            "fog_color":         (0.93, 0.93, 0.95),
+            "sky_color":         (0.72, 0.82, 0.98),
+            "ground_color":      (0.50, 0.45, 0.38),
+            "light_color":       (0.92, 0.90, 0.86),
+            "env_texture":       None,
+            "env_intensity":     0.0,
+            "spotlight_enabled": False,
+        },
+    ),
 }
+
+
+def _normalized_sun(sun_dirs: dict, up_axis: int) -> np.ndarray:
+    d = sun_dirs.get(up_axis, sun_dirs[2])
+    return d / np.linalg.norm(d)
+
 
 ENABLE_CUDA_INTEROP = False
 ENABLE_GL_CHECKS = False
@@ -917,9 +984,11 @@ class RendererGL:
         vsync=True,
         headless=None,
         device=None,
-        shading_style="classic",
+        shading_style: str = "classic",
     ):
-        self.shading_style = shading_style
+        if shading_style not in STYLE_REGISTRY:
+            raise ValueError(f"Unknown shading_style {shading_style!r}. Available: {list(STYLE_REGISTRY)}")
+        self._active_style: ShadingStyleConfig = STYLE_REGISTRY[shading_style]
         self.draw_sky = True
         self.draw_fps = True
         self.draw_shadows = True
@@ -939,13 +1008,6 @@ class RendererGL:
         self.spotlight_enabled = True
         self._shadow_extents = 10.0
         self._exposure = 1.6
-
-        # Hemispherical ambient light colors, interpolated by dot(N, up).
-        # Decoupled from the sky background so the visible sky can be a
-        # saturated blue while the ambient fill stays neutral — a stand-in
-        # for a proper irradiance map that we don't precompute yet.
-        self.ambient_sky = (0.8, 0.8, 0.85)
-        self.ambient_ground = (0.3, 0.3, 0.35)
 
         # On Wayland, PyOpenGL defaults to EGL which cannot see the GLX context
         # that pyglet creates via XWayland. Force GLX so both libraries agree.
@@ -1079,8 +1141,9 @@ class RendererGL:
         self._setup_frame_mesh()
 
         self._shadow_shader = ShadowShader(gl)
-        self._shape_shader = ShaderShape(gl)
-        self._shape_shader_studio = ShaderShapeStudio(gl)
+        self._style_shaders: dict[str, ShaderShape] = {
+            name: cfg.shader_class(gl) for name, cfg in STYLE_REGISTRY.items()
+        }
         self._edge_shader = ShaderEdge(gl)
         self._frame_shader = FrameShader(gl)
         self._sky_shader = ShaderSky(gl)
@@ -1129,6 +1192,16 @@ class RendererGL:
     def exposure(self, value: float):
         self._exposure = max(float(value), 0.0)
 
+    @property
+    def shading_style(self) -> str:
+        return self._active_style.name
+
+    @shading_style.setter
+    def shading_style(self, value: str):
+        if value not in STYLE_REGISTRY:
+            raise ValueError(f"Unknown shading_style {value!r}. Available: {list(STYLE_REGISTRY)}")
+        self._active_style = STYLE_REGISTRY[value]
+
     def update(self):
         self._make_current()
 
@@ -1150,10 +1223,8 @@ class RendererGL:
         gl = RendererGL.gl
         self._make_current()
 
-        if self.shading_style == "studio":
-            bg = _STUDIO_BG_COLOR
-        else:
-            bg = self.sky_upper
+        style = self._active_style
+        bg = style.overrides.get("fog_color", self.sky_upper)
         gl.glClearColor(*bg, 1)
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDepthMask(True)
@@ -1161,18 +1232,8 @@ class RendererGL:
 
         self.camera = camera
 
-        # Set sun direction for this frame (studio uses its own per-up-axis key light).
-        if self.shading_style == "studio":
-            d = _STUDIO_SUN.get(camera.up_axis, _STUDIO_SUN[2])
-            self._sun_direction = d / np.linalg.norm(d)
-        elif self._sun_direction is None:
-            _sun_dirs = {
-                0: np.array((0.8, 0.2, -0.3)),  # X-up
-                1: np.array((0.2, 0.8, -0.3)),  # Y-up
-                2: np.array((0.2, -0.3, 0.8)),  # Z-up
-            }
-            d = _sun_dirs.get(camera.up_axis, _sun_dirs[2])
-            self._sun_direction = d / np.linalg.norm(d)
+        # Set sun direction for this frame from the active style's key-light table.
+        self._sun_direction = _normalized_sun(style.sun_directions, camera.up_axis)
 
         # Store matrices for other methods
         self._view_matrix = self.camera.get_view_matrix()
@@ -1746,70 +1807,51 @@ class RendererGL:
 
         check_gl_error()
 
+    def _build_shader_kwargs(self) -> dict:
+        """Merge active style overrides onto live renderer defaults for shader.update().
+
+        Renderer defaults are built first; style overrides are applied on top via
+        dict.update(), so a style only needs to declare the keys it changes.
+        dict.update() is safe for all values including black (0,0,0) and 0.0.
+        """
+        kwargs = dict(
+            view_matrix=self._view_matrix,
+            projection_matrix=self._projection_matrix,
+            view_pos=self.camera.pos,
+            up_axis=self.camera.up_axis,
+            sun_direction=tuple(self._sun_direction),
+            fog_color=self.sky_lower,
+            sky_color=self.sky_upper,
+            ground_color=self.sky_lower,
+            light_color=self._light_color,
+            enable_shadows=self.draw_shadows,
+            shadow_texture=self._shadow_texture,
+            light_space_matrix=self._light_space_matrix,
+            env_texture=self._env_texture,
+            env_intensity=self._env_intensity,
+            shadow_radius=self.shadow_radius,
+            shadow_extents=self.shadow_extents,
+            diffuse_scale=self.diffuse_scale,
+            specular_scale=self.specular_scale,
+            spotlight_enabled=self.spotlight_enabled,
+        )
+        kwargs.update(self._active_style.overrides)
+        return kwargs
+
     def _render_scene(self, objects):
         gl = RendererGL.gl
+        style = self._active_style
 
-        if self.shading_style == "studio":
-            # Flat background: skip sky sphere, use solid clear color instead.
-            # Choose a key-light direction that is always "above" for this up axis
-            # (the default sun_direction is tuned for Z-up and gives NdotL≈0 for
-            # upward-facing surfaces in Y-up scenes, making everything look flat).
-            sun = _STUDIO_SUN.get(self.camera.up_axis, _STUDIO_SUN[2])
-            sun = sun / np.linalg.norm(sun)
+        if self.draw_wireframe:
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
 
-            if self.draw_wireframe:
-                gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+        if style.draw_sky:
+            self._draw_sky()
 
-            self._shape_shader_studio.update(
-                view_matrix=self._view_matrix,
-                projection_matrix=self._projection_matrix,
-                view_pos=self.camera.pos,
-                fog_color=_STUDIO_BG_COLOR,
-                up_axis=self.camera.up_axis,
-                sun_direction=tuple(sun),
-                enable_shadows=self.draw_shadows,
-                shadow_texture=self._shadow_texture,
-                light_space_matrix=self._light_space_matrix,
-                light_color=_STUDIO_LIGHT_COLOR,
-                sky_color=_STUDIO_SKY_COLOR,
-                ground_color=_STUDIO_GROUND_COLOR,
-                env_texture=None,
-                env_intensity=0.0,
-            )
-
-            with self._shape_shader_studio:
-                self._draw_objects(objects)
-        else:
-            if self.draw_sky:
-                self._draw_sky()
-
-            if self.draw_wireframe:
-                gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
-
-            self._shape_shader.update(
-                view_matrix=self._view_matrix,
-                projection_matrix=self._projection_matrix,
-                view_pos=self.camera.pos,
-                fog_color=self.sky_lower,
-                up_axis=self.camera.up_axis,
-                sun_direction=self._sun_direction,
-                enable_shadows=self.draw_shadows,
-                shadow_texture=self._shadow_texture,
-                light_space_matrix=self._light_space_matrix,
-                light_color=self._light_color,
-                sky_color=self.sky_upper,
-                ground_color=self.sky_lower,
-                env_texture=self._env_texture,
-                env_intensity=self._env_intensity,
-                shadow_radius=self.shadow_radius,
-                diffuse_scale=self.diffuse_scale,
-                specular_scale=self.specular_scale,
-                spotlight_enabled=self.spotlight_enabled,
-                shadow_extents=self.shadow_extents,
-            )
-
-            with self._shape_shader:
-                self._draw_objects(objects)
+        shader = self._style_shaders[style.name]
+        shader.update(**self._build_shader_kwargs())
+        with shader:
+            self._draw_objects(objects)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
