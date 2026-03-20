@@ -1201,7 +1201,6 @@ def evaluate_self_contact_force_norm(dis: float, collision_radius: float, k: flo
     tau = collision_radius * 0.5
     d_min = 1.0e-5
     if tau > dis > d_min:
-        # Log-barrier region: E ∝ -ln(dis)
         k2 = tau * tau * k
         dEdD = -k2 / dis
         d2E_dDdD = k2 / (dis * dis)
