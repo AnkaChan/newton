@@ -394,6 +394,7 @@ class SolverVBD(SolverBase):
                 vertex_collision_buffer_pre_alloc=particle_vertex_contact_buffer_size,
                 edge_collision_buffer_pre_alloc=particle_edge_contact_buffer_size,
                 edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
+                record_triangle_contacting_vertices=True,
             )
 
             self._compute_particle_contact_filtering_list(
@@ -432,6 +433,12 @@ class SolverVBD(SolverBase):
         self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
         self.particle_displacements = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
         self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
+
+        # Debug recording support
+        self.debug_recorder = None
+        self.debug_f_inertia = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+        self.debug_f_elastic = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+        self.debug_f_bending = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
 
     def _init_rigid_system(
         self,
@@ -1373,12 +1380,28 @@ class SolverVBD(SolverBase):
         self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid_history)
         self._initialize_particles(state_in, state_out, dt)
 
+        # Debug: record substep start (positions, velocities, inertia)
+        if self.debug_recorder is not None:
+            self.debug_recorder.record_substep_start(state_in, self)
+
         for iter_num in range(self.iterations):
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
+            # Debug: record iteration data (forces, hessians, displacements)
+            if self.debug_recorder is not None:
+                if iter_num == 0:
+                    self.debug_recorder.record_contacts(self, contacts)
+                self.debug_recorder.record_iteration(self, state_in)
+                self.debug_recorder.advance_iteration()
+
         self._finalize_rigid_bodies(state_out, dt)
         self._finalize_particles(state_out, dt)
+
+        # Debug: record substep end (final velocities)
+        if self.debug_recorder is not None:
+            self.debug_recorder.record_substep_end(state_out)
+            self.debug_recorder.advance_substep()
 
     def _penetration_free_truncation(self, particle_q_out=None):
         """
@@ -1882,6 +1905,9 @@ class SolverVBD(SolverBase):
                     ],
                     outputs=[
                         self.particle_displacements,
+                        self.debug_f_inertia,
+                        self.debug_f_elastic,
+                        self.debug_f_bending,
                     ],
                     device=self.device,
                 )
