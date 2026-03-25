@@ -168,15 +168,15 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="../../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -189,13 +189,6 @@
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../guide/development.html">
-    Development
-  </a>
-</li>
-
-
-<li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/worlds.html">
     Worlds
   </a>
@@ -205,6 +198,13 @@
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -473,13 +473,6 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../../guide/tutorials.html">
     Tutorials
   </a>
@@ -503,6 +496,13 @@
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -705,7 +705,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../guide/key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/development.html">Development</a></li>
 </ul>
@@ -713,6 +712,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/worlds.html">Worlds</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/mass_inertia.html">Mass and Inertia</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sites.html">Sites</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sensors.html">Sensors</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/conventions.html">Conventions</a></li>
@@ -811,7 +811,7 @@
 <h1>newton.selection.ArticulationView<a class="headerlink" href="#newton-selection-articulationview" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.selection.ArticulationView">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.selection.</span></span><span class="sig-name descname"><span class="pre">ArticulationView</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pattern</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_joint_types</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_joint_types</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/utils/selection.py#L431"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.selection.ArticulationView" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.selection.</span></span><span class="sig-name descname"><span class="pre">ArticulationView</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pattern</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_joint_types</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_joint_types</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/utils/selection.py#L469"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.selection.ArticulationView" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>ArticulationView provides a flexible interface for selecting and manipulating
 subsets of articulations and their joints, links, and shapes within a Model.
@@ -1092,7 +1092,7 @@ If None, allocates internally.</p></li>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>actuator</strong> (<em>Actuator</em>) – An actuator instance with input_indices and parameter arrays.</p></li>
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Parameter name (e.g., ‘kp’, ‘kd’, ‘max_force’, ‘gear’, ‘constant_force’).</p></li>
-<li><p><strong>values</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><em>array</em></a>) – New parameter values shaped (world_count, dofs_per_world). Non-actuated DOFs are ignored.</p></li>
+<li><p><strong>values</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><em>array</em></a>) – New parameter values shaped (world_count, dofs_per_world). Non-actuated DOFs are ignored.</p></li>
 <li><p><strong>mask</strong> (<em>array</em><em>, </em><em>optional</em>) – Per-world mask (world_count,). Only masked worlds are updated.</p></li>
 </ul>
 </dd>
@@ -1237,29 +1237,29 @@ Call <a class="reference internal" href="#newton.selection.ArticulationView.eval
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView"><code class="docutils literal notranslate"><span class="pre">ArticulationView</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.__init__"><code class="docutils literal notranslate"><span class="pre">ArticulationView.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_fk"><code class="docutils literal notranslate"><span class="pre">ArticulationView.eval_fk()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_jacobian"><code class="docutils literal notranslate"><span class="pre">ArticulationView.eval_jacobian()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_mass_matrix"><code class="docutils literal notranslate"><span class="pre">ArticulationView.eval_mass_matrix()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_actuator_parameter"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_actuator_parameter()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_attribute"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_attribute()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_forces"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_dof_forces()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_positions"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_dof_positions()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_velocities"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_dof_velocities()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_link_transforms"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_link_transforms()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_link_velocities"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_link_velocities()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_model_articulation_mask"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_model_articulation_mask()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_root_transforms"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_root_transforms()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_root_velocities"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_root_velocities()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_actuator_parameter"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_actuator_parameter()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_attribute"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_attribute()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_dof_forces"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_dof_forces()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_dof_positions"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_dof_positions()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_dof_velocities"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_dof_velocities()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_root_transforms"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_root_transforms()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_root_velocities"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_root_velocities()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.body_names"><code class="docutils literal notranslate"><span class="pre">ArticulationView.body_names</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.body_shapes"><code class="docutils literal notranslate"><span class="pre">ArticulationView.body_shapes</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_fk"><code class="docutils literal notranslate"><span class="pre">eval_fk()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_jacobian"><code class="docutils literal notranslate"><span class="pre">eval_jacobian()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_mass_matrix"><code class="docutils literal notranslate"><span class="pre">eval_mass_matrix()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_actuator_parameter"><code class="docutils literal notranslate"><span class="pre">get_actuator_parameter()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_attribute"><code class="docutils literal notranslate"><span class="pre">get_attribute()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_forces"><code class="docutils literal notranslate"><span class="pre">get_dof_forces()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_positions"><code class="docutils literal notranslate"><span class="pre">get_dof_positions()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_velocities"><code class="docutils literal notranslate"><span class="pre">get_dof_velocities()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_link_transforms"><code class="docutils literal notranslate"><span class="pre">get_link_transforms()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_link_velocities"><code class="docutils literal notranslate"><span class="pre">get_link_velocities()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_model_articulation_mask"><code class="docutils literal notranslate"><span class="pre">get_model_articulation_mask()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_root_transforms"><code class="docutils literal notranslate"><span class="pre">get_root_transforms()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_root_velocities"><code class="docutils literal notranslate"><span class="pre">get_root_velocities()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_actuator_parameter"><code class="docutils literal notranslate"><span class="pre">set_actuator_parameter()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_attribute"><code class="docutils literal notranslate"><span class="pre">set_attribute()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_dof_forces"><code class="docutils literal notranslate"><span class="pre">set_dof_forces()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_dof_positions"><code class="docutils literal notranslate"><span class="pre">set_dof_positions()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_dof_velocities"><code class="docutils literal notranslate"><span class="pre">set_dof_velocities()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_root_transforms"><code class="docutils literal notranslate"><span class="pre">set_root_transforms()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_root_velocities"><code class="docutils literal notranslate"><span class="pre">set_root_velocities()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.body_names"><code class="docutils literal notranslate"><span class="pre">body_names</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.body_shapes"><code class="docutils literal notranslate"><span class="pre">body_shapes</span></code></a></li>
 </ul>
 </li>
 </ul>

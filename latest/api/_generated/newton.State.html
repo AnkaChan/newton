@@ -168,15 +168,15 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="../../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -189,13 +189,6 @@
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../guide/development.html">
-    Development
-  </a>
-</li>
-
-
-<li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/worlds.html">
     Worlds
   </a>
@@ -205,6 +198,13 @@
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -473,13 +473,6 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../../guide/tutorials.html">
     Tutorials
   </a>
@@ -503,6 +496,13 @@
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -705,7 +705,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../guide/key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/development.html">Development</a></li>
 </ul>
@@ -713,6 +712,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/worlds.html">Worlds</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/mass_inertia.html">Mass and Inertia</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sites.html">Sites</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sensors.html">Sensors</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/conventions.html">Conventions</a></li>
@@ -808,7 +808,7 @@
 <h1>newton.State<a class="headerlink" href="#newton-state" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.State">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">State</span></span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/state.py#L21"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.State" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">State</span></span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/state.py#L9"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.State" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Represents the time-varying state of a <a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> in a simulation.</p>
 <p>The State object holds all dynamic quantities that change over time during simulation,
@@ -898,7 +898,7 @@ If the number of substeps is odd, the last state needs to be explicitly copied f
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_f">
-<span class="sig-name descname"><span class="pre">body_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_f" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">body_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_f" title="Link to this definition">#</a></dt>
 <dd><p>Rigid body forces (spatial) [N, N·m], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
 First three entries: linear force [N] in world frame applied at the body’s center of mass (COM).
 Last three: torque (moment) [N·m] in world frame.</p>
@@ -910,7 +910,7 @@ Last three: torque (moment) [N·m] in world frame.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_parent_f">
-<span class="sig-name descname"><span class="pre">body_parent_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_parent_f" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">body_parent_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_parent_f" title="Link to this definition">#</a></dt>
 <dd><p>Parent interaction forces [N, N·m], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
 First three entries: linear force [N]; last three: torque [N·m].</p>
 <p>This is an extended state attribute; see <a class="reference internal" href="../../concepts/extended_attributes.html#extended-state-attributes"><span class="std std-ref">Extended State Attributes</span></a> for more information.</p>
@@ -922,19 +922,19 @@ First three entries: linear force [N]; last three: torque [N·m].</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_q">
-<span class="sig-name descname"><span class="pre">body_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_q" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">body_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_q" title="Link to this definition">#</a></dt>
 <dd><p>Rigid body transforms (7-DOF) [m, unitless quaternion], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">transform</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_q_prev">
-<span class="sig-name descname"><span class="pre">body_q_prev</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_q_prev" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">body_q_prev</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_q_prev" title="Link to this definition">#</a></dt>
 <dd><p>Previous rigid body transforms [m, unitless quaternion] for finite-difference velocity computation.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_qd">
-<span class="sig-name descname"><span class="pre">body_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_qd" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">body_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_qd" title="Link to this definition">#</a></dt>
 <dd><p>Rigid body velocities (spatial) [m/s, rad/s], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
 First three entries: linear velocity [m/s] relative to the body’s center of mass in world frame;
 last three: angular velocity [rad/s] in world frame.
@@ -943,7 +943,7 @@ See <a class="reference internal" href="../../concepts/conventions.html#twist-co
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_qdd">
-<span class="sig-name descname"><span class="pre">body_qdd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_qdd" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">body_qdd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_qdd" title="Link to this definition">#</a></dt>
 <dd><p>Rigid body accelerations (spatial) [m/s², rad/s²], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
 First three entries: linear acceleration [m/s²] relative to the body’s center of mass in world frame;
 last three: angular acceleration [rad/s²] in world frame.</p>
@@ -964,13 +964,13 @@ last three: angular acceleration [rad/s²] in world frame.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.joint_q">
-<span class="sig-name descname"><span class="pre">joint_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.joint_q" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">joint_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.joint_q" title="Link to this definition">#</a></dt>
 <dd><p>Generalized joint position coordinates [m or rad, depending on joint type], shape (joint_coord_count,), dtype float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.joint_qd">
-<span class="sig-name descname"><span class="pre">joint_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.joint_qd" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">joint_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.joint_qd" title="Link to this definition">#</a></dt>
 <dd><p>Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float.</p>
 </dd></dl>
 
@@ -982,19 +982,19 @@ last three: angular acceleration [rad/s²] in world frame.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.particle_f">
-<span class="sig-name descname"><span class="pre">particle_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.particle_f" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">particle_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.particle_f" title="Link to this definition">#</a></dt>
 <dd><p>3D forces on particles [N], shape (particle_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.particle_q">
-<span class="sig-name descname"><span class="pre">particle_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.particle_q" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">particle_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.particle_q" title="Link to this definition">#</a></dt>
 <dd><p>3D positions of particles [m], shape (particle_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.particle_qd">
-<span class="sig-name descname"><span class="pre">particle_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.particle_qd" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">particle_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.12.0)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.particle_qd" title="Link to this definition">#</a></dt>
 <dd><p>3D velocities of particles [m/s], shape (particle_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
 </dd></dl>
 
@@ -1032,27 +1032,27 @@ last three: angular acceleration [rad/s²] in world frame.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State"><code class="docutils literal notranslate"><span class="pre">State</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.validate_extended_attributes"><code class="docutils literal notranslate"><span class="pre">State.validate_extended_attributes()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.__init__"><code class="docutils literal notranslate"><span class="pre">State.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.assign"><code class="docutils literal notranslate"><span class="pre">State.assign()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.clear_forces"><code class="docutils literal notranslate"><span class="pre">State.clear_forces()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.EXTENDED_ATTRIBUTES"><code class="docutils literal notranslate"><span class="pre">State.EXTENDED_ATTRIBUTES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_count"><code class="docutils literal notranslate"><span class="pre">State.body_count</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_f"><code class="docutils literal notranslate"><span class="pre">State.body_f</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_parent_f"><code class="docutils literal notranslate"><span class="pre">State.body_parent_f</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_q"><code class="docutils literal notranslate"><span class="pre">State.body_q</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_q_prev"><code class="docutils literal notranslate"><span class="pre">State.body_q_prev</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_qd"><code class="docutils literal notranslate"><span class="pre">State.body_qd</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_qdd"><code class="docutils literal notranslate"><span class="pre">State.body_qdd</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.joint_coord_count"><code class="docutils literal notranslate"><span class="pre">State.joint_coord_count</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.joint_dof_count"><code class="docutils literal notranslate"><span class="pre">State.joint_dof_count</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.joint_q"><code class="docutils literal notranslate"><span class="pre">State.joint_q</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.joint_qd"><code class="docutils literal notranslate"><span class="pre">State.joint_qd</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.particle_count"><code class="docutils literal notranslate"><span class="pre">State.particle_count</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.particle_f"><code class="docutils literal notranslate"><span class="pre">State.particle_f</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.particle_q"><code class="docutils literal notranslate"><span class="pre">State.particle_q</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.particle_qd"><code class="docutils literal notranslate"><span class="pre">State.particle_qd</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.requires_grad"><code class="docutils literal notranslate"><span class="pre">State.requires_grad</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.validate_extended_attributes"><code class="docutils literal notranslate"><span class="pre">validate_extended_attributes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.assign"><code class="docutils literal notranslate"><span class="pre">assign()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.clear_forces"><code class="docutils literal notranslate"><span class="pre">clear_forces()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.EXTENDED_ATTRIBUTES"><code class="docutils literal notranslate"><span class="pre">EXTENDED_ATTRIBUTES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_count"><code class="docutils literal notranslate"><span class="pre">body_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_f"><code class="docutils literal notranslate"><span class="pre">body_f</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_parent_f"><code class="docutils literal notranslate"><span class="pre">body_parent_f</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_q"><code class="docutils literal notranslate"><span class="pre">body_q</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_q_prev"><code class="docutils literal notranslate"><span class="pre">body_q_prev</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_qd"><code class="docutils literal notranslate"><span class="pre">body_qd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.body_qdd"><code class="docutils literal notranslate"><span class="pre">body_qdd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.joint_coord_count"><code class="docutils literal notranslate"><span class="pre">joint_coord_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.joint_dof_count"><code class="docutils literal notranslate"><span class="pre">joint_dof_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.joint_q"><code class="docutils literal notranslate"><span class="pre">joint_q</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.joint_qd"><code class="docutils literal notranslate"><span class="pre">joint_qd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.particle_count"><code class="docutils literal notranslate"><span class="pre">particle_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.particle_f"><code class="docutils literal notranslate"><span class="pre">particle_f</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.particle_q"><code class="docutils literal notranslate"><span class="pre">particle_q</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.particle_qd"><code class="docutils literal notranslate"><span class="pre">particle_qd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.State.requires_grad"><code class="docutils literal notranslate"><span class="pre">requires_grad</span></code></a></li>
 </ul>
 </li>
 </ul>

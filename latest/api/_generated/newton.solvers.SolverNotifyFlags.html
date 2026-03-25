@@ -168,15 +168,15 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="../../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -189,13 +189,6 @@
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../guide/development.html">
-    Development
-  </a>
-</li>
-
-
-<li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/worlds.html">
     Worlds
   </a>
@@ -205,6 +198,13 @@
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -473,13 +473,6 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../../guide/tutorials.html">
     Tutorials
   </a>
@@ -503,6 +496,13 @@
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -705,7 +705,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../guide/key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/development.html">Development</a></li>
 </ul>
@@ -713,6 +712,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/worlds.html">Worlds</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/mass_inertia.html">Mass and Inertia</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sites.html">Sites</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sensors.html">Sensors</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/conventions.html">Conventions</a></li>
@@ -811,7 +811,7 @@
 <h1>newton.solvers.SolverNotifyFlags<a class="headerlink" href="#newton-solvers-solvernotifyflags" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.solvers.SolverNotifyFlags">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.</span></span><span class="sig-name descname"><span class="pre">SolverNotifyFlags</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/flags.py#L22"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.SolverNotifyFlags" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.</span></span><span class="sig-name descname"><span class="pre">SolverNotifyFlags</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/flags.py#L10"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.SolverNotifyFlags" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">IntEnum</span></code></a></p>
 <p>Flags indicating which parts of the model have been updated and require the solver to be notified.</p>
 <p>These flags are used with <cite>solver.notify_model_update()</cite> to specify which properties have changed,
@@ -847,7 +847,7 @@ allowing the solver to efficiently update only the necessary components.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.solvers.SolverNotifyFlags.BODY_PROPERTIES">
 <span class="sig-name descname"><span class="pre">BODY_PROPERTIES</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">4</span></em><a class="headerlink" href="#newton.solvers.SolverNotifyFlags.BODY_PROPERTIES" title="Link to this definition">#</a></dt>
-<dd><p>body_q, body_qd.</p>
+<dd><p>body_q, body_qd, body_flags.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>Indicates body property updates</p>
@@ -949,16 +949,16 @@ allowing the solver to efficiently update only the necessary components.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.ACTUATOR_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.ACTUATOR_PROPERTIES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.ALL"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.ALL</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.BODY_INERTIAL_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.BODY_INERTIAL_PROPERTIES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.BODY_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.BODY_PROPERTIES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.CONSTRAINT_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.CONSTRAINT_PROPERTIES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.JOINT_DOF_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.JOINT_DOF_PROPERTIES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.JOINT_PROPERTIES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.MODEL_PROPERTIES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.SHAPE_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.SHAPE_PROPERTIES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.TENDON_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.TENDON_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.ACTUATOR_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">ACTUATOR_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.ALL"><code class="docutils literal notranslate"><span class="pre">ALL</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.BODY_INERTIAL_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">BODY_INERTIAL_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.BODY_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">BODY_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.CONSTRAINT_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">CONSTRAINT_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.JOINT_DOF_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">JOINT_DOF_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">JOINT_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">MODEL_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.SHAPE_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SHAPE_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.TENDON_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">TENDON_PROPERTIES</span></code></a></li>
 </ul>
 </li>
 </ul>

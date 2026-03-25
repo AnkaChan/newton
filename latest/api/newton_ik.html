@@ -168,15 +168,15 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
-    Key Concepts
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../guide/tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -189,13 +189,6 @@
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
-    Development
-  </a>
-</li>
-
-
-<li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
     Worlds
   </a>
@@ -205,6 +198,13 @@
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -469,13 +469,6 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../guide/tutorials.html">
     Tutorials
   </a>
@@ -499,6 +492,13 @@
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -701,7 +701,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
 </ul>
@@ -709,6 +708,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/mass_inertia.html">Mass and Inertia</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
@@ -802,6 +802,7 @@
                   
   <section id="newton-ik">
 <h1>newton.ik<a class="headerlink" href="#newton-ik" title="Link to this heading">#</a></h1>
+<p>Public inverse-kinematics API for defining objectives and solving IK problems.</p>
 <p class="rubric">Classes</p>
 <div class="pst-scrollable-table-container"><table class="autosummary longtable table">
 <tbody>
@@ -809,31 +810,31 @@
 <td><p>Specifies the backend used for Jacobian computation in inverse kinematics.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.ik.IKObjective.html#newton.ik.IKObjective" title="newton.ik.IKObjective"><code class="xref py py-obj docutils literal notranslate"><span class="pre">IKObjective</span></code></a></p></td>
-<td><p>Abstract base class for inverse kinematics objectives.</p></td>
+<td><p>Base class for inverse-kinematics objectives.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.ik.IKObjectiveJointLimit.html#newton.ik.IKObjectiveJointLimit" title="newton.ik.IKObjectiveJointLimit"><code class="xref py py-obj docutils literal notranslate"><span class="pre">IKObjectiveJointLimit</span></code></a></p></td>
-<td><p>Joint limit constraint objective.</p></td>
+<td><p>Penalize violations of per-DoF joint limits.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.ik.IKObjectivePosition.html#newton.ik.IKObjectivePosition" title="newton.ik.IKObjectivePosition"><code class="xref py py-obj docutils literal notranslate"><span class="pre">IKObjectivePosition</span></code></a></p></td>
-<td><p>End-effector positional target for one link.</p></td>
+<td><p>Match the world-space position of a point on a link.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.ik.IKObjectiveRotation.html#newton.ik.IKObjectiveRotation" title="newton.ik.IKObjectiveRotation"><code class="xref py py-obj docutils literal notranslate"><span class="pre">IKObjectiveRotation</span></code></a></p></td>
-<td><p>End-effector rotational target for one link.</p></td>
+<td><p>Match the world-space orientation of a link frame.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.ik.IKOptimizer.html#newton.ik.IKOptimizer" title="newton.ik.IKOptimizer"><code class="xref py py-obj docutils literal notranslate"><span class="pre">IKOptimizer</span></code></a></p></td>
-<td><p>Optimization backend selection for <a class="reference internal" href="_generated/newton.ik.IKSolver.html#newton.ik.IKSolver" title="newton.ik.IKSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">IKSolver</span></code></a>.</p></td>
+<td><p>Optimizer backends supported by <a class="reference internal" href="_generated/newton.ik.IKSolver.html#newton.ik.IKSolver" title="newton.ik.IKSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">IKSolver</span></code></a>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.ik.IKOptimizerLBFGS.html#newton.ik.IKOptimizerLBFGS" title="newton.ik.IKOptimizerLBFGS"><code class="xref py py-obj docutils literal notranslate"><span class="pre">IKOptimizerLBFGS</span></code></a></p></td>
-<td><p>L-BFGS inverse-kinematics solver with a parallel Wolfe-conditions line search.</p></td>
+<td><p>L-BFGS optimizer for batched inverse kinematics.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.ik.IKOptimizerLM.html#newton.ik.IKOptimizerLM" title="newton.ik.IKOptimizerLM"><code class="xref py py-obj docutils literal notranslate"><span class="pre">IKOptimizerLM</span></code></a></p></td>
-<td><p>Modular inverse-kinematics solver.</p></td>
+<td><p>Levenberg-Marquardt optimizer for batched inverse kinematics.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.ik.IKSampler.html#newton.ik.IKSampler" title="newton.ik.IKSampler"><code class="xref py py-obj docutils literal notranslate"><span class="pre">IKSampler</span></code></a></p></td>
-<td><p>Initial-seed sampling strategy.</p></td>
+<td><p>Sampling strategies used by <a class="reference internal" href="_generated/newton.ik.IKSolver.html#newton.ik.IKSolver" title="newton.ik.IKSolver"><code class="xref py py-class docutils literal notranslate"><span class="pre">IKSolver</span></code></a> before optimization.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.ik.IKSolver.html#newton.ik.IKSolver" title="newton.ik.IKSolver"><code class="xref py py-obj docutils literal notranslate"><span class="pre">IKSolver</span></code></a></p></td>
-<td><p>Flat IK front-end that handles sampling, optimization, and selection.</p></td>
+<td><p>High-level inverse-kinematics front end with optional multi-seed sampling.</p></td>
 </tr>
 </tbody>
 </table>

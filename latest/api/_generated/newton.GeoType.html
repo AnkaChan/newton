@@ -59,7 +59,7 @@
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="newton.Heightfield" href="newton.Heightfield.html" />
-    <link rel="prev" title="newton.EqType" href="newton.EqType.html" />
+    <link rel="prev" title="newton.Gaussian" href="newton.Gaussian.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -168,15 +168,15 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="../../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -189,13 +189,6 @@
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../guide/development.html">
-    Development
-  </a>
-</li>
-
-
-<li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/worlds.html">
     Worlds
   </a>
@@ -205,6 +198,13 @@
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -473,13 +473,6 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../../guide/tutorials.html">
     Tutorials
   </a>
@@ -503,6 +496,13 @@
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -705,7 +705,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../guide/key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/development.html">Development</a></li>
 </ul>
@@ -713,6 +712,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/worlds.html">Worlds</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/mass_inertia.html">Mass and Inertia</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sites.html">Sites</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sensors.html">Sensors</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/conventions.html">Conventions</a></li>
@@ -808,20 +808,20 @@
 <h1>newton.GeoType<a class="headerlink" href="#newton-geotype" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.GeoType">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">GeoType</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/types.py#L50"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.GeoType" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">GeoType</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/types.py#L38"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.GeoType" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">IntEnum</span></code></a></p>
 <p>Enumeration of geometric shape types supported in Newton.</p>
 <p>Each member represents a different primitive or mesh-based geometry
 that can be used for collision, rendering, or simulation.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.GeoType.BOX">
-<span class="sig-name descname"><span class="pre">BOX</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">6</span></em><a class="headerlink" href="#newton.GeoType.BOX" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">BOX</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">7</span></em><a class="headerlink" href="#newton.GeoType.BOX" title="Link to this definition">#</a></dt>
 <dd><p>Axis-aligned box.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.GeoType.CAPSULE">
-<span class="sig-name descname"><span class="pre">CAPSULE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">3</span></em><a class="headerlink" href="#newton.GeoType.CAPSULE" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">CAPSULE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">4</span></em><a class="headerlink" href="#newton.GeoType.CAPSULE" title="Link to this definition">#</a></dt>
 <dd><p>Capsule (cylinder with hemispherical ends).</p>
 </dd></dl>
 
@@ -839,43 +839,49 @@ that can be used for collision, rendering, or simulation.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.GeoType.CYLINDER">
-<span class="sig-name descname"><span class="pre">CYLINDER</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">5</span></em><a class="headerlink" href="#newton.GeoType.CYLINDER" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">CYLINDER</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">6</span></em><a class="headerlink" href="#newton.GeoType.CYLINDER" title="Link to this definition">#</a></dt>
 <dd><p>Cylinder.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.GeoType.ELLIPSOID">
-<span class="sig-name descname"><span class="pre">ELLIPSOID</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">4</span></em><a class="headerlink" href="#newton.GeoType.ELLIPSOID" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">ELLIPSOID</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">5</span></em><a class="headerlink" href="#newton.GeoType.ELLIPSOID" title="Link to this definition">#</a></dt>
 <dd><p>Ellipsoid.</p>
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.GeoType.GAUSSIAN">
+<span class="sig-name descname"><span class="pre">GAUSSIAN</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">11</span></em><a class="headerlink" href="#newton.GeoType.GAUSSIAN" title="Link to this definition">#</a></dt>
+<dd><p>Gaussian splat.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.GeoType.HFIELD">
-<span class="sig-name descname"><span class="pre">HFIELD</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.GeoType.HFIELD" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">HFIELD</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">2</span></em><a class="headerlink" href="#newton.GeoType.HFIELD" title="Link to this definition">#</a></dt>
 <dd><p>Height field (terrain).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.GeoType.MESH">
-<span class="sig-name descname"><span class="pre">MESH</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">7</span></em><a class="headerlink" href="#newton.GeoType.MESH" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">MESH</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">8</span></em><a class="headerlink" href="#newton.GeoType.MESH" title="Link to this definition">#</a></dt>
 <dd><p>Triangle mesh.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.GeoType.NONE">
-<span class="sig-name descname"><span class="pre">NONE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">11</span></em><a class="headerlink" href="#newton.GeoType.NONE" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">NONE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.GeoType.NONE" title="Link to this definition">#</a></dt>
 <dd><p>No geometry (placeholder).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.GeoType.PLANE">
-<span class="sig-name descname"><span class="pre">PLANE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.GeoType.PLANE" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">PLANE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.GeoType.PLANE" title="Link to this definition">#</a></dt>
 <dd><p>Plane.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.GeoType.SPHERE">
-<span class="sig-name descname"><span class="pre">SPHERE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">2</span></em><a class="headerlink" href="#newton.GeoType.SPHERE" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">SPHERE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">3</span></em><a class="headerlink" href="#newton.GeoType.SPHERE" title="Link to this definition">#</a></dt>
 <dd><p>Sphere.</p>
 </dd></dl>
 
@@ -907,17 +913,18 @@ that can be used for collision, rendering, or simulation.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType"><code class="docutils literal notranslate"><span class="pre">GeoType</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.BOX"><code class="docutils literal notranslate"><span class="pre">GeoType.BOX</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.CAPSULE"><code class="docutils literal notranslate"><span class="pre">GeoType.CAPSULE</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.CONE"><code class="docutils literal notranslate"><span class="pre">GeoType.CONE</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.CONVEX_MESH"><code class="docutils literal notranslate"><span class="pre">GeoType.CONVEX_MESH</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.CYLINDER"><code class="docutils literal notranslate"><span class="pre">GeoType.CYLINDER</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.ELLIPSOID"><code class="docutils literal notranslate"><span class="pre">GeoType.ELLIPSOID</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.HFIELD"><code class="docutils literal notranslate"><span class="pre">GeoType.HFIELD</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.MESH"><code class="docutils literal notranslate"><span class="pre">GeoType.MESH</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.NONE"><code class="docutils literal notranslate"><span class="pre">GeoType.NONE</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.PLANE"><code class="docutils literal notranslate"><span class="pre">GeoType.PLANE</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.SPHERE"><code class="docutils literal notranslate"><span class="pre">GeoType.SPHERE</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.BOX"><code class="docutils literal notranslate"><span class="pre">BOX</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.CAPSULE"><code class="docutils literal notranslate"><span class="pre">CAPSULE</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.CONE"><code class="docutils literal notranslate"><span class="pre">CONE</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.CONVEX_MESH"><code class="docutils literal notranslate"><span class="pre">CONVEX_MESH</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.CYLINDER"><code class="docutils literal notranslate"><span class="pre">CYLINDER</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.ELLIPSOID"><code class="docutils literal notranslate"><span class="pre">ELLIPSOID</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.GAUSSIAN"><code class="docutils literal notranslate"><span class="pre">GAUSSIAN</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.HFIELD"><code class="docutils literal notranslate"><span class="pre">HFIELD</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.MESH"><code class="docutils literal notranslate"><span class="pre">MESH</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.NONE"><code class="docutils literal notranslate"><span class="pre">NONE</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.PLANE"><code class="docutils literal notranslate"><span class="pre">PLANE</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.GeoType.SPHERE"><code class="docutils literal notranslate"><span class="pre">SPHERE</span></code></a></li>
 </ul>
 </li>
 </ul>

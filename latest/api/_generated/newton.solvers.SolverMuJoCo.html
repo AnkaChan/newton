@@ -59,7 +59,7 @@
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="newton.solvers.SolverNotifyFlags" href="newton.solvers.SolverNotifyFlags.html" />
-    <link rel="prev" title="newton.solvers.SolverImplicitMPM" href="newton.solvers.SolverImplicitMPM.html" />
+    <link rel="prev" title="newton.solvers.SolverKamino" href="newton.solvers.SolverKamino.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -168,15 +168,15 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="../../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -189,13 +189,6 @@
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../guide/development.html">
-    Development
-  </a>
-</li>
-
-
-<li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/worlds.html">
     Worlds
   </a>
@@ -205,6 +198,13 @@
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -473,13 +473,6 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../../guide/tutorials.html">
     Tutorials
   </a>
@@ -503,6 +496,13 @@
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -705,7 +705,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../guide/key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/development.html">Development</a></li>
 </ul>
@@ -713,6 +712,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/worlds.html">Worlds</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/mass_inertia.html">Mass and Inertia</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sites.html">Sites</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sensors.html">Sensors</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/conventions.html">Conventions</a></li>
@@ -811,7 +811,7 @@
 <h1>newton.solvers.SolverMuJoCo<a class="headerlink" href="#newton-solvers-solvermujoco" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.</span></span><span class="sig-name descname"><span class="pre">SolverMuJoCo</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">separate_worlds</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">njmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nconmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_initpoints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">integrator</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cone</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">jacobian</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">impratio</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">density</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">viscosity</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wind</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">magnetic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_cpu</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">disable_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">update_data_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_to_mjcf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_parallel</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_sites</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_visual_only_geoms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/solver_mujoco.py#L94"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.SolverMuJoCo" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.</span></span><span class="sig-name descname"><span class="pre">SolverMuJoCo</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">separate_worlds</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">njmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nconmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_initpoints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">integrator</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cone</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">jacobian</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">impratio</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">density</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">viscosity</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wind</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">magnetic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_cpu</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">disable_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">update_data_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_to_mjcf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_parallel</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_sites</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_visual_only_geoms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/solver_mujoco.py#L84"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.SolverMuJoCo" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference internal" href="newton.solvers.SolverBase.html#newton.solvers.SolverBase" title="newton._src.solvers.solver.SolverBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverBase</span></code></a></p>
 <p>This solver provides an interface to simulate physics using the <a class="reference external" href="https://github.com/google-deepmind/mujoco">MuJoCo</a> physics engine,
 optimized with GPU acceleration through <a class="reference external" href="https://github.com/google-deepmind/mujoco_warp">mujoco_warp</a>. It supports both MuJoCo and
@@ -826,6 +826,21 @@ contacts and constraints.</p>
 bounding sphere radii (<code class="docutils literal notranslate"><span class="pre">geom_rbound</span></code>) internally based on the geometry definition.</p></li>
 </ul>
 </div>
+<dl>
+<dt>Joint support:</dt><dd><ul class="simple">
+<li><p>Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, D6.
+DISTANCE and CABLE joints are not supported.</p></li>
+<li><p><a class="reference internal" href="newton.Model.html#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_armature</span></code></a>, <a class="reference internal" href="newton.Model.html#newton.Model.joint_friction" title="newton.Model.joint_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_friction</span></code></a>,
+<a class="reference internal" href="newton.Model.html#newton.Model.joint_effort_limit" title="newton.Model.joint_effort_limit"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_effort_limit</span></code></a>, <a class="reference internal" href="newton.Model.html#newton.Model.joint_limit_ke" title="newton.Model.joint_limit_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_ke</span></code></a>/<a class="reference internal" href="newton.Model.html#newton.Model.joint_limit_kd" title="newton.Model.joint_limit_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_limit_kd</span></code></a>,
+<a class="reference internal" href="newton.Model.html#newton.Model.joint_target_ke" title="newton.Model.joint_target_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_ke</span></code></a>/<a class="reference internal" href="newton.Model.html#newton.Model.joint_target_kd" title="newton.Model.joint_target_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_kd</span></code></a>,
+<a class="reference internal" href="newton.Model.html#newton.Model.joint_target_mode" title="newton.Model.joint_target_mode"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_mode</span></code></a>, and <a class="reference internal" href="newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_f</span></code></a> are supported.</p></li>
+<li><p>Equality constraints (CONNECT, WELD, JOINT) and mimic constraints (REVOLUTE and PRISMATIC only) are supported.</p></li>
+<li><p><a class="reference internal" href="newton.Model.html#newton.Model.joint_velocity_limit" title="newton.Model.joint_velocity_limit"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_velocity_limit</span></code></a> and <a class="reference internal" href="newton.Model.html#newton.Model.joint_enabled" title="newton.Model.joint_enabled"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_enabled</span></code></a>
+are not supported.</p></li>
+</ul>
+<p>See <a class="reference internal" href="../newton_solvers.html#joint-feature-support"><span class="std std-ref">Joint Feature Support</span></a> for the full comparison across solvers.</p>
+</dd>
+</dl>
 <p class="rubric">Example</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 
@@ -1171,6 +1186,12 @@ A value of -1 indicates that the MuJoCo equality constraint is not associated wi
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.newton_dof_to_body">
+<span class="sig-name descname"><span class="pre">newton_dof_to_body</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.newton_dof_to_body" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from Newton DOF index to child body index. Shape [joint_dof_count], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.newton_shape_to_mjc_geom">
 <span class="sig-name descname"><span class="pre">newton_shape_to_mjc_geom</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.newton_shape_to_mjc_geom" title="Link to this definition">#</a></dt>
 <dd><p>Inverse mapping from Newton shape index to MuJoCo geom index. Only created when use_mujoco_contacts=False. Shape [nshape], dtype int32.</p>
@@ -1207,50 +1228,51 @@ A value of -1 indicates that the MuJoCo equality constraint is not associated wi
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlSource"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlSource</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlSource.CTRL_DIRECT</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlSource.JOINT_TARGET</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlSource"><code class="docutils literal notranslate"><span class="pre">CtrlSource</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT"><code class="docutils literal notranslate"><span class="pre">CTRL_DIRECT</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET"><code class="docutils literal notranslate"><span class="pre">JOINT_TARGET</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlType</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType.GENERAL"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlType.GENERAL</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType.POSITION"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlType.POSITION</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType.VELOCITY"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlType.VELOCITY</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType"><code class="docutils literal notranslate"><span class="pre">CtrlType</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType.GENERAL"><code class="docutils literal notranslate"><span class="pre">GENERAL</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType.POSITION"><code class="docutils literal notranslate"><span class="pre">POSITION</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType.VELOCITY"><code class="docutils literal notranslate"><span class="pre">VELOCITY</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.TrnType</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.BODY"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.TrnType.BODY</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.JOINT"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.TrnType.JOINT</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.JOINT_IN_PARENT"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.TrnType.JOINT_IN_PARENT</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.SITE"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.TrnType.SITE</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.SLIDERCRANK"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.TrnType.SLIDERCRANK</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.TENDON"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.TrnType.TENDON</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.UNDEFINED"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.TrnType.UNDEFINED</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType"><code class="docutils literal notranslate"><span class="pre">TrnType</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.BODY"><code class="docutils literal notranslate"><span class="pre">BODY</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.JOINT"><code class="docutils literal notranslate"><span class="pre">JOINT</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.JOINT_IN_PARENT"><code class="docutils literal notranslate"><span class="pre">JOINT_IN_PARENT</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.SITE"><code class="docutils literal notranslate"><span class="pre">SITE</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.SLIDERCRANK"><code class="docutils literal notranslate"><span class="pre">SLIDERCRANK</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.TENDON"><code class="docutils literal notranslate"><span class="pre">TENDON</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.TrnType.UNDEFINED"><code class="docutils literal notranslate"><span class="pre">UNDEFINED</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.import_mujoco"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.import_mujoco()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.register_custom_attributes"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.register_custom_attributes()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.__init__"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.close_mujoco_viewer"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.close_mujoco_viewer()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.get_max_contact_count"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.get_max_contact_count()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.notify_model_changed"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.notify_model_changed()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.render_mujoco_viewer"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.render_mujoco_viewer()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.step"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.step()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_contacts"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_contacts()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.body_free_qd_start"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.body_free_qd_start</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_actuator_ctrl_source"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_actuator_ctrl_source</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_actuator_to_newton_idx"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_actuator_to_newton_idx</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_body_to_newton"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_body_to_newton</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_dof_to_newton_dof"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_dof_to_newton_dof</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_eq"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_eq_to_newton_eq</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_jnt"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_eq_to_newton_jnt</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_mimic"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_eq_to_newton_mimic</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_geom_to_newton_shape"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_geom_to_newton_shape</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_dof"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_jnt_to_newton_dof</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_jnt"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_jnt_to_newton_jnt</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_mocap_to_newton_jnt"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_mocap_to_newton_jnt</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_tendon_to_newton_tendon"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_tendon_to_newton_tendon</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.newton_shape_to_mjc_geom"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.newton_shape_to_mjc_geom</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.import_mujoco"><code class="docutils literal notranslate"><span class="pre">import_mujoco()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.register_custom_attributes"><code class="docutils literal notranslate"><span class="pre">register_custom_attributes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.close_mujoco_viewer"><code class="docutils literal notranslate"><span class="pre">close_mujoco_viewer()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.get_max_contact_count"><code class="docutils literal notranslate"><span class="pre">get_max_contact_count()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.notify_model_changed"><code class="docutils literal notranslate"><span class="pre">notify_model_changed()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.render_mujoco_viewer"><code class="docutils literal notranslate"><span class="pre">render_mujoco_viewer()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.step"><code class="docutils literal notranslate"><span class="pre">step()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_contacts"><code class="docutils literal notranslate"><span class="pre">update_contacts()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.body_free_qd_start"><code class="docutils literal notranslate"><span class="pre">body_free_qd_start</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_actuator_ctrl_source"><code class="docutils literal notranslate"><span class="pre">mjc_actuator_ctrl_source</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_actuator_to_newton_idx"><code class="docutils literal notranslate"><span class="pre">mjc_actuator_to_newton_idx</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_body_to_newton"><code class="docutils literal notranslate"><span class="pre">mjc_body_to_newton</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_dof_to_newton_dof"><code class="docutils literal notranslate"><span class="pre">mjc_dof_to_newton_dof</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_eq"><code class="docutils literal notranslate"><span class="pre">mjc_eq_to_newton_eq</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_jnt"><code class="docutils literal notranslate"><span class="pre">mjc_eq_to_newton_jnt</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_mimic"><code class="docutils literal notranslate"><span class="pre">mjc_eq_to_newton_mimic</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_geom_to_newton_shape"><code class="docutils literal notranslate"><span class="pre">mjc_geom_to_newton_shape</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_dof"><code class="docutils literal notranslate"><span class="pre">mjc_jnt_to_newton_dof</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_jnt"><code class="docutils literal notranslate"><span class="pre">mjc_jnt_to_newton_jnt</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_mocap_to_newton_jnt"><code class="docutils literal notranslate"><span class="pre">mjc_mocap_to_newton_jnt</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_tendon_to_newton_tendon"><code class="docutils literal notranslate"><span class="pre">mjc_tendon_to_newton_tendon</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.newton_dof_to_body"><code class="docutils literal notranslate"><span class="pre">newton_dof_to_body</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.newton_shape_to_mjc_geom"><code class="docutils literal notranslate"><span class="pre">newton_shape_to_mjc_geom</span></code></a></li>
 </ul>
 </li>
 </ul>

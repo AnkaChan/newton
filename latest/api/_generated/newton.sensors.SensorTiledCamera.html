@@ -168,15 +168,15 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="../../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -189,13 +189,6 @@
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../guide/development.html">
-    Development
-  </a>
-</li>
-
-
-<li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/worlds.html">
     Worlds
   </a>
@@ -205,6 +198,13 @@
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -473,13 +473,6 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../../guide/tutorials.html">
     Tutorials
   </a>
@@ -503,6 +496,13 @@
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -705,7 +705,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../guide/key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../guide/development.html">Development</a></li>
 </ul>
@@ -713,6 +712,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/worlds.html">Worlds</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/mass_inertia.html">Mass and Inertia</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sites.html">Sites</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/sensors.html">Sensors</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../concepts/conventions.html">Conventions</a></li>
@@ -811,28 +811,83 @@
 <h1>newton.sensors.SensorTiledCamera<a class="headerlink" href="#newton-sensors-sensortiledcamera" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorTiledCamera</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_tiled_camera.py#L94"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorTiledCamera" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorTiledCamera</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_tiled_camera.py#L88"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorTiledCamera" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<p>A Warp-based tiled camera sensor for raytraced rendering across multiple worlds.</p>
-<p>Renders color and depth images for multiple cameras and worlds, organizing the
-output as tiles in a grid layout.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>Model</em></a>) – The Newton Model containing shapes to render.</p></li>
-<li><p><strong>config</strong> (<a class="reference internal" href="#newton.sensors.SensorTiledCamera.Config" title="newton.sensors.SensorTiledCamera.Config"><em>Config</em></a><em> | </em><em>None</em>) – Render Config.</p></li>
+<p>Warp-based tiled camera sensor for raytraced rendering across multiple worlds.</p>
+<p>Renders up to five image channels per (world, camera) pair:</p>
+<ul class="simple">
+<li><p><strong>color</strong> – RGBA shaded image (<code class="docutils literal notranslate"><span class="pre">uint32</span></code>).</p></li>
+<li><p><strong>depth</strong> – ray-hit distance [m] (<code class="docutils literal notranslate"><span class="pre">float32</span></code>); negative means no hit.</p></li>
+<li><p><strong>normal</strong> – surface normal at hit point (<code class="docutils literal notranslate"><span class="pre">vec3f</span></code>).</p></li>
+<li><p><strong>albedo</strong> – unshaded surface color (<code class="docutils literal notranslate"><span class="pre">uint32</span></code>).</p></li>
+<li><p><strong>shape_index</strong> – shape id per pixel (<code class="docutils literal notranslate"><span class="pre">uint32</span></code>).</p></li>
 </ul>
-</dd>
+<p>All output arrays have shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>. Use the <code class="docutils literal notranslate"><span class="pre">flatten_*</span></code> helpers to
+rearrange them into tiled RGBA buffers for display, with one tile per (world, camera) pair laid out in a grid.</p>
+<p>Shapes without the <code class="docutils literal notranslate"><span class="pre">VISIBLE</span></code> flag are excluded.</p>
+<p class="rubric">Example</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">sensor</span> <span class="o">=</span> <span class="n">SensorTiledCamera</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">rays</span> <span class="o">=</span> <span class="n">sensor</span><span class="o">.</span><span class="n">compute_pinhole_camera_rays</span><span class="p">(</span><span class="n">width</span><span class="p">,</span> <span class="n">height</span><span class="p">,</span> <span class="n">fov</span><span class="p">)</span>
+<span class="n">color</span> <span class="o">=</span> <span class="n">sensor</span><span class="o">.</span><span class="n">create_color_image_output</span><span class="p">(</span><span class="n">width</span><span class="p">,</span> <span class="n">height</span><span class="p">)</span>
+
+<span class="c1"># each step</span>
+<span class="n">sensor</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">camera_transforms</span><span class="p">,</span> <span class="n">rays</span><span class="p">,</span> <span class="n">color_image</span><span class="o">=</span><span class="n">color</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>See <a class="reference internal" href="#newton.sensors.SensorTiledCamera.Config" title="newton.sensors.SensorTiledCamera.Config"><code class="xref py py-class docutils literal notranslate"><span class="pre">Config</span></code></a> for optional rendering settings and <a class="reference internal" href="#newton.sensors.SensorTiledCamera.ClearData" title="newton.sensors.SensorTiledCamera.ClearData"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ClearData</span></code></a> / <a class="reference internal" href="#newton.sensors.SensorTiledCamera.DEFAULT_CLEAR_DATA" title="newton.sensors.SensorTiledCamera.DEFAULT_CLEAR_DATA"><code class="xref py py-attr docutils literal notranslate"><span class="pre">DEFAULT_CLEAR_DATA</span></code></a> /
+<a class="reference internal" href="#newton.sensors.SensorTiledCamera.GRAY_CLEAR_DATA" title="newton.sensors.SensorTiledCamera.GRAY_CLEAR_DATA"><code class="xref py py-attr docutils literal notranslate"><span class="pre">GRAY_CLEAR_DATA</span></code></a> for image-clear presets.</p>
+<dl class="field-list simple">
 </dl>
 <dl class="py class">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Config</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">checkerboard_texture</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'bool'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_light</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'bool'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_light_shadows</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'bool'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors_per_world</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'bool'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors_per_shape</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'bool'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">backface_culling</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'bool'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config" title="Link to this definition">#</a></dt>
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.ClearData">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ClearData</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">clear_color</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'int'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_depth</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'float'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_shape_index</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'int'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">4294967295</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_normal</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'tuple[float,</span> <span class="pre">float,</span> <span class="pre">float]'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">0.0,</span> <span class="pre">0.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_albedo</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="s"><span class="pre">'int'</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.ClearData" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <dl class="field-list simple">
 </dl>
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.ClearData.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">clear_color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_depth</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_shape_index</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4294967295</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_normal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">0.0,</span> <span class="pre">0.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_albedo</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.ClearData.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.ClearData.clear_albedo">
+<span class="sig-name descname"><span class="pre">clear_albedo</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.ClearData.clear_albedo" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.ClearData.clear_color">
+<span class="sig-name descname"><span class="pre">clear_color</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.ClearData.clear_color" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.ClearData.clear_depth">
+<span class="sig-name descname"><span class="pre">clear_depth</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0.0</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.ClearData.clear_depth" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.ClearData.clear_normal">
+<span class="sig-name descname"><span class="pre">clear_normal</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><span class="pre">tuple</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a><span class="p"><span class="pre">]</span></span></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">(0.0,</span> <span class="pre">0.0,</span> <span class="pre">0.0)</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.ClearData.clear_normal" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.ClearData.clear_shape_index">
+<span class="sig-name descname"><span class="pre">clear_shape_index</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">4294967295</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.ClearData.clear_shape_index" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Config</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">checkerboard_texture</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_light</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_light_shadows</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_ambient_lighting</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors_per_world</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors_per_shape</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">backface_culling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_textures</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_particles</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Rendering configuration.</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">checkerboard_texture</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_light</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_light_shadows</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors_per_world</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors_per_shape</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">backface_culling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.__init__" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">checkerboard_texture</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_light</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_light_shadows</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_ambient_lighting</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors_per_world</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors_per_shape</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">backface_culling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_textures</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_particles</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.__init__" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
@@ -840,32 +895,75 @@ output as tiles in a grid layout.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.backface_culling">
 <span class="sig-name descname"><span class="pre">backface_culling</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">True</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.backface_culling" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dd><p>Cull back-facing triangles.</p>
+</dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.checkerboard_texture">
 <span class="sig-name descname"><span class="pre">checkerboard_texture</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.checkerboard_texture" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dd><p>Apply a checkerboard texture to all shapes.</p>
+</dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.colors_per_shape">
 <span class="sig-name descname"><span class="pre">colors_per_shape</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.colors_per_shape" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dd><p>Assign a random color per shape (ignored when <code class="docutils literal notranslate"><span class="pre">colors_per_world</span></code> is True).</p>
+</dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.colors_per_world">
 <span class="sig-name descname"><span class="pre">colors_per_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.colors_per_world" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dd><p>Assign a random color palette per world.</p>
+</dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.default_light">
 <span class="sig-name descname"><span class="pre">default_light</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.default_light" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dd><p>Add a default directional light to the scene.</p>
+</dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.default_light_shadows">
 <span class="sig-name descname"><span class="pre">default_light_shadows</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.default_light_shadows" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dd><p>Enable shadows for the default light (requires <code class="docutils literal notranslate"><span class="pre">default_light</span></code>).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.enable_ambient_lighting">
+<span class="sig-name descname"><span class="pre">enable_ambient_lighting</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">True</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.enable_ambient_lighting" title="Link to this definition">#</a></dt>
+<dd><p>Enable ambient lighting for the scene.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.enable_particles">
+<span class="sig-name descname"><span class="pre">enable_particles</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">True</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.enable_particles" title="Link to this definition">#</a></dt>
+<dd><p>Enable particle rendering.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.Config.enable_textures">
+<span class="sig-name descname"><span class="pre">enable_textures</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">False</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.Config.enable_textures" title="Link to this definition">#</a></dt>
+<dd><p>Enable texturing.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.GaussianRenderMode">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">GaussianRenderMode</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">IntEnum</span></code></a></p>
+<p>Gaussian Render Mode</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.GaussianRenderMode.FAST">
+<span class="sig-name descname"><span class="pre">FAST</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode.FAST" title="Link to this definition">#</a></dt>
+<dd><p>Fast Render Mode</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.GaussianRenderMode.QUALITY">
+<span class="sig-name descname"><span class="pre">QUALITY</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode.QUALITY" title="Link to this definition">#</a></dt>
+<dd><p>Quality Render Mode, collect hits until minimum transmittance is reached</p>
+</dd></dl>
 
 </dd></dl>
 
@@ -923,8 +1021,8 @@ output as tiles in a grid layout.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.assign_checkerboard_material_to_all_shapes">
 <span class="sig-name descname"><span class="pre">assign_checkerboard_material_to_all_shapes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">resolution</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">64</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">checker_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">32</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.assign_checkerboard_material_to_all_shapes" title="Link to this definition">#</a></dt>
-<dd><p>Assign a checkerboard texture material to all shapes.</p>
-<p>Creates a gray checkerboard pattern texture and applies it to all shapes
+<dd><p>Assign a gray checkerboard texture material to all shapes.
+Creates a gray checkerboard pattern texture and applies it to all shapes
 in the scene.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -939,10 +1037,10 @@ in the scene.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.assign_random_colors_per_shape">
 <span class="sig-name descname"><span class="pre">assign_random_colors_per_shape</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.assign_random_colors_per_shape" title="Link to this definition">#</a></dt>
-<dd><p>Assign a random color to all shapes.</p>
+<dd><p>Assign a random color to each shape.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>seed</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The seed to use for the randomizer.</p>
+<dd class="field-odd"><p><strong>seed</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Random seed.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -950,10 +1048,10 @@ in the scene.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.assign_random_colors_per_world">
 <span class="sig-name descname"><span class="pre">assign_random_colors_per_world</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">seed</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.assign_random_colors_per_world" title="Link to this definition">#</a></dt>
-<dd><p>Assign a random color to all shapes, per world.</p>
+<dd><p>Assign each world a random color, applied to all its shapes.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>seed</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The seed to use for the randomizer.</p>
+<dd class="field-odd"><p><strong>seed</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Random seed.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -962,18 +1060,18 @@ in the scene.</p>
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.compute_pinhole_camera_rays">
 <span class="sig-name descname"><span class="pre">compute_pinhole_camera_rays</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_fovs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.compute_pinhole_camera_rays" title="Link to this definition">#</a></dt>
 <dd><p>Compute camera-space ray directions for pinhole cameras.</p>
-<p>Generates rays in camera space (origin at [0,0,0], direction normalized) for each
-pixel in each camera based on the specified field-of-view angles.</p>
+<p>Generates rays in camera space (origin at the camera center, direction normalized) for each pixel based on the
+vertical field of view.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Width of the image these rays are computed for.</p></li>
-<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Height of the image these rays are computed for.</p></li>
-<li><p><strong>camera_fovs</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>np.ndarray</em><em> | </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>)</em>) – Array of vertical FOV angles in radians, shape (camera_count,).</p></li>
+<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width [px].</p></li>
+<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height [px].</p></li>
+<li><p><strong>camera_fovs</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>np.ndarray</em><em> | </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>)</em>) – Vertical FOV angles [rad], shape <code class="docutils literal notranslate"><span class="pre">(camera_count,)</span></code>.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>Array of camera rays in camera space, shape (camera_count, height, width, 2).</p>
+<dd class="field-even"><p>Shape <code class="docutils literal notranslate"><span class="pre">(camera_count,</span> <span class="pre">height,</span> <span class="pre">width,</span> <span class="pre">2)</span></code>, dtype <code class="docutils literal notranslate"><span class="pre">vec3f</span></code>.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>camera_rays</p>
@@ -984,17 +1082,17 @@ pixel in each camera based on the specified field-of-view angles.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_albedo_image_output">
 <span class="sig-name descname"><span class="pre">create_albedo_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_albedo_image_output" title="Link to this definition">#</a></dt>
-<dd><p>Create a Warp array for albedo image output.</p>
+<dd><p>Create an albedo output array for <a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
-<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
+<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width [px].</p></li>
+<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height [px].</p></li>
 <li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype uint32.</p>
+<dd class="field-even"><p>Array of shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>, dtype <code class="docutils literal notranslate"><span class="pre">uint32</span></code>.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=uint32)</p>
@@ -1005,17 +1103,17 @@ pixel in each camera based on the specified field-of-view angles.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_color_image_output">
 <span class="sig-name descname"><span class="pre">create_color_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_color_image_output" title="Link to this definition">#</a></dt>
-<dd><p>Create a Warp array for color image output.</p>
+<dd><p>Create a color output array for <a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
-<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
+<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width [px].</p></li>
+<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height [px].</p></li>
 <li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype uint32.</p>
+<dd class="field-even"><p>Array of shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>, dtype <code class="docutils literal notranslate"><span class="pre">uint32</span></code>.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=uint32)</p>
@@ -1026,26 +1124,28 @@ pixel in each camera based on the specified field-of-view angles.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_default_light">
 <span class="sig-name descname"><span class="pre">create_default_light</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">enable_shadows</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_default_light" title="Link to this definition">#</a></dt>
-<dd><p>Create a default directional light for the scene.</p>
-<p>Sets up a single directional light oriented at (-1, 1, -1) with shadow casting enabled.</p>
+<dd><p>Create a default directional light oriented at <code class="docutils literal notranslate"><span class="pre">(-1,</span> <span class="pre">1,</span> <span class="pre">-1)</span></code>.</p>
 <dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>enable_shadows</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Enable shadow casting for this light.</p>
+</dd>
 </dl>
 </dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_depth_image_output">
 <span class="sig-name descname"><span class="pre">create_depth_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_depth_image_output" title="Link to this definition">#</a></dt>
-<dd><p>Create a Warp array for depth image output.</p>
+<dd><p>Create a depth output array for <a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
-<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
+<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width [px].</p></li>
+<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height [px].</p></li>
 <li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype float32.</p>
+<dd class="field-even"><p>Array of shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>, dtype <code class="docutils literal notranslate"><span class="pre">float32</span></code>.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=float32)</p>
@@ -1056,17 +1156,17 @@ pixel in each camera based on the specified field-of-view angles.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_normal_image_output">
 <span class="sig-name descname"><span class="pre">create_normal_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_normal_image_output" title="Link to this definition">#</a></dt>
-<dd><p>Create a Warp array for normal image output.</p>
+<dd><p>Create a normal output array for <a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
-<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
+<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width [px].</p></li>
+<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height [px].</p></li>
 <li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype vec3f.</p>
+<dd class="field-even"><p>Array of shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>, dtype <code class="docutils literal notranslate"><span class="pre">vec3f</span></code>.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=vec3f)</p>
@@ -1077,17 +1177,17 @@ pixel in each camera based on the specified field-of-view angles.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_shape_index_image_output">
 <span class="sig-name descname"><span class="pre">create_shape_index_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_shape_index_image_output" title="Link to this definition">#</a></dt>
-<dd><p>Create a Warp array for shape index image output.</p>
+<dd><p>Create a shape-index output array for <a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
-<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
+<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width [px].</p></li>
+<li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height [px].</p></li>
 <li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype uint32.</p>
+<dd class="field-even"><p>Array of shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>, dtype <code class="docutils literal notranslate"><span class="pre">uint32</span></code>.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=uint32)</p>
@@ -1098,15 +1198,14 @@ pixel in each camera based on the specified field-of-view angles.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba">
 <span class="sig-name descname"><span class="pre">flatten_color_image_to_rgba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_buffer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">worlds_per_row</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba" title="Link to this definition">#</a></dt>
-<dd><p>Flatten rendered color image to a tiled image buffer.</p>
-<p>Arranges (world_count x camera_count) tiles in a grid layout. Each tile
-shows one camera’s view of one world.</p>
+<dd><p>Flatten rendered color image to a tiled RGBA buffer.</p>
+<p>Arranges <code class="docutils literal notranslate"><span class="pre">(world_count</span> <span class="pre">*</span> <span class="pre">camera_count)</span></code> tiles in a grid. Each tile shows one camera’s view of one world.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>)</em>) – Color output array from render(), shape (world_count, camera_count, height, width).</p></li>
-<li><p><strong>out_buffer</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint8</em><em>, </em><em>ndim=3</em><em>) </em><em>| </em><em>None</em>) – Optional output array</p></li>
-<li><p><strong>worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional number of rows</p></li>
+<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>)</em>) – Color output from <a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>, shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>.</p></li>
+<li><p><strong>out_buffer</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint8</em><em>, </em><em>ndim=3</em><em>) </em><em>| </em><em>None</em>) – Pre-allocated RGBA buffer. If None, allocates a new one.</p></li>
+<li><p><strong>worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Tiles per row in the grid. If None, picks a square-ish layout.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1115,17 +1214,16 @@ shows one camera’s view of one world.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba">
 <span class="sig-name descname"><span class="pre">flatten_depth_image_to_rgba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_buffer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">worlds_per_row</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba" title="Link to this definition">#</a></dt>
-<dd><p>Flatten rendered depth image to a tiled grayscale image buffer.</p>
-<p>Arranges (world_count x camera_count) tiles in a grid. Depth values are
-inverted (closer = brighter) and normalized to [50, 255] range. Background (depth &lt; 0
-or no hit) remains black.</p>
+<dd><p>Flatten rendered depth image to a tiled RGBA buffer.</p>
+<p>Encodes depth as grayscale: inverts values (closer = brighter) and normalizes to the <code class="docutils literal notranslate"><span class="pre">[50,</span> <span class="pre">255]</span></code>
+range. Background pixels (no hit) remain black.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=4</em><em>)</em>) – Depth output array from render(), shape (world_count, camera_count, height, width).</p></li>
-<li><p><strong>out_buffer</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint8</em><em>, </em><em>ndim=3</em><em>) </em><em>| </em><em>None</em>) – Optional output array</p></li>
-<li><p><strong>worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional number of rows</p></li>
-<li><p><strong>depth_range</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><em>None</em>) – Depth range to normalize to, shape (2) [near, far], will be automatically determined if None</p></li>
+<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=4</em><em>)</em>) – Depth output from <a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>, shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>.</p></li>
+<li><p><strong>out_buffer</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint8</em><em>, </em><em>ndim=3</em><em>) </em><em>| </em><em>None</em>) – Pre-allocated RGBA buffer. If None, allocates a new one.</p></li>
+<li><p><strong>worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Tiles per row in the grid. If None, picks a square-ish layout.</p></li>
+<li><p><strong>depth_range</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><em>None</em>) – Depth range to normalize to, shape <code class="docutils literal notranslate"><span class="pre">(2,)</span></code> <code class="docutils literal notranslate"><span class="pre">[near,</span> <span class="pre">far]</span></code>. If None, computes from <em>image</em>.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1134,15 +1232,14 @@ or no hit) remains black.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.flatten_normal_image_to_rgba">
 <span class="sig-name descname"><span class="pre">flatten_normal_image_to_rgba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_buffer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">worlds_per_row</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.flatten_normal_image_to_rgba" title="Link to this definition">#</a></dt>
-<dd><p>Flatten rendered normal image to a tiled image buffer.</p>
-<p>Arranges (world_count x camera_count) tiles in a grid layout. Each tile
-shows one camera’s view of one world.</p>
+<dd><p>Flatten rendered normal image to a tiled RGBA buffer.</p>
+<p>Arranges <code class="docutils literal notranslate"><span class="pre">(world_count</span> <span class="pre">*</span> <span class="pre">camera_count)</span></code> tiles in a grid. Each tile shows one camera’s view of one world.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>)</em>) – Normal output array from render(), shape (world_count, camera_count, height, width).</p></li>
-<li><p><strong>out_buffer</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint8</em><em>, </em><em>ndim=3</em><em>) </em><em>| </em><em>None</em>) – Optional output array</p></li>
-<li><p><strong>worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional number of rows</p></li>
+<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>)</em>) – Normal output from <a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a>, shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code>.</p></li>
+<li><p><strong>out_buffer</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint8</em><em>, </em><em>ndim=3</em><em>) </em><em>| </em><em>None</em>) – Pre-allocated RGBA buffer. If None, allocates a new one.</p></li>
+<li><p><strong>worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Tiles per row in the grid. If None, picks a square-ish layout.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1151,7 +1248,8 @@ shows one camera’s view of one world.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.sync_transforms">
 <span class="sig-name descname"><span class="pre">sync_transforms</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.sync_transforms" title="Link to this definition">#</a></dt>
-<dd><p>Synchronize transforms from the current simulation state.</p>
+<dd><p>Synchronize shape transforms from the simulation state.</p>
+<p><a class="reference internal" href="#newton.sensors.SensorTiledCamera.update" title="newton.sensors.SensorTiledCamera.update"><code class="xref py py-meth docutils literal notranslate"><span class="pre">update()</span></code></a> calls this automatically when <em>state</em> is not None.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The current simulation state containing body transforms.</p>
@@ -1162,31 +1260,39 @@ shows one camera’s view of one world.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.update">
 <span class="sig-name descname"><span class="pre">update</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_transforms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_rays</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">color_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_index_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normal_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">albedo_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">refit_bvh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_data</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">DEFAULT_CLEAR_DATA</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.update" title="Link to this definition">#</a></dt>
-<dd><p>Render output images for all worlds and cameras.
-The shape of the output images is (world_count, camera_count, height, width) where element
-[world_id, camera_id, y, x] is the output generated by the ray in camera_rays[camera_id, y, x].</p>
+<dd><p>Render output images for all worlds and cameras.</p>
+<p>Each output array has shape <code class="docutils literal notranslate"><span class="pre">(world_count,</span> <span class="pre">camera_count,</span> <span class="pre">height,</span> <span class="pre">width)</span></code> where element
+<code class="docutils literal notranslate"><span class="pre">[world_id,</span> <span class="pre">camera_id,</span> <span class="pre">y,</span> <span class="pre">x]</span></code> corresponds to the ray in <code class="docutils literal notranslate"><span class="pre">camera_rays[camera_id,</span> <span class="pre">y,</span> <span class="pre">x]</span></code>. Each output
+channel is optional – pass None to skip that channel’s rendering entirely.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>State</em></a><em> | </em><em>None</em>) – The current simulation state containing body transforms.</p></li>
-<li><p><strong>camera_transforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transformf</em><em>, </em><em>ndim=2</em><em>)</em>) – Array of camera transforms in world space, shape (camera_count, world_count).</p></li>
-<li><p><strong>camera_rays</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>)</em>) – Array of camera rays in camera space, shape (camera_count, height, width, 2).</p></li>
-<li><p><strong>color_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for color data (world_count, camera_count, height, width).
-If None, no color rendering is performed.</p></li>
-<li><p><strong>depth_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for depth data (world_count, camera_count, height, width).
-If None, no depth rendering is performed.</p></li>
-<li><p><strong>shape_index_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for shape index data (world_count, camera_count, height, width).
-If None, no shape index rendering is performed.</p></li>
-<li><p><strong>normal_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for normal data (world_count, camera_count, height, width).
-If None, no normal rendering is performed.</p></li>
-<li><p><strong>albedo_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for albedo data (world_count, camera_count, height, width).
-If None, no albedo rendering is performed.</p></li>
-<li><p><strong>refit_bvh</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to refit the BVH or not.</p></li>
-<li><p><strong>clear_data</strong> (<em>ClearData</em><em> | </em><em>None</em>) – The data to clear the image buffers with (or skip if None).</p></li>
+<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>State</em></a><em> | </em><em>None</em>) – Simulation state with body transforms. If not None, calls <a class="reference internal" href="#newton.sensors.SensorTiledCamera.sync_transforms" title="newton.sensors.SensorTiledCamera.sync_transforms"><code class="xref py py-meth docutils literal notranslate"><span class="pre">sync_transforms()</span></code></a> first.</p></li>
+<li><p><strong>camera_transforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transformf</em><em>, </em><em>ndim=2</em><em>)</em>) – Camera-to-world transforms, shape <code class="docutils literal notranslate"><span class="pre">(camera_count,</span> <span class="pre">world_count)</span></code>.</p></li>
+<li><p><strong>camera_rays</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>)</em>) – Camera-space rays from <a class="reference internal" href="#newton.sensors.SensorTiledCamera.compute_pinhole_camera_rays" title="newton.sensors.SensorTiledCamera.compute_pinhole_camera_rays"><code class="xref py py-meth docutils literal notranslate"><span class="pre">compute_pinhole_camera_rays()</span></code></a>, shape
+<code class="docutils literal notranslate"><span class="pre">(camera_count,</span> <span class="pre">height,</span> <span class="pre">width,</span> <span class="pre">2)</span></code>.</p></li>
+<li><p><strong>color_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Output for RGBA color. None to skip.</p></li>
+<li><p><strong>depth_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Output for ray-hit distance [m]. None to skip.</p></li>
+<li><p><strong>shape_index_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Output for per-pixel shape id. None to skip.</p></li>
+<li><p><strong>normal_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Output for surface normals. None to skip.</p></li>
+<li><p><strong>albedo_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Output for unshaded surface color. None to skip.</p></li>
+<li><p><strong>refit_bvh</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Refit the BVH before rendering.</p></li>
+<li><p><strong>clear_data</strong> (<a class="reference internal" href="#newton.sensors.SensorTiledCamera.ClearData" title="newton.sensors.SensorTiledCamera.ClearData"><em>SensorTiledCamera.ClearData</em></a><em> | </em><em>None</em>) – Values to clear output buffers with.
+See <a class="reference internal" href="#newton.sensors.SensorTiledCamera.DEFAULT_CLEAR_DATA" title="newton.sensors.SensorTiledCamera.DEFAULT_CLEAR_DATA"><code class="xref py py-attr docutils literal notranslate"><span class="pre">DEFAULT_CLEAR_DATA</span></code></a>, <a class="reference internal" href="#newton.sensors.SensorTiledCamera.GRAY_CLEAR_DATA" title="newton.sensors.SensorTiledCamera.GRAY_CLEAR_DATA"><code class="xref py py-attr docutils literal notranslate"><span class="pre">GRAY_CLEAR_DATA</span></code></a>.</p></li>
 </ul>
 </dd>
 </dl>
 </dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.DEFAULT_CLEAR_DATA">
+<span class="sig-name descname"><span class="pre">DEFAULT_CLEAR_DATA</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">RenderContext.ClearData(clear_color=0,</span> <span class="pre">clear_depth=0.0,</span> <span class="pre">clear_shape_index=4294967295,</span> <span class="pre">clear_normal=(0.0,</span> <span class="pre">0.0,</span> <span class="pre">0.0),</span> <span class="pre">clear_albedo=0)</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.DEFAULT_CLEAR_DATA" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.GRAY_CLEAR_DATA">
+<span class="sig-name descname"><span class="pre">GRAY_CLEAR_DATA</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">RenderContext.ClearData(clear_color=4284900966,</span> <span class="pre">clear_depth=0.0,</span> <span class="pre">clear_shape_index=4294967295,</span> <span class="pre">clear_normal=(0.0,</span> <span class="pre">0.0,</span> <span class="pre">0.0),</span> <span class="pre">clear_albedo=4278190080)</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.GRAY_CLEAR_DATA" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
 
 </dd></dl>
 
@@ -1216,43 +1322,62 @@ If None, no albedo rendering is performed.</p></li>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera</span></code></a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.__init__"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.__init__()</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.backface_culling"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.backface_culling</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.checkerboard_texture"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.checkerboard_texture</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.colors_per_shape"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.colors_per_shape</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.colors_per_world"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.colors_per_world</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.default_light"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.default_light</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.default_light_shadows"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.Config.default_light_shadows</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.ClearData"><code class="docutils literal notranslate"><span class="pre">ClearData</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.ClearData.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.ClearData.clear_albedo"><code class="docutils literal notranslate"><span class="pre">clear_albedo</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.ClearData.clear_color"><code class="docutils literal notranslate"><span class="pre">clear_color</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.ClearData.clear_depth"><code class="docutils literal notranslate"><span class="pre">clear_depth</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.ClearData.clear_normal"><code class="docutils literal notranslate"><span class="pre">clear_normal</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.ClearData.clear_shape_index"><code class="docutils literal notranslate"><span class="pre">clear_shape_index</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderLightType"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderLightType</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderLightType.DIRECTIONAL"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderLightType.DIRECTIONAL</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderLightType.SPOTLIGHT"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderLightType.SPOTLIGHT</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config"><code class="docutils literal notranslate"><span class="pre">Config</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.backface_culling"><code class="docutils literal notranslate"><span class="pre">backface_culling</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.checkerboard_texture"><code class="docutils literal notranslate"><span class="pre">checkerboard_texture</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.colors_per_shape"><code class="docutils literal notranslate"><span class="pre">colors_per_shape</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.colors_per_world"><code class="docutils literal notranslate"><span class="pre">colors_per_world</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.default_light"><code class="docutils literal notranslate"><span class="pre">default_light</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.default_light_shadows"><code class="docutils literal notranslate"><span class="pre">default_light_shadows</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.enable_ambient_lighting"><code class="docutils literal notranslate"><span class="pre">enable_ambient_lighting</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.enable_particles"><code class="docutils literal notranslate"><span class="pre">enable_particles</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.Config.enable_textures"><code class="docutils literal notranslate"><span class="pre">enable_textures</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderOrder</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder.PIXEL_PRIORITY"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderOrder.PIXEL_PRIORITY</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder.TILED"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderOrder.TILED</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder.VIEW_PRIORITY"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderOrder.VIEW_PRIORITY</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode"><code class="docutils literal notranslate"><span class="pre">GaussianRenderMode</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode.FAST"><code class="docutils literal notranslate"><span class="pre">FAST</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.GaussianRenderMode.QUALITY"><code class="docutils literal notranslate"><span class="pre">QUALITY</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.__init__"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.assign_checkerboard_material_to_all_shapes"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.assign_checkerboard_material_to_all_shapes()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.assign_random_colors_per_shape"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.assign_random_colors_per_shape()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.assign_random_colors_per_world"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.assign_random_colors_per_world()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.compute_pinhole_camera_rays"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.compute_pinhole_camera_rays()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_albedo_image_output"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.create_albedo_image_output()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_color_image_output"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.create_color_image_output()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_default_light"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.create_default_light()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_depth_image_output"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.create_depth_image_output()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_normal_image_output"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.create_normal_image_output()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_shape_index_image_output"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.create_shape_index_image_output()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.flatten_color_image_to_rgba()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.flatten_depth_image_to_rgba()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.flatten_normal_image_to_rgba"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.flatten_normal_image_to_rgba()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.sync_transforms"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.sync_transforms()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.update"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.update()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderLightType"><code class="docutils literal notranslate"><span class="pre">RenderLightType</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderLightType.DIRECTIONAL"><code class="docutils literal notranslate"><span class="pre">DIRECTIONAL</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderLightType.SPOTLIGHT"><code class="docutils literal notranslate"><span class="pre">SPOTLIGHT</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder"><code class="docutils literal notranslate"><span class="pre">RenderOrder</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder.PIXEL_PRIORITY"><code class="docutils literal notranslate"><span class="pre">PIXEL_PRIORITY</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder.TILED"><code class="docutils literal notranslate"><span class="pre">TILED</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder.VIEW_PRIORITY"><code class="docutils literal notranslate"><span class="pre">VIEW_PRIORITY</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.assign_checkerboard_material_to_all_shapes"><code class="docutils literal notranslate"><span class="pre">assign_checkerboard_material_to_all_shapes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.assign_random_colors_per_shape"><code class="docutils literal notranslate"><span class="pre">assign_random_colors_per_shape()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.assign_random_colors_per_world"><code class="docutils literal notranslate"><span class="pre">assign_random_colors_per_world()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.compute_pinhole_camera_rays"><code class="docutils literal notranslate"><span class="pre">compute_pinhole_camera_rays()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_albedo_image_output"><code class="docutils literal notranslate"><span class="pre">create_albedo_image_output()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_color_image_output"><code class="docutils literal notranslate"><span class="pre">create_color_image_output()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_default_light"><code class="docutils literal notranslate"><span class="pre">create_default_light()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_depth_image_output"><code class="docutils literal notranslate"><span class="pre">create_depth_image_output()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_normal_image_output"><code class="docutils literal notranslate"><span class="pre">create_normal_image_output()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.create_shape_index_image_output"><code class="docutils literal notranslate"><span class="pre">create_shape_index_image_output()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba"><code class="docutils literal notranslate"><span class="pre">flatten_color_image_to_rgba()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba"><code class="docutils literal notranslate"><span class="pre">flatten_depth_image_to_rgba()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.flatten_normal_image_to_rgba"><code class="docutils literal notranslate"><span class="pre">flatten_normal_image_to_rgba()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.sync_transforms"><code class="docutils literal notranslate"><span class="pre">sync_transforms()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.update"><code class="docutils literal notranslate"><span class="pre">update()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.DEFAULT_CLEAR_DATA"><code class="docutils literal notranslate"><span class="pre">DEFAULT_CLEAR_DATA</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.GRAY_CLEAR_DATA"><code class="docutils literal notranslate"><span class="pre">GRAY_CLEAR_DATA</span></code></a></li>
 </ul>
 </li>
 </ul>

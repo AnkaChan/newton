@@ -2,13 +2,13 @@
 <!DOCTYPE html>
 
 
-<html lang="en" data-content_root="../" >
+<html lang="en" data-content_root="../../" >
 
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Key Concepts &#8212; Newton Physics</title>
+    <title>newton.BodyFlags &#8212; Newton Physics</title>
   
   
   
@@ -27,28 +27,28 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+  <link href="../../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
 
-    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
-    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
-    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=b2b65678" />
   
   <!-- So that users can add custom icons -->
-  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <script src="../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
-<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
 
-    <script src="../_static/documentation_options.js?v=1c471e8e"></script>
-    <script src="../_static/doctools.js?v=9bcbadda"></script>
-    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
-    <script src="../_static/copybutton.js?v=f281be69"></script>
-    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script src="../../_static/documentation_options.js?v=1c471e8e"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'guide/key-concepts';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'api/_generated/newton.BodyFlags';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
         DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
@@ -56,10 +56,10 @@
         DOCUMENTATION_OPTIONS.show_version_warning_banner =
             false;
         </script>
-    <link rel="index" title="Index" href="../genindex.html" />
-    <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Tutorials" href="tutorials.html" />
-    <link rel="prev" title="Visualization" href="visualization.html" />
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="newton.CollisionPipeline" href="newton.CollisionPipeline.html" />
+    <link rel="prev" title="newton.Axis" href="newton.Axis.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -81,7 +81,7 @@
   <dialog id="pst-search-dialog">
     
 <form class="bd-search d-flex align-items-center"
-      action="../search.html"
+      action="../../search.html"
       method="get">
   <i class="fa-solid fa-magnifying-glass"></i>
   <input type="search"
@@ -117,7 +117,7 @@
     
   
 
-<a class="navbar-brand logo" href="../index.html">
+<a class="navbar-brand logo" href="../../index.html">
   
   
   
@@ -128,8 +128,8 @@
       
     
     
-    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
-    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+    <img src="../../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
   
   
     <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.1.0.dev0)</span></p>
@@ -147,36 +147,36 @@
   <ul class="bd-navbar-elements navbar-nav">
     
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="overview.html">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
     Overview
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="installation.html">
+  <a class="nav-link nav-internal" href="../../guide/installation.html">
     Installation
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="visualization.html">
+  <a class="nav-link nav-internal" href="../../guide/visualization.html">
     Visualization
   </a>
 </li>
 
 
-<li class="nav-item current active">
-  <a class="nav-link nav-internal" href="#">
-    Key Concepts
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="../../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -189,161 +189,161 @@
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="development.html">
-    Development
-  </a>
-</li>
-
-
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/worlds.html">
     Worlds
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
     Articulations
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../concepts/sites.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/sites.html">
     Sites
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../concepts/sensors.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/sensors.html">
     Sensors
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../concepts/conventions.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/conventions.html">
     Conventions
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../concepts/usd_parsing.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/usd_parsing.html">
     USD Parsing
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../concepts/custom_attributes.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/custom_attributes.html">
     Custom Attributes
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../concepts/extended_attributes.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/extended_attributes.html">
     Extended Attributes
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../concepts/collisions.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/collisions.html">
     Collisions and Contacts
   </a>
 </li>
 
 
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="../newton.html">
     newton
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_geometry.html">
     newton.geometry
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_ik.html">
     newton.ik
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_math.html">
     newton.math
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_selection.html">
     newton.selection
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_sensors.html">
     newton.sensors
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_solvers.html">
     newton.solvers
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_usd.html">
     newton.usd
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_utils.html">
     newton.utils
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_viewer.html">
     newton.viewer
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../faq.html">
     FAQ
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../migration.html">
     Migration Guide
   </a>
 </li>
 
 
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+  <a class="nav-link dropdown-item nav-internal" href="../../integrations/index.html">
     Integrations
   </a>
 </li>
@@ -452,196 +452,196 @@
   <ul class="bd-navbar-elements navbar-nav">
     
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="overview.html">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
     Overview
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="installation.html">
+  <a class="nav-link nav-internal" href="../../guide/installation.html">
     Installation
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="visualization.html">
+  <a class="nav-link nav-internal" href="../../guide/visualization.html">
     Visualization
   </a>
 </li>
 
 
-<li class="nav-item current active">
-  <a class="nav-link nav-internal" href="#">
-    Key Concepts
-  </a>
-</li>
-
-
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="tutorials.html">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
     Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="development.html">
+  <a class="nav-link nav-internal" href="../../guide/development.html">
     Development
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../concepts/worlds.html">
+  <a class="nav-link nav-internal" href="../../concepts/worlds.html">
     Worlds
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../concepts/articulations.html">
+  <a class="nav-link nav-internal" href="../../concepts/articulations.html">
     Articulations
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../concepts/sites.html">
+  <a class="nav-link nav-internal" href="../../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/sites.html">
     Sites
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../concepts/sensors.html">
+  <a class="nav-link nav-internal" href="../../concepts/sensors.html">
     Sensors
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../concepts/conventions.html">
+  <a class="nav-link nav-internal" href="../../concepts/conventions.html">
     Conventions
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../concepts/usd_parsing.html">
+  <a class="nav-link nav-internal" href="../../concepts/usd_parsing.html">
     USD Parsing
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../concepts/custom_attributes.html">
+  <a class="nav-link nav-internal" href="../../concepts/custom_attributes.html">
     Custom Attributes
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../concepts/extended_attributes.html">
+  <a class="nav-link nav-internal" href="../../concepts/extended_attributes.html">
     Extended Attributes
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../concepts/collisions.html">
+  <a class="nav-link nav-internal" href="../../concepts/collisions.html">
     Collisions and Contacts
   </a>
 </li>
 
 
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton.html">
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../newton.html">
     newton
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+  <a class="nav-link nav-internal" href="../newton_geometry.html">
     newton.geometry
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+  <a class="nav-link nav-internal" href="../newton_ik.html">
     newton.ik
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton_math.html">
+  <a class="nav-link nav-internal" href="../newton_math.html">
     newton.math
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+  <a class="nav-link nav-internal" href="../newton_selection.html">
     newton.selection
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+  <a class="nav-link nav-internal" href="../newton_sensors.html">
     newton.sensors
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+  <a class="nav-link nav-internal" href="../newton_solvers.html">
     newton.solvers
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+  <a class="nav-link nav-internal" href="../newton_usd.html">
     newton.usd
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+  <a class="nav-link nav-internal" href="../newton_utils.html">
     newton.utils
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+  <a class="nav-link nav-internal" href="../newton_viewer.html">
     newton.viewer
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../faq.html">
+  <a class="nav-link nav-internal" href="../../faq.html">
     FAQ
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../migration.html">
+  <a class="nav-link nav-internal" href="../../migration.html">
     Migration Guide
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../integrations/index.html">
+  <a class="nav-link nav-internal" href="../../integrations/index.html">
     Integrations
   </a>
 </li>
@@ -701,45 +701,45 @@
      aria-label="Table of Contents">
   <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
   <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
-<ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="overview.html">Overview</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="visualization.html">Visualization</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Key Concepts</a></li>
-<li class="toctree-l1"><a class="reference internal" href="tutorials.html">Tutorials</a></li>
-<li class="toctree-l1"><a class="reference internal" href="development.html">Development</a></li>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/development.html">Development</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../concepts/usd_parsing.html">USD Parsing</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../concepts/custom_attributes.html">Custom Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/custom_attributes.html">Custom Attributes</a></li>
 
-<li class="toctree-l1"><a class="reference internal" href="../concepts/extended_attributes.html">Extended Attributes</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../concepts/collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/collisions.html">Collisions and Contacts</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="reference internal" href="../newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_viewer.html">newton.viewer</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../integrations/index.html">Integrations</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
 <ul class="nav bd-sidenav">
@@ -780,11 +780,14 @@
   <ul class="bd-breadcrumbs">
     
     <li class="breadcrumb-item breadcrumb-home">
-      <a href="../index.html" class="nav-link" aria-label="Home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Key Concepts</span></li>
+    
+    <li class="breadcrumb-item"><a href="../newton.html" class="nav-link">newton</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">newton.BodyFlags</span></li>
   </ul>
 </nav>
 </div>
@@ -801,39 +804,37 @@
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section id="key-concepts">
-<h1>Key Concepts<a class="headerlink" href="#key-concepts" title="Link to this heading">#</a></h1>
-<p>Newton Physics is built around a set of core abstractions that make it powerful, extensible, and easy to use for a wide range of simulation tasks. Understanding these concepts will help you get the most out of the engine.</p>
-<section id="core-abstractions">
-<h2>Core Abstractions<a class="headerlink" href="#core-abstractions" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>: The entry point for constructing simulation models. You can build models programmatically or import them from standard formats (URDF, MJCF, USD).</p></li>
-<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>: Encapsulates the physical structure, parameters, and configuration of your simulation world, including bodies, joints, shapes, and physical properties.</p></li>
-<li><p><a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a>: Represents the dynamic state of the simulation at a given time (positions, velocities, etc.). States are updated by solvers and can be inspected or visualized.</p></li>
-<li><p><a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control" title="newton.Control"><code class="xref py py-class docutils literal notranslate"><span class="pre">Control</span></code></a>: Encodes the control inputs (e.g., joint targets, forces) applied to the model at each simulation step.</p></li>
-<li><p><a class="reference internal" href="../api/newton_solvers.html"><span class="doc">Solver</span></a>: Advances the simulation by integrating the equations of motion, handling contacts, constraints, and physics integration. Newton supports multiple solver backends (XPBD, VBD, MuJoCo, Featherstone, etc.).</p></li>
-<li><p><strong>Importer</strong>: Loads models from external formats and populates the ModelBuilder (see <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_urdf" title="newton.ModelBuilder.add_urdf"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_urdf()</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_mjcf" title="newton.ModelBuilder.add_mjcf"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_mjcf()</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_usd()</span></code></a>).</p></li>
-<li><p><a class="reference internal" href="visualization.html"><span class="doc">Viewer</span></a>: Visualizes the simulation in real-time (OpenGL) or offline (USD, Omniverse).</p></li>
-</ul>
-</section>
-<section id="simulation-loop">
-<h2>Simulation Loop<a class="headerlink" href="#simulation-loop" title="Link to this heading">#</a></h2>
-<ol class="arabic simple">
-<li><p><strong>Build or import a model</strong> using ModelBuilder.</p></li>
-<li><p><strong>Initialize the state</strong> (positions, velocities, etc.).</p></li>
-<li><p><strong>Apply controls</strong> (joint targets, forces).</p></li>
-<li><p><strong>Step the solver</strong> to advance the simulation.</p></li>
-<li><p><strong>Render or export</strong> the results.</p></li>
-</ol>
-</section>
-<section id="further-reading">
-<h2>Further Reading<a class="headerlink" href="#further-reading" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p><a class="reference internal" href="tutorials.html"><span class="doc">Tutorials</span></a> — Step-by-step guides</p></li>
-<li><p><a class="reference internal" href="../api/newton.html"><span class="doc">newton</span></a> — Full API reference</p></li>
-<li><p><a class="reference external" href="https://deepwiki.com/newton-physics/newton">DeepWiki: Newton Physics</a> — Conceptual background</p></li>
-</ul>
-</section>
+  <section id="newton-bodyflags">
+<h1>newton.BodyFlags<a class="headerlink" href="#newton-bodyflags" title="Link to this heading">#</a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.BodyFlags">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">BodyFlags</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/enums.py#L8"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.BodyFlags" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">IntEnum</span></code></a></p>
+<p>Per-body dynamic state flags.</p>
+<p>Each body must store exactly one runtime state flag:
+<a class="reference internal" href="#newton.BodyFlags.DYNAMIC" title="newton.BodyFlags.DYNAMIC"><code class="xref py py-attr docutils literal notranslate"><span class="pre">DYNAMIC</span></code></a> or <a class="reference internal" href="#newton.BodyFlags.KINEMATIC" title="newton.BodyFlags.KINEMATIC"><code class="xref py py-attr docutils literal notranslate"><span class="pre">KINEMATIC</span></code></a>. <a class="reference internal" href="#newton.BodyFlags.ALL" title="newton.BodyFlags.ALL"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ALL</span></code></a> is a convenience
+filter mask for APIs such as <a class="reference internal" href="newton.eval_fk.html#newton.eval_fk" title="newton.eval_fk"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.eval_fk()</span></code></a> and is not a valid
+stored body state.</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.BodyFlags.ALL">
+<span class="sig-name descname"><span class="pre">ALL</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">3</span></em><a class="headerlink" href="#newton.BodyFlags.ALL" title="Link to this definition">#</a></dt>
+<dd><p>Filter bitmask selecting both dynamic and kinematic bodies.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.BodyFlags.DYNAMIC">
+<span class="sig-name descname"><span class="pre">DYNAMIC</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.BodyFlags.DYNAMIC" title="Link to this definition">#</a></dt>
+<dd><p>Dynamic body that participates in simulation dynamics.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.BodyFlags.KINEMATIC">
+<span class="sig-name descname"><span class="pre">KINEMATIC</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">2</span></em><a class="headerlink" href="#newton.BodyFlags.KINEMATIC" title="Link to this definition">#</a></dt>
+<dd><p>User-prescribed body that does not respond to applied forces.</p>
+</dd></dl>
+
+</dd></dl>
+
 </section>
 
 
@@ -859,9 +860,12 @@
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#core-abstractions">Core Abstractions</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#simulation-loop">Simulation Loop</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#further-reading">Further Reading</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.BodyFlags"><code class="docutils literal notranslate"><span class="pre">BodyFlags</span></code></a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.BodyFlags.ALL"><code class="docutils literal notranslate"><span class="pre">ALL</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.BodyFlags.DYNAMIC"><code class="docutils literal notranslate"><span class="pre">DYNAMIC</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.BodyFlags.KINEMATIC"><code class="docutils literal notranslate"><span class="pre">KINEMATIC</span></code></a></li>
+</ul>
+</li>
 </ul>
   </nav></div>
 
@@ -878,8 +882,8 @@
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
-<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+  <script defer src="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
 
   <footer class="bd-footer">
 <div class="bd-footer__inner bd-page-width">

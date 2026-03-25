@@ -58,7 +58,7 @@
         </script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="newton.viewer.ViewerFile" href="_generated/newton.viewer.ViewerFile.html" />
+    <link rel="next" title="newton.viewer.ViewerBase" href="_generated/newton.viewer.ViewerBase.html" />
     <link rel="prev" title="newton.utils.string_to_warp" href="_generated/newton.utils.string_to_warp.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -168,15 +168,15 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
-    Key Concepts
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
   </a>
 </li>
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../guide/tutorials.html">
-    Tutorials
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
   </a>
 </li>
 
@@ -189,13 +189,6 @@
                 <ul id="pst-nav-more-links" class="dropdown-menu">
                     
 <li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
-    Development
-  </a>
-</li>
-
-
-<li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
     Worlds
   </a>
@@ -205,6 +198,13 @@
 <li class=" ">
   <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -469,13 +469,6 @@
 
 
 <li class="nav-item ">
-  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
-    Key Concepts
-  </a>
-</li>
-
-
-<li class="nav-item ">
   <a class="nav-link nav-internal" href="../guide/tutorials.html">
     Tutorials
   </a>
@@ -499,6 +492,13 @@
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="../concepts/articulations.html">
     Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
   </a>
 </li>
 
@@ -701,7 +701,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
 </ul>
@@ -709,6 +708,7 @@
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/mass_inertia.html">Mass and Inertia</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
@@ -805,22 +805,25 @@
 <p class="rubric">Classes</p>
 <div class="pst-scrollable-table-container"><table class="autosummary longtable table">
 <tbody>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerFile.html#newton.viewer.ViewerFile" title="newton.viewer.ViewerFile"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerFile</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerBase.html#newton.viewer.ViewerBase" title="newton.viewer.ViewerBase"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerBase</span></code></a></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerFile.html#newton.viewer.ViewerFile" title="newton.viewer.ViewerFile"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerFile</span></code></a></p></td>
 <td><p>File-based viewer backend for Newton physics simulations.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerGL</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerGL</span></code></a></p></td>
 <td><p>OpenGL-based interactive viewer for Newton physics models.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerNull.html#newton.viewer.ViewerNull" title="newton.viewer.ViewerNull"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerNull</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerNull.html#newton.viewer.ViewerNull" title="newton.viewer.ViewerNull"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerNull</span></code></a></p></td>
 <td><p>A no-operation (no-op) viewer implementation for Newton.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerRerun.html#newton.viewer.ViewerRerun" title="newton.viewer.ViewerRerun"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerRerun</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerRerun.html#newton.viewer.ViewerRerun" title="newton.viewer.ViewerRerun"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerRerun</span></code></a></p></td>
 <td><p>ViewerRerun provides a backend for visualizing Newton simulations using the rerun visualization library.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerUSD.html#newton.viewer.ViewerUSD" title="newton.viewer.ViewerUSD"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerUSD</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerUSD.html#newton.viewer.ViewerUSD" title="newton.viewer.ViewerUSD"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerUSD</span></code></a></p></td>
 <td><p>USD viewer backend for Newton physics simulations.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerViser.html#newton.viewer.ViewerViser" title="newton.viewer.ViewerViser"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerViser</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.viewer.ViewerViser.html#newton.viewer.ViewerViser" title="newton.viewer.ViewerViser"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ViewerViser</span></code></a></p></td>
 <td><p>ViewerViser provides a backend for visualizing Newton simulations using the viser library.</p></td>
 </tr>
 </tbody>

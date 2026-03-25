@@ -38,10 +38,12 @@ newton
    :nosignatures:
 
    Axis
+   BodyFlags
    CollisionPipeline
    Contacts
    Control
    EqType
+   Gaussian
    GeoType
    Heightfield
    JointTargetMode
