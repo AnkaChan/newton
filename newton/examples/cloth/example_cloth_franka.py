@@ -366,6 +366,10 @@ class Example:
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
+        # State save tracking
+        self._save_key_prev = False
+        self._save_counter = 0
+
         # graph capture
         if self.add_cloth:
             self.capture()
@@ -572,7 +576,40 @@ class Example:
 
         self.target_joint_qd.assign(delta_q)
 
+    def save_state(self, path: str | None = None):
+        """Save the current cloth particle positions and velocities to a .npz file.
+
+        Args:
+            path: Output file path. Defaults to ``cloth_state_<counter>.npz``.
+        """
+        if path is None:
+            path = f"cloth_state_{self._save_counter}.npz"
+            self._save_counter += 1
+
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
+
+        data = {
+            "particle_q": particle_q,
+            "particle_qd": particle_qd,
+            "sim_time": self.sim_time,
+        }
+
+        if self.add_robot:
+            data["joint_q"] = self.state_0.joint_q.numpy()
+            data["joint_qd"] = self.state_0.joint_qd.numpy()
+
+        np.savez(path, **data)
+        print(f"Saved state to {path} (time={self.sim_time:.3f}s, particles={particle_q.shape[0]})")
+
     def step(self):
+        # Save state on 's' key press (edge-triggered)
+        if hasattr(self.viewer, "is_key_down"):
+            save_down = bool(self.viewer.is_key_down("s"))
+            if save_down and not self._save_key_prev:
+                self.save_state()
+            self._save_key_prev = save_down
+
         self.generate_control_joint_qd(self.state_0)
         if self.graph:
             wp.capture_launch(self.graph)
