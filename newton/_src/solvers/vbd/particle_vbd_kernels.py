@@ -3155,6 +3155,10 @@ def solve_elasticity(
     particle_hessians: wp.array[wp.mat33],
     # output
     particle_displacements: wp.array[wp.vec3],
+    # debug force component outputs (pass None when not recording)
+    debug_f_inertia: wp.array[wp.vec3],
+    debug_f_elastic: wp.array[wp.vec3],
+    debug_f_bending: wp.array[wp.vec3],
 ):
     t_id = wp.tid()
 
@@ -3177,6 +3181,10 @@ def solve_elasticity(
             particle_index,
             f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
         )
+
+    # Debug: track force components separately
+    f_elastic_sum = wp.vec3(0.0)
+    f_bending_sum = wp.vec3(0.0)
 
     if tri_indices:
         # elastic force and hessian
@@ -3216,6 +3224,7 @@ def solve_elasticity(
 
                 f = f + f_tri
                 h = h + h_tri
+                f_elastic_sum = f_elastic_sum + f_tri
 
     if edge_indices:
         for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
@@ -3229,6 +3238,7 @@ def solve_elasticity(
 
                 f = f + f_edge
                 h = h + h_edge
+                f_bending_sum = f_bending_sum + f_edge
 
     if tet_indices:
         # solve tet elasticity
@@ -3263,6 +3273,15 @@ def solve_elasticity(
         )
 
     # fmt: on
+
+    # Debug: write separated force components
+    if debug_f_inertia:
+        debug_f_inertia[particle_index] = mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * dt_sqr_reciprocal
+    if debug_f_elastic:
+        debug_f_elastic[particle_index] = f_elastic_sum
+    if debug_f_bending:
+        debug_f_bending[particle_index] = f_bending_sum
+
     h = h + particle_hessians[particle_index]
     f = f + particle_forces[particle_index]
 
