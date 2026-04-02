@@ -1987,11 +1987,12 @@ class ViewerBase(ABC):
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:
-            # just set colors on first frame
-            if self.model_changed:
+            # Check for pinning colors
+            colors = None
+            if hasattr(self, "particle_pinning") and self.particle_pinning is not None:
+                colors = self.particle_pinning.get_colors()
+            if colors is None and self.model_changed:
                 colors = wp.full(shape=self.model.particle_count, value=wp.vec3(0.7, 0.6, 0.4), device=self.device)
-            else:
-                colors = None
 
             self.log_points(
                 name="/model/particles",

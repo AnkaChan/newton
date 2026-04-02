@@ -21,6 +21,7 @@ from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
 from .gl.opengl import STYLE_REGISTRY, LinesGL, MeshGL, MeshInstancerGL, RendererGL
+from .particle_pinning import ParticlePinning
 from .picking import Picking
 from .viewer import ViewerBase
 from .wind import Wind
@@ -476,6 +477,7 @@ class ViewerGL(ViewerBase):
                 batch.scales = out_scales
 
         self.picking = Picking(model, world_offsets=self.world_offsets)
+        self.particle_pinning = ParticlePinning(model) if model and model.particle_count > 0 else None
         self.wind = Wind(model)
 
         # Precompile picking/raycast kernels to avoid JIT delay on first pick
@@ -1523,6 +1525,21 @@ class ViewerGL(ViewerBase):
 
         import pyglet
 
+        # Handle particle pinning (middle-click when pin mode active)
+        if (
+            button == pyglet.window.mouse.MIDDLE
+            and self.particle_pinning is not None
+            and self.particle_pinning.active
+            and self._last_state is not None
+        ):
+            fb_x, fb_y = self._to_framebuffer_coords(x, y)
+            ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
+            idx = self.particle_pinning.try_pick(self._last_state, ray_start, ray_dir)
+            if idx >= 0:
+                self.particle_pinning.toggle_pin(idx, self._last_state)
+                print(f"Toggled pin on particle {idx}")
+            return
+
         # Handle right-click for picking
         if button == pyglet.window.mouse.RIGHT and self.picking_enabled and self.picking is not None:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
@@ -1540,6 +1557,8 @@ class ViewerGL(ViewerBase):
             button: Mouse button released.
             modifiers: Modifier keys.
         """
+        if self.particle_pinning is not None:
+            self.particle_pinning.release_drag()
         if self.picking is not None:
             self.picking.release()
 
@@ -1567,6 +1586,19 @@ class ViewerGL(ViewerBase):
             return
 
         import pyglet
+
+        # Pin mode: right-drag moves pinned particle
+        if (
+            buttons & pyglet.window.mouse.RIGHT
+            and self.particle_pinning is not None
+            and self.particle_pinning.active
+            and self.particle_pinning.is_dragging()
+            and self._last_state is not None
+        ):
+            fb_x, fb_y = self._to_framebuffer_coords(x, y)
+            ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
+            self.particle_pinning.update_drag(self._last_state, ray_start, ray_dir)
+            return
 
         if buttons & pyglet.window.mouse.LEFT:
             sensitivity = 0.1
@@ -1647,6 +1679,11 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
+        elif symbol == pyglet.window.key.P:
+            # Toggle particle pin mode
+            if self.particle_pinning is not None:
+                on = self.particle_pinning.toggle_mode()
+                print(f"Pin mode: {'ON' if on else 'OFF'}")
         elif symbol == pyglet.window.key.ESCAPE:
             # Exit with Escape key
             self.renderer.close()
