@@ -2073,15 +2073,15 @@ class ViewerGL(ViewerBase):
                     show_collision = self.show_collision
                     changed, self.show_collision = imgui.checkbox("Show Collision", show_collision)
 
-                    # Edge overlay toggle
-                    changed, self.renderer.draw_edges = imgui.checkbox("Show Edges", self.renderer.draw_edges)
-
                     # Shading style dropdown
                     shading_styles = list(STYLE_REGISTRY.keys())
                     current_style_idx = shading_styles.index(self.renderer.shading_style)
                     changed, current_style_idx = imgui.combo("Shading", current_style_idx, shading_styles)
                     if changed:
                         self.renderer.shading_style = shading_styles[current_style_idx]
+
+                    # Edge overlay toggle
+                    changed, self.renderer.draw_edges = imgui.checkbox("Show Edges", self.renderer.draw_edges)
 
                     # Camera mode dropdown
                     cam_idx = self._CAMERA_MODES.index(self.camera_mode)
