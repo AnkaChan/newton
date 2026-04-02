@@ -27,12 +27,44 @@ import newton.examples
 from newton.solvers import SolverVBD
 
 
+def find_settled_substep(positions, window=20, threshold_fraction=0.01):
+    """Find the substep where horizontal motion has settled.
+
+    Computes max horizontal displacement per substep over a sliding window.
+    Returns the first substep where it drops below threshold_fraction of
+    the peak value. Falls back to 50% if never settles.
+    """
+    n = positions.shape[0]
+    if n < window * 2:
+        return n // 2
+
+    # Max horizontal speed per substep (across all particles)
+    xy_delta = np.diff(positions[:, :, :2], axis=0)  # [n-1, N, 2]
+    max_xy_speed = np.sqrt((xy_delta**2).sum(axis=-1)).max(axis=1)  # [n-1]
+
+    # Smooth with sliding window
+    kernel = np.ones(window) / window
+    smoothed = np.convolve(max_xy_speed, kernel, mode="valid")
+
+    peak = smoothed.max()
+    if peak < 1e-10:
+        return 0  # no horizontal motion at all
+
+    threshold = peak * threshold_fraction
+    settled_indices = np.where(smoothed < threshold)[0]
+    if len(settled_indices) > 0:
+        return int(settled_indices[0]) + window
+    # Never fully settled — use last 25%
+    return int(n * 0.75)
+
+
 class Example:
     def __init__(
         self,
         viewer,
         args=None,
         grid_n: int = 1,
+        grid_ny: int | None = None,
         layers: int = 1,
         contact_ke: float = 1.0e4,
         tri_ke: float = 1.0e4,
@@ -50,9 +82,12 @@ class Example:
         self_contact_margin: float = 0.2,
         density: float = 0.02,
         fold: bool = False,
+        tube: bool = False,
     ):
         self.fold = fold
+        self.tube = tube
         self.grid_n = grid_n
+        self.grid_ny = grid_ny if grid_ny is not None else grid_n
         self.layers = layers
         self.sim_time = 0.0
         self.fps = 60
@@ -76,8 +111,14 @@ class Example:
 
         # Stack layers with perturbation (cm scale)
         fold_gap = particle_radius * 2 + 0.1 if fold and grid_n >= 2 else 0.0
-        layer_spacing = 0.5 + fold_gap  # extra space when folded
+        tube_diameter = 0.0
+        if tube and grid_n >= 3:
+            tube_radius = (grid_n * cell_size) / (2.0 * np.pi)
+            tube_diameter = 2.0 * tube_radius
+        layer_spacing = 0.5 + fold_gap + tube_diameter
         base_z = particle_radius + 0.1
+        if tube and grid_n >= 3:
+            base_z = tube_radius + particle_radius + 0.1  # center above ground
 
         # Compute mass from density (g/cm^2)
         cell_area = cell_size * cell_size
@@ -98,7 +139,7 @@ class Example:
                 rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle),
                 vel=wp.vec3(0.0, 0.0, 0.0),
                 dim_x=grid_n,
-                dim_y=grid_n,
+                dim_y=self.grid_ny,
                 cell_x=cell_size,
                 cell_y=cell_size,
                 mass=mass_per_particle,
@@ -129,6 +170,27 @@ class Example:
                         new_z = pz + fold_gap      # place on top
                         builder.particle_q[i] = (new_x, py, new_z)
 
+        # Roll each layer into a tube (cylinder along y-axis) if requested
+        if tube and grid_n >= 3:
+            for start_idx, end_idx in self.layer_vertex_ranges:
+                positions = []
+                for i in range(start_idx, end_idx):
+                    positions.append(list(builder.particle_q[i]))
+                positions = np.array(positions)
+                x_min = positions[:, 0].min()
+                x_max = positions[:, 0].max()
+                x_span = x_max - x_min
+                x_center = (x_min + x_max) / 2.0
+                r = x_span / (2.0 * np.pi)
+                z_base = positions[:, 2].mean()  # layer's base z
+                for i in range(start_idx, end_idx):
+                    px, py, pz = builder.particle_q[i]
+                    # Map x position to angle around circle
+                    theta = (px - x_min) / x_span * 2.0 * np.pi
+                    new_x = x_center + r * np.sin(theta)
+                    new_z = z_base + r * (1.0 - np.cos(theta))  # bottom at z_base
+                    builder.particle_q[i] = (new_x, py, new_z)
+
         builder.color(include_bending=True)
         self.model = builder.finalize()
 
@@ -141,7 +203,7 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=iterations,
-            particle_enable_self_contact=enable_self_contact and (layers > 1 or fold),
+            particle_enable_self_contact=enable_self_contact and (layers > 1 or fold or tube),
             particle_self_contact_radius=self_contact_radius,
             particle_self_contact_margin=self_contact_margin,
             particle_enable_tile_solve=False,
@@ -197,41 +259,39 @@ class Example:
             print("Not enough frames to analyze.")
             return
 
-        positions = np.array(self.positions_history)  # [frames, N, 3]
-        n_frames = positions.shape[0]
-        # Use last 50% of frames for steady-state analysis
-        start = n_frames // 2
+        positions = np.array(self.positions_history)  # [substeps, N, 3]
+        start = find_settled_substep(positions)
         steady = positions[start:]
 
-        z = steady[:, :, 2]  # z-positions
+        z = steady[:, :, 2]
         z_std = np.std(z, axis=0)
-        z_range = np.ptp(z, axis=0)  # peak-to-peak
+        z_range = np.ptp(z, axis=0)
 
+        n_substeps = positions.shape[0]
         print(f"\n{'='*60}")
-        print(f"Instability Report ({n_frames} frames, steady-state from frame {start})")
-        print(f"Grid: {self.grid_n}x{self.grid_n}, Layers: {self.layers}")
+        print(f"Instability Report ({n_substeps} substeps, settled at substep {start})")
+        print(f"Grid: {self.grid_n}x{self.grid_n}, Layers: {self.layers}, Fold: {self.fold}")
         print(f"Particles: {positions.shape[1]}")
         print(f"{'='*60}")
         print(f"Z-position std  — max: {z_std.max():.4f} cm, mean: {z_std.mean():.4f} cm")
         print(f"Z-position range — max: {z_range.max():.4f} cm, mean: {z_range.mean():.4f} cm")
 
-        # Per-layer breakdown
         for i, (s, e) in enumerate(self.layer_vertex_ranges):
             layer_std = z_std[s:e]
             layer_range = z_range[s:e]
             print(f"  Layer {i}: std max={layer_std.max():.6f}, range max={layer_range.max():.6f}")
 
-        # Top 5 most unstable vertices
         top5 = np.argsort(z_std)[-5:][::-1]
         print(f"\nTop 5 unstable vertices:")
         for v in top5:
             print(f"  v{v}: std={z_std[v]:.6f}, range={z_range[v]:.6f}, "
-                  f"z_mean={np.mean(z[v]):.6f}")
+                  f"z_mean={np.mean(z[:, v]):.6f}")
 
         return {
             "positions": positions,
             "z_std": z_std,
             "z_range": z_range,
+            "settled_substep": start,
         }
 
 
@@ -252,6 +312,8 @@ def create_parser():
     parser.add_argument("--seed", type=int, default=42, help="RNG seed")
     parser.add_argument("--no-self-contact", action="store_true", help="Disable self-contact")
     parser.add_argument("--fold", action="store_true", help="Fold grid in half along x")
+    parser.add_argument("--tube", action="store_true", help="Roll grid into a tube (cylinder along y)")
+    parser.add_argument("--grid-ny", type=int, default=None, help="Grid cells in y (defaults to grid-n)")
     parser.add_argument("--particle-radius", type=float, default=0.8, help="Particle radius (cm)")
     parser.add_argument("--density", type=float, default=0.02, help="Cloth area density (g/cm^2)")
     return parser
@@ -265,6 +327,7 @@ if __name__ == "__main__":
         viewer=viewer,
         args=args,
         grid_n=args.grid_n,
+        grid_ny=args.grid_ny,
         layers=args.layers,
         contact_ke=args.contact_ke,
         tri_ke=args.tri_ke,
@@ -280,6 +343,7 @@ if __name__ == "__main__":
         particle_radius=args.particle_radius,
         density=args.density,
         fold=args.fold,
+        tube=args.tube,
     )
 
     newton.examples.run(example, args)
