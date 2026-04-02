@@ -182,6 +182,7 @@ class ViewerGL(ViewerBase):
         - Object picking and manipulation via mouse.
         - Visualization toggles for joints, contacts, particles, springs, etc.
         - Wind force controls and visualization.
+        - Particle pinning (P to toggle, middle-click to pin/unpin).
         - Performance statistics overlay (FPS, object counts, etc.).
         - Selection panel for introspecting and filtering model attributes.
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
@@ -2167,6 +2168,8 @@ class ViewerGL(ViewerBase):
                 imgui.text("Space - Pause/Resume")
                 imgui.text("H - Toggle UI")
                 imgui.text("F - Frame camera around model")
+                imgui.text("P - Toggle pin mode")
+                imgui.text("  Middle Click - Pin/unpin particle")
 
             # Selection API section
             self._render_selection_panel()
