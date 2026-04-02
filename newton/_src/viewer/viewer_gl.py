@@ -28,11 +28,11 @@ import warp as wp
 import newton as nt
 from newton.selection import ArticulationView
 
-from ..core.types import nparray, override
+from ..core.types import override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
-from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL, STYLE_REGISTRY
+from .gl.opengl import STYLE_REGISTRY, LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
 from .wind import Wind
@@ -1000,7 +1000,7 @@ class ViewerGL(ViewerBase):
             cache["colors_uploaded"] = True
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | nparray):
+    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
         """
         Log a generic array for visualization (not implemented).
 
