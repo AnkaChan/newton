@@ -221,6 +221,9 @@ class Example:
         self.viewer.set_camera(pos=wp.vec3(61.0, 6.0, 27.0), pitch=-22.4, yaw=-175.1)
         if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
             self.viewer.camera.fov = 27.0
+        if hasattr(self.viewer, "renderer"):
+            self.viewer.renderer.shading_style = "studio"
+            self.viewer.renderer.draw_edges = True
 
         # Trajectory recording (per-substep)
         self.positions_history = []
