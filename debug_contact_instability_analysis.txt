@@ -1,0 +1,422 @@
+Loading /home/horde/Graphics/newton-working-copies/contact-instability/debug_contact_instability.npz...
+  Substeps: 600
+  Iterations: 3000
+  Particles: 6436
+  Edges: 19174
+  Triangles: 12736
+
+================================================================================
+GLOBAL STATISTICS
+================================================================================
+  Particles: 6436, Substeps: 600
+  Max velocity across all particles/substeps: 50.9998
+  Mean velocity (last substep): 0.5437
+  Particles with max|vel| > 50: 1
+  Particles with max|vel| > 100: 0
+  Particles with max|vel| > 200: 0
+  Particles with velocity doubling (late vs early): 667
+
+================================================================================
+UNSTABLE VERTICES (top-20 by combined instability score)
+================================================================================
+Rank  Vtx    Score    MaxVel     VelGrowth    SignChg   VelVar    
+------------------------------------------------------------
+1     4044   0.6839   37.27      1.95         104       25.37     
+2     756    0.6713   39.67      1.77         106       23.22     
+3     4410   0.6195   45.91      1.49         50        16.40     
+4     4413   0.5418   31.38      1.59         50        16.66     
+5     4263   0.5133   51.00      0.08         58        8.99      
+6     4419   0.5030   27.27      1.42         45        16.23     
+7     4184   0.4914   27.36      1.30         35        16.00     
+8     1730   0.4913   23.72      0.16         597       3.16      
+9     769    0.4743   26.81      1.46         41        12.78     
+10    2602   0.4659   16.28      3.18         50        6.78      
+11    2866   0.4413   13.49      3.13         58        5.77      
+12    4369   0.4410   19.09      1.76         66        11.11     
+13    660    0.4362   27.16      0.82         108       9.50      
+14    4368   0.4351   17.87      1.93         104       8.46      
+15    4379   0.4284   28.84      0.85         86        7.99      
+16    964    0.4280   13.18      0.52         599       0.31      
+17    5431   0.4234   11.79      0.30         597       2.42      
+18    971    0.4176   13.30      0.32         597       0.41      
+19    2737   0.4135   24.66      0.73         112       8.96      
+20    4185   0.3980   23.29      0.97         47        9.06      
+
+================================================================================
+VELOCITY TRAJECTORY (every 10 substeps, top-5 unstable vertices)
+================================================================================
+Substep   v4044         v756          v4410         v4413         v4263         
+--------------------------------------------------------------------------------
+0         1.4104        1.8490        0.3910        0.4057        0.6977        
+10        11.2127       12.7348       1.2075        1.1589        0.3978        
+20        4.6189        5.2912        0.7540        1.1324        0.2882        
+30        2.9730        2.9928        0.5935        0.5900        0.6483        
+40        0.9352        1.1435        0.9505        0.9514        0.4633        
+50        1.7938        1.5875        2.6853        2.6924        0.4861        
+60        2.7841        2.2933        0.9123        0.9260        0.4397        
+70        14.9581       15.5634       1.3882        1.3895        0.6841        
+80        3.7052        3.6451        1.8007        1.8093        0.8839        
+90        2.2497        2.1256        3.9275        3.9127        0.5584        
+100       27.6401       22.1821       1.5286        1.2967        0.2966        
+110       5.2956        4.3735        17.3111       30.4622       0.1261        
+120       2.8507        3.1331        3.0266        3.0013        0.3365        
+130       7.7476        7.9049        1.4859        1.4773        0.2545        
+140       6.6595        6.7680        0.5670        0.4966        0.1635        
+150       2.3762        3.8117        1.1754        1.0090        0.2790        
+160       7.2514        7.0605        0.5483        0.5927        0.4016        
+170       3.9563        4.0809        0.5662        0.5565        0.4504        
+180       5.3692        6.0489        0.2447        0.2488        1.5336        
+190       5.6935        5.6374        0.4556        0.4442        1.1414        
+200       5.0255        7.1817        0.7044        0.6929        0.9714        
+210       10.2558       11.4219       0.1724        0.1378        0.8565        
+220       1.4279        1.2496        0.4838        0.4681        0.1669        
+230       3.1594        3.0396        0.9888        0.9854        0.3192        
+240       2.4464        1.4899        1.3720        1.3960        0.4388        
+250       8.5607        9.5899        0.3097        0.3241        0.5998        
+260       2.0433        2.0657        1.4816        1.4522        0.1301        
+270       2.1320        2.1439        2.5902        2.5842        0.6308        
+280       0.4530        0.4558        2.9431        2.9070        0.4047        
+290       3.4833        3.6316        19.9131       19.7839       0.1411        
+300       4.9310        5.1645        2.1860        2.1742        0.1094        
+310       0.8771        1.0187        3.7351        3.6859        1.9826        
+320       1.3238        1.9289        3.0647        3.1111        1.4285        
+330       19.0075       18.6404       2.0021        2.0453        0.5439        
+340       4.5585        5.1291        1.2441        1.2420        0.6667        
+350       2.2919        3.1037        2.4057        2.3956        0.4230        
+360       1.2527        0.6860        1.7199        1.7310        1.1068        
+370       27.6957       21.4053       2.9430        2.9324        1.2608        
+380       5.1957        4.7638        2.3985        2.3524        5.9903        
+390       0.3865        0.6828        17.9538       20.6107       1.1777        
+400       0.4910        0.5654        2.7137        2.7221        0.1181        
+410       3.2009        2.9381        3.8039        3.7562        0.7002        
+420       6.1039        8.0075        1.6366        1.6710        0.4198        
+430       8.4565        8.1309        1.0546        1.0391        0.2457        
+440       2.9786        3.2884        1.4592        1.4549        0.3444        
+450       2.5740        2.8069        0.1496        0.1530        0.4840        
+460       4.8146        5.1264        0.3866        0.3672        0.6999        
+470       2.4418        1.7894        0.1510        0.1508        0.1834        
+480       1.5512        1.5898        0.8763        0.6338        0.1653        
+490       1.2489        1.1306        0.8587        0.8471        0.3390        
+500       0.2623        0.5404        1.9294        1.9162        0.2490        
+510       0.5287        0.2615        0.8933        0.9178        0.3357        
+520       0.6422        0.8929        1.2822        1.2986        2.8256        
+530       4.3082        3.6389        1.0289        1.0027        2.0461        
+540       11.1655       11.8061       2.4022        1.9873        1.6966        
+550       6.2820        7.5260        0.4478        0.3939        0.3676        
+560       2.6230        2.6463        0.4685        0.4807        1.2123        
+570       2.3547        2.7786        1.2285        1.1750        0.1793        
+580       11.0544       12.1428       3.0911        3.0925        0.2301        
+590       1.5728        2.7746        2.3229        2.2898        0.5035        
+
+================================================================================
+FORCE COMPONENT ANALYSIS (last iteration of each substep)
+================================================================================
+
+--- Vertex 4044 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      20.8676      514.7056     48.7762     
+  Elastic      5344.5669    6441.9893    347.3947    
+  Bending      55.7143      75.4886      5.1214      
+  Contact      4892.8394    6164.5381    290.4306    
+  Net          2694.2512    4714.8140    1088.0531   
+  Cancellation ratio: mean=5.72, max=64.90
+  Scale ratio: mean=917.80, max=2948.42
+
+--- Vertex 756 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      21.9076      608.9899     53.8017     
+  Elastic      4655.3267    5362.1675    192.8706    
+  Bending      82.7382      118.8811     8.1380      
+  Contact      4535.7788    7331.2397    227.5995    
+  Net          1544.6489    4217.3535    692.0673    
+  Cancellation ratio: mean=8.32, max=103.01
+  Scale ratio: mean=810.11, max=5896.75
+  *** WARNING: High cancellation — large forces nearly cancel ***
+
+--- Vertex 4410 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      11.0906      261.0973     14.7531     
+  Elastic      573.3470     1521.7162    251.7166    
+  Bending      29.5580      62.0032      3.3732      
+  Contact      761.7493     50495.1055   3572.8081   
+  Net          759.1219     50217.9609   3555.2993   
+  Cancellation ratio: mean=3.19, max=49.37
+  Scale ratio: mean=81.18, max=5076.71
+
+--- Vertex 4413 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      11.3910      274.7317     15.0298     
+  Elastic      1045.4041    2430.6956    384.6329    
+  Bending      42.9967      50.5182      1.2222      
+  Contact      952.7025     8508.3975    591.1644    
+  Net          437.0288     7798.6401    601.0336    
+  Cancellation ratio: mean=8.02, max=79.48
+  Scale ratio: mean=114.27, max=788.29
+
+--- Vertex 4263 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      11.5967      161.3028     11.6497     
+  Elastic      97.3533      443.8184     106.3736    
+  Bending      22.5138      58.5621      10.0661     
+  Contact      118.3967     16323.3721   776.9503    
+  Net          70.3488      16262.0186   770.3409    
+  Cancellation ratio: mean=13.17, max=207.73
+  Scale ratio: mean=14.64, max=1287.26
+  *** WARNING: High cancellation — large forces nearly cancel ***
+
+--- Vertex 4419 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      9.4069       52.7384      4.8091      
+  Elastic      273.8738     642.4865     58.9808     
+  Bending      28.9317      30.2422      0.8833      
+  Contact      239.6656     612.2215     56.8634     
+  Net          57.2555      257.1252     37.8734     
+  Cancellation ratio: mean=18.13, max=132.00
+  Scale ratio: mean=31.56, max=103.42
+  *** WARNING: High cancellation — large forces nearly cancel ***
+
+--- Vertex 4184 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      7.7739       40.3053      3.7695      
+  Elastic      297.5511     385.4332     39.4037     
+  Bending      32.6615      41.9787      3.2416      
+  Contact      296.9395     397.5380     38.3095     
+  Net          53.3201      167.8707     32.9971     
+  Cancellation ratio: mean=16.89, max=46.78
+  Scale ratio: mean=42.32, max=84.64
+
+--- Vertex 1730 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      49.3233      132.6449     11.2052     
+  Elastic      109.2485     271.1148     32.7894     
+  Bending      15.6876      23.7977      3.5285      
+  Contact      2020.8379    40003.1289   3212.2537   
+  Net          1960.8381    39932.0742   3170.5081   
+  Cancellation ratio: mean=5.68, max=18.40
+  Scale ratio: mean=182.80, max=3812.35
+
+--- Vertex 769 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      9.9033       60.2148      5.2833      
+  Elastic      61.4988      427.3960     35.9624     
+  Bending      15.0682      25.9369      0.6665      
+  Contact      30.9819      142.8785     13.8872     
+  Net          20.8431      345.0238     31.0869     
+  Cancellation ratio: mean=9.34, max=59.53
+  Scale ratio: mean=6.55, max=32.31
+
+--- Vertex 2602 ---
+  Component    Mean|f|      Max|f|       Std|f|      
+  Inertia      12.7234      71.4803      7.9667      
+  Elastic      324.7944     552.2426     31.1989     
+  Bending      60.2685      61.3262      0.3875      
+  Contact      299.0810     377.1448     24.6223     
+  Net          66.7166      402.6368     46.1144     
+  Cancellation ratio: mean=14.06, max=161.53
+  Scale ratio: mean=32.79, max=268.06
+  *** WARNING: High cancellation — large forces nearly cancel ***
+
+================================================================================
+HESSIAN CONDITIONING (pre-solve hessians = contact + spring component)
+================================================================================
+
+--- Vertex 4044 ---
+  |H|_F: mean=39523404.0000, max=138706368.0000
+  Eigenvalues: min=47836.871094, max=98363160.000000
+  Condition number: mean=26.49, max=341.77
+  Substeps with negative eigenvalues: 0/600
+
+--- Vertex 756 ---
+  |H|_F: mean=40222740.0000, max=127139792.0000
+  Eigenvalues: min=66586.210938, max=90597560.000000
+  Condition number: mean=29.48, max=446.85
+  Substeps with negative eigenvalues: 0/600
+
+--- Vertex 4410 ---
+  |H|_F: mean=3855944.0000, max=16276945.0000
+  Eigenvalues: min=2710.170166, max=11629742.000000
+  Condition number: mean=5.23, max=38.76
+  Substeps with negative eigenvalues: 0/600
+
+--- Vertex 4413 ---
+  |H|_F: mean=3679220.0000, max=16335189.0000
+  Eigenvalues: min=0.000000, max=11613387.000000
+  Condition number: mean=2.99, max=42.83
+  Substeps with negative eigenvalues: 0/600
+
+--- Vertex 4263 ---
+  |H|_F: mean=340371.4688, max=4507588.0000
+  Eigenvalues: min=0.000000, max=3163680.000000
+  Condition number: mean=3.30, max=50.06
+  Substeps with negative eigenvalues: 0/600
+
+--- Vertex 4419 ---
+  |H|_F: mean=604805.2500, max=5062981.5000
+  Eigenvalues: min=1841.351685, max=3580180.250000
+  Condition number: mean=117.20, max=1110.81
+  Substeps with negative eigenvalues: 0/600
+
+--- Vertex 4184 ---
+  |H|_F: mean=615822.3750, max=4708814.5000
+  Eigenvalues: min=2432.743164, max=3329625.250000
+  Condition number: mean=37.25, max=730.46
+  Substeps with negative eigenvalues: 0/600
+
+--- Vertex 1730 ---
+  |H|_F: mean=485681.2812, max=10376757.0000
+  Eigenvalues: min=0.000000, max=7330258.000000
+  Condition number: mean=0.94, max=22.42
+  Substeps with negative eigenvalues: 0/600
+
+--- Vertex 769 ---
+  |H|_F: mean=48559.7852, max=270173.9688
+  Eigenvalues: min=89.713570, max=202377.687500
+  Condition number: mean=5.69, max=74.80
+  Substeps with negative eigenvalues: 0/600
+
+--- Vertex 2602 ---
+  |H|_F: mean=247261.6250, max=2108155.0000
+  Eigenvalues: min=543.465149, max=1490690.750000
+  Condition number: mean=100.70, max=1903.76
+  Substeps with negative eigenvalues: 0/600
+
+================================================================================
+CONTACT CHATTERING (VT contact count changes over substeps)
+================================================================================
+
+--- Vertex 4044 ---
+  Contact count: mean=1.17, max=2, var=0.37
+  Contact state changes (on/off): 28
+  Always in contact: False
+  Never in contact: False
+
+--- Vertex 756 ---
+  Contact count: mean=0.00, max=0, var=0.00
+  Contact state changes (on/off): 0
+  Always in contact: False
+  Never in contact: True
+
+--- Vertex 4410 ---
+  Contact count: mean=0.42, max=5, var=0.42
+  Contact state changes (on/off): 50
+  Always in contact: False
+  Never in contact: False
+
+--- Vertex 4413 ---
+  Contact count: mean=4.40, max=6, var=0.77
+  Contact state changes (on/off): 12
+  Always in contact: False
+  Never in contact: False
+
+--- Vertex 4263 ---
+  Contact count: mean=0.71, max=2, var=0.92
+  Contact state changes (on/off): 3
+  Always in contact: False
+  Never in contact: False
+
+--- Vertex 4419 ---
+  Contact count: mean=0.00, max=0, var=0.00
+  Contact state changes (on/off): 0
+  Always in contact: False
+  Never in contact: True
+
+--- Vertex 4184 ---
+  Contact count: mean=0.00, max=0, var=0.00
+  Contact state changes (on/off): 0
+  Always in contact: False
+  Never in contact: True
+
+--- Vertex 1730 ---
+  Contact count: mean=3.02, max=6, var=8.99
+  Contact state changes (on/off): 594
+  Always in contact: False
+  Never in contact: False
+  *** WARNING: Contact chattering — 594 state changes in 600 substeps ***
+
+--- Vertex 769 ---
+  Contact count: mean=0.00, max=0, var=0.00
+  Contact state changes (on/off): 0
+  Always in contact: False
+  Never in contact: True
+
+--- Vertex 2602 ---
+  Contact count: mean=0.00, max=0, var=0.00
+  Contact state changes (on/off): 0
+  Always in contact: False
+  Never in contact: True
+
+================================================================================
+DISPLACEMENT & TRUNCATION ANALYSIS
+================================================================================
+
+--- Vertex 4044 ---
+  |displacement|: mean=0.007780, max=0.062120
+  Convergence ratio (last/first iter): mean=0.9959, max=16.4998
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 154
+  *** WARNING: Poor convergence — displacement not decreasing across iterations ***
+
+--- Vertex 756 ---
+  |displacement|: mean=0.008143, max=0.066121
+  Convergence ratio (last/first iter): mean=1.0375, max=14.6292
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 146
+  *** WARNING: Poor convergence — displacement not decreasing across iterations ***
+
+--- Vertex 4410 ---
+  |displacement|: mean=0.004285, max=0.076515
+  Convergence ratio (last/first iter): mean=0.7934, max=6.0954
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 285
+
+--- Vertex 4413 ---
+  |displacement|: mean=0.004325, max=0.071684
+  Convergence ratio (last/first iter): mean=0.6706, max=6.5156
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 383
+
+--- Vertex 4263 ---
+  |displacement|: mean=0.001878, max=0.085000
+  Convergence ratio (last/first iter): mean=0.5509, max=3.2381
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 869
+
+--- Vertex 4419 ---
+  |displacement|: mean=0.004593, max=0.045509
+  Convergence ratio (last/first iter): mean=0.6399, max=5.2832
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 193
+
+--- Vertex 4184 ---
+  |displacement|: mean=0.004637, max=0.045595
+  Convergence ratio (last/first iter): mean=0.6915, max=3.8317
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 209
+
+--- Vertex 1730 ---
+  |displacement|: mean=0.007595, max=0.041631
+  Convergence ratio (last/first iter): mean=2.2586, max=4.4900
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 1197
+  *** WARNING: Poor convergence — displacement not decreasing across iterations ***
+
+--- Vertex 769 ---
+  |displacement|: mean=0.003972, max=0.044687
+  Convergence ratio (last/first iter): mean=0.7600, max=8.0817
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 199
+
+--- Vertex 2602 ---
+  |displacement|: mean=0.004860, max=0.027132
+  Convergence ratio (last/first iter): mean=0.8293, max=6.8807
+  Truncation active: 0/3000 iterations, 0/600 substeps
+  Displacement z sign changes: 158
+  *** WARNING: Poor convergence — displacement not decreasing across iterations ***
+
+================================================================================
+BODY CONTACT COUNT PER SUBSTEP
+================================================================================
+  Mean: 2622.6, Max: 2637, Min: 2604
+  Substeps with body contacts: 600/600
+
+Analysis complete. Re-run with redirect to save: python /home/horde/Graphics/newton-working-copies/contact-instability/scripts/analyze_contact_instability.py > /home/horde/Graphics/newton-working-copies/contact-instability/debug_contact_instability_analysis.txt
