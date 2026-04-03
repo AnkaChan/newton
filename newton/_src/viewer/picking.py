@@ -243,3 +243,82 @@ class Picking:
                 print("#" * 80)
                 print(f"Hit geom {index} of body {body_index} at distance {dist}")
                 print("#" * 80)
+
+    def raycast(self, state: "newton.State", ray_start, ray_dir) -> tuple | None:
+        """Cast a ray and return the world-space hit point, or ``None`` on miss.
+
+        Unlike :meth:`pick`, this does **not** initiate a drag interaction.
+
+        Args:
+            state: The simulation state.
+            ray_start: Ray origin.
+            ray_dir: Ray direction.
+
+        Returns:
+            Tuple ``(x, y, z)`` of the hit point in world space, or ``None``.
+        """
+        if self.model is None:
+            return None
+
+        num_geoms = self.model.shape_count
+        if num_geoms == 0:
+            return None
+
+        p, d = ray_start, ray_dir
+
+        if self.min_dist is None:
+            self.min_dist = wp.array([1.0e10], dtype=float, device=self.model.device)
+            self.min_index = wp.array([-1], dtype=int, device=self.model.device)
+            self.min_body_index = wp.array([-1], dtype=int, device=self.model.device)
+            self.lock = wp.array([0], dtype=wp.int32, device=self.model.device)
+        else:
+            self.min_dist.fill_(1.0e10)
+            self.min_index.fill_(-1)
+            self.min_body_index.fill_(-1)
+            self.lock.zero_()
+
+        shape_world = (
+            self.model.shape_world
+            if self.model.shape_world is not None
+            else wp.array([], dtype=int, device=self.model.device)
+        )
+        world_offsets = (
+            self.world_offsets
+            if self.world_offsets is not None
+            else wp.array([], dtype=wp.vec3, device=self.model.device)
+        )
+
+        wp.launch(
+            kernel=raycast.raycast_kernel,
+            dim=num_geoms,
+            inputs=[
+                state.body_q,
+                self.model.shape_body,
+                self.model.shape_transform,
+                self.model.shape_type,
+                self.model.shape_scale,
+                self.model.shape_source_ptr,
+                p,
+                d,
+                self.lock,
+            ],
+            outputs=[self.min_dist, self.min_index, self.min_body_index, shape_world, world_offsets],
+            device=self.model.device,
+        )
+
+        dist = self.min_dist.numpy()[0]
+        if dist >= 1.0e10:
+            return None
+
+        d = wp.vec3f(d[0], d[1], d[2])
+        p = wp.vec3f(p[0], p[1], p[2])
+        hit = p + d * float(dist)
+
+        index = self.min_index.numpy()[0]
+        if world_offsets.shape[0] > 0 and shape_world.shape[0] > 0 and index >= 0:
+            world_idx = shape_world.numpy()[index] if hasattr(shape_world, "numpy") else shape_world[index]
+            if 0 <= world_idx < world_offsets.shape[0]:
+                off = world_offsets.numpy()[world_idx]
+                hit = wp.vec3f(hit[0] - off[0], hit[1] - off[1], hit[2] - off[2])
+
+        return (float(hit[0]), float(hit[1]), float(hit[2]))

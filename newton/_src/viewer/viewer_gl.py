@@ -186,6 +186,8 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
+    _CAMERA_MODES = ("fps", "arcball")
+
     def __init__(
         self,
         width: int = 1920,
@@ -193,6 +195,7 @@ class ViewerGL(ViewerBase):
         vsync: bool = False,
         headless: bool = False,
         shading_style: str = "classic",
+        camera_mode: str = "fps",
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -205,6 +208,8 @@ class ViewerGL(ViewerBase):
             shading_style: Visual rendering style. ``"classic"`` uses Newton's default
                 checker-floor look. ``"studio"`` uses a clean studio look with soft
                 hemisphere lighting, directional shadows, and a neutral ground plane.
+            camera_mode: Camera interaction mode. ``"fps"`` (default) uses first-person
+                controls. ``"arcball"`` orbits around a target point like ParaView.
         """
         # Pre-initialize callback registry; clear_model() (called from
         # super().__init__()) resets the "side" slot on each model change.
@@ -223,6 +228,8 @@ class ViewerGL(ViewerBase):
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
+
+        self.camera_mode = camera_mode if camera_mode in self._CAMERA_MODES else "fps"
 
         self._paused = False
 
@@ -1483,7 +1490,10 @@ class ViewerGL(ViewerBase):
 
     def on_mouse_scroll(self, x: float, y: float, scroll_x: float, scroll_y: float):
         """
-        Handle mouse scroll for zooming (FOV adjustment).
+        Handle mouse scroll for zooming.
+
+        In FPS mode this adjusts FOV.  In arcball mode this dollies the camera
+        toward or away from the orbit target.
 
         Args:
             x: Mouse X position in window coordinates.
@@ -1494,9 +1504,12 @@ class ViewerGL(ViewerBase):
         if self._ui_is_capturing_mouse():
             return
 
-        fov_delta = scroll_y * 2.0
-        self.camera.fov -= fov_delta
-        self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+        if self.camera_mode == "arcball":
+            self.camera.dolly(scroll_y * self.camera.orbit_distance * 0.1)
+        else:
+            fov_delta = scroll_y * 2.0
+            self.camera.fov -= fov_delta
+            self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
         """Convert window coordinates to framebuffer coordinates."""
@@ -1510,7 +1523,7 @@ class ViewerGL(ViewerBase):
 
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
         """
-        Handle mouse press events (object picking).
+        Handle mouse press events (object picking and arcball pinning).
 
         Args:
             x: Mouse X position in window coordinates.
@@ -1529,6 +1542,10 @@ class ViewerGL(ViewerBase):
             ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
             if self._last_state is not None:
                 self.picking.pick(self._last_state, ray_start, ray_dir)
+
+        # Middle-click: pin orbit center on geometry (arcball mode)
+        if button == pyglet.window.mouse.MIDDLE and self.camera_mode == "arcball":
+            self._pin_orbit_center(x, y)
 
     def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
         """
@@ -1570,13 +1587,20 @@ class ViewerGL(ViewerBase):
 
         if buttons & pyglet.window.mouse.LEFT:
             sensitivity = 0.1
-            dx *= sensitivity
-            dy *= sensitivity
+            sdx = dx * sensitivity
+            sdy = dy * sensitivity
 
-            # Map screen-space right drag to a right turn (clockwise),
-            # independent of world up-axis convention.
-            self.camera.yaw = (self.camera.yaw - dx + 180.0) % 360.0 - 180.0
-            self.camera.pitch = max(min(self.camera.pitch + dy, 89.0), -89.0)
+            if self.camera_mode == "arcball":
+                self.camera.rotate_around_target(-sdx, sdy)
+            else:
+                # FPS: rotate in place
+                self.camera.yaw = (self.camera.yaw - sdx + 180.0) % 360.0 - 180.0
+                self.camera.pitch = max(min(self.camera.pitch + sdy, 89.0), -89.0)
+
+        if buttons & pyglet.window.mouse.MIDDLE and self.camera_mode == "arcball":
+            # Pan: translate camera and target together in screen-aligned plane
+            scale = self.camera.orbit_distance * 0.002
+            self.camera.pan_around_target(-dx * scale, dy * scale)
 
         if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
@@ -1647,6 +1671,13 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
+        elif symbol == pyglet.window.key.TAB:
+            # Toggle camera mode
+            idx = self._CAMERA_MODES.index(self.camera_mode)
+            self.camera_mode = self._CAMERA_MODES[(idx + 1) % len(self._CAMERA_MODES)]
+            if self.camera_mode == "arcball":
+                # Initialise target along the view direction at a reasonable distance
+                self.camera.sync_yaw_pitch_from_target()
         elif symbol == pyglet.window.key.ESCAPE:
             # Exit with Escape key
             self.renderer.close()
@@ -1715,6 +1746,38 @@ class ViewerGL(ViewerBase):
             center[2] - front.z * distance,
         )
         self.camera.pos = new_pos
+        self.camera.target = PyVec3(float(center[0]), float(center[1]), float(center[2]))
+
+    def _pin_orbit_center(self, x: float, y: float):
+        """Set the arcball orbit center to the geometry under the cursor.
+
+        Casts a ray from the click position.  If picking geometry is available
+        and a body is hit, the orbit target moves to that world-space point.
+        Otherwise the target is placed along the ray at the current orbit
+        distance so that panning/orbiting still feels reasonable.
+        """
+        from pyglet.math import Vec3 as PyVec3
+
+        fb_x, fb_y = self._to_framebuffer_coords(x, y)
+        ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
+
+        # Try to hit geometry via the picking system
+        hit_pos = None
+        if self.picking is not None and self._last_state is not None:
+            hit_pos = self.picking.raycast(self._last_state, ray_start, ray_dir)
+
+        if hit_pos is not None:
+            self.camera.target = PyVec3(*hit_pos)
+        else:
+            # No hit — place target along ray at current orbit distance
+            d = self.camera.orbit_distance
+            self.camera.target = PyVec3(
+                ray_start.x + ray_dir.x * d,
+                ray_start.y + ray_dir.y * d,
+                ray_start.z + ray_dir.z * d,
+            )
+
+        self.camera.sync_yaw_pitch_from_target()
 
     def _update_camera(self, dt: float):
         """
@@ -1770,6 +1833,8 @@ class ViewerGL(ViewerBase):
         # integrate position
         dv = type(self.camera.pos)(*self._cam_vel)
         self.camera.pos += dv * dt
+        if self.camera_mode == "arcball":
+            self.camera.target += dv * dt
 
     def on_resize(self, width: int, height: int):
         """
@@ -2020,6 +2085,14 @@ class ViewerGL(ViewerBase):
                     changed, current_style_idx = imgui.combo("Shading", current_style_idx, shading_styles)
                     if changed:
                         self.renderer.shading_style = shading_styles[current_style_idx]
+
+                    # Camera mode dropdown
+                    cam_idx = self._CAMERA_MODES.index(self.camera_mode)
+                    changed, cam_idx = imgui.combo("Camera", cam_idx, list(self._CAMERA_MODES))
+                    if changed:
+                        self.camera_mode = self._CAMERA_MODES[cam_idx]
+                        if self.camera_mode == "arcball":
+                            self.camera.sync_yaw_pitch_from_target()
 
                     # Gap + margin wireframe mode
                     _sdf_margin_labels = ["Off", "Margin", "Margin + Gap"]

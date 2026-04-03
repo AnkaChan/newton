@@ -50,6 +50,90 @@ class Camera:
         self.pitch = 0.0
         self.yaw = -180.0
 
+        # Arcball orbit target (initialized to origin)
+        self.target = PyVec3(0.0, 0.0, 0.0)
+
+    @property
+    def orbit_distance(self) -> float:
+        """Distance from camera to orbit target."""
+        d = self.pos - self.target
+        return float(np.sqrt(d.x * d.x + d.y * d.y + d.z * d.z))
+
+    def rotate_around_target(self, dyaw: float, dpitch: float):
+        """Orbit the camera around ``target`` by the given yaw/pitch deltas [deg].
+
+        Maintains the current distance to the target. Updates ``pos``, ``yaw``,
+        and ``pitch`` so that the camera keeps looking at the target.
+        """
+        from pyglet.math import Vec3 as PyVec3
+
+        dist = max(self.orbit_distance, 1e-6)
+
+        self.yaw = (self.yaw + dyaw + 180.0) % 360.0 - 180.0
+        self.pitch = max(min(self.pitch + dpitch, 89.0), -89.0)
+
+        # Recompute position on the sphere around target
+        front = self.get_front()
+        self.pos = PyVec3(
+            self.target.x - front.x * dist,
+            self.target.y - front.y * dist,
+            self.target.z - front.z * dist,
+        )
+
+    def dolly(self, delta: float):
+        """Move the camera toward (positive) or away from (negative) the target.
+
+        Clamps minimum distance to 0.01 to avoid flipping through the target.
+        """
+        from pyglet.math import Vec3 as PyVec3
+
+        dist = self.orbit_distance
+        new_dist = max(dist - delta, 0.01)
+        front = self.get_front()
+        self.pos = PyVec3(
+            self.target.x - front.x * new_dist,
+            self.target.y - front.y * new_dist,
+            self.target.z - front.z * new_dist,
+        )
+
+    def pan_around_target(self, dx: float, dy: float):
+        """Translate both camera and target in screen-aligned directions.
+
+        Args:
+            dx: Horizontal offset in world units (positive = right).
+            dy: Vertical offset in world units (positive = up).
+        """
+        right = self.get_right()
+        up = self.get_up()
+        offset = right * dx + up * dy
+        self.pos = self.pos + offset
+        self.target = self.target + offset
+
+    def sync_yaw_pitch_from_target(self):
+        """Recompute yaw/pitch so that the camera looks at ``target``.
+
+        Call this after setting ``target`` externally (e.g. when pinning the
+        orbit center on geometry).
+        """
+        d = self.target - self.pos
+        dx, dy, dz = float(d.x), float(d.y), float(d.z)
+
+        if self.up_axis == 0:  # X up
+            dist_hz = np.sqrt(dy * dy + dz * dz)
+            self.yaw = float(np.degrees(np.arctan2(dz, dy)))
+            self.pitch = float(np.degrees(np.arctan2(dx, dist_hz))) if dist_hz > 1e-8 else (90.0 if dx > 0 else -90.0)
+        elif self.up_axis == 2:  # Z up
+            dist_hz = np.sqrt(dx * dx + dy * dy)
+            self.yaw = float(np.degrees(np.arctan2(dy, dx)))
+            self.pitch = float(np.degrees(np.arctan2(dz, dist_hz))) if dist_hz > 1e-8 else (90.0 if dz > 0 else -90.0)
+        else:  # Y up
+            dist_hz = np.sqrt(dx * dx + dz * dz)
+            self.yaw = float(np.degrees(np.arctan2(dz, dx)))
+            self.pitch = float(np.degrees(np.arctan2(dy, dist_hz))) if dist_hz > 1e-8 else (90.0 if dy > 0 else -90.0)
+
+        self.pitch = max(min(self.pitch, 89.0), -89.0)
+        self.yaw = (self.yaw + 180.0) % 360.0 - 180.0
+
     def get_front(self):
         """Get the camera front direction vector (read-only)."""
         from pyglet.math import Vec3 as PyVec3
