@@ -72,7 +72,9 @@ DENSITY = 0.02
 # Damping defaults — scaled to produce equivalent effective damping in each mode.
 # Rayleigh: effective = kd * ke.  Absolute: effective = kd.
 if _use_absolute:
-    CONTACT_KD = 1e-2 * CONTACT_KE  # 100
+    # NOTE: CONTACT_KD not scaled — body-particle contact in
+    # rigid_vbd_kernels.py still uses Rayleigh convention (kd * ke).
+    CONTACT_KD = 1e-2
     TRI_KD = 1.5e-6 * TRI_KE        # 0.015
     EDGE_KD = 1e-2 * EDGE_KE        # 0.05
 else:
