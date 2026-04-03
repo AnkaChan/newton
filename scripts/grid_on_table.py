@@ -22,9 +22,6 @@ import sys
 import numpy as np
 import warp as wp
 
-import newton
-import newton.examples
-from newton.solvers import SolverVBD
 
 
 def find_settled_substep(positions, window=20, threshold_fraction=0.01):
@@ -305,10 +302,10 @@ def create_parser():
     parser.add_argument("--contact-ke", type=float, default=1e4, help="Contact stiffness")
     parser.add_argument("--tri-ke", type=float, default=1e4, help="Elastic stiffness")
     parser.add_argument("--tri-ka", type=float, default=1e4, help="Area stiffness")
-    parser.add_argument("--contact-kd", type=float, default=1e-2, help="Contact damping")
-    parser.add_argument("--tri-kd", type=float, default=1.5e-6, help="Elastic damping")
+    parser.add_argument("--contact-kd", type=float, default=None, help="Contact damping (auto-scaled by damping mode)")
+    parser.add_argument("--tri-kd", type=float, default=None, help="Elastic damping (auto-scaled by damping mode)")
     parser.add_argument("--edge-ke", type=float, default=5.0, help="Bending stiffness")
-    parser.add_argument("--edge-kd", type=float, default=1e-2, help="Bending damping")
+    parser.add_argument("--edge-kd", type=float, default=None, help="Bending damping (auto-scaled by damping mode)")
     parser.add_argument("--iterations", type=int, default=5, help="VBD iterations")
     parser.add_argument("--substeps", type=int, default=10, help="Substeps per frame")
     parser.add_argument("--frames", type=int, default=120, help="Total frames")
@@ -319,12 +316,63 @@ def create_parser():
     parser.add_argument("--grid-ny", type=int, default=None, help="Grid cells in y (defaults to grid-n)")
     parser.add_argument("--particle-radius", type=float, default=0.8, help="Particle radius (cm)")
     parser.add_argument("--density", type=float, default=0.02, help="Cloth area density (g/cm^2)")
+    parser.add_argument(
+        "--rayleigh-damping",
+        action="store_true",
+        help="Use Rayleigh damping instead of absolute (default is absolute)",
+    )
     return parser
 
 
+def _resolve_damping_defaults(args):
+    """Fill in damping defaults based on the active damping mode."""
+    if args.rayleigh_damping:
+        # Rayleigh: effective = kd * ke
+        if args.contact_kd is None:
+            args.contact_kd = 1e-2
+        if args.tri_kd is None:
+            args.tri_kd = 1.5e-6
+        if args.edge_kd is None:
+            args.edge_kd = 1e-2
+    else:
+        # Absolute: effective = kd  (scale Rayleigh defaults by ke)
+        if args.contact_kd is None:
+            args.contact_kd = 1e-2 * args.contact_ke  # 100
+        if args.tri_kd is None:
+            args.tri_kd = 1.5e-6 * args.tri_ke        # 0.015
+        if args.edge_kd is None:
+            args.edge_kd = 1e-2 * args.edge_ke         # 0.05
+
+
 if __name__ == "__main__":
+    # Phase 1: pre-parse damping mode flag before importing newton so the
+    # compile-time constant is set before any kernel compilation.
+    _pre_parser = argparse.ArgumentParser(add_help=False)
+    _pre_parser.add_argument("--rayleigh-damping", action="store_true")
+    _pre_args, _ = _pre_parser.parse_known_args()
+    use_absolute = not _pre_args.rayleigh_damping
+
+    import newton._src.solvers.vbd.particle_vbd_kernels as _pvk
+
+    _damping_tag = "absolute" if use_absolute else "rayleigh"
+    wp.config.kernel_cache_dir = os.path.join(
+        wp.config.kernel_cache_dir or os.path.expanduser("~/.cache/warp"),
+        f"damping_{_damping_tag}",
+    )
+    if use_absolute:
+        _pvk._DAMPING_ABSOLUTE = True
+        print("*** Damping mode: ABSOLUTE ***")
+    else:
+        print("*** Damping mode: RAYLEIGH ***")
+
+    # Phase 2: now safe to import newton and parse full args.
+    import newton
+    import newton.examples
+    from newton.solvers import SolverVBD
+
     parser = create_parser()
     viewer, args = newton.examples.init(parser)
+    _resolve_damping_defaults(args)
 
     example = Example(
         viewer=viewer,

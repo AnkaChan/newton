@@ -23,29 +23,33 @@ import warp as wp
 # Parse args early so we can set damping mode before kernel compilation.
 _parser = argparse.ArgumentParser(description="Tube cloth instability diagnostic")
 _parser.add_argument(
-    "--absolute-damping",
+    "--rayleigh-damping",
     action="store_true",
-    help="Use absolute damping convention instead of Rayleigh (stiffness-proportional)",
+    help="Use Rayleigh damping instead of absolute (default is absolute)",
 )
 _cli_args = _parser.parse_args()
 
-import newton
-import newton.examples
-from newton.solvers import SolverVBD
-from newton._src.solvers.vbd.debug_recorder import DebugRecorder
 import newton._src.solvers.vbd.particle_vbd_kernels as _pvk
 
 # Set damping mode before any kernel is compiled.
 # Use a separate kernel cache directory per mode so switching doesn't
 # serve stale compiled code (the Python constant isn't part of the cache key).
-_damping_tag = "absolute" if _cli_args.absolute_damping else "rayleigh"
+_use_absolute = not _cli_args.rayleigh_damping
+_damping_tag = "absolute" if _use_absolute else "rayleigh"
 wp.config.kernel_cache_dir = os.path.join(
     wp.config.kernel_cache_dir or os.path.expanduser("~/.cache/warp"),
     f"damping_{_damping_tag}",
 )
-if _cli_args.absolute_damping:
+if _use_absolute:
     _pvk._DAMPING_ABSOLUTE = True
     print("*** Damping mode: ABSOLUTE ***")
+else:
+    print("*** Damping mode: RAYLEIGH ***")
+
+import newton
+import newton.examples
+from newton.solvers import SolverVBD
+from newton._src.solvers.vbd.debug_recorder import DebugRecorder
 
 # ---------- parameters ----------
 GRID_N = 20
@@ -67,7 +71,7 @@ DENSITY = 0.02
 
 # Damping defaults — scaled to produce equivalent effective damping in each mode.
 # Rayleigh: effective = kd * ke.  Absolute: effective = kd.
-if _cli_args.absolute_damping:
+if _use_absolute:
     CONTACT_KD = 1e-2 * CONTACT_KE  # 100
     TRI_KD = 1.5e-6 * TRI_KE        # 0.015
     EDGE_KD = 1e-2 * EDGE_KE        # 0.05
