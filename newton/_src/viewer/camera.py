@@ -59,42 +59,87 @@ class Camera:
         d = self.pos - self.target
         return float(np.sqrt(d.x * d.x + d.y * d.y + d.z * d.z))
 
+    def _world_up_vec(self) -> np.ndarray:
+        """Return the world-up unit vector as a numpy array."""
+        up = np.zeros(3, dtype=np.float64)
+        up[self.up_axis] = 1.0
+        return up
+
     def rotate_around_target(self, dyaw: float, dpitch: float):
         """Orbit the camera around ``target`` by the given yaw/pitch deltas [deg].
 
-        Maintains the current distance to the target. Updates ``pos``, ``yaw``,
-        and ``pitch`` so that the camera keeps looking at the target.
+        Uses the actual camera-to-target arm vector (Rodrigues' rotation) so
+        the orbit is correct even when yaw/pitch are stale after a pin.
+        Updates ``pos``, ``yaw``, and ``pitch``.
         """
         from pyglet.math import Vec3 as PyVec3
 
-        dist = max(self.orbit_distance, 1e-6)
-
-        self.yaw = (self.yaw + dyaw + 180.0) % 360.0 - 180.0
-        self.pitch = max(min(self.pitch + dpitch, 89.0), -89.0)
-
-        # Recompute position on the sphere around target
-        front = self.get_front()
-        self.pos = PyVec3(
-            self.target.x - front.x * dist,
-            self.target.y - front.y * dist,
-            self.target.z - front.z * dist,
+        arm = np.array(
+            [self.pos.x - self.target.x, self.pos.y - self.target.y, self.pos.z - self.target.z],
+            dtype=np.float64,
         )
+        dist = np.linalg.norm(arm)
+        if dist < 1e-8:
+            return
+
+        world_up = self._world_up_vec()
+
+        # Yaw: rotate arm around world up axis
+        yaw_rad = np.radians(-dyaw)
+        arm = self._rodrigues(arm, world_up, yaw_rad)
+
+        # Pitch: rotate arm around the camera's right vector
+        arm_n = arm / np.linalg.norm(arm)
+        right = np.cross(arm_n, world_up)
+        rn = np.linalg.norm(right)
+        if rn > 1e-8:
+            right /= rn
+            pitch_rad = np.radians(dpitch)
+            new_arm = self._rodrigues(arm, right, pitch_rad)
+            # Clamp: reject if too close to straight up/down (gimbal lock)
+            new_arm_n = new_arm / np.linalg.norm(new_arm)
+            if abs(np.dot(new_arm_n, world_up)) < 0.99:
+                arm = new_arm
+
+        # Maintain original distance
+        arm = arm / np.linalg.norm(arm) * dist
+
+        self.pos = PyVec3(
+            self.target.x + arm[0],
+            self.target.y + arm[1],
+            self.target.z + arm[2],
+        )
+        self.sync_yaw_pitch_from_target()
 
     def dolly(self, delta: float):
         """Move the camera toward (positive) or away from (negative) the target.
 
-        Clamps minimum distance to 0.01 to avoid flipping through the target.
+        Uses the actual arm vector so it works correctly after a pin.
+        Clamps minimum distance to 0.01.
         """
         from pyglet.math import Vec3 as PyVec3
 
-        dist = self.orbit_distance
-        new_dist = max(dist - delta, 0.01)
-        front = self.get_front()
-        self.pos = PyVec3(
-            self.target.x - front.x * new_dist,
-            self.target.y - front.y * new_dist,
-            self.target.z - front.z * new_dist,
+        arm = np.array(
+            [self.pos.x - self.target.x, self.pos.y - self.target.y, self.pos.z - self.target.z],
+            dtype=np.float64,
         )
+        dist = np.linalg.norm(arm)
+        if dist < 1e-8:
+            return
+        new_dist = max(dist - delta, 0.01)
+        arm = arm / dist * new_dist
+        self.pos = PyVec3(
+            self.target.x + arm[0],
+            self.target.y + arm[1],
+            self.target.z + arm[2],
+        )
+        self.sync_yaw_pitch_from_target()
+
+    @staticmethod
+    def _rodrigues(v: np.ndarray, axis: np.ndarray, angle: float) -> np.ndarray:
+        """Rotate vector *v* around unit *axis* by *angle* radians (Rodrigues)."""
+        c, s = np.cos(angle), np.sin(angle)
+        return v * c + np.cross(axis, v) * s + axis * np.dot(axis, v) * (1.0 - c)
 
     def pan_around_target(self, dx: float, dy: float):
         """Translate both camera and target in screen-aligned directions.

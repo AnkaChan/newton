@@ -1672,12 +1672,9 @@ class ViewerGL(ViewerBase):
             # Frame camera around model bounds
             self._frame_camera_on_model()
         elif symbol == pyglet.window.key.TAB:
-            # Toggle camera mode
+            # Toggle camera mode — no view change, just switches input routing
             idx = self._CAMERA_MODES.index(self.camera_mode)
             self.camera_mode = self._CAMERA_MODES[(idx + 1) % len(self._CAMERA_MODES)]
-            if self.camera_mode == "arcball":
-                # Initialise target along the view direction at a reasonable distance
-                self.camera.sync_yaw_pitch_from_target()
         elif symbol == pyglet.window.key.ESCAPE:
             # Exit with Escape key
             self.renderer.close()
@@ -1776,8 +1773,8 @@ class ViewerGL(ViewerBase):
                 ray_start.y + ray_dir.y * d,
                 ray_start.z + ray_dir.z * d,
             )
-
-        self.camera.sync_yaw_pitch_from_target()
+        # Don't sync yaw/pitch here — the view should not snap when pinning.
+        # The next orbit/dolly will use the actual arm vector and sync then.
 
     def _update_camera(self, dt: float):
         """
@@ -2091,8 +2088,6 @@ class ViewerGL(ViewerBase):
                     changed, cam_idx = imgui.combo("Camera", cam_idx, list(self._CAMERA_MODES))
                     if changed:
                         self.camera_mode = self._CAMERA_MODES[cam_idx]
-                        if self.camera_mode == "arcball":
-                            self.camera.sync_yaw_pitch_from_target()
 
                     # Gap + margin wireframe mode
                     _sdf_margin_labels = ["Off", "Margin", "Margin + Gap"]
