@@ -42,6 +42,13 @@ NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE = 16
 TILE_SIZE_SELF_CONTACT_SOLVE = 8
 
+_DAMPING_ABSOLUTE = wp.constant(False)
+"""When True, VBD uses absolute damping (``f = kd * v``).
+
+When False (default), VBD uses Rayleigh stiffness-proportional damping
+(``f = kd * ke * v``).  Changing this value requires kernel recompilation.
+"""
+
 
 class mat32(wp.types.matrix(shape=(3, 2), dtype=wp.float32)):
     pass
@@ -222,21 +229,6 @@ def assemble_tet_vertex_force_and_hessian(
 
     return f, h
 
-
-@wp.func
-def damp_force_and_hessian(
-    particle_pos_prev: wp.vec3,
-    particle_pos: wp.vec3,
-    force: wp.vec3,
-    hessian: wp.mat33,
-    damping: float,
-    dt: float,
-):
-    displacement = particle_pos_prev - particle_pos
-    h_d = hessian * (damping / dt)
-    f_d = h_d * displacement
-
-    return force + f_d, hessian + h_d
 
 
 # @wp.func
@@ -449,7 +441,12 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
             F_dot[2, 2],
         )
 
-        P_damp = damping * (H * f_dot)
+        if _DAMPING_ABSOLUTE:
+            # Absolute: viscous damping stress sigma_damp = damping * F_dot
+            P_damp = damping * f_dot
+        else:
+            # Rayleigh: sigma_damp = damping * H * F_dot (stiffness-proportional)
+            P_damp = damping * (H * f_dot)
 
         f_damp = wp.vec3(
             -(P_damp[0] * m[0] + P_damp[3] * m[1] + P_damp[6] * m[2]),
@@ -457,7 +454,13 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
             -(P_damp[2] * m[0] + P_damp[5] * m[1] + P_damp[8] * m[2]),
         )
         force = force + f_damp
-        hessian = hessian * (1.0 + damping * inv_dt)
+
+        if _DAMPING_ABSOLUTE:
+            # d(f_damp)/dx = damping/dt * G^T G = damping/dt * |m|^2 * I
+            m_sq = m[0] * m[0] + m[1] * m[1] + m[2] * m[2]
+            hessian = hessian + (damping * inv_dt * m_sq) * wp.identity(3, float)
+        else:
+            hessian = hessian * (1.0 + damping * inv_dt)
 
     return force, hessian
 
@@ -990,12 +993,16 @@ def evaluate_stvk_force_hessian(
         # Gradient of constraint w.r.t. vertex position: dCmu/dx = (dCmu/dF) : (dF/dx)
         dCmu_dx = df0_dx * dCmu_dF_col0 + df1_dx * dCmu_dF_col1
 
-        # Damping force from first constraint: -mu * damping * (dCmu/dt) * (dCmu/dx)
-        kd_mu = mu * damping
-        force += -kd_mu * dCmu_dt * dCmu_dx
-
-        # Damping Hessian: mu * damping * (1/dt) * (dCmu/dx) x (dCmu/dx)
-        hessian += kd_mu * inv_dt * wp.outer(dCmu_dx, dCmu_dx)
+        # Damping force from first constraint
+        if _DAMPING_ABSOLUTE:
+            # Absolute: damping used directly (no stiffness weighting)
+            force += -damping * dCmu_dt * dCmu_dx
+            hessian += damping * inv_dt * wp.outer(dCmu_dx, dCmu_dx)
+        else:
+            # Rayleigh: damping scaled by mu
+            kd_mu = mu * damping
+            force += -kd_mu * dCmu_dt * dCmu_dx
+            hessian += kd_mu * inv_dt * wp.outer(dCmu_dx, dCmu_dx)
 
         # Second constraint: Clmbd = trace(G) = G00 + G11 (trace of Green strain)
         # Time derivative of second constraint: dClmbd/dt = trace(dG/dt)
@@ -1008,12 +1015,14 @@ def evaluate_stvk_force_hessian(
         # Gradient of Clmbd w.r.t. vertex position: dClmbd/dx = (dClmbd/dF) : (dF/dx)
         dClmbd_dx = df0_dx * dClmbd_dF_col0 + df1_dx * dClmbd_dF_col1
 
-        # Damping force from second constraint: -lambda * damping * (dClmbd/dt) * (dClmbd/dx)
-        kd_lmbd = lmbd * damping
-        force += -kd_lmbd * dClmbd_dt * dClmbd_dx
-
-        # Damping Hessian from second constraint: lambda * damping * (1/dt) * (dClmbd/dx) x (dClmbd/dx)
-        hessian += kd_lmbd * inv_dt * wp.outer(dClmbd_dx, dClmbd_dx)
+        # Damping force from second constraint
+        if _DAMPING_ABSOLUTE:
+            force += -damping * dClmbd_dt * dClmbd_dx
+            hessian += damping * inv_dt * wp.outer(dClmbd_dx, dClmbd_dx)
+        else:
+            kd_lmbd = lmbd * damping
+            force += -kd_lmbd * dClmbd_dt * dClmbd_dx
+            hessian += kd_lmbd * inv_dt * wp.outer(dClmbd_dx, dClmbd_dx)
 
     # Apply area scaling
     force *= area
@@ -1177,7 +1186,12 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
             wp.dot(dtheta_dx0, dx0) + wp.dot(dtheta_dx1, dx1) + wp.dot(dtheta_dx2, dx2) + wp.dot(dtheta_dx3, dx3)
         ) * inv_dt
 
-        damping_coeff = damping * k  # damping coefficients following the VBD convention
+        if _DAMPING_ABSOLUTE:
+            # Absolute: damping coefficient used directly
+            damping_coeff = damping
+        else:
+            # Rayleigh: damping scaled by stiffness
+            damping_coeff = damping * k
         damping_force = -damping_coeff * dtheta_dt * dtheta_dx
         damping_hessian = damping_coeff * inv_dt * wp.outer(dtheta_dx, dtheta_dx)
 
@@ -1227,7 +1241,12 @@ def damp_collision(
     dt: float,
 ):
     if wp.dot(displacement, collision_normal) > 0:
-        damping_hessian = (collision_damping / dt) * collision_hessian
+        if _DAMPING_ABSOLUTE:
+            # Absolute: use n*n^T instead of elastic collision hessian
+            damping_hessian = (collision_damping / dt) * wp.outer(collision_normal, collision_normal)
+        else:
+            # Rayleigh: scale by elastic collision hessian
+            damping_hessian = (collision_damping / dt) * collision_hessian
         damping_force = damping_hessian * displacement
         return damping_force, damping_hessian
     else:
@@ -1350,8 +1369,12 @@ def evaluate_edge_edge_contact(
             displacement = pos_anchor[e2_v2] - e2_v2_pos
 
         collision_normal_sign = wp.vec4(1.0, 1.0, -1.0, -1.0)
-        if wp.dot(displacement, collision_normal * collision_normal_sign[v_order]) > 0:
-            damping_hessian = (collision_damping / dt) * collision_hessian
+        signed_normal = collision_normal * collision_normal_sign[v_order]
+        if wp.dot(displacement, signed_normal) > 0:
+            if _DAMPING_ABSOLUTE:
+                damping_hessian = (collision_damping / dt) * wp.outer(signed_normal, signed_normal)
+            else:
+                damping_hessian = (collision_damping / dt) * collision_hessian
             collision_hessian = collision_hessian + damping_hessian
             collision_force = collision_force + damping_hessian * displacement
 
@@ -1578,8 +1601,12 @@ def evaluate_vertex_triangle_collision_force_hessian(
             displacement = pos_anchor[v] - p
 
         collision_normal_sign = wp.vec4(-1.0, -1.0, -1.0, 1.0)
-        if wp.dot(displacement, collision_normal * collision_normal_sign[v_order]) > 0:
-            damping_hessian = (collision_damping / dt) * collision_hessian
+        signed_normal = collision_normal * collision_normal_sign[v_order]
+        if wp.dot(displacement, signed_normal) > 0:
+            if _DAMPING_ABSOLUTE:
+                damping_hessian = (collision_damping / dt) * wp.outer(signed_normal, signed_normal)
+            else:
+                damping_hessian = (collision_damping / dt) * collision_hessian
             collision_hessian = collision_hessian + damping_hessian
             collision_force = collision_force + damping_hessian * displacement
 
@@ -2274,14 +2301,20 @@ def evaluate_spring_force_and_hessian(
 
     force_sign = 1.0 if particle_idx == v0 else -1.0
 
-    spring_force = force_sign * spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
-    spring_hessian = spring_stiffness[spring_idx] * (
+    structural = (
         wp.identity(3, float)
         - (l0 / spring_length) * (wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length))
     )
+    spring_force = force_sign * spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
+    spring_hessian = spring_stiffness[spring_idx] * structural
 
     # compute damping
-    h_d = spring_hessian * (spring_damping[spring_idx] / dt)
+    if _DAMPING_ABSOLUTE:
+        # Absolute: use structural matrix (geometry only), not stiffness-scaled hessian
+        h_d = structural * (spring_damping[spring_idx] / dt)
+    else:
+        # Rayleigh: use full stiffness-scaled hessian
+        h_d = spring_hessian * (spring_damping[spring_idx] / dt)
 
     f_d = h_d * (pos_anchor[particle_idx] - pos[particle_idx])
 
@@ -2316,16 +2349,20 @@ def evaluate_spring_force_and_hessian_both_vertices(
     l0 = spring_rest_length[spring_idx]
 
     # Base spring force for v0 (v1 gets the opposite)
-    base_force = spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
-
-    # Hessian is the same for both vertices (symmetric)
-    spring_hessian = spring_stiffness[spring_idx] * (
+    structural = (
         wp.identity(3, float)
         - (l0 / spring_length) * (wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length))
     )
+    base_force = spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
+
+    # Hessian is the same for both vertices (symmetric)
+    spring_hessian = spring_stiffness[spring_idx] * structural
 
     # Compute damping hessian contribution
-    h_d = spring_hessian * (spring_damping[spring_idx] / dt)
+    if _DAMPING_ABSOLUTE:
+        h_d = structural * (spring_damping[spring_idx] / dt)
+    else:
+        h_d = spring_hessian * (spring_damping[spring_idx] / dt)
 
     # Damping force for each vertex
     f_d_v0 = h_d * (pos_anchor[v0] - pos[v0])

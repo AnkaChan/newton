@@ -7,10 +7,12 @@ then analyzes and reports the top unstable vertices with force/contact breakdown
 
 Usage:
     CUDA_VISIBLE_DEVICES=4 uv run --extra examples python scripts/diag_tube_instability.py
+    CUDA_VISIBLE_DEVICES=4 uv run --extra examples python scripts/diag_tube_instability.py --absolute-damping
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import time
@@ -18,10 +20,32 @@ import time
 import numpy as np
 import warp as wp
 
+# Parse args early so we can set damping mode before kernel compilation.
+_parser = argparse.ArgumentParser(description="Tube cloth instability diagnostic")
+_parser.add_argument(
+    "--absolute-damping",
+    action="store_true",
+    help="Use absolute damping convention instead of Rayleigh (stiffness-proportional)",
+)
+_cli_args = _parser.parse_args()
+
 import newton
 import newton.examples
 from newton.solvers import SolverVBD
 from newton._src.solvers.vbd.debug_recorder import DebugRecorder
+import newton._src.solvers.vbd.particle_vbd_kernels as _pvk
+
+# Set damping mode before any kernel is compiled.
+# Use a separate kernel cache directory per mode so switching doesn't
+# serve stale compiled code (the Python constant isn't part of the cache key).
+_damping_tag = "absolute" if _cli_args.absolute_damping else "rayleigh"
+wp.config.kernel_cache_dir = os.path.join(
+    wp.config.kernel_cache_dir or os.path.expanduser("~/.cache/warp"),
+    f"damping_{_damping_tag}",
+)
+if _cli_args.absolute_damping:
+    _pvk._DAMPING_ABSOLUTE = True
+    print("*** Damping mode: ABSOLUTE ***")
 
 # ---------- parameters ----------
 GRID_N = 20
@@ -375,7 +399,8 @@ def main():
     wp.init()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    print(f"Building tube scene: grid={GRID_N}x{GRID_NY}, layers={LAYERS}")
+    damping_mode = "ABSOLUTE" if _pvk._DAMPING_ABSOLUTE else "RAYLEIGH"
+    print(f"Building tube scene: grid={GRID_N}x{GRID_NY}, layers={LAYERS}, damping={damping_mode}")
     model, state_0, state_1, control, contacts, solver, layer_ranges = build_tube_scene()
 
     N = model.particle_count
