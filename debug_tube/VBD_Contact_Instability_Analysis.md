@@ -290,7 +290,23 @@ Vertices near the ground or near self-contact boundaries flicker between "in con
 
 ---
 
-## 12. Proposed Validation Experiments
+## 12. Energy Analysis
+
+![Energy over time](figures/fig10_energy.png)
+
+**Figure 10:** Energy over time. Left column shows the full simulation; right column zooms into the steady state (substeps 300-600).
+
+### Key observations:
+
+- **Kinetic energy never reaches zero.** In steady state, KE oscillates between 0.8 and 6.7 g*cm^2/s^2 with a mean of 2.14. For a system that should be at rest, this is a clear sign of persistent oscillation.
+- **GPE slowly drifts downward** in steady state (from ~13300 to ~13050 over 300 substeps). The cloth is very slowly creeping lower — likely the tube gradually flattening under gravity as the elastic forces can't fully maintain the curved shape.
+- **KE spikes correlate with vertex oscillation bursts** visible in the trajectory plots (Figure 2). Each spike represents a few vertices briefly accelerating before being pulled back.
+
+Note: We can only measure KE + GPE here. The elastic potential energy (strain energy stored in the deformed triangles) is not recorded by the DebugRecorder. The true total energy (KE + GPE + elastic PE) would be more informative — if elastic PE increases while KE + GPE decreases, the system is transferring energy into elastic deformation, which is physical. But the persistent non-zero KE indicates the solver is failing to fully dissipate kinetic energy at each substep.
+
+---
+
+## 13. Proposed Validation Experiments
 
 To confirm these findings and test potential fixes:
 
