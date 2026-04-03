@@ -28,7 +28,9 @@ import warp as wp
 import newton as nt
 from newton.selection import ArticulationView
 
-from ..core.types import nparray, override
+from ..core.types import override
+
+nparray = np.ndarray
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
