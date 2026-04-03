@@ -59,14 +59,22 @@ FPS = 60
 CONTACT_KE = 1e4
 TRI_KE = 1e4
 TRI_KA = 1e4
-CONTACT_KD = 1e-2
-TRI_KD = 1.5e-6
 EDGE_KE = 5.0
-EDGE_KD = 1e-2
 PARTICLE_RADIUS = 0.8
 SELF_CONTACT_RADIUS = 0.2
 SELF_CONTACT_MARGIN = 0.2
 DENSITY = 0.02
+
+# Damping defaults — scaled to produce equivalent effective damping in each mode.
+# Rayleigh: effective = kd * ke.  Absolute: effective = kd.
+if _cli_args.absolute_damping:
+    CONTACT_KD = 1e-2 * CONTACT_KE  # 100
+    TRI_KD = 1.5e-6 * TRI_KE        # 0.015
+    EDGE_KD = 1e-2 * EDGE_KE        # 0.05
+else:
+    CONTACT_KD = 1e-2
+    TRI_KD = 1.5e-6
+    EDGE_KD = 1e-2
 
 MAX_SUBSTEPS = NUM_FRAMES * SIM_SUBSTEPS
 TOP_K = 10  # number of unstable vertices to analyze
