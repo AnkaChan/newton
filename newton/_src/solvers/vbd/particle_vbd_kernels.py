@@ -16,7 +16,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.math import orthonormal_basis
-from newton._src.solvers.vbd.rigid_vbd_kernels import evaluate_body_particle_contact
+from newton._src.solvers.vbd.rigid_vbd_kernels import _DAMPING_ABSOLUTE, evaluate_body_particle_contact
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
@@ -42,12 +42,6 @@ NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE = 16
 TILE_SIZE_SELF_CONTACT_SOLVE = 8
 
-_DAMPING_ABSOLUTE = wp.constant(False)
-"""When True, VBD uses absolute damping (``f = kd * v``).
-
-When False (default), VBD uses Rayleigh stiffness-proportional damping
-(``f = kd * ke * v``).  Changing this value requires kernel recompilation.
-"""
 
 
 class mat32(wp.types.matrix(shape=(3, 2), dtype=wp.float32)):

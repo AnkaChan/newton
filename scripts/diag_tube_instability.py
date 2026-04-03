@@ -29,6 +29,7 @@ _parser.add_argument(
 )
 _cli_args = _parser.parse_args()
 
+import newton._src.solvers.vbd.rigid_vbd_kernels as _rvk
 import newton._src.solvers.vbd.particle_vbd_kernels as _pvk
 
 # Set damping mode before any kernel is compiled.
@@ -41,6 +42,7 @@ wp.config.kernel_cache_dir = os.path.join(
     f"damping_{_damping_tag}",
 )
 if _use_absolute:
+    _rvk._DAMPING_ABSOLUTE = True
     _pvk._DAMPING_ABSOLUTE = True
     print("*** Damping mode: ABSOLUTE ***")
 else:
@@ -72,9 +74,7 @@ DENSITY = 0.02
 # Damping defaults — scaled to produce equivalent effective damping in each mode.
 # Rayleigh: effective = kd * ke.  Absolute: effective = kd.
 if _use_absolute:
-    # NOTE: CONTACT_KD not scaled — body-particle contact in
-    # rigid_vbd_kernels.py still uses Rayleigh convention (kd * ke).
-    CONTACT_KD = 1e-2
+    CONTACT_KD = 1e-2 * CONTACT_KE  # 100
     TRI_KD = 1.5e-6 * TRI_KE        # 0.015
     EDGE_KD = 1e-2 * EDGE_KE        # 0.05
 else:

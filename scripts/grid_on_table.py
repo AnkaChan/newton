@@ -336,10 +336,8 @@ def _resolve_damping_defaults(args):
             args.edge_kd = 1e-2
     else:
         # Absolute: effective = kd  (scale Rayleigh defaults by ke)
-        # NOTE: contact_kd is NOT scaled — body-particle contact in
-        # rigid_vbd_kernels.py still uses Rayleigh convention (kd * ke).
         if args.contact_kd is None:
-            args.contact_kd = 1e-2
+            args.contact_kd = 1e-2 * args.contact_ke  # 100
         if args.tri_kd is None:
             args.tri_kd = 1.5e-6 * args.tri_ke        # 0.015
         if args.edge_kd is None:
@@ -354,6 +352,7 @@ if __name__ == "__main__":
     _pre_args, _ = _pre_parser.parse_known_args()
     use_absolute = not _pre_args.rayleigh_damping
 
+    import newton._src.solvers.vbd.rigid_vbd_kernels as _rvk
     import newton._src.solvers.vbd.particle_vbd_kernels as _pvk
 
     _damping_tag = "absolute" if use_absolute else "rayleigh"
@@ -362,6 +361,8 @@ if __name__ == "__main__":
         f"damping_{_damping_tag}",
     )
     if use_absolute:
+        # Patch both modules — `from ... import` copies the name binding.
+        _rvk._DAMPING_ABSOLUTE = True
         _pvk._DAMPING_ABSOLUTE = True
         print("*** Damping mode: ABSOLUTE ***")
     else:

@@ -50,6 +50,13 @@ _USE_SMALL_ANGLE_APPROX = wp.constant(True)
 _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 """Deadband threshold for hysteresis direction selection"""
 
+_DAMPING_ABSOLUTE = wp.constant(False)
+"""When True, VBD uses absolute damping (``f = kd * v``).
+
+When False (default), VBD uses Rayleigh stiffness-proportional damping
+(``f = kd * ke * v``).  Changing this value requires kernel recompilation.
+"""
+
 _NUM_CONTACT_THREADS_PER_BODY = 16
 """Threads per body for contact accumulation using strided iteration"""
 
@@ -757,9 +764,11 @@ def evaluate_body_particle_contact(
         dx = particle_pos - particle_prev_pos
 
         if wp.dot(n, dx) < 0.0:
-            # Damping coefficient is scaled by contact stiffness (consistent with rigid-rigid)
-            damping_coeff = body_particle_contact_kd * body_particle_contact_ke
-            damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
+            if _DAMPING_ABSOLUTE:
+                damping_hessian = (body_particle_contact_kd / dt) * wp.outer(n, n)
+            else:
+                damping_coeff = body_particle_contact_kd * body_particle_contact_ke
+                damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
             body_contact_hessian = body_contact_hessian + damping_hessian
             body_contact_force = body_contact_force - damping_hessian * dx
 
