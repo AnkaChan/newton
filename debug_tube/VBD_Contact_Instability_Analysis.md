@@ -318,3 +318,40 @@ To confirm these findings and test potential fixes:
 | 4 | Flat grid (no tube) same resolution | Confirms tube curvature = persistent stress = trigger |
 | 5 | Detect contacts every iteration (interval=1) | Fixes stale contacts for Mechanism B |
 | 6 | Disable self-contact | Isolates Mechanism A from B |
+
+---
+
+## 14. Conclusion
+
+The VBD solver exhibits persistent, non-decaying oscillation when simulating cloth in configurations where the actual shape differs from the rest shape (tubes, folds, draped garments). This is not a parameter tuning issue — it is a structural limitation of the diagonal block descent method.
+
+### The chain of causation
+
+1. **Rest-vs-actual shape mismatch** creates large, persistent elastic forces across the mesh. For a tube whose rest shape is flat, every vertex is under stress at all times.
+
+2. **The diagonal block approximation** solves each vertex independently, assuming its neighbors stay fixed. But elastic forces couple adjacent vertices through shared triangles — moving vertex A changes the elastic force on vertex B.
+
+3. **This off-diagonal coupling causes iteration divergence.** Displacements grow across VBD iterations (ratio > 1.0 for most vertices), meaning each iteration makes the solution *worse*. The solver never converges to equilibrium within the allocated 5 iterations.
+
+4. **Residual net force becomes velocity.** The unconverged force residual at the end of each substep is integrated into velocity, which feeds into the next substep's inertia term, perpetuating the oscillation cycle.
+
+5. **Kinetic energy never dissipates.** The system maintains a steady-state KE of ~2.1 g·cm²/s² indefinitely, when it should be zero for an object at rest.
+
+### Why this matters for the T-shirt
+
+The T-shirt folding scenario is a worst case for this problem. A folded garment has:
+- Large rest-vs-actual shape mismatch (rest is flat, actual is folded)
+- Dense self-contact regions where barrier forces add another source of stiff, coupled forces
+- Multiple cloth layers amplifying the coupling (top layer has no ground anchor)
+
+The simple tube experiment reproduces the essential mechanism without the complexity of the full T-shirt mesh: even with zero self-contact, the elastic coupling alone is sufficient to produce persistent oscillation.
+
+### What would fix it
+
+The root cause is that the diagonal block preconditioner is too local — it ignores the coupling between adjacent vertices. Potential solver-level fixes include:
+
+- **Better preconditioners**: Block-tridiagonal or sparse approximate inverse preconditioners that capture some off-diagonal coupling.
+- **Line search / trust region**: Currently truncation never activates (0% of iterations). A more aggressive line search that detects divergence and reduces step size could prevent overcorrection.
+- **Chebyshev acceleration**: Damped iteration schemes that prevent oscillation in the solver iterates.
+- **More iterations with convergence monitoring**: Rather than a fixed iteration count, iterate until a residual norm drops below a threshold — though this may be expensive for stiff systems.
+- **Rayleigh damping on the elastic term**: Increasing `tri_kd` adds velocity-dependent dissipation that damps the oscillation. This is a workaround rather than a fix — it hides the solver's convergence failure behind artificial damping.
