@@ -73,6 +73,7 @@ class Contacts:
         per_contact_shape_properties: bool = False,
         clear_buffers: bool = False,
         requested_attributes: set[str] | None = None,
+        soft_contact_tids_dim: int | None = None,
     ):
         """
         Initialize Contacts storage.
@@ -93,9 +94,20 @@ class Contacts:
                 and safe since solvers only read up to contact_count.
             requested_attributes: Set of extended contact attribute names to allocate.
                 See :attr:`EXTENDED_ATTRIBUTES` for available options.
+            soft_contact_tids_dim: Size of the ``soft_contact_tids`` array.  This must equal
+                the kernel launch dimension of the soft-contact detection kernel — i.e. the
+                total number of (particle, shape) pairs examined.  Defaults to
+                ``soft_contact_max`` (the legacy behaviour where every cross-product pair is
+                examined).  Pass a smaller value when using the world-batched collision kernel
+                (:func:`~newton._src.geometry.kernels.create_soft_contacts_batched`) so that
+                only same-world pairs are examined and the array stays within int32 limits.
         """
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
+        # soft_contact_tids must be sized to the kernel launch dim, which equals
+        # particle_count * shape_count in the standard kernel, but can be smaller
+        # when using the world-batched kernel (create_soft_contacts_batched).
+        _soft_contact_tids_dim = soft_contact_tids_dim if soft_contact_tids_dim is not None else soft_contact_max
         with wp.ScopedDevice(device):
             # Consolidated counter array to minimize kernel launches for zeroing
             # Layout: [rigid_contact_count, soft_contact_count]
@@ -152,7 +164,7 @@ class Contacts:
             """Contact velocity on body [m/s], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
-            self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
+            self.soft_contact_tids = wp.full(_soft_contact_tids_dim, -1, dtype=int)
 
             # Extended contact attributes (optional, allocated on demand)
             self.force: wp.array | None = None

@@ -1154,6 +1154,164 @@ def create_soft_contacts(
             soft_contact_normal[index] = world_normal
 
 
+@wp.kernel
+def create_soft_contacts_batched(
+    particle_q: wp.array(dtype=wp.vec3),
+    particle_radius: wp.array(dtype=float),
+    particle_flags: wp.array(dtype=wp.int32),
+    particle_world: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transform),
+    shape_transform: wp.array(dtype=wp.transform),
+    shape_body: wp.array(dtype=int),
+    shape_type: wp.array(dtype=int),
+    shape_scale: wp.array(dtype=wp.vec3),
+    shape_source_ptr: wp.array(dtype=wp.uint64),
+    shape_world: wp.array(dtype=int),
+    margin: float,
+    soft_contact_max: int,
+    shape_flags: wp.array(dtype=wp.int32),
+    shape_heightfield_data: wp.array(dtype=HeightfieldData),
+    heightfield_elevation_data: wp.array(dtype=wp.float32),
+    particles_per_world: int,
+    shapes_per_world: int,
+    # outputs
+    soft_contact_count: wp.array(dtype=int),
+    soft_contact_particle: wp.array(dtype=int),
+    soft_contact_shape: wp.array(dtype=int),
+    soft_contact_body_pos: wp.array(dtype=wp.vec3),
+    soft_contact_body_vel: wp.array(dtype=wp.vec3),
+    soft_contact_normal: wp.array(dtype=wp.vec3),
+    soft_contact_tids: wp.array(dtype=int),
+):
+    """World-batched variant of :func:`create_soft_contacts`.
+
+    Launched with ``dim = particles_per_world * shapes_per_world * num_worlds``
+    instead of ``dim = particle_count * shape_count``.  This avoids int32 overflow
+    and exceeding CUDA kernel launch limits in scenes with many parallel worlds
+    (e.g. 4096 environments), where the full cross-product would be
+    ``(particles_per_world * num_worlds) * (shapes_per_world * num_worlds)``
+    — growing as ``num_worlds²`` — but same-world filtering means only
+    ``particles_per_world * shapes_per_world * num_worlds`` pairs are meaningful.
+
+    Assumes all worlds have the same number of particles (``particles_per_world``)
+    and shapes (``shapes_per_world``), which holds for parallel reinforcement-learning
+    environments where every env is an identical replica.
+    """
+    tid = wp.tid()
+    ps = particles_per_world * shapes_per_world
+    world_id = tid // ps
+    local_ps = tid % ps
+    particle_index = world_id * particles_per_world + local_ps // shapes_per_world
+    shape_index = world_id * shapes_per_world + local_ps % shapes_per_world
+
+    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+        return
+    if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+        return
+
+    # Check world indices — should always match when using batched indexing, but guard
+    # in case shapes_per_world / particles_per_world counts are imprecise.
+    particle_world_id = particle_world[particle_index]
+    shape_world_id = shape_world[shape_index]
+    if particle_world_id != -1 and shape_world_id != -1 and particle_world_id != shape_world_id:
+        return
+
+    rigid_index = shape_body[shape_index]
+
+    px = particle_q[particle_index]
+    radius = particle_radius[particle_index]
+
+    X_wb = wp.transform_identity()
+    if rigid_index >= 0:
+        X_wb = body_q[rigid_index]
+
+    X_bs = shape_transform[shape_index]
+
+    X_ws = wp.transform_multiply(X_wb, X_bs)
+    X_sw = wp.transform_inverse(X_ws)
+
+    x_local = wp.transform_point(X_sw, px)
+
+    geo_type = shape_type[shape_index]
+    geo_scale = shape_scale[shape_index]
+
+    d = 1.0e6
+    n = wp.vec3()
+    v = wp.vec3()
+
+    if geo_type == GeoType.SPHERE:
+        d = sdf_sphere(x_local, geo_scale[0])
+        n = sdf_sphere_grad(x_local, geo_scale[0])
+
+    if geo_type == GeoType.BOX:
+        d = sdf_box(x_local, geo_scale[0], geo_scale[1], geo_scale[2])
+        n = sdf_box_grad(x_local, geo_scale[0], geo_scale[1], geo_scale[2])
+
+    if geo_type == GeoType.CAPSULE:
+        d = sdf_capsule(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+        n = sdf_capsule_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+
+    if geo_type == GeoType.CYLINDER:
+        d = sdf_cylinder(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+        n = sdf_cylinder_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+
+    if geo_type == GeoType.CONE:
+        d = sdf_cone(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+        n = sdf_cone_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+
+    if geo_type == GeoType.ELLIPSOID:
+        d = sdf_ellipsoid(x_local, geo_scale)
+        n = sdf_ellipsoid_grad(x_local, geo_scale)
+
+    if geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH:
+        mesh = shape_source_ptr[shape_index]
+
+        face_index = int(0)
+        face_u = float(0.0)
+        face_v = float(0.0)
+        sign = float(0.0)
+
+        min_scale = wp.min(geo_scale)
+        if wp.mesh_query_point_sign_normal(
+            mesh, wp.cw_div(x_local, geo_scale), margin + radius / min_scale, sign, face_index, face_u, face_v
+        ):
+            shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
+            shape_v = wp.mesh_eval_velocity(mesh, face_index, face_u, face_v)
+
+            shape_p = wp.cw_mul(shape_p, geo_scale)
+            shape_v = wp.cw_mul(shape_v, geo_scale)
+
+            delta = x_local - shape_p
+
+            d = wp.length(delta) * sign
+            n = wp.normalize(delta) * sign
+            v = shape_v
+
+    if geo_type == GeoType.PLANE:
+        d = sdf_plane(x_local, geo_scale[0] * 0.5, geo_scale[1] * 0.5)
+        n = wp.vec3(0.0, 0.0, 1.0)
+
+    if geo_type == GeoType.HFIELD:
+        hfd = shape_heightfield_data[shape_index]
+        if hfd.nrow > 1 and hfd.ncol > 1:
+            d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevation_data, x_local)
+
+    if d < margin + radius:
+        index = counter_increment(soft_contact_count, 0, soft_contact_tids, tid)
+
+        if index < soft_contact_max:
+            body_pos = wp.transform_point(X_bs, x_local - n * d)
+            body_vel = wp.transform_vector(X_bs, v)
+
+            world_normal = wp.transform_vector(X_ws, n)
+
+            soft_contact_shape[index] = shape_index
+            soft_contact_body_pos[index] = body_pos
+            soft_contact_body_vel[index] = body_vel
+            soft_contact_particle[index] = particle_index
+            soft_contact_normal[index] = world_normal
+
+
 # --------------------------------------
 # region Triangle collision detection
 

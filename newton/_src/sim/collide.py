@@ -25,7 +25,7 @@ from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
 from ..geometry.contact_data import ContactData
-from ..geometry.kernels import create_soft_contacts
+from ..geometry.kernels import create_soft_contacts, create_soft_contacts_batched
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.support_function import (
@@ -407,6 +407,8 @@ class CollisionPipeline:
         | None = None,
         narrow_phase: NarrowPhase | None = None,
         sdf_hydroelastic_config: HydroelasticSDF.Config | None = None,
+        particles_per_world: int | None = None,
+        shapes_per_world: int | None = None,
     ):
         """
         Initialize the CollisionPipeline (expert API).
@@ -428,7 +430,7 @@ class CollisionPipeline:
                 Increase this when scenes with large/complex heightfields report
                 heightfield-cell-pair overflow warnings.
             soft_contact_max: Maximum number of soft contacts to allocate.
-                If None, computed as shape_count * particle_count.
+                If None, computed as ``shape_count * particle_count``.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
             requires_grad: Whether to enable gradient computation. If None, uses model.requires_grad.
             broad_phase:
@@ -441,6 +443,15 @@ class CollisionPipeline:
                 "nxn"/"sap" modes, ignored.
             sdf_hydroelastic_config: Configuration for
                 hydroelastic collision handling. Defaults to None.
+            particles_per_world: Number of particles per Newton world.  When provided together
+                with :paramref:`shapes_per_world`, the pipeline uses the world-batched soft-contact
+                kernel (:func:`~newton._src.geometry.kernels.create_soft_contacts_batched`) whose
+                launch dimension is ``particles_per_world * shapes_per_world * num_worlds`` instead
+                of the default ``particle_count * shape_count``.  This prevents int32 overflow and
+                CUDA launch-dim violations when running large numbers of parallel environments
+                (e.g. 4096 envs × 1386 particles × 49 shapes ≈ 278 M pairs instead of 1.14 T).
+                Assumes all worlds have the same particle and shape count (true for parallel RL envs).
+            shapes_per_world: Number of shapes per Newton world.  See :paramref:`particles_per_world`.
         """
         mode_from_broad_phase: str | None = None
         broad_phase_instance: BroadPhaseAllPairs | BroadPhaseSAP | BroadPhaseExplicit | None = None
@@ -622,9 +633,28 @@ class CollisionPipeline:
             )
 
         if soft_contact_max is None:
-            soft_contact_max = shape_count * particle_count
+            if particles_per_world is not None and shapes_per_world is not None:
+                # Cap per-env: particles and shapes in different worlds never interact.
+                # Use per-env product × num_worlds so the contact output buffer is
+                # proportional to the number of realistically possible contacts.
+                num_worlds = particle_count // max(particles_per_world, 1)
+                soft_contact_max = min(particles_per_world * shapes_per_world * num_worlds, 2**30)
+            else:
+                soft_contact_max = shape_count * particle_count
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
+
+        # When using the world-batched kernel, the tids array must equal the batched
+        # kernel launch dim (particles_per_world * shapes_per_world * num_worlds),
+        # NOT the full cross-product.  Store it separately for contacts() to use.
+        if particles_per_world is not None and shapes_per_world is not None:
+            num_worlds = particle_count // max(particles_per_world, 1)
+            self._soft_contact_tids_dim: int | None = particles_per_world * shapes_per_world * num_worlds
+        else:
+            self._soft_contact_tids_dim = None
+        self._particles_per_world: int | None = particles_per_world
+        self._shapes_per_world: int | None = shapes_per_world
+
         self.requires_grad = requires_grad
 
     @property
@@ -651,6 +681,7 @@ class CollisionPipeline:
             device=self.model.device,
             per_contact_shape_properties=self.narrow_phase.hydroelastic_sdf is not None,
             requested_attributes=self.model.get_requested_contact_attributes(),
+            soft_contact_tids_dim=self._soft_contact_tids_dim,
         )
 
         # attach custom attributes with assignment==CONTACT
@@ -830,36 +861,77 @@ class CollisionPipeline:
         # Generate soft contacts for particles and shapes
         particle_count = len(state.particle_q) if state.particle_q else 0
         if state.particle_q and model.shape_count > 0:
-            wp.launch(
-                kernel=create_soft_contacts,
-                dim=particle_count * model.shape_count,
-                inputs=[
-                    state.particle_q,
-                    model.particle_radius,
-                    model.particle_flags,
-                    model.particle_world,
-                    state.body_q,
-                    model.shape_transform,
-                    model.shape_body,
-                    model.shape_type,
-                    model.shape_scale,
-                    model.shape_source_ptr,
-                    model.shape_world,
-                    soft_contact_margin,
-                    self.soft_contact_max,
-                    model.shape_count,
-                    model.shape_flags,
-                    model.shape_heightfield_data,
-                    model.heightfield_elevation_data,
-                ],
-                outputs=[
-                    contacts.soft_contact_count,
-                    contacts.soft_contact_particle,
-                    contacts.soft_contact_shape,
-                    contacts.soft_contact_body_pos,
-                    contacts.soft_contact_body_vel,
-                    contacts.soft_contact_normal,
-                    contacts.soft_contact_tids,
-                ],
-                device=self.device,
-            )
+            if self._particles_per_world is not None and self._shapes_per_world is not None:
+                # World-batched kernel: launch dim = P_per_world * S_per_world * num_worlds
+                # instead of the full cross-product P_total * S_total (which grows as
+                # num_worlds² and overflows int32 / CUDA limits for large env counts).
+                num_worlds = particle_count // max(self._particles_per_world, 1)
+                batched_dim = self._particles_per_world * self._shapes_per_world * num_worlds
+                wp.launch(
+                    kernel=create_soft_contacts_batched,
+                    dim=batched_dim,
+                    inputs=[
+                        state.particle_q,
+                        model.particle_radius,
+                        model.particle_flags,
+                        model.particle_world,
+                        state.body_q,
+                        model.shape_transform,
+                        model.shape_body,
+                        model.shape_type,
+                        model.shape_scale,
+                        model.shape_source_ptr,
+                        model.shape_world,
+                        soft_contact_margin,
+                        self.soft_contact_max,
+                        model.shape_flags,
+                        model.shape_heightfield_data,
+                        model.heightfield_elevation_data,
+                        self._particles_per_world,
+                        self._shapes_per_world,
+                    ],
+                    outputs=[
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_particle,
+                        contacts.soft_contact_shape,
+                        contacts.soft_contact_body_pos,
+                        contacts.soft_contact_body_vel,
+                        contacts.soft_contact_normal,
+                        contacts.soft_contact_tids,
+                    ],
+                    device=self.device,
+                )
+            else:
+                wp.launch(
+                    kernel=create_soft_contacts,
+                    dim=particle_count * model.shape_count,
+                    inputs=[
+                        state.particle_q,
+                        model.particle_radius,
+                        model.particle_flags,
+                        model.particle_world,
+                        state.body_q,
+                        model.shape_transform,
+                        model.shape_body,
+                        model.shape_type,
+                        model.shape_scale,
+                        model.shape_source_ptr,
+                        model.shape_world,
+                        soft_contact_margin,
+                        self.soft_contact_max,
+                        model.shape_count,
+                        model.shape_flags,
+                        model.shape_heightfield_data,
+                        model.heightfield_elevation_data,
+                    ],
+                    outputs=[
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_particle,
+                        contacts.soft_contact_shape,
+                        contacts.soft_contact_body_pos,
+                        contacts.soft_contact_body_vel,
+                        contacts.soft_contact_normal,
+                        contacts.soft_contact_tids,
+                    ],
+                    device=self.device,
+                )

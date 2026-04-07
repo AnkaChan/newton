@@ -188,6 +188,12 @@ class SolverVBD(SolverBase):
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
         rigid_enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
+        # Body-particle soft contact capacity override.
+        # Defaults to model.shape_count * model.particle_count, which can overflow int32
+        # in large parallel environments.  Set this to the actual soft_contact_max of
+        # the CollisionPipeline to avoid the overflow while still covering all contacts.
+        max_soft_contacts: int | None = None,
+        particle_max_velocity: float = float("inf"),
     ):
         """
         Args:
@@ -258,6 +264,17 @@ class SolverVBD(SolverBase):
             rigid_enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
                 Configure per-joint Dahl parameters via the solver-registered custom model attributes
                 ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``.
+            max_soft_contacts: Maximum number of body-particle soft contacts to allocate per-contact
+                AVBD state for. Defaults to ``model.shape_count * model.particle_count``, which is the
+                worst-case upper bound matching ``CollisionPipeline``'s default. In large parallel
+                environments this product can overflow int32; pass the ``soft_contact_max`` from the
+                ``CollisionPipeline`` you will use to cap the allocation to the actual contact capacity.
+            particle_max_velocity: Maximum particle speed [m/s] allowed after each VBD iteration.
+                Displacements exceeding ``particle_max_velocity * dt`` are scaled back proportionally
+                while preserving direction. Default ``inf`` (no clamping, backwards-compatible).
+                Set to a finite value (e.g. ``10.0``) when large simultaneous contact impulses
+                cause velocity runaway — typically in rigid-VBD two-way coupling scenarios where
+                a moving rigid body suddenly contacts many particles at once.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -300,6 +317,8 @@ class SolverVBD(SolverBase):
             particle_external_edge_contact_filtering_map,
         )
 
+        self.particle_max_velocity = particle_max_velocity
+
         # Initialize rigid body system and rigid-particle (body-particle) interaction state
         self._init_rigid_system(
             model,
@@ -315,6 +334,7 @@ class SolverVBD(SolverBase):
             rigid_body_contact_buffer_size,
             rigid_body_particle_contact_buffer_size,
             rigid_enable_dahl_friction,
+            max_soft_contacts,
         )
 
         # Rigid-only flag to control whether to update cross-step history
@@ -445,6 +465,7 @@ class SolverVBD(SolverBase):
         rigid_body_contact_buffer_size: int,
         rigid_body_particle_contact_buffer_size: int,
         rigid_enable_dahl_friction: bool,
+        max_soft_contacts: int | None = None,
     ):
         """Initialize rigid body-specific AVBD data structures and settings.
 
@@ -558,8 +579,12 @@ class SolverVBD(SolverBase):
         # Body-particle interaction - shared state
         # -------------------------------------------------------------
         # Soft contact penalties (adaptive penalties for body-particle contacts)
-        # Use same initial penalty as body-body contacts
-        max_soft_contacts = model.shape_count * model.particle_count
+        # Use same initial penalty as body-body contacts.
+        # The default upper bound (shape_count × particle_count) can overflow int32 in
+        # large parallel environments; callers may pass an explicit cap matching the
+        # CollisionPipeline's soft_contact_max to stay under the int32 limit.
+        if max_soft_contacts is None:
+            max_soft_contacts = model.shape_count * model.particle_count
         # Per-contact AVBD penalty for body-particle soft contacts (same initial seed as body-body)
         self.body_particle_contact_penalty_k = wp.full(
             (max_soft_contacts,), self.k_start_body_contact, dtype=float, device=self.device
@@ -1199,7 +1224,7 @@ class SolverVBD(SolverBase):
         self._finalize_rigid_bodies(state_out, dt)
         self._finalize_particles(state_out, dt)
 
-    def _penetration_free_truncation(self, particle_q_out=None):
+    def _penetration_free_truncation(self, particle_q_out=None, dt: float = 1.0):
         """
         Modify displacements_in in-place, also modify particle_q if its not None
 
@@ -1213,7 +1238,7 @@ class SolverVBD(SolverBase):
                     self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
                     self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
                     self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
-                    wp.inf,  # max_displacement: float (input threshold)
+                    self.particle_max_velocity * dt,  # max_displacement: float
                 ],
                 outputs=[
                     self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
@@ -1298,7 +1323,7 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-        self._penetration_free_truncation(state_in.particle_q)
+        self._penetration_free_truncation(state_in.particle_q, dt)
 
     def _initialize_rigid_bodies(
         self,
@@ -1670,7 +1695,7 @@ class SolverVBD(SolverBase):
                     ],
                     device=self.device,
                 )
-            self._penetration_free_truncation(state_in.particle_q)
+            self._penetration_free_truncation(state_in.particle_q, dt)
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 
