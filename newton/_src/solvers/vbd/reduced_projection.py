@@ -71,22 +71,30 @@ def _compute_body_residual(
 def project_to_reduced_coordinates(
     model: Model,
     state: State,
+    joint_q_prev: wp.array,
+    dt: float,
     gn_iterations: int = 3,
     damping: float = 1e-6,
+    max_joint_vel: float = 20.0,
 ) -> None:
     """Project maximal body_q onto the reduced-coordinate manifold.
 
-    Modifies ``state.body_q``, ``state.joint_q``, and ``state.joint_qd`` in
-    place.  Call this after the AVBD iterations and **before** the velocity
-    finalize so that ``body_qd`` is derived from the projected poses.
+    After the GN solve finds the closest on-manifold joint_q, the joint
+    velocity is derived via BDF1 and clamped to ``max_joint_vel`` to prevent
+    explosion from large projection corrections.  FK then produces consistent
+    ``body_q`` and ``body_qd``.
 
     Args:
         model: The model containing articulation definitions.
         state: The state to project (body_q is read as the AVBD target, then
             overwritten with the FK-projected result).
+        joint_q_prev: Previous step's projected joint coordinates (used for
+            BDF1 velocity).
+        dt: Timestep [s].
         gn_iterations: Number of Gauss-Newton iterations (0 = analytical IK
             projection only).
         damping: Levenberg-Marquardt damping for the normal equations.
+        max_joint_vel: Maximum joint velocity [rad/s or m/s] for clamping.
     """
     if model.articulation_count == 0 or model.body_count == 0:
         return
@@ -97,67 +105,76 @@ def project_to_reduced_coordinates(
     # --- Warm-start joint_q via analytical per-joint IK ---
     eval_ik(model, state, state.joint_q, state.joint_qd)
 
-    if gn_iterations == 0:
-        # Pure analytical projection: FK from IK-derived joint_q
-        eval_fk(model, state.joint_q, state.joint_qd, state)
-        return
+    if gn_iterations > 0:
+        # --- Pre-fetch model topology (CPU) ---
+        art_start_np = model.articulation_start.numpy()
+        joint_child_np = model.joint_child.numpy()
+        joint_qd_start_np = model.joint_qd_start.numpy()
+        joint_q_start_np = model.joint_q_start.numpy()
+        body_q_target_np = body_q_target.numpy().reshape(-1, 7)
 
-    # --- Pre-fetch model topology (CPU) ---
-    art_start_np = model.articulation_start.numpy()
-    joint_child_np = model.joint_child.numpy()
-    joint_qd_start_np = model.joint_qd_start.numpy()
-    joint_q_start_np = model.joint_q_start.numpy()
-    body_q_target_np = body_q_target.numpy().reshape(-1, 7)
+        # --- Gauss-Newton iterations ---
+        for _k in range(gn_iterations):
+            # FK from current joint_q → state.body_q
+            eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    # --- Gauss-Newton iterations ---
-    for _k in range(gn_iterations):
-        # FK from current joint_q → state.body_q
-        eval_fk(model, state.joint_q, state.joint_qd, state)
+            # Jacobian (GPU kernel, then pull to CPU)
+            J_wp = eval_jacobian(model, state)
+            J_np = J_wp.numpy()  # (art_count, max_links*6, max_dofs)
 
-        # Jacobian (GPU kernel, then pull to CPU)
-        J_wp = eval_jacobian(model, state)
-        J_np = J_wp.numpy()  # (art_count, max_links*6, max_dofs)
+            # Pull current body_q and joint_q to CPU
+            body_q_fk_np = state.body_q.numpy().reshape(-1, 7)
+            joint_q_np = state.joint_q.numpy().copy()
 
-        # Pull current body_q and joint_q to CPU
-        body_q_fk_np = state.body_q.numpy().reshape(-1, 7)
-        joint_q_np = state.joint_q.numpy().copy()
+            # Solve per articulation
+            for art_idx in range(model.articulation_count):
+                joint_start = art_start_np[art_idx]
+                joint_end = art_start_np[art_idx + 1]
+                n_links = joint_end - joint_start
 
-        # Solve per articulation
-        for art_idx in range(model.articulation_count):
-            joint_start = art_start_np[art_idx]
-            joint_end = art_start_np[art_idx + 1]
-            n_links = joint_end - joint_start
+                # Body indices for this articulation's links
+                body_indices = [int(joint_child_np[j]) for j in range(joint_start, joint_end)]
 
-            # Body indices for this articulation's links
-            body_indices = [int(joint_child_np[j]) for j in range(joint_start, joint_end)]
+                # Articulation DOF range
+                dof_start = int(joint_qd_start_np[joint_start])
+                dof_end = int(joint_qd_start_np[joint_end])
+                n_dofs = dof_end - dof_start
 
-            # Articulation DOF range
-            dof_start = int(joint_qd_start_np[joint_start])
-            dof_end = int(joint_qd_start_np[joint_end])
-            n_dofs = dof_end - dof_start
+                if n_dofs == 0:
+                    continue
 
-            if n_dofs == 0:
-                continue
+                # Residual: FK vs AVBD target
+                r = _compute_body_residual(body_q_fk_np, body_q_target_np, body_indices, n_links)
 
-            # Residual: FK vs AVBD target
-            r = _compute_body_residual(body_q_fk_np, body_q_target_np, body_indices, n_links)
+                # Extract this articulation's Jacobian block
+                J_art = J_np[art_idx, : n_links * 6, :n_dofs]
 
-            # Extract this articulation's Jacobian block
-            J_art = J_np[art_idx, : n_links * 6, :n_dofs]
+                # Normal equations: (J^T J + λI) Δq = -J^T r
+                JtJ = J_art.T @ J_art + damping * np.eye(n_dofs)
+                Jtr = J_art.T @ r
+                delta_q = np.linalg.solve(JtJ, -Jtr)
 
-            # Normal equations: (J^T J + λI) Δq = -J^T r
-            JtJ = J_art.T @ J_art + damping * np.eye(n_dofs)
-            Jtr = J_art.T @ r
-            delta_q = np.linalg.solve(JtJ, -Jtr)
+                # Map DOF delta to coordinate update.
+                q_start = int(joint_q_start_np[joint_start])
+                joint_q_np[q_start : q_start + n_dofs] += delta_q
 
-            # Map DOF delta to coordinate update.
-            # For revolute/prismatic joints (Franka), coord and DOF indices
-            # are 1:1.  Ball/free joints would need a separate mapping.
-            q_start = int(joint_q_start_np[joint_start])
-            joint_q_np[q_start : q_start + n_dofs] += delta_q
+            # Push updated joint_q back to GPU
+            state.joint_q.assign(wp.array(joint_q_np, dtype=float, device=state.joint_q.device))
 
-        # Push updated joint_q back to GPU
-        state.joint_q.assign(wp.array(joint_q_np, dtype=float, device=state.joint_q.device))
+    # --- Clamp joint_q change to enforce velocity limit ---
+    joint_q_np = state.joint_q.numpy()
+    joint_q_prev_np = joint_q_prev.numpy()
+    max_dq = max_joint_vel * dt
+    delta = joint_q_np - joint_q_prev_np
+    delta_clamped = np.clip(delta, -max_dq, max_dq)
+    joint_q_clamped = joint_q_prev_np + delta_clamped
+    state.joint_q.assign(wp.array(joint_q_clamped, dtype=float, device=state.joint_q.device))
 
-    # --- Final FK from converged joint_q ---
+    # --- Compute joint_qd via BDF1 ---
+    n_dof = state.joint_qd.shape[0]
+    if dt > 0.0:
+        joint_qd_np = delta_clamped[:n_dof] / dt
+        state.joint_qd.assign(wp.array(joint_qd_np, dtype=float, device=state.joint_qd.device))
+
+    # --- Final FK → body_q and body_qd ---
     eval_fk(model, state.joint_q, state.joint_qd, state)

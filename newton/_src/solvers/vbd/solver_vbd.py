@@ -299,6 +299,13 @@ class SolverVBD(SolverBase):
         self.body_enable_reduced_solve = body_enable_reduced_solve
         self.reduced_gn_iterations = reduced_gn_iterations
         self.reduced_gn_damping = reduced_gn_damping
+        if body_enable_reduced_solve and model.joint_coord_count > 0:
+            # Initialize joint_q_prev from the model's initial joint config.
+            # eval_fk should be called on state before the first step() so that
+            # body_q is consistent with joint_q.
+            self._joint_q_prev = wp.clone(model.joint_q).to(self.device)
+        else:
+            self._joint_q_prev = None
 
         # Initialize particle system
         self._init_particle_system(
@@ -1392,17 +1399,22 @@ class SolverVBD(SolverBase):
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
-        # Project maximal body poses onto kinematic manifold before velocity finalize
+        self._finalize_rigid_bodies(state_out, dt)
+        self._finalize_particles(state_out, dt)
+
+        # Project maximal body poses onto kinematic manifold after finalize.
+        # Uses BDF1 on joint_q with velocity clamping to prevent explosion from
+        # large manifold corrections.  FK produces consistent body_q + body_qd.
         if self.body_enable_reduced_solve and not self.integrate_with_external_rigid_solver:
             project_to_reduced_coordinates(
                 self.model,
                 state_out,
+                joint_q_prev=self._joint_q_prev,
+                dt=dt,
                 gn_iterations=self.reduced_gn_iterations,
                 damping=self.reduced_gn_damping,
             )
-
-        self._finalize_rigid_bodies(state_out, dt)
-        self._finalize_particles(state_out, dt)
+            self._joint_q_prev.assign(state_out.joint_q)
 
     def _penetration_free_truncation(self, particle_q_out=None):
         """
