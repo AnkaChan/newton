@@ -162,6 +162,7 @@ class SolverVBD(SolverBase):
         # Common parameters
         iterations: int = 10,
         friction_epsilon: float = 1e-2,
+        step_ratio: float = 1.0,
         integrate_with_external_rigid_solver: bool = False,
         # Particle parameters
         particle_enable_self_contact: bool = False,
@@ -173,6 +174,7 @@ class SolverVBD(SolverBase):
         particle_collision_detection_interval: int = 0,
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
+        particle_tri_material_model: str = "stvk",
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -201,6 +203,9 @@ class SolverVBD(SolverBase):
             iterations: Number of VBD iterations per step.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
+            step_ratio: Relaxation factor (gamma) for particle displacement updates. Each VBD iteration applies
+                ``x += gamma * H^{-1} f`` instead of the full Newton step. Values < 1 under-relax the update,
+                which can improve stability at the cost of convergence speed. Default 1.0 (full step).
 
             Particle parameters:
 
@@ -222,6 +227,8 @@ class SolverVBD(SolverBase):
                 iterations.
             particle_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
             particle_enable_tile_solve: Whether to accelerate the particle solver using tile API.
+            particle_tri_material_model: Material model for triangle elasticity. ``"stvk"`` (default) uses
+                St. Venant-Kirchhoff; ``"neohookean"`` uses stable Neo-Hookean (Smith et al. 2018).
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -279,6 +286,7 @@ class SolverVBD(SolverBase):
         # Common parameters
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
+        self.step_ratio = step_ratio
 
         # Rigid integration mode: when True, rigid bodies are integrated by an external
         # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
@@ -297,6 +305,7 @@ class SolverVBD(SolverBase):
             particle_collision_detection_interval,
             particle_edge_parallel_epsilon,
             particle_enable_tile_solve,
+            particle_tri_material_model,
             particle_topological_contact_filter_threshold,
             particle_rest_shape_contact_exclusion_radius,
             particle_external_vertex_contact_filtering_map,
@@ -344,12 +353,21 @@ class SolverVBD(SolverBase):
         particle_collision_detection_interval: int,
         particle_edge_parallel_epsilon: float,
         particle_enable_tile_solve: bool,
+        particle_tri_material_model: str,
         particle_topological_contact_filter_threshold: int,
         particle_rest_shape_contact_exclusion_radius: float,
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
     ):
         """Initialize particle-specific data structures and settings."""
+        _tri_models = {"stvk": 0, "neohookean": 1}
+        if particle_tri_material_model not in _tri_models:
+            raise ValueError(
+                f"Unknown tri_material_model: {particle_tri_material_model!r}. "
+                f"Choose from {list(_tri_models)}"
+            )
+        self._tri_material_model = _tri_models[particle_tri_material_model]
+
         # Early exit if no particles
         if model.particle_count == 0:
             return
@@ -439,6 +457,9 @@ class SolverVBD(SolverBase):
         self.debug_f_inertia = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.debug_f_elastic = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
         self.debug_f_bending = wp.zeros(model.particle_count, dtype=wp.vec3, device=self.device)
+
+        # Per-particle squared force norm for residual tracking
+        self.force_norm_sq = wp.zeros(model.particle_count, dtype=float, device=self.device)
 
     def _init_rigid_system(
         self,
@@ -1860,6 +1881,7 @@ class SolverVBD(SolverBase):
                         self.model.tri_poses,
                         self.model.tri_materials,
                         self.model.tri_areas,
+                        self._tri_material_model,
                         self.model.edge_indices,
                         self.model.edge_rest_angle,
                         self.model.edge_rest_length,
@@ -1873,6 +1895,8 @@ class SolverVBD(SolverBase):
                     ],
                     outputs=[
                         self.particle_displacements,
+                        self.step_ratio,
+                        self.force_norm_sq,
                     ],
                     device=self.device,
                 )
@@ -1892,6 +1916,7 @@ class SolverVBD(SolverBase):
                         self.model.tri_poses,
                         self.model.tri_materials,
                         self.model.tri_areas,
+                        self._tri_material_model,
                         self.model.edge_indices,
                         self.model.edge_rest_angle,
                         self.model.edge_rest_length,
@@ -1908,6 +1933,8 @@ class SolverVBD(SolverBase):
                         self.debug_f_inertia,
                         self.debug_f_elastic,
                         self.debug_f_bending,
+                        self.step_ratio,
+                        self.force_norm_sq,
                     ],
                     device=self.device,
                 )

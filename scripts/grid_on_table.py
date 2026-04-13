@@ -80,6 +80,8 @@ class Example:
         density: float = 0.02,
         fold: bool = False,
         tube: bool = False,
+        step_ratio: float = 1.0,
+        material: str = "stvk",
     ):
         self.fold = fold
         self.tube = tube
@@ -200,10 +202,12 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=iterations,
+            step_ratio=step_ratio,
             particle_enable_self_contact=enable_self_contact and (layers > 1 or fold or tube),
             particle_self_contact_radius=self_contact_radius,
             particle_self_contact_margin=self_contact_margin,
             particle_enable_tile_solve=False,
+            particle_tri_material_model=material,
         )
 
         self.state_0 = self.model.state()
@@ -316,6 +320,9 @@ def create_parser():
     parser.add_argument("--grid-ny", type=int, default=None, help="Grid cells in y (defaults to grid-n)")
     parser.add_argument("--particle-radius", type=float, default=0.8, help="Particle radius (cm)")
     parser.add_argument("--density", type=float, default=0.02, help="Cloth area density (g/cm^2)")
+    parser.add_argument("--step-ratio", type=float, default=1.0, help="VBD step ratio gamma (default 1.0)")
+    parser.add_argument("--material", type=str, default="stvk", choices=["stvk", "neohookean"],
+                        help="Triangle material model (default stvk)")
     parser.add_argument(
         "--rayleigh-damping",
         action="store_true",
@@ -398,6 +405,8 @@ if __name__ == "__main__":
         density=args.density,
         fold=args.fold,
         tube=args.tube,
+        step_ratio=args.step_ratio,
+        material=args.material,
     )
 
     newton.examples.run(example, args)
