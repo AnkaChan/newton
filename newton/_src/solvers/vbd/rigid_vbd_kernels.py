@@ -50,7 +50,7 @@ _USE_SMALL_ANGLE_APPROX = wp.constant(True)
 _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 """Deadband threshold for hysteresis direction selection"""
 
-_DAMPING_ABSOLUTE = wp.constant(False)
+_DAMPING_ABSOLUTE = wp.constant(True)
 """When True, VBD uses absolute damping (``f = kd * v``).
 
 When False (default), VBD uses Rayleigh stiffness-proportional damping
