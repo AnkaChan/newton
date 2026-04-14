@@ -763,27 +763,14 @@ def evaluate_body_particle_contact(
 
         dx = particle_pos - particle_prev_pos
 
-        if wp.dot(n, dx) < 0.0:
-            if _DAMPING_ABSOLUTE:
-                damping_hessian = (body_particle_contact_kd / dt) * wp.outer(n, n)
-            else:
-                damping_coeff = body_particle_contact_kd * body_particle_contact_ke
-                damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
-            body_contact_hessian = body_contact_hessian + damping_hessian
-            body_contact_force = body_contact_force - damping_hessian * dx
-
-        # body velocity
+        # Compute body velocity first so we can use relative displacement for damping
         if body_q_prev:
-            # if body_q_prev is available, compute velocity using finite difference method
-            # this is more accurate for simulating static friction
             X_wb_prev = wp.transform_identity()
             if body_index >= 0:
                 X_wb_prev = body_q_prev[body_index]
             bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[contact_index])
             bv = (bx - bx_prev) / dt + wp.transform_vector(X_wb, contact_body_vel[contact_index])
-
         else:
-            # otherwise use the instantaneous velocity
             r = bx - wp.transform_point(X_wb, X_com)
             body_v_s = wp.spatial_vector()
             if body_index >= 0:
@@ -791,11 +778,21 @@ def evaluate_body_particle_contact(
 
             body_w = wp.spatial_bottom(body_v_s)
             body_v = wp.spatial_top(body_v_s)
-
-            # compute the body velocity at the particle position
             bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
 
+        # Relative displacement (translation-invariant: zero when particle co-moves with body)
         relative_translation = dx - bv * dt
+
+        # Damp relative normal approach, not absolute displacement
+        relative_normal_speed = wp.dot(n, relative_translation) / dt
+        if relative_normal_speed < 0.0:
+            if _DAMPING_ABSOLUTE:
+                damping_hessian = (body_particle_contact_kd / dt) * wp.outer(n, n)
+            else:
+                damping_coeff = body_particle_contact_kd * body_particle_contact_ke
+                damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
+            body_contact_hessian = body_contact_hessian + damping_hessian
+            body_contact_force = body_contact_force - damping_hessian * relative_translation
 
         # Friction using 3D projector approach (consistent with rigid-rigid contacts)
         eps_u = friction_epsilon * dt

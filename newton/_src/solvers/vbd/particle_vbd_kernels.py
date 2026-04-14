@@ -1344,21 +1344,33 @@ def evaluate_self_contact_force_norm(dis: float, collision_radius: float, k: flo
 
 @wp.func
 def damp_collision(
-    displacement: wp.vec3,
+    gap_rate: float,
+    b_i: float,
     collision_normal: wp.vec3,
-    collision_hessian: wp.mat33,
+    d2E_dDdD: float,
     collision_damping: float,
-    collision_stiffness: float,
     dt: float,
 ):
-    if wp.dot(displacement, collision_normal) > 0:
+    """Collision damping using gap rate (translation-invariant).
+
+    Args:
+        gap_rate: Rate of gap change d_dot = sum_j(b_j * dot(n, v_j)).
+                  Negative means gap is closing.
+        b_i: Barycentric weight for the current vertex.
+        collision_normal: Unit contact normal.
+        d2E_dDdD: Second derivative of contact energy w.r.t. gap distance.
+        collision_damping: Damping coefficient kd.
+        dt: Timestep.
+    """
+    # Only damp when gap is closing (gap_rate < 0)
+    if gap_rate < 0.0:
         if _DAMPING_ABSOLUTE:
-            # Absolute: use n*n^T instead of elastic collision hessian
-            damping_hessian = (collision_damping / dt) * wp.outer(collision_normal, collision_normal)
+            damping_force = -collision_damping * gap_rate * b_i * collision_normal
+            damping_hessian = (collision_damping / dt) * b_i * b_i * wp.outer(collision_normal, collision_normal)
         else:
-            # Rayleigh: kd * ke, projected onto normal direction
-            damping_hessian = (collision_damping * collision_stiffness / dt) * wp.outer(collision_normal, collision_normal)
-        damping_force = damping_hessian * displacement
+            # Rayleigh: stiffness-proportional
+            damping_force = -collision_damping * d2E_dDdD * gap_rate * b_i * collision_normal
+            damping_hessian = (collision_damping * d2E_dDdD / dt) * b_i * b_i * wp.outer(collision_normal, collision_normal)
         return damping_force, damping_hessian
     else:
         return wp.vec3(0.0), wp.mat33(0.0)
@@ -1470,25 +1482,25 @@ def evaluate_edge_edge_contact(
         #     )
         # # fmt: on
 
-        if v_order == 0:
-            displacement = pos_anchor[e1_v1] - e1_v1_pos
-        elif v_order == 1:
-            displacement = pos_anchor[e1_v2] - e1_v2_pos
-        elif v_order == 2:
-            displacement = pos_anchor[e2_v1] - e2_v1_pos
-        else:
-            displacement = pos_anchor[e2_v2] - e2_v2_pos
+        # Compute gap rate from all 4 edge vertices (translation-invariant)
+        inv_dt = 1.0 / dt
+        dx_e1_v1 = e1_v1_pos - pos_anchor[e1_v1]
+        dx_e1_v2 = e1_v2_pos - pos_anchor[e1_v2]
+        dx_e2_v1 = e2_v1_pos - pos_anchor[e2_v1]
+        dx_e2_v2 = e2_v2_pos - pos_anchor[e2_v2]
 
-        collision_normal_sign = wp.vec4(1.0, 1.0, -1.0, -1.0)
-        signed_normal = collision_normal * collision_normal_sign[v_order]
-        if wp.dot(displacement, signed_normal) > 0:
-            if _DAMPING_ABSOLUTE:
-                damping_hessian = (collision_damping / dt) * wp.outer(signed_normal, signed_normal)
-            else:
-                # Rayleigh: kd * ke, projected onto normal direction
-                damping_hessian = (collision_damping * collision_stiffness / dt) * wp.outer(signed_normal, signed_normal)
-            collision_hessian = collision_hessian + damping_hessian
-            collision_force = collision_force + damping_hessian * displacement
+        gap_rate = (
+            bs[0] * wp.dot(collision_normal, dx_e1_v1)
+            + bs[1] * wp.dot(collision_normal, dx_e1_v2)
+            + bs[2] * wp.dot(collision_normal, dx_e2_v1)
+            + bs[3] * wp.dot(collision_normal, dx_e2_v2)
+        ) * inv_dt
+
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, v_bary, collision_normal, d2E_dDdD, collision_damping, dt,
+        )
+        collision_force = collision_force + damping_force
+        collision_hessian = collision_hessian + damping_hessian
 
         collision_force = collision_force + friction_force
         collision_hessian = collision_hessian + friction_hessian
@@ -1598,35 +1610,35 @@ def evaluate_edge_edge_contact_2_vertices(
         #     )
         # # fmt: on
 
-        displacement_0 = pos_anchor[e1_v1] - e1_v1_pos
-        displacement_1 = pos_anchor[e1_v2] - e1_v2_pos
-
         collision_force_0 = collision_force * bs[0]
         collision_force_1 = collision_force * bs[1]
 
         collision_hessian_0 = collision_hessian * bs[0] * bs[0]
         collision_hessian_1 = collision_hessian * bs[1] * bs[1]
 
-        collision_normal_sign = wp.vec4(1.0, 1.0, -1.0, -1.0)
+        # Compute gap rate from all 4 edge vertices (translation-invariant)
+        inv_dt = 1.0 / dt
+        dx_e1_v1 = e1_v1_pos - pos_anchor[e1_v1]
+        dx_e1_v2 = e1_v2_pos - pos_anchor[e1_v2]
+        dx_e2_v1 = e2_v1_pos - pos_anchor[e2_v1]
+        dx_e2_v2 = e2_v2_pos - pos_anchor[e2_v2]
+
+        gap_rate = (
+            bs[0] * wp.dot(collision_normal, dx_e1_v1)
+            + bs[1] * wp.dot(collision_normal, dx_e1_v2)
+            + bs[2] * wp.dot(collision_normal, dx_e2_v1)
+            + bs[3] * wp.dot(collision_normal, dx_e2_v2)
+        ) * inv_dt
+
         damping_force, damping_hessian = damp_collision(
-            displacement_0,
-            collision_normal * collision_normal_sign[0],
-            collision_hessian_0,
-            collision_damping,
-            collision_stiffness,
-            dt,
+            gap_rate, bs[0], collision_normal, d2E_dDdD, collision_damping, dt,
         )
 
         collision_force_0 += damping_force + bs[0] * friction_force
         collision_hessian_0 += damping_hessian + bs[0] * bs[0] * friction_hessian
 
         damping_force, damping_hessian = damp_collision(
-            displacement_1,
-            collision_normal * collision_normal_sign[1],
-            collision_hessian_1,
-            collision_damping,
-            collision_stiffness,
-            dt,
+            gap_rate, bs[1], collision_normal, d2E_dDdD, collision_damping, dt,
         )
         collision_force_1 += damping_force + bs[1] * friction_force
         collision_hessian_1 += damping_hessian + bs[1] * bs[1] * friction_hessian
@@ -1705,25 +1717,25 @@ def evaluate_vertex_triangle_collision_force_hessian(
             )
         # fmt: on
 
-        if v_order == 0:
-            displacement = pos_anchor[tri_indices[tri, 0]] - a
-        elif v_order == 1:
-            displacement = pos_anchor[tri_indices[tri, 1]] - b
-        elif v_order == 2:
-            displacement = pos_anchor[tri_indices[tri, 2]] - c
-        else:
-            displacement = pos_anchor[v] - p
+        # Compute gap rate from all stencil vertices (translation-invariant)
+        inv_dt = 1.0 / dt
+        dx_0 = a - pos_anchor[tri_indices[tri, 0]]
+        dx_1 = b - pos_anchor[tri_indices[tri, 1]]
+        dx_2 = c - pos_anchor[tri_indices[tri, 2]]
+        dx_3 = p - pos_anchor[v]
 
-        collision_normal_sign = wp.vec4(-1.0, -1.0, -1.0, 1.0)
-        signed_normal = collision_normal * collision_normal_sign[v_order]
-        if wp.dot(displacement, signed_normal) > 0:
-            if _DAMPING_ABSOLUTE:
-                damping_hessian = (collision_damping / dt) * wp.outer(signed_normal, signed_normal)
-            else:
-                # Rayleigh: kd * ke, projected onto normal direction
-                damping_hessian = (collision_damping * collision_stiffness / dt) * wp.outer(signed_normal, signed_normal)
-            collision_hessian = collision_hessian + damping_hessian
-            collision_force = collision_force + damping_hessian * displacement
+        gap_rate = (
+            bs[0] * wp.dot(collision_normal, dx_0)
+            + bs[1] * wp.dot(collision_normal, dx_1)
+            + bs[2] * wp.dot(collision_normal, dx_2)
+            + bs[3] * wp.dot(collision_normal, dx_3)
+        ) * inv_dt
+
+        damping_force, damping_hessian = damp_collision(
+            gap_rate, v_bary, collision_normal, d2E_dDdD, collision_damping, dt,
+        )
+        collision_force = collision_force + damping_force
+        collision_hessian = collision_hessian + damping_hessian
 
         collision_force = collision_force + v_bary * friction_force
         collision_hessian = collision_hessian + v_bary * v_bary * friction_hessian
@@ -1799,11 +1811,6 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
             )
         # fmt: on
 
-        displacement_0 = pos_anchor[tri_indices[tri, 0]] - a
-        displacement_1 = pos_anchor[tri_indices[tri, 1]] - b
-        displacement_2 = pos_anchor[tri_indices[tri, 2]] - c
-        displacement_3 = pos_anchor[v] - p
-
         collision_force_0 = collision_force * bs[0]
         collision_force_1 = collision_force * bs[1]
         collision_force_2 = collision_force * bs[2]
@@ -1814,48 +1821,42 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
         collision_hessian_2 = collision_hessian * bs[2] * bs[2]
         collision_hessian_3 = collision_hessian * bs[3] * bs[3]
 
-        collision_normal_sign = wp.vec4(-1.0, -1.0, -1.0, 1.0)
+        # Compute gap rate from all stencil vertices (translation-invariant)
+        # bs sums to zero, so rigid translation produces zero gap rate
+        inv_dt = 1.0 / dt
+        dx_0 = a - pos_anchor[tri_indices[tri, 0]]
+        dx_1 = b - pos_anchor[tri_indices[tri, 1]]
+        dx_2 = c - pos_anchor[tri_indices[tri, 2]]
+        dx_3 = p - pos_anchor[v]
+
+        gap_rate = (
+            bs[0] * wp.dot(collision_normal, dx_0)
+            + bs[1] * wp.dot(collision_normal, dx_1)
+            + bs[2] * wp.dot(collision_normal, dx_2)
+            + bs[3] * wp.dot(collision_normal, dx_3)
+        ) * inv_dt
+
         damping_force, damping_hessian = damp_collision(
-            displacement_0,
-            collision_normal * collision_normal_sign[0],
-            collision_hessian_0,
-            collision_damping,
-            collision_stiffness,
-            dt,
+            gap_rate, bs[0], collision_normal, d2E_dDdD, collision_damping, dt,
         )
 
         collision_force_0 += damping_force + bs[0] * friction_force
         collision_hessian_0 += damping_hessian + bs[0] * bs[0] * friction_hessian
 
         damping_force, damping_hessian = damp_collision(
-            displacement_1,
-            collision_normal * collision_normal_sign[1],
-            collision_hessian_1,
-            collision_damping,
-            collision_stiffness,
-            dt,
+            gap_rate, bs[1], collision_normal, d2E_dDdD, collision_damping, dt,
         )
         collision_force_1 += damping_force + bs[1] * friction_force
         collision_hessian_1 += damping_hessian + bs[1] * bs[1] * friction_hessian
 
         damping_force, damping_hessian = damp_collision(
-            displacement_2,
-            collision_normal * collision_normal_sign[2],
-            collision_hessian_2,
-            collision_damping,
-            collision_stiffness,
-            dt,
+            gap_rate, bs[2], collision_normal, d2E_dDdD, collision_damping, dt,
         )
         collision_force_2 += damping_force + bs[2] * friction_force
         collision_hessian_2 += damping_hessian + bs[2] * bs[2] * friction_hessian
 
         damping_force, damping_hessian = damp_collision(
-            displacement_3,
-            collision_normal * collision_normal_sign[3],
-            collision_hessian_3,
-            collision_damping,
-            collision_stiffness,
-            dt,
+            gap_rate, bs[3], collision_normal, d2E_dDdD, collision_damping, dt,
         )
         collision_force_3 += damping_force + bs[3] * friction_force
         collision_hessian_3 += damping_hessian + bs[3] * bs[3] * friction_hessian
