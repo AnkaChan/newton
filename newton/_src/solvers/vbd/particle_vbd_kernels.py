@@ -1348,6 +1348,7 @@ def damp_collision(
     collision_normal: wp.vec3,
     collision_hessian: wp.mat33,
     collision_damping: float,
+    collision_stiffness: float,
     dt: float,
 ):
     if wp.dot(displacement, collision_normal) > 0:
@@ -1355,8 +1356,8 @@ def damp_collision(
             # Absolute: use n*n^T instead of elastic collision hessian
             damping_hessian = (collision_damping / dt) * wp.outer(collision_normal, collision_normal)
         else:
-            # Rayleigh: scale by elastic collision hessian
-            damping_hessian = (collision_damping / dt) * collision_hessian
+            # Rayleigh: kd * ke, projected onto normal direction
+            damping_hessian = (collision_damping * collision_stiffness / dt) * wp.outer(collision_normal, collision_normal)
         damping_force = damping_hessian * displacement
         return damping_force, damping_hessian
     else:
@@ -1484,7 +1485,8 @@ def evaluate_edge_edge_contact(
             if _DAMPING_ABSOLUTE:
                 damping_hessian = (collision_damping / dt) * wp.outer(signed_normal, signed_normal)
             else:
-                damping_hessian = (collision_damping / dt) * collision_hessian
+                # Rayleigh: kd * ke, projected onto normal direction
+                damping_hessian = (collision_damping * collision_stiffness / dt) * wp.outer(signed_normal, signed_normal)
             collision_hessian = collision_hessian + damping_hessian
             collision_force = collision_force + damping_hessian * displacement
 
@@ -1611,6 +1613,7 @@ def evaluate_edge_edge_contact_2_vertices(
             collision_normal * collision_normal_sign[0],
             collision_hessian_0,
             collision_damping,
+            collision_stiffness,
             dt,
         )
 
@@ -1622,6 +1625,7 @@ def evaluate_edge_edge_contact_2_vertices(
             collision_normal * collision_normal_sign[1],
             collision_hessian_1,
             collision_damping,
+            collision_stiffness,
             dt,
         )
         collision_force_1 += damping_force + bs[1] * friction_force
@@ -1716,7 +1720,8 @@ def evaluate_vertex_triangle_collision_force_hessian(
             if _DAMPING_ABSOLUTE:
                 damping_hessian = (collision_damping / dt) * wp.outer(signed_normal, signed_normal)
             else:
-                damping_hessian = (collision_damping / dt) * collision_hessian
+                # Rayleigh: kd * ke, projected onto normal direction
+                damping_hessian = (collision_damping * collision_stiffness / dt) * wp.outer(signed_normal, signed_normal)
             collision_hessian = collision_hessian + damping_hessian
             collision_force = collision_force + damping_hessian * displacement
 
@@ -1815,6 +1820,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
             collision_normal * collision_normal_sign[0],
             collision_hessian_0,
             collision_damping,
+            collision_stiffness,
             dt,
         )
 
@@ -1826,6 +1832,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
             collision_normal * collision_normal_sign[1],
             collision_hessian_1,
             collision_damping,
+            collision_stiffness,
             dt,
         )
         collision_force_1 += damping_force + bs[1] * friction_force
@@ -1836,6 +1843,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
             collision_normal * collision_normal_sign[2],
             collision_hessian_2,
             collision_damping,
+            collision_stiffness,
             dt,
         )
         collision_force_2 += damping_force + bs[2] * friction_force
@@ -1846,6 +1854,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
             collision_normal * collision_normal_sign[3],
             collision_hessian_3,
             collision_damping,
+            collision_stiffness,
             dt,
         )
         collision_force_3 += damping_force + bs[3] * friction_force
