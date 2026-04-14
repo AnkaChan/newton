@@ -1362,18 +1362,14 @@ def damp_collision(
         collision_damping: Damping coefficient kd.
         dt: Timestep.
     """
-    # Only damp when gap is closing (gap_rate < 0)
-    if gap_rate < 0.0:
-        if _DAMPING_ABSOLUTE:
-            damping_force = -collision_damping * gap_rate * b_i * collision_normal
-            damping_hessian = (collision_damping / dt) * b_i * b_i * wp.outer(collision_normal, collision_normal)
-        else:
-            # Rayleigh: stiffness-proportional
-            damping_force = -collision_damping * d2E_dDdD * gap_rate * b_i * collision_normal
-            damping_hessian = (collision_damping * d2E_dDdD / dt) * b_i * b_i * wp.outer(collision_normal, collision_normal)
-        return damping_force, damping_hessian
+    if _DAMPING_ABSOLUTE:
+        damping_force = -collision_damping * gap_rate * b_i * collision_normal
+        damping_hessian = (collision_damping / dt) * b_i * b_i * wp.outer(collision_normal, collision_normal)
     else:
-        return wp.vec3(0.0), wp.mat33(0.0)
+        # Rayleigh: stiffness-proportional
+        damping_force = -collision_damping * d2E_dDdD * gap_rate * b_i * collision_normal
+        damping_hessian = (collision_damping * d2E_dDdD / dt) * b_i * b_i * wp.outer(collision_normal, collision_normal)
+    return damping_force, damping_hessian
 
 
 @wp.func
