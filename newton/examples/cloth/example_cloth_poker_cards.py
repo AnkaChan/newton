@@ -74,7 +74,7 @@ class Example:
         cube_cfg = newton.ModelBuilder.ShapeConfig()
         cube_cfg.density = 0.0  # Static body (infinite mass)
         cube_cfg.ke = 5.0e6  # Contact stiffness
-        cube_cfg.kd = 1.0e-4  # Contact damping
+        cube_cfg.kd = 1000  # Contact damping
         cube_cfg.mu = 0.1  # Friction
         builder.add_shape_box(
             body_cube,
@@ -185,7 +185,7 @@ class Example:
 
         # Contact parameters for card-card and card-ground interactions
         self.model.soft_contact_ke = 1.0e5  # Contact stiffness
-        self.model.soft_contact_kd = 1.0e-4  # Contact damping
+        self.model.soft_contact_kd = 100  # Contact damping
         self.model.soft_contact_mu = 0.3  # Friction coefficient
 
         # Create VBD solver with self-contact enabled

@@ -15,13 +15,10 @@ Usage (headless data collection):
 from __future__ import annotations
 
 import argparse
-import math
 import os
-import sys
 
 import numpy as np
 import warp as wp
-
 
 
 def find_settled_substep(positions, window=20, threshold_fraction=0.01):
@@ -166,7 +163,7 @@ class Example:
                     px, py, pz = builder.particle_q[i]
                     if px > x_mid + 0.01:  # right half folds over
                         new_x = 2.0 * x_mid - px  # reflect
-                        new_z = pz + fold_gap      # place on top
+                        new_z = pz + fold_gap  # place on top
                         builder.particle_q[i] = (new_x, py, new_z)
 
         # Roll each layer into a tube (cylinder along y-axis) if requested
@@ -234,9 +231,7 @@ class Example:
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.model.collide(self.state_0, self.contacts)
-            self.solver.step(
-                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt
-            )
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
             # Record per-substep
@@ -272,11 +267,11 @@ class Example:
         z_range = np.ptp(z, axis=0)
 
         n_substeps = positions.shape[0]
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Instability Report ({n_substeps} substeps, settled at substep {start})")
         print(f"Grid: {self.grid_n}x{self.grid_n}, Layers: {self.layers}, Fold: {self.fold}")
         print(f"Particles: {positions.shape[1]}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"Z-position std  — max: {z_std.max():.4f} cm, mean: {z_std.mean():.4f} cm")
         print(f"Z-position range — max: {z_range.max():.4f} cm, mean: {z_range.mean():.4f} cm")
 
@@ -286,10 +281,9 @@ class Example:
             print(f"  Layer {i}: std max={layer_std.max():.6f}, range max={layer_range.max():.6f}")
 
         top5 = np.argsort(z_std)[-5:][::-1]
-        print(f"\nTop 5 unstable vertices:")
+        print("\nTop 5 unstable vertices:")
         for v in top5:
-            print(f"  v{v}: std={z_std[v]:.6f}, range={z_range[v]:.6f}, "
-                  f"z_mean={np.mean(z[:, v]):.6f}")
+            print(f"  v{v}: std={z_std[v]:.6f}, range={z_range[v]:.6f}, z_mean={np.mean(z[:, v]):.6f}")
 
         return {
             "positions": positions,
@@ -321,8 +315,13 @@ def create_parser():
     parser.add_argument("--particle-radius", type=float, default=0.8, help="Particle radius (cm)")
     parser.add_argument("--density", type=float, default=0.02, help="Cloth area density (g/cm^2)")
     parser.add_argument("--step-ratio", type=float, default=1.0, help="VBD step ratio gamma (default 1.0)")
-    parser.add_argument("--material", type=str, default="stvk", choices=["stvk", "neohookean"],
-                        help="Triangle material model (default stvk)")
+    parser.add_argument(
+        "--material",
+        type=str,
+        default="stvk",
+        choices=["stvk", "neohookean"],
+        help="Triangle material model (default stvk)",
+    )
     parser.add_argument(
         "--rayleigh-damping",
         action="store_true",
@@ -346,9 +345,9 @@ def _resolve_damping_defaults(args):
         if args.contact_kd is None:
             args.contact_kd = 1e-2 * args.contact_ke  # 100
         if args.tri_kd is None:
-            args.tri_kd = 1.5e-6 * args.tri_ke        # 0.015
+            args.tri_kd = 1.5e-6 * args.tri_ke  # 0.015
         if args.edge_kd is None:
-            args.edge_kd = 1e-2 * args.edge_ke         # 0.05
+            args.edge_kd = 1e-2 * args.edge_ke  # 0.05
 
 
 if __name__ == "__main__":
@@ -359,8 +358,8 @@ if __name__ == "__main__":
     _pre_args, _ = _pre_parser.parse_known_args()
     use_absolute = not _pre_args.rayleigh_damping
 
-    import newton._src.solvers.vbd.rigid_vbd_kernels as _rvk
     import newton._src.solvers.vbd.particle_vbd_kernels as _pvk
+    import newton._src.solvers.vbd.rigid_vbd_kernels as _rvk
 
     _damping_tag = "absolute" if use_absolute else "rayleigh"
     wp.config.kernel_cache_dir = os.path.join(
@@ -373,6 +372,8 @@ if __name__ == "__main__":
         _pvk._DAMPING_ABSOLUTE = True
         print("*** Damping mode: ABSOLUTE ***")
     else:
+        _rvk._DAMPING_ABSOLUTE = False
+        _pvk._DAMPING_ABSOLUTE = False
         print("*** Damping mode: RAYLEIGH ***")
 
     # Phase 2: now safe to import newton and parse full args.
