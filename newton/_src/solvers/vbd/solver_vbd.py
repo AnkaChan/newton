@@ -231,8 +231,8 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural angular joint constraints
         rigid_joint_linear_k_start: float = 1.0e2,  # Linear penalty seed (used when linear beta > 0)
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
-        rigid_joint_linear_kd: float = 0.0,  # Rayleigh damping for non-cable linear joint constraints
-        rigid_joint_angular_kd: float = 0.0,  # Rayleigh damping for non-cable angular joint constraints
+        rigid_joint_linear_kd: float = 0.0,  # Absolute damping coefficient [N·s/m] for non-cable linear joint constraints
+        rigid_joint_angular_kd: float = 0.0,  # Absolute damping coefficient [N·m·s/rad] for non-cable angular joint constraints
         rigid_enable_dahl_friction: bool | None = None,  # Deprecated: auto-detected from model attributes
     ):
         """
@@ -326,9 +326,9 @@ class SolverVBD(SolverBase):
             rigid_joint_angular_k_start: Angular penalty seed for AVBD ramping. Used when
                 ``rigid_avbd_angular_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the angular beta is 0, k is fixed at the joint stiffness regardless of this value.
-            rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints.
+            rigid_joint_linear_kd: Absolute damping coefficient [N·s/m] for non-cable linear joint constraints.
                 Negative values are clamped to 0.
-            rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints.
+            rigid_joint_angular_kd: Absolute damping coefficient [N·m·s/rad] for non-cable angular joint constraints.
                 Negative values are clamped to 0.
             rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is auto-detected
                 from ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
