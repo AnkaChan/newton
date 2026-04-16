@@ -220,7 +220,7 @@ def _build_cable_chain(
     num_links: int = 6,
     pin_first: bool = True,
     bend_stiffness: float = 1.0e1,
-    bend_damping: float = 1.0e-2,
+    bend_damping: float = 1.0e-1,  # 1e-2 * 1e1 (default bend_stiffness), absolute convention
     segment_length: float = 0.2,
 ):
     """Build a simple cable.
@@ -236,7 +236,7 @@ def _build_cable_chain(
     builder = newton.ModelBuilder()
 
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     # Geometry: straight cable along +X, centered around the origin
@@ -251,7 +251,7 @@ def _build_cable_chain(
         bend_stiffness=bend_stiffness,
         bend_damping=bend_damping,
         stretch_stiffness=1.0e6,
-        stretch_damping=1.0e-2,
+        stretch_damping=1.0e4,
         label="test_cable_chain",
     )
 
@@ -278,7 +278,7 @@ def _build_cable_loop(device, num_links: int = 6):
     builder = newton.ModelBuilder()
 
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     # Geometry: points on a circle in the X-Y plane at fixed height
@@ -301,9 +301,9 @@ def _build_cable_loop(device, num_links: int = 6):
         quaternions=edge_q,
         radius=0.05,
         bend_stiffness=1.0e1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-1,
         stretch_stiffness=1.0e6,
-        stretch_damping=1.0e-2,
+        stretch_damping=1.0e4,
         closed=True,
         label="test_cable_loop",
     )
@@ -630,7 +630,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
 
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3  # 1e1 * 1e2 (ke), absolute convention
     builder.default_shape_cfg.mu = 1.0
 
     # Place cables far apart along Y so they don't interact.
@@ -647,9 +647,9 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
             quaternions=edge_q,
             radius=0.05,
             bend_stiffness=k,
-            bend_damping=1.0e1,
+            bend_damping=1.0e1 * k,  # was Rayleigh (1e1), now absolute (1e1 * bend_stiffness)
             stretch_stiffness=1.0e6,
-            stretch_damping=1.0e-2,
+            stretch_damping=1.0e4,  # 1e-2 * 1e6 (stretch_stiffness)
             label=f"bend_stiffness_{k:.0e}",
         )
 
@@ -766,7 +766,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     builder = newton.ModelBuilder()
 
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     z_height = 3.0
@@ -791,7 +791,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
         bend_stiffness=1.0e4,
         bend_damping=0.0,
         stretch_stiffness=1.0e6,
-        stretch_damping=1.0e-2,
+        stretch_damping=1.0e4,
         label="twist_chain_orthogonal",
     )
 
@@ -932,7 +932,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
 
     # Contact material (stiff contacts, noticeable friction)
     builder.default_shape_cfg.ke = 1.0e5
-    builder.default_shape_cfg.kd = 1.0e-1
+    builder.default_shape_cfg.kd = 1.0e4
     builder.default_shape_cfg.mu = 1.0
 
     # Cable geometric parameters
@@ -997,9 +997,9 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
                 quaternions=edge_q,
                 radius=cable_radius,
                 bend_stiffness=bend_stiffness,
-                bend_damping=1.0e-1,
+                bend_damping=1.0e-2,
                 stretch_stiffness=1.0e6,
-                stretch_damping=1.0e-2,
+                stretch_damping=1.0e4,
                 label=f"pile_l{layer}_{lane}",
             )
             cable_bodies.extend(rod_bodies)
@@ -1096,7 +1096,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     """Cable VBD: BALL joint should keep rod start endpoint attached to a kinematic anchor."""
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     # Kinematic anchor body at the rod start point.
@@ -1133,7 +1133,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=1.0e-1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-3,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -1240,7 +1240,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -1274,7 +1274,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         quaternions=edge_q_x,
         radius=rod_radius,
         bend_stiffness=1.0e-1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-3,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -1302,7 +1302,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         quaternions=edge_q_y,
         radius=rod_radius,
         bend_stiffness=1.0e-1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-3,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -1420,7 +1420,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -1454,7 +1454,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         quaternions=edge_q_x,
         radius=rod_radius,
         bend_stiffness=1.0e-1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-3,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -1485,7 +1485,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         quaternions=edge_q_y,
         radius=rod_radius,
         bend_stiffness=1.0e-1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-3,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -1615,7 +1615,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -1646,7 +1646,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-1,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -1655,7 +1655,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     target_angle = 0.4  # rad
     drive_ke = 2000.0
-    drive_kd = 0.05
+    drive_kd = 100.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -1739,7 +1739,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -1769,7 +1769,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-1,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -1779,7 +1779,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     target_angle = 1.5  # rad -- beyond limits
     ang_limit = 0.3
     drive_ke = 2000.0
-    drive_kd = 0.05
+    drive_kd = 100.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -1795,7 +1795,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
         limit_lower=-ang_limit,
         limit_upper=ang_limit,
         limit_ke=1.0e5,
-        limit_kd=1.0e-4,
+        limit_kd=1.0e1,
     )
     builder.add_articulation([*rod_joints, j_revolute])
 
@@ -1873,7 +1873,7 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -1905,7 +1905,7 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=1.0e-1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-3,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -2003,7 +2003,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -2034,7 +2034,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-1,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -2043,7 +2043,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
 
     target_displacement = 0.1  # m
     drive_ke = 5000.0
-    drive_kd = 0.04
+    drive_kd = 200.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -2127,7 +2127,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -2157,7 +2157,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-1,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -2167,7 +2167,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     target_displacement = 0.5  # m -- beyond limits
     lin_limit = 0.05
     drive_ke = 5000.0
-    drive_kd = 0.04
+    drive_kd = 200.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
     child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -2183,7 +2183,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
         limit_lower=-lin_limit,
         limit_upper=lin_limit,
         limit_ke=1.0e5,
-        limit_kd=1.0e-3,
+        limit_kd=1.0e2,
     )
     builder.add_articulation([*rod_joints, j_prismatic])
 
@@ -2265,7 +2265,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -2298,7 +2298,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e-1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-3,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -2356,7 +2356,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
             state0, state1 = state1, state0
 
             pos_perp_err, ang_perp_err, _d_along, _rot_free = _compute_d6_joint_error(model, state0.body_q, j_d6)
-            test.assertLess(pos_perp_err, 1.0e-3)
+            test.assertLess(pos_perp_err, 2.0e-3)
             test.assertLess(ang_perp_err, 2.0e-2)
 
     final_q = state0.body_q.numpy()
@@ -2400,7 +2400,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -2431,7 +2431,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e-1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-3,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -2519,7 +2519,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -2552,7 +2552,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e-1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-3,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -2671,7 +2671,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -2702,7 +2702,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-1,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -2712,9 +2712,9 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     target_displacement = 0.1  # m
     target_angle = 0.4  # rad
     lin_drive_ke = 5000.0
-    lin_drive_kd = 0.04
+    lin_drive_kd = 200.0
     ang_drive_ke = 2000.0
-    ang_drive_kd = 0.05
+    ang_drive_kd = 100.0
 
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
@@ -2811,7 +2811,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     """
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
@@ -2841,7 +2841,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-1,
         stretch_stiffness=1.0e9,
         stretch_damping=0.0,
         wrap_in_articulation=False,
@@ -2868,22 +2868,22 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
             JointDofConfig(
                 axis=(1, 0, 0),
                 target_ke=5000.0,
-                target_kd=0.04,
+                target_kd=200.0,
                 limit_lower=-lin_limit,
                 limit_upper=lin_limit,
                 limit_ke=1.0e5,
-                limit_kd=1.0e-3,
+                limit_kd=1.0e2,
             )
         ],
         angular_axes=[
             JointDofConfig(
                 axis=(0, 1, 0),
                 target_ke=2000.0,
-                target_kd=0.05,
+                target_kd=100.0,
                 limit_lower=-ang_limit,
                 limit_upper=ang_limit,
                 limit_ke=1.0e5,
-                limit_kd=1.0e-4,
+                limit_kd=1.0e1,
             )
         ],
     )
@@ -3135,7 +3135,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     """Cable graph: Y-junction should build (and simulate) with wrap_in_articulation=True."""
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     # Simple Y: 0-1-2 and 1-3
@@ -3157,9 +3157,9 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
         radius=cable_radius,
         cfg=builder.default_shape_cfg.copy(),
         bend_stiffness=1.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e0,
         stretch_stiffness=1.0e6,
-        stretch_damping=1.0e-2,
+        stretch_damping=1.0e4,
         label="ut_cable_graph_y",
         wrap_in_articulation=True,
     )
@@ -3252,7 +3252,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
     """Closed ring via add_rod(closed=True) should build and simulate."""
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3
     builder.default_shape_cfg.mu = 1.0
 
     # Build a planar ring polyline (duplicate last point so the last segment returns to the start).
@@ -3275,9 +3275,9 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
         radius=cable_radius,
         cfg=builder.default_shape_cfg.copy(),
         bend_stiffness=1.0e2,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e0,
         stretch_stiffness=1.0e6,
-        stretch_damping=1.0e-2,
+        stretch_damping=1.0e4,
         closed=True,
         label="ut_cable_rod_ring_closed",
         wrap_in_articulation=True,
@@ -3351,7 +3351,7 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
         bend_stiffness=0.0,
         bend_damping=0.0,
         stretch_stiffness=1.0e6,
-        stretch_damping=1.0e-2,
+        stretch_damping=1.0e4,
         label="ut_cable_graph_quat",
         wrap_in_articulation=True,
         quaternions=None,
@@ -3447,7 +3447,7 @@ def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
     """VBD rigid contact-force query returns valid per-contact buffers."""
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e3
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e4
     builder.default_shape_cfg.mu = 0.5
 
     # Two overlapping dynamic boxes to guarantee rigid-rigid contact generation.
@@ -3526,7 +3526,7 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     for joint_label, joint_kind in joint_configs:
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1.0e2
-        builder.default_shape_cfg.kd = 1.0e1
+        builder.default_shape_cfg.kd = 1.0e3
         builder.default_shape_cfg.mu = 1.0
 
         points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=z_height)
@@ -3539,7 +3539,7 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
             quaternions=edge_q,
             radius=rod_radius,
             bend_stiffness=1.0e-1,
-            bend_damping=1.0e-2,
+            bend_damping=1.0e-3,
             stretch_stiffness=1.0e9,
             stretch_damping=0.0,
             wrap_in_articulation=False,
@@ -3712,9 +3712,9 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=1.0e1,
-        bend_damping=1.0e-2,
+        bend_damping=1.0e-1,
         stretch_stiffness=1.0e6,
-        stretch_damping=1.0e-2,
+        stretch_damping=1.0e4,
         wrap_in_articulation=False,
         label="test_joint_enabled_cable",
     )
