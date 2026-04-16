@@ -756,14 +756,7 @@ def evaluate_body_particle_contact(
 
         dx = particle_pos - particle_prev_pos
 
-        if wp.dot(n, dx) < 0.0:
-            # Damping coefficient is scaled by contact stiffness (consistent with rigid-rigid)
-            damping_coeff = body_particle_contact_kd * body_particle_contact_ke
-            damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
-            body_contact_hessian = body_contact_hessian + damping_hessian
-            body_contact_force = body_contact_force - damping_hessian * dx
-
-        # body velocity
+        # Compute body velocity at contact point (needed for both damping and friction)
         if body_q_prev:
             # if body_q_prev is available, compute velocity using finite difference method
             # this is more accurate for simulating static friction
@@ -786,7 +779,13 @@ def evaluate_body_particle_contact(
             # compute the body velocity at the particle position
             bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
 
-        relative_translation = dx - bv * dt
+        relative_dx = dx - bv * dt
+        if wp.dot(n, relative_dx) < 0.0:
+            damping_hessian = (body_particle_contact_kd / dt) * wp.outer(n, n)
+            body_contact_hessian = body_contact_hessian + damping_hessian
+            body_contact_force = body_contact_force - damping_hessian * relative_dx
+
+        relative_translation = relative_dx
 
         # Friction using 3D projector approach (consistent with rigid-rigid contacts)
         eps_u = friction_epsilon * dt
