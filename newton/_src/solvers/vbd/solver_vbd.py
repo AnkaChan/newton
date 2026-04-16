@@ -186,8 +186,8 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_k_start: float = 1.0e1,  # AVBD: initial stiffness seed for angular joint constraints
         rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable linear joint constraints (BALL/FIXED/REVOLUTE/PRISMATIC/D6)
         rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/REVOLUTE/PRISMATIC/D6)
-        rigid_joint_linear_kd: float = 1.0e-2,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
-        rigid_joint_angular_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable angular joint constraints
+        rigid_joint_linear_kd: float = 1.0e4,  # AVBD: damping coefficient [N·s/m] for non-cable linear joint constraints
+        rigid_joint_angular_kd: float = 0.0,  # AVBD: damping coefficient [N·m·s/rad] for non-cable angular joint constraints
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
         rigid_enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
@@ -255,10 +255,8 @@ class SolverVBD(SolverBase):
                 constraint tuning).
             rigid_joint_angular_ke: Stiffness cap used by AVBD for **non-cable** angular joint constraint scalars
                 (FIXED, REVOLUTE, PRISMATIC, and D6 projected angular slots).
-            rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints (paired with
-                ``rigid_joint_linear_ke``).
-            rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints (paired with
-                ``rigid_joint_angular_ke``).
+            rigid_joint_linear_kd: Damping coefficient [N·s/m] for non-cable linear joint constraints.
+            rigid_joint_angular_kd: Damping coefficient [N·m·s/rad] for non-cable angular joint constraints.
             rigid_body_contact_buffer_size: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
             rigid_body_particle_contact_buffer_size: Max body-particle (rigid-particle) contacts per rigid body for per-body soft-contact lists (tune based on expected body-particle contact density).
             rigid_enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
