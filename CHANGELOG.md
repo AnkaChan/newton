@@ -47,6 +47,9 @@
 - Change `SolverImplicitMPM.Config.solver` warmstart syntax from `+`-separated strings to ordered sequences; use `solver=("cg", "gauss-seidel")` instead of `solver="cg+gauss-seidel"`.
 - Change implicit MPM default `collider_basis` from `"Q1"` to `"S2"` for improved contact quality; set `collider_basis="Q1"` explicitly to restore the previous behavior.
 - Change GL viewer scroll to dolly toward the orbit pivot; use Ctrl+scroll for FOV zoom
+- **Breaking:** VBD solver damping convention changed from Rayleigh (`D = kd * ke`) to absolute (`D = kd`). All `kd` parameters now have physical units (e.g. `[N·s/m]`) and are applied directly without multiplication by stiffness. Existing `kd` values will need rescaling.
+- **Breaking:** Collision damping in VBD now damps relative (gap-rate) displacement instead of absolute displacement, and only when surfaces are approaching (directional). Tangential sliding is no longer artificially damped by contact.
+- Add Neo-Hookean membrane material model for cloth triangles, selectable via `SolverVBD(particle_tri_material_model="neohookean")`
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
 - Adjust grouping of `reset`, `step`, and `pause` controls so they appear together
 - Bump `Pillow` floor to `>=11.3.0`
