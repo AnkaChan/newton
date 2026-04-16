@@ -21,6 +21,9 @@
 
 - Use pre-computed local AABB for `CONVEX_MESH` shapes in `compute_shape_aabbs`, avoiding a per-frame support-function AABB computation
 - Build mesh SDFs via the texture-based sparse path only; sample via `SDF.texture_data` instead of `SDF.sparse_volume` / `SDF.coarse_volume`.
+- **Breaking:** VBD solver damping convention changed from Rayleigh (`D = kd * ke`) to absolute (`D = kd`). All `kd` parameters now have physical units (e.g. `[N·s/m]`) and are applied directly without multiplication by stiffness. Existing `kd` values will need rescaling.
+- **Breaking:** Collision damping in VBD now damps relative (gap-rate) displacement instead of absolute displacement, and only when surfaces are approaching (directional). Tangential sliding is no longer artificially damped by contact.
+- Add Neo-Hookean membrane material model for cloth triangles, selectable via `SolverVBD(particle_tri_material_model="neohookean")`
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
 - Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
 - Update default environment map texture in GL viewer (source: https://polyhaven.com/a/brown_photostudio_02)
