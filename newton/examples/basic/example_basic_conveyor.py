@@ -184,19 +184,19 @@ class Example:
         belt_cfg = newton.ModelBuilder.ShapeConfig(
             mu=1.2,
             ke=1.0e7,  # vbd only
-            kd=1.0e-5,  # vbd only
+            kd=1.0e2,  # vbd only, absolute convention: 1e-5 * 1e7 (ke)
             collision_group=BELT_COLLISION_GROUP,
         )
         rail_cfg = newton.ModelBuilder.ShapeConfig(
             mu=0.8,
             ke=1.0e7,  # vbd only
-            kd=1.0e-5,  # vbd only
+            kd=1.0e2,  # vbd only, absolute convention: 1e-5 * 1e7 (ke)
             collision_group=RAIL_COLLISION_GROUP,
         )
         bag_cfg = newton.ModelBuilder.ShapeConfig(
             mu=1.0,
             ke=1.0e7,  # vbd only
-            kd=1.0e-5,  # vbd only
+            kd=1.0e2,  # vbd only, absolute convention: 1e-5 * 1e7 (ke)
             restitution=0.0,
         )
 
