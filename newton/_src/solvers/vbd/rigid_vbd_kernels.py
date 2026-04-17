@@ -2306,7 +2306,9 @@ def init_body_particle_contacts(
     )
 
     body_particle_contact_material_ke[i] = avg_ke
-    body_particle_contact_material_kd[i] = avg_kd
+    # Convert absolute kd to damping ratio for body-particle kernel,
+    # which scales damping by the AVBD adaptive penalty (body_particle_contact_ke).
+    body_particle_contact_material_kd[i] = avg_kd / wp.max(avg_ke, 1.0)
     body_particle_contact_material_mu[i] = avg_mu
 
     k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
