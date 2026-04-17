@@ -26,13 +26,10 @@ import newton.utils
 from newton.math import quat_between_vectors_robust
 from newton.solvers import SolverVBD
 
-CONTACT_KE = 1.0e5
-CONTACT_KD = 0.0
-
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
-    mu=0.0,
-    ke=CONTACT_KE,
-    kd=CONTACT_KD,
+    mu=0.1,
+    ke=1.0e6,
+    kd=1.0e9,  # absolute convention: 1e3 * 1e6 (ke)
     gap=0.002,
     density=1.0e6,
     mu_torsional=0.0,
@@ -48,14 +45,16 @@ CABLE_RADIUS = 0.00325
 CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow it
 
 # Contact parameters for cable and ground plane (tuned for VBD).
+CABLE_KE = 1.0e8
+CABLE_KD = 1.0e5  # absolute convention: 1e-3 * 1e8 (CABLE_KE)
 CABLE_MU = 2.0
 
 # Latch revolute-joint tuning.
 LATCH_LIMIT_LOWER = -0.2  # max inward deflection [rad]
 LATCH_LIMIT_UPPER = 0.3  # max outward deflection [rad]
 LATCH_SPRING_KE = 0.15  # angular return-spring stiffness [N*m/rad]
-LATCH_SPRING_KD = 0.2  # dimensionless damping ratio (VBD: D = kd * ke)
-LATCH_LIMIT_KD = 1.0e-4  # dimensionless limit damping (VBD: D = kd * limit_ke)
+LATCH_SPRING_KD = 0.03  # absolute convention: 0.2 * 0.15 (LATCH_SPRING_KE)
+LATCH_LIMIT_KD = 1.0e-4  # limit damping (small, keep as-is for stability)
 
 
 @wp.kernel
@@ -311,7 +310,6 @@ class Example:
 
         cable_points = _load_cable_centerline(stage)
         cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
-        bend_stiffness = 1.0e1
 
         rod_bodies, _ = builder.add_rod(
             positions=cable_points,
@@ -319,12 +317,14 @@ class Example:
             radius=CABLE_RADIUS,
             cfg=dataclasses.replace(
                 builder.default_shape_cfg,
-                ke=CONTACT_KE,
-                kd=CONTACT_KD,
+                ke=CABLE_KE,
+                kd=CABLE_KD,
                 mu=CABLE_MU,
             ),
-            bend_stiffness=bend_stiffness,
-            bend_damping=1.0e-1,
+            bend_stiffness=1.0e-1,
+            bend_damping=1.0e-2,  # absolute convention: 1e-1 * 1e-1 (bend_stiffness)
+            stretch_stiffness=1.0e9,
+            stretch_damping=1.0e8,  # absolute convention: 1e-1 * 1e9 (stretch_stiffness)
             label="cable",
         )
 
@@ -384,10 +384,10 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
+            friction_epsilon=0.1,
+            rigid_contact_k_start=1.0e5,
             rigid_body_contact_buffer_size=256,
         )
-        for j in range(self.model.joint_count):
-            self.solver.set_joint_constraint_mode(j, False)
 
         self._rest_pos = plug_pos
         self.gizmo_tf = wp.transform(plug_pos, wp.quat_identity())

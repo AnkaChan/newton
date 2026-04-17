@@ -271,7 +271,7 @@ class Example:
         ground_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
             ke=1.0e4,
-            kd=1.0e-1,
+            kd=1.0e3,  # absolute convention: 1e-1 * 1e4 (ke)
             kf=builder.default_shape_cfg.kf,
             ka=builder.default_shape_cfg.ka,
             mu=2.5,

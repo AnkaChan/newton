@@ -125,9 +125,9 @@ class Example:
         # edge_ke: bending stiffness (key for card rigidity)
         tri_ke = 1.0e4  # High stretch stiffness
         tri_ka = 1.0e4  # High shear stiffness
-        tri_kd = 1.0e0  # Stretch/shear damping
+        tri_kd = 1.0e0  # Stretch/shear damping (absolute: 1e-4 * 1e4)
         edge_ke = 1.0e2  # High bending stiffness for rigid cards
-        edge_kd = 1.0e0  # Bending damping
+        edge_kd = 1.0e0  # Bending damping (absolute: 1e-2 * 1e2)
 
         # Particle radius for collision (in meters)
         particle_radius = 0.003  # m (0.15 cm)
@@ -173,7 +173,7 @@ class Example:
         # Add ground plane
         ground_cfg = newton.ModelBuilder.ShapeConfig()
         ground_cfg.ke = 1.0e5  # Contact stiffness
-        ground_cfg.kd = 1.0e-4  # Contact damping
+        ground_cfg.kd = 1.0e1  # Contact damping (absolute: 1e-4 * 1e5)
         ground_cfg.mu = 0.3  #
         builder.add_ground_plane(cfg=ground_cfg)
 
@@ -185,7 +185,7 @@ class Example:
 
         # Contact parameters for card-card and card-ground interactions
         self.model.soft_contact_ke = 1.0e5  # Contact stiffness
-        self.model.soft_contact_kd = 1.0e-4  # Contact damping
+        self.model.soft_contact_kd = 1.0e1  # Contact damping (absolute: 1e-4 * 1e5)
         self.model.soft_contact_mu = 0.3  # Friction coefficient
 
         # Create VBD solver with self-contact enabled
