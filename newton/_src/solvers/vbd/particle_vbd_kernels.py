@@ -1281,8 +1281,10 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
             wp.dot(dtheta_dx0, dx0) + wp.dot(dtheta_dx1, dx1) + wp.dot(dtheta_dx2, dx2) + wp.dot(dtheta_dx3, dx3)
         ) * inv_dt
 
-        damping_force = -damping * dtheta_dt * dtheta_dx
-        damping_hessian = damping * inv_dt * wp.outer(dtheta_dx, dtheta_dx)
+        # Scale damping by edge rest length for geometry-consistent behavior
+        rest_len = edge_rest_length[bending_index]
+        damping_force = -damping * rest_len * dtheta_dt * dtheta_dx
+        damping_hessian = damping * rest_len * inv_dt * wp.outer(dtheta_dx, dtheta_dx)
 
         bending_force = bending_force + damping_force
         bending_hessian = bending_hessian + damping_hessian
