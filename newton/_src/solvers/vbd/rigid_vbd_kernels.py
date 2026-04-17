@@ -776,13 +776,11 @@ def evaluate_body_particle_contact(
         # Relative displacement (translation-invariant: zero when particle co-moves with body)
         relative_translation = dx - bv * dt
 
-        # Damp relative normal approach, not absolute displacement
-        relative_normal_speed = wp.dot(n, relative_translation) / dt
-        if relative_normal_speed < 0.0:
-            damping_coeff = body_particle_contact_kd * body_particle_contact_ke
-            damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
-            body_contact_hessian = body_contact_hessian + damping_hessian
-            body_contact_force = body_contact_force - damping_hessian * relative_translation
+        # Damp relative normal displacement, not absolute displacement
+        damping_coeff = body_particle_contact_kd * body_particle_contact_ke
+        damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
+        body_contact_hessian = body_contact_hessian + damping_hessian
+        body_contact_force = body_contact_force - damping_hessian * relative_translation
 
         # Friction using 3D projector approach (consistent with rigid-rigid contacts)
         eps_u = friction_epsilon * dt
