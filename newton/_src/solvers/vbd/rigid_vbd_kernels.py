@@ -780,7 +780,9 @@ def evaluate_body_particle_contact(
 
         relative_dx = dx - bv * dt
         if wp.dot(n, relative_dx) < 0.0:
-            damping_hessian = (body_particle_contact_kd / dt) * wp.outer(n, n)
+            # Scale damping by AVBD penalty for progressive convergence
+            damping_coeff = body_particle_contact_kd * body_particle_contact_ke
+            damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
             body_contact_hessian = body_contact_hessian + damping_hessian
             body_contact_force = body_contact_force - damping_hessian * relative_dx
 
@@ -1922,7 +1924,9 @@ def warmstart_body_particle_contacts(
     avg_mu = wp.sqrt(soft_contact_mu * shape_material_mu[shape_idx])
 
     body_particle_contact_material_ke[i] = avg_ke
-    body_particle_contact_material_kd[i] = avg_kd
+    # Convert absolute kd to damping ratio for body-particle kernel,
+    # which scales damping by the AVBD adaptive penalty (body_particle_contact_ke).
+    body_particle_contact_material_kd[i] = avg_kd / wp.max(avg_ke, 1.0)
     body_particle_contact_material_mu[i] = avg_mu
 
     # Reset contact penalty to k_start every frame because contact indices are not persistent across frames.
