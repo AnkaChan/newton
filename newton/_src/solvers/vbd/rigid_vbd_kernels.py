@@ -677,6 +677,7 @@ def evaluate_body_particle_contact(
     contact_index: int,
     body_particle_contact_ke: float,
     body_particle_contact_kd: float,
+    body_particle_contact_ramp_ratio: float,
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array[float],
@@ -710,7 +711,11 @@ def evaluate_body_particle_contact(
             "previous" position for finite-difference contact-relative velocity.
         contact_index: Index in the body-particle contact arrays
         body_particle_contact_ke: Contact stiffness (model-level or AVBD adaptive)
-        body_particle_contact_kd: Contact damping (model-level or AVBD averaged)
+        body_particle_contact_kd: Contact damping in absolute units [N·s/m]
+        body_particle_contact_ramp_ratio: AVBD ramp progress in [0, 1], shared by
+            stiffness and damping. Defined as ``penalty_k / material_ke_target`` so
+            the damping-to-stiffness Hessian ratio stays constant across iterations
+            (= ``kd / (ke_target * dt)``). Pass ``1.0`` outside the AVBD code path.
         friction_mu: Friction coefficient (model-level or AVBD averaged)
         friction_epsilon: Friction regularization distance
         particle_radius: Array of particle radii
@@ -780,8 +785,7 @@ def evaluate_body_particle_contact(
 
         relative_dx = dx - bv * dt
         if wp.dot(n, relative_dx) < 0.0:
-            # Scale damping by AVBD penalty for progressive convergence
-            damping_coeff = body_particle_contact_kd * body_particle_contact_ke
+            damping_coeff = body_particle_contact_kd * body_particle_contact_ramp_ratio
             damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
             body_contact_hessian = body_contact_hessian + damping_hessian
             body_contact_force = body_contact_force - damping_hessian * relative_dx
@@ -1924,9 +1928,7 @@ def warmstart_body_particle_contacts(
     avg_mu = wp.sqrt(soft_contact_mu * shape_material_mu[shape_idx])
 
     body_particle_contact_material_ke[i] = avg_ke
-    # Convert absolute kd to damping ratio for body-particle kernel,
-    # which scales damping by the AVBD adaptive penalty (body_particle_contact_ke).
-    body_particle_contact_material_kd[i] = avg_kd / wp.max(avg_ke, 1.0)
+    body_particle_contact_material_kd[i] = avg_kd
     body_particle_contact_material_mu[i] = avg_mu
 
     # Reset contact penalty to k_start every frame because contact indices are not persistent across frames.
@@ -2341,6 +2343,7 @@ def accumulate_body_particle_contacts_per_body(
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
@@ -2432,6 +2435,9 @@ def accumulate_body_particle_contacts_per_body(
         contact_ke = body_particle_contact_penalty_k[contact_idx]
         contact_kd = body_particle_contact_material_kd[contact_idx]
         contact_mu = body_particle_contact_material_mu[contact_idx]
+        # AVBD progress in [0, 1]: penalty_k / target_ke. Shared by stiffness and damping
+        # so the damping-to-stiffness ratio stays constant as the penalty ramps up.
+        contact_ramp_ratio = contact_ke / wp.max(body_particle_contact_material_ke[contact_idx], 1.0)
 
         force_on_particle, hessian_particle = evaluate_body_particle_contact(
             particle_idx,
@@ -2440,6 +2446,7 @@ def accumulate_body_particle_contacts_per_body(
             contact_idx,
             contact_ke,
             contact_kd,
+            contact_ramp_ratio,
             contact_mu,
             friction_epsilon,
             particle_radius,

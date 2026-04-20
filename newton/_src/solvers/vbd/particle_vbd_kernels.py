@@ -2508,6 +2508,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     body_particle_contact_max: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
     body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     shape_material_mu: wp.array[float],
@@ -2536,6 +2537,9 @@ def accumulate_contact_force_and_hessian_no_self_contact(
             contact_ke = body_particle_contact_penalty_k[t_id]
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
+            # AVBD progress in [0, 1]: penalty_k / target_ke. Shared by stiffness and damping
+            # so the damping-to-stiffness ratio stays constant as the penalty ramps up.
+            contact_ramp_ratio = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0)
 
             body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
                 particle_idx,
@@ -2544,6 +2548,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 t_id,
                 contact_ke,
                 contact_kd,
+                contact_ramp_ratio,
                 contact_mu,
                 friction_epsilon,
                 particle_radius,
@@ -3009,6 +3014,7 @@ def accumulate_particle_body_contact_force_and_hessian(
     body_particle_contact_max: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
     body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     shape_material_mu: wp.array[float],
@@ -3037,6 +3043,9 @@ def accumulate_particle_body_contact_force_and_hessian(
             contact_ke = body_particle_contact_penalty_k[t_id]
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
+            # AVBD progress in [0, 1]: penalty_k / target_ke. Shared by stiffness and damping
+            # so the damping-to-stiffness ratio stays constant as the penalty ramps up.
+            contact_ramp_ratio = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0)
 
             body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
                 particle_idx,
@@ -3045,6 +3054,7 @@ def accumulate_particle_body_contact_force_and_hessian(
                 t_id,
                 contact_ke,
                 contact_kd,
+                contact_ramp_ratio,
                 contact_mu,
                 friction_epsilon,
                 particle_radius,
@@ -3566,6 +3576,7 @@ def accumulate_contact_force_and_hessian(
         particle_idx = soft_contact_particle[t_id]
 
         if particle_colors[particle_idx] == current_color:
+            # Non-AVBD path: stiffness is constant (no penalty ramp), so ramp_ratio = 1.
             body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
                 particle_idx,
                 pos[particle_idx],
@@ -3573,6 +3584,7 @@ def accumulate_contact_force_and_hessian(
                 t_id,
                 soft_contact_ke,
                 soft_contact_kd,
+                1.0,
                 friction_mu,
                 friction_epsilon,
                 particle_radius,
