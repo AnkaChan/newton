@@ -65,6 +65,7 @@ def eval_body_contact_kernel(
 
     if t_id < particle_body_contact_count:
         particle_idx = soft_contact_particle[t_id]
+        # Non-AVBD path: stiffness is constant (no penalty ramp), so ramp_ratio = 1.
         body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
             particle_idx,
             pos[particle_idx],
@@ -72,6 +73,7 @@ def eval_body_contact_kernel(
             t_id,
             soft_contact_ke,
             soft_contact_kd,
+            1.0,
             friction_mu,
             friction_epsilon,
             particle_radius,

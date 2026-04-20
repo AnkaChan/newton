@@ -725,6 +725,7 @@ def _compute_body_particle_contact_force(
     relative_translation: wp.vec3,
     ke: float,
     kd: float,
+    ramp_ratio: float,
     mu: float,
     friction_epsilon: float,
     dt: float,
@@ -733,14 +734,15 @@ def _compute_body_particle_contact_force(
 
     All geometry and kinematics (penetration, normal, relative displacement) are
     resolved by the caller.  This function only computes the contact force and
-    Hessian from those scalar/vector inputs.
+    Hessian from those scalar/vector inputs. ``ramp_ratio`` shares the AVBD
+    penalty progress between stiffness and damping; pass ``1.0`` outside AVBD.
     """
     f_n = penetration_depth * ke
     force = n * f_n
     hessian = ke * wp.outer(n, n)
 
     if wp.dot(n, relative_translation) < 0.0:
-        damping_coeff = kd * ke
+        damping_coeff = kd * ramp_ratio
         damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
         hessian = hessian + damping_hessian
         force = force - damping_hessian * relative_translation
@@ -761,6 +763,7 @@ def _eval_body_particle_contact(
     contact_index: int,
     body_particle_contact_ke: float,
     body_particle_contact_kd: float,
+    body_particle_contact_ramp_ratio: float,
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array[float],
@@ -820,6 +823,7 @@ def _eval_body_particle_contact(
             relative_translation,
             body_particle_contact_ke,
             body_particle_contact_kd,
+            body_particle_contact_ramp_ratio,
             friction_mu,
             friction_epsilon,
             dt,
@@ -836,6 +840,7 @@ def evaluate_body_particle_contact(
     contact_index: int,
     body_particle_contact_ke: float,
     body_particle_contact_kd: float,
+    body_particle_contact_ramp_ratio: float,
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array[float],
@@ -856,6 +861,9 @@ def evaluate_body_particle_contact(
     VBD rigid-side uses ``_eval_body_particle_contact`` directly (mu is
     pre-averaged per contact).  This wrapper is kept for other solvers
     that pass raw mu and need per-shape mixing.
+
+    ``body_particle_contact_ramp_ratio`` shares the AVBD penalty progress
+    between stiffness and damping; pass ``1.0`` outside the AVBD code path.
     """
     shape_index = contact_shape[contact_index]
     mixed_mu = wp.sqrt(friction_mu * shape_material_mu[shape_index])
@@ -866,6 +874,7 @@ def evaluate_body_particle_contact(
         contact_index,
         body_particle_contact_ke,
         body_particle_contact_kd,
+        body_particle_contact_ramp_ratio,
         mixed_mu,
         friction_epsilon,
         particle_radius,
@@ -880,6 +889,7 @@ def evaluate_body_particle_contact(
         contact_normal,
         dt,
     )
+
 
 
 @wp.func
@@ -2306,9 +2316,7 @@ def init_body_particle_contacts(
     )
 
     body_particle_contact_material_ke[i] = avg_ke
-    # Convert absolute kd to damping ratio for body-particle kernel,
-    # which scales damping by the AVBD adaptive penalty (body_particle_contact_ke).
-    body_particle_contact_material_kd[i] = avg_kd / wp.max(avg_ke, 1.0)
+    body_particle_contact_material_kd[i] = avg_kd
     body_particle_contact_material_mu[i] = avg_mu
 
     k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
@@ -2764,6 +2772,7 @@ def accumulate_body_particle_contacts_per_body(
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
@@ -2851,12 +2860,18 @@ def accumulate_body_particle_contacts_per_body(
         dx = particle_pos - particle_q_prev[particle_idx]
         relative_translation = dx - bv * dt
 
+        # AVBD progress in [0, 1]: penalty_k / target_ke. Shared by stiffness and damping
+        # so the damping-to-stiffness ratio stays constant as the penalty ramps up.
+        contact_ramp_ratio = body_particle_contact_penalty_k[contact_idx] / wp.max(
+            body_particle_contact_material_ke[contact_idx], 1.0
+        )
         force_on_particle, hessian_particle = _compute_body_particle_contact_force(
             penetration_depth,
             n,
             relative_translation,
             body_particle_contact_penalty_k[contact_idx],
             body_particle_contact_material_kd[contact_idx],
+            contact_ramp_ratio,
             body_particle_contact_material_mu[contact_idx],
             friction_epsilon,
             dt,
