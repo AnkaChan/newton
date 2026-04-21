@@ -2511,6 +2511,8 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
+    # Damping convention: 0 = absolute, 1 = legacy (scales damping with AVBD stiffness).
+    damping_scale_with_stiffness: int,
     shape_material_mu: wp.array[float],
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -2537,9 +2539,13 @@ def accumulate_contact_force_and_hessian_no_self_contact(
             contact_ke = body_particle_contact_penalty_k[t_id]
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
-            # AVBD progress in [0, 1]: penalty_k / target_ke. Shared by stiffness and damping
-            # so the damping-to-stiffness ratio stays constant as the penalty ramps up.
-            contact_ramp_ratio = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0)
+            # Damping scaling selected by the solver's damping convention flag:
+            #   absolute: ratio = penalty_k / material_ke ∈ [0, 1]  (damping = kd * ratio, kd in N·s/m)
+            #   legacy:   ratio = penalty_k                          (damping = kd * penalty_k, Rayleigh)
+            if damping_scale_with_stiffness != 0:
+                contact_ramp_ratio = contact_ke
+            else:
+                contact_ramp_ratio = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0)
 
             body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
                 particle_idx,
@@ -3017,6 +3023,8 @@ def accumulate_particle_body_contact_force_and_hessian(
     body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
+    # Damping convention: 0 = absolute, 1 = legacy (scales damping with AVBD stiffness).
+    damping_scale_with_stiffness: int,
     shape_material_mu: wp.array[float],
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -3043,9 +3051,13 @@ def accumulate_particle_body_contact_force_and_hessian(
             contact_ke = body_particle_contact_penalty_k[t_id]
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
-            # AVBD progress in [0, 1]: penalty_k / target_ke. Shared by stiffness and damping
-            # so the damping-to-stiffness ratio stays constant as the penalty ramps up.
-            contact_ramp_ratio = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0)
+            # Damping scaling selected by the solver's damping convention flag:
+            #   absolute: ratio = penalty_k / material_ke ∈ [0, 1]  (damping = kd * ratio, kd in N·s/m)
+            #   legacy:   ratio = penalty_k                          (damping = kd * penalty_k, Rayleigh)
+            if damping_scale_with_stiffness != 0:
+                contact_ramp_ratio = contact_ke
+            else:
+                contact_ramp_ratio = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0)
 
             body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
                 particle_idx,

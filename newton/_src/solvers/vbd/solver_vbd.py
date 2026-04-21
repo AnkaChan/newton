@@ -187,6 +187,7 @@ class SolverVBD(SolverBase):
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
         rigid_enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
+        contact_damping_scale_with_stiffness: bool = False,  # See docstring
     ):
         """
         Args:
@@ -258,6 +259,15 @@ class SolverVBD(SolverBase):
             rigid_enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
                 Configure per-joint Dahl parameters via the solver-registered custom model attributes
                 ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``.
+            contact_damping_scale_with_stiffness: Selects the body-particle contact damping convention.
+                When ``False`` (default, absolute convention), the contact damping coefficient is treated
+                as an absolute value in N·s/m: ``damping = kd * ramp_ratio`` where ``ramp_ratio ∈ [0, 1]``
+                is the AVBD penalty progress; at full ramp ``damping = kd``.
+                When ``True`` (legacy convention, matches pre-unification ``avg_kd * avg_ke`` behavior),
+                the contact damping scales with the AVBD penalty stiffness:
+                ``damping = kd * penalty_k``; at full ramp ``damping = kd * avg_ke``.
+                The legacy mode is useful for reproducing pre-unification results or when existing
+                ``shape_material_kd`` values were tuned assuming Rayleigh-style ``kd * ke`` damping.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -276,6 +286,11 @@ class SolverVBD(SolverBase):
         # Common parameters
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
+        # Damping convention toggle for body-particle contacts:
+        #   False (default): absolute damping (kd in N·s/m, clamped at kd via AVBD ramp).
+        #   True: legacy Rayleigh-style damping that scales with the AVBD penalty stiffness.
+        # Stored as int so it can be passed directly to Warp kernels.
+        self.contact_damping_scale_with_stiffness = int(bool(contact_damping_scale_with_stiffness))
 
         # Material model: 0 = StVK, 1 = NeoHookean
         _TRI_MATERIAL_MODELS = {"stvk": 0, "neohookean": 1}
@@ -1759,6 +1774,7 @@ class SolverVBD(SolverBase):
                         self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
+                        self.contact_damping_scale_with_stiffness,
                         model.shape_material_mu,
                         model.shape_body,
                         body_q_for_particles,
@@ -1981,6 +1997,7 @@ class SolverVBD(SolverBase):
                         self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
+                        self.contact_damping_scale_with_stiffness,
                         # soft contact data (body-particle contacts)
                         contacts.soft_contact_count,
                         contacts.soft_contact_particle,
