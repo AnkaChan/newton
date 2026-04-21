@@ -54,7 +54,7 @@ class Example:
 
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1.0e4
-        builder.default_shape_cfg.kd = 1.0e-1
+        builder.default_shape_cfg.kd = 1.0e3
         builder.default_shape_cfg.mu = 1.0
 
         cable_cfg = builder.default_shape_cfg.copy()

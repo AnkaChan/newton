@@ -42,7 +42,7 @@ class Example:
         cell_size = 0.1
 
         # Create 4 grids with different damping values
-        damping_values = [1e-1, 1e-2, 1e-3, 1e-4]
+        damping_values = [1e4, 1e3, 1e2, 1e1]
         spacing = 0.6  # Space between grids along Y-axis
 
         for i, k_damp in enumerate(damping_values):
