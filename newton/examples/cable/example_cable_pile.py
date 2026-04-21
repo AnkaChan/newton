@@ -62,7 +62,7 @@ class Example:
         # Set default material properties before adding any shapes
         # Default config will be used by plane and any shape without explicit cfg
         builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness (used by plane)
-        builder.default_shape_cfg.kd = 1.0e-1  # Contact damping
+        builder.default_shape_cfg.kd = 1.0e4  # Contact damping (absolute convention)
         builder.default_shape_cfg.mu = 5.0  # Friction coefficient
 
         cable_shape_cfg = newton.ModelBuilder.ShapeConfig(
@@ -150,9 +150,9 @@ class Example:
                     radius=cable_radius,
                     cfg=cable_shape_cfg,
                     bend_stiffness=1.0e1,
-                    bend_damping=5.0e-1,
+                    bend_damping=5.0e0,
                     stretch_stiffness=1.0e6,
-                    stretch_damping=1.0e-4,
+                    stretch_damping=1.0e2,
                     label=f"cable_l{layer}_{lane}",
                 )
                 rod_bodies_all.extend(rod_bodies)

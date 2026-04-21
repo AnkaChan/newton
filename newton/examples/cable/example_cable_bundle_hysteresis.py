@@ -173,7 +173,7 @@ class Example:
         self.cable_radius = 0.02
         self.cable_gap_multiplier = 1.1
         bend_stiffness = 1.0e1
-        bend_damping = 5.0e-2
+        bend_damping = 5.0e-1
         stretch_stiffness = 1.0e6
         stretch_damping = 0.0
 
@@ -186,7 +186,7 @@ class Example:
 
         # Set default material properties for cables (cable-to-cable contact)
         builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
-        builder.default_shape_cfg.kd = 1.0e-2  # Contact damping
+        builder.default_shape_cfg.kd = 1.0e4  # Contact damping
         builder.default_shape_cfg.mu = 2.0  # Friction coefficient
 
         # Bundle layout: align cable center with obstacle center
@@ -228,7 +228,7 @@ class Example:
         obstacle_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
             ke=1.0e6,
-            kd=1.0e-2,
+            kd=1.0e4,
             kf=builder.default_shape_cfg.kf,
             ka=builder.default_shape_cfg.ka,
             mu=0.0,  # Frictionless obstacles
@@ -271,7 +271,7 @@ class Example:
         ground_cfg = newton.ModelBuilder.ShapeConfig(
             density=builder.default_shape_cfg.density,
             ke=1.0e4,
-            kd=1.0e-1,
+            kd=1.0e3,  # absolute convention: 1e-1 * 1e4 (ke)
             kf=builder.default_shape_cfg.kf,
             ka=builder.default_shape_cfg.ka,
             mu=2.5,

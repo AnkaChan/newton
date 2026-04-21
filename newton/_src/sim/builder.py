@@ -4200,13 +4200,11 @@ class ModelBuilder:
             child_xform: The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
             stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e9.
-            stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
-                this is a dimensionless (Rayleigh-style) coefficient. If None,
+            stretch_damping: Cable stretch damping [N·s/m] (stored as ``target_kd``). If None,
                 defaults to 0.0.
             bend_stiffness: Cable bend/twist stiffness (stored as ``target_ke``) [N*m] (torque per radian). If None,
                 defaults to 0.0.
-            bend_damping: Cable bend/twist damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
-                this is a dimensionless (Rayleigh-style) coefficient. If None,
+            bend_damping: Cable bend/twist damping [N·m·s/rad] (stored as ``target_kd``). If None,
                 defaults to 0.0.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.

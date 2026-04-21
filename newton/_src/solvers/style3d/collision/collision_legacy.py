@@ -208,6 +208,7 @@ class CollisionHandler:
                 self.self_contact_radius,
                 self.model.soft_contact_ke,
                 self.model.soft_contact_kd,
+                0,  # damping_bidirectional: legacy path keeps the unidirectional gate
                 self.model.soft_contact_mu,
                 self.friction_epsilon,
                 self.trimesh_collision_detector.edge_edge_parallel_epsilon,

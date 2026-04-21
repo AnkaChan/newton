@@ -138,7 +138,7 @@ class Example:
 
         # Set default material properties before adding any shapes
         builder.default_shape_cfg.ke = 1.0e4  # Contact stiffness
-        builder.default_shape_cfg.kd = 1.0e-1  # Contact damping
+        builder.default_shape_cfg.kd = 1.0e3  # Contact damping
         builder.default_shape_cfg.mu = 1.0e0  # Friction coefficient
 
         kinematic_body_indices = []
@@ -168,9 +168,9 @@ class Example:
                 quaternions=cable_edge_q,
                 radius=cable_radius,
                 bend_stiffness=bend_stiffness,
-                bend_damping=1.0e-2,
+                bend_damping=1.0e0,
                 stretch_stiffness=stretch_stiffness,
-                stretch_damping=1.0e-4,
+                stretch_damping=1.0e2,
                 label=f"cable_{i}",
             )
 

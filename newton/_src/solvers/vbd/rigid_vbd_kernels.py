@@ -377,10 +377,10 @@ def evaluate_angular_constraint_force_hessian(
             q_wp, q_wc, q_wp_rest, q_wc_rest, omega_p_world, omega_c_world, kappa_now_vec
         )
         dkappa_perp = P * dkappa_dt_vec
-        f_damp_local = (damping * k_eff) * dkappa_perp
+        f_damp_local = damping * dkappa_perp
         f_local = f_local + f_damp_local
 
-        k_damp = (damping * inv_dt) * k_eff
+        k_damp = damping * inv_dt
         H_local = H_local + k_damp * P
 
     H_aa = J_world * (H_local * wp.transpose(J_world))
@@ -455,14 +455,14 @@ def evaluate_linear_constraint_force_hessian(
         dC_dt = (C_vec - C_vec_prev) * inv_dt
         dC_dt_perp = P * dC_dt
 
-        damping_coeff = damping * penalty_k
-        f_damping = damping_coeff * dC_dt_perp
+        f_damping = damping * dC_dt_perp
         f_attachment = f_attachment + f_damping
 
+        # Damping Hessian uses projector P (geometry), not K_point (penalty_k * P)
         damp_scale = damping * inv_dt
-        H_ll_damp = damp_scale * H_ll
-        H_al_damp = damp_scale * H_al
-        H_aa_damp = damp_scale * H_aa
+        H_ll_damp = damp_scale * P
+        H_al_damp = damp_scale * (rx * P)
+        H_aa_damp = damp_scale * (wp.transpose(rx) * P * rx)
 
         H_ll = H_ll + H_ll_damp
         H_al = H_al + H_al_damp
@@ -618,9 +618,8 @@ def evaluate_rigid_contact_from_collision(
 
     # Damping only when compressing (v_n < 0, bodies approaching)
     if contact_kd > 0.0 and v_dot_n < 0.0:
-        damping_coeff = contact_kd * contact_ke
-        damping_force = -damping_coeff * v_dot_n * contact_normal
-        damping_hessian = (damping_coeff / dt) * n_outer
+        damping_force = -contact_kd * v_dot_n * contact_normal
+        damping_hessian = (contact_kd / dt) * n_outer
         f_total = f_total + damping_force
         K_total = K_total + damping_hessian
 
@@ -678,6 +677,8 @@ def evaluate_body_particle_contact(
     contact_index: int,
     body_particle_contact_ke: float,
     body_particle_contact_kd: float,
+    body_particle_contact_ramp_ratio: float,
+    damping_bidirectional: int,
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array[float],
@@ -711,7 +712,11 @@ def evaluate_body_particle_contact(
             "previous" position for finite-difference contact-relative velocity.
         contact_index: Index in the body-particle contact arrays
         body_particle_contact_ke: Contact stiffness (model-level or AVBD adaptive)
-        body_particle_contact_kd: Contact damping (model-level or AVBD averaged)
+        body_particle_contact_kd: Contact damping in absolute units [N·s/m]
+        body_particle_contact_ramp_ratio: AVBD ramp progress in [0, 1], shared by
+            stiffness and damping. Defined as ``penalty_k / material_ke_target`` so
+            the damping-to-stiffness Hessian ratio stays constant across iterations
+            (= ``kd / (ke_target * dt)``). Pass ``1.0`` outside the AVBD code path.
         friction_mu: Friction coefficient (model-level or AVBD averaged)
         friction_epsilon: Friction regularization distance
         particle_radius: Array of particle radii
@@ -756,14 +761,7 @@ def evaluate_body_particle_contact(
 
         dx = particle_pos - particle_prev_pos
 
-        if wp.dot(n, dx) < 0.0:
-            # Damping coefficient is scaled by contact stiffness (consistent with rigid-rigid)
-            damping_coeff = body_particle_contact_kd * body_particle_contact_ke
-            damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
-            body_contact_hessian = body_contact_hessian + damping_hessian
-            body_contact_force = body_contact_force - damping_hessian * dx
-
-        # body velocity
+        # Compute body velocity at contact point (needed for both damping and friction)
         if body_q_prev:
             # if body_q_prev is available, compute velocity using finite difference method
             # this is more accurate for simulating static friction
@@ -786,7 +784,17 @@ def evaluate_body_particle_contact(
             # compute the body velocity at the particle position
             bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
 
-        relative_translation = dx - bv * dt
+        relative_dx = dx - bv * dt
+        # Damping gate:
+        #   default (unidirectional): damp only on approach (dot(n, relative_dx) < 0).
+        #   bidirectional: damp on both approach and separation.
+        if damping_bidirectional != 0 or wp.dot(n, relative_dx) < 0.0:
+            damping_coeff = body_particle_contact_kd * body_particle_contact_ramp_ratio
+            damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
+            body_contact_hessian = body_contact_hessian + damping_hessian
+            body_contact_force = body_contact_force - damping_hessian * relative_dx
+
+        relative_translation = relative_dx
 
         # Friction using 3D projector approach (consistent with rigid-rigid contacts)
         eps_u = friction_epsilon * dt
@@ -1262,14 +1270,12 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                lim_d = lim_kd * lim_ke
-                f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
-                H_scalar = lim_ke + lim_d * inv_dt
+                f_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
+                H_scalar = lim_ke + lim_kd * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                drive_d = drive_kd * drive_ke
                 vel_err = dtheta_dt - target_vel
-                f_scalar = drive_ke * err_pos + drive_d * vel_err
-                H_scalar = drive_ke + drive_d * inv_dt
+                f_scalar = drive_ke * err_pos + drive_kd * vel_err
+                H_scalar = drive_ke + drive_kd * inv_dt
 
             if H_scalar > 0.0:
                 tau_drive, Haa_drive = apply_angular_drive_limit_torque(a, J_world, is_parent_body, f_scalar, H_scalar)
@@ -1367,14 +1373,12 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                lim_d = lim_kd * lim_ke
-                f_scalar = lim_ke * err_pos + lim_d * dd_dt
-                H_scalar = lim_ke + lim_d * inv_dt
+                f_scalar = lim_ke * err_pos + lim_kd * dd_dt
+                H_scalar = lim_ke + lim_kd * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                drive_d = drive_kd * drive_ke
                 vel_err = dd_dt - target_vel
-                f_scalar = drive_ke * err_pos + drive_d * vel_err
-                H_scalar = drive_ke + drive_d * inv_dt
+                f_scalar = drive_ke * err_pos + drive_kd * vel_err
+                H_scalar = drive_ke + drive_kd * inv_dt
 
             if H_scalar > 0.0:
                 if is_parent_body:
@@ -1520,14 +1524,12 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            lim_d = lim_kd * lim_ke
-                            f_scalar = lim_ke * err_pos + lim_d * dd_dt
-                            H_scalar = lim_ke + lim_d * inv_dt
+                            f_scalar = lim_ke * err_pos + lim_kd * dd_dt
+                            H_scalar = lim_ke + lim_kd * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            drive_d = drive_kd * drive_ke
                             vel_err = dd_dt - target_vel
-                            f_scalar = drive_ke * err_pos + drive_d * vel_err
-                            H_scalar = drive_ke + drive_d * inv_dt
+                            f_scalar = drive_ke * err_pos + drive_kd * vel_err
+                            H_scalar = drive_ke + drive_kd * inv_dt
 
                         if H_scalar > 0.0:
                             force_drive, torque_drive, Hll_drive, Hal_drive, Haa_drive = apply_linear_drive_limit_force(
@@ -1585,14 +1587,12 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            lim_d = lim_kd * lim_ke
-                            f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
-                            H_scalar = lim_ke + lim_d * inv_dt
+                            f_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
+                            H_scalar = lim_ke + lim_kd * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            drive_d = drive_kd * drive_ke
                             vel_err = dtheta_dt - target_vel
-                            f_scalar = drive_ke * err_pos + drive_d * vel_err
-                            H_scalar = drive_ke + drive_d * inv_dt
+                            f_scalar = drive_ke * err_pos + drive_kd * vel_err
+                            H_scalar = drive_ke + drive_kd * inv_dt
 
                         if H_scalar > 0.0:
                             tau_drive, Haa_drive = apply_angular_drive_limit_torque(
@@ -2347,8 +2347,14 @@ def accumulate_body_particle_contacts_per_body(
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
+    # Damping convention: 0 = absolute (kd * ramp_ratio, clamped at kd),
+    #                     1 = legacy (kd * penalty_k, scales with AVBD stiffness).
+    damping_scale_with_stiffness: int,
+    # Damping direction gate: 0 = unidirectional (approach only), 1 = bidirectional (approach + separation).
+    damping_bidirectional: int,
     # Soft contact data (body-particle)
     body_particle_contact_count: wp.array[int],
     body_particle_contact_particle: wp.array[int],
@@ -2438,6 +2444,15 @@ def accumulate_body_particle_contacts_per_body(
         contact_ke = body_particle_contact_penalty_k[contact_idx]
         contact_kd = body_particle_contact_material_kd[contact_idx]
         contact_mu = body_particle_contact_material_mu[contact_idx]
+        # Damping scaling selected by the solver's damping convention flag:
+        #   absolute (default):  ratio = penalty_k / material_ke ∈ [0, 1] → damping = kd * ratio
+        #                        (kd interpreted as N·s/m, clamped via AVBD ramp).
+        #   legacy (stiffness):  ratio = penalty_k → damping = kd * penalty_k
+        #                        (Rayleigh-style, damping scales with AVBD penalty).
+        if damping_scale_with_stiffness != 0:
+            contact_ramp_ratio = contact_ke
+        else:
+            contact_ramp_ratio = contact_ke / wp.max(body_particle_contact_material_ke[contact_idx], 1.0)
 
         force_on_particle, hessian_particle = evaluate_body_particle_contact(
             particle_idx,
@@ -2446,6 +2461,8 @@ def accumulate_body_particle_contacts_per_body(
             contact_idx,
             contact_ke,
             contact_kd,
+            contact_ramp_ratio,
+            damping_bidirectional,
             contact_mu,
             friction_epsilon,
             particle_radius,

@@ -102,13 +102,9 @@ class SolverVBD(SolverBase):
         - :attr:`~newton.Model.joint_enabled` is supported for all joint types.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and CABLE (as stretch/bend stiffness and damping).
-          VBD interprets ``kd`` as a dimensionless Rayleigh coefficient (``D = kd * ke``).
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
-          for REVOLUTE, PRISMATIC, and D6 joints. The default ``limit_kd`` in
-          :class:`~newton.ModelBuilder.JointDofConfig` is ``1e1``, which under VBD's Rayleigh
-          convention (``D = kd * ke``) can produce excessive damping. When using joint limits
-          with VBD, explicitly set ``limit_kd`` to a small value.
+          for REVOLUTE, PRISMATIC, and D6 joints.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_target_mode`, equality constraints, mimic constraints.
@@ -173,6 +169,7 @@ class SolverVBD(SolverBase):
         particle_collision_detection_interval: int = 0,
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
+        particle_tri_material_model: str = "neohookean",
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -185,11 +182,13 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_k_start: float = 1.0e1,  # AVBD: initial stiffness seed for angular joint constraints
         rigid_joint_linear_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable linear joint constraints (BALL/FIXED/REVOLUTE/PRISMATIC/D6)
         rigid_joint_angular_ke: float = 1.0e9,  # AVBD: stiffness cap for non-cable angular joint constraints (FIXED/REVOLUTE/PRISMATIC/D6)
-        rigid_joint_linear_kd: float = 1.0e-2,  # AVBD: Rayleigh damping coefficient for non-cable linear joint constraints
-        rigid_joint_angular_kd: float = 0.0,  # AVBD: Rayleigh damping coefficient for non-cable angular joint constraints
+        rigid_joint_linear_kd: float = 1.0e4,  # AVBD: damping coefficient [N·s/m] for non-cable linear joint constraints
+        rigid_joint_angular_kd: float = 0.0,  # AVBD: damping coefficient [N·m·s/rad] for non-cable angular joint constraints
         rigid_body_contact_buffer_size: int = 64,
         rigid_body_particle_contact_buffer_size: int = 256,
         rigid_enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
+        contact_damping_scale_with_stiffness: bool = False,  # See docstring
+        contact_damping_bidirectional: bool = False,  # See docstring
     ):
         """
         Args:
@@ -222,6 +221,8 @@ class SolverVBD(SolverBase):
                 iterations.
             particle_edge_parallel_epsilon: Threshold to detect near-parallel edges in edge-edge collision handling.
             particle_enable_tile_solve: Whether to accelerate the particle solver using tile API.
+            particle_tri_material_model: Triangle membrane material model. ``"neohookean"`` (default) uses the
+                stable Neo-Hookean energy; ``"stvk"`` uses the St. Venant-Kirchhoff energy.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -252,15 +253,31 @@ class SolverVBD(SolverBase):
                 constraint tuning).
             rigid_joint_angular_ke: Stiffness cap used by AVBD for **non-cable** angular joint constraint scalars
                 (FIXED, REVOLUTE, PRISMATIC, and D6 projected angular slots).
-            rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints (paired with
-                ``rigid_joint_linear_ke``).
-            rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints (paired with
-                ``rigid_joint_angular_ke``).
+            rigid_joint_linear_kd: Damping coefficient [N·s/m] for non-cable linear joint constraints.
+            rigid_joint_angular_kd: Damping coefficient [N·m·s/rad] for non-cable angular joint constraints.
             rigid_body_contact_buffer_size: Max body-body (rigid-rigid) contacts per rigid body for per-body contact lists (tune based on expected body-body contact density).
             rigid_body_particle_contact_buffer_size: Max body-particle (rigid-particle) contacts per rigid body for per-body soft-contact lists (tune based on expected body-particle contact density).
             rigid_enable_dahl_friction: Enable Dahl hysteresis friction model for cable bending (default: False).
                 Configure per-joint Dahl parameters via the solver-registered custom model attributes
                 ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``.
+            contact_damping_scale_with_stiffness: Selects the body-particle contact damping convention.
+                When ``False`` (default, absolute convention), the contact damping coefficient is treated
+                as an absolute value in N·s/m: ``damping = kd * ramp_ratio`` where ``ramp_ratio ∈ [0, 1]``
+                is the AVBD penalty progress; at full ramp ``damping = kd``.
+                When ``True`` (legacy convention, matches pre-unification ``avg_kd * avg_ke`` behavior),
+                the contact damping scales with the AVBD penalty stiffness:
+                ``damping = kd * penalty_k``; at full ramp ``damping = kd * avg_ke``.
+                The legacy mode is useful for reproducing pre-unification results or when existing
+                ``shape_material_kd`` values were tuned assuming Rayleigh-style ``kd * ke`` damping.
+            contact_damping_bidirectional: Selects when the contact damping force is applied,
+                along the contact normal, for body-particle and particle-particle (self) contacts.
+                When ``False`` (default, unidirectional), damping is applied only while surfaces are
+                approaching (``relative normal velocity < 0``) and disabled on separation — this
+                prevents damping from resisting natural separation after impact.
+                When ``True`` (bidirectional), damping is applied symmetrically on both approach
+                and separation, which more closely matches an implicit spring-damper contact.
+                Use bidirectional when the one-sided gate causes objects to bounce off repeatedly
+                after impact.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -279,6 +296,20 @@ class SolverVBD(SolverBase):
         # Common parameters
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
+        # Damping convention toggle for body-particle contacts:
+        #   False (default): absolute damping (kd in N·s/m, clamped at kd via AVBD ramp).
+        #   True: legacy Rayleigh-style damping that scales with the AVBD penalty stiffness.
+        # Stored as int so it can be passed directly to Warp kernels.
+        self.contact_damping_scale_with_stiffness = int(bool(contact_damping_scale_with_stiffness))
+        # Damping direction gate for all contacts (body-particle and self-contact):
+        #   False (default, unidirectional): damp only while surfaces approach.
+        #   True (bidirectional): damp on both approach and separation.
+        # Stored as int so it can be passed directly to Warp kernels.
+        self.contact_damping_bidirectional = int(bool(contact_damping_bidirectional))
+
+        # Material model: 0 = StVK, 1 = NeoHookean
+        _TRI_MATERIAL_MODELS = {"stvk": 0, "neohookean": 1}
+        self.tri_material_model = _TRI_MATERIAL_MODELS[particle_tri_material_model]
 
         # Rigid integration mode: when True, rigid bodies are integrated by an external
         # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
@@ -1755,8 +1786,11 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_count,
                         contacts.soft_contact_max,
                         self.body_particle_contact_penalty_k,
+                        self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
+                        self.contact_damping_scale_with_stiffness,
+                        self.contact_damping_bidirectional,
                         model.shape_material_mu,
                         model.shape_body,
                         body_q_for_particles,
@@ -1812,6 +1846,7 @@ class SolverVBD(SolverBase):
                         self.particle_self_contact_radius,
                         self.model.soft_contact_ke,
                         self.model.soft_contact_kd,
+                        self.contact_damping_bidirectional,
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
                         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
@@ -1837,6 +1872,7 @@ class SolverVBD(SolverBase):
                         self.model.tri_poses,
                         self.model.tri_materials,
                         self.model.tri_areas,
+                        self.tri_material_model,
                         self.model.edge_indices,
                         self.model.edge_rest_angle,
                         self.model.edge_rest_length,
@@ -1869,6 +1905,7 @@ class SolverVBD(SolverBase):
                         self.model.tri_poses,
                         self.model.tri_materials,
                         self.model.tri_areas,
+                        self.tri_material_model,
                         self.model.edge_indices,
                         self.model.edge_rest_angle,
                         self.model.edge_rest_length,
@@ -1974,8 +2011,11 @@ class SolverVBD(SolverBase):
                         # AVBD body-particle soft contact penalties and material properties
                         self.friction_epsilon,
                         self.body_particle_contact_penalty_k,
+                        self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
+                        self.contact_damping_scale_with_stiffness,
+                        self.contact_damping_bidirectional,
                         # soft contact data (body-particle contacts)
                         contacts.soft_contact_count,
                         contacts.soft_contact_particle,
