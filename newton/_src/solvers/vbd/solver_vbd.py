@@ -188,6 +188,7 @@ class SolverVBD(SolverBase):
         rigid_body_particle_contact_buffer_size: int = 256,
         rigid_enable_dahl_friction: bool = False,  # Cable bending plasticity/hysteresis
         contact_damping_scale_with_stiffness: bool = False,  # See docstring
+        contact_damping_bidirectional: bool = False,  # See docstring
     ):
         """
         Args:
@@ -268,6 +269,15 @@ class SolverVBD(SolverBase):
                 ``damping = kd * penalty_k``; at full ramp ``damping = kd * avg_ke``.
                 The legacy mode is useful for reproducing pre-unification results or when existing
                 ``shape_material_kd`` values were tuned assuming Rayleigh-style ``kd * ke`` damping.
+            contact_damping_bidirectional: Selects when the contact damping force is applied,
+                along the contact normal, for body-particle and particle-particle (self) contacts.
+                When ``False`` (default, unidirectional), damping is applied only while surfaces are
+                approaching (``relative normal velocity < 0``) and disabled on separation — this
+                prevents damping from resisting natural separation after impact.
+                When ``True`` (bidirectional), damping is applied symmetrically on both approach
+                and separation, which more closely matches an implicit spring-damper contact.
+                Use bidirectional when the one-sided gate causes objects to bounce off repeatedly
+                after impact.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -291,6 +301,11 @@ class SolverVBD(SolverBase):
         #   True: legacy Rayleigh-style damping that scales with the AVBD penalty stiffness.
         # Stored as int so it can be passed directly to Warp kernels.
         self.contact_damping_scale_with_stiffness = int(bool(contact_damping_scale_with_stiffness))
+        # Damping direction gate for all contacts (body-particle and self-contact):
+        #   False (default, unidirectional): damp only while surfaces approach.
+        #   True (bidirectional): damp on both approach and separation.
+        # Stored as int so it can be passed directly to Warp kernels.
+        self.contact_damping_bidirectional = int(bool(contact_damping_bidirectional))
 
         # Material model: 0 = StVK, 1 = NeoHookean
         _TRI_MATERIAL_MODELS = {"stvk": 0, "neohookean": 1}
@@ -1775,6 +1790,7 @@ class SolverVBD(SolverBase):
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         self.contact_damping_scale_with_stiffness,
+                        self.contact_damping_bidirectional,
                         model.shape_material_mu,
                         model.shape_body,
                         body_q_for_particles,
@@ -1830,6 +1846,7 @@ class SolverVBD(SolverBase):
                         self.particle_self_contact_radius,
                         self.model.soft_contact_ke,
                         self.model.soft_contact_kd,
+                        self.contact_damping_bidirectional,
                         self.model.soft_contact_mu,
                         self.friction_epsilon,
                         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
@@ -1998,6 +2015,7 @@ class SolverVBD(SolverBase):
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         self.contact_damping_scale_with_stiffness,
+                        self.contact_damping_bidirectional,
                         # soft contact data (body-particle contacts)
                         contacts.soft_contact_count,
                         contacts.soft_contact_particle,

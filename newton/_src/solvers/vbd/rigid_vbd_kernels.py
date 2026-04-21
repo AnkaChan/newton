@@ -678,6 +678,7 @@ def evaluate_body_particle_contact(
     body_particle_contact_ke: float,
     body_particle_contact_kd: float,
     body_particle_contact_ramp_ratio: float,
+    damping_bidirectional: int,
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array[float],
@@ -784,7 +785,10 @@ def evaluate_body_particle_contact(
             bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
 
         relative_dx = dx - bv * dt
-        if wp.dot(n, relative_dx) < 0.0:
+        # Damping gate:
+        #   default (unidirectional): damp only on approach (dot(n, relative_dx) < 0).
+        #   bidirectional: damp on both approach and separation.
+        if damping_bidirectional != 0 or wp.dot(n, relative_dx) < 0.0:
             damping_coeff = body_particle_contact_kd * body_particle_contact_ramp_ratio
             damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
             body_contact_hessian = body_contact_hessian + damping_hessian
@@ -2349,6 +2353,8 @@ def accumulate_body_particle_contacts_per_body(
     # Damping convention: 0 = absolute (kd * ramp_ratio, clamped at kd),
     #                     1 = legacy (kd * penalty_k, scales with AVBD stiffness).
     damping_scale_with_stiffness: int,
+    # Damping direction gate: 0 = unidirectional (approach only), 1 = bidirectional (approach + separation).
+    damping_bidirectional: int,
     # Soft contact data (body-particle)
     body_particle_contact_count: wp.array[int],
     body_particle_contact_particle: wp.array[int],
@@ -2456,6 +2462,7 @@ def accumulate_body_particle_contacts_per_body(
             contact_ke,
             contact_kd,
             contact_ramp_ratio,
+            damping_bidirectional,
             contact_mu,
             friction_epsilon,
             particle_radius,
