@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -46,7 +45,6 @@ if _BAG_SIM_DIR not in sys.path:
     sys.path.insert(0, _BAG_SIM_DIR)
 
 from example_kfc_bag_sag import Example  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Mesh quality metrics
@@ -113,9 +111,9 @@ def _triangle_metrics(verts: np.ndarray, faces: np.ndarray, ref_normals: np.ndar
         c = np.clip(c, -1.0, 1.0)
         return np.degrees(np.arccos(c))
 
-    ang0 = _angle(e01, -e20)     # at v0
-    ang1 = _angle(-e01, e12)     # at v1
-    ang2 = _angle(-e12, e20)     # at v2
+    ang0 = _angle(e01, -e20)  # at v0
+    ang1 = _angle(-e01, e12)  # at v1
+    ang2 = _angle(-e12, e20)  # at v2
     angles = np.stack([ang0, ang1, ang2], axis=1)  # (F, 3)
     min_angle = angles.min(axis=1)
     max_angle = angles.max(axis=1)
@@ -136,11 +134,14 @@ def _triangle_metrics(verts: np.ndarray, faces: np.ndarray, ref_normals: np.ndar
 
 def _edge_lengths(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
     """Return lengths of unique undirected edges."""
-    e = np.concatenate([
-        faces[:, [0, 1]],
-        faces[:, [1, 2]],
-        faces[:, [2, 0]],
-    ], axis=0)
+    e = np.concatenate(
+        [
+            faces[:, [0, 1]],
+            faces[:, [1, 2]],
+            faces[:, [2, 0]],
+        ],
+        axis=0,
+    )
     e_sorted = np.sort(e, axis=1)
     uniq = np.unique(e_sorted, axis=0)
     d = verts[uniq[:, 0]] - verts[uniq[:, 1]]
@@ -305,12 +306,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-frames", type=int, default=300)
     parser.add_argument(
-        "--sample-frames", type=str,
+        "--sample-frames",
+        type=str,
         default="0,50,100,150,200,250,300",
         help="Comma-separated frame indices at which to compute metrics",
     )
     parser.add_argument(
-        "--out-dir", type=str,
+        "--out-dir",
+        type=str,
         default="/home/horde/Code/AI-Docs/AI-Logs/Newton/tasks/mesh-quality-bag-sag",
     )
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -326,7 +329,6 @@ def main():
     viewer = _NullViewer()
     example = Example(viewer=viewer, show_sim_mesh=True, test_mode=False)
 
-    model = example.model
     bag_start = example._bag_particle_start
     bag_end = example._bag_particle_end
     n_bag_verts = bag_end - bag_start
@@ -399,7 +401,7 @@ def main():
         ov = metrics["overall"]
         print(
             f"[frame {frame_idx:4d}] "
-            f"good={ov['fraction_good']*100:5.1f}% | "
+            f"good={ov['fraction_good'] * 100:5.1f}% | "
             f"aspect mean={a['mean']:.2f} max={a['max']:.2f} bad>3={a['count_bad_gt_3']} | "
             f"minang<20={ang['count_min_angle_lt_20']} maxang>120={ang['count_max_angle_gt_120']} | "
             f"area min={ar['min']:.3f} cv={ar['cv']:.2f} degen={ar['count_degen_lt_0p01']} near={ar['count_near_degen_lt_0p1']} | "
