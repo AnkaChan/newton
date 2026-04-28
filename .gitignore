@@ -62,6 +62,7 @@ asv/html
 # Log files, settings
 MUJOCO_LOG.TXT
 imgui.ini
+/outputs/
 newton/tests/outputs/
 
 # Viser recordings

@@ -167,6 +167,7 @@ class MeshGL:
         self.device = device
         self.hidden = hidden
         self.backface_culling = backface_culling
+        self.alpha = 1.0
 
         self.vertices = wp.zeros(num_points, dtype=RenderVertex, device=self.device)
         self.indices = None
@@ -362,9 +363,26 @@ class MeshGL:
             else:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
+            alpha = getattr(self, "alpha", 1.0)
+            transparent = alpha < 1.0
+            if transparent:
+                gl.glEnable(gl.GL_BLEND)
+                gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+                gl.glDepthMask(gl.GL_FALSE)
+                shader = RendererGL._active_shape_shader
+                if shader is not None:
+                    shader.set_mesh_alpha(alpha)
+
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
             gl.glBindVertexArray(0)
+
+            if transparent:
+                gl.glDepthMask(gl.GL_TRUE)
+                gl.glDisable(gl.GL_BLEND)
+                shader = RendererGL._active_shape_shader
+                if shader is not None:
+                    shader.set_mesh_alpha(1.0)
 
 
 class LinesGL:
@@ -858,16 +876,34 @@ class MeshInstancerGL:
         else:
             gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
+        alpha = getattr(self.mesh, "alpha", 1.0)
+        transparent = alpha < 1.0
+        if transparent:
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+            gl.glDepthMask(gl.GL_FALSE)
+            shader = RendererGL._active_shape_shader
+            if shader is not None:
+                shader.set_mesh_alpha(alpha)
+
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(
             gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
         )
         gl.glBindVertexArray(0)
 
+        if transparent:
+            gl.glDepthMask(gl.GL_TRUE)
+            gl.glDisable(gl.GL_BLEND)
+            shader = RendererGL._active_shape_shader
+            if shader is not None:
+                shader.set_mesh_alpha(1.0)
+
 
 class RendererGL:
     gl = None  # Class-level variable to hold the imported module
     _fallback_texture = None  # 1x1 white texture bound when no albedo is set (suppresses macOS GL warning)
+    _active_shape_shader = None  # Set while shape shader is bound for mesh draws
 
     @classmethod
     def initialize_gl(cls):
@@ -1739,8 +1775,10 @@ class RendererGL:
             exposure=self.exposure,
         )
 
+        RendererGL._active_shape_shader = self._shape_shader
         with self._shape_shader:
             self._draw_objects(objects)
+        RendererGL._active_shape_shader = None
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
@@ -1759,9 +1797,21 @@ class RendererGL:
         check_gl_error()
 
     def _draw_objects(self, objects):
+        # Render opaque objects first, then transparent ones for correct blending
+        opaque = []
+        transparent = []
         for o in objects.values():
             if hasattr(o, "render"):
-                o.render()
+                # MeshGL stores alpha directly; MeshInstancerGL stores it on .mesh
+                alpha = getattr(o, "alpha", getattr(getattr(o, "mesh", None), "alpha", 1.0))
+                if alpha < 1.0:
+                    transparent.append(o)
+                else:
+                    opaque.append(o)
+        for o in opaque:
+            o.render()
+        for o in transparent:
+            o.render()
 
         check_gl_error()
 

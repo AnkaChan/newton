@@ -132,6 +132,7 @@ uniform sampler2D albedo_map;
 
 uniform vec3 fogColor;
 uniform int up_axis;
+uniform float mesh_alpha;
 
 uniform mat4 light_space_matrix;
 
@@ -402,7 +403,7 @@ void main()
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));
 
-    FragColor = vec4(color, 1.0);
+    FragColor = vec4(color, mesh_alpha);
 }
 """
 
@@ -561,6 +562,13 @@ class ShaderShape(ShaderGL):
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
+            self.loc_mesh_alpha = self._get_uniform_location("mesh_alpha")
+            # Expose as class variable so MeshInstancerGL can set per-mesh alpha
+            ShaderShape.cls_loc_mesh_alpha = self.loc_mesh_alpha
+
+    def set_mesh_alpha(self, alpha: float):
+        """Set the per-draw alpha for the next draw call."""
+        self._gl.glUniform1f(self.loc_mesh_alpha, alpha)
 
     def update(
         self,
@@ -626,6 +634,8 @@ class ShaderShape(ShaderGL):
                 self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
             self._gl.glUniform1i(self.loc_env_map, 2)
             self._gl.glUniform1f(self.loc_env_intensity, float(env_intensity))
+            # Default alpha=1.0; individual meshes override per draw call
+            self._gl.glUniform1f(self.loc_mesh_alpha, 1.0)
 
 
 class ShaderSky(ShaderGL):

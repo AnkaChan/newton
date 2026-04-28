@@ -75,12 +75,16 @@ remesh = [
 examples = [
     "newton[sim]",          # include simulation dependencies
     "newton[importers]",    # include import dependencies
+    "usd-core>=25.5 ; platform_machine != 'aarch64' and python_version < '3.14'",  # for examples that import pxr directly
+    "pymeshlab>=2025.7.post1",  # for mesh decimation used by kfc bag related examples
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
     "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
     "Pillow>=9.0.0",        # for image processing (viewer icons, heightfield loading, textures)
+    "imageio>=2.37.3",      # for replay capture PNG/GIF output
+    "imageio-ffmpeg>=0.6.0",  # for replay capture MP4 output
 ]
 
 # Extra dependency needed to run examples that inference an RL policy
