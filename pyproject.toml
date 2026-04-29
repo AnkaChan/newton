@@ -85,6 +85,7 @@ examples = [
     "Pillow>=9.0.0",        # for image processing (viewer icons, heightfield loading, textures)
     "imageio>=2.37.3",      # for replay capture PNG/GIF output
     "imageio-ffmpeg>=0.6.0",  # for replay capture MP4 output
+    "lasso-python>=2.0.4 ; python_version >= '3.11'",  # for reading LS-DYNA d3plot replay output
 ]
 
 # Extra dependency needed to run examples that inference an RL policy

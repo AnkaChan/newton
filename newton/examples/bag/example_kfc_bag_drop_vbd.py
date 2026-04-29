@@ -31,16 +31,29 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
-import subprocess
-
-import imageio.v2 as imageio
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.bag.mesh import (
+    DEFAULT_PROXY_MODE as _DEFAULT_PROXY_MODE,
+    add_proxy_mesh_arguments as _add_proxy_mesh_arguments,
+    build_bary_map as _build_bary_map_common,
+    decimate_mesh as _decimate_mesh_common,
+    load_kfc_mesh_zup as _load_kfc_mesh_zup_common,
+)
+from newton.examples.bag.capture import (
+    add_capture_arguments as _add_capture_arguments,
+    capture_replay_frame as _capture_replay_frame_common,
+    configure_capture as _configure_capture,
+    finalize_capture as _finalize_capture,
+    finalize_replay_video as _finalize_replay_video_common,
+    get_viewer_frame as _get_viewer_frame_common,
+    init_video_capture as _init_video_capture_common,
+    write_video_frame as _write_video_frame_common,
+)
+from newton.examples.bag.render import render_bag_meshes as _render_bag_meshes
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Simulation scale: centimeters
@@ -186,146 +199,15 @@ def _k_bary_interp(
 
 
 def _build_bary_map(full_verts, phys_verts, phys_faces):
-    """For each full-res vertex, find the closest physics triangle and barycentrics.
-
-    Returns
-    -------
-    vi0, vi1, vi2 : ndarray (N,) int32 — physics vertex indices per full-res vert
-    bary : ndarray (N, 3) float32 — barycentric weights
-    """
-    from scipy.spatial import cKDTree
-
-    # Build a KD-tree of physics triangle centroids for fast lookup
-    v0 = phys_verts[phys_faces[:, 0]]
-    v1 = phys_verts[phys_faces[:, 1]]
-    v2 = phys_verts[phys_faces[:, 2]]
-    centroids = (v0 + v1 + v2) / 3.0
-    tree = cKDTree(centroids)
-
-    n_full = len(full_verts)
-    vi0 = np.zeros(n_full, dtype=np.int32)
-    vi1 = np.zeros(n_full, dtype=np.int32)
-    vi2 = np.zeros(n_full, dtype=np.int32)
-    bary = np.zeros((n_full, 3), dtype=np.float32)
-
-    # Query nearest k centroids and pick the best triangle
-    _, nearest = tree.query(full_verts, k=min(5, len(centroids)))
-    if nearest.ndim == 1:
-        nearest = nearest[:, None]
-
-    for i in range(n_full):
-        p = full_verts[i]
-        best_dist = 1e30
-        best_b = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        best_t = 0
-        for ti in nearest[i]:
-            a, b, c = v0[ti], v1[ti], v2[ti]
-            # Barycentric coords via projection
-            e0 = b - a
-            e1 = c - a
-            v = p - a
-            d00 = e0 @ e0
-            d01 = e0 @ e1
-            d11 = e1 @ e1
-            dv0 = v @ e0
-            dv1 = v @ e1
-            denom = d00 * d11 - d01 * d01
-            if abs(denom) < 1e-12:
-                continue
-            u = (d11 * dv0 - d01 * dv1) / denom
-            w = (d00 * dv1 - d01 * dv0) / denom
-            t = 1.0 - u - w
-            # Clamp to triangle
-            t = max(0.0, min(1.0, t))
-            u = max(0.0, min(1.0, u))
-            w = max(0.0, min(1.0, w))
-            s = t + u + w
-            if s > 0:
-                t /= s
-                u /= s
-                w /= s
-            proj = a * t + b * u + c * w
-            dist = float(np.sum((p - proj) ** 2))
-            if dist < best_dist:
-                best_dist = dist
-                best_b = np.array([t, u, w], dtype=np.float32)
-                best_t = ti
-        vi0[i] = phys_faces[best_t, 0]
-        vi1[i] = phys_faces[best_t, 1]
-        vi2[i] = phys_faces[best_t, 2]
-        bary[i] = best_b
-
-    return vi0, vi1, vi2, bary
+    return _build_bary_map_common(full_verts, phys_verts, phys_faces)
 
 
 def _load_kfc_mesh_zup():
-    """Load KFC bag mesh from kfc.usd, convert to Z-up and scale to cm.
-
-    Returns full-resolution vertices (cm) and face indices.
-    """
-    from pxr import Usd, UsdGeom
-
-    usd_path = str(newton.examples.get_asset("kfc.usd"))
-    stage = Usd.Stage.Open(usd_path)
-    prim = stage.GetPrimAtPath("/World/material/material_001")
-    usd_mesh = UsdGeom.Mesh(prim)
-
-    pts = np.array(usd_mesh.GetPointsAttr().Get(), dtype=np.float32)
-    faces = np.array(usd_mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32).reshape(-1, 3)
-
-    # USD is Y-up; rotate to Z-up: (x, y, z) -> (x, -z, y)
-    pts_zup = np.column_stack([pts[:, 0], -pts[:, 2], pts[:, 1]])
-
-    # Scale so bag height = _BAG_H cm
-    usd_h_m = float(pts_zup[:, 2].max() - pts_zup[:, 2].min())
-    scale_m = (_BAG_H / 100.0) / usd_h_m
-    pts_zup *= scale_m
-    pts_zup[:, 2] -= float(pts_zup[:, 2].min())  # base at z=0
-
-    verts_cm = (pts_zup * 100.0).astype(np.float32)
-    return verts_cm, faces
+    return _load_kfc_mesh_zup_common(_BAG_H)
 
 
-def _decimate_mesh(verts, faces, target_faces):
-    """Simplify a mesh to approximately target_faces using pymeshlab.
-
-    Uses isotropic remeshing (not quadric decimation) to produce uniformly
-    sized triangles that VBD can simulate stably.  Degenerate triangles at
-    open boundaries are filtered out.
-    """
-    import pymeshlab
-
-    ms = pymeshlab.MeshSet()
-    ms.add_mesh(pymeshlab.Mesh(verts, faces))
-
-    # Isotropic remeshing: 5% of bounding box diagonal produces ~1500
-    # well-shaped triangles from a 50K-tri bag mesh.
-    ms.meshing_isotropic_explicit_remeshing(
-        targetlen=pymeshlab.PercentageValue(5.0),
-        iterations=10,
-    )
-    ms.meshing_repair_non_manifold_edges()
-    ms.meshing_repair_non_manifold_vertices()
-
-    dm = ms.current_mesh()
-    out_v = np.array(dm.vertex_matrix(), dtype=np.float32)
-    out_f = np.array(dm.face_matrix(), dtype=np.int32)
-
-    # Remove degenerate triangles (open-boundary artifacts from remeshing)
-    areas = np.array([
-        0.5 * np.linalg.norm(np.cross(
-            out_v[t[1]] - out_v[t[0]], out_v[t[2]] - out_v[t[0]]))
-        for t in out_f
-    ])
-    keep = areas > 0.1  # cm² minimum
-    out_f = out_f[keep]
-    used = np.unique(out_f)
-    remap = np.full(len(out_v), -1, dtype=np.int32)
-    remap[used] = np.arange(len(used), dtype=np.int32)
-    out_v = out_v[used]
-    out_f = remap[out_f]
-
-    return out_v, out_f
+def _decimate_mesh(verts, faces, target_faces, proxy_mode):
+    return _decimate_mesh_common(verts, faces, target_faces, proxy_mode)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -432,32 +314,28 @@ class Example:
         capture_fps: int = 60,
         capture_dir: str = "outputs/replay_capture",
         capture_format: str = "mp4",
+        target_faces: int = _PHYSICS_TARGET_FACES,
+        mesh_proxy_mode: str = _DEFAULT_PROXY_MODE,
     ):
         self.viewer = viewer
         self.test_mode = test_mode
-        self.save_mp4 = save_mp4
         self.soft_bag = bool(soft_bag)
-        self.capture_replay = bool(capture_replay)
-        self.capture_frames = int(capture_frames)
-        self.capture_fps = int(capture_fps)
-        self.capture_format = str(capture_format)
-        self.capture_count = 0
-        self.capture_done = False
-        self.capture_video_path = None
-        self.capture_dir = None
+        _configure_capture(
+            self,
+            save_mp4=save_mp4,
+            capture_replay=capture_replay,
+            capture_frames=capture_frames,
+            capture_fps=capture_fps,
+            capture_dir=capture_dir,
+            capture_format=capture_format,
+            capture_background_writes=False,
+        )
 
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = _SIM_SUBSTEPS
         self.sim_dt = self.frame_dt / self.sim_substeps
-
-        self._video_process = None
-        if self.capture_replay and self.capture_frames > 0:
-            run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-            base_dir = Path(capture_dir)
-            self.capture_dir = base_dir / f"run_{run_tag}"
-            self.capture_dir.mkdir(parents=True, exist_ok=True)
 
         if self.soft_bag:
             bag_tri_ke = _SOFT_TRI_KE
@@ -484,7 +362,10 @@ class Example:
         # ── Load meshes ────────────────────────────────────────────────────
         full_verts_cm, full_faces = _load_kfc_mesh_zup()
         phys_verts_cm, phys_faces = _decimate_mesh(
-            full_verts_cm, full_faces, _PHYSICS_TARGET_FACES
+            full_verts_cm,
+            full_faces,
+            target_faces,
+            mesh_proxy_mode,
         )
 
         print(f"[KFC drop] Full mesh: {len(full_verts_cm)} verts, {len(full_faces)} tris")
@@ -842,15 +723,8 @@ class Example:
         self.simulate()
         self.sim_time += self.frame_dt
 
-    def render(self):
-        if self.capture_done:
-            return
-
-        proxy_mode = bool(
-            self.viewer.show_collision or self.viewer.show_triangles
-        )
-
-        # Interpolate full-res bag mesh from physics particles via barycentrics
+    def _update_render_buffers(self):
+        """Refresh cached render buffers for the current simulation frame."""
         wp.launch(
             _k_bary_interp,
             dim=self._n_full_verts,
@@ -881,37 +755,23 @@ class Example:
                 outputs=[self.viz_state.body_q],
             )
 
-        # Suppress viewer's built-in cloth draw during log_state
-        show_triangles = self.viewer.show_triangles
-        self.viewer.show_triangles = False
-        self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.viz_state)
-        self.viewer.show_triangles = show_triangles
+    def render(self):
+        if self.capture_done:
+            return
 
-        # Hi-res USD mesh: visible when collision view is OFF
-        self.viewer.log_mesh(
-            "/bag",
-            self._viz_full_q,
-            self._full_indices_wp,
-            backface_culling=False,
-            hidden=proxy_mode,
-            alpha=0.5,
+        self._update_render_buffers()
+
+        _render_bag_meshes(
+            self.viewer,
+            sim_time=self.sim_time,
+            viz_state=self.viz_state,
+            full_positions=self._viz_full_q,
+            full_indices=self._full_indices_wp,
+            proxy_positions=self.viz_state.particle_q,
+            proxy_indices=self._proxy_indices_wp,
         )
 
-        # Physics proxy mesh: visible when collision view is ON
-        self.viewer.log_mesh(
-            "/bag_proxy",
-            self.viz_state.particle_q,
-            self._proxy_indices_wp,
-            backface_culling=False,
-            hidden=not proxy_mode,
-        )
-
-        self.viewer.end_frame()
-
-        if self._video_process is not None and hasattr(self.viewer, "get_frame"):
-            frame = self._get_viewer_frame()
-            self._video_process.stdin.write(frame.numpy().tobytes())
+        _write_video_frame_common(self)
         self._capture_replay_frame()
 
     def test_final(self):
@@ -930,106 +790,18 @@ class Example:
     # ─────────────────────────────────────────────────────────────────────
 
     def _init_video_capture(self):
-        if not hasattr(self.viewer, "get_frame"):
-            print("Warning: viewer lacks get_frame(); skipping MP4")
-            return
-        try:
-            w = self.viewer.renderer._screen_width
-            h = self.viewer.renderer._screen_height
-        except AttributeError:
-            print("Warning: cannot determine screen size; skipping MP4")
-            return
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "rawvideo", "-vcodec", "rawvideo",
-            "-s", f"{w}x{h}", "-pix_fmt", "rgb24",
-            "-r", str(self.fps), "-i", "pipe:0",
-            "-an", "-vcodec", "libx264", "-pix_fmt", "yuv420p",
-            self.save_mp4,
-        ]
-        try:
-            self._video_process = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-        except FileNotFoundError:
-            print("Warning: ffmpeg not found; skipping MP4")
+        _init_video_capture_common(self)
 
     def _get_viewer_frame(self, *, render_ui: bool = False):
-        try:
-            return self.viewer.get_frame(render_ui=render_ui)
-        except TypeError:
-            return self.viewer.get_frame()
+        return _get_viewer_frame_common(self.viewer, render_ui=render_ui)
 
-    def _capture_replay_frame(self):
-        if not self.capture_replay or self.capture_done:
-            return
-        if self.capture_dir is None:
-            return
-        if self.capture_count >= self.capture_frames:
-            self._finalize_replay_video()
-            self.capture_done = True
-            self.viewer.close()
-            return
-        if not hasattr(self.viewer, "get_frame"):
-            return
-
-        frame_wp = self._get_viewer_frame(render_ui=False)
-        frame_np = frame_wp.numpy()
-        out_path = self.capture_dir / f"frame_{self.capture_count:05d}.png"
-        imageio.imwrite(out_path, frame_np)
-        self.capture_count += 1
-
-        if self.capture_count % 20 == 0:
-            print(
-                f"[replay_capture] saved"
-                f" {self.capture_count}/{self.capture_frames} frames"
-            )
-
-        if self.capture_count >= self.capture_frames:
-            self._finalize_replay_video()
-            self.capture_done = True
-            self.viewer.close()
+    def _capture_replay_frame(self, *, frame_key: int | None = None):
+        if frame_key is None:
+            frame_key = self._frame_count
+        _capture_replay_frame_common(self, frame_key=frame_key)
 
     def _finalize_replay_video(self):
-        if self.capture_dir is None:
-            return
-        png_files = sorted(self.capture_dir.glob("frame_*.png"))
-        if len(png_files) == 0:
-            return
-
-        try:
-            if self.capture_format == "gif":
-                video_path = self.capture_dir / "replay.gif"
-                with imageio.get_writer(
-                    video_path,
-                    mode="I",
-                    duration=1.0 / max(self.capture_fps, 1),
-                ) as writer:
-                    for path in png_files:
-                        writer.append_data(imageio.imread(path))
-            else:
-                video_path = self.capture_dir / "replay.mp4"
-                with imageio.get_writer(
-                    video_path,
-                    fps=max(self.capture_fps, 1),
-                    codec="libx264",
-                ) as writer:
-                    for path in png_files:
-                        writer.append_data(imageio.imread(path))
-            self.capture_video_path = video_path
-            print(f"[replay_capture] wrote video: {video_path}")
-        except Exception as exc:
-            fallback = self.capture_dir / "replay.gif"
-            with imageio.get_writer(
-                fallback,
-                mode="I",
-                duration=1.0 / max(self.capture_fps, 1),
-            ) as writer:
-                for path in png_files:
-                    writer.append_data(imageio.imread(path))
-            self.capture_video_path = fallback
-            print(
-                f"[replay_capture] mp4 failed ({exc});"
-                f" wrote gif: {fallback}"
-            )
+        _finalize_replay_video_common(self)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1040,43 +812,14 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=300)
     parser.add_argument(
-        "--save-mp4", type=str, default=None,
-        help="Save simulation to MP4 file",
-    )
-    parser.add_argument(
         "--soft-bag",
         action="store_true",
         help="Use a softer bag material tuning",
     )
-    parser.add_argument(
-        "--capture-replay",
-        action="store_true",
-        help="Capture rendered frames and build replay video",
-    )
-    parser.add_argument(
-        "--capture-frames",
-        type=int,
-        default=300,
-        help="Number of frames to capture when replay capture is enabled",
-    )
-    parser.add_argument(
-        "--capture-fps",
-        type=int,
-        default=60,
-        help="Output replay video FPS",
-    )
-    parser.add_argument(
-        "--capture-dir",
-        type=str,
-        default="outputs/replay_capture",
-        help="Directory to store captured frames and replay video",
-    )
-    parser.add_argument(
-        "--capture-format",
-        type=str,
-        default="mp4",
-        choices=["mp4", "gif"],
-        help="Preferred replay output format",
+    _add_proxy_mesh_arguments(parser)
+    _add_capture_arguments(
+        parser,
+        replay_help="Capture rendered frames and build replay video",
     )
     viewer, args = newton.examples.init(parser)
     example = Example(
@@ -1089,13 +832,17 @@ if __name__ == "__main__":
         capture_fps=int(args.capture_fps),
         capture_dir=str(args.capture_dir),
         capture_format=str(args.capture_format),
+        target_faces=int(args.target_faces),
+        mesh_proxy_mode=str(args.proxy_mode),
     )
 
-    for i in range(args.num_frames):
-        if not viewer.is_running() or example.capture_done:
+    while viewer.is_running() and not example.capture_done:
+        if example._frame_count >= args.num_frames:
             break
         example.step()
         example.render()
 
     if args.test:
         example.test_final()
+
+    _finalize_capture(example)
