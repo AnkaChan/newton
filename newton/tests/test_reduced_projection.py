@@ -66,7 +66,8 @@ def test_projection_recovers_fk_poses(test, device):
     body_q_gt = state.body_q.numpy().copy()
 
     # Project (should be near no-op on already-consistent state)
-    project_to_reduced_coordinates(model, state, gn_iterations=3)
+    joint_q_prev = wp.clone(state.joint_q)
+    project_to_reduced_coordinates(model, state, joint_q_prev, dt=1.0, gn_iterations=3)
 
     joint_q_proj = state.joint_q.numpy()
     body_q_proj = state.body_q.numpy()
@@ -86,7 +87,8 @@ def test_projection_corrects_perturbed_bodies(test, device):
     state.body_q.assign(wp.array(body_q_np.flatten(), dtype=wp.transform, device=device))
 
     # Project
-    project_to_reduced_coordinates(model, state, gn_iterations=5)
+    joint_q_prev = wp.clone(state.joint_q)
+    project_to_reduced_coordinates(model, state, joint_q_prev, dt=1.0, gn_iterations=5)
 
     # After projection, body_q should satisfy FK exactly
     state_check = model.state()
@@ -108,7 +110,8 @@ def test_projection_analytical_only(test, device):
     state.body_q.assign(wp.array(body_q_np.flatten(), dtype=wp.transform, device=device))
 
     # Analytical projection
-    project_to_reduced_coordinates(model, state, gn_iterations=0)
+    joint_q_prev = wp.clone(state.joint_q)
+    project_to_reduced_coordinates(model, state, joint_q_prev, dt=1.0, gn_iterations=0)
 
     # Body_q should be kinematically consistent (FK round-trip)
     state_check = model.state()
@@ -167,7 +170,8 @@ def test_projection_multi_joint_chain(test, device):
     state.body_q.assign(wp.array(body_q_np.flatten(), dtype=wp.transform, device=device))
 
     # Project
-    project_to_reduced_coordinates(model, state, gn_iterations=5)
+    joint_q_prev = wp.clone(state.joint_q)
+    project_to_reduced_coordinates(model, state, joint_q_prev, dt=1.0, gn_iterations=5)
 
     # Verify FK consistency
     state_check = model.state()
