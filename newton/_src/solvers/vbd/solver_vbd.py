@@ -49,6 +49,7 @@ from .particle_vbd_kernels import (
     solve_elasticity_tile,
     update_velocity,
 )
+from .reduced_projection import project_to_reduced_coordinates
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     RigidForceElementAdjacencyInfo,
@@ -76,7 +77,6 @@ from .rigid_vbd_kernels import (
     warmstart_body_particle_contacts,  # Body-particle soft contacts (penalty warmstart)
     warmstart_joints,  # Cable joints (stretch & bend)
 )
-from .reduced_projection import project_to_reduced_coordinates
 from .tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
