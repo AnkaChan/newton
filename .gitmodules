@@ -1,0 +1,4 @@
+[submodule "ppf-contact-solver"]
+	path = ppf-contact-solver
+	url = ../ppf-contact-solver.git
+	branch = custom-feature
