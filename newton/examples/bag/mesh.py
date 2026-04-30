@@ -157,28 +157,32 @@ def _isotropic_remesh(
     faces: np.ndarray,
     target_faces: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    targetlen_percent = 5.0
+    tri_verts0 = verts[faces[:, 0]]
+    tri_verts1 = verts[faces[:, 1]]
+    tri_verts2 = verts[faces[:, 2]]
+    tri_areas = 0.5 * np.linalg.norm(
+        np.cross(tri_verts1 - tri_verts0, tri_verts2 - tri_verts0),
+        axis=1,
+    )
+    total_area = float(tri_areas.sum())
+    if total_area <= 0.0:
+        raise ValueError("Input mesh has zero surface area.")
+
+    # Convert the requested face count to the edge length of an equivalent
+    # equilateral-triangle tessellation over the same surface area.
+    target_edge_len = float(
+        np.sqrt((4.0 * total_area) / (np.sqrt(3.0) * float(target_faces)))
+    )
     out_v, out_f = _run_isotropic_remesh(
         verts,
         faces,
-        targetlen_percent=targetlen_percent,
+        target_edge_len=target_edge_len,
     )
-    raw_count = len(out_f)
-
-    if raw_count > 0:
-        rel_error = abs(raw_count - target_faces) / float(target_faces)
-        if rel_error > 0.05:
-            targetlen_percent *= np.sqrt(raw_count / float(target_faces))
-            out_v, out_f = _run_isotropic_remesh(
-                verts,
-                faces,
-                targetlen_percent=targetlen_percent,
-            )
 
     print(
         "Isotropic-remeshed proxy:"
         f" target={target_faces}, actual={len(out_f)},"
-        f" targetlen={targetlen_percent:.3g}%"
+        f" target_edge_len={target_edge_len:.3g}"
     )
     return out_v, out_f
 
@@ -187,14 +191,14 @@ def _run_isotropic_remesh(
     verts: np.ndarray,
     faces: np.ndarray,
     *,
-    targetlen_percent: float,
+    target_edge_len: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     import pymeshlab
 
     ms = pymeshlab.MeshSet()
     ms.add_mesh(pymeshlab.Mesh(verts, faces))
     ms.meshing_isotropic_explicit_remeshing(
-        targetlen=pymeshlab.PercentageValue(float(targetlen_percent)),
+        targetlen=pymeshlab.PureValue(float(target_edge_len)),
         iterations=10,
     )
 

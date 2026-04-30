@@ -300,10 +300,18 @@ def trim_replay_capture(
     keep_count = max(0, int(frame_count))
     _stop_capture_writer(owner)
 
-    if owner.capture_dir is None or owner.capture_count <= keep_count:
+    if owner.capture_dir is None:
         owner.capture_count = min(owner.capture_count, keep_count)
         owner._last_captured_frame_key = (
-            keep_count - 1 if keep_count > 0 else None
+            owner.capture_count - 1 if owner.capture_count > 0 else None
+        )
+        return
+
+    if owner.capture_count <= keep_count:
+        # Rollback can accept frames before render writes their PNGs.
+        # Do not mark those future frame keys as already captured.
+        owner._last_captured_frame_key = (
+            owner.capture_count - 1 if owner.capture_count > 0 else None
         )
         return
 

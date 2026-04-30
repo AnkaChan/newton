@@ -149,6 +149,7 @@ _D3PLOT_WRITE_RE = re.compile(r"\bt\s+([0-9.+\-Ee]+)\s+dt\s+[0-9.+\-Ee]+\s+write
 _LSDYNA_DEBUG_SUMMARY_FILENAME = "lsdyna_debug_summary.json"
 _LSDYNA_DEBUG_SUMMARY_SCHEMA = "newton.kfc_bag_ansys_common.lsdyna_debug"
 _LSDYNA_DEBUG_SUMMARY_VERSION = 1
+_LOGGED_CONTENT_PLACEMENTS: set[tuple[object, ...]] = set()
 _LSDYNA_DIAGNOSTIC_PATTERNS: dict[str, tuple[str, ...]] = {
     "solver_stdout": ("lsdyna.stdout.txt",),
     "d3hsp": ("d3hsp*",),
@@ -418,15 +419,28 @@ def _fit_bag_contents(phys_verts_cm: np.ndarray):
     capsule_pos_cm = (bag_cx, bag_cy, 12.5)
     capsule_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0)
 
-    print(
-        f"{_LOG_PREFIX} Object placements (clearance to bag wall):\n"
-        f"  sphere  @ ({sphere_pos_cm[0]:.1f}, {sphere_pos_cm[1]:.1f}, {sphere_pos_cm[2]:.1f})"
-        f"  clr={dist_sphere(*sphere_pos_cm, sphere_r_cm):.2f} cm\n"
-        f"  box     @ ({box_pos_cm[0]:.1f}, {box_pos_cm[1]:.1f}, {box_pos_cm[2]:.1f})"
-        f"  clr={dist_box(*box_pos_cm, box_h_cm, box_h_cm, box_h_cm):.2f} cm\n"
-        f"  capsule @ ({capsule_pos_cm[0]:.1f}, {capsule_pos_cm[1]:.1f}, {capsule_pos_cm[2]:.1f})"
-        f" [Y-horiz]  clr={dist_capsule_y(*capsule_pos_cm, cap_r_cm, cap_half_len_cm):.2f} cm"
+    sphere_clearance_cm = dist_sphere(*sphere_pos_cm, sphere_r_cm)
+    box_clearance_cm = dist_box(*box_pos_cm, box_h_cm, box_h_cm, box_h_cm)
+    capsule_clearance_cm = dist_capsule_y(*capsule_pos_cm, cap_r_cm, cap_half_len_cm)
+    placement_key = (
+        tuple(round(float(value), 3) for value in sphere_pos_cm),
+        round(float(sphere_clearance_cm), 3),
+        tuple(round(float(value), 3) for value in box_pos_cm),
+        round(float(box_clearance_cm), 3),
+        tuple(round(float(value), 3) for value in capsule_pos_cm),
+        round(float(capsule_clearance_cm), 3),
     )
+    if placement_key not in _LOGGED_CONTENT_PLACEMENTS:
+        _LOGGED_CONTENT_PLACEMENTS.add(placement_key)
+        print(
+            f"{_LOG_PREFIX} Object placements (clearance to bag wall):\n"
+            f"  sphere  @ ({sphere_pos_cm[0]:.1f}, {sphere_pos_cm[1]:.1f}, {sphere_pos_cm[2]:.1f})"
+            f"  clr={sphere_clearance_cm:.2f} cm\n"
+            f"  box     @ ({box_pos_cm[0]:.1f}, {box_pos_cm[1]:.1f}, {box_pos_cm[2]:.1f})"
+            f"  clr={box_clearance_cm:.2f} cm\n"
+            f"  capsule @ ({capsule_pos_cm[0]:.1f}, {capsule_pos_cm[1]:.1f}, {capsule_pos_cm[2]:.1f})"
+            f" [Y-horiz]  clr={capsule_clearance_cm:.2f} cm"
+        )
     return sphere_pos_cm, box_pos_cm, capsule_pos_cm, capsule_quat
 
 
@@ -1873,36 +1887,56 @@ def _load_existing_setup_from_d3plot(job_dir: Path, deck_path: Path) -> tuple[np
 
 def _find_lsdyna_executable(explicit_exe: str | None, search_root: Path) -> Path:
     """Locate the LS-DYNA executable or raise a targeted error."""
-    candidates = [
-        explicit_exe,
-        os.environ.get("LS_DYNA_EXE"),
-        os.environ.get("LSDYNA_EXE"),
-    ]
-    for candidate in candidates:
-        if candidate:
-            path = Path(candidate)
-            if path.is_file():
-                return path
+    if explicit_exe:
+        return _ensure_lsdyna_executable(Path(explicit_exe), source="`--lsdyna-exe`")
+
+    search_root = Path(os.path.expandvars(str(search_root))).expanduser()
 
     if search_root.is_file():
-        return search_root
+        return _ensure_lsdyna_executable(search_root, source="`--lsdyna-root`")
 
     if search_root.is_dir():
         patterns = ["ls-dyna*.exe", "lsdyna*_dp*.exe", "lsdyna*.exe", "*dyna*.exe"]
         for pattern in patterns:
             matches = sorted(search_root.rglob(pattern))
             if matches:
-                return matches[0]
+                return _ensure_lsdyna_executable(matches[0], source="`--lsdyna-root` match")
+
+    if not search_root.exists():
+        raise FileNotFoundError(
+            "Could not locate an LS-DYNA executable. Pass `--lsdyna-exe` or "
+            "configure `--lsdyna-root`. The configured "
+            "`--lsdyna-root` does not exist: "
+            f"`{search_root}`."
+        )
 
     raise FileNotFoundError(
-        "Could not locate an LS-DYNA executable. Pass `--lsdyna-exe` or set "
-        "`LS_DYNA_EXE`. The configured root was "
+        "Could not locate an LS-DYNA executable. Pass `--lsdyna-exe` or "
+        "configure `--lsdyna-root`. No executable matching `ls-dyna*.exe`, "
+        "`lsdyna*_dp*.exe`, `lsdyna*.exe`, or `*dyna*.exe` was found under "
         f"`{search_root}`."
     )
 
 
+def _ensure_lsdyna_executable(executable: Path, *, source: str = "LS-DYNA executable") -> Path:
+    """Return a normalized LS-DYNA executable path or raise a clear error."""
+    path = Path(os.path.expandvars(str(executable))).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{source} does not exist: `{path}`. Install LS-DYNA or pass a "
+            "valid path with `--lsdyna-exe`."
+        )
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{source} is not a file: `{path}`. Pass the full LS-DYNA executable "
+            "path via `--lsdyna-exe`, or use `--lsdyna-root` for a search folder."
+        )
+    return path
+
+
 def _run_lsdyna(deck_path: Path, executable: Path, job_dir: Path, ncpu: int, memory: str):
     """Run LS-DYNA as an external process and wait for completion."""
+    executable = _ensure_lsdyna_executable(executable)
     log_path = job_dir / "lsdyna.stdout.txt"
     ncpu = min(int(ncpu), _STUDENT_MAX_CPU)
     cmd = [
@@ -1989,6 +2023,7 @@ def _start_lsdyna_background(
     memory: str,
 ) -> tuple[subprocess.Popen, object, Path]:
     """Launch LS-DYNA in the background and return the process plus log file handle."""
+    executable = _ensure_lsdyna_executable(executable)
     log_path = job_dir / "lsdyna.stdout.txt"
     ncpu = min(int(ncpu), _STUDENT_MAX_CPU)
     cmd = [
@@ -3046,8 +3081,8 @@ _DEFAULT_JOB_DIR = Path("outputs/lsdyna/kfc_bag_lift_ansys")
 _DEFAULT_CLOSED_WIDTH_CM = 0.6
 _MAX_GRIPPER_WIDTH_CM = 4.0
 _LIFT_BAG_YOUNGS_MODULUS_PA = 1.0e9
-_LIFT_CONTACT_FS = 0.55
-_LIFT_CONTACT_FD = 0.40
+_LIFT_CONTACT_FS = 0.70
+_LIFT_CONTACT_FD = 0.55
 _DEFAULT_TSSFAC = 0.90
 _DEFAULT_ROLLBACK_MAX_RETRIES = 2
 _DEFAULT_ROLLBACK_BACKTRACK_FRAMES = 0
@@ -4011,6 +4046,7 @@ def _run_lsdyna_allow_failure(
     memory: str,
 ) -> tuple[int, bool]:
     """Run LS-DYNA and keep partial outputs even if the solve fails."""
+    executable = _ansys_common._ensure_lsdyna_executable(executable)
     log_path = job_dir / "lsdyna.stdout.txt"
     ncpu = min(int(ncpu), _ansys_common._STUDENT_MAX_CPU)
     cmd = [
@@ -5096,6 +5132,27 @@ class Example(_ansys_common.Example):
 
         self._persist_rollback_summary()
 
+    def _limit_rescue_replay_update(
+        self,
+        update: _ansys_common.ReplayData,
+    ) -> _ansys_common.ReplayData:
+        """Keep a one-frame rescue limited to restart plus rescued state."""
+        if self._rollback_current_attempt_mode != "rescue":
+            return update
+        if len(update.times_s) <= 2:
+            return update
+        if self._rollback_active_attempt_record is not None:
+            self._rollback_active_attempt_record["rescue_report_limit"] = 2
+            self._rollback_active_attempt_record["discarded_rescue_report_count"] = int(
+                len(update.times_s) - 2
+            )
+        if self._rollback_active_retry_event is not None:
+            self._rollback_active_retry_event["rescue_report_limit"] = 2
+            self._rollback_active_retry_event["discarded_rescue_report_count"] = int(
+                len(update.times_s) - 2
+            )
+        return _truncate_replay(update, 2)
+
     def _append_final_attempt_replay_update(self, attempt_dir: Path) -> int:
         """Append any remaining readable frames after one attempt stops."""
         try:
@@ -5117,6 +5174,7 @@ class Example(_ansys_common.Example):
                 f"finished. {exc}"
             ) from exc
 
+        update = self._limit_rescue_replay_update(update)
         update = _offset_replay_times(
             update,
             self._rollback_current_time_offset_s,
@@ -5482,6 +5540,7 @@ class Example(_ansys_common.Example):
             return
 
         self._stream_last_d3plot_signature = d3plot_signature
+        update = self._limit_rescue_replay_update(update)
         update = _offset_replay_times(update, self._rollback_current_time_offset_s)
         appended = self._append_streaming_replay(update)
         if appended > 0:
