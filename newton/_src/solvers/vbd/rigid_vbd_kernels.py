@@ -19,8 +19,9 @@ Organization:
 
 import warp as wp
 
+from newton._src.sim import BodyFlags
+
 wp.set_module_options({"enable_backward": False})
-from newton._src.sim import BodyFlag
 
 @wp.kernel
 def forward_step_rigid(
@@ -71,6 +72,7 @@ def forward_step_rigid(
     tau = wp.spatial_bottom(f)
 
     # rotational part (quaternion)
+    x = wp.transform_get_translation(q)
     rot = wp.transform_get_rotation(q)
     # semi-implicit rotation integration
     w_b = wp.quat_rotate_inv(rot, w)
@@ -79,10 +81,12 @@ def forward_step_rigid(
     w_new = wp.quat_rotate(rot, w_new_b)
     # integrate rotation
     rot_new = wp.normalize(rot + 0.5 * dt * wp.quat(w_new, 0) * rot)
+    # angular damping (applied after rot_new so the integration uses undamped ω)
+    w_new *= 1.0 - angular_damping * dt
     
     # linear part
     x_com     = x + wp.quat_rotate(rot, com_local)
-    v_new = v + dt *(f_lin * inv_m + g)
+    v_new = v + dt * (f_lin * inv_m + g * wp.nonzero(inv_m))
     x_com_new = x_com + dt * v_new
     # x_com and body_frame origina does not overlap
     pos_new   = x_com_new - wp.quat_rotate(rot_new, com_local)
