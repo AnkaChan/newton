@@ -17,12 +17,10 @@ Organization:
 - Post-iteration kernels: Velocity updates, Dahl state updates
 """
 
-from ipaddress import v6_int_to_packed
-
 import warp as wp
 
 wp.set_module_options({"enable_backward": False})
-
+from newton._src.sim import BodyFlag
 
 @wp.kernel
 def forward_step_rigid(
@@ -56,6 +54,10 @@ def forward_step_rigid(
     world_idx = body_world[tid]
     g = gravity[wp.max(world_idx, 0)]
 
+    if (flags & BodyFlags.KINEMATIC) != 0:
+       body_q_inertial_out[tid]=q; body_q_out[tid]=q;
+       body_qd_out[tid]=qd; return
+
     body_q_prev_out[tid] = q
 
     # linear velocity
@@ -64,26 +66,29 @@ def forward_step_rigid(
     w = wp.spatial_bottom(qd)
 
     # linear force
-    f = wp.spatial_top(f)
+    f_lin = wp.spatial_top(f)
     # torque
     tau = wp.spatial_bottom(f)
-
-    # linear part
-    x_com = wp.transform_get_translation(q)
-    x_com_new = x_com + dt * v + dt * dt * (f+g)
 
     # rotational part (quaternion)
     rot = wp.transform_get_rotation(q)
     # semi-implicit rotation integration
     w_b = wp.quat_rotate_inv(rot, w)
     tau_b = wp.quat_rotate_inv(rot, tau)
-    w_new_b = w + dt * inv_I_body * (tau_b - wp.cross(w_b, I_body * w_b))
+    w_new_b = w_b + dt * inv_I_body * (tau_b - wp.cross(w_b, I_body * w_b))
     w_new = wp.quat_rotate(rot, w_new_b)
     # integrate rotation
     rot_new = wp.normalize(rot + 0.5 * dt * wp.quat(w_new, 0) * rot)
+    
+    # linear part
+    x_com     = x + wp.quat_rotate(rot, com_local)
+    v_new = v + dt *(f_lin * inv_m + g)
+    x_com_new = x_com + dt * v_new
+    # x_com and body_frame origina does not overlap
+    pos_new   = x_com_new - wp.quat_rotate(rot_new, com_local)
 
-    q_new = wp.transfrom(x_com_new, rot_new)
+    q_new = wp.transform(pos_new, rot_new)
 
     body_q_inertial_out[tid] = q_new
     body_q_out[tid] = q_new
-    body_qd_out[tid] = wp.spatial_vector(v, w_new)
+    body_qd_out[tid] = wp.spatial_vector(v_new, w_new)
