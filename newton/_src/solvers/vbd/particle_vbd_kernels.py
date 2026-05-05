@@ -947,24 +947,61 @@ def evaluate_neo_hookean_membrane_force_hessian(
     I33 = wp.identity(n=3, dtype=float)
     hessian = I_coeff * I33 + c1 * wp.outer(dJ_dx, dJ_dx) - r * wp.outer(w, w)
 
-    # Absolute damping (Newtonian viscosity: P_damp = damping * F_dot)
+    # Absolute damping with the StVK-style two-constraint formulation:
+    #   Cmu   = ||G||_F   (Frobenius norm of Green strain)
+    #   Clmbd = trace(G)
+    # Coefficient `damping` is used directly (no mu/lmbd material weighting),
+    # matching the absolute-convention plan in the damping-unification doc.
     if damping > 0.0:
-        inv_dt = 1.0 / dt
+        G00 = 0.5 * (f0_dot_f0 - 1.0)
+        G11 = 0.5 * (f1_dot_f1 - 1.0)
+        G01 = 0.5 * f0_dot_f1
+        G_frobenius_sq = G00 * G00 + G11 * G11 + 2.0 * G01 * G01
 
-        x0_prev = pos_anchor[v0]
-        x01_prev = pos_anchor[v1] - x0_prev
-        x02_prev = pos_anchor[v2] - x0_prev
+        # Cmu normalization is ill-defined at rest; skip damping near zero strain.
+        if G_frobenius_sq >= 1.0e-20:
+            inv_dt = 1.0 / dt
 
-        vel_x01 = (x01 - x01_prev) * inv_dt
-        vel_x02 = (x02 - x02_prev) * inv_dt
+            x0_prev = pos_anchor[v0]
+            x01_prev = pos_anchor[v1] - x0_prev
+            x02_prev = pos_anchor[v2] - x0_prev
 
-        df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
-        df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
+            vel_x01 = (x01 - x01_prev) * inv_dt
+            vel_x02 = (x02 - x02_prev) * inv_dt
 
-        f_damp = damping * (df0_dt * df0_dx + df1_dt * df1_dx)
-        force += -f_damp
+            df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
+            df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
 
-        hessian += damping * inv_dt * (df0_dx_sq + df1_dx_sq) * I33
+            # First constraint: Cmu = ||G||_F
+            Cmu = wp.sqrt(G_frobenius_sq)
+            G00_normalized = G00 / Cmu
+            G01_normalized = G01 / Cmu
+            G11_normalized = G11 / Cmu
+
+            dG_dt_00 = wp.dot(f0, df0_dt)
+            dG_dt_11 = wp.dot(f1, df1_dt)
+            dG_dt_01 = 0.5 * (wp.dot(f0, df1_dt) + wp.dot(f1, df0_dt))
+
+            dCmu_dt = G00_normalized * dG_dt_00 + G11_normalized * dG_dt_11 + 2.0 * G01_normalized * dG_dt_01
+
+            dCmu_dF_col0 = G00_normalized * f0 + G01_normalized * f1
+            dCmu_dF_col1 = G01_normalized * f0 + G11_normalized * f1
+
+            dCmu_dx = df0_dx * dCmu_dF_col0 + df1_dx * dCmu_dF_col1
+
+            force += -damping * dCmu_dt * dCmu_dx
+            hessian += damping * inv_dt * wp.outer(dCmu_dx, dCmu_dx)
+
+            # Second constraint: Clmbd = trace(G)
+            dClmbd_dt = dG_dt_00 + dG_dt_11
+
+            dClmbd_dF_col0 = f0
+            dClmbd_dF_col1 = f1
+
+            dClmbd_dx = df0_dx * dClmbd_dF_col0 + df1_dx * dClmbd_dF_col1
+
+            force += -damping * dClmbd_dt * dClmbd_dx
+            hessian += damping * inv_dt * wp.outer(dClmbd_dx, dClmbd_dx)
 
     # Apply area scaling
     force *= area
