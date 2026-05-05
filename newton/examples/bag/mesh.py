@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+
 import numpy as np
 
 import newton.examples
@@ -136,6 +138,13 @@ def decimate_mesh(
     faces: np.ndarray,
     target_faces: int,
     proxy_mode: str = DEFAULT_PROXY_MODE,
+    *,
+    make_intersection_free: bool = False,
+    intersection_checker: Callable[[np.ndarray, np.ndarray], Sequence[tuple[int, int]]] | None = None,
+    checker_transform: Callable[[np.ndarray], np.ndarray] | None = None,
+    edge_edge_min_distance: float = 0.0,
+    intersection_free_min_area: float = 1.0e-12,
+    log_prefix: str = "",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Create a lower-resolution bag proxy mesh for VBD cloth simulation."""
     verts = np.asarray(verts, dtype=np.float32)
@@ -143,13 +152,25 @@ def decimate_mesh(
     target_faces = max(int(target_faces), 1)
 
     if proxy_mode == DEFAULT_PROXY_MODE:
-        return _isotropic_remesh(verts, faces, target_faces)
-    if proxy_mode == "surface-decimate":
-        return _surface_decimate(verts, faces, target_faces)
-    if proxy_mode == "qem-decimate":
-        return _qem_decimate(verts, faces, target_faces)
+        proxy_verts, proxy_faces = _isotropic_remesh(verts, faces, target_faces)
+    elif proxy_mode == "surface-decimate":
+        proxy_verts, proxy_faces = _surface_decimate(verts, faces, target_faces)
+    elif proxy_mode == "qem-decimate":
+        proxy_verts, proxy_faces = _qem_decimate(verts, faces, target_faces)
+    else:
+        raise ValueError(f"Unknown proxy mode: {proxy_mode}")
 
-    raise ValueError(f"Unknown proxy mode: {proxy_mode}")
+    if make_intersection_free:
+        proxy_verts, proxy_faces = make_proxy_mesh_intersection_free(
+            proxy_verts,
+            proxy_faces,
+            intersection_checker=intersection_checker,
+            checker_transform=checker_transform,
+            edge_edge_min_distance=edge_edge_min_distance,
+            min_area=intersection_free_min_area,
+            log_prefix=log_prefix,
+        )
+    return proxy_verts, proxy_faces
 
 
 def _isotropic_remesh(
@@ -264,6 +285,366 @@ def _qem_decimate(
     return out_v, out_f
 
 
+def make_proxy_mesh_intersection_free(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    *,
+    intersection_checker: Callable[[np.ndarray, np.ndarray], Sequence[tuple[int, int]]] | None = None,
+    checker_transform: Callable[[np.ndarray], np.ndarray] | None = None,
+    edge_edge_min_distance: float = 0.0,
+    min_area: float = 1.0e-12,
+    max_meshlab_passes: int = 20,
+    max_checker_passes: int = 12,
+    max_edge_edge_passes: int = 12,
+    log_prefix: str = "",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Remove self-intersections from a proxy mesh for strict contact solvers.
+
+    MeshLab's selector is used first because it can remove faces and close
+    resulting holes in the same mesh state.  A caller may provide an additional
+    checker, such as ppf-contact-solver's own self-intersection test, to remove
+    any remaining pairs that MeshLab does not report.
+    """
+    out_v, out_f = _remove_meshlab_self_intersections(
+        verts,
+        faces,
+        min_area=min_area,
+        max_passes=max_meshlab_passes,
+        log_prefix=log_prefix,
+    )
+    if intersection_checker is not None:
+        out_v, out_f = _remove_checker_reported_intersections(
+            out_v,
+            out_f,
+            intersection_checker,
+            checker_transform=checker_transform,
+            min_area=min_area,
+            max_passes=max_checker_passes,
+            log_prefix=log_prefix,
+        )
+    if edge_edge_min_distance > 0.0:
+        out_v, out_f = _remove_edge_edge_proximity_intersections(
+            out_v,
+            out_f,
+            min_distance=float(edge_edge_min_distance),
+            min_area=min_area,
+            max_passes=max_edge_edge_passes,
+            log_prefix=log_prefix,
+        )
+        if intersection_checker is not None:
+            out_v, out_f = _remove_checker_reported_intersections(
+                out_v,
+                out_f,
+                intersection_checker,
+                checker_transform=checker_transform,
+                min_area=min_area,
+                max_passes=max_checker_passes,
+                log_prefix=log_prefix,
+            )
+    return out_v, out_f
+
+
+def _remove_meshlab_self_intersections(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    *,
+    min_area: float,
+    max_passes: int,
+    log_prefix: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    import pymeshlab
+
+    ms = pymeshlab.MeshSet()
+    ms.add_mesh(pymeshlab.Mesh(verts, faces))
+    ms.meshing_repair_non_manifold_edges()
+    ms.meshing_repair_non_manifold_vertices()
+
+    total_selected = 0
+    for _ in range(max_passes):
+        ms.meshing_repair_non_manifold_edges()
+        ms.meshing_repair_non_manifold_vertices()
+        try:
+            ms.compute_selection_by_self_intersections_per_face()
+        except Exception:
+            break
+        selected_faces = ms.current_mesh().selected_face_number()
+        if selected_faces == 0:
+            break
+        total_selected += selected_faces
+        ms.meshing_remove_selected_faces()
+        try:
+            ms.meshing_close_holes(maxholesize=20)
+        except Exception:
+            pass
+
+    mesh = ms.current_mesh()
+    out_v = np.asarray(mesh.vertex_matrix(), dtype=np.float32)
+    out_f = np.asarray(mesh.face_matrix(), dtype=np.int32).reshape(-1, 3)
+    out_v, out_f = _sanitize_proxy_mesh(out_v, out_f, min_area=min_area)
+    if total_selected:
+        prefix = f"{log_prefix} " if log_prefix else ""
+        print(
+            f"{prefix}Removed MeshLab-selected self-intersecting proxy faces "
+            f"({total_selected} selections across cleanup passes)."
+        )
+    return out_v, out_f
+
+
+def _remove_checker_reported_intersections(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    intersection_checker: Callable[[np.ndarray, np.ndarray], Sequence[tuple[int, int]]],
+    *,
+    checker_transform: Callable[[np.ndarray], np.ndarray] | None,
+    min_area: float,
+    max_passes: int,
+    log_prefix: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    out_v, out_f = _sanitize_proxy_mesh(verts, faces, min_area=min_area)
+    total_removed = 0
+    for _ in range(max_passes):
+        check_v = checker_transform(out_v) if checker_transform is not None else out_v
+        pairs = intersection_checker(
+            np.ascontiguousarray(check_v, dtype=np.float64),
+            np.ascontiguousarray(out_f, dtype=np.int32),
+        )
+        tri_pairs = [(int(a), int(b)) for a, b in pairs if a >= 0 and b >= 0]
+        if not tri_pairs:
+            break
+
+        counts = np.zeros(len(out_f), dtype=np.int32)
+        for a, b in tri_pairs:
+            counts[a] += 1
+            counts[b] += 1
+        areas = _triangle_areas(out_v, out_f)
+
+        remove: set[int] = set()
+        for a, b in tri_pairs:
+            if a in remove or b in remove:
+                continue
+            if counts[a] > counts[b]:
+                drop = a
+            elif counts[b] > counts[a]:
+                drop = b
+            else:
+                drop = a if areas[a] <= areas[b] else b
+            remove.add(drop)
+
+        keep = np.ones(len(out_f), dtype=bool)
+        keep[list(remove)] = False
+        out_f = out_f[keep]
+        total_removed += len(remove)
+        out_v, out_f = _sanitize_proxy_mesh(out_v, out_f, min_area=min_area)
+    else:
+        raise RuntimeError("Unable to remove all reported proxy self-intersections.")
+
+    if total_removed:
+        prefix = f"{log_prefix} " if log_prefix else ""
+        print(
+            f"{prefix}Removed {total_removed} additional proxy faces reported by "
+            "the strict self-intersection checker."
+        )
+    return out_v, out_f
+
+
+def _remove_edge_edge_proximity_intersections(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    *,
+    min_distance: float,
+    min_area: float,
+    max_passes: int,
+    log_prefix: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    out_v, out_f = _sanitize_proxy_mesh(verts, faces, min_area=min_area)
+    total_removed = 0
+    for _ in range(max_passes):
+        conflicts = _find_edge_edge_proximity_conflicts(out_v, out_f, min_distance)
+        if not conflicts:
+            break
+
+        face_conflict_count = np.zeros(len(out_f), dtype=np.int32)
+        for edge_a, edge_b in conflicts:
+            for face_id in edge_a[2]:
+                face_conflict_count[face_id] += 1
+            for face_id in edge_b[2]:
+                face_conflict_count[face_id] += 1
+
+        areas = _triangle_areas(out_v, out_f)
+        remove: set[int] = set()
+        for edge_a, edge_b in conflicts:
+            candidates = set(edge_a[2]) | set(edge_b[2])
+            candidates.difference_update(remove)
+            if not candidates:
+                continue
+            drop = max(
+                candidates,
+                key=lambda face_id: (face_conflict_count[face_id], -areas[face_id]),
+            )
+            remove.add(drop)
+
+        keep = np.ones(len(out_f), dtype=bool)
+        keep[list(remove)] = False
+        out_f = out_f[keep]
+        total_removed += len(remove)
+        out_v, out_f = _sanitize_proxy_mesh(out_v, out_f, min_area=min_area)
+    else:
+        raise RuntimeError("Unable to remove all proxy edge-edge proximity intersections.")
+
+    if total_removed:
+        prefix = f"{log_prefix} " if log_prefix else ""
+        print(
+            f"{prefix}Removed {total_removed} proxy faces to satisfy "
+            f"edge-edge separation >= {min_distance:.3g}."
+        )
+    return out_v, out_f
+
+
+def _find_edge_edge_proximity_conflicts(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    min_distance: float,
+) -> list[tuple[tuple[int, int, tuple[int, ...]], tuple[int, int, tuple[int, ...]]]]:
+    edges = _extract_edges_with_faces(faces)
+    if len(edges) < 2:
+        return []
+
+    edge_indices = np.array([(a, b) for a, b, _ in edges], dtype=np.int32)
+    p0 = verts[edge_indices[:, 0]]
+    p1 = verts[edge_indices[:, 1]]
+    mins = np.minimum(p0, p1) - min_distance
+    maxs = np.maximum(p0, p1) + min_distance
+    order = np.argsort(mins[:, 0])
+    min_dist2 = min_distance * min_distance
+    conflicts = []
+
+    for order_pos, edge_id in enumerate(order):
+        max_x = maxs[edge_id, 0]
+        for other_id in order[order_pos + 1:]:
+            if mins[other_id, 0] > max_x:
+                break
+            if np.any(mins[edge_id] > maxs[other_id]) or np.any(mins[other_id] > maxs[edge_id]):
+                continue
+            edge_a = edges[edge_id]
+            edge_b = edges[other_id]
+            dist2 = _native_style_edge_edge_distance2(
+                verts,
+                edge_a[0],
+                edge_a[1],
+                edge_b[0],
+                edge_b[1],
+            )
+            if dist2 < min_dist2:
+                conflicts.append((edge_a, edge_b))
+    return conflicts
+
+
+def _extract_edges_with_faces(faces: np.ndarray) -> list[tuple[int, int, tuple[int, ...]]]:
+    edge_faces: dict[tuple[int, int], list[int]] = {}
+    for face_id, tri in enumerate(faces):
+        for i0, i1 in ((0, 1), (1, 2), (2, 0)):
+            a = int(tri[i0])
+            b = int(tri[i1])
+            edge = (a, b) if a < b else (b, a)
+            edge_faces.setdefault(edge, []).append(face_id)
+    return [(a, b, tuple(face_ids)) for (a, b), face_ids in edge_faces.items()]
+
+
+def _native_style_edge_edge_distance2(
+    verts: np.ndarray,
+    a: int,
+    b: int,
+    c: int,
+    d: int,
+) -> float:
+    shared = set((a, b)) & set((c, d))
+    if shared:
+        shared_id = shared.pop()
+        other_ab = b if a == shared_id else a
+        other_cd = d if c == shared_id else c
+        p_shared = verts[shared_id]
+        p_ab = verts[other_ab]
+        p_cd = verts[other_cd]
+        return min(
+            _point_segment_distance2(p_ab, p_shared, p_cd),
+            _point_segment_distance2(p_cd, p_shared, p_ab),
+        )
+    return _segment_segment_distance2(verts[a], verts[b], verts[c], verts[d])
+
+
+def _point_segment_distance2(point: np.ndarray, seg_a: np.ndarray, seg_b: np.ndarray) -> float:
+    edge = seg_b - seg_a
+    denom = float(edge @ edge)
+    if denom <= 0.0:
+        delta = point - seg_a
+        return float(delta @ delta)
+    t = float((point - seg_a) @ edge) / denom
+    t = max(0.0, min(1.0, t))
+    delta = point - (seg_a + t * edge)
+    return float(delta @ delta)
+
+
+def _segment_segment_distance2(
+    p0: np.ndarray,
+    p1: np.ndarray,
+    q0: np.ndarray,
+    q1: np.ndarray,
+) -> float:
+    u = p1 - p0
+    v = q1 - q0
+    w = p0 - q0
+    a = float(u @ u)
+    b = float(u @ v)
+    c = float(v @ v)
+    d = float(u @ w)
+    e = float(v @ w)
+    denom = a * c - b * b
+    eps = 1.0e-20
+    s_denom = denom
+    t_denom = denom
+
+    if denom < eps:
+        s_num = 0.0
+        s_denom = 1.0
+        t_num = e
+        t_denom = c
+    else:
+        s_num = b * e - c * d
+        t_num = a * e - b * d
+        if s_num < 0.0:
+            s_num = 0.0
+            t_num = e
+            t_denom = c
+        elif s_num > s_denom:
+            s_num = s_denom
+            t_num = e + b
+            t_denom = c
+
+    if t_num < 0.0:
+        t_num = 0.0
+        if -d < 0.0:
+            s_num = 0.0
+        elif -d > a:
+            s_num = s_denom
+        else:
+            s_num = -d
+            s_denom = a
+    elif t_num > t_denom:
+        t_num = t_denom
+        if -d + b < 0.0:
+            s_num = 0.0
+        elif -d + b > a:
+            s_num = s_denom
+        else:
+            s_num = -d + b
+            s_denom = a
+
+    s = 0.0 if abs(s_num) < eps else s_num / s_denom
+    t = 0.0 if abs(t_num) < eps else t_num / t_denom
+    delta = w + s * u - t * v
+    return float(delta @ delta)
+
+
 def _sanitize_proxy_mesh(
     verts: np.ndarray,
     faces: np.ndarray,
@@ -280,15 +661,7 @@ def _sanitize_proxy_mesh(
     )
     out_f = out_f[unique_vertex_ids]
 
-    areas = np.array([
-        0.5 * np.linalg.norm(
-            np.cross(
-                out_v[tri[1]] - out_v[tri[0]],
-                out_v[tri[2]] - out_v[tri[0]],
-            )
-        )
-        for tri in out_f
-    ])
+    areas = _triangle_areas(out_v, out_f)
     keep = areas > min_area
     out_f = out_f[keep]
 
@@ -297,15 +670,7 @@ def _sanitize_proxy_mesh(
     out_f = out_f[np.sort(unique_ids)]
 
     while True:
-        tri_areas = np.array([
-            0.5 * np.linalg.norm(
-                np.cross(
-                    out_v[tri[1]] - out_v[tri[0]],
-                    out_v[tri[2]] - out_v[tri[0]],
-                )
-            )
-            for tri in out_f
-        ])
+        tri_areas = _triangle_areas(out_v, out_f)
 
         edge_faces: dict[tuple[int, int], list[int]] = {}
         for face_id, tri in enumerate(out_f):
@@ -338,3 +703,13 @@ def _sanitize_proxy_mesh(
     out_f = remap[out_f]
 
     return out_v, out_f
+
+
+def _triangle_areas(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    return 0.5 * np.linalg.norm(
+        np.cross(
+            verts[faces[:, 1]] - verts[faces[:, 0]],
+            verts[faces[:, 2]] - verts[faces[:, 0]],
+        ),
+        axis=1,
+    )

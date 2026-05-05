@@ -31,21 +31,30 @@ def render_bag_meshes(
     render_proxy_overlay: Callable[[bool], None] | None = None,
 ) -> None:
     """Render the hi-res bag or proxy from viewer cloth/collision flags."""
-    proxy_mode = bool(viewer.show_collision or viewer.show_triangles)
+    proxy_mode = bool(
+        getattr(viewer, "show_collision", False)
+        or getattr(viewer, "show_triangles", False)
+    )
 
-    show_triangles = viewer.show_triangles
-    viewer.show_triangles = False
+    show_triangles = getattr(viewer, "show_triangles", False)
+    if hasattr(viewer, "show_triangles"):
+        viewer.show_triangles = False
     viewer.begin_frame(sim_time)
     viewer.log_state(viz_state)
-    viewer.show_triangles = show_triangles
+    if hasattr(viewer, "show_triangles"):
+        viewer.show_triangles = show_triangles
 
+    full_mesh_kwargs = {
+        "backface_culling": False,
+        "hidden": proxy_mode,
+    }
+    if viewer.__class__.__name__ == "ViewerGL":
+        full_mesh_kwargs["alpha"] = 0.5
     viewer.log_mesh(
         "/bag",
         full_positions,
         full_indices,
-        backface_culling=False,
-        hidden=proxy_mode,
-        alpha=0.5,
+        **full_mesh_kwargs,
     )
 
     viewer.log_mesh(

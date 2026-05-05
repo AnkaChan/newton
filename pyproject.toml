@@ -86,6 +86,18 @@ examples = [
     "imageio>=2.37.3",      # for replay capture PNG/GIF output
     "imageio-ffmpeg>=0.6.0",  # for replay capture MP4 output
     "lasso-python>=2.0.4 ; python_version >= '3.11'",  # for reading LS-DYNA d3plot replay output
+    # ppf-contact-solver frontend dependencies used by example_kfc_bag_lift_ppfcs
+    "numba>=0.62.0",
+    "plyfile>=1.0.0",
+    "gdown>=5.2.0",
+    "pywavefront>=1.3.3",
+    "matplotlib>=3.8.0",
+    "tqdm>=4.66.0",
+    "pythreejs>=2.4.2",
+    "ipywidgets>=8.1.0",
+    "tabulate>=0.9.0",
+    "triangle>=20250106",
+    "pytetwild>=0.0.2",
 ]
 
 # Extra dependency needed to run examples that inference an RL policy

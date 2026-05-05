@@ -46,6 +46,7 @@ import newton.examples
 import newton.ik as ik
 import newton.utils
 from newton.examples.bag.capture import (
+    add_capture_arguments as _add_capture_arguments,
     capture_replay_frame as _capture_replay_frame_common,
     configure_capture as _configure_capture_common,
     finalize_capture as _finalize_capture_common,
@@ -265,16 +266,6 @@ def _duration_from_capture_frames(capture_frames: int, output_dt_s: float) -> fl
 def _full_capture_frame_count(output_dt_s: float) -> int:
     """Return the frame count needed to cover the full hold duration."""
     return int(math.ceil(_TOTAL_DURATION_S / float(output_dt_s))) + 1
-
-
-def _sync_viewer_frame_limit(viewer, args, capture_frames: int):
-    """Keep fixed-length viewers aligned with the replay by default."""
-    if not hasattr(viewer, "num_frames"):
-        return
-    if int(getattr(args, "num_frames", _DEFAULT_NUM_FRAMES)) != _DEFAULT_NUM_FRAMES:
-        return
-    viewer.num_frames = int(capture_frames)
-    args.num_frames = int(capture_frames)
 
 
 def _disable_viewer_frame_limit_for_streaming(viewer):
@@ -1854,37 +1845,6 @@ def _extract_shell_part_topology(
     return element_indexes, global_node_indexes, node_ids, faces, vertices_m
 
 
-def _load_existing_setup_from_d3plot(job_dir: Path, deck_path: Path) -> tuple[np.ndarray, DeckMetadata]:
-    """Rebuild replay metadata directly from an existing d3plot."""
-    D3plot, ArrayType = require_lasso()
-    d3plot_path = _find_d3plot_file(job_dir)
-    d3plot = D3plot(str(d3plot_path), state_array_filter=[ArrayType.node_displacement])
-    arrays = d3plot.arrays
-
-    _, _, bag_node_ids, bag_faces, bag_vertices_m = _extract_shell_part_topology(arrays, ArrayType, _BAG_PART_ID)
-    content_part_ids = {
-        "sphere": _SPHERE_PART_ID,
-        "box": _BOX_PART_ID,
-        "capsule": _CAPSULE_PART_ID,
-    }
-    content_part_node_ids = {
-        label: _extract_shell_part_topology(arrays, ArrayType, part_id)[2]
-        for label, part_id in content_part_ids.items()
-    }
-
-    return bag_vertices_m * 100.0, DeckMetadata(
-        deck_path=deck_path,
-        bag_part_id=_BAG_PART_ID,
-        bag_faces=bag_faces,
-        bag_node_ids=bag_node_ids,
-        bag_node_count=len(bag_node_ids),
-        bag_element_count=len(bag_faces),
-        content_part_ids=content_part_ids,
-        content_part_node_ids=content_part_node_ids,
-        content_part_initial_q_cm=_initial_content_body_q_cm(bag_vertices_m * 100.0),
-    )
-
-
 def _find_lsdyna_executable(explicit_exe: str | None, search_root: Path) -> Path:
     """Locate the LS-DYNA executable or raise a targeted error."""
     if explicit_exe:
@@ -2404,14 +2364,14 @@ class Example:
             "Replay an LS-DYNA shell bag lift-start inside Newton. The finger pads "
             "start already gripping the bag at the lifted height, the keyword "
             "deck is written by this standalone example, and the LS-DYNA "
-            "solve is launched directly via the configured executable. Use "
-            "`--reuse-results` or `--skip-solve` to avoid re-running LS-DYNA."
+            "solve is launched directly via the configured executable."
         )
         parser.set_defaults(num_frames=_DEFAULT_NUM_FRAMES)
-        parser.add_argument(
-            "--capture-replay",
-            action="store_true",
-            help="Capture rendered frames and auto-build a replay video or gif.",
+        _add_capture_arguments(
+            parser,
+            replay_help="Capture rendered frames and auto-build a replay video or gif.",
+            capture_frames_default=_DEFAULT_NUM_FRAMES,
+            include_save_mp4=False,
         )
         parser.add_argument(
             "--lsdyna-root",
@@ -2432,18 +2392,6 @@ class Example:
             help="Directory used for the generated keyword deck and LS-DYNA outputs.",
         )
         parser.add_argument(
-            "--reuse-results",
-            action=argparse.BooleanOptionalAction,
-            default=False,
-            help="Reuse an existing d3plot in the job directory when present.",
-        )
-        parser.add_argument(
-            "--skip-solve",
-            action=argparse.BooleanOptionalAction,
-            default=False,
-            help="Do not launch LS-DYNA; require an existing d3plot in the job directory.",
-        )
-        parser.add_argument(
             "--target-faces",
             type=int,
             default=_DEFAULT_TARGET_FACES,
@@ -2453,35 +2401,6 @@ class Example:
             "--small-pad",
             action="store_true",
             help="Use small finger pads (~20%% of full-pad friction area).",
-        )
-        parser.add_argument(
-            "--capture-frames",
-            type=int,
-            default=_DEFAULT_NUM_FRAMES,
-            help=(
-                "Number of LS-DYNA output frames to generate and replay. "
-                "When `--capture-replay` is enabled, this is also the number of "
-                "rendered frames saved."
-            ),
-        )
-        parser.add_argument(
-            "--capture-fps",
-            type=int,
-            default=60,
-            help="Output replay video FPS when `--capture-replay` is enabled.",
-        )
-        parser.add_argument(
-            "--capture-dir",
-            type=str,
-            default="outputs/replay_capture",
-            help="Directory used to store captured replay frames and video.",
-        )
-        parser.add_argument(
-            "--capture-format",
-            type=str,
-            default="mp4",
-            choices=["mp4", "gif"],
-            help="Preferred replay output format when `--capture-replay` is enabled.",
         )
         parser.add_argument(
             "--output-dt",
@@ -2547,33 +2466,17 @@ class Example:
         self.job_dir = Path(args.job_dir)
         self.job_dir.mkdir(parents=True, exist_ok=True)
         self._lsdyna_debug_summary_path = _lsdyna_debug_summary_path(self.job_dir)
-        d3plot_exists = any(self.job_dir.glob("d3plot*"))
         existing_deck_path = self.job_dir / "input.k"
-        reuse_existing_results = bool(args.reuse_results and d3plot_exists)
-        if args.skip_solve and not d3plot_exists:
-            raise FileNotFoundError(f"`--skip-solve` was requested but `{self.job_dir}` has no d3plot output.")
-        reuse_existing_setup = bool(args.skip_solve or reuse_existing_results)
-        self._stream_mode = bool(not args.skip_solve and not reuse_existing_results)
-
-        if self._stream_mode:
-            _disable_viewer_frame_limit_for_streaming(self.viewer)
-        else:
-            _sync_viewer_frame_limit(self.viewer, self.args, self.capture_frames)
+        self._stream_mode = True
+        _disable_viewer_frame_limit_for_streaming(self.viewer)
 
         print(f"{_LOG_PREFIX} LS-DYNA debug summary: {self._lsdyna_debug_summary_path.resolve()}")
 
-        if reuse_existing_setup:
-            shell_verts_cm, self.deck = _load_existing_setup_from_d3plot(self.job_dir, existing_deck_path)
-            print(
-                f"{_LOG_PREFIX} Reusing existing LS-DYNA result: {len(shell_verts_cm)} verts, "
-                f"{len(self.deck.bag_faces)} tris"
-            )
-        else:
-            shell_verts_cm, shell_faces = _decimate_mesh(full_verts_cm, full_faces, int(args.target_faces))
-            print(
-                f"{_LOG_PREFIX} LS-DYNA shell mesh: {len(shell_verts_cm)} verts, {len(shell_faces)} tris "
-                f"(target={int(args.target_faces)} from {len(full_verts_cm)} / {len(full_faces)})"
-            )
+        shell_verts_cm, shell_faces = _decimate_mesh(full_verts_cm, full_faces, int(args.target_faces))
+        print(
+            f"{_LOG_PREFIX} LS-DYNA shell mesh: {len(shell_verts_cm)} verts, {len(shell_faces)} tris "
+            f"(target={int(args.target_faces)} from {len(full_verts_cm)} / {len(full_faces)})"
+        )
 
         if not self._full_replay_requested or self.capture_frames != self._full_capture_frames:
             print(
@@ -2598,46 +2501,34 @@ class Example:
         ).sample(self._capture_duration_s)
         self._target_frame_times_s = self.motion.times_s[: self.capture_frames].astype(np.float32).copy()
 
-        if not reuse_existing_setup:
-            parts = _build_shell_parts(
-                shell_verts_cm,
-                shell_faces,
-                self.motion,
-                small_pad=self.small_pad,
-            )
-            self.deck = _write_keyword_deck(
-                deck_path=existing_deck_path,
-                parts=parts,
-                motion=self.motion,
-                output_dt_s=self.target_frame_dt,
-            )
+        parts = _build_shell_parts(
+            shell_verts_cm,
+            shell_faces,
+            self.motion,
+            small_pad=self.small_pad,
+        )
+        self.deck = _write_keyword_deck(
+            deck_path=existing_deck_path,
+            parts=parts,
+            motion=self.motion,
+            output_dt_s=self.target_frame_dt,
+        )
 
-        if not reuse_existing_setup:
-            solver_exe = _find_lsdyna_executable(args.lsdyna_exe, Path(args.lsdyna_root))
-            print(f"{_LOG_PREFIX} Running LS-DYNA: {solver_exe}")
-            _cleanup_lsdyna_outputs(self.job_dir)
-            if self._stream_mode:
-                (
-                    self._stream_solver_process,
-                    self._stream_solver_log_file,
-                    self._stream_solver_log_path,
-                ) = _start_lsdyna_background(
-                    deck_path=self.deck.deck_path,
-                    executable=solver_exe,
-                    job_dir=self.job_dir,
-                    ncpu=int(args.ncpu),
-                    memory=str(args.memory),
-                )
-                self._write_lsdyna_debug_summary(note="LS-DYNA launched in streaming mode.")
-            else:
-                _run_lsdyna(
-                    deck_path=self.deck.deck_path,
-                    executable=solver_exe,
-                    job_dir=self.job_dir,
-                    ncpu=int(args.ncpu),
-                    memory=str(args.memory),
-                )
-                self._write_lsdyna_debug_summary(note="LS-DYNA solve completed before replay load.")
+        solver_exe = _find_lsdyna_executable(args.lsdyna_exe, Path(args.lsdyna_root))
+        print(f"{_LOG_PREFIX} Running LS-DYNA: {solver_exe}")
+        _cleanup_lsdyna_outputs(self.job_dir)
+        (
+            self._stream_solver_process,
+            self._stream_solver_log_file,
+            self._stream_solver_log_path,
+        ) = _start_lsdyna_background(
+            deck_path=self.deck.deck_path,
+            executable=solver_exe,
+            job_dir=self.job_dir,
+            ncpu=int(args.ncpu),
+            memory=str(args.memory),
+        )
+        self._write_lsdyna_debug_summary(note="LS-DYNA launched in streaming mode.")
 
         print(f"{_LOG_PREFIX} Building barycentric map...", end=" ", flush=True)
         self._bary_vi0_np, self._bary_vi1_np, self._bary_vi2_np, self._bary_w_np = _build_bary_map(
@@ -2655,18 +2546,8 @@ class Example:
         self._bary_disp_m = ((full_verts_cm - bary_proj_cm) * _VIZ_SCALE).astype(np.float32)
         print("done.")
 
-        if self._stream_mode:
-            self._source_replay = _initial_replay_data(shell_verts_cm, self.deck)
-        else:
-            self._write_lsdyna_debug_summary(
-                note="Preparing replay load from existing LS-DYNA outputs.",
-            )
-            self._source_replay, self._last_replay_diagnostics = _load_replay_data_with_diagnostics(
-                self.job_dir,
-                self.deck,
-                output_dt_s=self.target_frame_dt,
-            )
-        self._update_replay_from_source(hold_last=not self._stream_mode)
+        self._source_replay = _initial_replay_data(shell_verts_cm, self.deck)
+        self._update_replay_from_source(hold_last=False)
         self._write_lsdyna_debug_summary(
             note="Initial replay buffers prepared.",
         )
@@ -3667,21 +3548,6 @@ def _write_keyword_deck_friction(
     )
 
 
-def _load_existing_setup_from_d3plot_lift(
-    job_dir: Path,
-    deck_path: Path,
-) -> tuple[np.ndarray, _ansys_common.DeckMetadata]:
-    """Reuse a prior standalone d3plot while keeping lift-specific metadata."""
-    shell_verts_cm, deck = _ansys_common._load_existing_setup_from_d3plot(
-        job_dir,
-        deck_path,
-    )
-    deck.content_part_initial_q_cm = _initial_lift_content_body_q_cm(
-        shell_verts_cm
-    )
-    return shell_verts_cm, deck
-
-
 def _slice_motion_samples(
     motion: _ansys_common.MotionSamples,
     start_frame_index: int,
@@ -4596,27 +4462,9 @@ class Example(_ansys_common.Example):
             self.job_dir
         )
         self.rollback_summary_path = _rollback_summary_path(self.job_dir)
-        d3plot_exists = any(self.job_dir.glob("d3plot*"))
-        existing_deck_path = self.job_dir / "input.k"
-        reuse_existing_results = bool(args.reuse_results and d3plot_exists)
-        if args.skip_solve and not d3plot_exists:
-            raise FileNotFoundError(
-                f"`--skip-solve` was requested but `{self.job_dir}` has "
-                "no d3plot output."
-            )
-        reuse_existing_setup = bool(args.skip_solve or reuse_existing_results)
-        self._stream_mode = bool(not args.skip_solve and not reuse_existing_results)
-        if self._stream_mode:
-            _ansys_common.require_lasso()
-
-        if self._stream_mode:
-            _ansys_common._disable_viewer_frame_limit_for_streaming(self.viewer)
-        else:
-            _ansys_common._sync_viewer_frame_limit(
-                self.viewer,
-                self.args,
-                self.capture_frames,
-            )
+        self._stream_mode = True
+        _ansys_common.require_lasso()
+        _ansys_common._disable_viewer_frame_limit_for_streaming(self.viewer)
         print(
             f"{_ansys_common._LOG_PREFIX} LS-DYNA debug summary: "
             f"{self._lsdyna_debug_summary_path.resolve()}"
@@ -4626,27 +4474,17 @@ class Example(_ansys_common.Example):
             f"{self.rollback_summary_path.resolve()}"
         )
 
-        if reuse_existing_setup:
-            shell_verts_cm, self.deck = _load_existing_setup_from_d3plot_lift(
-                self.job_dir,
-                existing_deck_path,
-            )
-            print(
-                f"{_ansys_common._LOG_PREFIX} Reusing existing LS-DYNA result: "
-                f"{len(shell_verts_cm)} verts, {len(self.deck.bag_faces)} tris"
-            )
-        else:
-            shell_verts_cm, shell_faces = _ansys_common._decimate_mesh(
-                full_verts_cm,
-                full_faces,
-                int(args.target_faces),
-            )
-            print(
-                f"{_ansys_common._LOG_PREFIX} LS-DYNA shell mesh: "
-                f"{len(shell_verts_cm)} verts, {len(shell_faces)} tris "
-                f"(target={int(args.target_faces)} from "
-                f"{len(full_verts_cm)} / {len(full_faces)})"
-            )
+        shell_verts_cm, shell_faces = _ansys_common._decimate_mesh(
+            full_verts_cm,
+            full_faces,
+            int(args.target_faces),
+        )
+        print(
+            f"{_ansys_common._LOG_PREFIX} LS-DYNA shell mesh: "
+            f"{len(shell_verts_cm)} verts, {len(shell_faces)} tris "
+            f"(target={int(args.target_faces)} from "
+            f"{len(full_verts_cm)} / {len(full_faces)})"
+        )
 
         if (
             not self._full_replay_requested
@@ -4683,53 +4521,41 @@ class Example(_ansys_common.Example):
         )
         self._rollback_target_frame_count = self._active_target_frame_count()
 
-        if reuse_existing_setup:
-            self._write_lsdyna_debug_summary(
-                note="Preparing replay load from existing LS-DYNA outputs.",
-            )
-            self._source_replay, self._last_replay_diagnostics = (
-                _ansys_common._load_replay_data_with_diagnostics(
-                    self.job_dir,
-                    self.deck,
-                    output_dt_s=self.target_frame_dt,
-                )
+        solver_exe = _ansys_common._find_lsdyna_executable(
+            args.lsdyna_exe,
+            Path(args.lsdyna_root),
+        )
+        self._rollback_solver_executable = solver_exe
+        self._rollback_shell_faces = shell_faces.astype(np.int32).copy()
+        print(f"{_ansys_common._LOG_PREFIX} Running LS-DYNA: {solver_exe}")
+        if self._rollback_enabled and self._rollback_max_retries > 0:
+            print(
+                f"{_ansys_common._LOG_PREFIX} Rollback attempt outputs are stored "
+                f"under `{self.job_dir}`."
             )
         else:
-            solver_exe = _ansys_common._find_lsdyna_executable(
-                args.lsdyna_exe,
-                Path(args.lsdyna_root),
+            print(
+                f"{_ansys_common._LOG_PREFIX} Single-attempt outputs are stored "
+                f"under `{self.job_dir}`."
             )
-            self._rollback_solver_executable = solver_exe
-            self._rollback_shell_faces = shell_faces.astype(np.int32).copy()
-            print(f"{_ansys_common._LOG_PREFIX} Running LS-DYNA: {solver_exe}")
-            if self._rollback_enabled and self._rollback_max_retries > 0:
-                print(
-                    f"{_ansys_common._LOG_PREFIX} Rollback attempt outputs are stored "
-                    f"under `{self.job_dir}`."
-                )
-            else:
-                print(
-                    f"{_ansys_common._LOG_PREFIX} Single-attempt outputs are stored "
-                    f"under `{self.job_dir}`."
-                )
-            self._initialize_rollback_summary()
-            self._start_rollback_attempt(
-                attempt_index=0,
-                restart_frame_index=0,
-                attempt_mode="base",
-                rescue_depth=0,
-                restart_bag_verts_cm=shell_verts_cm.astype(np.float32).copy(),
-                content_part_initial_q_cm=_initial_lift_content_body_q_cm(
-                    shell_verts_cm
-                ),
-            )
-            self._write_lsdyna_debug_summary(
-                note=(
-                    "LS-DYNA launched in streaming rollback mode."
-                    if self._rollback_enabled and self._rollback_max_retries > 0
-                    else "LS-DYNA launched in single-attempt streaming mode."
-                ),
-            )
+        self._initialize_rollback_summary()
+        self._start_rollback_attempt(
+            attempt_index=0,
+            restart_frame_index=0,
+            attempt_mode="base",
+            rescue_depth=0,
+            restart_bag_verts_cm=shell_verts_cm.astype(np.float32).copy(),
+            content_part_initial_q_cm=_initial_lift_content_body_q_cm(
+                shell_verts_cm
+            ),
+        )
+        self._write_lsdyna_debug_summary(
+            note=(
+                "LS-DYNA launched in streaming rollback mode."
+                if self._rollback_enabled and self._rollback_max_retries > 0
+                else "LS-DYNA launched in single-attempt streaming mode."
+            ),
+        )
 
         print(
             f"{_ansys_common._LOG_PREFIX} Building barycentric map...",
@@ -4761,12 +4587,11 @@ class Example(_ansys_common.Example):
         ).astype(np.float32)
         print("done.")
 
-        if self._stream_mode:
-            self._source_replay = _ansys_common._initial_replay_data(
-                shell_verts_cm,
-                self.deck,
-            )
-        self._update_replay_from_source(hold_last=not self._stream_mode)
+        self._source_replay = _ansys_common._initial_replay_data(
+            shell_verts_cm,
+            self.deck,
+        )
+        self._update_replay_from_source(hold_last=False)
         self._persist_rollback_summary()
         self._write_lsdyna_debug_summary(
             note="Initial replay buffers prepared."

@@ -65,14 +65,21 @@ def configure_capture(
         owner.capture_dir.mkdir(parents=True, exist_ok=True)
 
 
-def add_capture_arguments(parser, *, replay_help: str) -> None:
+def add_capture_arguments(
+    parser,
+    *,
+    replay_help: str,
+    capture_frames_default: int = 300,
+    include_save_mp4: bool = True,
+) -> None:
     """Add the shared MP4 and replay-capture CLI flags."""
-    parser.add_argument(
-        "--save-mp4",
-        type=str,
-        default=None,
-        help="Save simulation to MP4 file",
-    )
+    if include_save_mp4:
+        parser.add_argument(
+            "--save-mp4",
+            type=str,
+            default=None,
+            help="Save simulation to MP4 file",
+        )
     parser.add_argument(
         "--capture-replay",
         action="store_true",
@@ -81,7 +88,7 @@ def add_capture_arguments(parser, *, replay_help: str) -> None:
     parser.add_argument(
         "--capture-frames",
         type=int,
-        default=300,
+        default=capture_frames_default,
         help="Number of frames to capture when replay capture is enabled",
     )
     parser.add_argument(
