@@ -21,18 +21,44 @@ This fork adds local documentation and workflows for the KFC bag examples under
 the standard Newton examples and focus on deformable bag debugging across VBD,
 PPF-CTS, and LS-DYNA backends.
 
-Start here:
+Start here, use "--capture-frames 3" instead for smoke test:
 
 ```bash
-uv run -m newton.examples kfc_bag_drop_vbd
-uv run -m newton.examples kfc_bag_lift_vbd
-uv run -m newton.examples kfc_bag_lift_ppfcs
-uv run -m newton.examples kfc_bag_lift_ansys
+uv run -m newton.examples kfc_bag_drop_vbd --capture-replay --capture-frames 200
+uv run -m newton.examples kfc_bag_lift_vbd --capture-replay --capture-frames 240
+uv run -m newton.examples kfc_bag_lift_ppfcs --capture-replay --capture-frames 240 --small-pad
+uv run -m newton.examples kfc_bag_lift_ansys --capture-replay --capture-frames 240 --small-pad
 ```
 
-The VBD examples run inside Newton. The PPF-CTS and LS-DYNA examples require
-local solver builds or executables; see the command-line flags in the example
-scripts for backend-specific paths and output directories.
+Backend setup:
+
+- The VBD examples run inside Newton and do not need an external solver.
+- The PPF-CTS lift example needs a compiled
+  [`ppf-contact-solver`](ppf-contact-solver) checkout. If that checkout is
+  beside this repo as `ppf-contact-solver`, no `--ppfcs-dir` flag is needed.
+  On Windows, build it with:
+
+  ```bat
+  ppf-contact-solver\build-win-native\warmup.bat /nopause
+  ppf-contact-solver\build-win-native\build.bat /nopause
+  ```
+
+  Only pass `--ppfcs-dir` when the backend checkout is somewhere else:
+
+  ```bash
+  uv run -m newton.examples kfc_bag_lift_ppfcs --ppfcs-dir D:\path\to\ppf-contact-solver
+  ```
+
+- The LS-DYNA lift example needs an installed LS-DYNA executable. Pass the
+  executable directly, or pass a root directory for the script to search:
+
+  ```bash
+  uv run -m newton.examples kfc_bag_lift_ansys --lsdyna-exe "D:\path\to\ls-dyna.exe"
+  uv run -m newton.examples kfc_bag_lift_ansys --lsdyna-root "D:\Program Files\LS-DYNA Suite R16.1 Student"
+  ```
+
+  Use `--job-dir` on either external-backend example when you want to keep
+  solver output from different runs separate.
 
 ## Requirements
 
