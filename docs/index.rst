@@ -18,6 +18,7 @@ Newton Physics
    guide/installation
    guide/visualization
    guide/tutorials
+   KFC Bag Examples <guide/bag_examples>
    Development <guide/development>
 
 .. toctree::
