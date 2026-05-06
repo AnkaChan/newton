@@ -14,6 +14,26 @@ Newton is a [Linux Foundation](https://www.linuxfoundation.org/) project that is
 
 Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Google DeepMind](https://deepmind.google/), and [NVIDIA](https://www.nvidia.com/).
 
+## Fork-Local KFC Bag Examples
+
+This fork adds local documentation and workflows for the KFC bag examples under
+[`newton/examples/bag`](newton/examples/bag). These examples are heavier than
+the standard Newton examples and focus on deformable bag debugging across VBD,
+PPF-CTS, and LS-DYNA backends.
+
+Start here:
+
+```bash
+uv run -m newton.examples kfc_bag_drop_vbd
+uv run -m newton.examples kfc_bag_lift_vbd
+uv run -m newton.examples kfc_bag_lift_ppfcs
+uv run -m newton.examples kfc_bag_lift_ansys
+```
+
+The VBD examples run inside Newton. The PPF-CTS and LS-DYNA examples require
+local solver builds or executables; see the command-line flags in the example
+scripts for backend-specific paths and output directories.
+
 ## Requirements
 
 - **Python** 3.10+
