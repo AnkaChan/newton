@@ -44,7 +44,6 @@ from scipy.spatial.transform import Rotation
 import newton
 import newton.examples
 import newton.ik as ik
-import newton.utils
 from newton.examples.bag.capture import (
     add_capture_arguments as _add_capture_arguments,
     capture_replay_frame as _capture_replay_frame_common,
@@ -55,9 +54,29 @@ from newton.examples.bag.capture import (
     trim_replay_capture as _trim_replay_capture_common,
 )
 from newton.examples.bag.mesh import (
-    build_bary_map as _shared_build_bary_map,
+    build_bary_map_with_logging as _shared_build_bary_map_with_logging,
     decimate_mesh as _shared_decimate_mesh,
     load_kfc_mesh_zup as _shared_load_kfc_mesh_zup,
+)
+from newton.examples.bag.lift import (
+    BAG_H_CM as _BAG_H,
+    BAG_X_CM as _BAG_X,
+    BAG_Y_CM as _BAG_Y,
+    DEFAULT_CLOSED_WIDTH_CM as _DEFAULT_CLOSED_WIDTH_CM,
+    FINGER_OPEN_Q_CM as _FINGER_OPEN_Q_CM,
+    FINGER_PAD_OFFSET_CM as _FINGER_PAD_OFFSET_CM,
+    FRAME_DT as _TARGET_FRAME_DT,
+    FR3_BASE_CM as _FR3_BASE_CM,
+    GRAB_Z_CM as _GRAB_Z,
+    LIFT_Z_CM as _LIFT_Z,
+    TOTAL_DURATION_S as _TOTAL_DURATION_S,
+    add_fr3_hand as _add_fr3_hand,
+    add_lift_robot_arguments as _add_lift_robot_arguments,
+    finger_joint_q_from_gripper_fraction as _finger_joint_q_from_gripper_fraction,
+    finger_pad_half_extents_cm as _finger_pad_half_extents_cm_common,
+    gripper_fraction_from_closed_width_cm as _gripper_fraction_from_closed_width_cm,
+    log_content_placements_cm as _log_content_placements_cm,
+    lift_waypoints_cm as _lift_waypoints_cm,
 )
 from newton.examples.bag.render import render_bag_meshes as _render_bag_meshes
 
@@ -65,10 +84,7 @@ from newton.examples.bag.render import render_bag_meshes as _render_bag_meshes
 _LOG_PREFIX = "[KFC ansys]"
 
 _FPS = 60.0
-_TARGET_FRAME_DT = 1.0 / _FPS
-_TOTAL_DURATION_S = 0.45 + 0.20 + 3.0 + 2.5
 _DEFAULT_NUM_FRAMES = int(math.ceil(_TOTAL_DURATION_S / _TARGET_FRAME_DT)) + 1
-_SMALL_PAD_SCALE = math.sqrt(0.20)
 _SHIFT_TARGET_FRAME_DT_S = 1.0 / 60.0
 
 _DEFAULT_JOB_DIR = Path("outputs/lsdyna/kfc_bag_ansys_common")
@@ -79,22 +95,8 @@ _DEFAULT_LSDYNA_ROOT = Path(
 # Simulation scale: centimeters
 _VIZ_SCALE = 0.01
 
-# Bag geometry [cm]
-_BAG_H = 27.9
-_BAG_X, _BAG_Y = 0.0, 0.0
-
-# Robot waypoints [cm]
-_GRAB_Z = _BAG_H + 9.0
-_LIFT_Z = 65.0
-
 # Content objects [g]
 _OBJECT_MASS_G = 1000.0
-
-# Finger pads [cm]
-_FINGER_PAD_OFFSET_CM = (0.0, 0.758, 5.75)
-_FINGER_PAD_HALF_THICKNESS_CM = 0.75
-_FINGER_PAD_HALF_HEIGHT_CM = 2.60
-_FINGER_PAD_TOP_BAND_CM = 1.0
 
 _BAG_PART_ID = 10
 _GROUND_PART_ID = 20
@@ -360,7 +362,11 @@ def _build_bary_map(
     phys_faces: np.ndarray,
 ):
     """Map each full-res vertex to a nearby shell triangle with barycentrics."""
-    return _shared_build_bary_map(full_verts, phys_verts, phys_faces)
+    return _shared_build_bary_map_with_logging(
+        full_verts,
+        phys_verts,
+        phys_faces,
+    )
 
 
 def _load_kfc_mesh_zup() -> tuple[np.ndarray, np.ndarray]:
@@ -423,14 +429,13 @@ def _fit_bag_contents(phys_verts_cm: np.ndarray):
     )
     if placement_key not in _LOGGED_CONTENT_PLACEMENTS:
         _LOGGED_CONTENT_PLACEMENTS.add(placement_key)
-        print(
-            f"{_LOG_PREFIX} Object placements (clearance to bag wall):\n"
-            f"  sphere  @ ({sphere_pos_cm[0]:.1f}, {sphere_pos_cm[1]:.1f}, {sphere_pos_cm[2]:.1f})"
-            f"  clr={sphere_clearance_cm:.2f} cm\n"
-            f"  box     @ ({box_pos_cm[0]:.1f}, {box_pos_cm[1]:.1f}, {box_pos_cm[2]:.1f})"
-            f"  clr={box_clearance_cm:.2f} cm\n"
-            f"  capsule @ ({capsule_pos_cm[0]:.1f}, {capsule_pos_cm[1]:.1f}, {capsule_pos_cm[2]:.1f})"
-            f" [Y-horiz]  clr={capsule_clearance_cm:.2f} cm"
+        _log_content_placements_cm(
+            sphere_pos_cm=sphere_pos_cm,
+            sphere_clearance_cm=sphere_clearance_cm,
+            box_pos_cm=box_pos_cm,
+            box_clearance_cm=box_clearance_cm,
+            capsule_pos_cm=capsule_pos_cm,
+            capsule_clearance_cm=capsule_clearance_cm,
         )
     return sphere_pos_cm, box_pos_cm, capsule_pos_cm, capsule_quat
 
@@ -780,16 +785,11 @@ def _finger_pad_half_extents_cm(
     small_pad: bool,
 ) -> tuple[float, float, float]:
     """Compute the finger pad half extents used for replay and LS-DYNA."""
-    top_band_mask = bag_verts_cm[:, 2] >= (_BAG_H - _FINGER_PAD_TOP_BAND_CM)
-    top_band_verts = bag_verts_cm[top_band_mask] if np.any(top_band_mask) else bag_verts_cm
-    pad_hx_cm = 0.5 * float(top_band_verts[:, 0].max() - top_band_verts[:, 0].min())
-    pad_hx_cm = max(pad_hx_cm, 2.0)
-    pad_hy_cm = _FINGER_PAD_HALF_THICKNESS_CM
-    pad_hz_cm = _FINGER_PAD_HALF_HEIGHT_CM
-    if small_pad:
-        pad_hx_cm *= _SMALL_PAD_SCALE
-        pad_hz_cm *= _SMALL_PAD_SCALE
-    return pad_hx_cm, pad_hy_cm, pad_hz_cm
+    return _finger_pad_half_extents_cm_common(
+        bag_verts_cm,
+        small_pad=small_pad,
+        min_hx_cm=2.0,
+    )
 
 
 def _axis_aligned_box_from_vertices(vertices_m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -950,27 +950,15 @@ class RobotTrajectorySampler:
         self.target_frame_dt = float(target_frame_dt_s)
 
         builder = newton.ModelBuilder(gravity=0.0)
-        asset_path = newton.utils.download_asset("franka_emika_panda")
-        builder.add_urdf(
-            str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-            xform=wp.transform((-50.0, 0.0, 5.0), wp.quat_identity()),
-            floating=False,
-            scale=100,
-            enable_self_collisions=False,
-            parse_visuals_as_colliders=True,
+        hand_bodies = _add_fr3_hand(
+            builder,
+            base_position=_FR3_BASE_CM,
+            scale=100.0,
+            finger_open_q=_FINGER_OPEN_Q_CM,
         )
-
-        init_q = [-3.6802e-03, 2.3902e-02, 3.6804e-03, -2.3683, -1.2919e-04, 2.3922, 7.8549e-01]
-        builder.joint_q[:9] = [*init_q, 4.0, 4.0]
-
-        self._left_finger_body = next(
-            i for i, label in enumerate(builder.body_label) if label.endswith("fr3_leftfinger")
-        )
-        self._right_finger_body = next(
-            i for i, label in enumerate(builder.body_label) if label.endswith("fr3_rightfinger")
-        )
-        hand_body = next(i for i, label in enumerate(builder.body_label) if label.endswith("fr3_hand"))
-        self._ee_body_index = hand_body
+        self._left_finger_body = hand_bodies.left_finger
+        self._right_finger_body = hand_bodies.right_finger
+        self._ee_body_index = hand_bodies.hand
 
         pad_cfg = newton.ModelBuilder.ShapeConfig(density=0.001, mu=0.5, ke=1.0e4, kd=1.0)
         pad_xform = wp.transform(wp.vec3(*_FINGER_PAD_OFFSET_CM), wp.quat_identity())
@@ -1027,12 +1015,7 @@ class RobotTrajectorySampler:
             jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
 
-        self.waypoints = [
-            (wp.vec3(_BAG_X, _BAG_Y, _GRAB_Z), 0.45, 0.0),
-            (wp.vec3(_BAG_X, _BAG_Y, _GRAB_Z), 0.20, 1.0),
-            (wp.vec3(_BAG_X, _BAG_Y, _GRAB_Z), 3.00, 1.0),
-            (wp.vec3(_BAG_X, _BAG_Y, _LIFT_Z), 2.50, 1.0),
-        ]
+        self.waypoints = _lift_waypoints_cm(closed_fraction=1.0)
         self._current_waypoint = 0
         self._time_in_waypoint = 0.0
         self._gripper_frac = 0.0
@@ -1074,7 +1057,7 @@ class RobotTrajectorySampler:
         joint_q = self.visual_model.joint_q.numpy().copy()
         ik_sol = self._joint_q_ik.numpy()[0]
         joint_q[:7] = ik_sol[:7]
-        gripper_width = 4.0 * (1.0 - self._gripper_frac)
+        gripper_width = _finger_joint_q_from_gripper_fraction(self._gripper_frac, scale=100.0)
         joint_q[7], joint_q[8] = gripper_width, gripper_width
         joint_q_wp = wp.array(joint_q, dtype=float)
 
@@ -2288,22 +2271,16 @@ def _build_visual_model(
 ) -> tuple[newton.Model, dict[str, int], int]:
     """Build the Newton-side replay model for robot and rigid contents."""
     builder = newton.ModelBuilder(gravity=0.0)
-    asset_path = newton.utils.download_asset("franka_emika_panda")
-    builder.add_urdf(
-        str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-        xform=wp.transform((-50.0, 0.0, 5.0), wp.quat_identity()),
-        floating=False,
-        scale=100,
-        enable_self_collisions=False,
-        parse_visuals_as_colliders=True,
+    hand_bodies = _add_fr3_hand(
+        builder,
+        base_position=_FR3_BASE_CM,
+        scale=100.0,
+        finger_open_q=_FINGER_OPEN_Q_CM,
     )
-
-    init_q = [-3.6802e-03, 2.3902e-02, 3.6804e-03, -2.3683, -1.2919e-04, 2.3922, 7.8549e-01]
-    builder.joint_q[:9] = [*init_q, 4.0, 4.0]
     robot_body_count = builder.body_count
 
-    left_finger_body = next(i for i, label in enumerate(builder.body_label) if label.endswith("fr3_leftfinger"))
-    right_finger_body = next(i for i, label in enumerate(builder.body_label) if label.endswith("fr3_rightfinger"))
+    left_finger_body = hand_bodies.left_finger
+    right_finger_body = hand_bodies.right_finger
     pad_cfg = newton.ModelBuilder.ShapeConfig(density=0.001, mu=0.5, ke=1.0e4, kd=1.0)
     pad_xform = wp.transform(wp.vec3(*_FINGER_PAD_OFFSET_CM), wp.quat_identity())
     pad_hx_cm, pad_hy_cm, pad_hz_cm = _finger_pad_half_extents_cm(
@@ -2397,11 +2374,7 @@ class Example:
             default=_DEFAULT_TARGET_FACES,
             help="Approximate shell face count for the bag mesh written to LS-DYNA.",
         )
-        parser.add_argument(
-            "--small-pad",
-            action="store_true",
-            help="Use small finger pads (~20%% of full-pad friction area).",
-        )
+        _add_lift_robot_arguments(parser, closed_width=False)
         parser.add_argument(
             "--output-dt",
             type=float,
@@ -2473,10 +2446,6 @@ class Example:
         print(f"{_LOG_PREFIX} LS-DYNA debug summary: {self._lsdyna_debug_summary_path.resolve()}")
 
         shell_verts_cm, shell_faces = _decimate_mesh(full_verts_cm, full_faces, int(args.target_faces))
-        print(
-            f"{_LOG_PREFIX} LS-DYNA shell mesh: {len(shell_verts_cm)} verts, {len(shell_faces)} tris "
-            f"(target={int(args.target_faces)} from {len(full_verts_cm)} / {len(full_faces)})"
-        )
 
         if not self._full_replay_requested or self.capture_frames != self._full_capture_frames:
             print(
@@ -2530,7 +2499,6 @@ class Example:
         )
         self._write_lsdyna_debug_summary(note="LS-DYNA launched in streaming mode.")
 
-        print(f"{_LOG_PREFIX} Building barycentric map...", end=" ", flush=True)
         self._bary_vi0_np, self._bary_vi1_np, self._bary_vi2_np, self._bary_w_np = _build_bary_map(
             full_verts_cm,
             shell_verts_cm,
@@ -2544,7 +2512,6 @@ class Example:
             + shell_verts_cm[self._bary_vi2_np] * self._bary_w_np[:, 2:3]
         )
         self._bary_disp_m = ((full_verts_cm - bary_proj_cm) * _VIZ_SCALE).astype(np.float32)
-        print("done.")
 
         self._source_replay = _initial_replay_data(shell_verts_cm, self.deck)
         self._update_replay_from_source(hold_last=False)
@@ -2959,8 +2926,6 @@ from types import SimpleNamespace as _SimpleNamespace
 _ansys_common = _SimpleNamespace(**globals())
 
 _DEFAULT_JOB_DIR = Path("outputs/lsdyna/kfc_bag_lift_ansys")
-_DEFAULT_CLOSED_WIDTH_CM = 0.6
-_MAX_GRIPPER_WIDTH_CM = 4.0
 _LIFT_BAG_YOUNGS_MODULUS_PA = 1.0e9
 _LIFT_CONTACT_FS = 0.70
 _LIFT_CONTACT_FD = 0.55
@@ -3090,17 +3055,6 @@ def _initial_lift_content_body_q_cm(
     }
 
 
-def _gripper_frac_from_closed_width_cm(closed_width_cm: float) -> float:
-    """Convert a target finger gap [cm] into the FR3 gripper fraction."""
-    if not np.isfinite(closed_width_cm):
-        raise ValueError("`closed_width_cm` must be finite.")
-    if closed_width_cm < 0.0 or closed_width_cm > _MAX_GRIPPER_WIDTH_CM:
-        raise ValueError(
-            f"`closed_width_cm` must be within [0, {_MAX_GRIPPER_WIDTH_CM}]."
-        )
-    return float(1.0 - closed_width_cm / _MAX_GRIPPER_WIDTH_CM)
-
-
 class LiftRobotTrajectorySampler(_ansys_common.RobotTrajectorySampler):
     """Replay the original lift motion with a configurable final finger gap."""
 
@@ -3115,15 +3069,8 @@ class LiftRobotTrajectorySampler(_ansys_common.RobotTrajectorySampler):
         closed_width_cm: float = _DEFAULT_CLOSED_WIDTH_CM,
     ):
         super().__init__(bag_verts_cm, target_frame_dt_s, small_pad=small_pad)
-        closed_frac = _gripper_frac_from_closed_width_cm(closed_width_cm)
-        grab_pos = wp.vec3(_ansys_common._BAG_X, _ansys_common._BAG_Y, _ansys_common._GRAB_Z)
-        lift_pos = wp.vec3(_ansys_common._BAG_X, _ansys_common._BAG_Y, _ansys_common._LIFT_Z)
-        self.waypoints = [
-            (grab_pos, 0.45, 0.0),
-            (grab_pos, 0.20, closed_frac),
-            (grab_pos, 3.00, closed_frac),
-            (lift_pos, 2.50, closed_frac),
-        ]
+        closed_frac = _gripper_fraction_from_closed_width_cm(closed_width_cm)
+        self.waypoints = _lift_waypoints_cm(closed_fraction=closed_frac)
         self._current_waypoint = 0
         self._time_in_waypoint = 0.0
         self._gripper_frac = 0.0
@@ -4265,16 +4212,7 @@ class Example(_ansys_common.Example):
             if action.dest == "job_dir":
                 action.default = str(_DEFAULT_JOB_DIR)
                 break
-        parser.add_argument(
-            "--closed-width-cm",
-            type=float,
-            default=_DEFAULT_CLOSED_WIDTH_CM,
-            help=(
-                "Final commanded gap between the finger pads [cm]. A small "
-                "positive gap is often more stable than fully closing through "
-                "the bag when using true frictional contact."
-            ),
-        )
+        _add_lift_robot_arguments(parser, small_pad=False)
         parser.add_argument(
             "--no-rollback",
             dest="rollback",
@@ -4479,12 +4417,6 @@ class Example(_ansys_common.Example):
             full_faces,
             int(args.target_faces),
         )
-        print(
-            f"{_ansys_common._LOG_PREFIX} LS-DYNA shell mesh: "
-            f"{len(shell_verts_cm)} verts, {len(shell_faces)} tris "
-            f"(target={int(args.target_faces)} from "
-            f"{len(full_verts_cm)} / {len(full_faces)})"
-        )
 
         if (
             not self._full_replay_requested
@@ -4557,11 +4489,6 @@ class Example(_ansys_common.Example):
             ),
         )
 
-        print(
-            f"{_ansys_common._LOG_PREFIX} Building barycentric map...",
-            end=" ",
-            flush=True,
-        )
         (
             self._bary_vi0_np,
             self._bary_vi1_np,
@@ -4585,7 +4512,6 @@ class Example(_ansys_common.Example):
         self._bary_disp_m = (
             (full_verts_cm - bary_proj_cm) * _ansys_common._VIZ_SCALE
         ).astype(np.float32)
-        print("done.")
 
         self._source_replay = _ansys_common._initial_replay_data(
             shell_verts_cm,

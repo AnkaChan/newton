@@ -26,6 +26,7 @@ import imageio.v2 as imageio
 
 
 _CAPTURE_SENTINEL = object()
+_LOG_PREFIX = "[replay_capture]"
 
 
 def configure_capture(
@@ -63,6 +64,12 @@ def configure_capture(
         base_dir = Path(capture_dir)
         owner.capture_dir = base_dir / f"run_{run_tag}"
         owner.capture_dir.mkdir(parents=True, exist_ok=True)
+        _log(owner, f"Capture directory: {owner.capture_dir.resolve()}")
+        _log(
+            owner,
+            f"  PNG frames will be written here; replay.{owner.capture_format} "
+            "is stitched at the end.",
+        )
 
 
 def add_capture_arguments(
@@ -123,14 +130,14 @@ def get_viewer_frame(viewer: Any, *, render_ui: bool = False):
 def init_video_capture(owner: Any) -> None:
     """Start ffmpeg-based frame capture for ``--save-mp4`` if available."""
     if not hasattr(owner.viewer, "get_frame"):
-        print("Warning: viewer lacks get_frame(); skipping MP4")
+        _warn(owner, "viewer lacks get_frame(); skipping MP4")
         return
 
     try:
         width = owner.viewer.renderer._screen_width
         height = owner.viewer.renderer._screen_height
     except AttributeError:
-        print("Warning: cannot determine screen size; skipping MP4")
+        _warn(owner, "cannot determine screen size; skipping MP4")
         return
 
     cmd = [
@@ -158,7 +165,7 @@ def init_video_capture(owner: Any) -> None:
     try:
         owner._video_process = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     except FileNotFoundError:
-        print("Warning: ffmpeg not found; skipping MP4")
+        _warn(owner, "ffmpeg not found; skipping MP4")
 
 
 def write_video_frame(owner: Any) -> None:
@@ -204,7 +211,7 @@ def capture_replay_frame(
 
     if owner.capture_count % 20 == 0:
         print(
-            f"[replay_capture] saved "
+            f"{_LOG_PREFIX} saved "
             f"{owner.capture_count}/{target_count} frames"
         )
 
@@ -260,7 +267,7 @@ def finalize_replay_video(owner: Any) -> None:
                 for path in png_files:
                     writer.append_data(imageio.imread(path))
         owner.capture_video_path = video_path
-        print(f"[replay_capture] wrote video: {video_path}")
+        print(f"{_LOG_PREFIX} wrote video: {video_path}")
     except Exception as exc:
         fallback = owner.capture_dir / "replay.gif"
         with imageio.get_writer(
@@ -272,7 +279,7 @@ def finalize_replay_video(owner: Any) -> None:
                 writer.append_data(imageio.imread(path))
         owner.capture_video_path = fallback
         print(
-            f"[replay_capture] mp4 failed ({exc});"
+            f"{_LOG_PREFIX} mp4 failed ({exc});"
             f" wrote gif: {fallback}"
         )
 
@@ -334,7 +341,7 @@ def trim_replay_capture(
     )
     target_count = _target_frame_count(owner, target_frame_count)
     print(
-        f"[replay_capture] trimmed to {keep_count}/"
+        f"{_LOG_PREFIX} trimmed to {keep_count}/"
         f"{target_count} accepted frames"
     )
 
@@ -343,6 +350,14 @@ def _target_frame_count(owner: Any, target_frame_count: int | None) -> int:
     if target_frame_count is None:
         target_frame_count = getattr(owner, "capture_frames", 0)
     return max(0, int(target_frame_count))
+
+
+def _log(owner: Any, message: str) -> None:
+    print(f"{_LOG_PREFIX} {message}")
+
+
+def _warn(owner: Any, message: str) -> None:
+    _log(owner, f"Warning: {message}")
 
 
 def _queue_capture_frame(owner: Any, out_path: Path, frame_np: Any) -> None:

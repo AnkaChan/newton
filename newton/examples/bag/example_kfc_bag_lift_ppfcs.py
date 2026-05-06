@@ -25,7 +25,7 @@
 #   - Build ppf-contact-solver from source:
 #       Linux:   cargo build --release
 #       Windows: build-win-native\warmup.bat, then build-win-native\build.bat
-#   - Set the PPFCS_DIR environment variable or pass --ppfcs-dir.
+#   - Pass --ppfcs-dir if the repo's ppf-contact-solver submodule is absent.
 #
 # Runtime knobs:
 #   - `--target-faces`     Approximate shell-face count fed to ppfcs.
@@ -82,7 +82,6 @@ from scipy.spatial.transform import Rotation
 import newton
 import newton.examples
 import newton.ik as ik
-import newton.utils
 from newton.examples.bag.capture import (
     add_capture_arguments as _add_capture_arguments,
     capture_replay_frame as _capture_replay_frame_common,
@@ -92,9 +91,35 @@ from newton.examples.bag.capture import (
 )
 from newton.examples.bag.mesh import (
     add_proxy_mesh_arguments as _add_proxy_mesh_arguments,
-    build_bary_map as _shared_build_bary_map,
+    build_bary_map_with_logging as _shared_build_bary_map_with_logging,
     decimate_mesh as _shared_decimate_mesh,
     load_kfc_mesh_zup as _shared_load_kfc_mesh_zup,
+    log_mesh_counts as _log_mesh_counts,
+)
+from newton.examples.bag.lift import (
+    BAG_H_M as _BAG_H_M,
+    FINGER_OPEN_Q_M as _FINGER_OPEN_Q,
+    FINGER_PAD_HALF_HEIGHT_M as _PAD_HALF_HEIGHT_M,
+    FINGER_PAD_HALF_THICKNESS_M as _PAD_HALF_THICKNESS_M,
+    FINGER_PAD_OFFSET_M as _FINGER_PAD_OFFSET_M,
+    FRAME_DT as _FRAME_DT,
+    FR3_BASE_M as _FR3_BASE_M,
+    GRAB_EE_Z_M as _GRAB_EE_Z_M,
+    GRIP_BAND_TOP_FRAC as _GRIP_BAND_TOP_FRAC,
+    LIFT_EE_Z_M as _LIFT_EE_Z_M,
+    PAD_OPEN_CLEARANCE_M as _PAD_OPEN_CLEARANCE_M,
+    PAD_Z_FROM_EE_M as _PAD_Z_FROM_EE_M,
+    PHASE_CLOSE_S as _PHASE_CLOSE_S,
+    PHASE_HOLD_S as _PHASE_HOLD_S,
+    PHASE_LIFT_S as _PHASE_LIFT_S,
+    PHASE_OPEN_S as _PHASE_OPEN_S,
+    SMALL_PAD_SCALE as _SMALL_PAD_SCALE,
+    TOTAL_DURATION_S as _TOTAL_DURATION_S,
+    add_fr3_hand as _add_fr3_hand,
+    add_lift_robot_arguments as _add_lift_robot_arguments,
+    finger_joint_q_from_gripper_fraction as _finger_joint_q_from_gripper_fraction,
+    gripper_fraction_from_closed_width_cm as _gripper_fraction_from_closed_width_cm,
+    lift_waypoints_m as _lift_waypoints_m,
 )
 from newton.examples.bag.render import render_bag_meshes as _render_bag_meshes
 
@@ -104,41 +129,21 @@ from newton.examples.bag.render import render_bag_meshes as _render_bag_meshes
 # ---------------------------------------------------------------------------
 _LOG_PREFIX = "[KFC ppfcs]"
 _FPS = 60.0
-_FRAME_DT = 1.0 / _FPS
 _DEFAULT_PPFCS_SUBSTEPS_PER_FRAME = 2
-
-_PHASE_OPEN_S = 0.45    # waypoint 0 duration: EE static at GRAB while fingers close
-_PHASE_CLOSE_S = 0.20   # waypoint 1 duration: brief pinch settle, EE+fingers at GRAB
-_PHASE_HOLD_S = 3.00    # waypoint 2 duration: EE rises GRAB→LIFT smoothstep (matches pyansys/radioss/lift)
-_PHASE_LIFT_S = 2.50    # waypoint 3 duration: EE+fingers static at LIFT
-_TOTAL_DURATION_S = _PHASE_OPEN_S + _PHASE_CLOSE_S + _PHASE_HOLD_S + _PHASE_LIFT_S
 
 # ---------------------------------------------------------------------------
 # Geometry defaults
 # ---------------------------------------------------------------------------
-_BAG_H_M = 0.279                    # nominal bag height [m]
-_GRIP_BAND_TOP_FRAC = 0.85          # grippable band = top 15 % of bag
-_PAD_HALF_THICKNESS_M = 0.0075      # finger-pad half-thickness [m]
-_PAD_HALF_HEIGHT_M = 0.026          # finger-pad half-height [m]
-_PAD_OPEN_CLEARANCE_M = 0.045       # extra clearance beyond bag when open [m]
-_PAD_LIFT_Z_M = 0.65                # target Z in Z-up for pad centre when lifted [m]
 
 # ---------------------------------------------------------------------------
 # FR3 robot rendering (Newton-side replay only — ppfcs walls drive the bag)
 # ---------------------------------------------------------------------------
-_FR3_BASE_M = (-0.50, 0.0, 0.05)
-_FR3_INIT_Q = [-3.6802e-03, 2.3902e-02, 3.6804e-03, -2.3683, -1.2919e-04, 2.3922, 7.8549e-01]
-_FINGER_OPEN_Q = 0.04                # FR3 finger joint = 0.04 (open) → 0.0 (closed)
-_FINGER_PAD_OFFSET_M = np.array([0.0, 0.00758, 0.0575], dtype=np.float64)
-_GRAB_EE_Z_M = _BAG_H_M + 0.09       # EE z for grasp pose (≈0.369 m)
-_LIFT_EE_Z_M = _PAD_LIFT_Z_M         # EE z at the end of the lift
 # Vertical offset from the FR3 EE (hand link) down to the finger-pad
 # centre in world Z when the gripper is in the standard down-pointing pose.
 # Derived from the FR3 URDF: finger body sits ~5 cm below the hand link,
 # and `_FINGER_PAD_OFFSET_M[2] = 0.0575` puts the pad ~5.75 cm below the
 # finger body — total ~11.7 cm.  ppfcs's kinematic pads use this offset so
 # their world Z matches the FR3 visual pads attached to the fingers.
-_PAD_Z_FROM_EE_M = 0.117
 
 # ---------------------------------------------------------------------------
 # ppfcs material parameters (bags are thin engineering plastic)
@@ -245,11 +250,7 @@ _INTERIOR_FRICTION = 0.45
 # ---------------------------------------------------------------------------
 # Miscellaneous
 # ---------------------------------------------------------------------------
-_DEFAULT_CLOSED_WIDTH_CM = 0.6
-_MAX_GRIPPER_WIDTH_CM = 4.0
-_SMALL_PAD_SCALE = math.sqrt(0.20)  # ~0.447 — reduces pad face area to ~20 %
 _DEFAULT_JOB_DIR = Path("outputs/ppfcs/kfc_bag_lift")
-_PPFCS_DIR_ENV = "PPFCS_DIR"
 _DEFAULT_NUM_FRAMES = int(math.ceil(_TOTAL_DURATION_S / _FRAME_DT)) + 1
 
 
@@ -258,10 +259,6 @@ _DEFAULT_NUM_FRAMES = int(math.ceil(_TOTAL_DURATION_S / _FRAME_DT)) + 1
 # ---------------------------------------------------------------------------
 
 def _default_ppfcs_dir() -> str:
-    env_value = os.environ.get(_PPFCS_DIR_ENV, "").strip()
-    if env_value:
-        return env_value
-
     repo_root = Path(__file__).resolve().parents[3]
     submodule = repo_root / "ppf-contact-solver"
     return str(submodule) if submodule.is_dir() else ""
@@ -406,7 +403,6 @@ def _decimate_mesh(
         checker_transform=lambda verts_cm: _zup_to_yup(verts_cm * 0.01),
         edge_edge_min_distance=edge_edge_min_distance,
         intersection_free_min_area=0.1,
-        log_prefix=_LOG_PREFIX,
     )
     return (out_verts_cm * 0.01).astype(np.float32), out_faces
 
@@ -428,7 +424,11 @@ def _build_bary_map(
     sim_faces: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Map each full-res vertex to a nearby proxy triangle."""
-    return _shared_build_bary_map(full_verts, sim_verts, sim_faces)
+    return _shared_build_bary_map_with_logging(
+        full_verts,
+        sim_verts,
+        sim_faces,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -451,9 +451,9 @@ def _yup_to_zup(arr: np.ndarray) -> np.ndarray:
 # Sizes are deliberately small so all three fit side-by-side in the bag's
 # widest cross-section.  ppfcs treats the volumetric stiffness + density as
 # the dominant rigidity factor (cf. ribbon.ipynb), so absolute size doesn't
-# need to match the pyansys defaults exactly.
-# Match pyansys / radioss bag-lift example sizes so the contents look the same
-# across all three backends.
+# need to match the other lift-example defaults exactly.
+# Match the ANSYS/VBD bag-lift example sizes so the contents look the same
+# across the replay backends.
 _SPHERE_RADIUS_M = 0.04
 _BOX_HALF_EXTENT_M = 0.03
 _CAPSULE_RADIUS_M = 0.03
@@ -465,7 +465,7 @@ _INTERIOR_CLEARANCE_M = 0.010
 def _fit_bag_contents(bag_verts_zup_m: np.ndarray) -> dict:
     """Return Z-up positions and orientations for the 3 rigid interior bodies.
 
-    Layout matches the radioss/pyansys lift examples:
+    Layout matches the ANSYS/VBD lift examples:
       sphere on the right side, box on the lower-left, capsule stacked on
       top of the box and rotated π/2 around X so it lies horizontally.
 
@@ -483,7 +483,7 @@ def _fit_bag_contents(bag_verts_zup_m: np.ndarray) -> dict:
     sphere = np.array([cx + 0.025, cy, z_floor + 0.050], dtype=np.float64)
     box = np.array([cx - 0.055, cy, z_floor + 0.040], dtype=np.float64)
     # ppfcs's tet meshing introduces small surface variations; a 1 mm gap
-    # between bodies is too tight (radioss uses rigid bodies and gets away
+    # between bodies is too tight (rigid-body backends can get away
     # with it).  Use 8 mm clearance to keep frame-0 self-intersection-free.
     capsule_xyz = np.array(
         [box[0], cy, box[2] + _BOX_HALF_EXTENT_M + _CAPSULE_RADIUS_M + 0.008],
@@ -603,38 +603,6 @@ def _compute_grip_geometry(
         y_left_open=y_left_open,
         lift_delta_z=lift_delta_z,
     )
-
-
-def _pad_centre_at_time_zup(g: dict, t: float) -> tuple[np.ndarray, np.ndarray]:
-    """Return (left_centre, right_centre) in Z-up at simulation time t [m]."""
-    t0 = _PHASE_OPEN_S
-    t1 = t0 + _PHASE_CLOSE_S
-    t2 = t1 + _PHASE_HOLD_S
-    t3 = t2 + _PHASE_LIFT_S
-
-    # Close fraction
-    if t <= t0:
-        close_frac = 0.0
-    elif t <= t1:
-        close_frac = (t - t0) / _PHASE_CLOSE_S
-    else:
-        close_frac = 1.0
-
-    # Lift fraction
-    if t <= t2:
-        lift_frac = 0.0
-    elif t <= t3:
-        lift_frac = (t - t2) / _PHASE_LIFT_S
-    else:
-        lift_frac = 1.0
-
-    y_right = g["y_right_open"] + close_frac * (g["y_right_closed"] - g["y_right_open"])
-    y_left  = g["y_left_open"]  + close_frac * (g["y_left_closed"]  - g["y_left_open"])
-    z_pad = g["z_pad_centre"] + lift_frac * g["lift_delta_z"]
-
-    right_centre = np.array([g["bag_cx"], y_right + g["pad_hy"], z_pad], dtype=np.float32)
-    left_centre  = np.array([g["bag_cx"], y_left  - g["pad_hy"], z_pad], dtype=np.float32)
-    return left_centre, right_centre
 
 
 # ---------------------------------------------------------------------------
@@ -857,8 +825,20 @@ def _start_ppfcs_streaming(
     (local to the body's vertex slice) so the caller can render via log_mesh.
     """
     App = _require_ppfcs(ppfcs_dir)
+    from frontend import Utils as _PpfcsUtils  # noqa: PLC0415
+
     if ppfcs_substeps_per_frame < 1:
         raise ValueError("--ppfcs-substeps-per-frame must be >= 1.")
+
+    def _terminate_stale_ppfcs_processes() -> None:
+        # PPFCS deletes and rebuilds a fixed `session` directory. On Windows,
+        # an interrupted solver can keep `error.log` locked until its process
+        # exits, so reap stale solver processes before touching that directory.
+        try:
+            _PpfcsUtils.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.3)
 
     # Convert bag mesh to Y-up (ppfcs convention: Y is up, gravity = -9.8 in Y)
     bag_verts_yup = _zup_to_yup(bag_verts_zup_m).astype(np.float64)
@@ -869,7 +849,7 @@ def _start_ppfcs_streaming(
     total_output_s = max_output_frame_idx * frame_dt
 
     # Phase transition times — matches the canonical IK waypoint convention
-    # used by example_kfc_bag_lift_pyansys / _radioss / _lift:
+    # used by the shared lift helper and the other lift examples:
     #   waypoint 0 (0     .. t_close): EE static, gripper closing → pads close laterally here
     #   waypoint 1 (t_close .. t_hold): EE static, brief pinch settle, pads stationary
     #   waypoint 2 (t_hold  .. t_lift): EE rises GRAB→LIFT smoothstep → pads rise vertically here
@@ -889,7 +869,6 @@ def _start_ppfcs_streaming(
     z_l_closed = float(grip["y_left_closed"])
     lift_dy    = float(grip["lift_delta_z"])     # Z-up ΔZ → Y-up ΔY
 
-    print(f"{_LOG_PREFIX} Bag verts: {len(bag_verts_yup)}, faces: {len(bag_faces_i32)}")
     print(f"{_LOG_PREFIX} Grip height (Y-up Y): {y_pad_yup:.4f} m")
     print(f"{_LOG_PREFIX} Close range (Y-up Z): {z_l_open:.4f} → {z_l_closed:.4f} (left), "
           f"{z_r_open:.4f} → {z_r_closed:.4f} (right)")
@@ -924,7 +903,7 @@ def _start_ppfcs_streaming(
     # grip dict's keys are in Z-up convention: pad_hx (X), pad_hy (Y_thick),
     # pad_hz (Z_height).  In Y-up these map to (X, Y_thick→Z, Z_height→Y).
     # `--small-pad` shrinks the contact face area to ~20% (matching the
-    # pyansys/radioss convention) by scaling X width and Z height; thickness
+    # shared lift convention) by scaling X width and Z height; thickness
     # stays unchanged.
     vis_scale = _SMALL_PAD_SCALE if small_pad else 1.0
     pad_hx_yup = float(grip["pad_hx"]) * vis_scale
@@ -1081,7 +1060,8 @@ def _start_ppfcs_streaming(
     # `fps`.  Keep the output clock aligned to Newton's replay interval while
     # using an integer number of solver substeps within each replay frame.
 
-    session = app.session.create(fixed_scene)
+    session_name = f"session-{os.getpid()}-{int(time.time() * 1000)}"
+    session = app.session.create(fixed_scene, name=session_name)
     session.param.set("frames", max_output_frame_idx)
     session.param.set("dt", sim_dt)
     session.param.set("fps", output_fps)
@@ -1092,6 +1072,7 @@ def _start_ppfcs_streaming(
     # more during the close-pinch peak).
     session.param.set("cg-max-iter", 50000)
 
+    _terminate_stale_ppfcs_processes()
     fixed_session = session.build()
     # Carry sim_dt out for the output sampling step below
     n_sim_steps = max_output_frame_idx
@@ -1105,16 +1086,7 @@ def _start_ppfcs_streaming(
     # viewer can begin pulling per-frame results as the solver writes them.
     print(f"{_LOG_PREFIX} Starting ppfcs solver (streaming mode — frames will "
           "be captured as soon as each becomes available)...", flush=True)
-    # Belt-and-suspenders cleanup: SIGTERM any leftover ppfcs binary process
-    # (Utils.busy() detects by name and would otherwise refuse to start a
-    # fresh solver with `Solver is already running.` from start()).  Pass
-    # force=True so the same check inside start() also reaps stale state.
-    from frontend import Utils as _PpfcsUtils  # noqa: PLC0415
-    try:
-        _PpfcsUtils.terminate()
-    except Exception:  # noqa: BLE001
-        pass
-    time.sleep(0.3)
+    # Pass force=True so the same check inside start() also reaps stale state.
     fixed_session.start(force=True, blocking=False)
 
     # Register SIGINT/SIGTERM/atexit cleanup so Ctrl-C kills the orphaned
@@ -1218,13 +1190,6 @@ def _quat_to_vec4(quat: wp.quat) -> wp.vec4:
     return wp.vec4(quat[0], quat[1], quat[2], quat[3])
 
 
-def _gripper_frac_from_closed_width_cm(closed_width_cm: float) -> float:
-    """Map a target closed gap [cm] to FR3 gripper fraction (0=open, 1=closed)."""
-    finger_q_at_close = max(0.5 * 0.01 * float(closed_width_cm), 0.0)
-    frac = 1.0 - finger_q_at_close / _FINGER_OPEN_Q
-    return float(np.clip(frac, 0.0, 1.0))
-
-
 def _build_visual_model(
     pad_hx_m: float,
     pad_hy_m: float,
@@ -1241,29 +1206,18 @@ def _build_visual_model(
     """
     interior_init_q = interior_init_q or {}
     builder = newton.ModelBuilder(gravity=0.0)
-    asset_path = newton.utils.download_asset("franka_emika_panda")
-    builder.add_urdf(
-        str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-        xform=wp.transform(_FR3_BASE_M, wp.quat_identity()),
-        floating=False,
+    hand_bodies = _add_fr3_hand(
+        builder,
+        base_position=_FR3_BASE_M,
         scale=1.0,
-        enable_self_collisions=False,
-        parse_visuals_as_colliders=True,
+        finger_open_q=_FINGER_OPEN_Q,
     )
-    builder.joint_q[:9] = [*_FR3_INIT_Q, _FINGER_OPEN_Q, _FINGER_OPEN_Q]
-
-    left_finger_body = next(
-        i for i, label in enumerate(builder.body_label) if label.endswith("fr3_leftfinger")
-    )
-    right_finger_body = next(
-        i for i, label in enumerate(builder.body_label) if label.endswith("fr3_rightfinger")
-    )
-    ee_body_index = next(
-        i for i, label in enumerate(builder.body_label) if label.endswith("fr3_hand")
-    )
+    left_finger_body = hand_bodies.left_finger
+    right_finger_body = hand_bodies.right_finger
+    ee_body_index = hand_bodies.hand
 
     # Visual finger pads attached to the FR3 fingers.  These render via
-    # log_state (Newton body palette → matches the pyansys/radioss colour
+    # log_state (Newton body palette → matches the ANSYS/VBD colour
     # scheme).  The ppfcs kinematic tet pad bodies follow the same trajectory
     # below them and are NOT log_mesh'd separately.
     pad_cfg = newton.ModelBuilder.ShapeConfig(density=0.001, mu=0.5, ke=1.0e4, kd=1.0)
@@ -1287,7 +1241,7 @@ def _build_visual_model(
 
     # ---- Interior rigid bodies (sphere / box / capsule) --------------------
     # These are visual-only proxies updated each frame from the corresponding
-    # ppfcs tet body's centroid.  Sizes match the radioss/pyansys lift example
+    # ppfcs tet body's centroid.  Sizes match the ANSYS/VBD lift examples
     # so the contents look identical across all three backends; default Newton
     # body colours give each shape a distinct hue.
     interior_body_idx: dict[str, int] = {}
@@ -1354,7 +1308,10 @@ class _Fr3IkPlayer:
         self.state = model.state()
         self._ee_body_index = ee_body_index
         self.frame_dt = float(frame_dt_s)
-        self._closed_frac = _gripper_frac_from_closed_width_cm(closed_width_cm)
+        self._closed_frac = _gripper_fraction_from_closed_width_cm(
+            closed_width_cm,
+            max_gap_cm=2.0 * _FINGER_OPEN_Q * 100.0,
+        )
         self._gripper_frac = 0.0
 
         # Initial FK to read EE pose (used to seed the IK solver target).
@@ -1385,12 +1342,7 @@ class _Fr3IkPlayer:
 
         # Phase plan: open hold, close, hold closed, lift.  Each entry is
         # (target EE position, duration in s, gripper fraction at end of phase).
-        self._waypoints = [
-            (wp.vec3(0.0, 0.0, _GRAB_EE_Z_M), _PHASE_OPEN_S, 0.0),
-            (wp.vec3(0.0, 0.0, _GRAB_EE_Z_M), _PHASE_CLOSE_S, self._closed_frac),
-            (wp.vec3(0.0, 0.0, _GRAB_EE_Z_M), _PHASE_HOLD_S,  self._closed_frac),
-            (wp.vec3(0.0, 0.0, _LIFT_EE_Z_M), _PHASE_LIFT_S,  self._closed_frac),
-        ]
+        self._waypoints = _lift_waypoints_m(closed_fraction=self._closed_frac)
         self._waypoint_index = 0
         self._time_in_waypoint = 0.0
         self._initialise()
@@ -1412,7 +1364,7 @@ class _Fr3IkPlayer:
     def _apply_pose(self):
         joint_q_np = self.model.joint_q.numpy().copy()
         joint_q_np[:7] = self._joint_q_ik.numpy()[0][:7]
-        finger_q = _FINGER_OPEN_Q * (1.0 - float(self._gripper_frac))
+        finger_q = _finger_joint_q_from_gripper_fraction(self._gripper_frac, scale=1.0)
         joint_q_np[7] = finger_q
         joint_q_np[8] = finger_q
         joint_q_wp = wp.array(joint_q_np, dtype=float, device=self.model.device)
@@ -1425,8 +1377,8 @@ class _Fr3IkPlayer:
     def advance(self):
         """Step the trajectory by `frame_dt` and update model state via IK + FK.
 
-        Uses the same convention as `example_kfc_bag_lift_pyansys` /
-        `_radioss` / `_lift`: each waypoint's *duration* is the time spent
+        Uses the shared lift waypoint convention: each waypoint's *duration*
+        is the time spent
         transitioning from the *current* waypoint's end-state to the
         *next* waypoint's end-state.  In the canonical 4-waypoint plan
         (OPEN, CLOSE, HOLD, LIFT) this means waypoint 0 closes the
@@ -1462,7 +1414,7 @@ class _Fr3IkPlayer:
 
 
 # ---------------------------------------------------------------------------
-# Capture helpers (same pattern as pyansys example)
+# Capture helpers
 # ---------------------------------------------------------------------------
 
 def _duration_from_capture_frames(capture_frames: int, frame_dt: float) -> float:
@@ -1493,8 +1445,7 @@ class Example:
             default=_default_ppfcs_dir(),
             help=(
                 "Path to the compiled ppf-contact-solver repository root.  "
-                f"Defaults to the {_PPFCS_DIR_ENV} environment variable or the "
-                "repo's `ppf-contact-solver` submodule when present."
+                "Defaults to the repo's `ppf-contact-solver` submodule when present."
             ),
         )
         parser.add_argument(
@@ -1504,26 +1455,12 @@ class Example:
             help="Directory used for ppfcs solver output.",
         )
         _add_proxy_mesh_arguments(parser)
-        parser.add_argument(
-            "--closed-width-cm",
-            type=float,
-            default=_DEFAULT_CLOSED_WIDTH_CM,
-            help="Final finger-pad gap [cm] when fully closed.",
-        )
+        _add_lift_robot_arguments(parser)
         _add_capture_arguments(
             parser,
             replay_help="Capture rendered frames and build a replay video or gif.",
             capture_frames_default=_DEFAULT_NUM_FRAMES,
             include_save_mp4=False,
-        )
-        parser.add_argument(
-            "--small-pad",
-            action="store_true",
-            help=(
-                "Use a smaller finger-pad visual (≈20 %% contact area).  "
-                "The grip walls are infinite planes so this affects the "
-                "visualisation only, not the simulation."
-            ),
         )
         parser.add_argument(
             "--ppfcs-substeps-per-frame",
@@ -1551,8 +1488,8 @@ class Example:
         ppfcs_dir_str = str(args.ppfcs_dir).strip()
         if not ppfcs_dir_str:
             raise ValueError(
-                f"--ppfcs-dir (or {_PPFCS_DIR_ENV} env var) is required when running "
-                "the solver. Set it to the ppf-contact-solver repo root."
+                "--ppfcs-dir is required when the repo's `ppf-contact-solver` "
+                "submodule is absent. Set it to the ppf-contact-solver repo root."
             )
         ppfcs_dir = Path(ppfcs_dir_str) if ppfcs_dir_str else Path(".")
 
@@ -1582,10 +1519,6 @@ class Example:
             # frame is counted, so video finalization sees a complete sequence.
             capture_background_writes=False,
         )
-        if self.capture_replay:
-            print(f"{_LOG_PREFIX} Capture directory: {self.capture_dir.resolve()}")
-            print(f"{_LOG_PREFIX}   PNG frames will be written here as the solver "
-                  "produces each frame; replay.mp4 is stitched at the end.")
 
         # Log resolved paths up-front so it's easy to find solver output and
         # captures in future debugging sessions (the defaults are cwd-relative).
@@ -1604,20 +1537,16 @@ class Example:
             proxy_mode,
             ppfcs_dir,
         )
-        print(
-            f"{_LOG_PREFIX} Sim/collision mesh (decimated): "
-            f"{len(shell_verts_zup_m)} verts, {len(shell_faces)} faces "
-            f"(target={target_faces}, proxy_mode={proxy_mode})"
-        )
-        print(
-            f"{_LOG_PREFIX} Render mesh (full-res): {len(full_verts_zup_m)} verts, "
-            f"{len(full_faces)} faces"
+        _log_mesh_counts(
+            full_label="Render mesh (full-res)",
+            full_verts=full_verts_zup_m,
+            full_faces=full_faces,
+            face_name="faces",
         )
 
         # Barycentric coupling: project each full-res render vertex onto the
         # nearest decimated triangle, plus a fixed displacement so the rest
         # state matches the original mesh exactly.  Per-frame we just remap.
-        print(f"{_LOG_PREFIX} Building barycentric render→sim map...", end=" ", flush=True)
         bary_vi0, bary_vi1, bary_vi2, bary_w = _build_bary_map(
             full_verts_zup_m, shell_verts_zup_m, shell_faces
         )
@@ -1636,7 +1565,6 @@ class Example:
             full_faces.flatten().astype(np.int32), dtype=wp.int32
         )
         self._n_full_verts = len(full_verts_zup_m)
-        print("done.")
 
         grip = _compute_grip_geometry(shell_verts_zup_m, closed_width_cm)
         print(
@@ -1717,8 +1645,8 @@ class Example:
         # bag renderer logs either the hi-res bag or proxy mesh explicitly.
         self.viewer.show_triangles = False
         if hasattr(self.viewer, "renderer"):
-            # Match the camera pose used by example_kfc_bag_lift_pyansys (and
-            # radioss/fenicsx variants) so side-by-side comparisons line up.
+            # Match the shared lift camera pose so side-by-side comparisons
+            # with other backends line up.
             self.viewer.set_camera(
                 pos=wp.vec3(1.0, -1.0, 0.8), pitch=-10.0, yaw=135.0
             )
@@ -1748,81 +1676,6 @@ class Example:
         # Frame 0 starts at the pre-grasp pose; only advance from frame 1 on.
         if self._frame_index > 0:
             self._robot.advance()
-        self._log_grip_metric()
-
-    def _log_grip_metric(self):
-        """Cheap per-frame slip-detection — prints bag-vs-pad vertical drift
-        at the gripper.  If the bag is slipping out of the pads, the bag's
-        upper-rim verts (those near the pad band at frame 0) drop relative
-        to the pad center.  Log every 5 display frames so the user can
-        Ctrl-C immediately when slip starts (instead of waiting 70+ frames).
-
-        Output format:
-          [grip] f=NN t=T.TTs phase  bag_top_z=.XXX pad_z=.XXX drift=±.XXX cm
-        ``drift`` is the change since grip-close (t=0.65 s); positive means
-        the bag is rising relative to the pad (good — being held); negative
-        means the bag is falling relative to the pad (slip).
-        """
-        fi = self._frame_index
-        if fi < 0 or fi % 5 != 0 and fi != 0:
-            return
-        bag = self._current_bodies.get("bag")
-        if bag is None:
-            return
-        # Track the upper-rim verts (those at the bag's top 5 % at frame 0).
-        if not hasattr(self, "_grip_metric_top_idx"):
-            top_z = bag[:, 2].max()
-            band_lo = top_z - 0.02  # top 2 cm of bag
-            self._grip_metric_top_idx = np.where(bag[:, 2] >= band_lo)[0]
-            self._grip_metric_pad_z0: float | None = None
-        top_idx = self._grip_metric_top_idx
-        if len(top_idx) == 0:
-            return
-        bag_top_z = float(bag[top_idx, 2].mean())
-        pads = []
-        for n in ("left_pad", "right_pad"):
-            v = self._current_bodies.get(n)
-            if v is not None:
-                pads.append(float(v[:, 2].mean()))
-        pad_z = float(np.mean(pads)) if pads else float("nan")
-        # Anchor at the moment grip closes (frame nearest t=0.65 s).
-        if (
-            self._grip_metric_pad_z0 is None
-            and self.sim_time >= _PHASE_OPEN_S + _PHASE_CLOSE_S
-        ):
-            self._grip_metric_pad_z0 = pad_z - bag_top_z
-        if self._grip_metric_pad_z0 is None:
-            phase = "open"
-            drift_cm_s = "  (pre-grip)"
-        else:
-            drift_m = (pad_z - bag_top_z) - self._grip_metric_pad_z0
-            # Negative drift_m = pad has fallen below bag (impossible) or
-            # bag has risen relative to pad.  We want the bag's vertical
-            # offset under the pad to STAY CONSTANT — anything else is slip.
-            slip_cm = -drift_m * 100.0  # cm; positive = bag dropped
-            # Canonical IK waypoint convention (matches pyansys/radioss/lift):
-            # 0..t_pinch      : fingers close, EE at GRAB
-            # t_pinch..t_lift0: pinch settle, EE+fingers at GRAB
-            # t_lift0..t_post : EE rises GRAB→LIFT smoothstep
-            # t_post..        : EE static at LIFT
-            t_pinch = _PHASE_OPEN_S
-            t_lift0 = t_pinch + _PHASE_CLOSE_S
-            t_post = t_lift0 + _PHASE_HOLD_S
-            if self.sim_time < t_pinch:
-                phase = "close"
-            elif self.sim_time < t_lift0:
-                phase = "pinch"
-            elif self.sim_time < t_post:
-                phase = "lift "
-            else:
-                phase = "post "
-            slip_marker = " ⚠ SLIP" if abs(slip_cm) > 0.5 else ""
-            drift_cm_s = f"  bag_drop={slip_cm:+.2f} cm{slip_marker}"
-        print(
-            f"[grip] f={fi:3d} t={self.sim_time:5.2f}s {phase} "
-            f"bag_top_z={bag_top_z:.3f}m pad_z={pad_z:.3f}m{drift_cm_s}",
-            flush=True,
-        )
 
     def render(self):
         """Render the FR3 robot, finger pads, ground, the bag, the interior
@@ -1876,7 +1729,7 @@ class Example:
 
         # The ppfcs kinematic tet pads are NOT rendered via log_mesh — the
         # box-shape pads attached to the FR3 fingers (rendered via log_state)
-        # serve as their visual stand-ins, matching pyansys's colour scheme.
+        # serve as their visual stand-ins, matching the other lift examples.
         # Both are driven by the same trajectory and stay co-located.
         _render_bag_meshes(
             self.viewer,

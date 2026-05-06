@@ -15,14 +15,21 @@
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable, Sequence
 
 import numpy as np
 
 import newton.examples
 
-DEFAULT_PROXY_MODE = "isotropic-remesh"
-PROXY_MODES = (DEFAULT_PROXY_MODE, "surface-decimate", "qem-decimate")
+DEFAULT_PROXY_MODE = "cgal-isotropic-remesh"
+PROXY_MODES = (
+    DEFAULT_PROXY_MODE,
+    "meshlab-isotropic-remesh",
+    "surface-decimate",
+    "qem-decimate",
+)
+_LOG_PREFIX = "[bag_mesh]"
 
 
 def build_bary_map(
@@ -92,6 +99,38 @@ def build_bary_map(
     return vi0, vi1, vi2, bary
 
 
+def build_bary_map_with_logging(
+    full_verts: np.ndarray,
+    phys_verts: np.ndarray,
+    phys_faces: np.ndarray,
+    *,
+    log_prefix: str = _LOG_PREFIX,
+    message: str = "Building barycentric render map",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Build a barycentric render-to-simulation map with uniform progress output."""
+    prefix = _log_prefix(log_prefix)
+    print(f"{prefix}{message}...", end=" ", flush=True)
+    bary_map = build_bary_map(full_verts, phys_verts, phys_faces)
+    print("done.")
+    return bary_map
+
+
+def log_mesh_counts(
+    *,
+    log_prefix: str = _LOG_PREFIX,
+    full_label: str = "Full mesh",
+    full_verts: np.ndarray,
+    full_faces: np.ndarray,
+    face_name: str = "tris",
+) -> None:
+    """Print uniform full/source mesh counts."""
+    prefix = _log_prefix(log_prefix)
+    print(
+        f"{prefix}{full_label}: {len(full_verts)} verts, "
+        f"{len(full_faces)} {face_name}"
+    )
+
+
 def load_kfc_mesh_zup(bag_height_cm: float) -> tuple[np.ndarray, np.ndarray]:
     """Load the KFC bag mesh, rotate it to Z-up, and scale it to cm."""
     from pxr import Usd, UsdGeom
@@ -122,7 +161,7 @@ def add_proxy_mesh_arguments(parser) -> None:
         "--target-faces",
         type=int,
         default=1200,
-        help="Target proxy face count for cloth simulation",
+        help="Target proxy face count for solver-side bag simulation",
     )
     parser.add_argument(
         "--proxy-mode",
@@ -144,15 +183,17 @@ def decimate_mesh(
     checker_transform: Callable[[np.ndarray], np.ndarray] | None = None,
     edge_edge_min_distance: float = 0.0,
     intersection_free_min_area: float = 1.0e-12,
-    log_prefix: str = "",
+    log_prefix: str = _LOG_PREFIX,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Create a lower-resolution bag proxy mesh for VBD cloth simulation."""
+    """Create a lower-resolution bag proxy mesh for solver-side simulation."""
     verts = np.asarray(verts, dtype=np.float32)
     faces = np.asarray(faces, dtype=np.int32).reshape(-1, 3)
     target_faces = max(int(target_faces), 1)
 
     if proxy_mode == DEFAULT_PROXY_MODE:
-        proxy_verts, proxy_faces = _isotropic_remesh(verts, faces, target_faces)
+        proxy_verts, proxy_faces = _cgal_isotropic_remesh(verts, faces, target_faces)
+    elif proxy_mode == "meshlab-isotropic-remesh":
+        proxy_verts, proxy_faces = _meshlab_isotropic_remesh(verts, faces, target_faces)
     elif proxy_mode == "surface-decimate":
         proxy_verts, proxy_faces = _surface_decimate(verts, faces, target_faces)
     elif proxy_mode == "qem-decimate":
@@ -170,14 +211,50 @@ def decimate_mesh(
             min_area=intersection_free_min_area,
             log_prefix=log_prefix,
         )
+        _log_proxy_mesh_counts("Cleaned proxy", proxy_verts, proxy_faces, log_prefix=log_prefix)
     return proxy_verts, proxy_faces
 
 
-def _isotropic_remesh(
+def _log_prefix(log_prefix: str) -> str:
+    return f"{log_prefix.strip()} " if log_prefix else ""
+
+
+def _log_proxy_mesh_counts(
+    label: str,
+    verts: np.ndarray,
+    faces: np.ndarray,
+    *,
+    log_prefix: str = _LOG_PREFIX,
+) -> None:
+    prefix = _log_prefix(log_prefix)
+    print(f"{prefix}{label}: {len(verts)} verts / {len(faces)} tris")
+
+
+def _meshlab_isotropic_remesh(
     verts: np.ndarray,
     faces: np.ndarray,
     target_faces: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    target_edge_len = _target_edge_length_for_face_count(verts, faces, target_faces)
+    out_v, out_f = _run_isotropic_remesh(
+        verts,
+        faces,
+        target_edge_len=target_edge_len,
+    )
+
+    print(
+        f"{_LOG_PREFIX} MeshLab isotropic-remeshed proxy (nondeterministic):"
+        f" target={target_faces}, actual={len(out_v)} verts / {len(out_f)} tris,"
+        f" target_edge_len={target_edge_len:.3g}"
+    )
+    return out_v, out_f
+
+
+def _target_edge_length_for_face_count(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    target_faces: int,
+) -> float:
     tri_verts0 = verts[faces[:, 0]]
     tri_verts1 = verts[faces[:, 1]]
     tri_verts2 = verts[faces[:, 2]]
@@ -191,21 +268,9 @@ def _isotropic_remesh(
 
     # Convert the requested face count to the edge length of an equivalent
     # equilateral-triangle tessellation over the same surface area.
-    target_edge_len = float(
+    return float(
         np.sqrt((4.0 * total_area) / (np.sqrt(3.0) * float(target_faces)))
     )
-    out_v, out_f = _run_isotropic_remesh(
-        verts,
-        faces,
-        target_edge_len=target_edge_len,
-    )
-
-    print(
-        "Isotropic-remeshed proxy:"
-        f" target={target_faces}, actual={len(out_f)},"
-        f" target_edge_len={target_edge_len:.3g}"
-    )
-    return out_v, out_f
 
 
 def _run_isotropic_remesh(
@@ -230,6 +295,102 @@ def _run_isotropic_remesh(
     return _sanitize_proxy_mesh(out_v, out_f, min_area=0.1)
 
 
+def _cgal_isotropic_remesh(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    target_faces: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        from CGAL import CGAL_Polygon_mesh_processing
+        from CGAL.CGAL_Polyhedron_3 import Polyhedron_3
+    except ImportError as exc:
+        raise RuntimeError(
+            "The cgal-isotropic-remesh proxy mode requires the CGAL Python "
+            "bindings. Install the examples extra or `pip install cgal`."
+        ) from exc
+
+    target_edge_len = _target_edge_length_for_face_count(verts, faces, target_faces)
+    with tempfile.TemporaryDirectory(prefix="newton_bag_cgal_") as tmp_dir:
+        input_path = f"{tmp_dir}/input.off"
+        output_path = f"{tmp_dir}/output.off"
+        _write_off_mesh(input_path, verts, faces)
+
+        polyhedron = Polyhedron_3(input_path)
+        facets = list(polyhedron.facets())
+        CGAL_Polygon_mesh_processing.isotropic_remeshing(
+            facets,
+            float(target_edge_len),
+            polyhedron,
+            10,
+        )
+        polyhedron.write_to_file(output_path)
+        out_v, out_f = _read_off_mesh(output_path)
+
+    raw_count = len(out_f)
+    out_v, out_f = _sanitize_proxy_mesh(out_v, out_f, min_area=0.1)
+    print(
+        f"{_LOG_PREFIX} CGAL isotropic-remeshed proxy:"
+        f" target={target_faces}, raw={raw_count} tris,"
+        f" actual={len(out_v)} verts / {len(out_f)} tris,"
+        f" target_edge_len={target_edge_len:.3g}"
+    )
+    return out_v, out_f
+
+
+def _write_off_mesh(path: str, verts: np.ndarray, faces: np.ndarray) -> None:
+    with open(path, "w", encoding="utf-8") as file:
+        file.write("OFF\n")
+        file.write(f"{len(verts)} {len(faces)} 0\n")
+        for vertex in verts:
+            file.write(f"{float(vertex[0]):.17g} {float(vertex[1]):.17g} {float(vertex[2]):.17g}\n")
+        for face in faces:
+            file.write(f"3 {int(face[0])} {int(face[1])} {int(face[2])}\n")
+
+
+def _read_off_mesh(path: str) -> tuple[np.ndarray, np.ndarray]:
+    with open(path, encoding="utf-8") as file:
+        tokens = [
+            token
+            for line in file
+            for token in line.split("#", maxsplit=1)[0].split()
+        ]
+
+    if not tokens or tokens[0] != "OFF":
+        raise ValueError(f"CGAL did not write an OFF mesh: {path}")
+    if len(tokens) < 4:
+        raise ValueError(f"CGAL wrote an incomplete OFF mesh: {path}")
+
+    cursor = 1
+    vertex_count = int(tokens[cursor])
+    face_count = int(tokens[cursor + 1])
+    cursor += 3
+
+    verts = np.asarray(
+        [
+            [
+                float(tokens[cursor + i * 3]),
+                float(tokens[cursor + i * 3 + 1]),
+                float(tokens[cursor + i * 3 + 2]),
+            ]
+            for i in range(vertex_count)
+        ],
+        dtype=np.float32,
+    )
+    cursor += vertex_count * 3
+
+    faces: list[list[int]] = []
+    for _ in range(face_count):
+        face_size = int(tokens[cursor])
+        cursor += 1
+        face = [int(tokens[cursor + i]) for i in range(face_size)]
+        cursor += face_size
+        if face_size != 3:
+            raise ValueError("CGAL isotropic remeshing produced a non-triangular OFF face.")
+        faces.append(face)
+
+    return verts, np.asarray(faces, dtype=np.int32)
+
+
 def _surface_decimate(
     verts: np.ndarray,
     faces: np.ndarray,
@@ -250,8 +411,9 @@ def _surface_decimate(
     raw_count = len(out_f)
     out_v, out_f = _sanitize_proxy_mesh(out_v, out_f)
     print(
-        "Surface-decimated proxy:"
-        f" target={target_faces}, raw={raw_count}, actual={len(out_f)}"
+        f"{_LOG_PREFIX} Surface-decimated proxy:"
+        f" target={target_faces}, raw={raw_count} tris,"
+        f" actual={len(out_v)} verts / {len(out_f)} tris"
     )
     return out_v, out_f
 
@@ -279,8 +441,9 @@ def _qem_decimate(
     raw_count = len(out_f)
     out_v, out_f = _sanitize_proxy_mesh(out_v, out_f)
     print(
-        "QEM-decimated proxy:"
-        f" target={target_faces}, raw={raw_count}, actual={len(out_f)}"
+        f"{_LOG_PREFIX} QEM-decimated proxy:"
+        f" target={target_faces}, raw={raw_count} tris,"
+        f" actual={len(out_v)} verts / {len(out_f)} tris"
     )
     return out_v, out_f
 
@@ -296,7 +459,7 @@ def make_proxy_mesh_intersection_free(
     max_meshlab_passes: int = 20,
     max_checker_passes: int = 12,
     max_edge_edge_passes: int = 12,
-    log_prefix: str = "",
+    log_prefix: str = _LOG_PREFIX,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Remove self-intersections from a proxy mesh for strict contact solvers.
 

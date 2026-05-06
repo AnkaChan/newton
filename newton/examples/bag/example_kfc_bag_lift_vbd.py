@@ -51,13 +51,30 @@ import newton
 import newton.examples
 import newton.ik as ik
 import newton.usd
-import newton.utils
+from newton.examples.bag.lift import (
+    BAG_H_CM as _BAG_H,
+    BAG_X_CM as _BAG_X,
+    BAG_Y_CM as _BAG_Y,
+    DEFAULT_CLOSED_WIDTH_CM as _DEFAULT_CLOSED_WIDTH_CM,
+    FINGER_OPEN_Q_CM as _FINGER_OPEN_Q_CM,
+    FINGER_PAD_OFFSET_CM as _FINGER_PAD_OFFSET_CM,
+    FRAME_DT as _FRAME_DT,
+    FR3_BASE_CM as _FR3_BASE_CM,
+    add_fr3_hand as _add_fr3_hand,
+    add_lift_robot_arguments as _add_lift_robot_arguments,
+    finger_joint_q_from_gripper_fraction as _finger_joint_q_from_gripper_fraction,
+    finger_pad_half_extents_cm as _finger_pad_half_extents_cm,
+    gripper_fraction_from_closed_width_cm as _gripper_fraction_from_closed_width_cm,
+    log_content_placements_cm as _log_content_placements_cm,
+    lift_waypoints_cm as _lift_waypoints_cm,
+)
 from newton.examples.bag.mesh import (
     DEFAULT_PROXY_MODE as _DEFAULT_PROXY_MODE,
     add_proxy_mesh_arguments as _add_proxy_mesh_arguments,
-    build_bary_map as _build_bary_map_common,
+    build_bary_map_with_logging as _build_bary_map_with_logging,
     decimate_mesh as _decimate_mesh_common,
     load_kfc_mesh_zup as _load_kfc_mesh_zup_common,
+    log_mesh_counts as _log_mesh_counts,
 )
 from newton.examples.bag.capture import (
     add_capture_arguments as _add_capture_arguments,
@@ -74,16 +91,13 @@ from newton.examples.bag.render import render_bag_meshes as _render_bag_meshes
 # ─────────────────────────────────────────────────────────────────────────────
 # Simulation scale: centimeters
 # ─────────────────────────────────────────────────────────────────────────────
+_LOG_PREFIX = "[KFC lift]"
 _G_CM = -981.0
 _VIZ_SCALE = 0.01  # cm → m for ViewerGL
 
 # ── Bag geometry (cm) ────────────────────────────────────────────────────────
-_BAG_H = 27.9        # full bag height
-_BAG_X, _BAG_Y = 0.0, 0.0  # bag centre position on the ground
 
 # ── Robot waypoints (cm) ─────────────────────────────────────────────────────
-_GRAB_Z  = _BAG_H + 9.0   # grasp height above the handle area
-_LIFT_Z  = 65.0           # final lift height above ground
 
 # ── Cloth material (CGS) ─────────────────────────────────────────────────────
 _TRI_KE  = 1.0e5
@@ -102,10 +116,6 @@ _OBJECT_MASS_G = 10.0    # lighter debug payload per internal rigid body [g]
 
 # ── Finger contact tuning ────────────────────────────────────────────────────
 _FINGER_SHAPE_MU = 4.0   # higher finger friction for contact-only pinch debugging
-_FINGER_PAD_OFFSET_CM = (0.0, 0.758, 5.75)
-_FINGER_PAD_HALF_THICKNESS_CM = 0.75
-_FINGER_PAD_HALF_HEIGHT_CM = 2.60
-_FINGER_PAD_TOP_BAND_CM = 1.0
 _SOFT_CONTACT_MU = 2.0   # raise particle-side friction so finger pad mu matters more
 
 # ── Contact stiffness (CGS) ──────────────────────────────────────────────────
@@ -176,7 +186,11 @@ def _k_bary_interp(
 
 
 def _build_bary_map(full_verts, phys_verts, phys_faces):
-    return _build_bary_map_common(full_verts, phys_verts, phys_faces)
+    return _build_bary_map_with_logging(
+        full_verts,
+        phys_verts,
+        phys_faces,
+    )
 
 
 def _load_kfc_mesh_zup():
@@ -229,11 +243,13 @@ def _fit_bag_contents(phys_verts_cm):
     cs = dist_sphere(s_x, s_y, s_z, SPHERE_R)
     cb = dist_box(b_x, b_y, b_z, BOX_H, BOX_H, BOX_H)
     cc = dist_cap_y(c_x, c_y, c_z, CAP_R, CAP_HL)
-    print(
-        f"[KFC lift] Object placements (clearance to bag wall):\n"
-        f"  sphere  @ ({s_x:.1f}, {s_y:.1f}, {s_z:.1f})  clr={cs:.2f} cm\n"
-        f"  box     @ ({b_x:.1f}, {b_y:.1f}, {b_z:.1f})  clr={cb:.2f} cm\n"
-        f"  capsule @ ({c_x:.1f}, {c_y:.1f}, {c_z:.1f}) [Y-horiz]  clr={cc:.2f} cm"
+    _log_content_placements_cm(
+        sphere_pos_cm=(s_x, s_y, s_z),
+        sphere_clearance_cm=cs,
+        box_pos_cm=(b_x, b_y, b_z),
+        box_clearance_cm=cb,
+        capsule_pos_cm=(c_x, c_y, c_z),
+        capsule_clearance_cm=cc,
     )
     return (s_x, s_y, s_z), (b_x, b_y, b_z), (c_x, c_y, c_z), cap_quat
 
@@ -267,6 +283,8 @@ class Example:
         capture_format: str = "mp4",
         target_faces: int = _PHYSICS_TARGET_FACES,
         mesh_proxy_mode: str = _DEFAULT_PROXY_MODE,
+        closed_width_cm: float = _DEFAULT_CLOSED_WIDTH_CM,
+        small_pad: bool = False,
     ):
         self.viewer    = viewer
         self.test_mode = test_mode
@@ -282,7 +300,7 @@ class Example:
         )
 
         self.fps          = 60
-        self.frame_dt     = 1.0 / self.fps
+        self.frame_dt     = _FRAME_DT
         self.sim_time     = 0.0
         self.sim_substeps = _SIM_SUBSTEPS
         self.sim_dt       = self.frame_dt / self.sim_substeps
@@ -291,6 +309,7 @@ class Example:
 
         # Gripper command state: 0=open, 1=closed.
         self._gripper_frac = 0.0
+        self._closed_frac = _gripper_fraction_from_closed_width_cm(closed_width_cm)
         # Saved content body transforms (numpy, shape=(3,7)) from previous VBD step.
         # eval_fk resets body_q for content bodies from their (never-updated) FREE
         # joint_q each frame.  We save after VBD and restore before the substep loop.
@@ -305,11 +324,12 @@ class Example:
             mesh_proxy_mode,
         )
 
-        print(f"[KFC lift] Full mesh: {len(full_verts_cm)} verts, {len(full_faces)} tris")
-        print(f"[KFC lift] Physics mesh: {len(phys_verts_cm)} verts, {len(phys_faces)} tris")
+        _log_mesh_counts(
+            full_verts=full_verts_cm,
+            full_faces=full_faces,
+        )
 
         # ── Barycentric map: full-res → physics mesh ───────────────────────
-        print("[KFC lift] Building barycentric map...", end=" ", flush=True)
         self._bary_vi0_np, self._bary_vi1_np, self._bary_vi2_np, bary_w = \
             _build_bary_map(full_verts_cm, phys_verts_cm, phys_faces)
         self._bary_w       = wp.array(bary_w, dtype=wp.vec3)
@@ -325,38 +345,25 @@ class Example:
         )
         self._bary_disp = wp.array(
             (full_verts_cm - bary_proj).astype(np.float32), dtype=wp.vec3)
-        print("done.")
 
         # ── Build scene ────────────────────────────────────────────────────
         builder = newton.ModelBuilder(gravity=_G_CM)
 
         # ── FR3 robot arm (metres → cm via scale=100) ─────────────────────
         # Base at (-50, 0, 5) so the arm can reach the bag at origin.
-        asset_path = newton.utils.download_asset("franka_emika_panda")
-        builder.add_urdf(
-            str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
-            xform=wp.transform((-50.0, 0.0, 5.0), wp.quat_identity()),
-            floating=False,
-            scale=100,
-            enable_self_collisions=False,
-            parse_visuals_as_colliders=True,
+        hand_bodies = _add_fr3_hand(
+            builder,
+            base_position=_FR3_BASE_CM,
+            scale=100.0,
+            finger_open_q=_FINGER_OPEN_Q_CM,
         )
         # Seed pose for the startup IK solve; the robot is moved to the first
         # grasp waypoint after initialization.
-        init_q = [-3.6802e-03, 2.3902e-02, 3.6804e-03,
-                  -2.3683,    -1.2919e-04, 2.3922, 7.8549e-01]
-        builder.joint_q[:9] = [*init_q, 4.0, 4.0]
 
         # ── Identify finger / hand bodies for selective mesh approximation ──
-        self._left_finger_body  = next(
-            i for i, l in enumerate(builder.body_label)
-            if l.endswith("fr3_leftfinger"))
-        self._right_finger_body = next(
-            i for i, l in enumerate(builder.body_label)
-            if l.endswith("fr3_rightfinger"))
-        _hand_body = next(
-            i for i, l in enumerate(builder.body_label)
-            if l.endswith("fr3_hand"))
+        self._left_finger_body = hand_bodies.left_finger
+        self._right_finger_body = hand_bodies.right_finger
+        _hand_body = hand_bodies.hand
         _finger_body_set = {self._left_finger_body, self._right_finger_body, _hand_body}
         _gripper_contact_body_set = {self._left_finger_body, self._right_finger_body}
 
@@ -368,14 +375,11 @@ class Example:
             ke=_OBJ_SHAPE_KE,
             kd=_OBJ_SHAPE_KE * 1e-4,
         )
-        top_band_mask = phys_verts_cm[:, 2] >= (_BAG_H - _FINGER_PAD_TOP_BAND_CM)
-        top_band_verts = phys_verts_cm[top_band_mask] if np.any(top_band_mask) else phys_verts_cm
-        bag_top_edge_span_x_cm = float(top_band_verts[:, 0].max() - top_band_verts[:, 0].min())
         pad_xform = wp.transform(wp.vec3(*_FINGER_PAD_OFFSET_CM), wp.quat_identity())
-        pad_hx = 0.5 * bag_top_edge_span_x_cm
-        pad_hy = _FINGER_PAD_HALF_THICKNESS_CM
-        pad_hz = _FINGER_PAD_HALF_HEIGHT_CM
-        self._bag_top_edge_span_x_cm = bag_top_edge_span_x_cm
+        pad_hx, pad_hy, pad_hz = _finger_pad_half_extents_cm(
+            phys_verts_cm,
+            small_pad=small_pad,
+        )
         self._finger_pad_half_extents_cm = (pad_hx, pad_hy, pad_hz)
         builder.add_shape_box(
             body=self._left_finger_body,
@@ -548,7 +552,7 @@ class Example:
             device=self.model.device,
         )
         print(
-            f"[KFC lift] Removed COLLIDE_PARTICLES from {n_removed} non-finger robot shapes; "
+            f"{_LOG_PREFIX} Removed COLLIDE_PARTICLES from {n_removed} non-finger robot shapes; "
             f"kept {n_kept} finger shapes active for cloth contact"
         )
 
@@ -677,18 +681,7 @@ class Example:
         )
 
         # Waypoints: (target_pos_cm, duration_s, gripper_frac)
-        #
-        # Startup is intentionally short for fast iteration:
-        #   - wp0 close:   cur_frac=0, nxt_frac=1 at GRAB_Z  → fingers start closing immediately
-        #   - wp1 hold:    both cur_frac=1 AND nxt_frac=1; cur_pos=nxt_pos=GRAB_Z  → brief pinch settle
-        #   - wp2 lift:    cur_pos=GRAB_Z, nxt_pos=LIFT_Z  → robot rises while staying closed
-        bx, by = _BAG_X, _BAG_Y
-        self.waypoints = [
-            (wp.vec3(bx, by, _GRAB_Z),  0.45, 0.0),  # 0: close while stationary at the grasp pose
-            (wp.vec3(bx, by, _GRAB_Z),  0.20, 1.0),  # 1: hold at grab — brief pinch settle
-            (wp.vec3(bx, by, _GRAB_Z),  3.0,  1.0),  # 2: lift — interpolates to nxt pos=LIFT_Z
-            (wp.vec3(bx, by, _LIFT_Z),  2.5,  1.0),  # 3: hold at lift height (end)
-        ]
+        self.waypoints = _lift_waypoints_cm(closed_fraction=self._closed_frac)
         self._current_waypoint = 0
         self._time_in_waypoint = 0.0
 
@@ -710,7 +703,7 @@ class Example:
         jq = self.state_0.joint_q.numpy().copy()
         ik_sol = self._joint_q_ik.numpy()[0]
         jq[:7] = ik_sol[:7]
-        gv = 4.0 * (1.0 - start_frac)
+        gv = _finger_joint_q_from_gripper_fraction(start_frac, scale=100.0)
         jq[7], jq[8] = gv, gv
         jq_wp = wp.array(jq, dtype=float)
 
@@ -775,7 +768,7 @@ class Example:
         jq = self.state_0.joint_q.numpy().copy()
         ik_sol = self._joint_q_ik.numpy()[0]
         jq[:7] = ik_sol[:7]
-        gv = 4.0 * (1.0 - self._gripper_frac)
+        gv = _finger_joint_q_from_gripper_fraction(self._gripper_frac, scale=100.0)
         jq[7], jq[8] = gv, gv
         self.state_0.joint_q.assign(wp.array(jq, dtype=float))
         newton.eval_fk(
@@ -911,6 +904,7 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=560)   # close immediately, then pinch + lift + final hold
     _add_proxy_mesh_arguments(parser)
+    _add_lift_robot_arguments(parser)
     _add_capture_arguments(
         parser,
         replay_help="Capture rendered frames and auto-build replay video",
@@ -927,6 +921,8 @@ if __name__ == "__main__":
         capture_format=str(args.capture_format),
         target_faces=int(args.target_faces),
         mesh_proxy_mode=str(args.proxy_mode),
+        closed_width_cm=float(args.closed_width_cm),
+        small_pad=bool(args.small_pad),
     )
     while viewer.is_running() and not getattr(example, "capture_done", False):
         if example._frame_count >= args.num_frames:

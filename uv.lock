@@ -476,6 +476,29 @@ wheels = [
 ]
 
 [[package]]
+name = "cgal"
+version = "6.0.1.post202410241521"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and python_full_version < '3.14') or (python_full_version < '3.11' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (python_full_version >= '3.14' and extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/bd/18bb8a79020834b67c3c0ffa3a46b6fc295ff08ab654d65cb42618f8feb3/cgal-6.0.1.post202410241521-cp310-cp310-macosx_10_13_x86_64.whl", hash = "sha256:d668984dc4528537044d71190a0c3234948ff69e9c77c2a41437da23dea30865", size = 11361781, upload-time = "2024-10-25T08:03:17.148Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/9b/b946a71a7198124e69e3738678f4ec77541bfbdb558a9ff95066abbf58e3/cgal-6.0.1.post202410241521-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:288c4ee6266e20e4730cffbfebeefa9af64df5ed06b0fc6947fef2d78773fe1e", size = 10540520, upload-time = "2024-10-25T08:03:19.525Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/3b/a590672137059740f8265ac512618b2d1f84a65700527c574f25d2f15466/cgal-6.0.1.post202410241521-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:830fa74688fe79e545bfdbc7b577184e45371774214184617680233234553b98", size = 16055922, upload-time = "2024-10-25T08:03:21.811Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/c8/eaa558bd2ba64a2a6b6d2f545b87bf509be6f15a1942ffa1de535d35b3dc/cgal-6.0.1.post202410241521-cp310-cp310-win_amd64.whl", hash = "sha256:bfe6514f8beef476c50da36c44e3a565295408ba3856fffbc35274f692f0ca1d", size = 25051445, upload-time = "2024-10-25T08:03:24.301Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/2a/01090308f8b8086a1c936c43fa20d28e068e9f2e4f5f369ad09f32fab08f/cgal-6.0.1.post202410241521-cp311-cp311-macosx_10_13_x86_64.whl", hash = "sha256:71519601772dcc642247ddc721764f0154badab0e819b09462b3a1e01eb464a7", size = 11361775, upload-time = "2024-10-25T08:03:27.315Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/35/42d3789017b7b4eddf062bd043d0e6c17d8c1ec6178355a7a54957f6a243/cgal-6.0.1.post202410241521-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:151156aabdb6c95e962d7b1017157faf606e301882278e726a620a7095342b48", size = 10540525, upload-time = "2024-10-25T08:03:29.829Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/ec/0c852b00a57e42fb95dcab1b0cf2e8d439677d0ac174ef5660a3d14fb266/cgal-6.0.1.post202410241521-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1ebe41ebd1b427f7d7baabbb88f081b40c7b151c1093c3b2699590b7d3a21b52", size = 16056549, upload-time = "2024-10-25T08:03:31.814Z" },
+    { url = "https://files.pythonhosted.org/packages/56/b0/df8d9f94ce96a9f6870842befce3b3c25462e9987b5cc789eb64a86f80b2/cgal-6.0.1.post202410241521-cp311-cp311-win_amd64.whl", hash = "sha256:7a7eb61238be20f6bee11e13dfcba0e7dbbdceb8b87b125b3497f5303de1e058", size = 25053098, upload-time = "2024-10-25T08:03:34.832Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/37/ce7fbdc1ebdc45f8ace261245c8adc14c35d5208696b9c61086a82d26991/cgal-6.0.1.post202410241521-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:48aab4d91a4172e2a6691965440bb23e4bf292f75ebb600a4f9bf298d119368c", size = 11414008, upload-time = "2024-10-25T08:03:37.324Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/97/0edbcc755b108f5cc88eede69fec4494018b59d33ffb259c9c0914ca898f/cgal-6.0.1.post202410241521-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:80bcb6d2106ea0f9d81bf71fe578d910ab94aac93f673d63db845112f459daed", size = 10567306, upload-time = "2024-10-25T08:03:39.733Z" },
+    { url = "https://files.pythonhosted.org/packages/02/59/4f904e7fca4b2c90fa9692737faaf93f5c192b143a66c407d6b30ce57b13/cgal-6.0.1.post202410241521-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0914c255cd0c97f6330f74f65f64b20f099068203c147b572835599f1718341c", size = 16047388, upload-time = "2024-10-25T08:03:42.315Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/2a/dbf509e718e3c39b225a77081c154e50de2646a94b00bdf471e2c26fbf4b/cgal-6.0.1.post202410241521-cp312-cp312-win_amd64.whl", hash = "sha256:2389d5fb8ed3d77344e43813ea1c2a7b590368fa89a6dfc742b2ca615c311ea9", size = 25062953, upload-time = "2024-10-25T08:03:44.429Z" },
+]
+
+[[package]]
 name = "charset-normalizer"
 version = "3.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -3029,6 +3052,7 @@ dependencies = [
 dev = [
     { name = "alphashape" },
     { name = "cbor2" },
+    { name = "cgal", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "coacd", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "coverage", extra = ["toml"] },
     { name = "fast-simplification" },
@@ -3100,6 +3124,7 @@ docs = [
 examples = [
     { name = "alphashape" },
     { name = "cbor2" },
+    { name = "cgal", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "coacd", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "fast-simplification" },
     { name = "gdown" },
@@ -3156,6 +3181,7 @@ importers = [
 notebook = [
     { name = "alphashape" },
     { name = "cbor2" },
+    { name = "cgal", marker = "python_full_version < '3.13' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "coacd", marker = "python_full_version < '3.14' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "fast-simplification" },
     { name = "gdown" },
@@ -3207,6 +3233,7 @@ sim = [
 torch-cu12 = [
     { name = "alphashape" },
     { name = "cbor2" },
+    { name = "cgal", marker = "python_full_version < '3.13'" },
     { name = "coacd", marker = "python_full_version < '3.14'" },
     { name = "fast-simplification" },
     { name = "gdown" },
@@ -3248,6 +3275,7 @@ torch-cu12 = [
 torch-cu13 = [
     { name = "alphashape" },
     { name = "cbor2" },
+    { name = "cgal", marker = "python_full_version < '3.13'" },
     { name = "coacd", marker = "python_full_version < '3.14'" },
     { name = "fast-simplification" },
     { name = "gdown" },
@@ -3306,6 +3334,11 @@ requires-dist = [
     { name = "cbor2", marker = "extra == 'notebook'", specifier = ">=5.7.0" },
     { name = "cbor2", marker = "extra == 'torch-cu12'", specifier = ">=5.7.0" },
     { name = "cbor2", marker = "extra == 'torch-cu13'", specifier = ">=5.7.0" },
+    { name = "cgal", marker = "python_full_version < '3.13' and extra == 'dev'", specifier = ">=6.0.1" },
+    { name = "cgal", marker = "python_full_version < '3.13' and extra == 'examples'", specifier = ">=6.0.1" },
+    { name = "cgal", marker = "python_full_version < '3.13' and extra == 'notebook'", specifier = ">=6.0.1" },
+    { name = "cgal", marker = "python_full_version < '3.13' and extra == 'torch-cu12'", specifier = ">=6.0.1" },
+    { name = "cgal", marker = "python_full_version < '3.13' and extra == 'torch-cu13'", specifier = ">=6.0.1" },
     { name = "coacd", marker = "python_full_version < '3.14' and extra == 'dev'", specifier = ">=1.0.7" },
     { name = "coacd", marker = "python_full_version < '3.14' and extra == 'docs'", specifier = ">=1.0.7" },
     { name = "coacd", marker = "python_full_version < '3.14' and extra == 'examples'", specifier = ">=1.0.7" },

@@ -77,6 +77,7 @@ examples = [
     "newton[importers]",    # include import dependencies
     "usd-core>=25.5 ; platform_machine != 'aarch64' and python_version < '3.14'",  # for examples that import pxr directly
     "pymeshlab>=2025.7.post1",  # for mesh decimation used by kfc bag related examples
+    "cgal>=6.0.1 ; python_version < '3.13'",  # for CGAL isotropic remeshing used by kfc bag related examples
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
     "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI

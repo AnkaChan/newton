@@ -39,10 +39,12 @@ import newton.examples
 from newton.examples.bag.mesh import (
     DEFAULT_PROXY_MODE as _DEFAULT_PROXY_MODE,
     add_proxy_mesh_arguments as _add_proxy_mesh_arguments,
-    build_bary_map as _build_bary_map_common,
+    build_bary_map_with_logging as _build_bary_map_with_logging,
     decimate_mesh as _decimate_mesh_common,
     load_kfc_mesh_zup as _load_kfc_mesh_zup_common,
+    log_mesh_counts as _log_mesh_counts,
 )
+from newton.examples.bag.lift import log_content_placements_cm as _log_content_placements_cm
 from newton.examples.bag.capture import (
     add_capture_arguments as _add_capture_arguments,
     capture_replay_frame as _capture_replay_frame_common,
@@ -58,6 +60,7 @@ from newton.examples.bag.render import render_bag_meshes as _render_bag_meshes
 # ─────────────────────────────────────────────────────────────────────────────
 # Simulation scale: centimeters
 # ─────────────────────────────────────────────────────────────────────────────
+_LOG_PREFIX = "[KFC drop]"
 _G_CM = -981.0  # cm/s²
 _VIZ_SCALE = 0.01  # cm → m for ViewerGL
 
@@ -199,7 +202,11 @@ def _k_bary_interp(
 
 
 def _build_bary_map(full_verts, phys_verts, phys_faces):
-    return _build_bary_map_common(full_verts, phys_verts, phys_faces)
+    return _build_bary_map_with_logging(
+        full_verts,
+        phys_verts,
+        phys_faces,
+    )
 
 
 def _load_kfc_mesh_zup():
@@ -228,7 +235,8 @@ def _fit_bag_contents(phys_verts_cm):
         and placed above both at the bag centre, where there is room before
         the bag narrows.
 
-    All clearances to the bag wall and between objects are ≥ 0.5 cm.
+    The fixed offsets below keep the objects clear of the bag wall and each
+    other for the default proxy mesh; the exact wall clearances are logged.
 
     Returns
     -------
@@ -281,11 +289,14 @@ def _fit_bag_contents(phys_verts_cm):
     cs = dist_sphere(s_x, s_y, s_z, SPHERE_R)
     cb = dist_box(b_x, b_y, b_z, BOX_H, BOX_H, BOX_H)
     cc = dist_cap_y(c_x, c_y, c_z, CAP_R, CAP_HL)
-    print(
-        f"[KFC drop] Object placements (local bag coords, clearance to bag wall):\n"
-        f"  sphere  @ ({s_x:.1f}, {s_y:.1f}, {s_z:.1f})  clr={cs:.2f} cm\n"
-        f"  box     @ ({b_x:.1f}, {b_y:.1f}, {b_z:.1f})  clr={cb:.2f} cm\n"
-        f"  capsule @ ({c_x:.1f}, {c_y:.1f}, {c_z:.1f}) [Y-horiz]  clr={cc:.2f} cm"
+    _log_content_placements_cm(
+        sphere_pos_cm=(s_x, s_y, s_z),
+        sphere_clearance_cm=cs,
+        box_pos_cm=(b_x, b_y, b_z),
+        box_clearance_cm=cb,
+        capsule_pos_cm=(c_x, c_y, c_z),
+        capsule_clearance_cm=cc,
+        local_bag_coords=True,
     )
     return (s_x, s_y, s_z), (b_x, b_y, b_z), (c_x, c_y, c_z), cap_quat
 
@@ -345,7 +356,7 @@ class Example:
             bag_edge_kd = _SOFT_EDGE_KD
             obj_shape_ke = _SOFT_OBJ_SHAPE_KE
             print(
-                "[KFC drop] Using soft bag tuning:"
+                f"{_LOG_PREFIX} Using soft bag tuning:"
                 f" tri_ke={bag_tri_ke:.3g}, tri_ka={bag_tri_ka:.3g},"
                 f" tri_kd={bag_tri_kd:.3g}, edge_ke={bag_edge_ke:.3g},"
                 f" edge_kd={bag_edge_kd:.3g},"
@@ -368,13 +379,14 @@ class Example:
             mesh_proxy_mode,
         )
 
-        print(f"[KFC drop] Full mesh: {len(full_verts_cm)} verts, {len(full_faces)} tris")
-        print(f"[KFC drop] Physics mesh: {len(phys_verts_cm)} verts, {len(phys_faces)} tris")
+        _log_mesh_counts(
+            full_verts=full_verts_cm,
+            full_faces=full_faces,
+        )
 
         # ── Barycentric map: full-res → physics mesh ──────────────────────
         # Each full-res vertex is mapped to a physics triangle + barycentrics
         # so the high-res visual mesh tracks the low-res simulation mesh.
-        print("[KFC drop] Building barycentric map...", end=" ", flush=True)
         self._bary_vi0_np, self._bary_vi1_np, self._bary_vi2_np, bary_w = \
             _build_bary_map(full_verts_cm, phys_verts_cm, phys_faces)
         self._bary_w = wp.array(bary_w, dtype=wp.vec3)
@@ -395,7 +407,6 @@ class Example:
         self._bary_disp = wp.array(
             (full_verts_cm - bary_proj).astype(np.float32), dtype=wp.vec3,
         )
-        print("done.")
 
         # ── Build scene ────────────────────────────────────────────────────
         builder = newton.ModelBuilder(gravity=_G_CM)
@@ -557,12 +568,12 @@ class Example:
         )
         object_masses = 1.0 / inv_m[:3]
 
-        print(f"[KFC drop] Bodies: {self.model.body_count}, "
+        print(f"{_LOG_PREFIX} Bodies: {self.model.body_count}, "
               f"Particles: {self.model.particle_count}, "
               f"Shapes: {self.model.shape_count}")
-        print(f"[KFC drop] Bag mass: {bag_mass:.6f} g")
+        print(f"{_LOG_PREFIX} Bag mass: {bag_mass:.6f} g")
         print(
-            "[KFC drop] Object masses: "
+            f"{_LOG_PREFIX} Object masses: "
             f"sphere={float(object_masses[0]):.6f} g, "
             f"box={float(object_masses[1]):.6f} g, "
             f"capsule={float(object_masses[2]):.6f} g, "
@@ -595,7 +606,7 @@ class Example:
         wp.launch(_k_set_float_scalar, dim=n_h,
                   inputs=[self.model.particle_mass, self._handle_idx_wp, 0.0])
 
-        print(f"[KFC drop] Handle particles: {n_h} "
+        print(f"{_LOG_PREFIX} Handle particles: {n_h} "
               f"(z >= {z_top_thresh:.1f} cm), hanging for {_HANG_FRAMES} frames")
 
         # ── VBD solver (solves both cloth + rigid bodies) ─────────────────
