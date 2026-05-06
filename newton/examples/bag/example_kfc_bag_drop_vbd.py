@@ -20,12 +20,12 @@
 # drops from a short height and settles on the ground.
 #
 # - Graphics mesh: full-resolution kfc.usd (24K verts)
-# - Physics/cloth mesh: ~1200 tris via pymeshlab quadric decimation
-# - Collision proxy: same decimated mesh (particle radius provides margin)
-# - 3 kinematic rigid bodies inside the bag
+# - Physics/cloth mesh: solver-side proxy from shared bag mesh generation
+# - Collision proxy: same solver mesh (particle radius provides margin)
+# - 3 dynamic rigid bodies inside the bag
 # - VBD solver, centimeter scale (gravity = -981 cm/s²)
 #
-# Command: python -m newton.examples robot.example_kfc_bag_drop
+# Command: python -m newton.examples.bag.example_kfc_bag_drop_vbd
 #
 ###########################################################################
 
@@ -418,8 +418,8 @@ class Example:
         #      "explicit" broadphase does not test particle-body pairs at all.
         #   2. Objects must be large enough to touch the bag walls
         #      (bag interior ~8 cm from center to wall → radius ≥ 3 cm).
-        #   3. Very low mass (0.1 g) combined with high ke lets the bag
-        #      support them while keeping the simulation stable.
+        #   3. Builder masses are placeholders until the post-finalize
+        #      _OBJECT_MASS_G inertia override below.
         #
         # Positions are computed geometrically from the physics mesh so that
         # no object overlaps the bag shell at simulation start.
@@ -672,8 +672,8 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        # Suppress the viewer's built-in cloth mesh draw — we render
-        # explicitly as either hi-res or proxy mesh via log_mesh().
+        # Suppress the viewer's built-in cloth mesh draw — the shared bag
+        # renderer logs either the hi-res or proxy mesh explicitly.
         self.viewer.show_triangles = False
 
         # Restore cm-scale shape data for simulation

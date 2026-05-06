@@ -37,7 +37,7 @@ def build_bary_map(
     phys_verts: np.ndarray,
     phys_faces: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Map each full-resolution vertex to the closest physics triangle."""
+    """Map each full-resolution vertex to a nearby physics triangle."""
     from scipy.spatial import cKDTree
 
     v0 = phys_verts[phys_faces[:, 0]]

@@ -35,7 +35,7 @@
 #     COLLIDE_PARTICLES so the bag can contact them.
 #   - All physics in centimeter scale (gravity = -981 cm/s²).
 #
-# Command: python -m newton.examples bag.example_kfc_bag_lift
+# Command: python -m newton.examples.bag.example_kfc_bag_lift_vbd
 #
 ###########################################################################
 
@@ -95,10 +95,6 @@ _LOG_PREFIX = "[KFC lift]"
 _G_CM = -981.0
 _VIZ_SCALE = 0.01  # cm → m for ViewerGL
 
-# ── Bag geometry (cm) ────────────────────────────────────────────────────────
-
-# ── Robot waypoints (cm) ─────────────────────────────────────────────────────
-
 # ── Cloth material (CGS) ─────────────────────────────────────────────────────
 _TRI_KE  = 1.0e5
 _TRI_KA  = 1.0e5
@@ -121,8 +117,9 @@ _SOFT_CONTACT_MU = 2.0   # raise particle-side friction so finger pad mu matters
 # ── Contact stiffness (CGS) ──────────────────────────────────────────────────
 # VBD averages particle-side (soft_contact_ke) with shape-side (shape_material_ke):
 #   effective ke = 0.5 * (soft_contact_ke + shape_material_ke[shape])
-# No drop-impact constraint here, so we can use high ke uniformly.
-#   cloth-object: 0.5*(5e3 + 495e3) = 250 000  → stiff enough for 1 kg static load
+# No drop-impact constraint here, so the lift example keeps a high contact ke.
+#   cloth-object: 0.5*(5e3 + 495e3) = 250 000
+#                 → supports the light debug payload
 #   cloth-ground: 0.5*(5e3 + 5e4)   =  27 500  → adequate static support
 _CONTACT_KE      = 5.0e3   # soft_contact_ke (particle-side)
 _OBJ_SHAPE_KE    = 4.95e5  # shape_material_ke for food-item rigid bodies
@@ -512,7 +509,8 @@ class Example:
         self.model.shape_material_kd = wp.array(kd_arr, dtype=float)
         self.model.shape_material_mu = wp.array(mu_arr, dtype=float)
 
-        # Robot bodies are kinematic (driven by IK+FK, not VBD/AVBD)
+        # Robot bodies are kinematic: inverse mass/inertia are zeroed and
+        # poses are driven by IK+FK, not VBD/AVBD.
         inv_m = self.model.body_inv_mass.numpy().copy()
         inv_i = self.model.body_inv_inertia.numpy().copy()
         inv_m[:self._robot_body_count] = 0.0

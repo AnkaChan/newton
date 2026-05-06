@@ -10,13 +10,13 @@
 #
 # ppf-contact-solver uses Projective Dynamics with Persistent Friction (PPF)
 # — a GPU-accelerated, guaranteed penetration-free contact solver.  The bag
-# is a deformable triangular shell; two invisible half-space walls represent
+# is a deformable triangular shell; two pinned tri-shell slabs represent
 # the finger pads and animate through open → close → hold → lift phases.
 #
 # Flow:
 #   1. Load and optionally decimate the KFC bag mesh.
 #   2. Build a ppf-contact-solver scene: deformable bag shell, two animated
-#      invisible gripping walls, and a static floor wall.
+#      gripping pads, and a static floor wall.
 #   3. Run the simulation and collect per-frame vertex positions.
 #   4. Replay the bag deformation inside the Newton viewer alongside
 #      analytical pad-box visualisations.
@@ -125,7 +125,7 @@ from newton.examples.bag.render import render_bag_meshes as _render_bag_meshes
 
 
 # ---------------------------------------------------------------------------
-# Timing constants (same phases as the LS-DYNA lift example)
+# Timing constants (same phases as the shared bag lift helpers)
 # ---------------------------------------------------------------------------
 _LOG_PREFIX = "[KFC ppfcs]"
 _FPS = 60.0
@@ -136,7 +136,7 @@ _DEFAULT_PPFCS_SUBSTEPS_PER_FRAME = 2
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# FR3 robot rendering (Newton-side replay only — ppfcs walls drive the bag)
+# FR3 robot rendering (Newton-side replay only — ppfcs pads drive the bag)
 # ---------------------------------------------------------------------------
 # Vertical offset from the FR3 EE (hand link) down to the finger-pad
 # centre in world Z when the gripper is in the standard down-pointing pose.
@@ -148,14 +148,15 @@ _DEFAULT_PPFCS_SUBSTEPS_PER_FRAME = 2
 # ---------------------------------------------------------------------------
 # ppfcs material parameters (bags are thin engineering plastic)
 # ---------------------------------------------------------------------------
-# young-mod in ppfcs is `E / volumetric_density` and is unit-normalized — the
-# default for tri shells is 100 (see frontend/_param_.py).  Higher values
-# (>~1e3) cause the CCD line search to collapse to toi≈0 and the Newton
-# solver cannot advance.  Stick close to the default for a paper bag.
+# young-mod in ppfcs is unit-normalized rather than an SI Young's modulus.
+# This lift tuning intentionally uses a high shell stiffness because the bag
+# carries heavy interior tet bodies; lower milestone values stretched too much
+# under load.
 _BAG_YOUNG_MOD = 400000.0       # 13× the original milestone's 30000.
-                                # masses (15 g bag + 3 kg of interior contents), the bag
+                                # With current masses (15 g bag + 3 kg of contents), the bag
                                 # walls must be stiff enough to support the interior load
-                                # without instantly straining to the strain-limit cap.
+                                # without immediately hitting the stretch failure modes
+                                # seen in lower-stiffness tuning.
                                 # The earlier "lower young-mod" reasoning applied when the
                                 # bag itself was unrealistically heavy and contributed
                                 # inertia spikes; with light bag + heavy contents the
@@ -167,7 +168,7 @@ _BAG_DENSITY_BASE = 0.03        # density at α=1 (≈15 g bag for the KFC mesh)
                                 # value lands the bag in the same ballpark (≈10-20 g for
                                 # a ~0.18 m² bag).  Heavier values produce massive
                                 # inertia on the gripped rim during smoothstep lift peak,
-                                # forcing the strain-limit constraint into geometrically
+                                # forcing the contact/stretch solve into geometrically
                                 # infeasible configurations and a NaN crash around
                                 # frame ~85-92.
 _BAG_BEND_BASE = 100000         # Strong bend stiffness (100× milestone's 1000).
@@ -175,13 +176,8 @@ _BAG_BEND_BASE = 100000         # Strong bend stiffness (100× milestone's 1000)
                                 # flag makes the input mesh the bend rest, so
                                 # folded gussets don't receive phantom
                                 # flattening stress.
-_BAG_STRAIN_LIMIT = 0.12        # 12 % max per-element principal stretch.  At 0.07 the cap
-                                # becomes geometrically infeasible during peak lift
-                                # acceleration (frame ~84): the constraint pins one row of
-                                # elements while inertia from bag-bottom + interior bodies
-                                # keeps pulling, and a triangle eventually collapses to a
-                                # NaN-producing degenerate config.  0.12 leaves enough
-                                # elasticity in reserve to absorb the lift peak.
+_BAG_STRAIN_LIMIT = 0.12        # Historical strain-limit test value; scene setup
+                                # intentionally leaves `strain-limit` unset below.
 # NOTE: pads use `.pin()` *without* `.pull()` — that puts pad verts in ppfcs's
 # FixPair table (scene.rs:1280-1296) which removes their DOFs from the linear
 # system, giving a true kinematic constraint.  `.pull(N)` would make a soft
@@ -465,9 +461,9 @@ _INTERIOR_CLEARANCE_M = 0.010
 def _fit_bag_contents(bag_verts_zup_m: np.ndarray) -> dict:
     """Return Z-up positions and orientations for the 3 rigid interior bodies.
 
-    Layout matches the ANSYS/VBD lift examples:
-      sphere on the right side, box on the lower-left, capsule stacked on
-      top of the box and rotated π/2 around X so it lies horizontally.
+    Layout is tuned for the ppfcs interior tet meshes:
+      sphere on the right side, box on the lower-left, capsule stacked above
+      the box and rotated π/2 around X so it lies horizontally.
 
     Returned dict values are 7-vectors ``[x, y, z, qx, qy, qz, qw]`` so the
     caller can write them straight into a Newton (Z-up) ``body_q``.
@@ -555,10 +551,9 @@ def _compute_grip_geometry(
     bag_half_x = max(float(0.5 * (gv[:, 0].max() - gv[:, 0].min())), 0.02)
     bag_half_y = float(0.5 * (gv[:, 1].max() - gv[:, 1].min()))
 
-    # ppfcs walls are infinite half-spaces — they constrain the entire bag in
-    # Y, not just the grippable band.  Use the bag's full Y extent for the open
-    # position so the walls don't intersect the wider bottom of the bag at
-    # frame 0 (which produces toi=0 in CCD and stalls the solver).
+    # The ppfcs pads are full-height tri-shell slabs, so use the bag's full Y
+    # extent for the open position.  This keeps the wider bottom of the bag
+    # clear at frame 0 and avoids toi=0 CCD stalls.
     full_y_lo = float(bag_verts_zup_m[:, 1].min())
     full_y_hi = float(bag_verts_zup_m[:, 1].max())
     full_half_y = float(0.5 * (full_y_hi - full_y_lo))
@@ -821,8 +816,8 @@ def _start_ppfcs_streaming(
 ) -> tuple[_StreamingFrameSource, dict[str, np.ndarray]]:
     """Start the ppfcs solver and return ``(streamer, body_surface_faces)``.
 
-    `body_surface_faces` maps each body name to its surface triangle array
-    (local to the body's vertex slice) so the caller can render via log_mesh.
+    `body_surface_faces` maps each body name to its local surface triangle
+    array so the example can cache optional/debug surface topology.
     """
     App = _require_ppfcs(ppfcs_dir)
     from frontend import Utils as _PpfcsUtils  # noqa: PLC0415
@@ -916,7 +911,7 @@ def _start_ppfcs_streaming(
     right_pad_centre_open = _v3(bag_cx_yup, y_pad_yup, z_r_open + pad_hz_yup)
     left_pad_centre_open  = _v3(bag_cx_yup, y_pad_yup, z_l_open  - pad_hz_yup)
 
-    print(f"{_LOG_PREFIX} Building tet finger pads (kinematic, "
+    print(f"{_LOG_PREFIX} Building tri-shell finger pads (kinematic, "
           f"hx={pad_hx_yup:.3f} hy={pad_hy_yup:.3f} hz={pad_hz_yup:.4f} m)...")
     right_pad_F = _make_tet_pad(app, "right_pad", pad_hx_yup, pad_hy_yup, pad_hz_yup, right_pad_centre_open)
     left_pad_F  = _make_tet_pad(app, "left_pad",  pad_hx_yup, pad_hy_yup, pad_hz_yup, left_pad_centre_open)
@@ -1007,7 +1002,7 @@ def _start_ppfcs_streaming(
         obj.param.set("density", interior_density)
         obj.param.set("friction", _INTERIOR_FRICTION)
 
-    # Add the tet pads, pin every vertex, and animate them through the
+    # Add the tri-shell pads, pin every vertex, and animate them through the
     # open→close→hold→lift trajectory via PinHolder.move_by(delta, t0, t1).
     # Use the ribbon.ipynb pattern: `.pin()` makes the body kinematic
     # via a strong constraint without zeroing all DOFs in the matrix.
@@ -1067,9 +1062,8 @@ def _start_ppfcs_streaming(
     session.param.set("fps", output_fps)
     # Static friction requires multiple Newton steps per frame
     session.param.set("min-newton-steps", 32)
-    # Headroom for CG convergence at high mesh densities (default is 10 000;
-    # the strain-limit constraint at --target-faces 15000 occasionally needs
-    # more during the close-pinch peak).
+    # Headroom for CG convergence at high mesh densities (default is 10 000);
+    # close-pinch contact at --target-faces 15000 can need extra iterations.
     session.param.set("cg-max-iter", 50000)
 
     _terminate_stale_ppfcs_processes()
@@ -1163,8 +1157,8 @@ def _build_frame_source(
 ) -> tuple:
     """Return ``(frame_source, body_surface_faces)``.
 
-    ``body_surface_faces`` maps each ppfcs body name to its surface-tri array
-    (local indices) so the caller can render via log_mesh.
+    ``body_surface_faces`` maps each ppfcs body name to its local surface-tri
+    array so the example can cache optional/debug surface topology.
     """
     job_dir.mkdir(parents=True, exist_ok=True)
     return _start_ppfcs_streaming(
@@ -1218,7 +1212,7 @@ def _build_visual_model(
 
     # Visual finger pads attached to the FR3 fingers.  These render via
     # log_state (Newton body palette → matches the ANSYS/VBD colour
-    # scheme).  The ppfcs kinematic tet pad bodies follow the same trajectory
+    # scheme).  The ppfcs kinematic tri-shell pads follow the same trajectory
     # below them and are NOT log_mesh'd separately.
     pad_cfg = newton.ModelBuilder.ShapeConfig(density=0.001, mu=0.5, ke=1.0e4, kd=1.0)
     pad_xform = wp.transform(wp.vec3(*_FINGER_PAD_OFFSET_M), wp.quat_identity())
@@ -1236,14 +1230,14 @@ def _build_visual_model(
     # Note: do NOT call builder.approximate_meshes("convex_hull") here — that
     # would replace the URDF visual meshes (.dae files) with simplified convex
     # hulls and the robot would render as chunky collision-style geometry.
-    # `parse_visuals_as_colliders=True` above already gives us the high-quality
-    # visual meshes for both physics and rendering.
+    # `_add_fr3_hand()` keeps its default parse_visuals_as_colliders=True, so
+    # the high-quality visual meshes are available for physics and rendering.
 
     # ---- Interior rigid bodies (sphere / box / capsule) --------------------
     # These are visual-only proxies updated each frame from the corresponding
-    # ppfcs tet body's centroid.  Sizes match the ANSYS/VBD lift examples
-    # so the contents look identical across all three backends; default Newton
-    # body colours give each shape a distinct hue.
+    # ppfcs tet body's vertices via rigid alignment.  Sizes match the ANSYS/VBD
+    # lift examples so the contents look consistent across all three backends;
+    # default Newton body colours give each shape a distinct hue.
     interior_body_idx: dict[str, int] = {}
     rigid_inertia = np.eye(3, dtype=np.float64) * 1.0e-4
     content_cfg = newton.ModelBuilder.ShapeConfig(
@@ -1436,7 +1430,7 @@ class Example:
         parser.description = (
             "Simulate a KFC bag lift using ppf-contact-solver (PPF-CTS) as the "
             "contact and deformation backend.  The bag is a deformable triangular "
-            "shell; two animated half-space walls represent the finger pads."
+            "shell; two animated pinned tri-shell slabs represent the finger pads."
         )
         parser.set_defaults(num_frames=_DEFAULT_NUM_FRAMES)
         parser.add_argument(
@@ -1591,7 +1585,7 @@ class Example:
         self.times_s = self.times_s[: self.capture_frames]
         self._current_bodies: dict[str, np.ndarray] = {}
 
-        # Pre-build wp arrays of surface faces for each body (once).
+        # Pre-build optional surface-face arrays for each non-bag body.
         self._body_faces_wp: dict[str, "wp.array"] = {}
         for name, F in self._body_faces_np.items():
             if name == "bag":
@@ -1621,7 +1615,7 @@ class Example:
 
         # Initial poses for the interior visual rigid bodies — these render
         # with default Newton body colours (one hue per body) and are updated
-        # each frame from the corresponding ppfcs tet body's centroid.
+        # each frame from the corresponding ppfcs tet body's fitted transform.
         interior_init_q = _fit_bag_contents(shell_verts_zup_m)
 
         # Build the Newton replay model: FR3 robot + interior bodies + ground.
@@ -1679,8 +1673,8 @@ class Example:
 
     def render(self):
         """Render the FR3 robot, finger pads, ground, the bag, the interior
-        rigid bodies (as Newton shapes — proper coloring), and the ppfcs tet
-        finger pads.  The bag uses the full-res barycentric mapping."""
+        rigid bodies as Newton shapes.  The bag uses the full-res barycentric
+        mapping."""
         fi = max(self._frame_index, 0)
 
         bodies = self._current_bodies
@@ -1727,7 +1721,7 @@ class Example:
                 wp.array(body_q_np, dtype=self.viz_state.body_q.dtype)
             )
 
-        # The ppfcs kinematic tet pads are NOT rendered via log_mesh — the
+        # The ppfcs kinematic tri-shell pads are NOT rendered via log_mesh — the
         # box-shape pads attached to the FR3 fingers (rendered via log_state)
         # serve as their visual stand-ins, matching the other lift examples.
         # Both are driven by the same trajectory and stay co-located.

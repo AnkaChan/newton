@@ -5,14 +5,15 @@
 # Example KFC Bag Lift via LS-DYNA shell replay
 #
 # This example builds the lift-start FR3 bag scene, writes an LS-DYNA
-# keyword deck, launches LS-DYNA as an external process, then replays the
+# keyword deck, launches LS-DYNA as a background process, then streams the
 # results inside Newton.
 #
 # Flow:
 #   1. Build the LS-DYNA keyword deck for a shell bag, rigid inserts, ground,
 #      and rigid finger pads already gripping the bag at the lifted height.
-#   2. Launch LS-DYNA as an external process and wait for completion.
-#   3. Read d3plot results back with lasso-python and replay the bag
+#   2. Launch LS-DYNA as a background process and stream d3plot results while
+#      the solve is still running.
+#   3. Read d3plot results with lasso-python and replay the bag
 #      deformation, shell stress, and rigid insert motion inside Newton.
 #
 # Runtime knobs:
@@ -92,7 +93,7 @@ _DEFAULT_LSDYNA_ROOT = Path(
     r"D:\Program Files\LS-DYNA Suite R16.1 Student\lsdyna\ls-dyna_smp_d_R16.1_180-gd50332dbe5_winx64_ifort190_sse2_studentversion.exe"
 )
 
-# Simulation scale: centimeters
+# Scene layout uses cm; LS-DYNA material/thickness values use SI units.
 _VIZ_SCALE = 0.01
 
 # Content objects [g]
@@ -602,7 +603,7 @@ def _node_positions_from_state(
 
 
 def _valid_state_indexes_from_positions(bag_points_m: np.ndarray) -> np.ndarray:
-    """Keep a smooth, physically plausible sequence of replay frames."""
+    """Filter replay frames by finite positions, extents, and max vertex step."""
     if bag_points_m.ndim != 3 or bag_points_m.shape[0] == 0:
         return np.empty(0, dtype=np.int32)
 
@@ -1875,47 +1876,6 @@ def _ensure_lsdyna_executable(executable: Path, *, source: str = "LS-DYNA execut
             "path via `--lsdyna-exe`, or use `--lsdyna-root` for a search folder."
         )
     return path
-
-
-def _run_lsdyna(deck_path: Path, executable: Path, job_dir: Path, ncpu: int, memory: str):
-    """Run LS-DYNA as an external process and wait for completion."""
-    executable = _ensure_lsdyna_executable(executable)
-    log_path = job_dir / "lsdyna.stdout.txt"
-    ncpu = min(int(ncpu), _STUDENT_MAX_CPU)
-    cmd = [
-        str(executable),
-        f"i={deck_path.name}",
-        f"ncpu={ncpu}",
-        f"memory={memory}",
-        "plabel=yes",
-    ]
-    env = os.environ.copy()
-    env["LSTC_LICENSE"] = "ANSYS"
-    with log_path.open("w", encoding="utf-8") as log_file:
-        completed = subprocess.run(
-            cmd,
-            cwd=job_dir,
-            check=False,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            env=env,
-        )
-    if completed.returncode not in (0, None):
-        if _lsdyna_log_has_normal_termination(log_path):
-            print(
-                f"{_LOG_PREFIX} Warning: LS-DYNA exited with code {completed.returncode} "
-                "after normal termination; continuing with written results."
-            )
-        else:
-            _write_lsdyna_debug_summary(
-                job_dir=job_dir,
-                stream_mode=False,
-                stream_complete=False,
-                stream_solver_finished=True,
-                stream_solver_exit_code=int(completed.returncode),
-                note="Blocking LS-DYNA solve exited with a non-zero code.",
-            )
-            raise RuntimeError(f"LS-DYNA failed. {_lsdyna_debug_hint(job_dir)}")
 
 
 def _lsdyna_log_has_normal_termination(log_path: Path) -> bool:
@@ -3732,19 +3692,6 @@ def _build_shell_parts_from_state(
     ]
 
 
-def _empty_replay(deck: _ansys_common.DeckMetadata) -> _ansys_common.ReplayData:
-    """Create one empty replay buffer compatible with the given deck."""
-    return _ansys_common.ReplayData(
-        times_s=np.empty(0, dtype=np.float32),
-        bag_points_m=np.empty((0, deck.bag_node_count, 3), dtype=np.float32),
-        bag_von_mises=np.empty((0, deck.bag_element_count), dtype=np.float32),
-        rigid_body_q_cm={
-            label: np.empty((0, 7), dtype=np.float32)
-            for label in deck.content_part_ids
-        },
-    )
-
-
 def _truncate_replay(
     replay: _ansys_common.ReplayData,
     frame_count: int,
@@ -3779,65 +3726,6 @@ def _offset_replay_times(
     )
 
 
-def _merge_aligned_replays(
-    prefix: _ansys_common.ReplayData | None,
-    suffix: _ansys_common.ReplayData,
-    *,
-    time_offset_s: float,
-) -> _ansys_common.ReplayData:
-    """Append one target-aligned replay suffix onto an existing prefix."""
-    shifted_times_s = suffix.times_s.astype(np.float32).copy()
-    shifted_times_s += float(time_offset_s)
-    if prefix is None or len(prefix.times_s) == 0:
-        return _ansys_common.ReplayData(
-            times_s=shifted_times_s,
-            bag_points_m=suffix.bag_points_m.astype(np.float32).copy(),
-            bag_von_mises=suffix.bag_von_mises.astype(np.float32).copy(),
-            rigid_body_q_cm={
-                label: values.astype(np.float32).copy()
-                for label, values in suffix.rigid_body_q_cm.items()
-            },
-        )
-    if len(suffix.times_s) == 0:
-        return _truncate_replay(prefix, len(prefix.times_s))
-
-    skip = 0
-    if abs(float(shifted_times_s[0]) - float(prefix.times_s[-1])) <= 1.0e-6:
-        skip = 1
-
-    labels = set(prefix.rigid_body_q_cm) | set(suffix.rigid_body_q_cm)
-    return _ansys_common.ReplayData(
-        times_s=np.concatenate(
-            [prefix.times_s, shifted_times_s[skip:]],
-            axis=0,
-        ).astype(np.float32),
-        bag_points_m=np.concatenate(
-            [prefix.bag_points_m, suffix.bag_points_m[skip:]],
-            axis=0,
-        ).astype(np.float32),
-        bag_von_mises=np.concatenate(
-            [prefix.bag_von_mises, suffix.bag_von_mises[skip:]],
-            axis=0,
-        ).astype(np.float32),
-        rigid_body_q_cm={
-            label: np.concatenate(
-                [
-                    prefix.rigid_body_q_cm.get(
-                        label,
-                        np.empty((0, 7), dtype=np.float32),
-                    ),
-                    suffix.rigid_body_q_cm.get(
-                        label,
-                        np.empty((0, 7), dtype=np.float32),
-                    )[skip:],
-                ],
-                axis=0,
-            ).astype(np.float32)
-            for label in labels
-        },
-    )
-
-
 def _content_body_q_cm_for_frame(
     replay: _ansys_common.ReplayData,
     frame_index: int,
@@ -3849,350 +3737,6 @@ def _content_body_q_cm_for_frame(
         if len(values) > frame_index:
             content_q_cm[label] = values[frame_index].astype(np.float32).copy()
     return content_q_cm
-
-
-def _run_lsdyna_allow_failure(
-    deck_path: Path,
-    executable: Path,
-    job_dir: Path,
-    ncpu: int,
-    memory: str,
-) -> tuple[int, bool]:
-    """Run LS-DYNA and keep partial outputs even if the solve fails."""
-    executable = _ansys_common._ensure_lsdyna_executable(executable)
-    log_path = job_dir / "lsdyna.stdout.txt"
-    ncpu = min(int(ncpu), _ansys_common._STUDENT_MAX_CPU)
-    cmd = [
-        str(executable),
-        f"i={deck_path.name}",
-        f"ncpu={ncpu}",
-        f"memory={memory}",
-        "plabel=yes",
-    ]
-    env = _ansys_common.os.environ.copy()
-    env["LSTC_LICENSE"] = "ANSYS"
-    with log_path.open("w", encoding="utf-8") as log_file:
-        completed = _ansys_common.subprocess.run(
-            cmd,
-            cwd=job_dir,
-            check=False,
-            stdout=log_file,
-            stderr=_ansys_common.subprocess.STDOUT,
-            env=env,
-        )
-    normal_termination = _ansys_common._lsdyna_log_has_normal_termination(log_path)
-    return int(completed.returncode), bool(normal_termination)
-
-
-def _load_aligned_attempt_replay(
-    job_dir: Path,
-    deck: _ansys_common.DeckMetadata,
-    target_times_s: np.ndarray,
-    output_dt_s: float,
-    *,
-    hold_last: bool,
-) -> tuple[_ansys_common.ReplayData, _ansys_common.ReplayLoadDiagnostics | None]:
-    """Load one attempt and align it onto the requested replay frame times."""
-    if not any(job_dir.glob("d3plot*")):
-        return _empty_replay(deck), None
-
-    try:
-        raw_replay, diagnostics = _ansys_common._load_replay_data_with_diagnostics(
-            job_dir,
-            deck,
-            output_dt_s=output_dt_s,
-        )
-    except Exception:
-        if hold_last:
-            raise
-        return _empty_replay(deck), None
-
-    aligned_replay, _ = _ansys_common._resample_replay_data(
-        raw_replay,
-        target_times_s,
-        hold_last=hold_last,
-    )
-    return aligned_replay, diagnostics
-
-
-def _solve_with_rollback(
-    job_dir: Path,
-    shell_verts_cm: np.ndarray,
-    shell_faces: np.ndarray,
-    motion: _ansys_common.MotionSamples,
-    output_dt_s: float,
-    *,
-    small_pad: bool,
-    executable: Path,
-    ncpu: int,
-    memory: str,
-    base_tssfac: float,
-    max_retries: int,
-    backtrack_frames: int,
-    tssfac_scale: float,
-    min_tssfac: float,
-) -> tuple[
-    _ansys_common.DeckMetadata,
-    _ansys_common.ReplayData,
-    _ansys_common.ReplayLoadDiagnostics | None,
-    Path,
-]:
-    """Solve the lift example with approximate rollback retries."""
-    summary_path = _rollback_summary_path(job_dir)
-    target_times_s = motion.times_s.astype(np.float32).copy()
-    committed_replay: _ansys_common.ReplayData | None = None
-    restart_frame_index = 0
-    restart_bag_verts_cm = shell_verts_cm.astype(np.float32).copy()
-    restart_content_q_cm = _initial_lift_content_body_q_cm(
-        restart_bag_verts_cm
-    )
-    first_deck: _ansys_common.DeckMetadata | None = None
-    last_diagnostics: _ansys_common.ReplayLoadDiagnostics | None = None
-    last_attempt_dir: Path | None = None
-    latest_replay_frame_count = 0
-    rollback_summary: dict[str, object] = {
-        "status": "running",
-        "completed": False,
-        "job_dir": str(job_dir),
-        "summary_path": str(summary_path),
-        "target_frame_count": int(len(target_times_s)),
-        "output_dt_s": float(output_dt_s),
-        "base_tssfac": float(base_tssfac),
-        "tssfac_scale": float(tssfac_scale),
-        "min_tssfac": float(min_tssfac),
-        "max_retries": int(max_retries),
-        "backtrack_frames": int(backtrack_frames),
-        "attempt_count": 0,
-        "retry_event_count": 0,
-        "rollback_event_count": 0,
-        "final_replay_frame_count": 0,
-        "attempts": [],
-        "rollback_events": [],
-    }
-    _write_rollback_summary(summary_path, rollback_summary)
-
-    try:
-        for attempt_index in range(max_retries + 1):
-            attempt_dir = job_dir / f"attempt_{attempt_index:02d}"
-            attempt_dir.mkdir(parents=True, exist_ok=True)
-            _ansys_common._cleanup_lsdyna_outputs(attempt_dir)
-            last_attempt_dir = attempt_dir
-
-            tssfac = max(
-                float(min_tssfac),
-                float(base_tssfac) * (float(tssfac_scale) ** attempt_index),
-            )
-            had_committed_prefix = bool(
-                committed_replay is not None and len(committed_replay.times_s) > 0
-            )
-            attempt_record: dict[str, object] = {
-                "attempt_index": int(attempt_index),
-                "attempt_dir": attempt_dir.name,
-                "had_committed_prefix": had_committed_prefix,
-                "restart_frame_index": int(restart_frame_index),
-                "restart_frame_number": int(restart_frame_index + 1),
-                "restart_time_s": float(target_times_s[restart_frame_index]),
-                "tssfac": float(tssfac),
-            }
-            rollback_summary["attempts"].append(attempt_record)
-            rollback_summary["attempt_count"] = len(rollback_summary["attempts"])
-
-            retry_event: dict[str, object] | None = None
-            if attempt_index > 0:
-                retry_event = {
-                    "retry_index": int(attempt_index),
-                    "attempt_index": int(attempt_index),
-                    "attempt_dir": attempt_dir.name,
-                    "had_committed_prefix": had_committed_prefix,
-                    "retry_mode": (
-                        "rollback" if had_committed_prefix else "restart_from_start"
-                    ),
-                    "restart_frame_index": int(restart_frame_index),
-                    "restart_frame_number": int(restart_frame_index + 1),
-                    "restart_time_s": float(target_times_s[restart_frame_index]),
-                    "tssfac": float(tssfac),
-                }
-                rollback_summary["rollback_events"].append(retry_event)
-                rollback_summary["retry_event_count"] = len(
-                    rollback_summary["rollback_events"]
-                )
-                rollback_summary["rollback_event_count"] = sum(
-                    1
-                    for event in rollback_summary["rollback_events"]
-                    if isinstance(event, dict)
-                    and bool(event.get("had_committed_prefix", False))
-                )
-
-            _write_rollback_summary(summary_path, rollback_summary)
-
-            attempt_motion = _slice_motion_samples(motion, restart_frame_index)
-            attempt_parts = _build_shell_parts_from_state(
-                restart_bag_verts_cm,
-                shell_faces,
-                attempt_motion,
-                restart_content_q_cm,
-                small_pad=small_pad,
-            )
-            attempt_deck = _write_keyword_deck_friction(
-                attempt_dir / "input.k",
-                attempt_parts,
-                attempt_motion,
-                output_dt_s,
-                tssfac=tssfac,
-                content_part_initial_q_cm=restart_content_q_cm,
-            )
-            if first_deck is None:
-                first_deck = attempt_deck
-
-            if attempt_index == 0:
-                print(
-                    f"{_ansys_common._LOG_PREFIX} Rollback solve base TSSFAC={tssfac:.3f} "
-                    f"(max retries={max_retries}, "
-                    f"backtrack={backtrack_frames} frame(s))"
-                )
-            else:
-                print(
-                    f"{_ansys_common._LOG_PREFIX} Rollback retry "
-                    f"{attempt_index}/{max_retries}: restart frame "
-                    f"{restart_frame_index + 1}/{len(target_times_s)} at "
-                    f"t={target_times_s[restart_frame_index]:.3f}s "
-                    f"with TSSFAC={tssfac:.3f}"
-                )
-
-            return_code, normal_termination = _run_lsdyna_allow_failure(
-                deck_path=attempt_deck.deck_path,
-                executable=executable,
-                job_dir=attempt_dir,
-                ncpu=ncpu,
-                memory=memory,
-            )
-            attempt_replay, last_diagnostics = _load_aligned_attempt_replay(
-                attempt_dir,
-                attempt_deck,
-                target_times_s[restart_frame_index:]
-                - target_times_s[restart_frame_index],
-                output_dt_s,
-                hold_last=bool(return_code == 0 or normal_termination),
-            )
-            full_replay = _merge_aligned_replays(
-                committed_replay,
-                attempt_replay,
-                time_offset_s=float(target_times_s[restart_frame_index]),
-            )
-            latest_replay_frame_count = int(len(full_replay.times_s))
-            attempt_record["return_code"] = int(return_code)
-            attempt_record["normal_termination"] = bool(normal_termination)
-            attempt_record["aligned_frame_count"] = int(len(attempt_replay.times_s))
-            attempt_record["merged_frame_count_after_attempt"] = (
-                latest_replay_frame_count
-            )
-            attempt_record["completed_full_replay"] = bool(
-                latest_replay_frame_count == len(target_times_s)
-            )
-            rollback_summary["final_replay_frame_count"] = latest_replay_frame_count
-            if retry_event is not None:
-                retry_event["return_code"] = int(return_code)
-                retry_event["normal_termination"] = bool(normal_termination)
-                retry_event["aligned_frame_count"] = int(len(attempt_replay.times_s))
-                retry_event["merged_frame_count_after_attempt"] = (
-                    latest_replay_frame_count
-                )
-
-            if len(full_replay.times_s) == len(target_times_s):
-                if attempt_index > 0:
-                    print(
-                        f"{_ansys_common._LOG_PREFIX} Rollback retry "
-                        f"{attempt_index} completed the full replay window."
-                    )
-                rollback_summary["status"] = "completed"
-                rollback_summary["completed"] = True
-                _finalize_rollback_summary_ranges(rollback_summary)
-                _write_rollback_summary(summary_path, rollback_summary)
-                return (
-                    first_deck or attempt_deck,
-                    full_replay,
-                    last_diagnostics,
-                    summary_path,
-                )
-
-            if attempt_index >= max_retries:
-                if last_attempt_dir is None:
-                    raise RuntimeError(
-                        "LS-DYNA produced no rollback attempt directory."
-                    )
-                rollback_summary["status"] = "failed"
-                rollback_summary["completed"] = False
-                rollback_summary["error"] = (
-                    "LS-DYNA rollback retries exhausted."
-                )
-                _finalize_rollback_summary_ranges(rollback_summary)
-                _write_rollback_summary(summary_path, rollback_summary)
-                raise RuntimeError(
-                    "LS-DYNA rollback retries exhausted. "
-                    f"{_ansys_common._lsdyna_debug_hint(last_attempt_dir)}"
-                )
-
-            if len(full_replay.times_s) == 0:
-                print(
-                    f"{_ansys_common._LOG_PREFIX} Attempt {attempt_index} produced no "
-                    "usable replay frames; retrying from the start with a "
-                    "smaller TSSFAC."
-                )
-                attempt_record["retry_from_start"] = True
-                committed_replay = None
-                restart_frame_index = 0
-                restart_bag_verts_cm = shell_verts_cm.astype(np.float32).copy()
-                restart_content_q_cm = _initial_lift_content_body_q_cm(
-                    restart_bag_verts_cm
-                )
-                _write_rollback_summary(summary_path, rollback_summary)
-                continue
-
-            restart_frame_index = max(
-                0,
-                len(full_replay.times_s) - 1 - int(backtrack_frames),
-            )
-            attempt_record["scheduled_next_restart_frame_index"] = int(
-                restart_frame_index
-            )
-            attempt_record["scheduled_next_restart_frame_number"] = int(
-                restart_frame_index + 1
-            )
-            attempt_record["scheduled_next_restart_time_s"] = float(
-                target_times_s[restart_frame_index]
-            )
-            committed_replay = _truncate_replay(
-                full_replay,
-                restart_frame_index + 1,
-            )
-            restart_bag_verts_cm = (
-                committed_replay.bag_points_m[-1] * 100.0
-            ).astype(np.float32)
-            restart_content_q_cm = _content_body_q_cm_for_frame(
-                committed_replay,
-                len(committed_replay.times_s) - 1,
-                restart_bag_verts_cm,
-            )
-            _write_rollback_summary(summary_path, rollback_summary)
-    except Exception as exc:
-        if rollback_summary.get("status") != "completed":
-            rollback_summary["status"] = "failed"
-            rollback_summary["completed"] = False
-            rollback_summary["final_replay_frame_count"] = int(
-                latest_replay_frame_count
-            )
-            rollback_summary["error"] = str(exc)
-            _finalize_rollback_summary_ranges(rollback_summary)
-            _write_rollback_summary(summary_path, rollback_summary)
-        raise
-
-    rollback_summary["status"] = "failed"
-    rollback_summary["completed"] = False
-    rollback_summary["error"] = "Rollback solve loop terminated unexpectedly."
-    rollback_summary["final_replay_frame_count"] = int(latest_replay_frame_count)
-    _finalize_rollback_summary_ranges(rollback_summary)
-    _write_rollback_summary(summary_path, rollback_summary)
-    raise RuntimeError("Rollback solve loop terminated unexpectedly.")
 
 
 class Example(_ansys_common.Example):

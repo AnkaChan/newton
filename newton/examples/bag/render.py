@@ -30,7 +30,7 @@ def render_bag_meshes(
     proxy_indices: Any,
     render_proxy_overlay: Callable[[bool], None] | None = None,
 ) -> None:
-    """Render the hi-res bag or proxy from viewer cloth/collision flags."""
+    """Render the hi-res bag or proxy from viewer collision/cloth flags."""
     proxy_mode = bool(
         getattr(viewer, "show_collision", False)
         or getattr(viewer, "show_triangles", False)
