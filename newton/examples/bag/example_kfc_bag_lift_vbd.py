@@ -117,13 +117,13 @@ _SOFT_CONTACT_MU = 2.0   # raise particle-side friction so finger pad mu matters
 # ── Contact stiffness (CGS) ──────────────────────────────────────────────────
 # VBD averages particle-side (soft_contact_ke) with shape-side (shape_material_ke):
 #   effective ke = 0.5 * (soft_contact_ke + shape_material_ke[shape])
-# No drop-impact constraint here, so the lift example keeps a high contact ke.
+# Match the drop example's ground contact tuning.
 #   cloth-object: 0.5*(5e3 + 495e3) = 250 000
 #                 → supports the light debug payload
-#   cloth-ground: 0.5*(5e3 + 5e4)   =  27 500  → adequate static support
+#   cloth-ground: 0.5*(5e3 + 1e3)   =   3 000
 _CONTACT_KE      = 5.0e3   # soft_contact_ke (particle-side)
 _OBJ_SHAPE_KE    = 4.95e5  # shape_material_ke for food-item rigid bodies
-_GROUND_SHAPE_KE = 5.0e4   # shape_material_ke for ground plane
+_GROUND_SHAPE_KE = 1.0e3   # shape_material_ke for ground plane
 
 # ── Solver ───────────────────────────────────────────────────────────────────
 _SIM_SUBSTEPS = 80
@@ -477,7 +477,7 @@ class Example:
 
         # Ground plane
         ground_cfg = newton.ModelBuilder.ShapeConfig(
-            ke=_GROUND_SHAPE_KE, kd=_GROUND_SHAPE_KE * 1e-5, mu=0.4)
+            ke=_GROUND_SHAPE_KE, kd=0.1, mu=0.4)
         builder.add_ground_plane(cfg=ground_cfg)
 
         builder.color(include_bending=True)
@@ -492,7 +492,7 @@ class Example:
 
         # Shape materials: per-shape ke so effective contact stiffness is:
         #   cloth–object: 0.5*(5e3 + 495e3) = 250 000  → supports contact-only debug payload
-        #   cloth–ground: 0.5*(5e3 + 5e4)   =  27 500  → adequate support
+        #   cloth–ground: 0.5*(5e3 + 1e3)   =   3 000
         n_shapes = self.model.shape_material_ke.numpy().shape[0]
         ke_arr = self.model.shape_material_ke.numpy().copy()
         kd_arr = self.model.shape_material_kd.numpy().copy()
@@ -504,7 +504,7 @@ class Example:
             if int(shape_body_np[s]) in _gripper_contact_body_set:
                 mu_arr[s] = _FINGER_SHAPE_MU
         ke_arr[n_shapes - 1] = _GROUND_SHAPE_KE
-        kd_arr[n_shapes - 1] = _GROUND_SHAPE_KE * 1e-5
+        kd_arr[n_shapes - 1] = 0.1
         self.model.shape_material_ke = wp.array(ke_arr, dtype=float)
         self.model.shape_material_kd = wp.array(kd_arr, dtype=float)
         self.model.shape_material_mu = wp.array(mu_arr, dtype=float)

@@ -520,7 +520,7 @@ class Example:
         # the shape-side shape_material_ke to get the effective contact stiffness.
         self.model.soft_contact_ke = _CONTACT_KE
         self.model.soft_contact_kd = _CONTACT_KE * 1e-4
-        self.model.soft_contact_mu = 0.5
+        self.model.soft_contact_mu = 2.0
 
         # Shape materials: set per-shape ke/kd.
         # Content shapes (sphere, box, capsule) are the first n_shapes - _n_ground_shapes.
@@ -613,7 +613,7 @@ class Example:
         # Soft bag uses a much higher rigid_contact_k_start so that the AVBD
         # penalty is already large enough to stop 1000 g objects on the first
         # contact substep, avoiding the explosive deep-penetration instability.
-        _rigid_k = _SOFT_RIGID_K_START if self.soft_bag else 1.0e3
+        _rigid_k = _SOFT_RIGID_K_START if self.soft_bag else _OBJ_SHAPE_KE
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
             iterations=_VBD_ITERS,
