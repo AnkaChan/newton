@@ -24,7 +24,7 @@ PPF-CTS, and LS-DYNA backends.
 Start here, use "--capture-frames 3" instead for smoke test:
 
 ```bash
-uv run -m newton.examples kfc_bag_drop_vbd --capture-replay --capture-frames 200
+uv run -m newton.examples kfc_bag_drop_vbd --capture-replay --capture-frames 150
 uv run -m newton.examples kfc_bag_lift_vbd --capture-replay --capture-frames 240
 uv run -m newton.examples kfc_bag_lift_ppfcs --capture-replay --capture-frames 240 --small-pad
 uv run -m newton.examples kfc_bag_lift_ansys --capture-replay --capture-frames 240 --small-pad
