@@ -2219,6 +2219,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -2257,6 +2258,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                shape_margin,
                 dt,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
@@ -2722,6 +2724,7 @@ def accumulate_particle_body_contact_force_and_hessian(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -2760,6 +2763,7 @@ def accumulate_particle_body_contact_force_and_hessian(
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                shape_margin,
                 dt,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
@@ -3105,6 +3109,7 @@ def accumulate_contact_force_and_hessian(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -3256,6 +3261,7 @@ def accumulate_contact_force_and_hessian(
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                shape_margin,
                 dt,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
