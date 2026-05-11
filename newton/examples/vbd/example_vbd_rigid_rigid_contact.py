@@ -43,8 +43,10 @@ PARAMS = {
     "container_kd": 1e-3,
     "container_mu": 0.8,
     "gravity": -9.8,
+    "initial_paused": False,
     "body_drop_offset": 0.08,
     "body_drop_spacing": 0.05,
+    "rigid_body_contact_buffer_size": 256,
 }
 
 
@@ -194,6 +196,7 @@ def setup_sim(builder, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
+        rigid_body_contact_buffer_size=params["rigid_body_contact_buffer_size"],
     )
 
     return model, solver
@@ -224,7 +227,7 @@ class Example:
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = True
         if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = True
+            self.viewer._paused = self.params["initial_paused"]
         if hasattr(self.viewer, "set_camera"):
             self.viewer.set_camera(wp.vec3(0.35, -0.35, 0.55), -25.0, 135.0)
 

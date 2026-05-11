@@ -56,8 +56,9 @@ PARAMS = {
     "soft_contact_kd": 1e-3,
     "soft_contact_mu": 0.8,
     "gravity": -9.8,
+    "initial_paused": False,
     "body_drop_offset": 0.04,
-    "rigid_body_particle_contact_buffer_size": 512,
+    "rigid_body_particle_contact_buffer_size": 1024,
     "particle_self_contact_radius_scale": 1.0,
     "particle_self_contact_margin_scale": 2.0,
     "particle_topological_contact_filter_threshold": 3,
@@ -326,7 +327,7 @@ class Example:
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = True
         if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = True
+            self.viewer._paused = self.params["initial_paused"]
         if hasattr(self.viewer, "set_camera"):
             self.viewer.set_camera(wp.vec3(0.0, -0.8, 0.6), -20.0, 90.0)
 
