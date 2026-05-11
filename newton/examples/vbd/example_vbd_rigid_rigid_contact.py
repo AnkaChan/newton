@@ -24,11 +24,11 @@ import newton.examples
 
 PARAMS = {
     "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
-    "shape_size": 0.012,
+    "shape_size": 0.042,
     "shape_margin": 0.005,
-    "box_width": 0.12,
-    "box_depth": 0.12,
-    "box_height": 0.06,
+    "box_width_scale": 10.0,
+    "box_depth_scale": 10.0,
+    "box_height_scale": 5.0,
     "box_elevation": 0.30,
     "box_wall_thickness": 0.005,
     "fps": 60,
@@ -43,9 +43,9 @@ PARAMS = {
     "container_kd": 1e-3,
     "container_mu": 0.8,
     "gravity": -9.8,
-    "initial_paused": False,
-    "body_drop_offset": 0.08,
-    "body_drop_spacing": 0.05,
+    "initial_paused": True,
+    "body_drop_offset_scale": 4.0,
+    "body_drop_spacing_scale": 3.0,
     "rigid_body_contact_buffer_size": 256,
 }
 
@@ -69,9 +69,10 @@ def _load_bear_mesh(target_size):
 def build_model(builder, params, seed=42):
     rng = np.random.default_rng(seed)
 
-    hx = params["box_width"] / 2
-    hy = params["box_depth"] / 2
-    hz = params["box_height"]
+    r = params["shape_size"]
+    hx = r * params["box_width_scale"] / 2
+    hy = r * params["box_depth_scale"] / 2
+    hz = r * params["box_height_scale"]
     elev = params["box_elevation"]
     t = params["box_wall_thickness"]
 
@@ -128,7 +129,6 @@ def build_model(builder, params, seed=42):
     )
 
     # Rigid bodies
-    r = params["shape_size"]
     margin = params["shape_margin"]
     interior_x = hx - r - margin * 2
     interior_y = hy - r - margin * 2
@@ -162,7 +162,7 @@ def build_model(builder, params, seed=42):
 
     for i, name in enumerate(shape_names):
         px, py = positions[i]
-        drop_z = elev + params["body_drop_offset"] + i * params["body_drop_spacing"]
+        drop_z = elev + r * params["body_drop_offset_scale"] + i * r * params["body_drop_spacing_scale"]
 
         body = builder.add_body(xform=wp.transform(wp.vec3(px, py, drop_z), wp.quat_identity()))
         body_indices.append(body)
