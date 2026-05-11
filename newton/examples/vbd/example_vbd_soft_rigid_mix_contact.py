@@ -24,15 +24,15 @@ import newton.examples
 from newton import ParticleFlags
 
 PARAMS = {
-    # "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
-    "shape_names": [
-        # "mesh",
-        # "cone",
-        # "sphere",
-        "box",
-        "capsule",
-        "cylinder",
-    ],
+    "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
+    # "shape_names": [
+    #     # "mesh",
+    #     # "cone",
+    #     # "sphere",
+    #     "box",
+    #     "capsule",
+    #     "cylinder",
+    # ],
     "shape_size": 0.012,
     "shape_margin": 0.005,
     "soft_contact_creation_margin": 0.01,
@@ -351,7 +351,7 @@ class Example:
         if hasattr(self.viewer, "_paused"):
             self.viewer._paused = True
         if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(wp.vec3(1.93, -1.51, 1.26), -15.9, 137.9)
+            self.viewer.set_camera(wp.vec3(0.41, -0.72, 0.54), -5.3, 121.5)
 
     def simulate(self):
         dz = 0.0
