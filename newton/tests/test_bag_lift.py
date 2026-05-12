@@ -15,6 +15,7 @@
 ###########################################################################
 
 import os
+import time
 import unittest
 
 import numpy as np
@@ -153,9 +154,7 @@ def lift_pinned_vertices(
 def build_model(builder, seed=42):
     rng = np.random.default_rng(seed)
 
-    bag_verts, bag_faces = _generate_box_bag(
-        BAG_WIDTH / 2, BAG_DEPTH / 2, BAG_HEIGHT, BAG_RES, BAG_ELEVATION
-    )
+    bag_verts, bag_faces = _generate_box_bag(BAG_WIDTH / 2, BAG_DEPTH / 2, BAG_HEIGHT, BAG_RES, BAG_ELEVATION)
 
     particle_radius = 0.003
     bag_start_particle = len(builder.particle_q)
@@ -200,10 +199,7 @@ def build_model(builder, seed=42):
             for _ in range(200):
                 x = rng.uniform(-interior_x, interior_x)
                 y = rng.uniform(-interior_y, interior_y)
-                ok = all(
-                    np.sqrt((x - px) ** 2 + (y - py) ** 2) >= r * 2
-                    for px, py in positions
-                )
+                ok = all(np.sqrt((x - px) ** 2 + (y - py) ** 2) >= r * 2 for px, py in positions)
                 if ok:
                     positions.append((x, y))
                     break
@@ -222,9 +218,7 @@ def build_model(builder, seed=42):
         px, py = positions[i]
         drop_z = BAG_ELEVATION + 0.04 + i * 0.03
 
-        body = builder.add_body(
-            xform=wp.transform(wp.vec3(px, py, drop_z), wp.quat_identity())
-        )
+        body = builder.add_body(xform=wp.transform(wp.vec3(px, py, drop_z), wp.quat_identity()))
         body_indices.append(body)
         shape_idx = len(builder.shape_type)
 
@@ -290,9 +284,7 @@ def setup_sim(builder, info):
         particle_topological_contact_filter_threshold=1,
     )
 
-    pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=pr + MESH_MARGIN + 0.01
-    )
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=pr + MESH_MARGIN + 0.01)
 
     return model, solver, pipeline, pinned_indices, pinned_original
 
@@ -312,8 +304,8 @@ class Example:
         print("Building model...", flush=True)
         self.info = build_model(builder, seed=seed)
         print("Setting up solver...", flush=True)
-        self.model, self.solver, self.pipeline, self.pinned_indices, self.pinned_original = (
-            setup_sim(builder, self.info)
+        self.model, self.solver, self.pipeline, self.pinned_indices, self.pinned_original = setup_sim(
+            builder, self.info
         )
         print("Ready.", flush=True)
 
@@ -333,6 +325,7 @@ class Example:
         if self.frame > SETTLE_FRAMES:
             dz = LIFT_SPEED * (self.frame - SETTLE_FRAMES) * self.frame_dt
 
+        t0 = time.perf_counter()
         for _ in range(self.sim_substeps):
             wp.launch(
                 lift_pinned_vertices,
@@ -342,10 +335,11 @@ class Example:
             )
             self.state_0.clear_forces()
             self.pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(
-                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt
-            )
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
+        wp.synchronize()
+        step_ms = (time.perf_counter() - t0) * 1000.0
+        print(f"frame {self.frame:4d}  step {step_ms:7.1f} ms", flush=True)
 
         self.sim_time += self.frame_dt
 
@@ -393,8 +387,8 @@ class BagLiftSim:
         with wp.ScopedDevice(device):
             builder = newton.ModelBuilder(gravity=-9.8)
             self.info = build_model(builder, seed=42)
-            self.model, self.solver, self.pipeline, self.pinned_indices, self.pinned_original = (
-                setup_sim(builder, self.info)
+            self.model, self.solver, self.pipeline, self.pinned_indices, self.pinned_original = setup_sim(
+                builder, self.info
             )
             self.state_0 = self.model.state()
             self.state_1 = self.model.state()

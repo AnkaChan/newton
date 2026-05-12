@@ -24,7 +24,14 @@ import newton.examples
 from newton import ParticleFlags
 
 PARAMS = {
-    "shape_names": ["mesh", "cone", "sphere", "box", "capsule", "cylinder"],
+    "shape_names": [
+        "mesh",
+        "cone",
+        "sphere",
+        "box",
+        # "capsule",
+        "cylinder",
+    ],
     # "shape_names": [
     #     # "mesh",
     #     # "cone",
@@ -33,7 +40,7 @@ PARAMS = {
     #     "capsule",
     #     "cylinder",
     # ],
-    "shape_size": 0.012,
+    "shape_size": 0.02,
     "shape_margin": 0.005,
     "soft_contact_creation_margin": 0.01,
     "bag_width": 0.12,
@@ -55,10 +62,10 @@ PARAMS = {
     "cloth_edge_ke": 50.0,
     "cloth_edge_kd": 1e-2,
     "shape_density": 100.0,
-    "shape_ke": 1e5,
+    "shape_ke": 1e3,
     "shape_kd": 1e-4,
     "shape_mu": 0.5,
-    "soft_contact_ke": 1e5,
+    "soft_contact_ke": 1e3,
     "soft_contact_kd": 1e-3,
     "soft_contact_mu": 0.8,
     "gravity": -9.8,

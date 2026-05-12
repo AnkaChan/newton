@@ -36,11 +36,11 @@ PARAMS = {
     "solver_iterations": 15,
     "settle_frames": 300,
     "shape_density": 100.0,
-    "shape_ke": 1e5,
-    "shape_kd": 1e-4,
+    "shape_ke": 1e3,
+    "shape_kd": 0,
     "shape_mu": 0.5,
-    "container_ke": 1e6,
-    "container_kd": 1e-3,
+    "container_ke": 1e3,
+    "container_kd": 0,
     "container_mu": 0.8,
     "gravity": -9.8,
     "initial_paused": True,
@@ -197,6 +197,7 @@ def setup_sim(builder, params):
         model=model,
         iterations=params["solver_iterations"],
         rigid_body_contact_buffer_size=params["rigid_body_contact_buffer_size"],
+        # rigid_contact_hard=False,
     )
 
     return model, solver
