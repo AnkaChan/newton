@@ -2,22 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example VBD Bag Plasticity
+# Example VBD Bag Franka Pickup
 #
 # A Franka FR3 arm grasps the open top of a lunch-bag-sized VBD cloth bag
-# with bending plasticity, briefly clamps it, and releases it immediately.
-# Plastic deformation is implemented by updating the cloth edge rest angles.
+# containing rigid bodies, then lifts and waves it. The gripper closes around
+# the bag rim but keeps a 0.003 m total finger gap.
 #
-# Command: python -m newton.examples vbd_bag_plasticity
+# Command: python -m newton.examples vbd_bag_franka_pickup
 #
 ###########################################################################
 
 from __future__ import annotations
 
 import copy
+import os
 
 import numpy as np
 import warp as wp
+from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
@@ -25,6 +27,12 @@ import newton.ik as ik
 import newton.utils
 
 PARAMS = {
+    "shape_names": [
+        # "mesh", "cone", "sphere", "box", "capsule", "cylinder"
+    ],
+    "shape_size": 0.03,
+    "shape_margin": 0.005,
+    "shape_clearance_scale": 0.9,
     "soft_contact_creation_margin": 0.012,
     "ground_size": 0.80,
     "ground_thickness": 0.01,
@@ -36,19 +44,23 @@ PARAMS = {
     "vertical_axis": 2,
     "particle_radius": 0.004,
     "fps": 60,
-    "settle_frames": 220,
-    "sim_substeps": 10,
-    "solver_iterations": 10,
+    "settle_frames": 420,
+    "sim_substeps": 20,
+    "solver_iterations": 5,
     "cloth_density": 0.08,
-    "cloth_tri_ke": 1e4,
-    "cloth_tri_ka": 1e4,
-    "cloth_tri_kd": 1e1,
-    "cloth_edge_ke": 60.0,
-    "cloth_edge_kd": 6e-2,
+    "cloth_tri_ke": 5e6,
+    "cloth_tri_ka": 1e6,
+    "cloth_tri_kd": 5e2,
+    "cloth_edge_ke": 200.0,
+    "cloth_edge_kd": 2e-1,
+    "shape_density": 1000.0,
+    "shape_ke": 5.0e5,
+    "shape_kd": 5.0e1,
+    "shape_mu": 0.5,
     "ground_ke": 1.0e5,
     "ground_kd": 1.0e2,
     "ground_mu": 0.9,
-    "soft_contact_ke": 5.0e4,
+    "soft_contact_ke": 5.0e5,
     "soft_contact_kd": 5.0e1,
     "soft_contact_mu": 0.5,
     "gravity": -9.8,
@@ -58,15 +70,17 @@ PARAMS = {
     "initial_waypoint": 0,
     "initial_waypoint_time": 0.0,
     "initial_gripper_frac": 0.0,
+    "seed": 42,
     "draw_wireframe": False,
     "camera_pos": (0.98, -1.38, 0.80),
     "camera_fov": 45.0,
     "camera_pitch": -16.9,
     "camera_yaw": 128.5,
+    "body_drop_offset": 0.06,
     "rigid_body_particle_contact_buffer_size": 2048,
     "rigid_body_contact_buffer_size": 512,
     "integrate_with_external_rigid_solver": False,
-    "particle_enable_self_contact": True,
+    "particle_enable_self_contact": False,
     "particle_self_contact_radius_scale": 1.0,
     "particle_self_contact_margin_scale": 2.0,
     "particle_topological_contact_filter_threshold": 3,
@@ -80,10 +94,14 @@ PARAMS = {
     "cloth_scale": 1.0,
     "cloth_vel": (0.0, 0.0, 0.0),
     "top_pin_tolerance": 0.001,
+    "shape_label_prefix": "bag_contents_",
+    "shape_center_spacing_radius_scale": 2.0,
+    "capsule_radius_scale": 0.7,
+    "cylinder_half_height_scale": 0.5,
     "ground_tolerance_particle_radius_scale": 3.0,
     "finger_shape_mu": 3.0,
-    "finger_shape_ke": 1.0e5,
-    "finger_shape_kd": 1.0e2,
+    "finger_shape_ke": 1.0e6,
+    "finger_shape_kd": 1.0e3,
     "finger_pad_density": 1.0,
     "finger_pad_half_width_scale": 0.5,
     "finger_pad_half_thickness": 0.0075,
@@ -116,10 +134,16 @@ PARAMS = {
     "ee_link_offset": (0.0, 0.0, 0.0),
     "grasp_xy": (0.0, 0.0),
     "grab_clearance": 0.09,
+    "lift_height": 0.62,
     "close_duration": 0.6,
-    "release_duration": 0.3,
-    "retreat_duration": 1.2,
-    "retreat_height": 0.58,
+    "pinch_duration": 0.25,
+    "lift_duration": 2.8,
+    "wave_axis": 0,
+    "wave_offset": 0.08,
+    "wave_start_duration": 0.5,
+    "wave_sweep_duration": 0.7,
+    "wave_return_duration": 0.5,
+    "hold_duration": 1.0,
     "waypoint_interp_max": 1.0,
     "tool_rotation_axis": (1.0, 0.0, 0.0),
     "tool_rotation_angle": np.pi,
@@ -130,14 +154,6 @@ PARAMS = {
     "ik_iterations": 24,
     "pregrasp_ik_iterations": 48,
     "enable_ik_cuda_graph": True,
-    "plasticity_enabled": True,
-    "plasticity_yield_angle": 0.03,
-    "plasticity_rate": 0.35,
-    "plasticity_max_rest_delta": 1.4,
-    "plasticity_start_waypoint": 0,
-    "plasticity_end_waypoint": 2,
-    "plasticity_min_test_frames": 80,
-    "plasticity_min_rest_change": 1.0e-4,
     "gripper_gap_test_tolerance": 1.0e-8,
 }
 
@@ -216,7 +232,53 @@ def _generate_box_bag(half_x, half_y, height, res, z_base):
     return np.array(vertices, dtype=np.float32), faces
 
 
-def build_model(builder, params):
+def _load_bear_mesh(target_size):
+    bear_path = os.path.join(newton.examples.get_asset_directory(), "bear.usd")
+    stage = Usd.Stage.Open(bear_path)
+    geom = UsdGeom.Mesh(stage.GetPrimAtPath("/root/bear/bear"))
+
+    points = np.array(geom.GetPointsAttr().Get(), dtype=np.float32)
+    indices = np.array(geom.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
+
+    center = (points.max(axis=0) + points.min(axis=0)) / 2.0
+    points -= center
+    extent = (points.max(axis=0) - points.min(axis=0)).max()
+    points *= (target_size * 2.0) / extent
+
+    return points, indices.tolist()
+
+
+def _generate_stacked_positions(count, half_x, half_y, z_bottom, z_top, min_spacing, rng):
+    """Generate centered XYZ positions with at least min_spacing between centers."""
+    cols = int(np.floor((half_x * 2.0) / min_spacing)) + 1
+    rows = int(np.floor((half_y * 2.0) / min_spacing)) + 1
+    cols = max(cols, 1)
+    rows = max(rows, 1)
+
+    xs = (np.arange(cols, dtype=np.float32) - (cols - 1) * 0.5) * min_spacing
+    ys = (np.arange(rows, dtype=np.float32) - (rows - 1) * 0.5) * min_spacing
+    layer_xy = [(float(x), float(y)) for y in ys for x in xs]
+    per_layer = len(layer_xy)
+    layers = int(np.ceil(count / per_layer))
+
+    if z_bottom + (layers - 1) * min_spacing > z_top:
+        raise ValueError(f"Bag is too short for {count} shapes with {min_spacing:.3f} m center spacing")
+
+    positions = []
+    for layer in range(layers):
+        shuffled_xy = list(layer_xy)
+        rng.shuffle(shuffled_xy)
+        z = z_bottom + layer * min_spacing
+        for x, y in shuffled_xy:
+            positions.append((x, y, z))
+            if len(positions) == count:
+                return positions
+
+    return positions
+
+
+def build_model(builder, params, seed=PARAMS["seed"]):
+    rng = np.random.default_rng(seed)
 
     ground_cfg = newton.ModelBuilder.ShapeConfig()
     ground_cfg.ke = params["ground_ke"]
@@ -268,11 +330,70 @@ def build_model(builder, params):
     top_mask = np.abs(bag_verts[:, params["vertical_axis"]] - z_top) < params["top_pin_tolerance"]
     top_global_indices = np.where(top_mask)[0] + bag_start_particle
 
+    r = params["shape_size"]
+    margin = params["shape_margin"]
+    interior_x = params["bag_size_x"] / 2 - r - margin * 2
+    interior_y = params["bag_size_y"] / 2 - r - margin * 2
+    z_bottom = params["bag_floor_height"] + params["body_drop_offset"]
+    z_top_inside = params["bag_floor_height"] + params["bag_size_z"] - r - margin
+    body_indices = []
+    shape_indices = []
+
+    shape_names = params["shape_names"]
+    min_spacing = r * (params["shape_center_spacing_radius_scale"] + params["shape_clearance_scale"])
+    positions = _generate_stacked_positions(
+        len(shape_names),
+        interior_x,
+        interior_y,
+        z_bottom,
+        z_top_inside,
+        min_spacing,
+        rng,
+    )
+
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.density = params["shape_density"]
+    cfg.ke = params["shape_ke"]
+    cfg.kd = params["shape_kd"]
+    cfg.mu = params["shape_mu"]
+    cfg.has_particle_collision = True
+    cfg.margin = margin
+
+    bear_mesh = None
+    for i, name in enumerate(shape_names):
+        px, py, pz = positions[i]
+
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(px, py, pz), wp.quat_identity()),
+            label=f"{params['shape_label_prefix']}{name}",
+        )
+        body_indices.append(body)
+        shape_idx = len(builder.shape_type)
+
+        if name == "sphere":
+            builder.add_shape_sphere(body, radius=r, cfg=cfg)
+        elif name == "box":
+            builder.add_shape_box(body, hx=r, hy=r, hz=r, cfg=cfg)
+        elif name == "capsule":
+            builder.add_shape_capsule(body, radius=r * params["capsule_radius_scale"], half_height=r, cfg=cfg)
+        elif name == "cylinder":
+            builder.add_shape_cylinder(body, radius=r, half_height=r * params["cylinder_half_height_scale"], cfg=cfg)
+        elif name == "cone":
+            builder.add_shape_cone(body, radius=r, half_height=r, cfg=cfg)
+        elif name == "mesh":
+            if bear_mesh is None:
+                bear_pts, bear_idx = _load_bear_mesh(r)
+                bear_mesh = newton.Mesh(bear_pts, np.array(bear_idx, dtype=np.int32))
+            builder.add_shape_mesh(body, mesh=bear_mesh, cfg=cfg)
+        shape_indices.append(shape_idx)
+
     builder.color(include_bending=True)
 
     return {
         "bag_particle_count": bag_end_particle - bag_start_particle,
         "top_global_indices": top_global_indices,
+        "body_indices": body_indices,
+        "shape_indices": shape_indices,
         "particle_radius": pr,
     }
 
@@ -281,42 +402,10 @@ def _quat_to_vec4(q: wp.quat) -> wp.vec4:
     return wp.vec4(q[0], q[1], q[2], q[3])
 
 
-def _wrap_angle_delta(delta: np.ndarray) -> np.ndarray:
-    return (delta + np.pi) % (2.0 * np.pi) - np.pi
-
-
-def _compute_edge_angles(edge_indices: np.ndarray, particle_q: np.ndarray) -> np.ndarray:
-    angles = np.zeros(edge_indices.shape[0], dtype=np.float32)
-    valid = (edge_indices[:, 0] != -1) & (edge_indices[:, 1] != -1)
-    if not np.any(valid):
-        return angles
-
-    valid_indices = edge_indices[valid]
-    x0 = particle_q[valid_indices[:, 0]]
-    x1 = particle_q[valid_indices[:, 1]]
-    x2 = particle_q[valid_indices[:, 2]]
-    x3 = particle_q[valid_indices[:, 3]]
-
-    n1 = np.cross(x2 - x0, x3 - x0)
-    n2 = np.cross(x3 - x1, x2 - x1)
-    edge = x3 - x2
-
-    n1_norm = np.linalg.norm(n1, axis=1)
-    n2_norm = np.linalg.norm(n2, axis=1)
-    edge_norm = np.linalg.norm(edge, axis=1)
-    nondegenerate = (n1_norm > 1.0e-8) & (n2_norm > 1.0e-8) & (edge_norm > 1.0e-8)
-
-    valid_angles = np.zeros(valid_indices.shape[0], dtype=np.float32)
-    if np.any(nondegenerate):
-        n1_hat = n1[nondegenerate] / n1_norm[nondegenerate, None]
-        n2_hat = n2[nondegenerate] / n2_norm[nondegenerate, None]
-        edge_hat = edge[nondegenerate] / edge_norm[nondegenerate, None]
-        cos_theta = np.clip(np.sum(n1_hat * n2_hat, axis=1), -1.0, 1.0)
-        sin_theta = np.sum(np.cross(n1_hat, n2_hat) * edge_hat, axis=1)
-        valid_angles[nondegenerate] = np.arctan2(sin_theta, cos_theta)
-
-    angles[valid] = valid_angles
-    return angles
+def _vec_with_axis_offset(pos: wp.vec3, axis: int, offset: float) -> wp.vec3:
+    values = [pos[0], pos[1], pos[2]]
+    values[axis] += offset
+    return wp.vec3(*values)
 
 
 class Example:
@@ -332,21 +421,19 @@ class Example:
         self._current_waypoint = self.params["initial_waypoint"]
         self._time_in_waypoint = self.params["initial_waypoint_time"]
         self._gripper_frac = self.params["initial_gripper_frac"]
+        self._content_body_q_save: np.ndarray | None = None
 
+        seed = getattr(args, "seed", self.params["seed"])
         builder = newton.ModelBuilder(gravity=self.params["gravity"])
 
         self._add_robot(builder)
-        self.info = build_model(builder, self.params)
+        self.info = build_model(builder, self.params, seed=seed)
+        self._content_body_indices = np.array(self.info["body_indices"], dtype=np.int32)
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = self.params["soft_contact_ke"]
         self.model.soft_contact_kd = self.params["soft_contact_kd"]
         self.model.soft_contact_mu = self.params["soft_contact_mu"]
-        self._edge_indices = self.model.edge_indices.numpy()
-        self._plastic_edge_mask = (self._edge_indices[:, 0] != -1) & (self._edge_indices[:, 1] != -1)
-        self._edge_rest_angle_initial = self.model.edge_rest_angle.numpy().copy()
-        self._edge_rest_angle_host = self._edge_rest_angle_initial.copy()
-        self._max_plastic_rest_change = 0.0
 
         self._configure_robot_contacts()
         self._make_robot_kinematic()
@@ -548,12 +635,19 @@ class Example:
         bag_top = self.params["bag_floor_height"] + self.params["bag_size_z"]
         grasp_x, grasp_y = self.params["grasp_xy"]
         grab_pos = wp.vec3(grasp_x, grasp_y, bag_top + self.params["grab_clearance"])
-        retreat_pos = wp.vec3(grasp_x, grasp_y, self.params["retreat_height"])
+        lift_pos = wp.vec3(grasp_x, grasp_y, self.params["lift_height"])
+        wave_axis = self.params["wave_axis"]
+        wave_left_pos = _vec_with_axis_offset(lift_pos, wave_axis, -self.params["wave_offset"])
+        wave_right_pos = _vec_with_axis_offset(lift_pos, wave_axis, self.params["wave_offset"])
         self._waypoints = [
             (grab_pos, self.params["close_duration"], self.params["gripper_open_frac"]),
-            (grab_pos, self.params["release_duration"], self.params["gripper_closed_frac"]),
-            (grab_pos, self.params["retreat_duration"], self.params["gripper_open_frac"]),
-            (retreat_pos, self.params["retreat_duration"], self.params["gripper_open_frac"]),
+            (grab_pos, self.params["pinch_duration"], self.params["gripper_closed_frac"]),
+            (grab_pos, self.params["lift_duration"], self.params["gripper_closed_frac"]),
+            (lift_pos, self.params["wave_start_duration"], self.params["gripper_closed_frac"]),
+            (wave_left_pos, self.params["wave_sweep_duration"], self.params["gripper_closed_frac"]),
+            (wave_right_pos, self.params["wave_sweep_duration"], self.params["gripper_closed_frac"]),
+            (wave_left_pos, self.params["wave_return_duration"], self.params["gripper_closed_frac"]),
+            (lift_pos, self.params["hold_duration"], self.params["gripper_closed_frac"]),
         ]
 
         if self.params["enable_ik_cuda_graph"] and wp.get_device().is_cuda:
@@ -637,40 +731,6 @@ class Example:
             self._current_waypoint += 1
             self._time_in_waypoint = 0.0
 
-    def _plasticity_is_active(self):
-        return (
-            self.params["plasticity_enabled"]
-            and self.params["plasticity_start_waypoint"]
-            <= self._current_waypoint
-            < self.params["plasticity_end_waypoint"]
-            and self._gripper_frac > 0.5
-        )
-
-    def _apply_bending_plasticity(self):
-        if not self._plasticity_is_active():
-            return
-
-        current_angles = _compute_edge_angles(self._edge_indices, self.state_0.particle_q.numpy())
-        angle_delta = _wrap_angle_delta(current_angles - self._edge_rest_angle_host)
-        yielded = self._plastic_edge_mask & (np.abs(angle_delta) > self.params["plasticity_yield_angle"])
-        if not np.any(yielded):
-            return
-
-        excess_delta = angle_delta - np.sign(angle_delta) * self.params["plasticity_yield_angle"]
-        next_rest_angle = self._edge_rest_angle_host + excess_delta * self.params["plasticity_rate"]
-        rest_delta_from_initial = np.clip(
-            _wrap_angle_delta(next_rest_angle - self._edge_rest_angle_initial),
-            -self.params["plasticity_max_rest_delta"],
-            self.params["plasticity_max_rest_delta"],
-        )
-
-        self._edge_rest_angle_host[yielded] = self._edge_rest_angle_initial[yielded] + rest_delta_from_initial[yielded]
-        self.model.edge_rest_angle = wp.array(self._edge_rest_angle_host, dtype=wp.float32, device=self.model.device)
-        self._max_plastic_rest_change = max(
-            self._max_plastic_rest_change,
-            float(np.max(np.abs(self._edge_rest_angle_host - self._edge_rest_angle_initial))),
-        )
-
     def simulate(self):
         joint_q = self.state_0.joint_q.numpy().copy()
         ik_solution = self._joint_q_ik.numpy()[0]
@@ -682,6 +742,11 @@ class Example:
         self.state_0.joint_q.assign(wp.array(joint_q, dtype=float, device=self.model.device))
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
+        if self._content_body_q_save is not None:
+            body_q = self.state_0.body_q.numpy().copy()
+            body_q[self._content_body_indices] = self._content_body_q_save
+            self.state_0.body_q.assign(wp.array(body_q, dtype=wp.transform, device=self.model.device))
+
         for _ in range(self.sim_substeps):
             wp.copy(self.state_1.body_q, self.state_0.body_q)
             self.state_0.clear_forces()
@@ -690,7 +755,7 @@ class Example:
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
-        self._apply_bending_plasticity()
+        self._content_body_q_save = self.state_0.body_q.numpy()[self._content_body_indices].copy()
 
     def step(self):
         self.frame += 1
@@ -718,14 +783,11 @@ class Example:
         )
         assert abs(open_gap - self.params["gripper_open_gap"]) < self.params["gripper_gap_test_tolerance"]
         assert abs(closed_gap - self.params["gripper_closed_gap"]) < self.params["gripper_gap_test_tolerance"]
-        if self.frame >= self.params["plasticity_min_test_frames"]:
-            assert self._max_plastic_rest_change > self.params["plasticity_min_rest_change"], (
-                "Plasticity did not update any cloth rest angles"
-            )
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        parser.add_argument("--seed", type=int, default=PARAMS["seed"])
         parser.set_defaults(num_frames=PARAMS["settle_frames"])
         return parser
 

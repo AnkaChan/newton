@@ -35,6 +35,7 @@ PARAMS = {
     "bag_size_z": 0.32,
     "bag_res": 18,
     "bag_floor_height": 0.004,
+    "vertical_axis": 2,
     "particle_radius": 0.004,
     "fps": 60,
     "settle_frames": 240,
@@ -43,27 +44,52 @@ PARAMS = {
     "cloth_density": 0.08,
     "cloth_tri_ke": 1e4,
     "cloth_tri_ka": 1e4,
-    "cloth_tri_kd": 1e-3,
+    "cloth_tri_kd": 1e1,
     "cloth_edge_ke": 50.0,
-    "cloth_edge_kd": 1e-2,
+    "cloth_edge_kd": 5e-1,
     "shape_density": 1000.0,
     "shape_ke": 1e3,
-    "shape_kd": 1e-4,
+    "shape_kd": 1e-1,
     "shape_mu": 0.5,
     "ground_ke": 1e3,
-    "ground_kd": 1e-4,
+    "ground_kd": 1e-1,
     "ground_mu": 0.9,
     "soft_contact_ke": 1e3,
-    "soft_contact_kd": 1e-3,
+    "soft_contact_kd": 1e0,
     "soft_contact_mu": 0.5,
     "gravity": -9.8,
     "initial_paused": True,
+    "initial_sim_time": 0.0,
+    "initial_frame": 0,
+    "seed": 42,
+    "draw_wireframe": True,
+    "camera_pos": (0.36, -0.58, 0.36),
+    "camera_pitch": -18.0,
+    "camera_yaw": 122.0,
     "body_drop_offset": 0.06,
     "rigid_body_particle_contact_buffer_size": 2048,
     "rigid_body_contact_buffer_size": 512,
+    "integrate_with_external_rigid_solver": False,
+    "particle_enable_self_contact": False,
     "particle_self_contact_radius_scale": 1.0,
     "particle_self_contact_margin_scale": 2.0,
     "particle_topological_contact_filter_threshold": 3,
+    "rigid_contact_hard": False,
+    "collision_broad_phase": "nxn",
+    "ground_body": -1,
+    "ground_center_xy": (0.0, 0.0),
+    "ground_color": (0.45, 0.45, 0.48),
+    "ground_label": "ground",
+    "cloth_pos": (0.0, 0.0, 0.0),
+    "cloth_scale": 1.0,
+    "cloth_vel": (0.0, 0.0, 0.0),
+    "top_pin_tolerance": 0.001,
+    "shape_label_prefix": "bag_contents_",
+    "shape_center_spacing_radius_scale": 2.0,
+    "capsule_radius_scale": 0.7,
+    "cylinder_half_height_scale": 0.5,
+    "ground_tolerance_particle_radius_scale": 3.0,
+    "settled_height_margin": 0.10,
 }
 
 
@@ -186,7 +212,7 @@ def _generate_stacked_positions(count, half_x, half_y, z_bottom, z_top, min_spac
     return positions
 
 
-def build_model(builder, params, seed=42):
+def build_model(builder, params, seed=PARAMS["seed"]):
     rng = np.random.default_rng(seed)
 
     ground_cfg = newton.ModelBuilder.ShapeConfig()
@@ -194,14 +220,17 @@ def build_model(builder, params, seed=42):
     ground_cfg.kd = params["ground_kd"]
     ground_cfg.mu = params["ground_mu"]
     builder.add_shape_box(
-        -1,
-        wp.transform(wp.vec3(0.0, 0.0, -params["ground_thickness"] / 2.0), wp.quat_identity()),
+        params["ground_body"],
+        wp.transform(
+            wp.vec3(*params["ground_center_xy"], -params["ground_thickness"] / 2.0),
+            wp.quat_identity(),
+        ),
         hx=params["ground_size"] / 2.0,
         hy=params["ground_size"] / 2.0,
         hz=params["ground_thickness"] / 2.0,
         cfg=ground_cfg,
-        color=(0.45, 0.45, 0.48),
-        label="ground",
+        color=params["ground_color"],
+        label=params["ground_label"],
     )
 
     bag_verts, bag_faces = _generate_box_bag(
@@ -216,10 +245,10 @@ def build_model(builder, params, seed=42):
     bag_start_particle = len(builder.particle_q)
 
     builder.add_cloth_mesh(
-        pos=wp.vec3(0.0, 0.0, 0.0),
+        pos=wp.vec3(*params["cloth_pos"]),
         rot=wp.quat_identity(),
-        scale=1.0,
-        vel=wp.vec3(0.0, 0.0, 0.0),
+        scale=params["cloth_scale"],
+        vel=wp.vec3(*params["cloth_vel"]),
         vertices=bag_verts.tolist(),
         indices=bag_faces,
         density=params["cloth_density"],
@@ -233,7 +262,7 @@ def build_model(builder, params, seed=42):
 
     bag_end_particle = len(builder.particle_q)
     z_top = params["bag_floor_height"] + params["bag_size_z"]
-    top_mask = np.abs(bag_verts[:, 2] - z_top) < 0.001
+    top_mask = np.abs(bag_verts[:, params["vertical_axis"]] - z_top) < params["top_pin_tolerance"]
     top_global_indices = np.where(top_mask)[0] + bag_start_particle
 
     r = params["shape_size"]
@@ -246,7 +275,7 @@ def build_model(builder, params, seed=42):
     shape_indices = []
 
     shape_names = params["shape_names"]
-    min_spacing = r * (2.0 + params["shape_clearance_scale"])
+    min_spacing = r * (params["shape_center_spacing_radius_scale"] + params["shape_clearance_scale"])
     positions = _generate_stacked_positions(
         len(shape_names),
         interior_x,
@@ -271,7 +300,7 @@ def build_model(builder, params, seed=42):
 
         body = builder.add_body(
             xform=wp.transform(wp.vec3(px, py, pz), wp.quat_identity()),
-            label=f"bag_contents_{name}",
+            label=f"{params['shape_label_prefix']}{name}",
         )
         body_indices.append(body)
         shape_idx = len(builder.shape_type)
@@ -281,9 +310,9 @@ def build_model(builder, params, seed=42):
         elif name == "box":
             builder.add_shape_box(body, hx=r, hy=r, hz=r, cfg=cfg)
         elif name == "capsule":
-            builder.add_shape_capsule(body, radius=r * 0.7, half_height=r, cfg=cfg)
+            builder.add_shape_capsule(body, radius=r * params["capsule_radius_scale"], half_height=r, cfg=cfg)
         elif name == "cylinder":
-            builder.add_shape_cylinder(body, radius=r, half_height=r * 0.5, cfg=cfg)
+            builder.add_shape_cylinder(body, radius=r, half_height=r * params["cylinder_half_height_scale"], cfg=cfg)
         elif name == "cone":
             builder.add_shape_cone(body, radius=r, half_height=r, cfg=cfg)
         elif name == "mesh":
@@ -320,18 +349,19 @@ def setup_sim(builder, info, params):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
+        integrate_with_external_rigid_solver=params["integrate_with_external_rigid_solver"],
         rigid_body_particle_contact_buffer_size=params["rigid_body_particle_contact_buffer_size"],
         rigid_body_contact_buffer_size=params["rigid_body_contact_buffer_size"],
-        particle_enable_self_contact=False,
+        particle_enable_self_contact=params["particle_enable_self_contact"],
         particle_self_contact_radius=pr * params["particle_self_contact_radius_scale"],
         particle_self_contact_margin=pr * params["particle_self_contact_margin_scale"],
         particle_topological_contact_filter_threshold=params["particle_topological_contact_filter_threshold"],
-        rigid_contact_hard=False,
+        rigid_contact_hard=params["rigid_contact_hard"],
     )
 
     pipeline = newton.CollisionPipeline(
         model,
-        broad_phase="nxn",
+        broad_phase=params["collision_broad_phase"],
         soft_contact_margin=params["soft_contact_creation_margin"],
     )
 
@@ -342,14 +372,14 @@ class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.params = PARAMS
-        self.sim_time = 0.0
+        self.sim_time = self.params["initial_sim_time"]
         self.fps = self.params["fps"]
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = self.params["sim_substeps"]
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.frame = 0
+        self.frame = self.params["initial_frame"]
 
-        seed = getattr(args, "seed", 42)
+        seed = getattr(args, "seed", self.params["seed"])
         builder = newton.ModelBuilder(gravity=self.params["gravity"])
         self.info = build_model(builder, self.params, seed=seed)
         self.model, self.solver, self.pipeline = setup_sim(builder, self.info, self.params)
@@ -361,11 +391,15 @@ class Example:
 
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
-            self.viewer.renderer.draw_wireframe = True
+            self.viewer.renderer.draw_wireframe = self.params["draw_wireframe"]
         if hasattr(self.viewer, "_paused"):
             self.viewer._paused = self.params["initial_paused"]
         if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(wp.vec3(0.36, -0.58, 0.36), -18.0, 122.0)
+            self.viewer.set_camera(
+                wp.vec3(*self.params["camera_pos"]),
+                self.params["camera_pitch"],
+                self.params["camera_yaw"],
+            )
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -388,16 +422,16 @@ class Example:
 
     def test_final(self):
         particle_q = self.state_0.particle_q.numpy()
-        min_particle_z = float(np.min(particle_q[:, 2]))
-        ground_tolerance = self.params["particle_radius"] * 3.0
+        min_particle_z = float(np.min(particle_q[:, self.params["vertical_axis"]]))
+        ground_tolerance = self.params["particle_radius"] * self.params["ground_tolerance_particle_radius_scale"]
         assert min_particle_z > -ground_tolerance, f"Bag penetrated below ground: z={min_particle_z:.4f}"
 
         body_q = self.state_0.body_q.numpy()
         bag_top = self.params["bag_floor_height"] + self.params["bag_size_z"]
         settled = 0
         for bi in self.info["body_indices"]:
-            z = body_q[bi][2]
-            if np.isfinite(z) and -ground_tolerance < z < bag_top + 0.10:
+            z = body_q[bi][self.params["vertical_axis"]]
+            if np.isfinite(z) and -ground_tolerance < z < bag_top + self.params["settled_height_margin"]:
                 settled += 1
 
         assert settled == len(self.info["body_indices"]), (
@@ -407,7 +441,7 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
-        parser.add_argument("--seed", type=int, default=42)
+        parser.add_argument("--seed", type=int, default=PARAMS["seed"])
         parser.set_defaults(num_frames=PARAMS["settle_frames"])
         return parser
 

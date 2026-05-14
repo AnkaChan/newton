@@ -30,12 +30,12 @@ MARGIN_VALUES = [0.0, 0.005, 0.01, 0.015, 0.02, 0.03]
 # Expected avg contact distance per margin (measured empirically).
 # Used as reference for the test_final loose comparison.
 EXPECTED_DISTANCES = {
-    0.000: 0.021,
-    0.005: 0.024,
-    0.010: 0.026,
-    0.015: 0.029,
-    0.020: 0.033,
-    0.030: 0.037,
+    0.000: 0.022,
+    0.005: 0.026,
+    0.010: 0.031,
+    0.015: 0.036,
+    0.020: 0.040,
+    0.030: 0.051,
 }
 
 SHAPE_BBOXES = {
@@ -96,12 +96,14 @@ def _generate_positions(rng, count, bounding_radii, max_attempts=500):
 
 def _random_rotation(rng):
     u1, u2, u3 = rng.random(), rng.random(), rng.random()
-    q = np.array([
-        np.sqrt(1 - u1) * np.sin(2 * np.pi * u2),
-        np.sqrt(1 - u1) * np.cos(2 * np.pi * u2),
-        np.sqrt(u1) * np.sin(2 * np.pi * u3),
-        np.sqrt(u1) * np.cos(2 * np.pi * u3),
-    ])
+    q = np.array(
+        [
+            np.sqrt(1 - u1) * np.sin(2 * np.pi * u2),
+            np.sqrt(1 - u1) * np.cos(2 * np.pi * u2),
+            np.sqrt(u1) * np.sin(2 * np.pi * u3),
+            np.sqrt(u1) * np.cos(2 * np.pi * u3),
+        ]
+    )
     return wp.quat(float(q[0]), float(q[1]), float(q[2]), float(q[3]))
 
 
@@ -148,7 +150,7 @@ def build_model(builder, seed=42):
             fix_right=True,
             tri_ke=1e4,
             tri_ka=1e4,
-            tri_kd=1e-4,
+            tri_kd=1e0,
             edge_ke=1.0,
             edge_kd=1e-3,
             particle_radius=particle_radius,
@@ -157,7 +159,7 @@ def build_model(builder, seed=42):
         cfg = newton.ModelBuilder.ShapeConfig()
         cfg.density = 1000.0
         cfg.ke = 1e5
-        cfg.kd = 1e-4
+        cfg.kd = 1e1
         cfg.mu = 0.5
         cfg.margin = margin
         cfg.has_particle_collision = True
@@ -171,9 +173,7 @@ def build_model(builder, seed=42):
             px, py = positions[i]
             drop_z = 0.7 + 2.0 * margin + i * (0.2 + 2.0 * margin)
             rot = _random_rotation(rng)
-            body = builder.add_body(
-                xform=wp.transform(wp.vec3(ox + px, oy + py, drop_z), rot)
-            )
+            body = builder.add_body(xform=wp.transform(wp.vec3(ox + px, oy + py, drop_z), rot))
             body_indices.append(body)
 
             shape_idx = len(builder.shape_type)
@@ -256,6 +256,7 @@ def measure_contact_distances(model, state, contacts, group_shape_indices):
 # Example class
 # ---------------------------------------------------------------------------
 
+
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
@@ -282,7 +283,7 @@ class Example:
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = 1e5
-        self.model.soft_contact_kd = 1e-4
+        self.model.soft_contact_kd = 1e1
         self.model.soft_contact_mu = 0.5
 
         max_margin = max(MARGIN_VALUES)
@@ -292,6 +293,7 @@ class Example:
             model=self.model,
             iterations=10,
             particle_enable_self_contact=False,
+            rigid_body_contact_buffer_size=512,
         )
 
         self.collision_pipeline = newton.CollisionPipeline(
@@ -310,9 +312,7 @@ class Example:
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(
-                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt
-            )
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -329,9 +329,7 @@ class Example:
         self.state_0.clear_forces()
         self.collision_pipeline.collide(self.state_0, self.contacts)
 
-        distances = measure_contact_distances(
-            self.model, self.state_0, self.contacts, self.group_shape_indices
-        )
+        distances = measure_contact_distances(self.model, self.state_0, self.contacts, self.group_shape_indices)
 
         # Check no explosion
         particle_q = self.state_0.particle_q.numpy()
@@ -345,8 +343,7 @@ class Example:
             if retry < self.max_retries:
                 self._retry_count = retry + 1
                 new_seed = self.seed + retry + 1
-                print(f"Missing contact data, retrying with seed={new_seed} "
-                      f"(attempt {retry + 1}/{self.max_retries})")
+                print(f"Missing contact data, retrying with seed={new_seed} (attempt {retry + 1}/{self.max_retries})")
                 self._build(new_seed)
                 self.viewer.set_model(self.model)
                 for _ in range(300):
@@ -372,8 +369,7 @@ class Example:
         for m, d in distances.items():
             exp = EXPECTED_DISTANCES[m]
             assert abs(d - exp) < 0.01, (
-                f"margin={m}: avg distance {d:.4f} deviates from expected {exp:.4f} "
-                f"by {abs(d - exp):.4f} (> 0.01)"
+                f"margin={m}: avg distance {d:.4f} deviates from expected {exp:.4f} by {abs(d - exp):.4f} (> 0.01)"
             )
 
         # Validate: distance should be monotonically non-decreasing with margin
@@ -397,6 +393,7 @@ class Example:
 # Headless sim helper (for unit tests)
 # ---------------------------------------------------------------------------
 
+
 class RigidDropSim:
     def __init__(self, device, seed=42):
         self.device = device
@@ -410,7 +407,7 @@ class RigidDropSim:
 
         self.model = builder.finalize(device=device)
         self.model.soft_contact_ke = 1e5
-        self.model.soft_contact_kd = 1e-4
+        self.model.soft_contact_kd = 1e1
         self.model.soft_contact_mu = 0.5
 
         max_margin = max(MARGIN_VALUES)
@@ -420,6 +417,7 @@ class RigidDropSim:
             model=self.model,
             iterations=10,
             particle_enable_self_contact=False,
+            rigid_body_contact_buffer_size=512,
         )
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
@@ -443,9 +441,7 @@ class RigidDropSim:
         for _ in range(self.substeps):
             self.state_0.clear_forces()
             self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(
-                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt
-            )
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def run(self):
@@ -455,14 +451,13 @@ class RigidDropSim:
     def measure(self):
         self.state_0.clear_forces()
         self.collision_pipeline.collide(self.state_0, self.contacts)
-        return measure_contact_distances(
-            self.model, self.state_0, self.contacts, self.group_shape_indices
-        )
+        return measure_contact_distances(self.model, self.state_0, self.contacts, self.group_shape_indices)
 
 
 # ---------------------------------------------------------------------------
 # Test functions
 # ---------------------------------------------------------------------------
+
 
 def test_rigid_drop_margin_study(test, device):
     max_retries = 5
@@ -498,7 +493,9 @@ def test_rigid_drop_margin_study(test, device):
     for m, d in distances.items():
         exp = EXPECTED_DISTANCES[m]
         test.assertAlmostEqual(
-            d, exp, delta=0.01,
+            d,
+            exp,
+            delta=0.01,
             msg=f"margin={m}: avg distance {d:.4f} vs expected {exp:.4f}",
         )
 
@@ -508,7 +505,8 @@ def test_rigid_drop_margin_study(test, device):
         m_prev = sorted_margins[i - 1]
         m_curr = sorted_margins[i]
         test.assertGreaterEqual(
-            distances[m_curr], distances[m_prev] - 0.005,
+            distances[m_curr],
+            distances[m_prev] - 0.005,
             msg=f"Distance not increasing: margin={m_prev}->{m_curr}",
         )
 

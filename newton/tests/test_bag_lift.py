@@ -169,9 +169,9 @@ def build_model(builder, seed=42):
         density=0.08,
         tri_ke=2e6,
         tri_ka=2e6,
-        tri_kd=1e-3,
+        tri_kd=1e2,
         edge_ke=50.0,
-        edge_kd=1e-2,
+        edge_kd=5e-1,
         particle_radius=particle_radius,
     )
 
@@ -208,8 +208,8 @@ def build_model(builder, seed=42):
 
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 100.0
-    cfg.ke = 1e5
-    cfg.kd = 1e-4
+    cfg.ke = 1e3
+    cfg.kd = 1e-1
     cfg.mu = 0.5
     cfg.has_particle_collision = True
     cfg.margin = SHAPE_MARGIN
@@ -259,8 +259,8 @@ def build_model(builder, seed=42):
 
 def setup_sim(builder, info):
     model = builder.finalize()
-    model.soft_contact_ke = 5e5
-    model.soft_contact_kd = 1e-3
+    model.soft_contact_ke = 1e3
+    model.soft_contact_kd = 1e0
     model.soft_contact_mu = 0.8
 
     top_idx = info["top_global_indices"]
@@ -277,6 +277,7 @@ def setup_sim(builder, info):
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=15,
+        rigid_body_contact_buffer_size=512,
         rigid_body_particle_contact_buffer_size=512,
         particle_enable_self_contact=True,
         particle_self_contact_radius=pr * 2.0,
