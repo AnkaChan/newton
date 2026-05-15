@@ -431,15 +431,15 @@ class TriMeshCollisionDetector:
                 v_adj_tris = adjacency.v_adj_tris.numpy()
                 v_adj_tris_offsets = adjacency.v_adj_tris_offsets.numpy()
             else:
-                vertex_adjacency = MeshAdjacency.compute_vertex_adjacency(
+                filter_adjacency = MeshAdjacency.compute_vertex_adjacency(
                     self.model.particle_count,
                     edge_indices=self.model.edge_indices,
                     tri_indices=self.model.tri_indices,
                 )
-                v_adj_hinges = vertex_adjacency["hinges"][0].numpy()
-                v_adj_hinges_offsets = vertex_adjacency["hinges"][1].numpy()
-                v_adj_tris = vertex_adjacency["tris"][0].numpy()
-                v_adj_tris_offsets = vertex_adjacency["tris"][1].numpy()
+                v_adj_hinges = filter_adjacency.v_adj_hinges.numpy()
+                v_adj_hinges_offsets = filter_adjacency.v_adj_hinges_offsets.numpy()
+                v_adj_tris = filter_adjacency.v_adj_tris.numpy()
+                v_adj_tris_offsets = filter_adjacency.v_adj_tris_offsets.numpy()
 
             vertex_triangle_filter_sets = build_vertex_n_ring_tris_collision_filter(
                 topological_contact_filter_threshold,

@@ -255,9 +255,10 @@ class MeshAdjacency:
         spring_indices=None,
         tet_indices=None,
         device=None,
-    ) -> dict[str, tuple[wp.array, wp.array]]:
-        """Build vertex-to-element CSR arrays using the shared Warp count/fill path."""
-        return _compute_soft_mesh_vertex_adjacency(
+    ) -> "MeshAdjacency":
+        """Build vertex-to-element CSR arrays into a temporary adjacency object."""
+        adjacency = MeshAdjacency()
+        return adjacency.populate_vertex_adjacency(
             particle_count,
             edge_indices=edge_indices,
             tri_indices=tri_indices,
@@ -730,72 +731,6 @@ def _build_vertex_adjacency_with_warp(
     return _move_vertex_adjacency_to_device(values, offsets, device)
 
 
-def _compute_soft_mesh_vertex_adjacency(
-    particle_count: int,
-    *,
-    edge_indices=None,
-    tri_indices=None,
-    spring_indices=None,
-    tet_indices=None,
-    device=None,
-) -> dict[str, tuple[wp.array, wp.array]]:
-    """Build vertex-to-element adjacency CSR arrays from soft topology.
-
-    Triangle, hinge, and tet rows store ``(element_id, local_vertex_slot)``
-    pairs using the slot convention expected by current Warp kernels. Spring
-    rows store only spring ids. Construction uses the VBD Warp count/fill
-    kernels on CPU, then moves the result to ``device`` when requested.
-    """
-    vertex_adjacency = {
-        "tris": _empty_vertex_adjacency(device),
-        "hinges": _empty_vertex_adjacency(device),
-        "springs": _empty_vertex_adjacency(device),
-        "tets": _empty_vertex_adjacency(device),
-    }
-
-    if _has_entries(tri_indices):
-        vertex_adjacency["tris"] = _build_vertex_adjacency_with_warp(
-            _as_cpu_int_array2d(tri_indices, 3),
-            particle_count,
-            count_kernel=_count_num_adjacent_tris,
-            fill_kernel=_fill_adjacent_tris,
-            values_per_entry=2,
-            device=device,
-        )
-
-    if _has_entries(edge_indices):
-        vertex_adjacency["hinges"] = _build_vertex_adjacency_with_warp(
-            _as_cpu_int_array2d(edge_indices, 4),
-            particle_count,
-            count_kernel=_count_num_adjacent_hinges,
-            fill_kernel=_fill_adjacent_hinges,
-            values_per_entry=2,
-            device=device,
-        )
-
-    if _has_entries(spring_indices):
-        vertex_adjacency["springs"] = _build_vertex_adjacency_with_warp(
-            _as_cpu_int_array1d(spring_indices),
-            particle_count,
-            count_kernel=_count_num_adjacent_springs,
-            fill_kernel=_fill_adjacent_springs,
-            values_per_entry=1,
-            device=device,
-        )
-
-    if _has_entries(tet_indices):
-        vertex_adjacency["tets"] = _build_vertex_adjacency_with_warp(
-            _as_cpu_int_array2d(tet_indices, 4),
-            particle_count,
-            count_kernel=_count_num_adjacent_tets,
-            fill_kernel=_fill_adjacent_tets,
-            values_per_entry=2,
-            device=device,
-        )
-
-    return vertex_adjacency
-
-
 def _init_empty_soft_mesh_vertex_adjacency(
     adjacency: MeshAdjacency,
     *,
@@ -828,19 +763,54 @@ def _populate_soft_mesh_vertex_adjacency(
     device=None,
 ) -> MeshAdjacency:
     """Compute and store derived vertex adjacency CSR fields on demand."""
-    vertex_adjacency = _compute_soft_mesh_vertex_adjacency(
-        particle_count,
-        edge_indices=edge_indices,
-        tri_indices=tri_indices,
-        spring_indices=spring_indices,
-        tet_indices=tet_indices,
-        device=device,
-    )
+    if _has_entries(edge_indices):
+        adjacency.v_adj_hinges, adjacency.v_adj_hinges_offsets = _build_vertex_adjacency_with_warp(
+            _as_cpu_int_array2d(edge_indices, 4),
+            particle_count,
+            count_kernel=_count_num_adjacent_hinges,
+            fill_kernel=_fill_adjacent_hinges,
+            values_per_entry=2,
+            device=device,
+        )
+    else:
+        adjacency.v_adj_hinges, adjacency.v_adj_hinges_offsets = _empty_vertex_adjacency(device)
 
-    adjacency.v_adj_tris, adjacency.v_adj_tris_offsets = vertex_adjacency["tris"]
-    adjacency.v_adj_hinges, adjacency.v_adj_hinges_offsets = vertex_adjacency["hinges"]
-    adjacency.v_adj_springs, adjacency.v_adj_springs_offsets = vertex_adjacency["springs"]
-    adjacency.v_adj_tets, adjacency.v_adj_tets_offsets = vertex_adjacency["tets"]
+    if _has_entries(tri_indices):
+        adjacency.v_adj_tris, adjacency.v_adj_tris_offsets = _build_vertex_adjacency_with_warp(
+            _as_cpu_int_array2d(tri_indices, 3),
+            particle_count,
+            count_kernel=_count_num_adjacent_tris,
+            fill_kernel=_fill_adjacent_tris,
+            values_per_entry=2,
+            device=device,
+        )
+    else:
+        adjacency.v_adj_tris, adjacency.v_adj_tris_offsets = _empty_vertex_adjacency(device)
+
+    if _has_entries(tet_indices):
+        adjacency.v_adj_tets, adjacency.v_adj_tets_offsets = _build_vertex_adjacency_with_warp(
+            _as_cpu_int_array2d(tet_indices, 4),
+            particle_count,
+            count_kernel=_count_num_adjacent_tets,
+            fill_kernel=_fill_adjacent_tets,
+            values_per_entry=2,
+            device=device,
+        )
+    else:
+        adjacency.v_adj_tets, adjacency.v_adj_tets_offsets = _empty_vertex_adjacency(device)
+
+    if _has_entries(spring_indices):
+        adjacency.v_adj_springs, adjacency.v_adj_springs_offsets = _build_vertex_adjacency_with_warp(
+            _as_cpu_int_array1d(spring_indices),
+            particle_count,
+            count_kernel=_count_num_adjacent_springs,
+            fill_kernel=_fill_adjacent_springs,
+            values_per_entry=1,
+            device=device,
+        )
+    else:
+        adjacency.v_adj_springs, adjacency.v_adj_springs_offsets = _empty_vertex_adjacency(device)
+
     return adjacency
 
 
