@@ -14,6 +14,7 @@ import warp as wp
 import newton
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
+from newton._src.utils.mesh import MeshAdjacency
 from newton.tests.unittest_utils import assert_np_equal
 
 
@@ -213,6 +214,27 @@ class TestModelMesh(unittest.TestCase):
         self.assertTrue(np.all(adjacency.tri_feature_owner_flag.numpy() != 0))
         self.assertEqual(len(adjacency.v_adj_tris), 0)
         self.assertEqual(len(adjacency.v_adj_hinges_offsets), 0)
+
+    def test_soft_mesh_feature_ownership_separates_vertex_and_edge_load(self):
+        tri_indices = np.array(
+            [
+                [0, 2, 1],
+                [0, 3, 2],
+                [0, 4, 3],
+            ],
+            dtype=np.int32,
+        )
+        _edge_indices, _edge_tri_indices, tri_edge_indices = MeshAdjacency.compute_edge_adjacency(tri_indices)
+
+        tri_flags, particle_in_triangle = MeshAdjacency.compute_feature_ownership(
+            tri_indices,
+            tri_edge_indices,
+            particle_count=5,
+        )
+
+        np.testing.assert_array_equal(particle_in_triangle, np.array([0, 0, 1, 2, 2], dtype=np.int32))
+        self.assertTrue(tri_flags[0] & (1 << 3))
+        self.assertFalse(tri_flags[1] & (1 << 5))
 
     def test_manual_soft_mesh_adjacency_placeholders_finalize(self):
         builder = ModelBuilder()

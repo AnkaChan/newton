@@ -421,13 +421,14 @@ def _compute_soft_mesh_feature_ownership(
         1. Candidate owners are the incident triangles of the feature.
         2. Vertices are assigned first in particle-id order.
         3. Edges are assigned next in edge-id order.
-        4. Each feature goes to the candidate triangle with the lowest current
-           owned-feature load; ties use ``(tri_id, local_slot)``.
+        4. Vertex ownership uses vertex load only; edge ownership uses edge
+           load only. Ties use ``(tri_id, local_slot)``.
         5. Boundary and single-incident features naturally go to their only
            candidate.
 
-    The load is ``owned_vertices + owned_edges``. Face features do not need an
-    ownership bit because each face is already unique to one triangle.
+    Keeping vertex and edge loads separate avoids coupling two different
+    contact-generation passes. Face features do not need an ownership bit
+    because each face is already unique to one triangle.
     """
     tris = _numpy_int_rows(tri_indices, 3)
     tri_count = tris.shape[0]
@@ -437,7 +438,8 @@ def _compute_soft_mesh_feature_ownership(
     if tri_count == 0:
         return tri_flags, particle_in_triangle
 
-    tri_feature_load = np.zeros(tri_count, dtype=np.int32)
+    tri_vertex_load = np.zeros(tri_count, dtype=np.int32)
+    tri_edge_load = np.zeros(tri_count, dtype=np.int32)
 
     vertex_incidence: list[list[tuple[int, int]]] = [[] for _ in range(particle_count)]
     for tri_id, tri in enumerate(tris):
@@ -445,15 +447,15 @@ def _compute_soft_mesh_feature_ownership(
             if 0 <= particle_id < particle_count:
                 vertex_incidence[int(particle_id)].append((tri_id, slot))
 
-    def choose_owner(entries: list[tuple[int, int]]) -> tuple[int, int]:
-        owner = min(entries, key=lambda entry: (tri_feature_load[entry[0]], entry[0], entry[1]))
-        tri_feature_load[owner[0]] += 1
+    def choose_owner(entries: list[tuple[int, int]], load: np.ndarray) -> tuple[int, int]:
+        owner = min(entries, key=lambda entry: (load[entry[0]], entry[0], entry[1]))
+        load[owner[0]] += 1
         return owner
 
     for particle_id, entries in enumerate(vertex_incidence):
         if not entries:
             continue
-        tri_id, slot = choose_owner(entries)
+        tri_id, slot = choose_owner(entries, tri_vertex_load)
         tri_flags[tri_id] |= np.uint8(1 << slot)
         particle_in_triangle[particle_id] = tri_id
 
@@ -466,7 +468,7 @@ def _compute_soft_mesh_feature_ownership(
                 edge_incidence.setdefault(edge_id, []).append((tri_id, slot))
 
     for edge_id in sorted(edge_incidence):
-        tri_id, slot = choose_owner(edge_incidence[edge_id])
+        tri_id, slot = choose_owner(edge_incidence[edge_id], tri_edge_load)
         tri_flags[tri_id] |= np.uint8(1 << (slot + 3))
 
     return tri_flags, particle_in_triangle
