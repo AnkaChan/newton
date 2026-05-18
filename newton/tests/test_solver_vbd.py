@@ -8,6 +8,9 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
+from newton import ModelBuilder
+from newton._src.geometry.kernels import SOFT_CONTACT_KIND_EDGE, SOFT_CONTACT_KIND_FACE
 from newton._src.solvers.vbd.particle_vbd_kernels import evaluate_self_contact_force_norm
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
@@ -17,6 +20,186 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices(mode="basic")
+
+
+def _soft_rigid_shape_config():
+    cfg = ModelBuilder.ShapeConfig()
+    cfg.density = 100.0
+    cfg.ke = 1.0e5
+    cfg.kd = 1.0e1
+    cfg.mu = 0.0
+    cfg.has_particle_collision = True
+    cfg.margin = 0.0
+    return cfg
+
+
+def _add_pinned_soft_quad(builder):
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0),
+        vertices=[
+            wp.vec3(-0.5, -0.5, 0.0),
+            wp.vec3(0.5, -0.5, 0.0),
+            wp.vec3(-0.5, 0.5, 0.0),
+            wp.vec3(0.5, 0.5, 0.0),
+        ],
+        indices=[0, 1, 2, 1, 3, 2],
+        density=0.0,
+        tri_ke=1.0e5,
+        tri_ka=1.0e5,
+        tri_kd=1.0e2,
+        edge_ke=1.0e2,
+        edge_kd=1.0,
+        particle_radius=0.02,
+    )
+
+
+def _add_pinned_vertical_triangle(builder):
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0),
+        vertices=[
+            wp.vec3(-0.3, 0.0, 0.0),
+            wp.vec3(0.3, 0.0, 0.0),
+            wp.vec3(-0.3, 0.0, -0.4),
+        ],
+        indices=[0, 1, 2],
+        density=0.0,
+        tri_ke=1.0e5,
+        tri_ka=1.0e5,
+        tri_kd=1.0e2,
+        edge_ke=1.0e2,
+        edge_kd=1.0,
+        particle_radius=0.02,
+    )
+
+
+def _box_mesh(hx, hy, hz):
+    points = np.array(
+        [
+            [-hx, -hy, -hz],
+            [hx, -hy, -hz],
+            [-hx, hy, -hz],
+            [hx, hy, -hz],
+            [-hx, -hy, hz],
+            [hx, -hy, hz],
+            [-hx, hy, hz],
+            [hx, hy, hz],
+        ],
+        dtype=np.float32,
+    )
+    indices = np.array(
+        [
+            0,
+            2,
+            1,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            5,
+            7,
+            6,
+            0,
+            1,
+            4,
+            1,
+            5,
+            4,
+            2,
+            6,
+            3,
+            3,
+            6,
+            7,
+            0,
+            4,
+            2,
+            2,
+            4,
+            6,
+            1,
+            3,
+            5,
+            3,
+            7,
+            5,
+        ],
+        dtype=np.int32,
+    )
+    return newton.Mesh(points, indices)
+
+
+def _add_example_soft_contact_shape(builder, body, shape_name, cfg):
+    radius = 0.05
+    if shape_name == "mesh":
+        builder.add_shape_mesh(body, mesh=_box_mesh(radius, radius, radius), cfg=cfg)
+    elif shape_name == "cone":
+        builder.add_shape_cone(body, radius=radius, half_height=radius, cfg=cfg)
+    elif shape_name == "sphere":
+        builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+    elif shape_name == "box":
+        builder.add_shape_box(body, hx=radius, hy=radius, hz=radius, cfg=cfg)
+    elif shape_name == "capsule":
+        builder.add_shape_capsule(body, radius=radius * 0.7, half_height=radius, cfg=cfg)
+    elif shape_name == "cylinder":
+        builder.add_shape_cylinder(body, radius=radius, half_height=radius * 0.5, cfg=cfg)
+    else:
+        raise ValueError(shape_name)
+
+
+def _collide_soft_contacts(builder, device, water_tight_soft_rigid, soft_contact_margin=0.0):
+    builder.color(include_bending=True)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="explicit", soft_contact_margin=soft_contact_margin, soft_contact_max=256
+    )
+    contacts = pipeline.contacts()
+    state = model.state()
+
+    pipeline.collide(state, contacts, water_tight_soft_rigid=water_tight_soft_rigid)
+    soft_count = int(contacts.soft_contact_count.numpy()[0])
+    contact_kinds = contacts.soft_contact_kind.numpy()[:soft_count].copy()
+    contact_particles = contacts.soft_contact_particle.numpy()[:soft_count].copy()
+    return soft_count, contact_kinds, contact_particles
+
+
+def _run_vbd_step_with_soft_contacts(builder, body, device, water_tight_soft_rigid, soft_contact_margin=0.0):
+    builder.color(include_bending=True)
+    model = builder.finalize(device=device)
+    model.soft_contact_ke = 1.0e5
+    model.soft_contact_kd = 1.0e2
+    model.soft_contact_mu = 0.0
+
+    solver = newton.solvers.SolverVBD(
+        model=model,
+        iterations=8,
+        rigid_body_particle_contact_buffer_size=64,
+        particle_enable_self_contact=False,
+    )
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="explicit", soft_contact_margin=soft_contact_margin, soft_contact_max=128
+    )
+    contacts = pipeline.contacts()
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    pipeline.collide(state_0, contacts, water_tight_soft_rigid=water_tight_soft_rigid)
+    soft_count = int(contacts.soft_contact_count.numpy()[0])
+    contact_kinds = contacts.soft_contact_kind.numpy()[:soft_count].copy()
+    contact_particles = contacts.soft_contact_particle.numpy()[:soft_count].copy()
+    initial_z = float(state_0.body_q.numpy()[body][2])
+
+    solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
+    final_z = float(state_1.body_q.numpy()[body][2])
+    return initial_z, final_z, soft_count, contact_kinds, contact_particles
 
 
 @wp.kernel
@@ -299,6 +482,91 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
         test.assertEqual(prev_penalty.numpy()[2], 0.0)
 
 
+def test_water_tight_soft_rigid_face_contact_pushes_body(test, device):
+    """A two-triangle soft quad should support a rigid body through face contact."""
+    with wp.ScopedDevice(device):
+        cfg = _soft_rigid_shape_config()
+
+        def build_scene():
+            builder = ModelBuilder(gravity=0.0)
+            _add_pinned_soft_quad(builder)
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.2, -0.1, 0.04), wp.quat_identity()))
+            builder.add_shape_sphere(body, radius=0.05, cfg=cfg)
+            return builder, body
+
+        legacy_z0, legacy_z1, legacy_count, _legacy_kinds, _legacy_particles = _run_vbd_step_with_soft_contacts(
+            *build_scene(), device, False
+        )
+        watertight_z0, watertight_z1, count, kinds, particles = _run_vbd_step_with_soft_contacts(
+            *build_scene(), device, True
+        )
+
+        test.assertEqual(legacy_count, 0)
+        test.assertLessEqual(abs(legacy_z1 - legacy_z0), 1.0e-6)
+        test.assertGreater(count, 0)
+        test.assertTrue(np.all(particles == -1))
+        test.assertIn(int(SOFT_CONTACT_KIND_FACE), kinds)
+        test.assertGreater(watertight_z1, watertight_z0 + 1.0e-4)
+
+
+def test_water_tight_soft_rigid_face_contact_emits_for_example_shapes(test, device):
+    """The example rigid shapes should contact a two-triangle soft quad by face/edge features."""
+    with wp.ScopedDevice(device):
+        cfg = _soft_rigid_shape_config()
+        shape_names = ("mesh", "cone", "sphere", "box", "capsule", "cylinder")
+
+        def build_scene(shape_name):
+            builder = ModelBuilder(gravity=0.0)
+            _add_pinned_soft_quad(builder)
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.2, -0.1, 0.06), wp.quat_identity()))
+            _add_example_soft_contact_shape(builder, body, shape_name, cfg)
+            return builder
+
+        for shape_name in shape_names:
+            legacy_count, _legacy_kinds, _legacy_particles = _collide_soft_contacts(
+                build_scene(shape_name), device, False, 0.02
+            )
+            count, kinds, particles = _collide_soft_contacts(build_scene(shape_name), device, True, 0.02)
+
+            test.assertEqual(legacy_count, 0, shape_name)
+            test.assertGreater(count, 0, shape_name)
+            test.assertTrue(np.all(particles == -1), shape_name)
+            test.assertIn(int(SOFT_CONTACT_KIND_FACE), kinds, shape_name)
+
+
+def test_water_tight_soft_rigid_edge_contact_pushes_rigid_edge_shapes(test, device):
+    """Supported rigid-edge shapes should be pushed out by a soft triangle edge."""
+    with wp.ScopedDevice(device):
+        cfg = _soft_rigid_shape_config()
+
+        def build_scene(shape_name):
+            builder = ModelBuilder(gravity=0.0)
+            _add_pinned_vertical_triangle(builder)
+            body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.065), wp.quat_identity()))
+            if shape_name == "box":
+                builder.add_shape_box(body, hx=0.08, hy=0.005, hz=0.05, cfg=cfg)
+            elif shape_name == "mesh":
+                builder.add_shape_mesh(body, mesh=_box_mesh(0.08, 0.005, 0.05), cfg=cfg)
+            else:
+                raise ValueError(shape_name)
+            return builder, body
+
+        for shape_name in ("box", "mesh"):
+            legacy_z0, legacy_z1, legacy_count, _legacy_kinds, _legacy_particles = _run_vbd_step_with_soft_contacts(
+                *build_scene(shape_name), device, False
+            )
+            watertight_z0, watertight_z1, count, kinds, particles = _run_vbd_step_with_soft_contacts(
+                *build_scene(shape_name), device, True, 0.02
+            )
+
+            test.assertEqual(legacy_count, 0, shape_name)
+            test.assertLessEqual(abs(legacy_z1 - legacy_z0), 1.0e-6, shape_name)
+            test.assertGreater(count, 0, shape_name)
+            test.assertTrue(np.all(particles == -1), shape_name)
+            test.assertIn(int(SOFT_CONTACT_KIND_EDGE), kinds, shape_name)
+            test.assertGreater(watertight_z1, watertight_z0 + 1.0e-4, shape_name)
+
+
 class TestSolverVBD(unittest.TestCase):
     pass
 
@@ -325,6 +593,24 @@ add_function_test(
     TestSolverVBD,
     "test_rigid_contact_history_snapshot_copies_active_rows",
     _rigid_contact_history_snapshot_copies_active_rows,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_water_tight_soft_rigid_face_contact_pushes_body",
+    test_water_tight_soft_rigid_face_contact_pushes_body,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_water_tight_soft_rigid_face_contact_emits_for_example_shapes",
+    test_water_tight_soft_rigid_face_contact_emits_for_example_shapes,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_water_tight_soft_rigid_edge_contact_pushes_rigid_edge_shapes",
+    test_water_tight_soft_rigid_edge_contact_pushes_rigid_edge_shapes,
     devices=devices,
 )
 

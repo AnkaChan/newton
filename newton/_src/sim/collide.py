@@ -16,7 +16,7 @@ from ..geometry.contact_match import ContactMatcher
 from ..geometry.contact_sort import ContactSorter
 from ..geometry.differentiable_contacts import launch_differentiable_contact_augment
 from ..geometry.flags import ShapeFlags
-from ..geometry.kernels import create_soft_contacts
+from ..geometry.kernels import create_soft_contacts_particle_driven, create_soft_contacts_triangle_driven
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.support_function import (
@@ -748,6 +748,7 @@ class CollisionPipeline:
             self.broad_phase_shape_pairs = wp.zeros(self.shape_pairs_max, dtype=wp.vec2i, device=device)
             self.geom_data = wp.zeros(shape_count, dtype=wp.vec4, device=device)
             self.geom_transform = wp.zeros(shape_count, dtype=wp.transform, device=device)
+            self._empty_particle_in_triangle = wp.full(1, -1, dtype=wp.int32, device=device)
 
         if (
             getattr(self.narrow_phase, "shape_aabb_lower", None) is None
@@ -859,6 +860,7 @@ class CollisionPipeline:
         contacts: Contacts,
         *,
         soft_contact_margin: float | None = None,
+        water_tight_soft_rigid: bool = False,
     ):
         """Run the collision pipeline using NarrowPhase.
 
@@ -883,6 +885,9 @@ class CollisionPipeline:
             contacts: The contacts buffer to populate (will be cleared first).
             soft_contact_margin: Margin for soft contact generation.
                 If ``None``, uses the value from construction.
+            water_tight_soft_rigid: Use triangle-owned soft-rigid contact
+                generation for triangulated particles, while keeping the
+                particle-driven path for particles not referenced by triangles.
         """
 
         # Counter zeroing and generation bump are fused into compute_shape_aabbs.
@@ -1148,8 +1153,60 @@ class CollisionPipeline:
         # Generate soft contacts for particles and shapes
         particle_count = len(state.particle_q) if state.particle_q else 0
         if state.particle_q and model.shape_count > 0:
+            skip_triangle_particles = 0
+            particle_in_triangle = self._empty_particle_in_triangle
+            if water_tight_soft_rigid and model.tri_count > 0:
+                if model.soft_mesh_adjacency is None:
+                    raise ValueError("water_tight_soft_rigid=True requires model.soft_mesh_adjacency")
+                skip_triangle_particles = 1
+                particle_in_triangle = model.soft_mesh_adjacency.particle_in_triangle
+                wp.launch(
+                    kernel=create_soft_contacts_triangle_driven,
+                    dim=model.tri_count * model.shape_count,
+                    inputs=[
+                        state.particle_q,
+                        model.particle_radius,
+                        model.particle_flags,
+                        model.particle_world,
+                        model.tri_indices,
+                        model.soft_mesh_adjacency.tri_feature_owner_flag,
+                        state.body_q,
+                        model.shape_transform,
+                        model.shape_body,
+                        model.shape_type,
+                        model.shape_scale,
+                        model.shape_source_ptr,
+                        model.shape_world,
+                        model.shape_margin,
+                        soft_contact_margin,
+                        self.soft_contact_max,
+                        model.shape_count,
+                        model.shape_flags,
+                        model.shape_heightfield_index,
+                        model.heightfield_data,
+                        model.heightfield_elevations,
+                        model.mesh_edge_indices,
+                        model.shape_edge_range,
+                        1.0e-5,
+                    ],
+                    outputs=[
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_primitive,
+                        contacts.soft_contact_kind,
+                        contacts.soft_contact_barycentric,
+                        contacts.soft_contact_radius,
+                        contacts.soft_contact_particle,
+                        contacts.soft_contact_shape,
+                        contacts.soft_contact_body_pos,
+                        contacts.soft_contact_body_vel,
+                        contacts.soft_contact_normal,
+                        contacts.soft_contact_tids,
+                    ],
+                    device=self.device,
+                )
+
             wp.launch(
-                kernel=create_soft_contacts,
+                kernel=create_soft_contacts_particle_driven,
                 dim=particle_count * model.shape_count,
                 inputs=[
                     state.particle_q,
@@ -1163,6 +1220,7 @@ class CollisionPipeline:
                     model.shape_scale,
                     model.shape_source_ptr,
                     model.shape_world,
+                    model.shape_margin,
                     soft_contact_margin,
                     self.soft_contact_max,
                     model.shape_count,
@@ -1170,9 +1228,15 @@ class CollisionPipeline:
                     model.shape_heightfield_index,
                     model.heightfield_data,
                     model.heightfield_elevations,
+                    particle_in_triangle,
+                    skip_triangle_particles,
                 ],
                 outputs=[
                     contacts.soft_contact_count,
+                    contacts.soft_contact_primitive,
+                    contacts.soft_contact_kind,
+                    contacts.soft_contact_barycentric,
+                    contacts.soft_contact_radius,
                     contacts.soft_contact_particle,
                     contacts.soft_contact_shape,
                     contacts.soft_contact_body_pos,

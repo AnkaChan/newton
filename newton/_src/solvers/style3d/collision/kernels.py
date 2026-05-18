@@ -41,7 +41,7 @@ def eval_body_contact_kernel(
     soft_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     soft_contact_particle: wp.array[int],
     contact_count: wp.array[int],
     contact_max: int,
@@ -65,6 +65,8 @@ def eval_body_contact_kernel(
 
     if t_id < particle_body_contact_count:
         particle_idx = soft_contact_particle[t_id]
+        if particle_idx < 0:
+            return
         body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
             particle_idx,
             pos[particle_idx],
@@ -74,7 +76,7 @@ def eval_body_contact_kernel(
             soft_contact_kd,
             friction_mu,
             friction_epsilon,
-            particle_radius,
+            soft_contact_radius,
             shape_material_mu,
             shape_body,
             body_q,

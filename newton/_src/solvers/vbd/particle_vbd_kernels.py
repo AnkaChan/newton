@@ -15,7 +15,11 @@ from __future__ import annotations
 import warp as wp
 
 from newton._src.math import orthonormal_basis
-from newton._src.solvers.vbd.rigid_vbd_kernels import _eval_body_particle_contact, evaluate_body_particle_contact
+from newton._src.solvers.vbd.rigid_vbd_kernels import (
+    _eval_body_particle_contact,
+    _soft_contact_point,
+    evaluate_body_particle_contact,
+)
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
@@ -1687,6 +1691,8 @@ def convert_body_particle_contact_data_kernel(
         return
 
     particle_index = soft_contact_particle[contact_index]
+    if particle_index < 0:
+        return
     offset = particle_index * body_particle_contact_buffer_pre_alloc
 
     contact_counter = wp.atomic_add(body_particle_contact_count, particle_index, 1)
@@ -1990,7 +1996,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     particle_colors: wp.array[int],
     # body-particle contact
     friction_epsilon: float,
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     body_particle_contact_particle: wp.array[int],
     body_particle_contact_count: wp.array[int],
     body_particle_contact_max: int,
@@ -2019,7 +2025,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
     if t_id < particle_body_contact_count:
         particle_idx = body_particle_contact_particle[t_id]
 
-        if particle_colors[particle_idx] == current_color:
+        if particle_idx >= 0 and particle_colors[particle_idx] == current_color:
             # Read per-contact AVBD penalty and material properties shared with the rigid side
             contact_ke = body_particle_contact_penalty_k[t_id]
             contact_kd = body_particle_contact_material_kd[t_id]
@@ -2034,7 +2040,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 contact_kd,
                 contact_mu,
                 friction_epsilon,
-                particle_radius,
+                soft_contact_radius,
                 shape_body,
                 body_q,
                 body_q_prev,
@@ -2490,8 +2496,11 @@ def accumulate_particle_body_contact_force_and_hessian(
     particle_colors: wp.array[int],
     # body-particle contact
     friction_epsilon: float,
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     body_particle_contact_particle: wp.array[int],
+    body_particle_contact_primitive: wp.array[int],
+    body_particle_contact_barycentric: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     body_particle_contact_count: wp.array[int],
     body_particle_contact_max: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
@@ -2518,13 +2527,11 @@ def accumulate_particle_body_contact_force_and_hessian(
 
     if t_id < particle_body_contact_count:
         particle_idx = body_particle_contact_particle[t_id]
+        contact_ke = body_particle_contact_penalty_k[t_id]
+        contact_kd = body_particle_contact_material_kd[t_id]
+        contact_mu = body_particle_contact_material_mu[t_id]
 
-        if particle_colors[particle_idx] == current_color:
-            # Read per-contact AVBD penalty and material properties shared with the rigid side
-            contact_ke = body_particle_contact_penalty_k[t_id]
-            contact_kd = body_particle_contact_material_kd[t_id]
-            contact_mu = body_particle_contact_material_mu[t_id]
-
+        if particle_idx >= 0 and particle_colors[particle_idx] == current_color:
             body_contact_force, body_contact_hessian = _eval_body_particle_contact(
                 particle_idx,
                 pos[particle_idx],
@@ -2534,7 +2541,7 @@ def accumulate_particle_body_contact_force_and_hessian(
                 contact_kd,
                 contact_mu,
                 friction_epsilon,
-                particle_radius,
+                soft_contact_radius,
                 shape_body,
                 body_q,
                 body_q_prev,
@@ -2548,6 +2555,69 @@ def accumulate_particle_body_contact_force_and_hessian(
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
+        elif particle_idx < 0:
+            tri_idx = body_particle_contact_primitive[t_id]
+            if tri_idx >= 0:
+                bary = body_particle_contact_barycentric[t_id]
+                v0 = tri_indices[tri_idx, 0]
+                v1 = tri_indices[tri_idx, 1]
+                v2 = tri_indices[tri_idx, 2]
+                c0 = particle_colors[v0]
+                c1 = particle_colors[v1]
+                c2 = particle_colors[v2]
+
+                if c0 == current_color or c1 == current_color or c2 == current_color:
+                    contact_pos = _soft_contact_point(
+                        t_id,
+                        body_particle_contact_particle,
+                        body_particle_contact_primitive,
+                        body_particle_contact_barycentric,
+                        tri_indices,
+                        pos,
+                    )
+                    contact_pos_anchor = _soft_contact_point(
+                        t_id,
+                        body_particle_contact_particle,
+                        body_particle_contact_primitive,
+                        body_particle_contact_barycentric,
+                        tri_indices,
+                        pos_anchor,
+                    )
+
+                    body_contact_force, body_contact_hessian = _eval_body_particle_contact(
+                        -1,
+                        contact_pos,
+                        contact_pos_anchor,
+                        t_id,
+                        contact_ke,
+                        contact_kd,
+                        contact_mu,
+                        friction_epsilon,
+                        soft_contact_radius,
+                        shape_body,
+                        body_q,
+                        body_q_prev,
+                        body_qd,
+                        body_com,
+                        contact_shape,
+                        contact_body_pos,
+                        contact_body_vel,
+                        contact_normal,
+                        dt,
+                    )
+
+                    if c0 == current_color:
+                        w = bary[0]
+                        wp.atomic_add(particle_forces, v0, body_contact_force * w)
+                        wp.atomic_add(particle_hessians, v0, body_contact_hessian * (w * w))
+                    if c1 == current_color:
+                        w = bary[1]
+                        wp.atomic_add(particle_forces, v1, body_contact_force * w)
+                        wp.atomic_add(particle_hessians, v1, body_contact_hessian * (w * w))
+                    if c2 == current_color:
+                        w = bary[2]
+                        wp.atomic_add(particle_forces, v2, body_contact_force * w)
+                        wp.atomic_add(particle_hessians, v2, body_contact_hessian * (w * w))
 
 
 @wp.kernel
@@ -2875,7 +2945,7 @@ def accumulate_contact_force_and_hessian(
     friction_epsilon: float,
     edge_edge_parallel_epsilon: float,
     # body-particle contact
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     soft_contact_particle: wp.array[int],
     contact_count: wp.array[int],
     contact_max: int,
@@ -3019,7 +3089,7 @@ def accumulate_contact_force_and_hessian(
     if t_id < particle_body_contact_count:
         particle_idx = soft_contact_particle[t_id]
 
-        if particle_colors[particle_idx] == current_color:
+        if particle_idx >= 0 and particle_colors[particle_idx] == current_color:
             body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
                 particle_idx,
                 pos[particle_idx],
@@ -3029,7 +3099,7 @@ def accumulate_contact_force_and_hessian(
                 soft_contact_kd,
                 friction_mu,
                 friction_epsilon,
-                particle_radius,
+                soft_contact_radius,
                 shape_material_mu,
                 shape_body,
                 body_q,

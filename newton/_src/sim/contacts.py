@@ -262,7 +262,16 @@ class Contacts:
 
             # soft contacts — requires_grad flows through here for differentiable simulation
             self.soft_contact_count = self.contact_counters[1:2]
+            self.soft_contact_primitive = wp.full(soft_contact_max, -1, dtype=int)
+            """Soft primitive id. Particle id for particle contacts, triangle id for triangle-driven contacts."""
+            self.soft_contact_kind = wp.zeros(soft_contact_max, dtype=wp.uint8)
+            """Soft contact kind: particle, vertex, edge, or face."""
+            self.soft_contact_barycentric = wp.zeros(soft_contact_max, dtype=wp.vec3)
+            """Soft triangle barycentric coordinates for triangle-driven contacts."""
+            self.soft_contact_radius = wp.zeros(soft_contact_max, dtype=wp.float32, requires_grad=requires_grad)
+            """Resolved soft-side contact radius [m], shape (soft_contact_max,), dtype float."""
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
+            """Resolved particle id for particle/vertex contacts, or ``-1`` for edge/face contacts."""
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`."""
@@ -343,6 +352,10 @@ class Contacts:
             if self.rigid_contact_match_index is not None:
                 self.rigid_contact_match_index.fill_(-1)
 
+            self.soft_contact_primitive.fill_(-1)
+            self.soft_contact_kind.zero_()
+            self.soft_contact_barycentric.zero_()
+            self.soft_contact_radius.zero_()
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)

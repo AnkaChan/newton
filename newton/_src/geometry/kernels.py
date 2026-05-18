@@ -984,9 +984,11 @@ def counter_increment(counter: wp.array[int], counter_index: int, tids: wp.array
     """
     count = wp.atomic_add(counter, counter_index, 1)
     if count < index_limit or index_limit < 0:
-        tids[tid] = count
+        if tid < tids.shape[0]:
+            tids[tid] = count
         return count
-    tids[tid] = -1
+    if tid < tids.shape[0]:
+        tids[tid] = -1
     return -1
 
 
@@ -994,31 +996,35 @@ def counter_increment(counter: wp.array[int], counter_index: int, tids: wp.array
 def counter_increment_replay(
     counter: wp.array[int], counter_index: int, tids: wp.array[int], tid: int, index_limit: int
 ):
-    return tids[tid]
+    if tid < tids.shape[0]:
+        return tids[tid]
+    return -1
 
 
-@wp.kernel
-def create_soft_contacts(
-    particle_q: wp.array[wp.vec3],
-    particle_radius: wp.array[float],
-    particle_flags: wp.array[wp.int32],
-    particle_world: wp.array[int],  # World indices for particles
-    body_q: wp.array[wp.transform],
-    shape_transform: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    shape_type: wp.array[int],
-    shape_scale: wp.array[wp.vec3],
-    shape_source_ptr: wp.array[wp.uint64],
-    shape_world: wp.array[int],  # World indices for shapes
-    margin: float,
+SOFT_CONTACT_KIND_PARTICLE = wp.constant(0)
+SOFT_CONTACT_KIND_VERTEX = wp.constant(1)
+SOFT_CONTACT_KIND_EDGE = wp.constant(2)
+SOFT_CONTACT_KIND_FACE = wp.constant(3)
+
+
+@wp.func
+def _emit_soft_contact(
+    source_tid: int,
     soft_contact_max: int,
-    shape_count: int,
-    shape_flags: wp.array[wp.int32],
-    shape_heightfield_index: wp.array[wp.int32],
-    heightfield_data: wp.array[HeightfieldData],
-    heightfield_elevations: wp.array[wp.float32],
-    # outputs
+    primitive_index: int,
+    contact_kind: int,
+    barycentric: wp.vec3,
+    contact_radius: float,
+    particle_index: int,
+    shape_index: int,
+    body_pos: wp.vec3,
+    body_vel: wp.vec3,
+    world_normal: wp.vec3,
     soft_contact_count: wp.array[int],
+    soft_contact_primitive: wp.array[int],
+    soft_contact_kind: wp.array[wp.uint8],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_radius: wp.array[float],
     soft_contact_particle: wp.array[int],
     soft_contact_shape: wp.array[int],
     soft_contact_body_pos: wp.array[wp.vec3],
@@ -1026,43 +1032,31 @@ def create_soft_contacts(
     soft_contact_normal: wp.array[wp.vec3],
     soft_contact_tids: wp.array[int],
 ):
-    tid = wp.tid()
-    particle_index, shape_index = tid // shape_count, tid % shape_count
-    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
-        return
-    if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
-        return
+    index = counter_increment(soft_contact_count, 0, soft_contact_tids, source_tid)
+    if index < soft_contact_max:
+        soft_contact_primitive[index] = primitive_index
+        soft_contact_kind[index] = wp.uint8(contact_kind)
+        soft_contact_barycentric[index] = barycentric
+        soft_contact_radius[index] = contact_radius
+        soft_contact_particle[index] = particle_index
+        soft_contact_shape[index] = shape_index
+        soft_contact_body_pos[index] = body_pos
+        soft_contact_body_vel[index] = body_vel
+        soft_contact_normal[index] = world_normal
 
-    # Check world indices
-    particle_world_id = particle_world[particle_index]
-    shape_world_id = shape_world[shape_index]
 
-    # Skip collision between different worlds (unless one is global)
-    if particle_world_id != -1 and shape_world_id != -1 and particle_world_id != shape_world_id:
-        return
-
-    rigid_index = shape_body[shape_index]
-
-    px = particle_q[particle_index]
-    radius = particle_radius[particle_index]
-
-    X_wb = wp.transform_identity()
-    if rigid_index >= 0:
-        X_wb = body_q[rigid_index]
-
-    X_bs = shape_transform[shape_index]
-
-    X_ws = wp.transform_multiply(X_wb, X_bs)
-    X_sw = wp.transform_inverse(X_ws)
-
-    # transform particle position to shape local space
-    x_local = wp.transform_point(X_sw, px)
-
-    # geo description
-    geo_type = shape_type[shape_index]
-    geo_scale = shape_scale[shape_index]
-
-    # evaluate shape sdf
+@wp.func
+def _query_shape_sdf(
+    shape_index: int,
+    x_local: wp.vec3,
+    geo_type: int,
+    geo_scale: wp.vec3,
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
+    query_radius: float,
+):
     d = 1.0e6
     n = wp.vec3()
     v = wp.vec3()
@@ -1101,7 +1095,7 @@ def create_soft_contacts(
 
         min_scale = wp.min(geo_scale)
         if wp.mesh_query_point_sign_normal(
-            mesh, wp.cw_div(x_local, geo_scale), margin + radius / min_scale, sign, face_index, face_u, face_v
+            mesh, wp.cw_div(x_local, geo_scale), query_radius / min_scale + 1.0e-6, sign, face_index, face_u, face_v
         ):
             shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
             shape_v = wp.mesh_eval_velocity(mesh, face_index, face_u, face_v)
@@ -1123,21 +1117,895 @@ def create_soft_contacts(
         hfd = heightfield_data[shape_heightfield_index[shape_index]]
         d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevations, x_local)
 
-    if d < margin + radius:
-        index = counter_increment(soft_contact_count, 0, soft_contact_tids, tid)
+    return d, n, v
 
-        if index < soft_contact_max:
-            # compute contact point in body local space
-            body_pos = wp.transform_point(X_bs, x_local - n * d)
-            body_vel = wp.transform_vector(X_bs, v)
 
-            world_normal = wp.transform_vector(X_ws, n)
+@wp.func
+def _box_corner(corner: int, half_extents: wp.vec3):
+    sx = -1.0
+    sy = -1.0
+    sz = -1.0
+    if (corner & 1) != 0:
+        sx = 1.0
+    if (corner & 2) != 0:
+        sy = 1.0
+    if (corner & 4) != 0:
+        sz = 1.0
+    return wp.vec3(sx * half_extents[0], sy * half_extents[1], sz * half_extents[2])
 
-            soft_contact_shape[index] = shape_index
-            soft_contact_body_pos[index] = body_pos
-            soft_contact_body_vel[index] = body_vel
-            soft_contact_particle[index] = particle_index
-            soft_contact_normal[index] = world_normal
+
+@wp.func
+def _box_edge(edge_id: int, half_extents: wp.vec3):
+    c0 = int(0)
+    c1 = int(0)
+    if edge_id < 4:
+        y = edge_id & 1
+        z = (edge_id >> 1) & 1
+        c0 = y * 2 + z * 4
+        c1 = c0 + 1
+    elif edge_id < 8:
+        local_id = edge_id - 4
+        x = local_id & 1
+        z = (local_id >> 1) & 1
+        c0 = x + z * 4
+        c1 = c0 + 2
+    else:
+        local_id = edge_id - 8
+        x = local_id & 1
+        y = (local_id >> 1) & 1
+        c0 = x + y * 2
+        c1 = c0 + 4
+
+    return _box_corner(c0, half_extents), _box_corner(c1, half_extents)
+
+
+@wp.func
+def _circle_sample(sample_id: int, radius: float, z: float):
+    angle = float(sample_id) * 0.7853981633974483
+    return wp.vec3(radius * wp.cos(angle), radius * wp.sin(angle), z)
+
+
+@wp.func
+def _tri_feature_owner_bit(feature_type: int):
+    if feature_type == TRI_CONTACT_FEATURE_VERTEX_A:
+        return 0
+    if feature_type == TRI_CONTACT_FEATURE_VERTEX_B:
+        return 1
+    if feature_type == TRI_CONTACT_FEATURE_VERTEX_C:
+        return 2
+    if feature_type == TRI_CONTACT_FEATURE_EDGE_AB:
+        return 3
+    if feature_type == TRI_CONTACT_FEATURE_EDGE_BC:
+        return 4
+    if feature_type == TRI_CONTACT_FEATURE_EDGE_AC:
+        return 5
+    return -1
+
+
+@wp.func
+def _tri_feature_kind(feature_type: int):
+    if (
+        feature_type == TRI_CONTACT_FEATURE_VERTEX_A
+        or feature_type == TRI_CONTACT_FEATURE_VERTEX_B
+        or feature_type == TRI_CONTACT_FEATURE_VERTEX_C
+    ):
+        return SOFT_CONTACT_KIND_VERTEX
+    if (
+        feature_type == TRI_CONTACT_FEATURE_EDGE_AB
+        or feature_type == TRI_CONTACT_FEATURE_EDGE_BC
+        or feature_type == TRI_CONTACT_FEATURE_EDGE_AC
+    ):
+        return SOFT_CONTACT_KIND_EDGE
+    return SOFT_CONTACT_KIND_FACE
+
+
+@wp.func
+def _tri_feature_particle(tri_indices: wp.array2d[wp.int32], tri_index: int, feature_type: int):
+    if feature_type == TRI_CONTACT_FEATURE_VERTEX_A:
+        return tri_indices[tri_index, 0]
+    if feature_type == TRI_CONTACT_FEATURE_VERTEX_B:
+        return tri_indices[tri_index, 1]
+    if feature_type == TRI_CONTACT_FEATURE_VERTEX_C:
+        return tri_indices[tri_index, 2]
+    return -1
+
+
+@wp.func
+def _tri_feature_radius(feature_type: int, r0: float, r1: float, r2: float):
+    if feature_type == TRI_CONTACT_FEATURE_VERTEX_A:
+        return r0
+    if feature_type == TRI_CONTACT_FEATURE_VERTEX_B:
+        return r1
+    if feature_type == TRI_CONTACT_FEATURE_VERTEX_C:
+        return r2
+    if feature_type == TRI_CONTACT_FEATURE_EDGE_AB:
+        return wp.max(r0, r1)
+    if feature_type == TRI_CONTACT_FEATURE_EDGE_BC:
+        return wp.max(r1, r2)
+    if feature_type == TRI_CONTACT_FEATURE_EDGE_AC:
+        return wp.max(r0, r2)
+    return wp.max(wp.max(r0, r1), r2)
+
+
+@wp.func
+def _tri_feature_is_owned(owner_flag: wp.uint8, feature_type: int):
+    bit = _tri_feature_owner_bit(feature_type)
+    if bit < 0:
+        return True
+    return (int(owner_flag) & (1 << bit)) != 0
+
+
+@wp.func
+def _soft_edge_points(slot: int, p0: wp.vec3, p1: wp.vec3, p2: wp.vec3):
+    a = p0
+    b = p1
+    if slot == 1:
+        a = p1
+        b = p2
+    elif slot == 2:
+        a = p2
+        b = p0
+    return a, b
+
+
+@wp.func
+def _soft_edge_bary(slot: int, t: float):
+    if slot == 0:
+        return wp.vec3(1.0 - t, t, 0.0)
+    if slot == 1:
+        return wp.vec3(0.0, 1.0 - t, t)
+    return wp.vec3(t, 0.0, 1.0 - t)
+
+
+@wp.func
+def _emit_triangle_point_contact(
+    source_tid: int,
+    tri_index: int,
+    shape_index: int,
+    owner_flag: wp.uint8,
+    tri_indices: wp.array2d[wp.int32],
+    p0: wp.vec3,
+    p1: wp.vec3,
+    p2: wp.vec3,
+    r0: float,
+    r1: float,
+    r2: float,
+    fallback_normal: wp.vec3,
+    rigid_world: wp.vec3,
+    rigid_body: wp.vec3,
+    rigid_body_vel: wp.vec3,
+    contact_normal: wp.vec3,
+    contact_margin: float,
+    soft_contact_max: int,
+    soft_contact_count: wp.array[int],
+    soft_contact_primitive: wp.array[int],
+    soft_contact_kind: wp.array[wp.uint8],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_radius: wp.array[float],
+    soft_contact_particle: wp.array[int],
+    soft_contact_shape: wp.array[int],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    soft_contact_tids: wp.array[int],
+):
+    soft_point, bary, feature_type = triangle_closest_point(p0, p1, p2, rigid_world)
+    normal = contact_normal
+    if wp.length(normal) < 1.0e-8:
+        normal = soft_point - rigid_world
+    if wp.length(normal) < 1.0e-8:
+        normal = fallback_normal
+    normal = wp.normalize(normal)
+
+    contact_radius = _tri_feature_radius(feature_type, r0, r1, r2)
+    distance = wp.dot(normal, soft_point - rigid_world)
+    if distance < contact_margin + contact_radius and _tri_feature_is_owned(owner_flag, feature_type):
+        _emit_soft_contact(
+            source_tid,
+            soft_contact_max,
+            tri_index,
+            _tri_feature_kind(feature_type),
+            bary,
+            contact_radius,
+            _tri_feature_particle(tri_indices, tri_index, feature_type),
+            shape_index,
+            rigid_body,
+            rigid_body_vel,
+            normal,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_radius,
+            soft_contact_particle,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
+            soft_contact_tids,
+        )
+
+
+@wp.func
+def _emit_triangle_edge_contact(
+    source_tid: int,
+    tri_index: int,
+    shape_index: int,
+    slot: int,
+    soft_a: wp.vec3,
+    soft_b: wp.vec3,
+    rigid_a_world: wp.vec3,
+    rigid_b_world: wp.vec3,
+    rigid_a_body: wp.vec3,
+    rigid_b_body: wp.vec3,
+    fallback_normal: wp.vec3,
+    contact_radius: float,
+    contact_margin: float,
+    edge_edge_parallel_epsilon: float,
+    soft_contact_max: int,
+    soft_contact_count: wp.array[int],
+    soft_contact_primitive: wp.array[int],
+    soft_contact_kind: wp.array[wp.uint8],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_radius: wp.array[float],
+    soft_contact_particle: wp.array[int],
+    soft_contact_shape: wp.array[int],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    soft_contact_tids: wp.array[int],
+):
+    closest = wp.closest_point_edge_edge(soft_a, soft_b, rigid_a_world, rigid_b_world, edge_edge_parallel_epsilon)
+    soft_t = closest[0]
+    rigid_t = closest[1]
+    distance = closest[2]
+
+    if distance < contact_margin + contact_radius:
+        soft_point = wp.lerp(soft_a, soft_b, soft_t)
+        rigid_point = wp.lerp(rigid_a_world, rigid_b_world, rigid_t)
+        normal = soft_point - rigid_point
+        if wp.length(normal) < 1.0e-8:
+            normal = fallback_normal
+        normal = wp.normalize(normal)
+
+        _emit_soft_contact(
+            source_tid,
+            soft_contact_max,
+            tri_index,
+            SOFT_CONTACT_KIND_EDGE,
+            _soft_edge_bary(slot, soft_t),
+            contact_radius,
+            -1,
+            shape_index,
+            wp.lerp(rigid_a_body, rigid_b_body, rigid_t),
+            wp.vec3(0.0),
+            normal,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_radius,
+            soft_contact_particle,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
+            soft_contact_tids,
+        )
+
+
+@wp.kernel
+def create_soft_contacts_particle_driven(
+    particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[int],  # World indices for particles
+    body_q: wp.array[wp.transform],
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_world: wp.array[int],  # World indices for shapes
+    shape_margin: wp.array[float],
+    margin: float,
+    soft_contact_max: int,
+    shape_count: int,
+    shape_flags: wp.array[wp.int32],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
+    particle_in_triangle: wp.array[int],
+    skip_triangle_particles: int,
+    # outputs
+    soft_contact_count: wp.array[int],
+    soft_contact_primitive: wp.array[int],
+    soft_contact_kind: wp.array[wp.uint8],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_radius: wp.array[float],
+    soft_contact_particle: wp.array[int],
+    soft_contact_shape: wp.array[int],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    soft_contact_tids: wp.array[int],
+):
+    tid = wp.tid()
+    particle_index, shape_index = tid // shape_count, tid % shape_count
+    if skip_triangle_particles != 0:
+        if particle_in_triangle[particle_index] != -1:
+            return
+    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+        return
+    if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+        return
+
+    # Check world indices
+    particle_world_id = particle_world[particle_index]
+    shape_world_id = shape_world[shape_index]
+
+    # Skip collision between different worlds (unless one is global)
+    if particle_world_id != -1 and shape_world_id != -1 and particle_world_id != shape_world_id:
+        return
+
+    rigid_index = shape_body[shape_index]
+
+    px = particle_q[particle_index]
+    radius = particle_radius[particle_index]
+
+    X_wb = wp.transform_identity()
+    if rigid_index >= 0:
+        X_wb = body_q[rigid_index]
+
+    X_bs = shape_transform[shape_index]
+
+    X_ws = wp.transform_multiply(X_wb, X_bs)
+    X_sw = wp.transform_inverse(X_ws)
+
+    # transform particle position to shape local space
+    x_local = wp.transform_point(X_sw, px)
+
+    # geo description
+    geo_type = shape_type[shape_index]
+    geo_scale = shape_scale[shape_index]
+
+    # evaluate shape sdf
+    contact_margin = margin + shape_margin[shape_index]
+    d, n, v = _query_shape_sdf(
+        shape_index,
+        x_local,
+        geo_type,
+        geo_scale,
+        shape_source_ptr,
+        shape_heightfield_index,
+        heightfield_data,
+        heightfield_elevations,
+        contact_margin + radius,
+    )
+
+    if d < contact_margin + radius:
+        body_pos = wp.transform_point(X_bs, x_local - n * d)
+        body_vel = wp.transform_vector(X_bs, v)
+        world_normal = wp.transform_vector(X_ws, n)
+
+        _emit_soft_contact(
+            tid,
+            soft_contact_max,
+            particle_index,
+            SOFT_CONTACT_KIND_PARTICLE,
+            wp.vec3(0.0),
+            radius,
+            particle_index,
+            shape_index,
+            body_pos,
+            body_vel,
+            world_normal,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_radius,
+            soft_contact_particle,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
+            soft_contact_tids,
+        )
+
+
+@wp.kernel
+def create_soft_contacts_triangle_driven(
+    particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[int],
+    tri_indices: wp.array2d[wp.int32],
+    tri_feature_owner_flag: wp.array[wp.uint8],
+    body_q: wp.array[wp.transform],
+    shape_transform: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_world: wp.array[int],
+    shape_margin: wp.array[float],
+    margin: float,
+    soft_contact_max: int,
+    shape_count: int,
+    shape_flags: wp.array[wp.int32],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
+    mesh_edge_indices: wp.array[wp.vec2i],
+    shape_edge_range: wp.array[wp.vec2i],
+    edge_edge_parallel_epsilon: float,
+    # outputs
+    soft_contact_count: wp.array[int],
+    soft_contact_primitive: wp.array[int],
+    soft_contact_kind: wp.array[wp.uint8],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_radius: wp.array[float],
+    soft_contact_particle: wp.array[int],
+    soft_contact_shape: wp.array[int],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    soft_contact_tids: wp.array[int],
+):
+    tid = wp.tid()
+    tri_index, shape_index = tid // shape_count, tid % shape_count
+
+    if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+        return
+
+    v0 = tri_indices[tri_index, 0]
+    v1 = tri_indices[tri_index, 1]
+    v2 = tri_indices[tri_index, 2]
+
+    flags0 = particle_flags[v0]
+    flags1 = particle_flags[v1]
+    flags2 = particle_flags[v2]
+    if (
+        (flags0 & ParticleFlags.ACTIVE) == 0
+        and (flags1 & ParticleFlags.ACTIVE) == 0
+        and (flags2 & ParticleFlags.ACTIVE) == 0
+    ):
+        return
+
+    particle_world_id = particle_world[v0]
+    shape_world_id = shape_world[shape_index]
+    if particle_world_id != -1 and shape_world_id != -1 and particle_world_id != shape_world_id:
+        return
+
+    p0 = particle_q[v0]
+    p1 = particle_q[v1]
+    p2 = particle_q[v2]
+    r0 = particle_radius[v0]
+    r1 = particle_radius[v1]
+    r2 = particle_radius[v2]
+
+    owner_flag = tri_feature_owner_flag[tri_index]
+    tri_normal = wp.cross(p1 - p0, p2 - p0)
+    if wp.length(tri_normal) < 1.0e-8:
+        return
+    tri_normal = wp.normalize(tri_normal)
+
+    rigid_index = shape_body[shape_index]
+    X_wb = wp.transform_identity()
+    if rigid_index >= 0:
+        X_wb = body_q[rigid_index]
+
+    X_bs = shape_transform[shape_index]
+    X_ws = wp.transform_multiply(X_wb, X_bs)
+    X_sw = wp.transform_inverse(X_ws)
+
+    geo_type = shape_type[shape_index]
+    geo_scale = shape_scale[shape_index]
+    contact_margin = margin + shape_margin[shape_index]
+
+    # Owned vertex contacts: same shape query as the particle-driven path,
+    # grouped by triangle ownership.
+    for slot in range(3):
+        owns_vertex = (int(owner_flag) & (1 << slot)) != 0
+        particle_index = v0
+        particle_pos = p0
+        radius = r0
+        if slot == 1:
+            particle_index = v1
+            particle_pos = p1
+            radius = r1
+        elif slot == 2:
+            particle_index = v2
+            particle_pos = p2
+            radius = r2
+
+        if owns_vertex and (particle_flags[particle_index] & ParticleFlags.ACTIVE) != 0:
+            x_local = wp.transform_point(X_sw, particle_pos)
+            d, n, shape_v = _query_shape_sdf(
+                shape_index,
+                x_local,
+                geo_type,
+                geo_scale,
+                shape_source_ptr,
+                shape_heightfield_index,
+                heightfield_data,
+                heightfield_elevations,
+                contact_margin + radius,
+            )
+
+            if d < contact_margin + radius:
+                bary = wp.vec3(1.0, 0.0, 0.0)
+                if slot == 1:
+                    bary = wp.vec3(0.0, 1.0, 0.0)
+                elif slot == 2:
+                    bary = wp.vec3(0.0, 0.0, 1.0)
+
+                _emit_soft_contact(
+                    tid,
+                    soft_contact_max,
+                    tri_index,
+                    SOFT_CONTACT_KIND_VERTEX,
+                    bary,
+                    radius,
+                    particle_index,
+                    shape_index,
+                    wp.transform_point(X_bs, x_local - n * d),
+                    wp.transform_vector(X_bs, shape_v),
+                    wp.transform_vector(X_ws, n),
+                    soft_contact_count,
+                    soft_contact_primitive,
+                    soft_contact_kind,
+                    soft_contact_barycentric,
+                    soft_contact_radius,
+                    soft_contact_particle,
+                    soft_contact_shape,
+                    soft_contact_body_pos,
+                    soft_contact_body_vel,
+                    soft_contact_normal,
+                    soft_contact_tids,
+                )
+
+    if geo_type == GeoType.SPHERE:
+        center_local = wp.vec3(0.0)
+        center_world = wp.transform_point(X_ws, center_local)
+        closest, _bary, _feature = triangle_closest_point(p0, p1, p2, center_world)
+        normal = closest - center_world
+        if wp.length(normal) < 1.0e-8:
+            normal = tri_normal
+        normal = wp.normalize(normal)
+        surface_local = wp.normalize(wp.transform_vector(X_sw, normal)) * geo_scale[0]
+        _emit_triangle_point_contact(
+            tid,
+            tri_index,
+            shape_index,
+            owner_flag,
+            tri_indices,
+            p0,
+            p1,
+            p2,
+            r0,
+            r1,
+            r2,
+            tri_normal,
+            wp.transform_point(X_ws, surface_local),
+            wp.transform_point(X_bs, surface_local),
+            wp.vec3(0.0),
+            normal,
+            contact_margin,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_radius,
+            soft_contact_particle,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
+            soft_contact_tids,
+        )
+
+    if geo_type == GeoType.BOX:
+        for corner in range(8):
+            corner_local = _box_corner(corner, geo_scale)
+            corner_world = wp.transform_point(X_ws, corner_local)
+            closest, _bary, _feature = triangle_closest_point(p0, p1, p2, corner_world)
+            normal = closest - corner_world
+            if wp.length(normal) < 1.0e-8:
+                normal = tri_normal
+            _emit_triangle_point_contact(
+                tid,
+                tri_index,
+                shape_index,
+                owner_flag,
+                tri_indices,
+                p0,
+                p1,
+                p2,
+                r0,
+                r1,
+                r2,
+                tri_normal,
+                corner_world,
+                wp.transform_point(X_bs, corner_local),
+                wp.vec3(0.0),
+                normal,
+                contact_margin,
+                soft_contact_max,
+                soft_contact_count,
+                soft_contact_primitive,
+                soft_contact_kind,
+                soft_contact_barycentric,
+                soft_contact_radius,
+                soft_contact_particle,
+                soft_contact_shape,
+                soft_contact_body_pos,
+                soft_contact_body_vel,
+                soft_contact_normal,
+                soft_contact_tids,
+            )
+
+    if geo_type == GeoType.CAPSULE:
+        radius = geo_scale[0]
+        half_height = geo_scale[1]
+        for point_id in range(2):
+            z = -half_height - radius
+            if point_id == 1:
+                z = half_height + radius
+            point_local = wp.vec3(0.0, 0.0, z)
+            point_world = wp.transform_point(X_ws, point_local)
+            closest, _bary, _feature = triangle_closest_point(p0, p1, p2, point_world)
+            normal = closest - point_world
+            if wp.length(normal) < 1.0e-8:
+                normal = tri_normal
+            _emit_triangle_point_contact(
+                tid,
+                tri_index,
+                shape_index,
+                owner_flag,
+                tri_indices,
+                p0,
+                p1,
+                p2,
+                r0,
+                r1,
+                r2,
+                tri_normal,
+                point_world,
+                wp.transform_point(X_bs, point_local),
+                wp.vec3(0.0),
+                normal,
+                contact_margin,
+                soft_contact_max,
+                soft_contact_count,
+                soft_contact_primitive,
+                soft_contact_kind,
+                soft_contact_barycentric,
+                soft_contact_radius,
+                soft_contact_particle,
+                soft_contact_shape,
+                soft_contact_body_pos,
+                soft_contact_body_vel,
+                soft_contact_normal,
+                soft_contact_tids,
+            )
+
+    if geo_type == GeoType.CYLINDER:
+        radius = geo_scale[0]
+        half_height = geo_scale[1]
+        for point_id in range(9):
+            point_local = wp.vec3(0.0, 0.0, -half_height)
+            if point_id < 8:
+                point_local = _circle_sample(point_id, radius, -half_height)
+            point_world = wp.transform_point(X_ws, point_local)
+            closest, _bary, _feature = triangle_closest_point(p0, p1, p2, point_world)
+            normal = closest - point_world
+            if wp.length(normal) < 1.0e-8:
+                normal = tri_normal
+            _emit_triangle_point_contact(
+                tid,
+                tri_index,
+                shape_index,
+                owner_flag,
+                tri_indices,
+                p0,
+                p1,
+                p2,
+                r0,
+                r1,
+                r2,
+                tri_normal,
+                point_world,
+                wp.transform_point(X_bs, point_local),
+                wp.vec3(0.0),
+                normal,
+                contact_margin,
+                soft_contact_max,
+                soft_contact_count,
+                soft_contact_primitive,
+                soft_contact_kind,
+                soft_contact_barycentric,
+                soft_contact_radius,
+                soft_contact_particle,
+                soft_contact_shape,
+                soft_contact_body_pos,
+                soft_contact_body_vel,
+                soft_contact_normal,
+                soft_contact_tids,
+            )
+
+    if geo_type == GeoType.CONE:
+        radius = geo_scale[0]
+        half_height = geo_scale[1]
+        for point_id in range(10):
+            point_local = wp.vec3(0.0, 0.0, -half_height)
+            if point_id < 8:
+                point_local = _circle_sample(point_id, radius, -half_height)
+            elif point_id == 9:
+                point_local = wp.vec3(0.0, 0.0, half_height)
+            point_world = wp.transform_point(X_ws, point_local)
+            closest, _bary, _feature = triangle_closest_point(p0, p1, p2, point_world)
+            normal = closest - point_world
+            if wp.length(normal) < 1.0e-8:
+                normal = tri_normal
+            _emit_triangle_point_contact(
+                tid,
+                tri_index,
+                shape_index,
+                owner_flag,
+                tri_indices,
+                p0,
+                p1,
+                p2,
+                r0,
+                r1,
+                r2,
+                tri_normal,
+                point_world,
+                wp.transform_point(X_bs, point_local),
+                wp.vec3(0.0),
+                normal,
+                contact_margin,
+                soft_contact_max,
+                soft_contact_count,
+                soft_contact_primitive,
+                soft_contact_kind,
+                soft_contact_barycentric,
+                soft_contact_radius,
+                soft_contact_particle,
+                soft_contact_shape,
+                soft_contact_body_pos,
+                soft_contact_body_vel,
+                soft_contact_normal,
+                soft_contact_tids,
+            )
+
+    if geo_type == GeoType.MESH:
+        mesh = wp.mesh_get(shape_source_ptr[shape_index])
+        for point_id in range(mesh.points.shape[0]):
+            point_local = wp.cw_mul(mesh.points[point_id], geo_scale)
+            point_world = wp.transform_point(X_ws, point_local)
+            closest, _bary, _feature = triangle_closest_point(p0, p1, p2, point_world)
+            normal = closest - point_world
+            if wp.length(normal) < 1.0e-8:
+                normal = tri_normal
+            _emit_triangle_point_contact(
+                tid,
+                tri_index,
+                shape_index,
+                owner_flag,
+                tri_indices,
+                p0,
+                p1,
+                p2,
+                r0,
+                r1,
+                r2,
+                tri_normal,
+                point_world,
+                wp.transform_point(X_bs, point_local),
+                wp.vec3(0.0),
+                normal,
+                contact_margin,
+                soft_contact_max,
+                soft_contact_count,
+                soft_contact_primitive,
+                soft_contact_kind,
+                soft_contact_barycentric,
+                soft_contact_radius,
+                soft_contact_particle,
+                soft_contact_shape,
+                soft_contact_body_pos,
+                soft_contact_body_vel,
+                soft_contact_normal,
+                soft_contact_tids,
+            )
+
+    # Owned soft edges against rigid box/mesh edges.
+    for slot in range(3):
+        owns_edge = (int(owner_flag) & (1 << (slot + 3))) != 0
+        if owns_edge:
+            soft_a, soft_b = _soft_edge_points(slot, p0, p1, p2)
+            edge_radius = wp.max(r0, r1)
+            if slot == 1:
+                edge_radius = wp.max(r1, r2)
+            elif slot == 2:
+                edge_radius = wp.max(r2, r0)
+
+            if geo_type == GeoType.BOX:
+                for edge_id in range(12):
+                    edge_a_local, edge_b_local = _box_edge(edge_id, geo_scale)
+                    _emit_triangle_edge_contact(
+                        tid,
+                        tri_index,
+                        shape_index,
+                        slot,
+                        soft_a,
+                        soft_b,
+                        wp.transform_point(X_ws, edge_a_local),
+                        wp.transform_point(X_ws, edge_b_local),
+                        wp.transform_point(X_bs, edge_a_local),
+                        wp.transform_point(X_bs, edge_b_local),
+                        tri_normal,
+                        edge_radius,
+                        contact_margin,
+                        edge_edge_parallel_epsilon,
+                        soft_contact_max,
+                        soft_contact_count,
+                        soft_contact_primitive,
+                        soft_contact_kind,
+                        soft_contact_barycentric,
+                        soft_contact_radius,
+                        soft_contact_particle,
+                        soft_contact_shape,
+                        soft_contact_body_pos,
+                        soft_contact_body_vel,
+                        soft_contact_normal,
+                        soft_contact_tids,
+                    )
+
+            if geo_type == GeoType.MESH:
+                mesh = wp.mesh_get(shape_source_ptr[shape_index])
+                edge_range = shape_edge_range[shape_index]
+                edge_start = edge_range[0]
+                edge_count = edge_range[1]
+                for edge_offset in range(edge_count):
+                    edge = mesh_edge_indices[edge_start + edge_offset]
+                    edge_a_local = wp.cw_mul(mesh.points[edge[0]], geo_scale)
+                    edge_b_local = wp.cw_mul(mesh.points[edge[1]], geo_scale)
+                    _emit_triangle_edge_contact(
+                        tid,
+                        tri_index,
+                        shape_index,
+                        slot,
+                        soft_a,
+                        soft_b,
+                        wp.transform_point(X_ws, edge_a_local),
+                        wp.transform_point(X_ws, edge_b_local),
+                        wp.transform_point(X_bs, edge_a_local),
+                        wp.transform_point(X_bs, edge_b_local),
+                        tri_normal,
+                        edge_radius,
+                        contact_margin,
+                        edge_edge_parallel_epsilon,
+                        soft_contact_max,
+                        soft_contact_count,
+                        soft_contact_primitive,
+                        soft_contact_kind,
+                        soft_contact_barycentric,
+                        soft_contact_radius,
+                        soft_contact_particle,
+                        soft_contact_shape,
+                        soft_contact_body_pos,
+                        soft_contact_body_vel,
+                        soft_contact_normal,
+                        soft_contact_tids,
+                    )
+
+
+create_soft_contacts = create_soft_contacts_particle_driven
 
 
 # --------------------------------------

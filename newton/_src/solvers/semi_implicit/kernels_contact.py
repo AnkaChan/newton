@@ -37,7 +37,7 @@ def eval_particle_contact(
     grid: wp.uint64,
     particle_x: wp.array[wp.vec3],
     particle_v: wp.array[wp.vec3],
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     particle_flags: wp.array[wp.int32],
     k_contact: float,
     k_damp: float,
@@ -181,6 +181,8 @@ def eval_particle_body_contact(
     shape_index = contact_shape[tid]
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
+    if particle_index < 0:
+        return
     if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
         return
 
@@ -201,7 +203,7 @@ def eval_particle_body_contact(
     r = bx - wp.transform_point(X_wb, X_com)
 
     n = contact_normal[tid]
-    c = wp.dot(n, px - bx) - particle_radius[particle_index]
+    c = wp.dot(n, px - bx) - soft_contact_radius[tid]
 
     if c > particle_ka:
         return
@@ -565,7 +567,7 @@ def eval_particle_contact_forces(model: Model, state: State, particle_f: wp.arra
                 model.particle_grid.id,
                 state.particle_q,
                 state.particle_qd,
-                model.particle_radius,
+                contacts.soft_contact_radius,
                 model.particle_flags,
                 model.particle_ke,
                 model.particle_kd,

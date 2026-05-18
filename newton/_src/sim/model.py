@@ -1002,6 +1002,7 @@ class Model:
         contacts: Contacts | None = None,
         *,
         collision_pipeline: CollisionPipeline | None = None,
+        water_tight_soft_rigid: bool = False,
     ) -> Contacts:
         """
         Generate contact points for the particles and rigid bodies in the model using the default collision
@@ -1012,6 +1013,8 @@ class Model:
             contacts: The contacts buffer to populate (will be cleared first). If None, a new
                 contacts buffer is allocated via :meth:`contacts`.
             collision_pipeline: Optional collision pipeline override.
+            water_tight_soft_rigid: Use triangle-owned soft-rigid contacts
+                for triangulated particles.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
@@ -1021,7 +1024,7 @@ class Model:
         if contacts is None:
             contacts = self._collision_pipeline.contacts()
 
-        self._collision_pipeline.collide(state, contacts)
+        self._collision_pipeline.collide(state, contacts, water_tight_soft_rigid=water_tight_soft_rigid)
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:

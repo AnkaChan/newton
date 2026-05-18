@@ -36,7 +36,7 @@ def apply_particle_shape_restitution(
     particle_v_new: wp.array[wp.vec3],
     particle_x_old: wp.array[wp.vec3],
     particle_v_old: wp.array[wp.vec3],
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     particle_flags: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
@@ -65,6 +65,8 @@ def apply_particle_shape_restitution(
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
 
+    if particle_index < 0:
+        return
     if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
         return
 
@@ -85,7 +87,7 @@ def apply_particle_shape_restitution(
     bx = wp.transform_point(X_wb, contact_body_pos[tid])
 
     n = contact_normal[tid]
-    c = wp.dot(n, px - bx) - particle_radius[particle_index]
+    c = wp.dot(n, px - bx) - soft_contact_radius[tid]
 
     if c > particle_ka:
         return
@@ -116,7 +118,7 @@ def solve_particle_shape_contacts(
     particle_x: wp.array[wp.vec3],
     particle_v: wp.array[wp.vec3],
     particle_invmass: wp.array[float],
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     particle_flags: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -150,6 +152,8 @@ def solve_particle_shape_contacts(
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
 
+    if particle_index < 0:
+        return
     if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
         return
 
@@ -168,7 +172,7 @@ def solve_particle_shape_contacts(
     r = bx - wp.transform_point(X_wb, X_com)
 
     n = contact_normal[tid]
-    c = wp.dot(n, px - bx) - particle_radius[particle_index]
+    c = wp.dot(n, px - bx) - soft_contact_radius[tid]
 
     if c > particle_ka:
         return

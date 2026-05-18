@@ -13,6 +13,12 @@ import warp as wp
 
 import newton
 from newton import ModelBuilder
+from newton._src.geometry.kernels import (
+    SOFT_CONTACT_KIND_EDGE,
+    SOFT_CONTACT_KIND_FACE,
+    SOFT_CONTACT_KIND_PARTICLE,
+    SOFT_CONTACT_KIND_VERTEX,
+)
 from newton._src.geometry.utils import transform_points
 from newton._src.utils.mesh import MeshAdjacency
 from newton.tests.unittest_utils import assert_np_equal
@@ -235,6 +241,141 @@ class TestModelMesh(unittest.TestCase):
         np.testing.assert_array_equal(particle_in_triangle, np.array([0, 0, 1, 2, 2], dtype=np.int32))
         self.assertTrue(tri_flags[0] & (1 << 3))
         self.assertFalse(tri_flags[1] & (1 << 5))
+
+    def test_soft_contact_schema_particle_driven(self):
+        builder = ModelBuilder(gravity=0.0)
+        builder.add_shape_sphere(
+            body=-1,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            radius=1.0,
+        )
+        builder.add_particle(wp.vec3(0.0, 0.0, 1.05), wp.vec3(0.0), 1.0, radius=0.1)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            soft_contact_margin=0.1,
+            soft_contact_max=8,
+        )
+
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        soft_count = int(contacts.soft_contact_count.numpy()[0])
+
+        self.assertEqual(soft_count, 1)
+        self.assertEqual(int(contacts.soft_contact_primitive.numpy()[0]), 0)
+        self.assertEqual(int(contacts.soft_contact_particle.numpy()[0]), 0)
+        self.assertEqual(int(contacts.soft_contact_kind.numpy()[0]), int(SOFT_CONTACT_KIND_PARTICLE))
+        self.assertAlmostEqual(float(contacts.soft_contact_radius.numpy()[0]), 0.1)
+        np.testing.assert_array_equal(contacts.soft_contact_barycentric.numpy()[0], np.zeros(3, dtype=np.float32))
+
+    def test_water_tight_soft_rigid_emits_face_contact(self):
+        builder = ModelBuilder(gravity=0.0)
+        builder.add_shape_sphere(
+            body=-1,
+            xform=wp.transform(wp.vec3(0.0, 0.0, -0.05), wp.quat_identity()),
+            radius=0.04,
+        )
+        for pos, radius in (
+            ((-1.0, -1.0, 0.0), 0.01),
+            ((1.0, -1.0, 0.0), 0.02),
+            ((0.0, 1.0, 0.0), 0.03),
+        ):
+            builder.add_particle(wp.vec3(*pos), wp.vec3(0.0), 1.0, radius=radius)
+        builder.add_triangle(0, 1, 2)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            soft_contact_margin=0.03,
+            soft_contact_max=16,
+        )
+        state = model.state()
+
+        legacy_contacts = pipeline.contacts()
+        pipeline.collide(state, legacy_contacts)
+        self.assertEqual(int(legacy_contacts.soft_contact_count.numpy()[0]), 0)
+
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts, water_tight_soft_rigid=True)
+        soft_count = int(contacts.soft_contact_count.numpy()[0])
+        bary = contacts.soft_contact_barycentric.numpy()[0]
+
+        self.assertEqual(soft_count, 1)
+        self.assertEqual(int(contacts.soft_contact_primitive.numpy()[0]), 0)
+        self.assertEqual(int(contacts.soft_contact_particle.numpy()[0]), -1)
+        self.assertEqual(int(contacts.soft_contact_kind.numpy()[0]), int(SOFT_CONTACT_KIND_FACE))
+        self.assertAlmostEqual(float(contacts.soft_contact_radius.numpy()[0]), 0.03)
+        self.assertTrue(np.all(bary > 0.0))
+        self.assertAlmostEqual(float(np.sum(bary)), 1.0)
+
+    def test_water_tight_soft_rigid_edge_contacts_use_endpoint_radius(self):
+        builder = ModelBuilder(gravity=0.0)
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(wp.vec3(0.0, 0.055, 0.0), wp.quat_identity()),
+            hx=0.5,
+            hy=0.005,
+            hz=0.005,
+        )
+        vertices = [(-0.5, 0.0, 0.0), (0.5, 0.0, 0.0), (0.0, 1.0, 0.0)]
+        radii = np.array([0.01, 0.04, 0.02], dtype=np.float32)
+        for pos, radius in zip(vertices, radii, strict=True):
+            builder.add_particle(wp.vec3(*pos), wp.vec3(0.0), 1.0, radius=float(radius))
+        builder.add_triangle(0, 1, 2)
+        builder._add_soft_mesh_edges_from_triangles(0, builder.tri_count)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            soft_contact_margin=0.02,
+            soft_contact_max=64,
+        )
+
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts, water_tight_soft_rigid=True)
+        soft_count = int(contacts.soft_contact_count.numpy()[0])
+        kinds = contacts.soft_contact_kind.numpy()[:soft_count]
+        edge_contact_ids = np.flatnonzero(kinds == int(SOFT_CONTACT_KIND_EDGE))
+
+        self.assertGreater(edge_contact_ids.size, 0)
+        checked_edge_radii = 0
+        for contact_id in edge_contact_ids:
+            bary = contacts.soft_contact_barycentric.numpy()[contact_id]
+            vertex_ids = np.flatnonzero(bary > 1.0e-6)
+            if vertex_ids.size != 2:
+                continue
+            self.assertAlmostEqual(
+                float(contacts.soft_contact_radius.numpy()[contact_id]), float(np.max(radii[vertex_ids]))
+            )
+            checked_edge_radii += 1
+        self.assertGreater(checked_edge_radii, 0)
+
+    def test_water_tight_soft_rigid_vertex_contacts_resolve_particles(self):
+        builder = ModelBuilder(gravity=0.0)
+        builder.add_ground_plane()
+        for pos in ((0.0, 0.0, 0.02), (1.0, 0.0, 0.02), (0.0, 1.0, 0.02)):
+            builder.add_particle(wp.vec3(*pos), wp.vec3(0.0), 1.0, radius=0.01)
+        builder.add_triangle(0, 1, 2)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(
+            model,
+            broad_phase="nxn",
+            soft_contact_margin=0.05,
+            soft_contact_max=16,
+        )
+
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts, water_tight_soft_rigid=True)
+        soft_count = int(contacts.soft_contact_count.numpy()[0])
+
+        self.assertEqual(soft_count, 3)
+        np.testing.assert_array_equal(np.sort(contacts.soft_contact_particle.numpy()[:soft_count]), np.arange(3))
+        np.testing.assert_array_equal(
+            contacts.soft_contact_kind.numpy()[:soft_count],
+            np.full(soft_count, int(SOFT_CONTACT_KIND_VERTEX), dtype=np.uint8),
+        )
+        np.testing.assert_allclose(contacts.soft_contact_radius.numpy()[:soft_count], 0.01)
 
     def test_manual_soft_mesh_adjacency_placeholders_finalize(self):
         builder = ModelBuilder()

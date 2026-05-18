@@ -761,7 +761,7 @@ def _eval_body_particle_contact(
     body_particle_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
@@ -791,7 +791,7 @@ def _eval_body_particle_contact(
     bx = wp.transform_point(X_wb, contact_body_pos[contact_index])
     n = contact_normal[contact_index]
 
-    penetration_depth = -(wp.dot(n, particle_pos - bx) - particle_radius[particle_index])
+    penetration_depth = -(wp.dot(n, particle_pos - bx) - soft_contact_radius[contact_index])
     if penetration_depth > 0.0:
         dx = particle_pos - particle_prev_pos
 
@@ -827,6 +827,30 @@ def _eval_body_particle_contact(
 
 
 @wp.func
+def _soft_contact_point(
+    contact_index: int,
+    soft_contact_particle: wp.array[int],
+    soft_contact_primitive: wp.array[int],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    particle_q: wp.array[wp.vec3],
+):
+    particle_idx = soft_contact_particle[contact_index]
+    if particle_idx >= 0:
+        return particle_q[particle_idx]
+
+    tri_idx = soft_contact_primitive[contact_index]
+    if tri_idx < 0:
+        return wp.vec3(0.0)
+
+    bary = soft_contact_barycentric[contact_index]
+    v0 = tri_indices[tri_idx, 0]
+    v1 = tri_indices[tri_idx, 1]
+    v2 = tri_indices[tri_idx, 2]
+    return particle_q[v0] * bary[0] + particle_q[v1] * bary[1] + particle_q[v2] * bary[2]
+
+
+@wp.func
 def evaluate_body_particle_contact(
     particle_index: int,
     particle_pos: wp.vec3,
@@ -836,7 +860,7 @@ def evaluate_body_particle_contact(
     body_particle_contact_kd: float,
     friction_mu: float,
     friction_epsilon: float,
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     shape_material_mu: wp.array[float],
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -866,7 +890,7 @@ def evaluate_body_particle_contact(
         body_particle_contact_kd,
         mixed_mu,
         friction_epsilon,
-        particle_radius,
+        soft_contact_radius,
         shape_body,
         body_q,
         body_q_prev,
@@ -2759,7 +2783,7 @@ def accumulate_body_particle_contacts_per_body(
     # Particle state
     particle_q: wp.array[wp.vec3],
     particle_q_prev: wp.array[wp.vec3],
-    particle_radius: wp.array[float],
+    soft_contact_radius: wp.array[float],
     # Rigid body state
     body_q_prev: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
@@ -2773,6 +2797,9 @@ def accumulate_body_particle_contacts_per_body(
     # Soft contact data (body-particle)
     body_particle_contact_count: wp.array[int],
     body_particle_contact_particle: wp.array[int],
+    body_particle_contact_primitive: wp.array[int],
+    body_particle_contact_barycentric: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
     body_particle_contact_body_pos: wp.array[wp.vec3],
     body_particle_contact_body_vel: wp.array[wp.vec3],
     body_particle_contact_normal: wp.array[wp.vec3],
@@ -2834,17 +2861,31 @@ def accumulate_body_particle_contacts_per_body(
             i += _NUM_CONTACT_THREADS_PER_BODY
             continue
 
-        particle_idx = body_particle_contact_particle[contact_idx]
-        if particle_idx < 0:
+        soft_pos = _soft_contact_point(
+            contact_idx,
+            body_particle_contact_particle,
+            body_particle_contact_primitive,
+            body_particle_contact_barycentric,
+            tri_indices,
+            particle_q,
+        )
+        soft_pos_prev = _soft_contact_point(
+            contact_idx,
+            body_particle_contact_particle,
+            body_particle_contact_primitive,
+            body_particle_contact_barycentric,
+            tri_indices,
+            particle_q_prev,
+        )
+        if body_particle_contact_particle[contact_idx] < 0 and body_particle_contact_primitive[contact_idx] < 0:
             i += _NUM_CONTACT_THREADS_PER_BODY
             continue
 
-        particle_pos = particle_q[particle_idx]
         cp_local = body_particle_contact_body_pos[contact_idx]
         cp_world = wp.transform_point(X_wb, cp_local)
         n = body_particle_contact_normal[contact_idx]
-        radius = particle_radius[particle_idx]
-        penetration_depth = -(wp.dot(n, particle_pos - cp_world) - radius)
+        radius = soft_contact_radius[contact_idx]
+        penetration_depth = -(wp.dot(n, soft_pos - cp_world) - radius)
 
         if penetration_depth <= 0.0:
             i += _NUM_CONTACT_THREADS_PER_BODY
@@ -2852,7 +2893,7 @@ def accumulate_body_particle_contacts_per_body(
 
         bx_prev = wp.transform_point(X_wb_prev, cp_local)
         bv = (cp_world - bx_prev) / dt + wp.transform_vector(X_wb, body_particle_contact_body_vel[contact_idx])
-        dx = particle_pos - particle_q_prev[particle_idx]
+        dx = soft_pos - soft_pos_prev
         relative_translation = dx - bv * dt
 
         force_on_particle, hessian_particle = _compute_body_particle_contact_force(
@@ -3676,11 +3717,14 @@ def update_duals_body_body_contacts(
 def update_duals_body_particle_contacts(
     body_particle_contact_count: wp.array[int],
     body_particle_contact_particle: wp.array[int],
+    body_particle_contact_primitive: wp.array[int],
+    body_particle_contact_barycentric: wp.array[wp.vec3],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
     body_particle_contact_normal: wp.array[wp.vec3],
     particle_q: wp.array[wp.vec3],
-    particle_radius: wp.array[float],
+    tri_indices: wp.array2d[wp.int32],
+    soft_contact_radius: wp.array[float],
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
     body_particle_contact_material_ke: wp.array[float],
@@ -3697,8 +3741,9 @@ def update_duals_body_particle_contacts(
     if idx >= body_particle_contact_count[0]:
         return
 
-    particle_idx = body_particle_contact_particle[idx]
     shape_idx = body_particle_contact_shape[idx]
+    if body_particle_contact_particle[idx] < 0 and body_particle_contact_primitive[idx] < 0:
+        return
     body_idx = shape_body[shape_idx] if shape_idx >= 0 else -1
 
     stiffness = body_particle_contact_material_ke[idx]
@@ -3708,8 +3753,15 @@ def update_duals_body_particle_contacts(
         X_wb = body_q[body_idx]
 
     cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[idx])
-    particle_pos = particle_q[particle_idx]
-    radius = particle_radius[particle_idx]
+    particle_pos = _soft_contact_point(
+        idx,
+        body_particle_contact_particle,
+        body_particle_contact_primitive,
+        body_particle_contact_barycentric,
+        tri_indices,
+        particle_q,
+    )
+    radius = soft_contact_radius[idx]
     n = body_particle_contact_normal[idx]
 
     penetration = -(wp.dot(n, particle_pos - cp_world) - radius)
