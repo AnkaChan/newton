@@ -48,9 +48,9 @@ PARAMS = {
     "sim_substeps": 20,
     "solver_iterations": 5,
     "cloth_density": 0.08,
-    "cloth_tri_ke": 5e6,
-    "cloth_tri_ka": 1e6,
-    "cloth_tri_kd": 5e2,
+    "cloth_tri_ke": 5e4,
+    "cloth_tri_ka": 1e4,
+    "cloth_tri_kd": 5e1,
     "cloth_edge_ke": 200.0,
     "cloth_edge_kd": 2e-1,
     "shape_density": 1000.0,
@@ -81,8 +81,8 @@ PARAMS = {
     "rigid_body_contact_buffer_size": 512,
     "integrate_with_external_rigid_solver": False,
     "particle_enable_self_contact": False,
-    "particle_self_contact_radius_scale": 1.0,
-    "particle_self_contact_margin_scale": 2.0,
+    "particle_self_contact_radius": 0.005,
+    "particle_self_contact_margin": 0.01,
     "particle_topological_contact_filter_threshold": 3,
     "rigid_contact_hard": False,
     "collision_broad_phase": "nxn",
@@ -101,7 +101,7 @@ PARAMS = {
     "ground_tolerance_particle_radius_scale": 3.0,
     "finger_shape_mu": 3.0,
     "finger_shape_ke": 1.0e6,
-    "finger_shape_kd": 1.0e3,
+    "finger_shape_kd": 1.0e1,
     "finger_pad_density": 1.0,
     "finger_pad_half_width_scale": 0.5,
     "finger_pad_half_thickness": 0.0075,
@@ -109,9 +109,8 @@ PARAMS = {
     "finger_pad_local_pos": (0.0, 0.00758, 0.0575),
     "finger_pad_left_label": "left_finger_bag_pad",
     "finger_pad_right_label": "right_finger_bag_pad",
-    "gripper_open_gap": 0.17,
-    "gripper_closed_gap": 0.003,
-    "gripper_joint_gap_scale": 0.5,
+    "gripper_open_gap": 0.08,
+    "gripper_closed_gap": 0.002,
     "gripper_open_frac": 0.0,
     "gripper_closed_frac": 1.0,
     "gripper_joint_indices": (7, 8),
@@ -446,10 +445,8 @@ class Example:
             rigid_body_particle_contact_buffer_size=self.params["rigid_body_particle_contact_buffer_size"],
             rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
             particle_enable_self_contact=self.params["particle_enable_self_contact"],
-            particle_self_contact_radius=self.info["particle_radius"]
-            * self.params["particle_self_contact_radius_scale"],
-            particle_self_contact_margin=self.info["particle_radius"]
-            * self.params["particle_self_contact_margin_scale"],
+            particle_self_contact_radius=self.params["particle_self_contact_radius"],
+            particle_self_contact_margin=self.params["particle_self_contact_margin"],
             particle_topological_contact_filter_threshold=self.params["particle_topological_contact_filter_threshold"],
             rigid_contact_hard=self.params["rigid_contact_hard"],
         )
@@ -662,8 +659,8 @@ class Example:
             self._graph_ik = None
 
     def _gripper_joint_value(self, gripper_frac):
-        open_value = self.params["gripper_open_gap"] * self.params["gripper_joint_gap_scale"]
-        closed_value = self.params["gripper_closed_gap"] * self.params["gripper_joint_gap_scale"]
+        open_value = self.params["gripper_open_gap"]
+        closed_value = self.params["gripper_closed_gap"]
         open_frac = self.params["gripper_open_frac"]
         closed_frac = self.params["gripper_closed_frac"]
         frac_range = closed_frac - open_frac
