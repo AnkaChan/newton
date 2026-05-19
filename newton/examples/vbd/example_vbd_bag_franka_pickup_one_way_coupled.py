@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import atexit
 import copy
 import os
 
@@ -29,9 +30,12 @@ import newton
 import newton.examples
 import newton.ik as ik
 import newton.utils
+from newton.viewer import ViewerUSD
 
 PARAMS = {
-    "shape_names": [],
+    "shape_names": [
+        # "mesh", "cone", "sphere", "box", "capsule", "cylinder"
+    ],
     "shape_size": 0.03,
     "shape_margin": 0.005,
     "shape_clearance_scale": 0.9,
@@ -487,6 +491,15 @@ class Example:
         if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
             self.viewer.camera.fov = self.params["camera_fov"]
 
+        usd_path = getattr(args, "usd_path", None)
+        if usd_path:
+            num_frames = getattr(args, "num_frames", self.params["settle_frames"])
+            self._usd_renderer = ViewerUSD(output_path=usd_path, fps=self.fps, num_frames=num_frames)
+            self._usd_renderer.set_model(self.model)
+            atexit.register(self._usd_renderer.close)
+        else:
+            self._usd_renderer = None
+
     def _add_robot(self, builder):
         asset_path = newton.utils.download_asset(self.params["franka_asset_name"])
         builder.add_urdf(
@@ -766,6 +779,11 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+        if self._usd_renderer is not None:
+            self._usd_renderer.begin_frame(self.sim_time)
+            self._usd_renderer.log_state(self.state_0)
+            self._usd_renderer.end_frame()
+
     def test_final(self):
         particle_q = self.state_0.particle_q.numpy()
         assert np.all(np.isfinite(particle_q)), "Bag particle positions contain non-finite values"
@@ -785,6 +803,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=PARAMS["seed"])
+        parser.add_argument("--usd-path", type=str, default=None, help="Export simulation to a USD file at this path")
         parser.set_defaults(num_frames=PARAMS["settle_frames"])
         return parser
 
