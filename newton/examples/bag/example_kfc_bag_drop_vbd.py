@@ -848,8 +848,6 @@ if __name__ == "__main__":
     )
 
     while viewer.is_running() and not example.capture_done:
-        if example._frame_count >= args.num_frames:
-            break
         example.step()
         example.render()
 

@@ -923,8 +923,6 @@ if __name__ == "__main__":
         small_pad=bool(args.small_pad),
     )
     while viewer.is_running() and not getattr(example, "capture_done", False):
-        if example._frame_count >= args.num_frames:
-            break
         example.step()
         example.render()
 
