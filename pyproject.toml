@@ -75,6 +75,7 @@ remesh = [
 examples = [
     "newton[sim]",          # include simulation dependencies
     "newton[importers]",    # include import dependencies
+    "h5py>=3.0",            # for example_table_cloth_vbd HDF5 recording replay
     "usd-core>=25.5 ; platform_machine != 'aarch64' and python_version < '3.14'",  # for examples that import pxr directly
     "pymeshlab>=2025.7.post1",  # for mesh decimation used by kfc bag related examples
     "cgal>=6.0.1 ; python_version < '3.13'",  # for CGAL isotropic remeshing used by kfc bag related examples
@@ -141,6 +142,7 @@ notebook = [
     "rerun-sdk[notebook]>=0.27.1; python_version < '3.14'",
     "jupyterlab>=4.4.10",
 ]
+
 
 [tool.hatch.version]
 path = "newton/_version.py"
