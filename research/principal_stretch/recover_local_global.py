@@ -43,6 +43,7 @@ class LocalGlobalRecover:
         tet_poses: np.ndarray,  # (T, 3, 3) Dm_inv
         pinned_indices: np.ndarray,  # (P,) int
         device: str = "cuda:0",
+        tikhonov: float = 0.0,
     ):
         self.device = device
         self.rest_q = rest_q.astype(np.float32)
@@ -66,6 +67,7 @@ class LocalGlobalRecover:
         J[:, 3] = self.tet_poses[:, 2]
         J[:, 0] = -(J[:, 1] + J[:, 2] + J[:, 3])
         self.J = J
+        self.tikhonov = float(tikhonov)
 
         self._assemble_L()
         self._partition_BC()
@@ -86,10 +88,15 @@ class LocalGlobalRecover:
         )
 
     def _partition_BC(self):
+        import scipy.sparse as sp
+
         mask = np.ones(self.n_verts, dtype=bool)
         mask[self.pinned] = False
         self.free = np.where(mask)[0]
-        self.L_ff = self.L[self.free][:, self.free].tocsc()
+        L_ff = self.L[self.free][:, self.free]
+        if self.tikhonov > 0.0:
+            L_ff = L_ff + self.tikhonov * sp.eye(self.free.size, format="csr")
+        self.L_ff = L_ff.tocsc()
         self.L_fp = self.L[self.free][:, self.pinned].tocsc()
 
     def _factorize(self):

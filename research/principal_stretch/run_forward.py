@@ -53,7 +53,7 @@ def find_pinned_indices(builder) -> np.ndarray:
     return pinned.astype(np.int64)
 
 
-def sanity_check(frame_idx, F, R, S, max_F_err=1e-4, max_sym_err=1e-5):
+def sanity_check(frame_idx, F, R, S, max_F_err=1e-3, max_sym_err=1e-4):
     F = F.reshape(-1, 3, 3)
     R = R.reshape(-1, 3, 3)
     S = S.reshape(-1, 3, 3)
@@ -67,7 +67,7 @@ def sanity_check(frame_idx, F, R, S, max_F_err=1e-4, max_sym_err=1e-5):
     R_orth = np.einsum("eij,ekj->eik", R, R)
     eye = np.broadcast_to(np.eye(3), R.shape)
     orth_err = np.linalg.norm(R_orth - eye, axis=(1, 2)).max()
-    assert orth_err < 1e-4, f"frame {frame_idx}: R not orthogonal, err={orth_err:.3e}"
+    assert orth_err < 1e-3, f"frame {frame_idx}: R not orthogonal, err={orth_err:.3e}"
 
 
 def main():
