@@ -81,7 +81,7 @@ def main():
     out_path = pathlib.Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     # ViewerUSD with up_axis="Y" since Newton's default scene is Y-up.
-    viewer = ViewerUSD(output_path=str(out_path), fps=args.fps, up_axis="Y", num_frames=n_frames)
+    viewer = ViewerUSD(output_path=str(out_path), fps=args.fps, up_axis="Z", num_frames=n_frames)
     viewer.set_model(model)
 
     sim_time = 0.0

@@ -50,13 +50,14 @@ def main():
     assert n_left == n_verts, f"{n_left} vs {n_verts}"
     state = model.state()
 
-    # Camera looking at the midpoint between the two grids.
+    # Newton is Z-up with gravity along -Z. Grids hang from +x=0 face and swing
+    # in -Z. For a true side view we look along -Y at the XZ plane.
     grid_center = np.array(
-        [x_offset / 2 + grid_width / 2, 1.0 + args.dim_y * args.cell / 2, args.dim_z * args.cell / 2]
+        [x_offset / 2 + grid_width / 2, args.dim_y * args.cell / 2, 1.0 - args.dim_z * args.cell / 2]
     )
     cam_target = tuple(float(v) for v in grid_center)
-    # Position camera a few metres in front and slightly above the centre.
-    cam_pos = (cam_target[0], cam_target[1] + 0.5, cam_target[2] + 3.5)
+    # Position camera a few metres along +Y (in front of the swing plane).
+    cam_pos = (cam_target[0], cam_target[1] + 3.5, cam_target[2] + 0.2)
 
     out_dir = pathlib.Path(args.out).parent
     out_dir.mkdir(parents=True, exist_ok=True)
