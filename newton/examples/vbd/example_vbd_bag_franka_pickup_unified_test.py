@@ -135,10 +135,10 @@ PARAMS = {
     "hand_body_suffix": "fr3_hand",
     "mesh_approximation_method": "convex_hull",
     "keep_visual_shapes": True,
-    "arm_drive_ke": 1000.0,
-    "arm_drive_kd": 100.0,
-    "gripper_drive_ke": 500.0,
-    "gripper_drive_kd": 50.0,
+    "arm_drive_ke": (4500.0, 4500.0, 3500.0, 3500.0, 2000.0, 2000.0, 2000.0),
+    "arm_drive_kd": (450.0, 450.0, 350.0, 350.0, 200.0, 200.0, 200.0),
+    "gripper_drive_ke": 100.0,
+    "gripper_drive_kd": 10.0,
     "ee_link_offset": (0.0, 0.0, 0.0),
     "grasp_xy": (0.0, 0.0),
     "grab_clearance": 0.09,
@@ -591,8 +591,8 @@ class Example:
         ke = self.model.joint_target_ke.numpy().copy()
         kd = self.model.joint_target_kd.numpy().copy()
         arm_n = self.params["arm_joint_count"]
-        ke[:arm_n] = self.params["arm_drive_ke"]
-        kd[:arm_n] = self.params["arm_drive_kd"]
+        ke[:arm_n] = self.params["arm_drive_ke"][:arm_n]
+        kd[:arm_n] = self.params["arm_drive_kd"][:arm_n]
         for ji in self.params["gripper_joint_indices"]:
             ke[ji] = self.params["gripper_drive_ke"]
             kd[ji] = self.params["gripper_drive_kd"]
