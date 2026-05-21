@@ -7,9 +7,10 @@
 # A Franka FR3 arm grasps the open top of a lunch-bag-sized VBD cloth bag
 # containing rigid bodies, then lifts and waves it.
 #
-# Uses a single VBD solver for both the robot (kinematic) and cloth/content.
-# The robot bodies are made kinematic (zero inverse mass) and positioned
-# via FK each frame; VBD handles cloth, rigid content, and all contacts.
+# Uses a single VBD solver for everything: robot dynamics, cloth, and
+# rigid content.  The robot arm is driven by PD joint drives whose
+# targets come from an IK solver each frame.  VBD integrates all
+# bodies and particles together.
 #
 # Derived from example_vbd_bag_franka_pickup_one_way_coupled.py to test
 # the unified VBD solve path with the resolve_drive_limit_mode fix.
@@ -134,8 +135,10 @@ PARAMS = {
     "hand_body_suffix": "fr3_hand",
     "mesh_approximation_method": "convex_hull",
     "keep_visual_shapes": True,
-    "robot_inv_mass": 0.0,
-    "robot_inv_inertia": 0.0,
+    "arm_drive_ke": 1000.0,
+    "arm_drive_kd": 100.0,
+    "gripper_drive_ke": 500.0,
+    "gripper_drive_kd": 50.0,
     "ee_link_offset": (0.0, 0.0, 0.0),
     "grasp_xy": (0.0, 0.0),
     "grab_clearance": 0.09,
@@ -426,14 +429,12 @@ class Example:
         self._current_waypoint = self.params["initial_waypoint"]
         self._time_in_waypoint = self.params["initial_waypoint_time"]
         self._gripper_frac = self.params["initial_gripper_frac"]
-        self._content_body_q_save: np.ndarray | None = None
 
         seed = getattr(args, "seed", self.params["seed"])
         builder = newton.ModelBuilder(gravity=self.params["gravity"])
 
         self._add_robot(builder)
         self.info = build_model(builder, self.params, seed=seed)
-        self._content_body_indices = np.array(self.info["body_indices"], dtype=np.int32)
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = self.params["soft_contact_ke"]
@@ -441,8 +442,7 @@ class Example:
         self.model.soft_contact_mu = self.params["soft_contact_mu"]
 
         self._configure_robot_contacts()
-        self._make_robot_kinematic()
-        self._sync_initial_fk_to_model()
+        self._configure_joint_drives()
 
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
@@ -469,6 +469,7 @@ class Example:
         self.control = self.model.control()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         wp.copy(self.state_1.body_q, self.state_0.body_q)
+        wp.copy(self.model.body_q, self.state_0.body_q)
 
         self._state_single = self._model_single.state()
         newton.eval_fk(self._model_single, self._model_single.joint_q, self._model_single.joint_qd, self._state_single)
@@ -586,18 +587,17 @@ class Example:
         self.model.shape_material_ke = wp.array(shape_ke, dtype=float, device=self.model.device)
         self.model.shape_material_kd = wp.array(shape_kd, dtype=float, device=self.model.device)
 
-    def _make_robot_kinematic(self):
-        inv_mass = self.model.body_inv_mass.numpy().copy()
-        inv_inertia = self.model.body_inv_inertia.numpy().copy()
-        inv_mass[: self._robot_body_count] = self.params["robot_inv_mass"]
-        inv_inertia[: self._robot_body_count] = self.params["robot_inv_inertia"]
-        self.model.body_inv_mass = wp.array(inv_mass, dtype=float, device=self.model.device)
-        self.model.body_inv_inertia = wp.array(inv_inertia, dtype=wp.mat33, device=self.model.device)
-
-    def _sync_initial_fk_to_model(self):
-        state = self.model.state()
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
-        wp.copy(self.model.body_q, state.body_q)
+    def _configure_joint_drives(self):
+        ke = self.model.joint_target_ke.numpy().copy()
+        kd = self.model.joint_target_kd.numpy().copy()
+        arm_n = self.params["arm_joint_count"]
+        ke[:arm_n] = self.params["arm_drive_ke"]
+        kd[:arm_n] = self.params["arm_drive_kd"]
+        for ji in self.params["gripper_joint_indices"]:
+            ke[ji] = self.params["gripper_drive_ke"]
+            kd[ji] = self.params["gripper_drive_kd"]
+        self.model.joint_target_ke = wp.array(ke, dtype=float, device=self.model.device)
+        self.model.joint_target_kd = wp.array(kd, dtype=float, device=self.model.device)
 
     def _tool_rotation(self):
         return wp.quat_from_axis_angle(
@@ -705,8 +705,8 @@ class Example:
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         wp.copy(self.state_1.body_q, self.state_0.body_q)
         wp.copy(self.model.body_q, self.state_0.body_q)
-        if getattr(self.solver, "body_q_prev", None) is not None:
-            wp.copy(self.solver.body_q_prev, self.state_0.body_q)
+
+        self._update_drive_targets()
 
     def _set_joint_targets(self):
         self._time_in_waypoint += self.frame_dt
@@ -734,31 +734,25 @@ class Example:
             self._current_waypoint += 1
             self._time_in_waypoint = 0.0
 
-    def simulate(self):
-        joint_q = self.state_0.joint_q.numpy().copy()
+    def _update_drive_targets(self):
         ik_solution = self._joint_q_ik.numpy()[0]
-        arm_joint_count = self.params["arm_joint_count"]
-        joint_q[:arm_joint_count] = ik_solution[:arm_joint_count]
+        arm_n = self.params["arm_joint_count"]
+        target_pos = np.zeros(self.model.joint_dof_count)
+        target_pos[:arm_n] = ik_solution[:arm_n]
         gripper_value = self._gripper_joint_value(self._gripper_frac)
-        for joint_index in self.params["gripper_joint_indices"]:
-            joint_q[joint_index] = gripper_value
-        self.state_0.joint_q.assign(wp.array(joint_q, dtype=float, device=self.model.device))
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        for ji in self.params["gripper_joint_indices"]:
+            target_pos[ji] = gripper_value
+        self.control.joint_target_pos.assign(wp.array(target_pos, dtype=float, device=self.model.device))
 
-        if self._content_body_q_save is not None:
-            body_q = self.state_0.body_q.numpy().copy()
-            body_q[self._content_body_indices] = self._content_body_q_save
-            self.state_0.body_q.assign(wp.array(body_q, dtype=wp.transform, device=self.model.device))
+    def simulate(self):
+        self._update_drive_targets()
 
         for _ in range(self.sim_substeps):
-            wp.copy(self.state_1.body_q, self.state_0.body_q)
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
-
-        self._content_body_q_save = self.state_0.body_q.numpy()[self._content_body_indices].copy()
 
     def step(self):
         self.frame += 1
