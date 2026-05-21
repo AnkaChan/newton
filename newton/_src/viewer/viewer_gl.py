@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import collections
 import ctypes
+import math
 import re
 import time
 from collections.abc import Callable, Sequence
@@ -20,6 +22,7 @@ from ..core.types import Axis, override
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
+from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
@@ -41,17 +44,19 @@ def _imgui_uses_imvec4_color_edit3() -> bool:
 
 
 _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
+# Width of the main Newton Viewer sidebar [px].
+_SIDEBAR_WIDTH_PX: float = 300.0
 
 
 @wp.kernel
-def _capsule_duplicate_vec3(in_values: wp.array(dtype=wp.vec3), out_values: wp.array(dtype=wp.vec3)):
+def _capsule_duplicate_vec3(in_values: wp.array[wp.vec3], out_values: wp.array[wp.vec3]):
     # Duplicate N values into 2N values (two caps per capsule).
     tid = wp.tid()
     out_values[tid] = in_values[tid // 2]
 
 
 @wp.kernel
-def _capsule_duplicate_vec4(in_values: wp.array(dtype=wp.vec4), out_values: wp.array(dtype=wp.vec4)):
+def _capsule_duplicate_vec4(in_values: wp.array[wp.vec4], out_values: wp.array[wp.vec4]):
     # Duplicate N values into 2N values (two caps per capsule).
     tid = wp.tid()
     out_values[tid] = in_values[tid // 2]
@@ -59,9 +64,9 @@ def _capsule_duplicate_vec4(in_values: wp.array(dtype=wp.vec4), out_values: wp.a
 
 @wp.kernel
 def _capsule_build_body_scales(
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_indices: wp.array(dtype=wp.int32),
-    out_scales: wp.array(dtype=wp.vec3),
+    shape_scale: wp.array[wp.vec3],
+    shape_indices: wp.array[wp.int32],
+    out_scales: wp.array[wp.vec3],
 ):
     # model.shape_scale stores capsule params as (radius, half_height, _unused).
     # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
@@ -76,10 +81,10 @@ def _capsule_build_body_scales(
 
 @wp.kernel
 def _capsule_build_cap_xforms_and_scales(
-    capsule_xforms: wp.array(dtype=wp.transform),
-    capsule_scales: wp.array(dtype=wp.vec3),
-    out_xforms: wp.array(dtype=wp.transform),
-    out_scales: wp.array(dtype=wp.vec3),
+    capsule_xforms: wp.array[wp.transform],
+    capsule_scales: wp.array[wp.vec3],
+    out_xforms: wp.array[wp.transform],
+    out_scales: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     i = tid // 2
@@ -101,16 +106,16 @@ def _capsule_build_cap_xforms_and_scales(
 
 @wp.kernel
 def _compute_shape_vbo_xforms(
-    shape_transform: wp.array(dtype=wp.transformf),
-    shape_body: wp.array(dtype=int),
-    body_q: wp.array(dtype=wp.transformf),
-    shape_scale: wp.array(dtype=wp.vec3),
-    shape_type: wp.array(dtype=int),
-    shape_world: wp.array(dtype=int),
-    world_offsets: wp.array(dtype=wp.vec3),
-    write_indices: wp.array(dtype=int),
-    out_world_xforms: wp.array(dtype=wp.transformf),
-    out_vbo_xforms: wp.array(dtype=wp.mat44),
+    shape_transform: wp.array[wp.transformf],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transformf],
+    shape_scale: wp.array[wp.vec3],
+    shape_type: wp.array[int],
+    shape_world: wp.array[int],
+    world_offsets: wp.array[wp.vec3],
+    write_indices: wp.array[int],
+    out_world_xforms: wp.array[wp.transformf],
+    out_vbo_xforms: wp.array[wp.mat44],
 ):
     """Process all model shapes, write mat44 to grouped output positions."""
     tid = wp.tid()
@@ -192,6 +197,7 @@ class ViewerGL(ViewerBase):
         height: int = 1080,
         vsync: bool = False,
         headless: bool = False,
+        plot_history_size: int = 250,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -201,20 +207,47 @@ class ViewerGL(ViewerBase):
             height: Window height in pixels.
             vsync: Enable vertical sync.
             headless: Run in headless mode (no window).
+            plot_history_size: Maximum number of samples kept per
+                :meth:`log_scalar` signal for the live time-series plots.
         """
+        if not isinstance(plot_history_size, int) or isinstance(plot_history_size, bool):
+            raise TypeError("plot_history_size must be an integer")
+        if plot_history_size <= 0:
+            raise ValueError("plot_history_size must be > 0")
+
         # Pre-initialize callback registry; clear_model() (called from
         # super().__init__()) resets the "side" slot on each model change.
         self._ui_callbacks = {"side": [], "stats": [], "free": [], "panel": []}
+
+        # Rolling buffers for log_scalar() time-series plots.
+        self._scalar_buffers: dict[str, collections.deque] = {}
+        self._scalar_arrays: dict[str, np.ndarray | None] = {}
+        self._scalar_accumulators: dict[str, list[float]] = {}
+        self._scalar_smoothing: dict[str, int] = {}
+        self._array_buffers: dict[str, np.ndarray] = {}
+        self._array_dirty: set[str] = set()
+        self._array_textures: dict[str, dict[str, Any]] = {}
+        self._heatmap_min_cell_pixels = 3.0
+        self._heatmap_nan_rgba = np.array([51, 51, 51, 255], dtype=np.uint8)
+        self._heatmap_color_lut = self._build_heatmap_color_lut()
+        self._plot_history_size = plot_history_size
+
+        # Initialized below once self.device is available; declared here so
+        # close() can safely run if __init__ raises before that point.
+        self._image_logger: ImageLogger | None = None
 
         super().__init__()
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
+        self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
 
         self._paused = False
+        self._step_requested = False
+        self._reset_callback: Callable[[], None] | None = None
 
         # Selection panel state
         self._selection_ui_state = {
@@ -239,8 +272,14 @@ class ViewerGL(ViewerBase):
         self.renderer.register_mouse_scroll(self.on_mouse_scroll)
         self.renderer.register_resize(self.on_resize)
 
+        self._loading_splash_active: bool = False
+        self._loading_splash_text: str | None = None
+
         # Camera movement settings
         self._camera_speed = 0.04
+        self._camera_orbit_sensitivity = 0.1
+        self._camera_dolly_scroll_sensitivity = 0.15
+        self._camera_dolly_drag_sensitivity = 0.01
         self._cam_vel = np.zeros(3, dtype=np.float32)
         self._cam_speed = 4.0  # m/s
         self._cam_damp_tau = 0.083  # s
@@ -297,6 +336,30 @@ class ViewerGL(ViewerBase):
             gl.glDeleteBuffers(1, pbo_id)
             self._pbo = None
 
+    def _delete_array_texture(self, name: str):
+        texture_state = self._array_textures.pop(name, None)
+        if texture_state is None:
+            return
+        gl = getattr(RendererGL, "gl", None)
+        texture_id = texture_state.get("texture_id")
+        if gl is None or texture_id is None:
+            return
+        texture_ids = (gl.GLuint * 1)(texture_id)
+        gl.glDeleteTextures(1, texture_ids)
+
+    def _clear_array_textures(self):
+        if not self._array_textures:
+            return
+        gl = getattr(RendererGL, "gl", None)
+        if gl is None:
+            self._array_textures.clear()
+            return
+        texture_ids = [state["texture_id"] for state in self._array_textures.values() if state.get("texture_id")]
+        if texture_ids:
+            gl_ids = (gl.GLuint * len(texture_ids))(*texture_ids)
+            gl.glDeleteTextures(len(texture_ids), gl_ids)
+        self._array_textures.clear()
+
     def register_ui_callback(
         self,
         callback: Callable[[Any], None],
@@ -336,6 +399,21 @@ class ViewerGL(ViewerBase):
         indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
 
         self._point_mesh.update(points, indices, normals, uvs)
+
+    @override
+    def _arrow_scale(self) -> float:
+        """Contact-arrow length multiplier, sourced from the GL renderer."""
+        return self.renderer.arrow_length_scale
+
+    @override
+    def _joint_scale(self) -> float:
+        """Joint-axis length multiplier, sourced from the GL renderer."""
+        return self.renderer.joint_scale
+
+    @override
+    def _com_scale(self) -> float:
+        """COM sphere radius multiplier, sourced from the GL renderer."""
+        return self.renderer.com_scale
 
     @override
     def log_gizmo(
@@ -390,8 +468,19 @@ class ViewerGL(ViewerBase):
         and whenever the current model is discarded.
         """
         # Render object and line caches (path -> GL object)
+        for obj in getattr(self, "objects", {}).values():
+            if hasattr(obj, "destroy"):
+                obj.destroy()
         self.objects = {}
+        for obj in getattr(self, "lines", {}).values():
+            obj.destroy()
         self.lines = {}
+        for obj in getattr(self, "arrows", {}).values():
+            obj.destroy()
+        self.arrows = {}
+        self._destroy_all_wireframes()
+        self.wireframe_shapes = {}
+        self._wireframe_vbo_owners: dict[int, WireframeShapeGL] = {}
 
         # Interactive picking and wind force helpers
         self.picking = None
@@ -413,6 +502,22 @@ class ViewerGL(ViewerBase):
         self._ui_callbacks["side"] = []
         self._ui_callbacks["free"] = []
 
+        # Clear scalar plot buffers
+        self._scalar_buffers.clear()
+        self._scalar_arrays.clear()
+        self._scalar_accumulators.clear()
+        self._scalar_smoothing.clear()
+        self._array_buffers.clear()
+        self._array_dirty.clear()
+        self._clear_array_textures()
+
+        # Drop image-logger entries so example-switch removes any image
+        # windows the previous example opened, and a re-entry into the same
+        # example creates a fresh entry (re-triggering the auto-select that
+        # opens the window after the user manually closed it).
+        if getattr(self, "_image_logger", None) is not None:
+            self._image_logger.clear()
+
         super().clear_model()
 
     @override
@@ -425,6 +530,13 @@ class ViewerGL(ViewerBase):
             max_worlds: Maximum number of worlds to render (None = all).
         """
         super().set_model(model, max_worlds=max_worlds)
+
+        # ``ViewerBase.set_model`` may have switched ``self.device`` to the
+        # model's device. Rebind the image logger so its GPU path tests against
+        # — and registers PBO interop with — the correct CUDA context.
+        if self._image_logger is not None and self._image_logger.device != self.device:
+            self._image_logger.clear()
+            self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
@@ -463,6 +575,7 @@ class ViewerGL(ViewerBase):
                 batch.scales = out_scales
 
         self.picking = Picking(model, world_offsets=self.world_offsets)
+        self.picking.visible_worlds_mask = self._visible_worlds_mask
         self.wind = Wind(model)
 
         # Precompile picking/raycast kernels to avoid JIT delay on first pick
@@ -537,6 +650,65 @@ class ViewerGL(ViewerBase):
         self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
         self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=True)
 
+    def _rebuild_gl_shape_caches(self):
+        """Rebuild GL-specific caches after shape instances change.
+
+        Re-applies capsule body-scale arrays and packed VBO arrays that
+        ``set_model`` normally sets up after ``_populate_shapes()``.
+        """
+        if self.model is None:
+            return
+
+        # Remove stale MeshInstancerGL objects from previous shape batches.
+        # Batch names are generated as /model/shapes/shape_N and may change
+        # when _populate_shapes() rebuilds the instance map.
+        from .gl.opengl import MeshInstancerGL  # noqa: PLC0415
+
+        current_names = {s.name for s in self._shape_instances.values()}
+        stale = [k for k, v in self.objects.items() if isinstance(v, MeshInstancerGL) and k not in current_names]
+        for k in stale:
+            obj = self.objects.pop(k)
+            del obj
+
+        shape_scale = self.model.shape_scale
+        if shape_scale.device != self.device:
+            shape_scale = wp.clone(shape_scale, device=self.device)
+
+        def _ensure_indices_wp(model_shapes) -> wp.array:
+            if isinstance(model_shapes, wp.array):
+                if model_shapes.device == self.device:
+                    return model_shapes
+                return wp.array(model_shapes.numpy().astype(np.int32), dtype=wp.int32, device=self.device)
+            return wp.array(model_shapes, dtype=wp.int32, device=self.device)
+
+        for batch in self._shape_instances.values():
+            if batch.geo_type != nt.GeoType.CAPSULE:
+                continue
+            shape_indices = _ensure_indices_wp(batch.model_shapes)
+            num_shapes = len(shape_indices)
+            out_scales = wp.empty(num_shapes, dtype=wp.vec3, device=self.device)
+            if num_shapes == 0:
+                batch.scales = out_scales
+                continue
+            wp.launch(
+                _capsule_build_body_scales,
+                dim=num_shapes,
+                inputs=[shape_scale, shape_indices],
+                outputs=[out_scales],
+                device=self.device,
+                record_tape=False,
+            )
+            batch.scales = out_scales
+
+        self._build_packed_vbo_arrays()
+
+    @override
+    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+        super().set_visible_worlds(worlds)
+        self._rebuild_gl_shape_caches()
+        if hasattr(self, "picking") and self.picking is not None:
+            self.picking.visible_worlds_mask = self._visible_worlds_mask
+
     @override
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
         """Set world offsets and update the picking system.
@@ -559,22 +731,26 @@ class ViewerGL(ViewerBase):
             pitch: The camera pitch.
             yaw: The camera yaw.
         """
-        self.camera.pos = pos
+        self.camera.pos = self.camera._as_vec3(pos)
         self.camera.pitch = max(min(pitch, 89.0), -89.0)
         self.camera.yaw = (yaw + 180.0) % 360.0 - 180.0
+        self.camera.sync_pivot_to_view()
 
     @override
     def log_mesh(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3),
-        indices: wp.array(dtype=wp.int32) | wp.array(dtype=wp.uint32),
-        normals: wp.array(dtype=wp.vec3) | None = None,
-        uvs: wp.array(dtype=wp.vec2) | None = None,
+        points: wp.array[wp.vec3],
+        indices: wp.array[wp.int32] | wp.array[wp.uint32],
+        normals: wp.array[wp.vec3] | None = None,
+        uvs: wp.array[wp.vec2] | None = None,
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
         alpha: float = 1.0,
+        color: tuple[float, float, float] | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -589,6 +765,12 @@ class ViewerGL(ViewerBase):
             hidden: Whether the mesh is hidden.
             backface_culling: Enable backface culling.
             alpha: Opacity (0.0 = fully transparent, 1.0 = opaque).
+            color: Optional base color as an RGB tuple with values in
+                [0, 1]. Used when no texture is provided.
+            roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
+                smooth, ``1`` is fully rough.
+            metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
+                is metal.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -605,15 +787,26 @@ class ViewerGL(ViewerBase):
         self.objects[name].backface_culling = backface_culling
         self.objects[name].alpha = alpha
 
+        if color is not None:
+            self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
+
+        if roughness is not None or metallic is not None:
+            r, m, c, t = self.objects[name].material
+            if roughness is not None:
+                r = float(roughness)
+            if metallic is not None:
+                m = float(metallic)
+            self.objects[name].material = (r, m, c, t)
+
     @override
     def log_instances(
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
     ):
         """
@@ -646,8 +839,10 @@ class ViewerGL(ViewerBase):
             resized = True
         elif transform_count > instancer.num_instances:
             new_capacity = max(transform_count, instancer.num_instances * 2)
+            old = instancer
             instancer = MeshInstancerGL(new_capacity, self.objects[mesh])
             self.objects[name] = instancer
+            del old
             resized = True
 
         needs_update = resized or not hidden
@@ -661,10 +856,10 @@ class ViewerGL(ViewerBase):
         self,
         name: str,
         mesh: str,
-        xforms: wp.array(dtype=wp.transform) | None,
-        scales: wp.array(dtype=wp.vec3) | None,
-        colors: wp.array(dtype=wp.vec3) | None,
-        materials: wp.array(dtype=wp.vec4) | None,
+        xforms: wp.array[wp.transform] | None,
+        scales: wp.array[wp.vec3] | None,
+        colors: wp.array[wp.vec3] | None,
+        materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
     ):
         """
@@ -752,23 +947,26 @@ class ViewerGL(ViewerBase):
     def log_lines(
         self,
         name: str,
-        starts: wp.array(dtype=wp.vec3) | None,
-        ends: wp.array(dtype=wp.vec3) | None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ),
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
         width: float = 0.01,
         hidden: bool = False,
     ):
-        """
-        Log line data for rendering.
+        """Log line data for rendering.
+
+        Lines are drawn as screen-space quads whose pixel width is set by
+        :attr:`RendererGL.line_width`.  The *width* parameter is currently
+        unused and reserved for future world-space width support.
 
         Args:
             name: Unique identifier for the line batch.
             starts: Array of line start positions (shape: [N, 3]) or None for empty.
             ends: Array of line end positions (shape: [N, 3]) or None for empty.
             colors: Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
-            width: The width of the lines.
+            width: Reserved for future use (world-space line width).
+                Currently ignored; pixel width is controlled by
+                ``RendererGL.line_width``.
             hidden: Whether the lines are initially hidden.
         """
         # Handle empty logs by resetting the LinesGL object
@@ -791,6 +989,8 @@ class ViewerGL(ViewerBase):
             else:
                 # Handle zero lines case
                 colors = wp.array([], dtype=wp.vec3, device=self.device)
+        elif isinstance(colors, wp.array) and colors.dtype == wp.float32:
+            colors = colors.reshape((num_lines, 3)).view(dtype=wp.vec3)
 
         assert isinstance(colors, wp.array)
         assert len(colors) == num_lines, "Number of line colors must match line begins"
@@ -807,16 +1007,129 @@ class ViewerGL(ViewerBase):
             self.lines[name] = LinesGL(max_lines, self.device, hidden=hidden)
 
         self.lines[name].update(starts, ends, colors)
+        self.lines[name].hidden = hidden
+
+    @override
+    def log_arrows(
+        self,
+        name: str,
+        starts: wp.array[wp.vec3] | None,
+        ends: wp.array[wp.vec3] | None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None),
+        width: float = 0.01,
+        hidden: bool = False,
+    ):
+        """Log arrow data for rendering (screen-space quad line + arrowhead per segment).
+
+        Arrow size is controlled in screen-space pixels by
+        ``RendererGL.arrow_scale``.
+
+        Args:
+            name: Unique identifier for the arrow batch.
+            starts: Array of arrow start positions (shape: [N, 3]) or None for empty.
+            ends: Array of arrow end positions / arrowhead tips (shape: [N, 3]) or None for empty.
+            colors: Array of arrow colors (shape: [N, 3]) or tuple/list of RGB or None for empty.
+            width: Reserved for future use (world-space line width).
+                Currently ignored; pixel dimensions are controlled by
+                ``RendererGL.arrow_scale``.
+            hidden: Whether the arrows are initially hidden.
+        """
+        if starts is None or ends is None or colors is None:
+            if name in self.arrows:
+                self.arrows[name].update(None, None, None)
+            return
+
+        assert isinstance(starts, wp.array)
+        assert isinstance(ends, wp.array)
+        num_arrows = len(starts)
+        assert len(ends) == num_arrows, "Number of arrow ends must match arrow begins"
+
+        if isinstance(colors, tuple | list):
+            if num_arrows > 0:
+                color_vec = wp.vec3(*colors)
+                colors = wp.zeros(num_arrows, dtype=wp.vec3, device=self.device)
+                colors.fill_(color_vec)
+            else:
+                colors = wp.array([], dtype=wp.vec3, device=self.device)
+        elif isinstance(colors, wp.array) and colors.dtype == wp.float32:
+            colors = colors.reshape((num_arrows, 3)).view(dtype=wp.vec3)
+
+        assert isinstance(colors, wp.array)
+        assert len(colors) == num_arrows, "Number of arrow colors must match arrow begins"
+
+        if name not in self.arrows:
+            max_arrows = max(num_arrows, 1000)
+            self.arrows[name] = LinesGL(max_arrows, self.device, hidden=hidden)
+        elif num_arrows > self.arrows[name].max_lines:
+            self.arrows[name].destroy()
+            max_arrows = max(num_arrows, self.arrows[name].max_lines * 2)
+            self.arrows[name] = LinesGL(max_arrows, self.device, hidden=hidden)
+
+        self.arrows[name].update(starts, ends, colors)
+        self.arrows[name].hidden = hidden
+
+    @override
+    def log_wireframe_shape(
+        self,
+        name: str,
+        vertex_data: np.ndarray | None,
+        world_matrix: np.ndarray | None,
+        hidden: bool = False,
+    ):
+        """Log a wireframe shape for geometry-shader line rendering.
+
+        Args:
+            name: Unique path/name for the wireframe shape.
+            vertex_data: ``(N, 6)`` float32 interleaved vertex data, or ``None``
+                to keep existing geometry.
+            world_matrix: 4x4 float32 world matrix, or ``None`` to keep current.
+            hidden: Whether the shape is hidden.
+        """
+        existing = self.wireframe_shapes.get(name)
+
+        if vertex_data is not None:
+            if existing is not None:
+                existing.destroy()
+            from .gl.opengl import WireframeShapeGL  # noqa: PLC0415
+
+            vbo_key = id(vertex_data)
+            owner = self._wireframe_vbo_owners.get(vbo_key)
+            if owner is None:
+                owner = WireframeShapeGL(vertex_data)
+                self._wireframe_vbo_owners[vbo_key] = owner
+            obj = WireframeShapeGL.create_shared(owner)
+            obj.hidden = hidden
+            if world_matrix is not None:
+                obj.world_matrix = world_matrix.astype(np.float32)
+            self.wireframe_shapes[name] = obj
+        elif existing is not None:
+            existing.hidden = hidden
+            if world_matrix is not None:
+                existing.world_matrix = world_matrix.astype(np.float32)
+
+    def _destroy_all_wireframes(self):
+        """Destroy all wireframe GL resources (visible shapes and VBO owners)."""
+        for obj in getattr(self, "wireframe_shapes", {}).values():
+            obj.destroy()
+        for owner in getattr(self, "_wireframe_vbo_owners", {}).values():
+            owner.destroy()
+
+    @override
+    def clear_wireframe_vbo_cache(self):
+        for obj in self.wireframe_shapes.values():
+            obj.destroy()
+        self.wireframe_shapes.clear()
+        for owner in self._wireframe_vbo_owners.values():
+            owner.destroy()
+        self._wireframe_vbo_owners.clear()
 
     @override
     def log_points(
         self,
         name: str,
-        points: wp.array(dtype=wp.vec3) | None,
-        radii: wp.array(dtype=wp.float32) | float | None = None,
-        colors: (
-            wp.array(dtype=wp.vec3) | wp.array(dtype=wp.float32) | tuple[float, float, float] | list[float] | None
-        ) = None,
+        points: wp.array[wp.vec3] | None,
+        radii: wp.array[wp.float32] | float | None = None,
+        colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
         """
@@ -848,10 +1161,13 @@ class ViewerGL(ViewerBase):
             old = self.objects[name]
             new_capacity = max(num_points, old.num_instances * 2)
             self.objects[name] = MeshInstancerGL(new_capacity, self._point_mesh)
+            del old
             object_recreated = True
 
         if radii is None:
             radii = wp.full(num_points, 0.1, dtype=wp.float32, device=self.device)
+        elif isinstance(radii, (int, float, np.integer, np.floating)):
+            radii = wp.full(num_points, float(radii), dtype=wp.float32, device=self.device)
 
         # If a point object is first created/recreated and no colors are provided,
         # initialize to white to avoid uninitialized instance color buffers.
@@ -952,8 +1268,10 @@ class ViewerGL(ViewerBase):
             self.objects[name].cast_shadow = False
             recreated = True
         elif n > self.objects[name].num_instances:
-            self.objects[name] = MeshInstancerGL(max(n, self.objects[name].num_instances * 2), self._gaussian_mesh)
+            old = self.objects[name]
+            self.objects[name] = MeshInstancerGL(max(n, old.num_instances * 2), self._gaussian_mesh)
             self.objects[name].cast_shadow = False
+            del old
             recreated = True
 
         instancer = self.objects[name]
@@ -1007,26 +1325,88 @@ class ViewerGL(ViewerBase):
             cache["colors_uploaded"] = True
 
     @override
-    def log_array(self, name: str, array: wp.array(dtype=Any) | np.ndarray):
+    def log_array(self, name: str, array: wp.array[Any] | np.ndarray | None):
         """
-        Log a generic array for visualization (not implemented).
+        Log a numeric array for visualization.
 
         Args:
             name: Unique path/name for the array signal.
-            array: Array data to visualize.
+            array: Array data to visualize, or ``None`` to remove a previously
+                logged array.
         """
-        pass
+        if array is None:
+            self._array_buffers.pop(name, None)
+            self._array_dirty.discard(name)
+            self._delete_array_texture(name)
+            return
+
+        array_np = array.numpy() if isinstance(array, wp.array) else np.asarray(array)
+        array_np = np.asarray(array_np, dtype=np.float32)
+
+        if array_np.ndim == 0:
+            array_np = array_np.reshape(1, 1)
+        elif array_np.ndim == 1:
+            array_np = array_np.reshape(1, -1)
+        elif array_np.ndim != 2:
+            raise ValueError("ViewerGL.log_array only supports scalar, 1-D, or 2-D arrays.")
+
+        self._array_buffers[name] = np.ascontiguousarray(array_np)
+        self._array_dirty.add(name)
 
     @override
-    def log_scalar(self, name: str, value: int | float | bool | np.number):
+    def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
+        """See :meth:`~newton.viewer.ViewerBase.log_image`."""
+        self._image_logger.log(name, image)
+
+    @override
+    def log_scalar(
+        self,
+        name: str,
+        value: int | float | bool | np.number,
+        *,
+        clear: bool = False,
+        smoothing: int = 1,
+    ):
         """
-        Log a scalar value for visualization (not implemented).
+        Log a scalar value as a live time-series plot.
+
+        Each unique *name* creates a separate line plot displayed in an
+        auto-generated "Plots" window.  Values are stored in a rolling
+        buffer of the last ``plot_history_size`` samples.
 
         Args:
             name: Unique path/name for the scalar signal.
-            value: Scalar value to visualize.
+            value: Scalar value to record.
+            clear: If ``True``, discard previously recorded samples for
+                *name* before logging the new value.
+            smoothing: Number of raw samples to average before committing
+                a point to the plot history.  Defaults to ``1`` (no smoothing).
         """
-        pass
+        if smoothing < 1:
+            raise ValueError("smoothing must be >= 1")
+        val = float(value.item() if hasattr(value, "item") else value)
+        buf = self._scalar_buffers.get(name)
+        if buf is None:
+            buf = collections.deque(maxlen=self._plot_history_size)
+            self._scalar_buffers[name] = buf
+        elif clear:
+            buf.clear()
+            self._scalar_accumulators.pop(name, None)
+
+        self._scalar_smoothing[name] = smoothing
+        if smoothing <= 1:
+            buf.append(val)
+        else:
+            acc = self._scalar_accumulators.get(name)
+            if acc is None:
+                acc = []
+                self._scalar_accumulators[name] = acc
+            acc.append(val)
+            if len(acc) >= smoothing:
+                buf.append(sum(acc) / len(acc))
+                acc.clear()
+
+        self._scalar_arrays[name] = None
 
     @override
     def log_state(self, state: nt.State):
@@ -1212,17 +1592,18 @@ class ViewerGL(ViewerBase):
             return
 
         # Render the scene and present it
-        self.renderer.render(self.camera, self.objects, self.lines)
+        self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
 
         # Always update FPS tracking, even if UI is hidden
         self._update_fps()
 
-        if self.ui and self.ui.is_available and self.show_ui:
+        # The splash needs an ImGui frame even when the user has hidden
+        # the regular UI, so the gate also opens for an active splash.
+        if self.ui and self.ui.is_available and (self.show_ui or self._loading_splash_active):
             self.ui.begin_frame()
-
-            # Render the UI
-            self._render_ui()
-
+            if self.show_ui:
+                self._render_ui()
+            self._render_loading_splash()
             self.ui.end_frame()
             self.ui.render()
 
@@ -1333,11 +1714,60 @@ class ViewerGL(ViewerBase):
         """
         return self._paused
 
+    def show_loading_splash(self, text: str | None = None) -> None:
+        """Display a centered Newton's-cradle loading splash with optional sub-label.
+
+        The splash dims the underlying scene and renders even when the rest
+        of the ImGui UI is hidden.  Call :meth:`hide_loading_splash` to
+        remove it.
+
+        Args:
+            text: Optional sub-label drawn below the cradle.
+
+        Note:
+            Not thread-safe.  Must be called on the thread that owns this
+            viewer's GL context.
+        """
+        self._loading_splash_active = True
+        self._loading_splash_text = text
+
+    def hide_loading_splash(self) -> None:
+        """Remove the splash set by :meth:`show_loading_splash`."""
+        self._loading_splash_active = False
+        self._loading_splash_text = None
+
+    @override
+    def should_step(self) -> bool:
+        """
+        Return True if the loop should advance one step.
+
+        Consumes a pending single-step request, so call exactly once per frame.
+        """
+        if not self._paused:
+            self._step_requested = False
+            return True
+        if self._step_requested:
+            self._step_requested = False
+            return True
+        return False
+
+    def set_reset_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register a callback invoked when the user clicks the Reset button.
+
+        Args:
+            callback: Called with no arguments on reset, or ``None`` to remove.
+        """
+        self._reset_callback = callback
+
     @override
     def close(self):
         """
         Close the viewer and clean up resources.
         """
+        self._clear_array_textures()
+        self._invalidate_pbo()
+        if self._image_logger is not None:
+            self._image_logger.clear()
         self.renderer.close()
 
     @property
@@ -1422,7 +1852,7 @@ class ViewerGL(ViewerBase):
 
     def on_mouse_scroll(self, x: float, y: float, scroll_x: float, scroll_y: float):
         """
-        Handle mouse scroll for zooming (FOV adjustment).
+        Handle mouse scroll for dolly and FOV adjustment.
 
         Args:
             x: Mouse X position in window coordinates.
@@ -1433,9 +1863,31 @@ class ViewerGL(ViewerBase):
         if self._ui_is_capturing_mouse():
             return
 
-        fov_delta = scroll_y * 2.0
-        self.camera.fov -= fov_delta
-        self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+        if self._is_ctrl_down():
+            fov_delta = scroll_y * 2.0
+            self.camera.fov -= fov_delta
+            self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
+        else:
+            self.camera.dolly(scroll_y * self._camera_dolly_scroll_sensitivity)
+
+    def _is_ctrl_down(self) -> bool:
+        """Return True when either Ctrl key is currently held."""
+        try:
+            import pyglet
+        except Exception:
+            return False
+
+        return self.renderer.is_key_down(pyglet.window.key.LCTRL) or self.renderer.is_key_down(pyglet.window.key.RCTRL)
+
+    def _camera_pan_scale(self) -> float:
+        """World-space meters per window pixel for screen-plane camera panning."""
+        height = max(float(self.camera.height), 1.0)
+        if hasattr(self.renderer, "window"):
+            _, window_height = self.renderer.window.get_size()
+            height = max(float(window_height), 1.0)
+        distance = max(self.camera.pivot_distance, self.camera.MIN_PIVOT_DISTANCE)
+        visible_height = 2.0 * distance * np.tan(np.radians(self.camera.fov) * 0.5)
+        return visible_height / height
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
         """Convert window coordinates to framebuffer coordinates."""
@@ -1507,6 +1959,17 @@ class ViewerGL(ViewerBase):
 
         import pyglet
 
+        if buttons & pyglet.window.mouse.MIDDLE:
+            if modifiers & pyglet.window.key.MOD_CTRL:
+                self.camera.dolly(dy * self._camera_dolly_drag_sensitivity)
+            elif modifiers & pyglet.window.key.MOD_SHIFT:
+                pan_scale = self._camera_pan_scale()
+                self.camera.pan(-dx * pan_scale, -dy * pan_scale)
+            else:
+                sensitivity = self._camera_orbit_sensitivity
+                self.camera.orbit(delta_yaw=-dx * sensitivity, delta_pitch=dy * sensitivity)
+            return
+
         if buttons & pyglet.window.mouse.LEFT:
             sensitivity = 0.1
             dx *= sensitivity
@@ -1516,6 +1979,7 @@ class ViewerGL(ViewerBase):
             # independent of world up-axis convention.
             self.camera.yaw = (self.camera.yaw - dx + 180.0) % 360.0 - 180.0
             self.camera.pitch = max(min(self.camera.pitch + dy, 89.0), -89.0)
+            self.camera.sync_pivot_to_view()
 
         if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
             fb_x, fb_y = self._to_framebuffer_coords(x, y)
@@ -1583,6 +2047,8 @@ class ViewerGL(ViewerBase):
         elif symbol == pyglet.window.key.SPACE:
             # Toggle pause with space key
             self._paused = not self._paused
+        elif symbol == pyglet.window.key.PERIOD and self._paused:
+            self._step_requested = True
         elif symbol == pyglet.window.key.F:
             # Frame camera around model bounds
             self._frame_camera_on_model()
@@ -1654,6 +2120,7 @@ class ViewerGL(ViewerBase):
             center[2] - front.z * distance,
         )
         self.camera.pos = new_pos
+        self.camera.set_pivot(center)
 
     def _update_camera(self, dt: float):
         """
@@ -1708,7 +2175,7 @@ class ViewerGL(ViewerBase):
 
         # integrate position
         dv = type(self.camera.pos)(*self._cam_vel)
-        self.camera.pos += dv * dt
+        self.camera.translate(dv * dt)
 
     def on_resize(self, width: int, height: int):
         """
@@ -1856,6 +2323,108 @@ class ViewerGL(ViewerBase):
 
         self.gizmo_is_using = giz.is_using_any()
 
+    def _render_loading_splash(self):
+        """Render a stylized Newton's-cradle loading splash, optionally with a sub-label.
+
+        The cradle is drawn statically with the leftmost ball lifted; this is
+        a one-frame snapshot, not an animation.  Sizes scale with the current
+        ImGui font size so the splash stays legible across DPI settings.
+        """
+        if not self._loading_splash_active or not self.ui:
+            return
+        imgui = self.ui.imgui
+        viewport = imgui.get_main_viewport()
+
+        # Scale relative to the default 13 px ImGui font so the splash
+        # respects user/DPI font scaling.
+        scale = imgui.get_font_size() / 13.0
+        ball_radius = 16.0 * scale
+        # 2.05 (vs 2.0) leaves a hairline gap between balls so adjacent
+        # rest-position balls remain visually distinguishable.
+        ball_spacing = ball_radius * 2.05
+        string_length = 80.0 * scale
+        bar_thickness = 5.0 * scale
+        text_gap = 18.0 * scale
+        bar_overhang = 8.0 * scale
+        string_thickness = 1.5 * scale
+        n_balls = 5
+
+        # Center the cradle's full bounding box (bar -> deepest ball) at the
+        # viewport center.  ``pivot_y`` is the bar's *bottom* edge (where
+        # strings attach), not the bar centerline — hence the
+        # ``+ bar_thickness`` after positioning the bbox top.
+        cradle_height = bar_thickness + string_length + ball_radius
+        cx = viewport.pos.x + viewport.size.x * 0.5
+        cy = viewport.pos.y + viewport.size.y * 0.5
+        pivot_y = cy - cradle_height * 0.5 + bar_thickness
+
+        imgui.set_next_window_pos(imgui.ImVec2(viewport.pos.x, viewport.pos.y))
+        imgui.set_next_window_size(imgui.ImVec2(viewport.size.x, viewport.size.y))
+        flags = (
+            imgui.WindowFlags_.no_decoration
+            | imgui.WindowFlags_.no_inputs
+            | imgui.WindowFlags_.no_saved_settings
+            | imgui.WindowFlags_.no_focus_on_appearing
+            | imgui.WindowFlags_.no_nav
+            | imgui.WindowFlags_.no_bring_to_front_on_focus
+            | imgui.WindowFlags_.no_move
+            | imgui.WindowFlags_.no_background
+        )
+        if imgui.begin("##loading_splash", None, flags)[0]:
+            draw_list = imgui.get_window_draw_list()
+
+            dim_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 0.55))
+            ball_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.88, 0.88, 0.92, 1.0))
+            string_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.55, 0.55, 0.6, 1.0))
+            bar_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.45, 0.45, 0.5, 1.0))
+            text_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.9, 0.9, 0.9, 1.0))
+
+            # Dim the underlying scene.  Drawn manually rather than via
+            # ``set_next_window_bg_alpha`` so the dim color is independent
+            # of the active ImGui style.
+            draw_list.add_rect_filled(
+                imgui.ImVec2(viewport.pos.x, viewport.pos.y),
+                imgui.ImVec2(viewport.pos.x + viewport.size.x, viewport.pos.y + viewport.size.y),
+                dim_col,
+            )
+
+            first_pivot_x = cx - (n_balls - 1) * ball_spacing * 0.5
+            bar_half = (n_balls - 1) * ball_spacing * 0.5 + ball_radius + bar_overhang
+            draw_list.add_rect_filled(
+                imgui.ImVec2(cx - bar_half, pivot_y - bar_thickness),
+                imgui.ImVec2(cx + bar_half, pivot_y),
+                bar_col,
+            )
+
+            swing_angle = math.radians(32.0)
+            for i in range(n_balls):
+                pivot_x = first_pivot_x + i * ball_spacing
+                if i == 0:
+                    ball_x = pivot_x - math.sin(swing_angle) * string_length
+                    ball_y = pivot_y + math.cos(swing_angle) * string_length
+                else:
+                    ball_x = pivot_x
+                    ball_y = pivot_y + string_length
+
+                draw_list.add_line(
+                    imgui.ImVec2(pivot_x, pivot_y),
+                    imgui.ImVec2(ball_x, ball_y),
+                    string_col,
+                    string_thickness,
+                )
+                draw_list.add_circle_filled(
+                    imgui.ImVec2(ball_x, ball_y),
+                    ball_radius,
+                    ball_col,
+                )
+
+            if self._loading_splash_text:
+                text_size = imgui.calc_text_size(self._loading_splash_text)
+                text_x = cx - text_size.x * 0.5
+                text_y = pivot_y + string_length + ball_radius + text_gap
+                draw_list.add_text(imgui.ImVec2(text_x, text_y), text_col, self._loading_splash_text)
+        imgui.end()
+
     def _render_ui(self):
         """
         Render the complete ImGui interface (left panel, stats overlay, and custom UI).
@@ -1871,6 +2440,9 @@ class ViewerGL(ViewerBase):
 
         # Render top-right stats overlay
         self._render_stats_overlay()
+
+        # Render scalar time-series plots (from log_scalar calls)
+        self._render_scalar_plots()
 
         # allow users to create custom windows
         for callback in self._ui_callbacks["free"]:
@@ -1888,7 +2460,7 @@ class ViewerGL(ViewerBase):
         # Position the window on the left side
         io = self.ui.io
         imgui.set_next_window_pos(imgui.ImVec2(10, 10))
-        imgui.set_next_window_size(imgui.ImVec2(300, io.display_size[1] - 20))
+        imgui.set_next_window_size(imgui.ImVec2(_SIDEBAR_WIDTH_PX, io.display_size[1] - 20))
 
         # Main control panel window - use safe flag values
         flags = imgui.WindowFlags_.no_resize.value
@@ -1898,6 +2470,20 @@ class ViewerGL(ViewerBase):
 
             # Collapsing headers default-open handling (first frame only)
             header_flags = 0
+
+            # Run controls — shown once a model is loaded
+            if self.model is not None:
+                changed, self._paused = imgui.checkbox("Pause", self._paused)
+                imgui.same_line()
+                imgui.begin_disabled(not self._paused)
+                if imgui.button("Step"):
+                    self._step_requested = True
+                imgui.end_disabled()
+                if self._reset_callback is not None:
+                    imgui.same_line()
+                    if imgui.button("Reset"):
+                        self._reset_callback()
+                imgui.separator()
 
             # Panel callbacks (e.g. example browser) - top-level collapsing headers
             for callback in self._ui_callbacks["panel"]:
@@ -1914,9 +2500,6 @@ class ViewerGL(ViewerBase):
                     gravity_text = f"Gravity: ({gravity[0]:.2f}, {gravity[1]:.2f}, {gravity[2]:.2f})"
                     imgui.text(gravity_text)
 
-                    # Pause simulation checkbox
-                    changed, self._paused = imgui.checkbox("Pause", self._paused)
-
                 # Visualization Controls section
                 imgui.set_next_item_open(True, imgui.Cond_.appearing)
                 if imgui.collapsing_header("Visualization", flags=header_flags):
@@ -1926,9 +2509,22 @@ class ViewerGL(ViewerBase):
                     show_joints = self.show_joints
                     changed, self.show_joints = imgui.checkbox("Show Joints", show_joints)
 
+                    if self.show_joints:
+                        _, self.renderer.joint_scale = imgui.slider_float(
+                            "Joint Scale", self.renderer.joint_scale, 0.25, 5.0
+                        )
+
                     # Contact visualization
                     show_contacts = self.show_contacts
                     changed, self.show_contacts = imgui.checkbox("Show Contacts", show_contacts)
+
+                    if self.show_contacts:
+                        _, self.renderer.arrow_length_scale = imgui.slider_float(
+                            "Contact Length", self.renderer.arrow_length_scale, 0.25, 5.0
+                        )
+                        _, self.renderer.arrow_scale = imgui.slider_float(
+                            "Contact Width", self.renderer.arrow_scale, 0.25, 5.0
+                        )
 
                     # Particle visualization
                     show_particles = self.show_particles
@@ -1942,6 +2538,9 @@ class ViewerGL(ViewerBase):
                     show_com = self.show_com
                     changed, self.show_com = imgui.checkbox("Show Center of Mass", show_com)
 
+                    if self.show_com:
+                        _, self.renderer.com_scale = imgui.slider_float("COM Scale", self.renderer.com_scale, 0.25, 5.0)
+
                     # Triangle mesh visualization
                     show_triangles = self.show_triangles
                     changed, self.show_triangles = imgui.checkbox("Show Cloth", show_triangles)
@@ -1949,6 +2548,16 @@ class ViewerGL(ViewerBase):
                     # Collision geometry toggle
                     show_collision = self.show_collision
                     changed, self.show_collision = imgui.checkbox("Show Collision", show_collision)
+
+                    # Gap + margin wireframe mode
+                    _sdf_margin_labels = ["Off", "Margin", "Margin + Gap"]
+                    _, new_sdf_idx = imgui.combo("Gap + Margin", int(self.sdf_margin_mode), _sdf_margin_labels)
+                    self.sdf_margin_mode = self.SDFMarginMode(new_sdf_idx)
+
+                    if self.sdf_margin_mode != self.SDFMarginMode.OFF:
+                        _, self.renderer.wireframe_line_width = imgui.slider_float(
+                            "Wireframe Width (px)", self.renderer.wireframe_line_width, 0.5, 5.0
+                        )
 
                     # Visual geometry toggle
                     show_visual = self.show_visual
@@ -2001,6 +2610,8 @@ class ViewerGL(ViewerBase):
                 # Ground color
                 changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
 
+            self._image_logger.draw_controls()
+
             # Wind Effects section
             if self.wind is not None:
                 imgui.set_next_item_open(False, imgui.Cond_.once)
@@ -2045,14 +2656,245 @@ class ViewerGL(ViewerBase):
                 imgui.text("QE - Pan up/down")
                 imgui.text("Left Click - Look around")
                 imgui.text("Right Click - Pick objects")
-                imgui.text("Scroll - Zoom")
+                imgui.text("Middle Click - Orbit")
+                imgui.text("Shift + Middle Click - Pan")
+                imgui.text("Ctrl + Middle Click - Dolly")
+                imgui.text("Scroll - Dolly")
+                imgui.text("Ctrl + Scroll - FOV zoom")
                 imgui.text("Space - Pause/Resume")
+                imgui.text(". - Step one frame (when paused)")
                 imgui.text("H - Toggle UI")
                 imgui.text("F - Frame camera around model")
 
             # Selection API section
             self._render_selection_panel()
 
+        imgui.end()
+
+        # Draw image-logger windows. Must be outside the sidebar begin/end block.
+        self._image_logger.draw()
+
+    @staticmethod
+    def _build_heatmap_color_lut() -> np.ndarray:
+        inferno_stops = (
+            (0.0, (0.001, 0.000, 0.014)),
+            (0.2, (0.169, 0.042, 0.341)),
+            (0.4, (0.416, 0.090, 0.433)),
+            (0.6, (0.698, 0.165, 0.388)),
+            (0.8, (0.944, 0.403, 0.121)),
+            (1.0, (0.988, 0.998, 0.645)),
+        )
+        lut = np.empty((256, 4), dtype=np.uint8)
+        for index, value in enumerate(np.linspace(0.0, 1.0, 256, dtype=np.float32)):
+            for stop_index in range(len(inferno_stops) - 1):
+                t0, c0 = inferno_stops[stop_index]
+                t1, c1 = inferno_stops[stop_index + 1]
+                if value <= t1:
+                    alpha = 0.0 if t1 <= t0 else (float(value) - t0) / (t1 - t0)
+                    rgb = [round(255.0 * ((1.0 - alpha) * c0[channel] + alpha * c1[channel])) for channel in range(3)]
+                    lut[index, :3] = rgb
+                    lut[index, 3] = 255
+                    break
+            else:
+                lut[index, :3] = [round(255.0 * channel) for channel in inferno_stops[-1][1]]
+                lut[index, 3] = 255
+        return lut
+
+    @staticmethod
+    def _downsample_heatmap(array: np.ndarray, target_rows: int, target_cols: int) -> np.ndarray:
+        rows, cols = array.shape
+        if rows <= target_rows and cols <= target_cols:
+            return array
+
+        row_factor = max(1, (rows + target_rows - 1) // target_rows)
+        col_factor = max(1, (cols + target_cols - 1) // target_cols)
+        new_rows = max(1, rows // row_factor)
+        new_cols = max(1, cols // col_factor)
+        if new_rows == rows and new_cols == cols:
+            return array
+
+        trimmed = array[: new_rows * row_factor, : new_cols * col_factor]
+        finite_mask = np.isfinite(trimmed)
+        safe_values = np.where(finite_mask, trimmed, 0.0)
+        reshaped_shape = (new_rows, row_factor, new_cols, col_factor)
+        value_sum = safe_values.reshape(reshaped_shape).sum(axis=(1, 3), dtype=np.float64)
+        value_count = finite_mask.reshape(reshaped_shape).sum(axis=(1, 3))
+        downsampled = np.full((new_rows, new_cols), np.nan, dtype=np.float32)
+        np.divide(value_sum, value_count, out=downsampled, where=value_count > 0)
+        return downsampled
+
+    def _colorize_heatmap(self, array: np.ndarray) -> tuple[np.ndarray, float, float]:
+        finite_mask = np.isfinite(array)
+        if not np.any(finite_mask):
+            rgba = np.empty((*array.shape, 4), dtype=np.uint8)
+            rgba[...] = self._heatmap_nan_rgba
+            return np.ascontiguousarray(rgba), float("nan"), float("nan")
+
+        finite_values = array[finite_mask]
+        value_min = float(np.min(finite_values))
+        value_max = float(np.max(finite_values))
+        denom = max(value_max - value_min, 1.0e-8)
+
+        normalized = np.zeros(array.shape, dtype=np.float32)
+        np.subtract(array, value_min, out=normalized, where=finite_mask)
+        np.divide(normalized, denom, out=normalized, where=finite_mask)
+        np.clip(normalized, 0.0, 1.0, out=normalized)
+
+        lut_indices = np.rint(normalized * 255.0).astype(np.uint8)
+        rgba = self._heatmap_color_lut[lut_indices].copy()
+        rgba[~finite_mask] = self._heatmap_nan_rgba
+        return np.ascontiguousarray(rgba), value_min, value_max
+
+    def _ensure_array_texture(self, name: str, width: int, height: int) -> dict[str, Any]:
+        texture_state = self._array_textures.get(name)
+        if texture_state is not None and texture_state["size"] == (width, height):
+            return texture_state
+
+        if texture_state is not None:
+            self._delete_array_texture(name)
+
+        gl = RendererGL.gl
+        texture_id = (gl.GLuint * 1)()
+        gl.glGenTextures(1, texture_id)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id[0])
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            gl.GL_RGBA8,
+            width,
+            height,
+            0,
+            gl.GL_RGBA,
+            gl.GL_UNSIGNED_BYTE,
+            None,
+        )
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+        texture_state = {
+            "texture_id": texture_id[0],
+            "size": (width, height),
+            "source_shape": None,
+            "display_shape": None,
+            "value_min": 0.0,
+            "value_max": 0.0,
+        }
+        self._array_textures[name] = texture_state
+        return texture_state
+
+    def _update_array_texture(self, texture_id: int, rgba: np.ndarray):
+        gl = RendererGL.gl
+        gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
+        gl.glTexSubImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            rgba.shape[1],
+            rgba.shape[0],
+            gl.GL_RGBA,
+            gl.GL_UNSIGNED_BYTE,
+            rgba.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
+        )
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+    def _render_array_heatmap(self, name: str, array: np.ndarray, width: float):
+        imgui = self.ui.imgui
+
+        rows, cols = array.shape
+        heatmap_width = max(120.0, width)
+        heatmap_height = np.clip(heatmap_width * rows / max(cols, 1), 80.0, 220.0)
+        target_cols = max(1, min(cols, int(heatmap_width / self._heatmap_min_cell_pixels)))
+        target_rows = max(1, min(rows, int(heatmap_height / self._heatmap_min_cell_pixels)))
+        display_array = self._downsample_heatmap(array, target_rows, target_cols)
+        display_rows, display_cols = display_array.shape
+        texture_state = self._ensure_array_texture(name, display_cols, display_rows)
+
+        if (
+            name in self._array_dirty
+            or texture_state["source_shape"] != array.shape
+            or texture_state["display_shape"] != display_array.shape
+        ):
+            rgba, value_min, value_max = self._colorize_heatmap(display_array)
+            self._update_array_texture(texture_state["texture_id"], rgba)
+            texture_state["source_shape"] = array.shape
+            texture_state["display_shape"] = display_array.shape
+            texture_state["value_min"] = value_min
+            texture_state["value_max"] = value_max
+            self._array_dirty.discard(name)
+
+        draw_list = imgui.get_window_draw_list()
+        origin = imgui.get_cursor_screen_pos()
+        imgui.image(imgui.ImTextureRef(texture_state["texture_id"]), imgui.ImVec2(heatmap_width, heatmap_height))
+
+        border_color = imgui.color_convert_float4_to_u32(imgui.ImVec4(1.0, 1.0, 1.0, 0.25))
+        draw_list.add_rect(
+            imgui.ImVec2(origin.x, origin.y),
+            imgui.ImVec2(origin.x + heatmap_width, origin.y + heatmap_height),
+            border_color,
+        )
+        shape_text = f"shape {rows}x{cols}"
+        if (display_rows, display_cols) != (rows, cols):
+            shape_text += f"  shown {display_rows}x{display_cols}"
+        if np.isfinite(texture_state["value_min"]) and np.isfinite(texture_state["value_max"]):
+            range_text = f"min {texture_state['value_min']:.4g}  max {texture_state['value_max']:.4g}"
+        else:
+            range_text = "min --  max --"
+        imgui.text(f"{shape_text}  {range_text}")
+
+    def _render_scalar_plots(self):
+        """Render an ImGui window with live line plots and array heatmaps."""
+        if not self._scalar_buffers and not self._array_buffers:
+            return
+
+        imgui = self.ui.imgui
+        io = self.ui.io
+
+        window_width = 400
+        item_height = len(self._scalar_buffers) * 140 + len(self._array_buffers) * 260
+        window_height = min(
+            io.display_size[1] - 20,
+            item_height + 60,
+        )
+        imgui.set_next_window_pos(
+            imgui.ImVec2(io.display_size[0] - window_width - 10, io.display_size[1] - window_height - 10),
+            imgui.Cond_.appearing,
+        )
+        imgui.set_next_window_size(
+            imgui.ImVec2(window_width, window_height),
+            imgui.Cond_.appearing,
+        )
+
+        expanded = imgui.begin("Plots")
+        if expanded:
+            graph_size = imgui.ImVec2(-1, 100)
+            n = self._plot_history_size
+            for name, buf in self._scalar_buffers.items():
+                arr = self._scalar_arrays.get(name)
+                if arr is None:
+                    # Pad with NaN on the left so the x-axis scale is fixed
+                    # but pre-history values are not drawn.
+                    arr = np.full(n, np.nan, dtype=np.float32)
+                    arr[n - len(buf) :] = np.array(buf, dtype=np.float32)
+                    self._scalar_arrays[name] = arr
+                overlay = f"{buf[-1]:.4g}" if buf else ""
+                if imgui.collapsing_header(
+                    name,
+                    imgui.TreeNodeFlags_.default_open.value,
+                ):
+                    imgui.plot_lines(f"##{name}", arr, graph_size=graph_size, overlay_text=overlay)
+
+            for name, array in self._array_buffers.items():
+                if imgui.collapsing_header(
+                    name,
+                    imgui.TreeNodeFlags_.default_open.value,
+                ):
+                    self._render_array_heatmap(name, array, window_width - 40.0)
         imgui.end()
 
     def _render_stats_overlay(self):

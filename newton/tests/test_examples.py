@@ -3,8 +3,9 @@
 
 """Test examples in the newton.examples package.
 
-Currently, this script mainly checks that the examples can run. There are no
-correctness checks.
+Currently, this script mainly checks that the examples can run. It also treats
+deprecation warnings as failures by default so examples do not regress onto
+deprecated APIs.
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -12,6 +13,7 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -29,6 +31,8 @@ from newton.tests.unittest_utils import (
     get_test_devices,
     sanitize_identifier,
 )
+
+_HAS_ONNX = importlib.util.find_spec("onnx") is not None
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -87,30 +91,32 @@ def add_example_test(
         else:
             options = _merge_options(test_options, test_options_cpu)
 
-        # Mark the test as skipped if Torch is not installed but required
-        torch_required = options.pop("torch_required", False)
-        if torch_required:
-            try:
-                import torch
-
-                if wp.get_device(device).is_cuda and not torch.cuda.is_available():
-                    # Ensure torch has CUDA support
-                    test.skipTest("Torch not compiled with CUDA support")
-
-            except Exception as e:
-                test.skipTest(f"{e}")
+        # Mark the test as skipped if onnx is not installed but required
+        onnx_required = options.pop("onnx_required", False)
+        # Legacy alias: torch_required examples have been migrated to ONNX.
+        onnx_required = onnx_required or options.pop("torch_required", False)
+        if onnx_required and not _HAS_ONNX:
+            test.skipTest("onnx not installed")
 
         # Mark the test as skipped if USD is not installed but required
         usd_required = options.pop("usd_required", False)
         if usd_required and not USD_AVAILABLE:
             test.skipTest("Requires usd-core")
 
-        # Find the current Warp cache
+        # Deprecations should fail example tests by default. Opt out only for
+        # a known third-party or asset issue that still needs follow-up.
+        allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
+
+        # Pass the parent dir; the subprocess's init_kernel_cache appends the version.
         warp_cache_path = wp.config.kernel_cache_dir
 
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
-            env_vars["WARP_CACHE_PATH"] = warp_cache_path
+            env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
+        if not allow_deprecation_warnings:
+            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
+        else:
+            env_vars.pop("PYTHONWARNINGS", None)
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
@@ -221,7 +227,21 @@ add_example_test(
 
 add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
 
-add_example_test(TestBasicExamples, name="basic.example_basic_joints", devices=test_devices, use_viewer=True)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_joints",
+    devices=test_devices,
+    use_viewer=True,
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_joints",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"solver": "vbd"},
+    test_suffix="vbd",
+)
 
 add_example_test(
     TestBasicExamples,
@@ -256,6 +276,13 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_cross_slide_table",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 540},
 )
 add_example_test(
     TestCableExamples,
@@ -350,7 +377,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "torch_required": True},
+    test_options={"usd_required": True, "num-frames": 500, "onnx_required": True},
     use_viewer=True,
 )
 add_example_test(
@@ -407,7 +434,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_29dof"},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_29dof"},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
     test_suffix="G1_29dof",
@@ -416,7 +443,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof"},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof"},
     use_viewer=True,
     test_suffix="G1_23dof",
 )
@@ -424,7 +451,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof", "physx": True},
     use_viewer=True,
     test_suffix="G1_23dof_Physx",
 )
@@ -432,7 +459,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "anymal"},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal"},
     use_viewer=True,
     test_suffix="Anymal",
 )
@@ -440,7 +467,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal", "physx": True},
     use_viewer=True,
     test_suffix="Anymal_Physx",
 )
@@ -448,7 +475,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"torch_required": True},
+    test_options={"onnx_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2"},
     use_viewer=True,
     test_suffix="Go2",
@@ -457,7 +484,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"torch_required": True},
+    test_options={"onnx_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
     use_viewer=True,
     test_suffix="Go2_Physx",
@@ -472,7 +499,7 @@ add_example_test(
     TestAdvancedRobotExamples,
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
-    test_options={"num-frames": 100, "torch_required": True},
+    test_options={"num-frames": 100, "onnx_required": True},
     use_viewer=True,
 )
 
@@ -760,6 +787,47 @@ class TestSoftbodyExamples(unittest.TestCase):
 add_example_test(
     TestSoftbodyExamples,
     name="softbody.example_softbody_hanging",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+
+
+class TestKaminoExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_basic_fourbar",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_basic_heterogeneous",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_basic_dr_testmech",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_robot_dr_legs",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_robot_anymal_d",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,

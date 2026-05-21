@@ -177,7 +177,6 @@ class Example:
             model=self.model,
             iterations=self.iterations,
         )
-        self.cloth_solver._precompute(h1)
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()
 
@@ -197,10 +196,10 @@ class Example:
     @wp.kernel
     def transform_interpolate(
         ratio: float,
-        transform0: wp.array(dtype=wp.transform),
-        transform1: wp.array(dtype=wp.transform),
+        transform0: wp.array[wp.transform],
+        transform1: wp.array[wp.transform],
         # outputs
-        new_transform: wp.array(dtype=wp.transform),
+        new_transform: wp.array[wp.transform],
     ):
         tid = wp.tid()
         tf0 = transform0[tid]
@@ -324,5 +323,4 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=601)
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

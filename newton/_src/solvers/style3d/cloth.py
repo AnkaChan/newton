@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -139,6 +140,9 @@ def _compute_edge_bending_data(
     def dot(a, b):
         return (a * b).sum(axis=-1)
 
+    def cross2d(a, b):
+        return a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+
     if edge_aniso_values is not None:
         angle_f0 = np.atan2(panel_x43_f0[:, 1], panel_x43_f0[:, 0])
         angle_f1 = np.atan2(panel_x43_f1[:, 1], panel_x43_f1[:, 0])
@@ -153,8 +157,8 @@ def _compute_edge_bending_data(
         edge_ke = aniso_ke[:, 0] * sin12 + aniso_ke[:, 1] * cos12 + aniso_ke[:, 2] * 4.0 * sin2 * cos2
 
     edge_area = (
-        np.abs(np.cross(panel_x43_f0, panel_x1_f0 - panel_x3_f0))
-        + np.abs(np.cross(panel_x43_f1, panel_x2_f1 - panel_x3_f1))
+        np.abs(cross2d(panel_x43_f0, panel_x1_f0 - panel_x3_f0))
+        + np.abs(cross2d(panel_x43_f1, panel_x2_f1 - panel_x3_f1))
         + 1.0e-8
     ) / 3.0
 
@@ -162,7 +166,7 @@ def _compute_edge_bending_data(
         ba = b - a
         ca = c - a
         dot_a = dot(ba, ca)
-        cross_a = np.abs(np.cross(ba, ca)) + 1.0e-8
+        cross_a = np.abs(cross2d(ba, ca)) + 1.0e-8
         return dot_a / cross_a
 
     cot1 = cot2d(panel_x3_f0, panel_x4_f0, panel_x1_f0)
@@ -200,6 +204,8 @@ def add_cloth_mesh(
     particle_radius: float | None = None,
     custom_attributes_particles: dict[str, Any] | None = None,
     custom_attributes_springs: dict[str, Any] | None = None,
+    validate_mesh: bool = False,
+    label: str | None = None,
 ) -> None:
     """Add a Style3D cloth mesh using :class:`newton.ModelBuilder` custom attributes.
 
@@ -254,6 +260,17 @@ def add_cloth_mesh(
             :attr:`newton.ModelBuilder.default_particle_radius`).
         custom_attributes_particles: Extra custom attributes for particles.
         custom_attributes_springs: Extra custom attributes for springs.
+        validate_mesh: If True, run quality checks on the input mesh and
+            emit warnings for degenerate or sliver triangles and extreme
+            interior angles. See
+            :func:`newton.utils.validate_triangle_mesh`. (Non-manifold
+            edges are reported separately by :class:`MeshAdjacency`,
+            which is built unconditionally for the bending-edge
+            pipeline.)
+        label: Optional name forwarded to
+            :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
+            warning emitted with ``validate_mesh=True`` can identify
+            this cloth.
     """
     vertices_np = np.array(vertices, dtype=float) * scale
     rot_mat = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
@@ -263,10 +280,16 @@ def add_cloth_mesh(
     panel_indices_np = np.array(panel_indices if panel_indices is not None else indices, dtype=int).reshape(-1, 3)
 
     tri_indices_np = np.array(indices, dtype=int).reshape(-1, 3)
+
+    if validate_mesh:
+        from ...utils.mesh import validate_triangle_mesh  # noqa: PLC0415
+
+        validate_triangle_mesh(vertices_np, tri_indices_np, label=label, stacklevel=3)
+
     panel_inv_D_all, panel_areas_all = _compute_panel_triangles(panel_verts_np, panel_indices_np)
     valid_inds = (panel_areas_all > 0.0).nonzero()[0]
     if len(valid_inds) < len(panel_areas_all):
-        print("inverted or degenerate triangle elements")
+        warnings.warn("Inverted or degenerate triangle elements detected.", stacklevel=2)
     tri_indices_valid = tri_indices_np[valid_inds]
     panel_indices_valid = panel_indices_np[valid_inds]
 
@@ -402,6 +425,7 @@ def add_cloth_grid(
     particle_radius: float | None = None,
     custom_attributes_particles: dict[str, Any] | None = None,
     custom_attributes_springs: dict[str, Any] | None = None,
+    label: str | None = None,
 ) -> None:
     """Create a planar Style3D cloth grid.
 
@@ -438,6 +462,9 @@ def add_cloth_grid(
         particle_radius: Per-particle radius.
         custom_attributes_particles: Extra custom attributes for particles.
         custom_attributes_springs: Extra custom attributes for springs.
+        label: Optional name forwarded through to
+            :func:`newton.solvers.style3d.add_cloth_mesh` and ultimately
+            to :func:`newton.utils.validate_triangle_mesh`.
     """
 
     def grid_index(x: int, y: int, dim_x: int) -> int:
@@ -492,6 +519,7 @@ def add_cloth_grid(
         particle_radius=particle_radius,
         custom_attributes_particles=custom_attributes_particles,
         custom_attributes_springs=custom_attributes_springs,
+        label=label,
     )
 
     if fix_left or fix_right or fix_top or fix_bottom:
@@ -515,12 +543,12 @@ def add_cloth_grid(
 def compute_sew_v(
     sew_dist: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    vert_indices: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    vert_indices: wp.array[wp.int32],
     # outputs
-    sew_vinds: wp.array(dtype=wp.vec2i, ndim=2),
-    sew_vdists: wp.array(dtype=wp.float32, ndim=2),
+    sew_vinds: wp.array2d[wp.vec2i],
+    sew_vdists: wp.array2d[wp.float32],
 ):
     v_index = vert_indices[wp.tid()]
     v = pos[v_index]

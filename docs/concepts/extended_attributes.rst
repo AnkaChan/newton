@@ -1,6 +1,8 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
+.. currentmodule:: newton
+
 .. _extended_attributes:
 
 Extended Attributes
@@ -108,7 +110,7 @@ The canonical list is :attr:`State.EXTENDED_ATTRIBUTES <newton.State.EXTENDED_AT
      - Rigid-body spatial accelerations (used by :class:`~newton.sensors.SensorIMU`)
    * - :attr:`~newton.State.body_parent_f`
      - Rigid-body parent interaction wrenches
-   * - :attr:`~newton.State.mujoco.qfrc_actuator`
+   * - ``State.mujoco.qfrc_actuator``
      - Actuator forces in generalized (joint DOF) coordinates, namespaced under ``state.mujoco.qfrc_actuator``.
        Only populated by :class:`~newton.solvers.SolverMuJoCo`.
 
@@ -118,4 +120,4 @@ Notes
 
 - Some components transparently request attributes they need. For example, :class:`~newton.sensors.SensorIMU` requests ``body_qdd`` and :class:`~newton.sensors.SensorContact` requests ``force``.
   Create sensors before allocating State/Contacts for this to work automatically.
-- Solvers populate extended attributes they support. Currently, :class:`~newton.solvers.SolverMuJoCo` populates ``body_qdd``, ``body_parent_f``, ``mujoco:qfrc_actuator``, and ``force``.
+- Solvers populate extended attributes they support. :class:`~newton.solvers.SolverMuJoCo` populates ``body_qdd``, ``body_parent_f``, ``mujoco:qfrc_actuator``, and ``force``. :class:`~newton.solvers.SolverFeatherstone` populates ``body_parent_f`` directly from its RNEA backward pass. :class:`~newton.solvers.SolverXPBD` populates ``body_parent_f`` and ``force``; XPBD's reported wrenches are approximate (it applies relaxation factors to each constraint correction and is not momentum-conserving), so they should be treated as the *applied* constraint reaction rather than an exact analytic value. For simple decoupled cases (e.g. a single dynamic body suspended from a kinematic or world parent) the XPBD values converge to within the integrator's first-order time-stepping bias.

@@ -20,7 +20,12 @@ def create_kernel(
 ) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
 
-    if state.render_color or state.render_normal:
+    if (
+        state.render_color
+        or state.render_hdr_color
+        or state.render_normal
+        or (state.render_albedo and config.enable_textures)
+    ):
         raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
     else:
         raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
@@ -34,48 +39,49 @@ def create_kernel(
         img_width: wp.int32,
         img_height: wp.int32,
         # Camera
-        camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-        camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
+        camera_rays: wp.array4d[wp.vec3f],
+        camera_transforms: wp.array2d[wp.transformf],
         # Shapes BVH
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
-        bvh_shapes_group_roots: wp.array(dtype=wp.int32),
+        bvh_shapes_group_roots: wp.array[wp.int32],
         # Shapes
-        shape_enabled: wp.array(dtype=wp.uint32),
-        shape_types: wp.array(dtype=wp.int32),
-        shape_sizes: wp.array(dtype=wp.vec3f),
-        shape_colors: wp.array(dtype=wp.vec4f),
-        shape_transforms: wp.array(dtype=wp.transformf),
-        shape_source_ptr: wp.array(dtype=wp.uint64),
-        shape_texture_ids: wp.array(dtype=wp.int32),
-        shape_mesh_data_ids: wp.array(dtype=wp.int32),
+        shape_enabled: wp.array[wp.uint32],
+        shape_types: wp.array[wp.int32],
+        shape_sizes: wp.array[wp.vec3f],
+        shape_colors: wp.array[wp.vec3f],
+        shape_transforms: wp.array[wp.transformf],
+        shape_source_ptr: wp.array[wp.uint64],
+        shape_texture_ids: wp.array[wp.int32],
+        shape_mesh_data_ids: wp.array[wp.int32],
         # Particle BVH
         bvh_particles_size: wp.int32,
         bvh_particles_id: wp.uint64,
-        bvh_particles_group_roots: wp.array(dtype=wp.int32),
+        bvh_particles_group_roots: wp.array[wp.int32],
         # Particles
-        particles_position: wp.array(dtype=wp.vec3f),
-        particles_radius: wp.array(dtype=wp.float32),
+        particles_position: wp.array[wp.vec3f],
+        particles_radius: wp.array[wp.float32],
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
         # Meshes
-        mesh_data: wp.array(dtype=MeshData),
+        mesh_data: wp.array[MeshData],
         # Gaussians
-        gaussians_data: wp.array(dtype=Gaussian.Data),
+        gaussians_data: wp.array[Gaussian.Data],
         # Textures
-        texture_data: wp.array(dtype=TextureData),
+        texture_data: wp.array[TextureData],
         # Lights
-        light_active: wp.array(dtype=wp.bool),
-        light_type: wp.array(dtype=wp.int32),
-        light_cast_shadow: wp.array(dtype=wp.bool),
-        light_positions: wp.array(dtype=wp.vec3f),
-        light_orientations: wp.array(dtype=wp.vec3f),
+        light_active: wp.array[wp.bool],
+        light_type: wp.array[wp.int32],
+        light_cast_shadow: wp.array[wp.bool],
+        light_positions: wp.array[wp.vec3f],
+        light_orientations: wp.array[wp.vec3f],
         # Outputs
-        out_color: wp.array(dtype=wp.uint32),
-        out_depth: wp.array(dtype=wp.float32),
-        out_shape_index: wp.array(dtype=wp.uint32),
-        out_normal: wp.array(dtype=wp.vec3f),
-        out_albedo: wp.array(dtype=wp.uint32),
+        out_color: wp.array[wp.uint32],
+        out_depth: wp.array[wp.float32],
+        out_shape_index: wp.array[wp.uint32],
+        out_normal: wp.array[wp.vec3f],
+        out_albedo: wp.array[wp.uint32],
+        out_hdr_color: wp.array[wp.vec3f],
     ):
         tid = wp.tid()
 
@@ -104,6 +110,7 @@ def create_kernel(
         camera_transform = camera_transforms[camera_index, world_index]
         ray_origin_world = wp.transform_point(camera_transform, camera_rays[camera_index, py, px, 0])
         ray_dir_world = wp.transform_vector(camera_transform, camera_rays[camera_index, py, px, 1])
+        camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         closest_hit = raytrace_closest_hit(
             bvh_shapes_size,
@@ -127,6 +134,7 @@ def create_kernel(
             gaussians_data,
             ray_origin_world,
             ray_dir_world,
+            camera_forward,
         )
 
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
@@ -134,6 +142,8 @@ def create_kernel(
                 out_color[out_index] = wp.uint32(wp.static(clear_data.clear_color))
             if wp.static(state.render_albedo):
                 out_albedo[out_index] = wp.uint32(wp.static(clear_data.clear_albedo))
+            if wp.static(state.render_hdr_color):
+                out_hdr_color[out_index] = wp.vec3f(0.0)
             if wp.static(state.render_depth):
                 out_depth[out_index] = wp.float32(wp.static(clear_data.clear_depth))
             if wp.static(state.render_normal):
@@ -155,7 +165,11 @@ def create_kernel(
         if wp.static(state.render_shape_index):
             out_shape_index[out_index] = closest_hit.shape_index
 
-        if not wp.static(state.render_color) and not wp.static(state.render_albedo):
+        if (
+            not wp.static(state.render_color)
+            and not wp.static(state.render_albedo)
+            and not wp.static(state.render_hdr_color)
+        ):
             return
 
         is_gaussian = wp.bool(False)
@@ -168,11 +182,9 @@ def create_kernel(
         if not is_gaussian:
             hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
 
-            color = wp.vec4f(1.0)
+            albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                color = shape_colors[closest_hit.shape_index]
-
-            albedo_color = wp.vec3f(color[0], color[1], color[2])
+                albedo_color = shape_colors[closest_hit.shape_index]
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
@@ -196,7 +208,7 @@ def create_kernel(
         if wp.static(state.render_albedo):
             out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo_color, 1.0)
 
-        if not wp.static(state.render_color):
+        if not wp.static(state.render_color) and not wp.static(state.render_hdr_color):
             return
 
         shaded_color = closest_hit.color
@@ -243,6 +255,10 @@ def create_kernel(
                 )
                 shaded_color = shaded_color + albedo_color * light_contribution
 
-        out_color[out_index] = tiling.pack_rgba_to_uint32(shaded_color, 1.0)
+        if wp.static(state.render_hdr_color):
+            out_hdr_color[out_index] = shaded_color
+
+        if wp.static(state.render_color):
+            out_color[out_index] = tiling.pack_rgba_to_uint32(shaded_color, 1.0)
 
     return render_megakernel

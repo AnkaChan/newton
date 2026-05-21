@@ -42,35 +42,77 @@ _NULL_COLLIDER_ID = -1
 class Collider:
     """Packed collider parameters and geometry queried during rasterization."""
 
-    collider_mesh: wp.array(dtype=wp.uint64)
+    collider_mesh: wp.array[wp.uint64]
     """Mesh of the collider. Shape (collider_count,)."""
 
-    collider_max_thickness: wp.array(dtype=float)
+    collider_max_thickness: wp.array[float]
     """Max thickness of each collider mesh. Shape (collider_count,)."""
 
-    collider_body_index: wp.array(dtype=int)
+    collider_body_index: wp.array[int]
     """Body index of each collider. Shape (collider_count,)"""
 
-    face_material_index: wp.array(dtype=int)
+    face_material_index: wp.array[int]
     """Material index for each collider mesh face. Shape (sum(mesh.face_count for mesh in meshes),)"""
 
-    material_thickness: wp.array(dtype=float)
+    material_thickness: wp.array[float]
     """Thickness for each collider material. Shape (material_count,)"""
 
-    material_friction: wp.array(dtype=float)
+    material_friction: wp.array[float]
     """Friction coefficient for each collider material. Shape (material_count,)"""
 
-    material_adhesion: wp.array(dtype=float)
+    material_adhesion: wp.array[float]
     """Adhesion coefficient for each collider material (Pa). Shape (material_count,)"""
 
-    material_projection_threshold: wp.array(dtype=float)
+    material_projection_threshold: wp.array[float]
     """Projection threshold for each collider material. Shape (material_count,)"""
 
-    body_com: wp.array(dtype=wp.vec3)
+    body_com: wp.array[wp.vec3]
     """Body center of mass of each collider. Shape (body_count,)"""
 
     query_max_dist: float
     """Maximum distance to query collider sdf"""
+
+
+@wp.func
+def _sq_dist_point_seg_at_origin(q: wp.vec3, seg: wp.vec3, seg_len_sq: float):
+    """Squared distance from ``q`` to the segment ``[0, seg]``."""
+    s = wp.clamp(wp.dot(q, seg) / seg_len_sq, 0.0, 1.0)
+    return wp.length_sq(q - s * seg)
+
+
+@wp.func
+def _sq_dist_point_tri_at_origin(q: wp.vec3, e1: wp.vec3, e2: wp.vec3):
+    """Squared distance from ``q`` to the triangle with vertices ``(0, e1, e2)``.
+
+    ``wp.vec3``-specialized inline of warp's ``project_on_tri_at_origin``
+    (from ``warp._src.fem.geometry.closest_point``). The original returns
+    the barycentric coordinates as well; those are unused here so the
+    inlined version returns just the squared distance.
+    """
+    e1e1 = wp.dot(e1, e1)
+    e1e2 = wp.dot(e1, e2)
+    e2e2 = wp.dot(e2, e2)
+
+    det = e1e1 * e2e2 - e1e2 * e1e2
+
+    # Interior projection when the triangle is non-degenerate and the
+    # projected point lies inside the triangle.
+    if det > e1e1 * e2e2 * 1.0e-6:
+        e1p = wp.dot(e1, q)
+        e2p = wp.dot(e2, q)
+
+        s = (e2e2 * e1p - e1e2 * e2p) / det
+        t = (e1e1 * e2p - e1e2 * e1p) / det
+
+        if s >= 0.0 and t >= 0.0 and s + t <= 1.0:
+            return wp.length_sq(q - s * e1 - t * e2)
+
+    # Otherwise (exterior projection or degenerate triangle) take the
+    # minimum squared distance across the three edges.
+    d1 = _sq_dist_point_seg_at_origin(q, e1, e1e1)
+    d2 = _sq_dist_point_seg_at_origin(q, e2, e2e2)
+    d12 = _sq_dist_point_seg_at_origin(q - e1, e2 - e1, wp.length_sq(e2 - e1))
+    return wp.min(wp.min(d1, d2), d12)
 
 
 @wp.func
@@ -103,7 +145,7 @@ def get_average_face_normal(
         V1 = points[vidx[face_index * 3 + 1]]
         V2 = points[vidx[face_index * 3 + 2]]
 
-        sq_dist, _coords = fem.geometry.closest_point.project_on_tri_at_origin(point - V0, V1 - V0, V2 - V0)
+        sq_dist = _sq_dist_point_tri_at_origin(point - V0, V1 - V0, V2 - V0)
         if sq_dist < eps_sq:
             face_normal += wp.mesh_eval_face_normal(mesh_id, face_index)
 
@@ -114,9 +156,9 @@ def get_average_face_normal(
 def collision_sdf(
     x: wp.vec3,
     collider: Collider,
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
     dt: float,
 ):
     min_sdf = float(_INFINITY)
@@ -220,9 +262,9 @@ def collision_sdf(
 @wp.kernel
 def collider_volumes_kernel(
     cell_volume: float,
-    collider_ids: wp.array(dtype=int),
-    node_volumes: wp.array(dtype=float),
-    volumes: wp.array(dtype=float),
+    collider_ids: wp.array[int],
+    node_volumes: wp.array[float],
+    volumes: wp.array[float],
 ):
     i = wp.tid()
     collider_id = collider_ids[i]
@@ -231,7 +273,7 @@ def collider_volumes_kernel(
 
 
 @wp.func
-def collider_is_dynamic(collider_id: int, collider: Collider, body_mass: wp.array(dtype=float)):
+def collider_is_dynamic(collider_id: int, collider: Collider, body_mass: wp.array[float]):
     if collider_id < 0:
         return False
     body_id = collider.collider_body_index[collider_id]
@@ -242,19 +284,19 @@ def collider_is_dynamic(collider_id: int, collider: Collider, body_mass: wp.arra
 
 @wp.kernel
 def project_outside_collider(
-    positions: wp.array(dtype=wp.vec3),
-    velocities: wp.array(dtype=wp.vec3),
-    velocity_gradients: wp.array(dtype=wp.mat33),
-    particle_flags: wp.array(dtype=wp.int32),
-    particle_mass: wp.array(dtype=float),
+    positions: wp.array[wp.vec3],
+    velocities: wp.array[wp.vec3],
+    velocity_gradients: wp.array[wp.mat33],
+    particle_flags: wp.array[wp.int32],
+    particle_mass: wp.array[float],
     collider: Collider,
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
     dt: float,
-    positions_out: wp.array(dtype=wp.vec3),
-    velocities_out: wp.array(dtype=wp.vec3),
-    velocity_gradients_out: wp.array(dtype=wp.mat33),
+    positions_out: wp.array[wp.vec3],
+    velocities_out: wp.array[wp.vec3],
+    velocity_gradients_out: wp.array[wp.mat33],
 ):
     """Project particles outside colliders and apply Coulomb response.
 
@@ -319,20 +361,20 @@ def project_outside_collider(
 @wp.kernel
 def rasterize_collider_kernel(
     collider: Collider,
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
     voxel_size: float,
     activation_distance: float,
     dt: float,
-    node_positions: wp.array(dtype=wp.vec3),
-    node_volumes: wp.array(dtype=float),
-    collider_sdf: wp.array(dtype=float),
-    collider_velocity: wp.array(dtype=wp.vec3),
-    collider_normals: wp.array(dtype=wp.vec3),
-    collider_friction: wp.array(dtype=float),
-    collider_adhesion: wp.array(dtype=float),
-    collider_ids: wp.array(dtype=int),
+    node_positions: wp.array[wp.vec3],
+    node_volumes: wp.array[float],
+    collider_sdf: wp.array[float],
+    collider_velocity: wp.array[wp.vec3],
+    collider_normals: wp.array[wp.vec3],
+    collider_friction: wp.array[float],
+    collider_adhesion: wp.array[float],
+    collider_ids: wp.array[int],
 ):
     """Sample collider data at grid nodes.
 
@@ -392,17 +434,17 @@ def rasterize_collider_kernel(
 
 @wp.kernel
 def fill_collider_rigidity_matrices(
-    node_positions: wp.array(dtype=wp.vec3),
+    node_positions: wp.array[wp.vec3],
     collider: Collider,
-    body_q: wp.array(dtype=wp.transform),
-    body_mass: wp.array(dtype=float),
-    body_inv_inertia: wp.array(dtype=wp.mat33),
+    body_q: wp.array[wp.transform],
+    body_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
     cell_volume: float,
-    collider_ids: wp.array(dtype=int),
-    J_rows: wp.array(dtype=int),
-    J_cols: wp.array(dtype=int),
-    J_values: wp.array(dtype=wp.mat33),
-    IJtm_values: wp.array(dtype=wp.mat33),
+    collider_ids: wp.array[int],
+    J_rows: wp.array[int],
+    J_cols: wp.array[int],
+    J_values: wp.array[wp.mat33],
+    IJtm_values: wp.array[wp.mat33],
 ):
     i = wp.tid()
 
@@ -486,8 +528,8 @@ def collider_gradient_field(s: fem.Sample, domain: fem.Domain, distance: fem.Fie
 
 @wp.kernel
 def normalize_gradient(
-    gradient: wp.array(dtype=wp.vec3),
-    normal: wp.array(dtype=wp.vec3),
+    gradient: wp.array[wp.vec3],
+    normal: wp.array[wp.vec3],
 ):
     i = wp.tid()
     normal[i] = wp.normalize(gradient[i])
@@ -495,20 +537,20 @@ def normalize_gradient(
 
 def rasterize_collider(
     collider: Collider,
-    body_q: wp.array(dtype=wp.transform),
-    body_qd: wp.array(dtype=wp.spatial_vector),
-    body_q_prev: wp.array(dtype=wp.transform),
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
     voxel_size: float,
     dt: float,
     collider_space_restriction: fem.SpaceRestriction,
-    collider_node_volume: wp.array(dtype=float),
+    collider_node_volume: wp.array[float],
     collider_position_field: fem.DiscreteField,
     collider_distance_field: fem.DiscreteField,
     collider_normal_field: fem.DiscreteField,
-    collider_velocity: wp.array(dtype=wp.vec3),
-    collider_friction: wp.array(dtype=float),
-    collider_adhesion: wp.array(dtype=float),
-    collider_ids: wp.array(dtype=int),
+    collider_velocity: wp.array[wp.vec3],
+    collider_friction: wp.array[float],
+    collider_adhesion: wp.array[float],
+    collider_ids: wp.array[int],
     temporary_store: fem.TemporaryStore,
 ):
     """Rasterize collider signed-distance, normals, velocity, and material onto grid nodes.
@@ -611,13 +653,13 @@ def interpolate_collider_normals(
 
 def build_rigidity_operator(
     cell_volume: float,
-    node_volumes: wp.array(dtype=float),
-    node_positions: wp.array(dtype=wp.vec3),
+    node_volumes: wp.array[float],
+    node_positions: wp.array[wp.vec3],
     collider: Collider,
-    body_q: wp.array(dtype=wp.transform),
-    body_mass: wp.array(dtype=float),
-    body_inv_inertia: wp.array(dtype=wp.mat33),
-    collider_ids: wp.array(dtype=int),
+    body_q: wp.array[wp.transform],
+    body_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    collider_ids: wp.array[int],
 ) -> tuple[wps.BsrMatrix, wps.BsrMatrix]:
     """Build the collider rigidity operator that couples collider impulses to rigid DOFs.
 

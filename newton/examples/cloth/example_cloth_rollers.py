@@ -20,7 +20,7 @@ from newton import ParticleFlags
 
 
 @wp.kernel
-def increment_time(time: wp.array(dtype=float), dt: float):
+def increment_time(time: wp.array[float], dt: float):
     """Increment time by dt."""
     time[0] = time[0] + dt
 
@@ -29,12 +29,12 @@ def increment_time(time: wp.array(dtype=float), dt: float):
 def rotate_cylinder(
     angular_speed: float,
     dt: float,
-    time: wp.array(dtype=float),
+    time: wp.array[float],
     center_x: float,
     center_z: float,
-    q0: wp.array(dtype=wp.vec3),
-    indices: wp.array(dtype=wp.int64),
-    q1: wp.array(dtype=wp.vec3),
+    q0: wp.array[wp.vec3],
+    indices: wp.array[wp.int64],
+    q1: wp.array[wp.vec3],
 ):
     """Rotate cylinder vertices around their center axis."""
     i = wp.tid()
@@ -302,7 +302,7 @@ class Example:
         # Finalize model
         self.model = builder.finalize()
         self.model.soft_contact_ke = 5.0e5
-        self.model.soft_contact_kd = 1.0e-5
+        self.model.soft_contact_kd = 1.0e-6
         self.model.soft_contact_mu = 0.1
 
         # Fix outer edge of cloth to cylinder 2 and set up cylinder rotation
@@ -527,7 +527,4 @@ if __name__ == "__main__":
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
-    # Create example and run
-    example = Example(viewer=viewer, args=args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer=viewer, args=args), args)

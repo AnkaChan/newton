@@ -13,37 +13,46 @@ from newton.sensors import SensorTiledCamera
 
 
 class TestSensorTiledCamera(unittest.TestCase):
-    def __build_scene(self):
+    @classmethod
+    def setUpClass(cls):
+        if not wp.is_cuda_available():
+            return
+        cls._shared_model = cls._build_scene()
+
+    @staticmethod
+    def _build_scene():
         from pxr import Usd, UsdGeom
 
         builder = newton.ModelBuilder()
 
         # add ground plane
-        builder.add_ground_plane()
+        builder.add_ground_plane(color=(0.91749084, 0.798277, 0.64443165))
 
         # SPHERE
         sphere_pos = wp.vec3(0.0, -2.0, 0.5)
         body_sphere = builder.add_body(xform=wp.transform(p=sphere_pos, q=wp.quat_identity()), label="sphere")
-        builder.add_shape_sphere(body_sphere, radius=0.5)
+        builder.add_shape_sphere(body_sphere, radius=0.5, color=(0.5214758, 0.9868272, 0.79823583))
 
         # CAPSULE
         capsule_pos = wp.vec3(0.0, 0.0, 0.75)
         body_capsule = builder.add_body(xform=wp.transform(p=capsule_pos, q=wp.quat_identity()), label="capsule")
-        builder.add_shape_capsule(body_capsule, radius=0.25, half_height=0.5)
+        builder.add_shape_capsule(body_capsule, radius=0.25, half_height=0.5, color=(0.8951316, 0.9551697, 0.8440772))
 
         # CYLINDER
         cylinder_pos = wp.vec3(0.0, -4.0, 0.5)
         body_cylinder = builder.add_body(xform=wp.transform(p=cylinder_pos, q=wp.quat_identity()), label="cylinder")
-        builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.5)
+        builder.add_shape_cylinder(
+            body_cylinder, radius=0.4, half_height=0.5, color=(0.59499574, 0.99073946, 0.64237005)
+        )
 
         # BOX
         box_pos = wp.vec3(0.0, 2.0, 0.5)
         body_box = builder.add_body(xform=wp.transform(p=box_pos, q=wp.quat_identity()), label="box")
-        builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.5)
+        builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.5, color=(0.8146366, 0.7905182, 0.79995614))
 
         # MESH (bunny)
         bunny_filename = os.path.join(os.path.dirname(__file__), "..", "examples", "assets", "bunny.usd")
-        self.assertTrue(os.path.exists(bunny_filename), f"File not found: {bunny_filename}")
+        assert os.path.exists(bunny_filename), f"File not found: {bunny_filename}"
         usd_stage = Usd.Stage.Open(bunny_filename)
         usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
 
@@ -54,7 +63,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         mesh_pos = wp.vec3(0.0, 4.0, 0.0)
         body_mesh = builder.add_body(xform=wp.transform(p=mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), label="mesh")
-        builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
+        builder.add_shape_mesh(body_mesh, mesh=demo_mesh, color=(0.7676241, 0.99788857, 0.75097305))
 
         return builder.finalize()
 
@@ -64,20 +73,16 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         gold_image = gold_image.reshape(test_image.shape)
 
-        def _absdiff(x, y):
-            if x > y:
-                return x - y
-            return y - x
-
-        absdiff = np.vectorize(_absdiff)
-
-        diff = absdiff(test_image, gold_image)
+        # Promote to a wide type before subtracting: int64 avoids unsigned underflow for
+        # integer images, float64 preserves fractional deltas for float (e.g. depth) images.
+        wide_dtype = np.int64 if np.issubdtype(test_image.dtype, np.integer) else np.float64
+        diff = np.abs(test_image.astype(wide_dtype) - gold_image.astype(wide_dtype))
 
         divider = 1.0
         if np.issubdtype(test_image.dtype, np.integer):
             divider = np.iinfo(test_image.dtype).max
 
-        percentage_diff = np.average(diff) / divider * 100.0
+        percentage_diff = float(np.average(diff)) / divider * 100.0
         self.assertLessEqual(
             percentage_diff,
             allowed_difference,
@@ -86,7 +91,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_golden_image(self):
-        model = self.__build_scene()
+        model = self._shared_model
 
         width = 320
         height = 240
@@ -98,15 +103,17 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         tiled_camera_sensor = SensorTiledCamera(model=model)
         tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
-        tiled_camera_sensor.utils.assign_random_colors_per_shape()
         tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
 
         camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
 
+        state = model.state()
+        newton.geometry.build_bvh_shape(model, state)
+        newton.geometry.build_bvh_particle(model, state)
         tiled_camera_sensor.update(
-            model.state(), camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
+            state, camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
         )
 
         golden_color_data = np.load(
@@ -121,7 +128,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_output_image_parameters(self):
-        model = self.__build_scene()
+        model = self._shared_model
 
         width = 640
         height = 480
@@ -134,33 +141,33 @@ class TestSensorTiledCamera(unittest.TestCase):
         tiled_camera_sensor = SensorTiledCamera(model=model)
         camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
 
+        state = model.state()
+        newton.geometry.build_bvh_shape(model, state)
+        newton.geometry.build_bvh_particle(model, state)
+
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
         tiled_camera_sensor.update(
-            model.state(), camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
+            state, camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
         )
         self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
         self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
 
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
-        tiled_camera_sensor.update(
-            model.state(), camera_transforms, camera_rays, color_image=color_image, depth_image=None
-        )
+        tiled_camera_sensor.update(state, camera_transforms, camera_rays, color_image=color_image, depth_image=None)
         self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
-        tiled_camera_sensor.update(
-            model.state(), camera_transforms, camera_rays, color_image=None, depth_image=depth_image
-        )
+        tiled_camera_sensor.update(state, camera_transforms, camera_rays, color_image=None, depth_image=depth_image)
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
 
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
-        tiled_camera_sensor.update(model.state(), camera_transforms, camera_rays, color_image=None, depth_image=None)
+        tiled_camera_sensor.update(state, camera_transforms, camera_rays, color_image=None, depth_image=None)
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 

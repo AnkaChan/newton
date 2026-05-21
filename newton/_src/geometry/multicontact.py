@@ -14,6 +14,7 @@ multiple contact points between colliding shapes. It includes polygon clipping
 and contact point selection algorithms.
 """
 
+import math
 from typing import Any
 
 import warp as wp
@@ -27,11 +28,11 @@ from .mpr import create_support_map_function
 EPS = 0.00001
 # The tilt angle defines how much the search direction gets tilted while searching for
 # points on the contact manifold.
-TILT_ANGLE_RAD = wp.static(2.0 * wp.pi / 180.0)
-SIN_TILT_ANGLE = wp.static(wp.sin(TILT_ANGLE_RAD))
-COS_TILT_ANGLE = wp.static(wp.cos(TILT_ANGLE_RAD))
+TILT_ANGLE_RAD = wp.static(2.0 * math.pi / 180.0)
+SIN_TILT_ANGLE = wp.static(math.sin(TILT_ANGLE_RAD))
+COS_TILT_ANGLE = wp.static(math.cos(TILT_ANGLE_RAD))
 
-COS_DEEPEST_CONTACT_THRESHOLD_ANGLE = wp.static(wp.cos(0.1 * wp.pi / 180.0))
+COS_DEEPEST_CONTACT_THRESHOLD_ANGLE = wp.static(math.cos(0.1 * math.pi / 180.0))
 
 
 @wp.func
@@ -286,7 +287,7 @@ def intersection_point(trim_seg_start: wp.vec2, trim_seg_end: wp.vec2, a: wp.vec
 
 
 @wp.func
-def insert_vec2(arr: wp.array(dtype=wp.vec2), arr_count: int, index: int, element: wp.vec2):
+def insert_vec2(arr: wp.array[wp.vec2], arr_count: int, index: int, element: wp.vec2):
     """
     Insert an element into an array at the specified index, shifting elements to the right.
 
@@ -307,7 +308,7 @@ def insert_vec2(arr: wp.array(dtype=wp.vec2), arr_count: int, index: int, elemen
 def trim_in_place(
     trim_seg_start: wp.vec2,
     trim_seg_end: wp.vec2,
-    loop: wp.array(dtype=wp.vec2),
+    loop: wp.array[wp.vec2],
     loop_count: int,
 ) -> int:
     """
@@ -396,9 +397,9 @@ def trim_in_place(
 
 @wp.func
 def trim_all_in_place(
-    trim_poly: wp.array(dtype=wp.vec2),
+    trim_poly: wp.array[wp.vec2],
     trim_poly_count: int,
-    loop: wp.array(dtype=wp.vec2),
+    loop: wp.array[wp.vec2],
     loop_count: int,
 ) -> int:
     """
@@ -482,7 +483,7 @@ def trim_all_in_place(
 
 
 @wp.func
-def approx_max_quadrilateral_area_with_calipers(hull: wp.array(dtype=wp.vec2), hull_count: int) -> wp.vec4i:
+def approx_max_quadrilateral_area_with_calipers(hull: wp.array[wp.vec2], hull_count: int) -> wp.vec4i:
     """
     Finds an approximate maximum area quadrilateral inside a convex hull in O(n) time
     using the Rotating Calipers algorithm to find the hull's diameter.
@@ -578,7 +579,7 @@ def approx_max_quadrilateral_area_with_calipers(hull: wp.array(dtype=wp.vec2), h
 
 
 @wp.func
-def remove_zero_length_edges(loop: wp.array(dtype=wp.vec2), loop_count: int, eps: float) -> int:
+def remove_zero_length_edges(loop: wp.array[wp.vec2], loop_count: int, eps: float) -> int:
     """
     Remove zero-length edges from a polygon loop.
 
@@ -618,9 +619,7 @@ def remove_zero_length_edges(loop: wp.array(dtype=wp.vec2), loop_count: int, eps
 
 
 @wp.func
-def add_avoid_duplicates_vec2(
-    arr: wp.array(dtype=wp.vec2), arr_count: int, vec: wp.vec2, eps: float
-) -> tuple[int, bool]:
+def add_avoid_duplicates_vec2(arr: wp.array[wp.vec2], arr_count: int, vec: wp.vec2, eps: float) -> tuple[int, bool]:
     """
     Add a vector to an array, avoiding duplicates.
 
@@ -645,12 +644,6 @@ def add_avoid_duplicates_vec2(
 
     arr[arr_count] = vec
     return arr_count + 1, True
-
-
-@wp.func_native("""
-    return (uint64_t)a.data;
-""")
-def get_ptr(a: wp.array(dtype=wp.vec2)) -> wp.uint64: ...
 
 
 def create_build_manifold(support_func: Any, writer_func: Any, post_process_contact: Any, _support_funcs: Any = None):
@@ -679,9 +672,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
     @wp.func
     def extract_4_point_contact_manifolds(
-        m_a: wp.array(dtype=wp.vec2),
+        m_a: wp.array[wp.vec2],
         m_a_count: int,
-        m_b: wp.array(dtype=wp.vec2),
+        m_b: wp.array[wp.vec2],
         m_b_count: int,
         normal_local: wp.vec3,
         cross_vector_1: wp.vec3,
@@ -768,6 +761,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 contact_data.contact_point_center = contact_point_world
                 contact_data.contact_normal_a_to_b = normal_world
                 contact_data.contact_distance = signed_distance
+                contact_data.sort_sub_key = (contact_template.sort_sub_key << 3) | i
 
                 contact_data = post_process_contact(
                     contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
@@ -822,14 +816,14 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         # Precomputed cos/sin for 5 evenly spaced pentagonal angles (0, 72, 144, 216, 288 deg).
         PENT_COS_0 = float(1.0)
         PENT_SIN_0 = float(0.0)
-        PENT_COS_1 = wp.static(wp.cos(2.0 * wp.pi / 5.0))
-        PENT_SIN_1 = wp.static(wp.sin(2.0 * wp.pi / 5.0))
-        PENT_COS_2 = wp.static(wp.cos(4.0 * wp.pi / 5.0))
-        PENT_SIN_2 = wp.static(wp.sin(4.0 * wp.pi / 5.0))
-        PENT_COS_3 = wp.static(wp.cos(6.0 * wp.pi / 5.0))
-        PENT_SIN_3 = wp.static(wp.sin(6.0 * wp.pi / 5.0))
-        PENT_COS_4 = wp.static(wp.cos(8.0 * wp.pi / 5.0))
-        PENT_SIN_4 = wp.static(wp.sin(8.0 * wp.pi / 5.0))
+        PENT_COS_1 = wp.static(math.cos(2.0 * math.pi / 5.0))
+        PENT_SIN_1 = wp.static(math.sin(2.0 * math.pi / 5.0))
+        PENT_COS_2 = wp.static(math.cos(4.0 * math.pi / 5.0))
+        PENT_SIN_2 = wp.static(math.sin(4.0 * math.pi / 5.0))
+        PENT_COS_3 = wp.static(math.cos(6.0 * math.pi / 5.0))
+        PENT_SIN_3 = wp.static(math.sin(6.0 * math.pi / 5.0))
+        PENT_COS_4 = wp.static(math.cos(8.0 * math.pi / 5.0))
+        PENT_SIN_4 = wp.static(math.sin(8.0 * math.pi / 5.0))
 
         a_count = int(0)
         b_count = int(0)
@@ -844,7 +838,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         # Allocate buffers: 5 for A, up to 10 for B (5 + clipping headroom)
         b_buffer = wp.zeros(shape=(10,), dtype=wp.vec2f)
-        a_buffer = wp.array(ptr=get_ptr(b_buffer) + wp.uint64(5 * 8), shape=(5,), dtype=wp.vec2f)
+        a_buffer = wp.array(ptr=b_buffer.ptr + wp.uint64(5 * 8), shape=(5,), dtype=wp.vec2f)
 
         # --- Step 1: Find Contact Polygons using Perturbed Support Mapping ---
         # Shape A: support_func returns points in A-local frame directly, no quat_rotate needed.
@@ -948,6 +942,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             contact_data.contact_point_center = deepest_center_world
             contact_data.contact_normal_a_to_b = normal_world
             contact_data.contact_distance = deepest_signed_distance
+            contact_data.sort_sub_key = (contact_template.sort_sub_key << 3) | count_out
 
             contact_data = post_process_contact(
                 contact_data, geom_a, position_a_ws, quaternion_a_ws, geom_b, position_b_ws, quaternion_b_ws

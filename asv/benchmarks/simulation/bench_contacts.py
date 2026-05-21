@@ -5,7 +5,7 @@ import warp as wp
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
 wp.config.enable_backward = False
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 
 import importlib
 
@@ -158,7 +158,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
-        "-b", "--bench", default=None, action="append", choices=benchmark_list.keys(), help="Run a single benchmark."
+        "-b",
+        "--bench",
+        default=None,
+        action="append",
+        choices=benchmark_list.keys(),
+        help="Run a specific benchmark; may be repeated to run multiple (e.g., --bench A --bench B).",
     )
     args = parser.parse_known_args()[0]
 
