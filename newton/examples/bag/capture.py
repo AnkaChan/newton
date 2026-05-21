@@ -15,15 +15,14 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
-import subprocess
 from threading import Thread
 from typing import Any
 
 import imageio.v2 as imageio
-
 
 _CAPTURE_SENTINEL = object()
 _LOG_PREFIX = "[replay_capture]"
@@ -77,9 +76,16 @@ def add_capture_arguments(
     *,
     replay_help: str,
     capture_frames_default: int = 300,
+    capture_fps_default: int = 60,
     include_save_mp4: bool = True,
 ) -> None:
-    """Add the shared MP4 and replay-capture CLI flags."""
+    """Add the shared MP4 and replay-capture CLI flags.
+
+    ``capture_fps_default`` lets each example pick a default that matches
+    its physics-step rate (so the captured video plays at real time
+    rather than at e.g. 2x speed). Users can still override with
+    ``--capture-fps`` on the command line.
+    """
     if include_save_mp4:
         parser.add_argument(
             "--save-mp4",
@@ -101,8 +107,8 @@ def add_capture_arguments(
     parser.add_argument(
         "--capture-fps",
         type=int,
-        default=60,
-        help="Output replay video FPS",
+        default=capture_fps_default,
+        help="Output replay video FPS (defaults to the example's physics step rate)",
     )
     parser.add_argument(
         "--capture-dir",

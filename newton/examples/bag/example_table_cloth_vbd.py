@@ -43,9 +43,7 @@
 from __future__ import annotations
 
 import math
-import os
 
-import h5py
 import numpy as np
 import warp as wp
 from pxr import Usd
@@ -53,6 +51,7 @@ from pxr import Usd
 import newton
 import newton.examples
 import newton.usd
+from newton.examples.bag import table_cloth as tc
 from newton.examples.bag.capture import (
     add_capture_arguments as _add_capture_arguments,
 )
@@ -78,205 +77,8 @@ from newton.examples.bag.capture import (
     write_video_frame as _write_video_frame_common,
 )
 
-# Pink-IK is imported lazily inside Example.__init__ if --no-ik is not set.
-# The heavy pinocchio import (~250 ms) is otherwise skipped.
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Asset paths (relative to newton/examples/assets/)
-# ─────────────────────────────────────────────────────────────────────────────
-_CLOTH_USD_REL = "cloth/assets-1/assets-1/Cloth_fold06/Cloth_fold10.usd"
-_CLOTH_PRIM_PATH = "/root/Cloth_fold07/Visuals/Cloth_fold06"
-# Rigid "cloth pile" (Cloth_In002) inside the same USD as the deformable cloth.
-# Visual and collision meshes have identical 28k-vert geometry; PhysX uses
-# convex decomposition for collision, we use a single convex hull.
-_RIGID_VIS_PRIM_PATH = "/root/Cloth_In002/Cloth_In002/Visuals/Cloth_In002"
-_RIGID_COL_PRIM_PATH = "/root/Cloth_In002/Cloth_In002/Collisions/Cloth_In002_Collider1"
-_G1_USD_REL = "cloth/assets-1/assets-1/g1-29dof-inspire-base-fix-usd/g1_29dof_with_inspire_rev_1_0.usd"
-_TABLE_USD_REL = "cloth/Table256/Table256/Table256.usd"
-_TABLE_VIS_PRIM_PATH = "/root/Table256/Visuals/Table256"
-# Table256 ships an authored offline convex decomposition: 29 mesh prims under
-# Collisions/, each tagged ``physics:approximation = convexHull``.
-_TABLE_COL_PRIM_FMT = "/root/Table256/Collisions/Table256_Collider{i}"
-_TABLE_COL_COUNT = 29
-
-# Recorded teleop demo from the i4h-workflows spread_tablecloth task (HDF5
-# output of ``record_demos_tablecloth.py``). One episode (``data/demo_0``),
-# 337 frames at the env's 30 Hz control rate. We replay G1 joint positions
-# from this file and use the cloth nodal positions as a visual reference.
-_REPLAY_HDF5_REL = "g1.hdf5"
-_REPLAY_EPISODE = "demo_0"
-
-# G1 fixed-base world pose, taken from the HDF5's recorded
-# states/articulation/robot/root_pose[0] (constant across the episode).
-# Without this, ``add_usd(floating=False)`` defaults the pelvis to the origin
-# and the G1's feet end up below the ground plane.
-_G1_BASE_POS = wp.vec3(-0.95, 0.0, 0.80)
-_G1_BASE_ROT = wp.quat_identity()
-
-# Isaac Lab's G1 joint ordering, copied verbatim from the env config's
-# ``joint_names`` list. Newton's ``add_usd`` parses the same USD in
-# tree-traversal order (legs/arms/fingers grouped by side instead of
-# interleaved). We build the IL→Newton permutation at init by joint name
-# match, and use it whenever we write IL-ordered values into joint_q.
-# Note: the ``joint_position`` field in the recording uses PhysX articulation
-# order, which is different again from Newton's USD traversal order.
-
-# Custom init pose from i4h-workflows config/robot_config.py
-# (DEFAULT_JOINT_POS + SPREAD_TABLECLOTH_CUSTOM_JOINT_POS). All joints
-# not listed default to 0. This is what Isaac Lab spawns the G1 with
-# before any teleop input arrives — used as our IK init seed and our
-# warmup display pose.
-_SPREAD_TABLECLOTH_INIT_POSE: dict[str, float] = {
-    "left_shoulder_pitch_joint": -0.3,
-    "left_shoulder_roll_joint": 0.5,
-    "left_shoulder_yaw_joint": 0.0,
-    "left_elbow_joint": -0.5,
-    "left_wrist_roll_joint": 0.0,
-    "left_wrist_pitch_joint": 0.0,
-    "left_wrist_yaw_joint": 0.0,
-    "right_shoulder_pitch_joint": -0.3,
-    "right_shoulder_roll_joint": -0.5,
-    "right_shoulder_yaw_joint": 0.0,
-    "right_elbow_joint": -0.5,
-    "right_wrist_roll_joint": 0.0,
-    "right_wrist_pitch_joint": 0.0,
-    "right_wrist_yaw_joint": 0.0,
-}
-
-# Full 53-slot mapping for the recording's
-# ``data/demo_0/states/articulation/robot/joint_position`` —
-# slot_index → URDF joint name. The recording's order is PhysX's
-# articulation order, which differs from both env_cfg ``joint_names``
-# order and the URDF tree-DFS order Newton uses.
-#
-# PhysX walks the articulation breadth-first from the pelvis root,
-# alternating waist + L/R leg + L/R arm joints at each depth. That's
-# why arm joints (depths 5-11 from pelvis) interleave with leg joints
-# (depths 1-6) inside slots 11-28.
-#
-# This is the same order Isaac Lab exposes as ``robot.data.joint_names`` for
-# this USD; an Isaac Sim playback would pass the vector directly to
-# ``write_joint_state_to_sim``. Newton's ``joint_q`` order is USD traversal
-# order, so this table converts each HDF5 slot to a joint name first.
-_JP_SLOT_TO_NAME: dict[int, str] = {
-    # Lower body — BFS depth 1-6, interleaved waist + L/R legs.
-    0: "left_hip_pitch_joint",
-    1: "right_hip_pitch_joint",
-    2: "waist_yaw_joint",
-    3: "left_hip_roll_joint",
-    4: "right_hip_roll_joint",
-    5: "waist_roll_joint",
-    6: "left_hip_yaw_joint",
-    7: "right_hip_yaw_joint",
-    8: "waist_pitch_joint",
-    9: "left_knee_joint",
-    10: "right_knee_joint",
-    # Arms — BFS depths 5-11, interleaved with the last two leg depths
-    # at slots 13/14 and 17/18.
-    11: "left_shoulder_pitch_joint",
-    12: "right_shoulder_pitch_joint",
-    13: "left_ankle_pitch_joint",
-    14: "right_ankle_pitch_joint",
-    15: "left_shoulder_roll_joint",
-    16: "right_shoulder_roll_joint",
-    17: "left_ankle_roll_joint",
-    18: "right_ankle_roll_joint",
-    19: "left_shoulder_yaw_joint",
-    20: "right_shoulder_yaw_joint",
-    21: "left_elbow_joint",
-    22: "right_elbow_joint",
-    23: "left_wrist_roll_joint",
-    24: "right_wrist_roll_joint",
-    25: "left_wrist_pitch_joint",
-    26: "right_wrist_pitch_joint",
-    27: "left_wrist_yaw_joint",
-    28: "right_wrist_yaw_joint",
-    # Finger joints — breadth-first by proximal depth, then intermediate /
-    # thumb child depths. This matches Isaac Lab's articulation view order.
-    29: "L_index_proximal_joint",
-    30: "L_middle_proximal_joint",
-    31: "L_pinky_proximal_joint",
-    32: "L_ring_proximal_joint",
-    33: "L_thumb_proximal_yaw_joint",
-    34: "R_index_proximal_joint",
-    35: "R_middle_proximal_joint",
-    36: "R_pinky_proximal_joint",
-    37: "R_ring_proximal_joint",
-    38: "R_thumb_proximal_yaw_joint",
-    39: "L_index_intermediate_joint",
-    40: "L_middle_intermediate_joint",
-    41: "L_pinky_intermediate_joint",
-    42: "L_ring_intermediate_joint",
-    43: "L_thumb_proximal_pitch_joint",
-    44: "R_index_intermediate_joint",
-    45: "R_middle_intermediate_joint",
-    46: "R_pinky_intermediate_joint",
-    47: "R_ring_intermediate_joint",
-    48: "R_thumb_proximal_pitch_joint",
-    49: "L_thumb_intermediate_joint",
-    50: "R_thumb_intermediate_joint",
-    51: "L_thumb_distal_joint",
-    52: "R_thumb_distal_joint",
-}
-
-_IL_JOINT_NAMES = [
-    "left_hip_pitch_joint",
-    "right_hip_pitch_joint",
-    "left_hip_roll_joint",
-    "right_hip_roll_joint",
-    "left_hip_yaw_joint",
-    "right_hip_yaw_joint",
-    "left_knee_joint",
-    "right_knee_joint",
-    "left_ankle_pitch_joint",
-    "right_ankle_pitch_joint",
-    "left_ankle_roll_joint",
-    "right_ankle_roll_joint",
-    "waist_yaw_joint",
-    "waist_roll_joint",
-    "waist_pitch_joint",
-    "left_shoulder_pitch_joint",
-    "left_shoulder_roll_joint",
-    "left_shoulder_yaw_joint",
-    "left_elbow_joint",
-    "left_wrist_roll_joint",
-    "left_wrist_pitch_joint",
-    "left_wrist_yaw_joint",
-    "right_shoulder_pitch_joint",
-    "right_shoulder_roll_joint",
-    "right_shoulder_yaw_joint",
-    "right_elbow_joint",
-    "right_wrist_roll_joint",
-    "right_wrist_pitch_joint",
-    "right_wrist_yaw_joint",
-    "L_index_proximal_joint",
-    "L_index_intermediate_joint",
-    "L_middle_proximal_joint",
-    "L_middle_intermediate_joint",
-    "L_pinky_proximal_joint",
-    "L_pinky_intermediate_joint",
-    "L_ring_proximal_joint",
-    "L_ring_intermediate_joint",
-    "L_thumb_proximal_yaw_joint",
-    "L_thumb_proximal_pitch_joint",
-    "L_thumb_intermediate_joint",
-    "L_thumb_distal_joint",
-    "R_index_proximal_joint",
-    "R_index_intermediate_joint",
-    "R_middle_proximal_joint",
-    "R_middle_intermediate_joint",
-    "R_pinky_proximal_joint",
-    "R_pinky_intermediate_joint",
-    "R_ring_proximal_joint",
-    "R_ring_intermediate_joint",
-    "R_thumb_proximal_yaw_joint",
-    "R_thumb_proximal_pitch_joint",
-    "R_thumb_intermediate_joint",
-    "R_thumb_distal_joint",
-]
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Scene geometry (meters, Z-up — matches the PhysX scene)
+# Scene geometry — composed once at import time
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # The cloth + pile world placement is composed from two sources:
@@ -284,150 +86,33 @@ _IL_JOINT_NAMES = [
 #      prims — translate + orient about Z. This is what positions the
 #      mesh relative to the cloth-USD root.
 #   2. IL's env_cfg cloth.init_state.pos / .rot — the world placement
-#      the env spawns the cloth-USD root at. From
-#      ``g1_spread_tablecloth_env_cfg.py``: pos=(-0.65, 0, 0.78),
-#      rot=(0,0,0,1) interpreted XYZW = identity.
-# Composed: cloth world = env_cfg_pos + cloth_usd_translate; cloth world
-# rot = cloth_usd_orient. Same for the pile, with its own translate.
+#      the env spawns the cloth-USD root at.
+# Table placement is composed from scene04.usd's /World/Table256 xform
+# and scene04's own env_cfg placement. See :mod:`table_cloth` for both.
+_CLOTH_INIT_POS, _CLOTH_INIT_ROT, _RIGID_POS, _RIGID_QUAT = tc.compose_cloth_and_pile_xforms_from_usd()
+_TABLE_CENTER, _TABLE_ROT, _TABLE_SCALE = tc.compose_table_xform_from_scene()
 
-# IL env_cfg cloth init_state (verified against the recording: composed
-# cloth centroid lands at the recording's frame-0 centroid within 1 mm).
-_ENVCFG_CLOTH_INIT_POS = wp.vec3(-0.65, 0.0, 0.78)
-_ENVCFG_CLOTH_INIT_ROT = wp.quat_identity()  # env_cfg rot=(0,0,0,1) XYZW = identity
-
-# Cloth-USD prim path used to read the cloth visual mesh xform.
-_CLOTH_ROOT_PRIM_PATH = "/root/Cloth_fold07"
-_RIGID_ROOT_PRIM_PATH = "/root/Cloth_In002"
-
-
-def _read_usd_prim_xform(stage, prim_path: str) -> tuple[wp.vec3, wp.quat]:
-    """Read an authored xform from a USD prim and return ``(translate, rot)``.
-
-    Composes ``xformOp:translate`` + ``xformOp:orient`` (the only
-    operations our cloth-USD prims author). Quaternion order in USD's
-    ``xformOp:orient`` is WXYZ; wp.quat is XYZW, so we repack.
-    """
-    prim = stage.GetPrimAtPath(prim_path)
-    if not prim:
-        raise RuntimeError(f"{prim_path} not found in USD stage")
-    t_attr = prim.GetAttribute("xformOp:translate")
-    o_attr = prim.GetAttribute("xformOp:orient")
-    t = t_attr.Get() if t_attr.IsValid() and t_attr.HasAuthoredValue() else (0.0, 0.0, 0.0)
-    o = o_attr.Get() if o_attr.IsValid() and o_attr.HasAuthoredValue() else None
-    translate = wp.vec3(float(t[0]), float(t[1]), float(t[2]))
-    if o is None:
-        rot = wp.quat_identity()
-    else:
-        # USD xformOp:orient is GfQuatf: w + imaginary(xyz). wp.quat is XYZW.
-        rot = wp.quat(float(o.imaginary[0]), float(o.imaginary[1]), float(o.imaginary[2]), float(o.real))
-    return translate, rot
-
-
-def _compose_cloth_and_pile_xforms_from_usd() -> tuple[wp.vec3, wp.quat, wp.vec3, wp.quat]:
-    """Read the cloth + pile authored xforms from Cloth_fold10.usd and
-    compose with IL env_cfg's cloth init_state to get their world poses.
-
-    Returns ``(cloth_pos, cloth_rot, pile_pos, pile_rot)``. We rely on
-    env_cfg's rot being identity (verified by matching the recording's
-    cloth centroid), so the composition reduces to element-wise add for
-    the translate and direct copy for the rotation.
-    """
-    cloth_usd = newton.examples.get_asset(_CLOTH_USD_REL)
-    stage = Usd.Stage.Open(cloth_usd)
-    cloth_t, cloth_r = _read_usd_prim_xform(stage, _CLOTH_ROOT_PRIM_PATH)
-    pile_t, pile_r = _read_usd_prim_xform(stage, _RIGID_ROOT_PRIM_PATH)
-    env_pos = _ENVCFG_CLOTH_INIT_POS
-    cloth_world_pos = wp.vec3(
-        float(env_pos[0]) + float(cloth_t[0]),
-        float(env_pos[1]) + float(cloth_t[1]),
-        float(env_pos[2]) + float(cloth_t[2]),
-    )
-    pile_world_pos = wp.vec3(
-        float(env_pos[0]) + float(pile_t[0]),
-        float(env_pos[1]) + float(pile_t[1]),
-        float(env_pos[2]) + float(pile_t[2]),
-    )
-    # env_cfg rotation is identity, so world rotation = USD-authored rotation.
-    return cloth_world_pos, cloth_r, pile_world_pos, pile_r
-
-
-_CLOTH_INIT_POS, _CLOTH_INIT_ROT, _RIGID_POS_FROM_USD, _RIGID_QUAT_FROM_USD = (
-    _compose_cloth_and_pile_xforms_from_usd()
-)
-# Kept for compatibility with anything that still references _USD_Z_ROT.
-_USD_Z_ROT = _CLOTH_INIT_ROT
-
-# Table placement.
-#
-# The four TABLE_* constants in IL's g1_spread_tablecloth_env_cfg.py
-# (TABLE_POS, TABLE_ROT, TABLE_SCALE, TABLE_TOP_POS) are dead — they're
-# not referenced by the SceneCfg. The actual table is authored inside
-# scene04.usd at /World/Table256 (see ``_compose_table_xform_from_scene``
-# below), and scene04 itself is spawned by the env_cfg at
-# pos=(0.9, -2.5, 0), rot=identity. The composed world placement is
-# (-0.499, -0.137, +0.388) with -90° about Z and **no scaling** — quite
-# different from the env_cfg's leftover constants. Reading scene04
-# rather than hardcoding the result keeps us in sync if the scene file
-# is updated.
-_SCENE_USD_REL = "cloth/assets-1/assets-1/scene04.usd"
-_SCENE_TABLE_PRIM_PATH = "/World/Table256"
-# scene04.usd's own placement in IL's env_cfg.
-_SCENE_ORIGIN_POS = wp.vec3(0.9, -2.5, 0.0)
-
-
-def _compose_table_xform_from_scene() -> tuple[wp.vec3, wp.quat, wp.vec3]:
-    """Read scene04.usd's authored xform for /World/Table256 and compose
-    with scene04's own world placement to get the table's world transform.
-
-    Returns ``(center, quat_xyzw_for_wp, scale)`` ready to feed
-    :func:`builder.add_shape_*` calls. scene04's payload references are
-    broken on our copy (they point to Assets/Table256/Table256.usd which
-    we don't have), but the xform attributes on /World/Table256 are
-    authored in scene04 itself and remain readable.
-    """
-    scene_usd = newton.examples.get_asset(_SCENE_USD_REL)
-    scene_stage = Usd.Stage.Open(scene_usd, Usd.Stage.LoadNone)
-    prim = scene_stage.GetPrimAtPath(_SCENE_TABLE_PRIM_PATH)
-    if not prim:
-        raise RuntimeError(f"{_SCENE_TABLE_PRIM_PATH} missing from {scene_usd}")
-    t = prim.GetAttribute("xformOp:translate").Get()
-    r = prim.GetAttribute("xformOp:rotateXYZ").Get()  # degrees, XYZ Euler
-    s = prim.GetAttribute("xformOp:scale").Get()
-    # Compose with scene04's world placement. scene04's own rotation is
-    # identity (env_cfg: rot=(0,0,0,1) interpreted XYZW), so the world
-    # translate is just element-wise add. Likewise scale.
-    center = wp.vec3(
-        float(t[0]) + float(_SCENE_ORIGIN_POS[0]),
-        float(t[1]) + float(_SCENE_ORIGIN_POS[1]),
-        float(t[2]) + float(_SCENE_ORIGIN_POS[2]),
-    )
-    # Only Z component is non-zero for this table; convert deg -> rad.
-    rot_z_rad = math.radians(float(r[2]))
-    rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), rot_z_rad)
-    scale = wp.vec3(float(s[0]), float(s[1]), float(s[2]))
-    return center, rot, scale
-
-
-_TABLE_CENTER, _TABLE_ROT, _TABLE_SCALE = _compose_table_xform_from_scene()
-
-# Rigid "cloth pile" world pose, composed from the cloth USD's authored
-# xform on /root/Cloth_In002 and IL env_cfg's cloth.init_state.pos. The
-# pile is authored 26 mm below the cloth mesh center (so they don't
-# overlap at rest) with the same +π/2 Z rotation.
-_RIGID_POS = _RIGID_POS_FROM_USD
-_RIGID_QUAT = _RIGID_QUAT_FROM_USD
-# USD has mass = 0.001 kg with linearDamping = 1.0 and maxLinearVelocity = 1.0
-# to keep the body stable. AVBD has no equivalent damping, so under the
-# asymmetric initial cloth-rigid contacts a 1 g body skitters off the table.
-# We use a heavier mass (~2 kg) as a stability accommodation; the body stays
-# roughly under the cloth and lands on the table top as in PhysX.
-_RIGID_MASS = 2.0
-_RIGID_MU = 0.95  # USD material's static/dynamic friction
-# Collision approximation. PhysX used convex decomposition with up to 64
-# hulls of up to 64 verts each. CoACD with max_convex_hull=64 matches.
-_RIGID_MAX_HULLS = 64
-# Uniform shape-scale applied to every decomposed hull. 1.0 = no shrink.
-_RIGID_COL_SCALE = 1.0
+# ─────────────────────────────────────────────────────────────────────────────
+# Rigid "cloth pile" (Cloth_In002) — VBD-specific tuning
+# ─────────────────────────────────────────────────────────────────────────────
+# Total pile mass [kg]. USD authors 0.001 kg with linearDamping = 1.0
+# and maxLinearVelocity = 1.0 to keep the body stable; AVBD has no
+# equivalent damping, so under the asymmetric initial cloth-rigid
+# contacts a 1 g body skitters off the table. 100 g is the experimental
+# middle ground: light enough for the cloth's contact pipeline to
+# actually slow the pile (instead of the pile blowing through the sheet
+# under its own weight), but heavy enough that AVBD keeps the body
+# stable without PhysX-style velocity damping. The hand-computed
+# inertia tensor below scales linearly with this constant.
+_PILE_MASS = 0.1
+_PILE_MU = 0.95  # USD material's static/dynamic friction
+# Single-hull approximation lives inside the cloth's hollow. The hull is
+# centroid-shrunk until ``shrink_pile_hull_clear_of_cloth`` reports no
+# overlap with the cloth surface; the helper binary-searches in
+# ``[_PILE_SHRINK_MIN, 1.0]`` and uses ppfcs's intersection checker for
+# the test so the same hull is also a valid pinned-shell collider for the
+# PPFCS variant.
+_PILE_SHRINK_MIN = 0.30
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cloth material (SI)
@@ -435,9 +120,26 @@ _RIGID_COL_SCALE = 1.0
 _TRI_KE = 1.0e3
 _TRI_KA = 1.0e3
 _TRI_KD = 1.0e-3
-_EDGE_KE = 5.0
-_EDGE_KD = 1.0e-3
-_DENSITY = 0.5  # kg/m² — surface density
+# Bending stiffness paired with the flat-rest override below: every cloth
+# edge has its rest dihedral re-zeroed after ``add_cloth_mesh``, so the
+# folded USD mesh carries elastic bending energy that drives the cloth to
+# relax open under gravity / hand contact (real tablecloth behaviour). With
+# rest=0 a stiff edge_ke makes the folds explode open on frame 0; at
+# ``_EDGE_KE = 1.0`` the unfolding was vigorous enough that the pile slipped
+# out of the cloth's hollow before the surfaces could drape over it. The
+# weaker spring + boosted damper here gives the cloth a gentle restoration
+# toward flat that lingers in contact with the pile and the hands instead
+# of snapping past them.
+_EDGE_KE = 0.3
+_EDGE_KD = 1.0e-1
+# Total cloth mass [kg]. The areal density passed to ``add_cloth_mesh``
+# is derived from this at runtime as ``mass / Σ triangle_area`` — the
+# folded mesh's triangle-area sum is ~0.54 m², so 0.27 kg gives the same
+# 0.5 kg/m² areal density we used to hard-code. Reference: IL/PhysX
+# spawned this cloth at ~45 g (240 kg/m^3 * 0.35 mm * 0.54 m^2); 270 g is
+# 6x heavier and was tuned to keep the VBD solver well-conditioned
+# against the kinematic G1 + dynamic pile.
+_CLOTH_MASS = 0.27
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Collision (SI)
@@ -469,10 +171,6 @@ _SHAPE_MU = 0.5
 _FPS = 30
 _SIM_SUBSTEPS = 40
 _VBD_ITERS = 10
-# Frames at the start where both HDF5 playback and physics simulation are
-# halted, so the scene's initial pose stays on screen for inspection.
-# At 30 Hz, 60 frames = 2 s.
-_WARMUP_FRAMES = 60
 
 
 class Example:
@@ -490,10 +188,9 @@ class Example:
         save_mp4: str | None = None,
         capture_replay: bool = False,
         capture_frames: int = 300,
-        capture_fps: int = 60,
+        capture_fps: int = _FPS,
         capture_dir: str = "outputs/replay_capture",
         capture_format: str = "mp4",
-        no_cloth: bool = False,
         no_pile: bool = False,
         show_record: bool = False,
     ):
@@ -505,7 +202,6 @@ class Example:
         self.sim_time = 0.0
         self.frame_index = 0
         self._frame_count = 0
-        self._has_cloth = not no_cloth
         self._has_pile = not no_pile
 
         # Replay state ─ populated by ``_load_replay()`` below.
@@ -514,8 +210,8 @@ class Example:
         self._replay_joint_q = None  # (T, 53)  G1 joint positions per frame (PhysX order)
         self._replay_cloth_pos = None  # (T, 2523, 3)  PhysX cloth particle world positions
         self._replay_total_frames = 0
-        self._replay_frame = 0  # next HDF5 frame to consume
-        self._replay_started = False  # set True after warmup completes
+        self._replay_frame = 0  # latest HDF5 frame index applied to joint_q
+        self._replay_started = False  # set True once frame 1's step() runs
         # Last metric values for the HUD.
         self._cloth_delta_rms_mm = float("nan")
         self._cloth_delta_max_mm = float("nan")
@@ -542,98 +238,153 @@ class Example:
         # Pelvis at world (-0.95, 0, 0.80) — matches the HDF5 recording. With
         # the default identity xform, the G1's feet would be below the ground.
         builder.add_usd(
-            newton.examples.get_asset(_G1_USD_REL),
-            xform=wp.transform(_G1_BASE_POS, _G1_BASE_ROT),
+            newton.examples.get_asset(tc.G1_USD_REL),
+            xform=wp.transform(tc.G1_BASE_POS, tc.G1_BASE_ROT),
             floating=False,
         )
         self._robot_body_count = builder.body_count
-        self._robot_shape_end = builder.shape_count
 
-        # Newton's USD parser loads the G1's per-body visual meshes as
-        # shapes but flags them VISIBLE-only (CollisionAPI sub-prims under
-        # `/g1_29dof_with_hand_rev_1_0/<link>/collisions` are emitted as a
-        # generic GPrim type the parser skips). Without an explicit flag
-        # flip, cloth particles can't see the robot at all. Turn on
-        # `COLLIDE_PARTICLES` on every robot shape so the cloth's
-        # particle-rigid soft-contact pipeline registers them; leave
-        # `COLLIDE_SHAPES` off so the robot's links don't collide with
-        # each other (matches IL env_cfg's `enabled_self_collisions=False`).
-        # The robot stays kinematic — `body_inv_mass` is zeroed below — so
-        # this is one-way: the cloth feels the robot's hands and body but
-        # the robot's pose is unchanged by cloth contact.
-        for s in range(self._robot_shape_end):
-            flags = int(builder.shape_flags[s])
-            builder.shape_flags[s] = flags | int(newton.ShapeFlags.COLLIDE_PARTICLES)
+        # Newton's USD parser builds the 65 G1 bodies + 53 revolute / 12
+        # fixed joints from the URDF-style schemas correctly, but the
+        # collision *meshes* under ``<link>/collisions`` are skipped — the
+        # parser emits them as a generic GPrim subtree it doesn't follow.
+        # We walk those meshes ourselves and register one collider per
+        # link where the USD authored geometry. The G1 ships
+        # ``physics:approximation="convexHull"`` on every populated
+        # ``<link>/collisions`` Xform; 24 of the 65 links carry collision
+        # geometry (the L_/R_ finger chains, including thumb base). Links
+        # without collision in the USD (legs, torso, head, upper arms,
+        # hand_base) get no collider, matching the USD's authored intent.
+        g1_stage = Usd.Stage.Open(newton.examples.get_asset(tc.G1_USD_REL))
+        robot_col_cfg = newton.ModelBuilder.ShapeConfig(
+            ke=_SHAPE_KE,
+            kd=_SHAPE_KD,
+            mu=_SHAPE_MU,
+            # COLLIDE_SHAPES enables the viewer's "Show Collision" toggle
+            # to render these as collision wireframes (the toggle keys
+            # off COLLIDE_SHAPES, not COLLIDE_PARTICLES). The robot is
+            # kinematic and IL env_cfg disables self-collisions, so we
+            # don't want these to actually participate in shape-shape
+            # contact — ``collision_group=0`` short-circuits every pair
+            # involving this shape in the broad phase (see
+            # ``ModelBuilder._test_group_pair``: any pair with a 0-group
+            # endpoint returns False). The COLLIDE_SHAPES flag remains
+            # set so the viewer still renders the hull wireframe under
+            # "Show Collision".
+            has_shape_collision=True,
+            has_particle_collision=True,
+            collision_group=0,
+            # Visual shapes from ``add_usd`` already render the robot;
+            # leave the collider invisible so "Show Visual" stays clean.
+            is_visible=False,
+            # The link's mass/inertia is authored on the body itself via
+            # ``PhysicsMassAPI``; the collider should not contribute.
+            density=0.0,
+        )
+        n_robot_colliders = 0
+        for b in range(self._robot_body_count):
+            link_path = builder.body_label[b]
+            geom = tc.collect_link_meshes_in_link_local(g1_stage, link_path, subtree="collisions")
+            if geom is None:
+                continue
+            V_link, F_link = geom
+            approx = tc.read_link_collision_approximation(g1_stage, link_path)
+            mesh = newton.Mesh(V_link, F_link.flatten(), compute_inertia=False)
+            if approx == "convexHull":
+                builder.add_shape_convex_hull(body=b, mesh=mesh, cfg=robot_col_cfg)
+            else:
+                builder.add_shape_mesh(body=b, mesh=mesh, cfg=robot_col_cfg)
+            n_robot_colliders += 1
+        print(
+            f"[table_cloth_vbd] Added {n_robot_colliders} G1 link colliders from USD "
+            f"(``physics:approximation`` + ``<link>/collisions`` meshes)"
+        )
 
         # Build the IL-index → Newton-qstart permutation by name-matching the
         # builder's joint labels. ``self._il_to_newton_qs[il_idx]`` is the
         # Newton joint_q coord index for the IL-named joint, or None if the
         # name didn't match (shouldn't happen with the canonical G1 USD).
-        self._il_to_newton_qs: list[int | None] = [None] * len(_IL_JOINT_NAMES)
-        for j in range(builder.joint_count):
-            if int(builder.joint_type[j]) != 1:  # revolute only — fixed/free skipped
-                continue
-            short = builder.joint_label[j].rsplit("/", 1)[-1]
-            if short in _IL_JOINT_NAMES:
-                self._il_to_newton_qs[_IL_JOINT_NAMES.index(short)] = int(builder.joint_q_start[j])
-        _missing = [_IL_JOINT_NAMES[i] for i, qs in enumerate(self._il_to_newton_qs) if qs is None]
+        self._il_to_newton_qs = tc.build_il_to_newton_qs(builder)
+        _missing = [tc.IL_JOINT_NAMES[i] for i, qs in enumerate(self._il_to_newton_qs) if qs is None]
         if _missing:
             print(f"[table_cloth_vbd] WARNING: IL joints not found in Newton model: {_missing}")
 
         # ── Cloth from assets/cloth/Cloth_fold10.usd ────────────────────────
         # The cloth USD also carries the rigid pile (Cloth_In002), so we open
-        # the stage even when the deformable cloth itself is disabled.
-        cloth_stage = Usd.Stage.Open(newton.examples.get_asset(_CLOTH_USD_REL))
+        # The cloth USD also carries the rigid pile (Cloth_In002), so we
+        # open the stage here even if the pile is disabled below.
+        cloth_stage = Usd.Stage.Open(newton.examples.get_asset(tc.CLOTH_USD_REL))
         self._cloth_particle_start = builder.particle_count
-        # Always read the cloth mesh (faces + vertices) — even with
-        # ``--no-cloth`` we still want the indices so the recorded-cloth
-        # overlay can render as a triangle mesh. We just skip
-        # ``add_cloth_mesh`` (which is what actually spawns simulated
-        # particles) when ``_has_cloth`` is False.
-        cloth_prim = cloth_stage.GetPrimAtPath(_CLOTH_PRIM_PATH)
+        cloth_prim = cloth_stage.GetPrimAtPath(tc.CLOTH_PRIM_PATH)
         if not cloth_prim:
-            raise RuntimeError(f"Cloth prim not found at {_CLOTH_PRIM_PATH}")
+            raise RuntimeError(f"Cloth prim not found at {tc.CLOTH_PRIM_PATH}")
         cloth_mesh = newton.usd.get_mesh(cloth_prim)
         vertices = [wp.vec3(float(v[0]), float(v[1]), float(v[2])) for v in cloth_mesh.vertices]
         indices = list(map(int, cloth_mesh.indices))
         self._cloth_indices_np = np.array(indices, dtype=np.int32)
-        if self._has_cloth:
-            builder.add_cloth_mesh(
-                pos=_CLOTH_INIT_POS,
-                rot=_CLOTH_INIT_ROT,
-                scale=1.0,
-                vel=wp.vec3(0.0, 0.0, 0.0),
-                vertices=vertices,
-                indices=indices,
-                density=_DENSITY,
-                tri_ke=_TRI_KE,
-                tri_ka=_TRI_KA,
-                tri_kd=_TRI_KD,
-                edge_ke=_EDGE_KE,
-                edge_kd=_EDGE_KD,
-                particle_radius=_PARTICLE_RADIUS,
-            )
+        cloth_edge_start = len(builder.edge_rest_angle)
+        # Areal density (kg/m^2) derived from the target total mass and the
+        # folded mesh's triangle-area sum. ``add_cloth_mesh`` distributes
+        # ``density * area`` to each particle (1/3 per triangle corner),
+        # so the cloth's total mass is exactly ``density * sum(area)``.
+        v_arr = np.asarray(cloth_mesh.vertices, dtype=np.float64).reshape(-1, 3)
+        f_arr = self._cloth_indices_np.reshape(-1, 3)
+        v0 = v_arr[f_arr[:, 0]]
+        v1 = v_arr[f_arr[:, 1]]
+        v2 = v_arr[f_arr[:, 2]]
+        cloth_area = 0.5 * float(np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1).sum())
+        cloth_density = _CLOTH_MASS / cloth_area
+        builder.add_cloth_mesh(
+            pos=_CLOTH_INIT_POS,
+            rot=_CLOTH_INIT_ROT,
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=vertices,
+            indices=indices,
+            density=cloth_density,
+            tri_ke=_TRI_KE,
+            tri_ka=_TRI_KA,
+            tri_kd=_TRI_KD,
+            edge_ke=_EDGE_KE,
+            edge_kd=_EDGE_KD,
+            particle_radius=_PARTICLE_RADIUS,
+        )
+        print(
+            f"[table_cloth_vbd] Cloth mass {_CLOTH_MASS * 1000:.1f} g "
+            f"(area {cloth_area:.3f} m^2, density {cloth_density:.3f} kg/m^2)"
+        )
+        # Override the per-edge bending rest angles to 0 (flat). By
+        # default ``add_cloth_mesh`` reads the rest dihedral from the
+        # input geometry, so the folded USD mesh would have *zero*
+        # stored bending energy — the cloth would not want to unfold
+        # at all. A real tablecloth's natural rest is flat; using 0
+        # everywhere gives the folded shape the elastic energy it
+        # needs to relax open under gravity and hand contact, mirroring
+        # the ``bend-rest-from-geometry`` removal in the PPFCS variant.
+        for e in range(cloth_edge_start, len(builder.edge_rest_angle)):
+            builder.edge_rest_angle[e] = 0.0
         self._cloth_particle_end = builder.particle_count
 
         # ── Rigid "cloth pile" (Cloth_In002) ────────────────────────────────
         # Dynamic rigid body living *inside* the deformable cloth at the
-        # USD-authored relative offset. Collision geometry mirrors the USD
-        # PhysX setup: convex decomposition (CoACD, up to 64 hulls) of the
-        # 28k-vert mesh — a single convex hull would extend into the cloth
-        # shell's concavities and cause initial-overlap penalties.
+        # USD-authored relative offset. Collision is a *single* convex
+        # hull centroid-shrunk until it fits in the cloth's hollow with
+        # zero initial overlap. The shrink is computed by
+        # ``tc.shrink_pile_hull_clear_of_cloth`` using ppfcs's own
+        # intersection checker, so the same hull is also acceptable to
+        # the PPFCS variant.
         self._rigid_body_idx = None
-        self._rigid_col_shape_start = 0
-        self._rigid_col_shape_end = 0
+        self._rigid_col_shape_idx = -1
         if self._has_pile:
-            rigid_col_prim = cloth_stage.GetPrimAtPath(_RIGID_COL_PRIM_PATH)
-            rigid_vis_prim = cloth_stage.GetPrimAtPath(_RIGID_VIS_PRIM_PATH)
+            rigid_col_prim = cloth_stage.GetPrimAtPath(tc.RIGID_COL_PRIM_PATH)
+            rigid_vis_prim = cloth_stage.GetPrimAtPath(tc.RIGID_VIS_PRIM_PATH)
             if not rigid_col_prim or not rigid_vis_prim:
                 raise RuntimeError("Rigid Cloth_In002 prims not found")
             rigid_col_mesh = newton.usd.get_mesh(rigid_col_prim)
             rigid_vis_mesh = newton.usd.get_mesh(rigid_vis_prim)
 
             # Diagonal inertia for a ~0.24 x 0.14 x 0.10 m box of the chosen mass.
-            I = _RIGID_MASS / 12.0
+            I = _PILE_MASS / 12.0
             rigid_inertia = [
                 [I * (0.14**2 + 0.10**2), 0.0, 0.0],
                 [0.0, I * (0.24**2 + 0.10**2), 0.0],
@@ -641,44 +392,112 @@ class Example:
             ]
             self._rigid_body_idx = builder.add_body(
                 xform=wp.transform(_RIGID_POS, _RIGID_QUAT),
-                mass=_RIGID_MASS,
+                mass=_PILE_MASS,
                 inertia=rigid_inertia,
                 lock_inertia=True,
             )
 
-            # Add the mesh as a (temporarily) mesh collider, then ask the
-            # builder to replace it with a CoACD decomposition. ``shape_scale``
-            # is set on each resulting hull so we can shrink them uniformly
-            # to clear the cloth shell if needed.
+            # Compose the pile's world-space vert cloud and the cloth's
+            # world-space vert cloud, then ask the helper to find the
+            # largest centroid-shrink that keeps the hull clear of the
+            # cloth surface. The shrunken verts are then converted back
+            # into the rigid body's local frame and shipped to
+            # ``add_shape_convex_hull`` — Newton computes the actual hull
+            # (capped at 64 verts via ``newton.Mesh.MAX_HULL_VERTICES``).
+            R_pile = np.array(
+                [[1 - 2 * (_RIGID_QUAT[1] ** 2 + _RIGID_QUAT[2] ** 2),
+                  2 * (_RIGID_QUAT[0] * _RIGID_QUAT[1] - _RIGID_QUAT[2] * _RIGID_QUAT[3]),
+                  2 * (_RIGID_QUAT[0] * _RIGID_QUAT[2] + _RIGID_QUAT[1] * _RIGID_QUAT[3])],
+                 [2 * (_RIGID_QUAT[0] * _RIGID_QUAT[1] + _RIGID_QUAT[2] * _RIGID_QUAT[3]),
+                  1 - 2 * (_RIGID_QUAT[0] ** 2 + _RIGID_QUAT[2] ** 2),
+                  2 * (_RIGID_QUAT[1] * _RIGID_QUAT[2] - _RIGID_QUAT[0] * _RIGID_QUAT[3])],
+                 [2 * (_RIGID_QUAT[0] * _RIGID_QUAT[2] - _RIGID_QUAT[1] * _RIGID_QUAT[3]),
+                  2 * (_RIGID_QUAT[1] * _RIGID_QUAT[2] + _RIGID_QUAT[0] * _RIGID_QUAT[3]),
+                  1 - 2 * (_RIGID_QUAT[0] ** 2 + _RIGID_QUAT[1] ** 2)]],
+                dtype=np.float64,
+            )
+            T_pile = np.array(
+                [float(_RIGID_POS[0]), float(_RIGID_POS[1]), float(_RIGID_POS[2])],
+                dtype=np.float64,
+            )
+            V_pile_world = (
+                np.asarray(rigid_col_mesh.vertices, dtype=np.float64).reshape(-1, 3)
+                @ R_pile.T
+                + T_pile
+            )
+            R_cloth = np.array(
+                [[1 - 2 * (_CLOTH_INIT_ROT[1] ** 2 + _CLOTH_INIT_ROT[2] ** 2),
+                  2 * (_CLOTH_INIT_ROT[0] * _CLOTH_INIT_ROT[1] - _CLOTH_INIT_ROT[2] * _CLOTH_INIT_ROT[3]),
+                  2 * (_CLOTH_INIT_ROT[0] * _CLOTH_INIT_ROT[2] + _CLOTH_INIT_ROT[1] * _CLOTH_INIT_ROT[3])],
+                 [2 * (_CLOTH_INIT_ROT[0] * _CLOTH_INIT_ROT[1] + _CLOTH_INIT_ROT[2] * _CLOTH_INIT_ROT[3]),
+                  1 - 2 * (_CLOTH_INIT_ROT[0] ** 2 + _CLOTH_INIT_ROT[2] ** 2),
+                  2 * (_CLOTH_INIT_ROT[1] * _CLOTH_INIT_ROT[2] - _CLOTH_INIT_ROT[0] * _CLOTH_INIT_ROT[3])],
+                 [2 * (_CLOTH_INIT_ROT[0] * _CLOTH_INIT_ROT[2] - _CLOTH_INIT_ROT[1] * _CLOTH_INIT_ROT[3]),
+                  2 * (_CLOTH_INIT_ROT[1] * _CLOTH_INIT_ROT[2] + _CLOTH_INIT_ROT[0] * _CLOTH_INIT_ROT[3]),
+                  1 - 2 * (_CLOTH_INIT_ROT[0] ** 2 + _CLOTH_INIT_ROT[1] ** 2)]],
+                dtype=np.float64,
+            )
+            T_cloth = np.array(
+                [float(_CLOTH_INIT_POS[0]), float(_CLOTH_INIT_POS[1]), float(_CLOTH_INIT_POS[2])],
+                dtype=np.float64,
+            )
+            V_cloth_world = (
+                np.asarray(vertices, dtype=np.float64).reshape(-1, 3) @ R_cloth.T + T_cloth
+            )
+            cloth_F_np = self._cloth_indices_np.reshape(-1, 3)
+            # Default to the SciPy half-space inside-hull test (the
+            # helper's no-ppfcs path) — orders of magnitude faster
+            # than ppf-contact-solver's tri-tri checker, and the
+            # cloth has 2.5 k verts so it's a dense enough sample
+            # of the surface. VBD penalty-resolves any sub-mm
+            # residual overlap that the conservative test misses.
+            V_pile_world_shrunk, _shrink_s = tc.shrink_pile_hull_clear_of_cloth(
+                V_pile_world,
+                V_cloth_world,
+                cloth_F_np,
+                s_min=_PILE_SHRINK_MIN,
+                ppfcs_dir=None,
+            )
+            print(f"[table_cloth_vbd] Pile hull shrunk to s={_shrink_s:.3f} of original size")
+            # Back to body-local for ``add_shape_convex_hull``.
+            V_pile_body = (V_pile_world_shrunk - T_pile) @ R_pile
+
+            # Compact the shrunken point cloud down to the hull-extremal
+            # vertices only. Newton's CONVEX_MESH support function
+            # iterates EVERY vertex in ``mesh.vertices`` on each GJK
+            # support call — shipping the full ~25 k shrunken cloud as
+            # the input mesh means O(25 k) per support call, which
+            # multiplies out to ~10x per-step slowdown in the narrow
+            # phase. Compacting to the hull verts (a few hundred max)
+            # restores fps without changing the resulting hull.
+            from scipy.spatial import ConvexHull as _ConvexHull  # noqa: PLC0415
+
+            _h = _ConvexHull(V_pile_body)
+            _used = np.unique(_h.simplices.flatten())
+            _remap = -np.ones(V_pile_body.shape[0], dtype=np.int64)
+            _remap[_used] = np.arange(len(_used))
+            V_pile_body_hull = V_pile_body[_used]
+            F_pile_body_hull = _remap[_h.simplices].astype(np.int32)
+            print(
+                f"[table_cloth_vbd] Pile hull compacted to {len(V_pile_body_hull)} verts "
+                f"(from {len(V_pile_body)} input points)"
+            )
             rigid_col_cfg = newton.ModelBuilder.ShapeConfig(
                 ke=_SHAPE_KE,
                 kd=_SHAPE_KD,
-                mu=_RIGID_MU,
+                mu=_PILE_MU,
                 density=0.0,
-                is_visible=False,  # the visual mesh below is the rendered form
+                is_visible=False,
             )
-            col_shape_idx = builder.add_shape_mesh(
+            self._rigid_col_shape_idx = builder.add_shape_convex_hull(
                 body=self._rigid_body_idx,
-                mesh=rigid_col_mesh,
+                mesh=newton.Mesh(
+                    V_pile_body_hull,
+                    F_pile_body_hull.flatten(),
+                    compute_inertia=False,
+                ),
                 cfg=rigid_col_cfg,
             )
-            builder.approximate_meshes(
-                method="coacd",
-                shape_indices=[col_shape_idx],
-                max_convex_hull=_RIGID_MAX_HULLS,
-                threshold=0.1,  # lower than Newton's 0.5 default to actually split
-                merge=True,  # merge small hulls back together to respect max_convex_hull
-            )
-            self._rigid_col_shape_start = col_shape_idx
-            self._rigid_col_shape_end = builder.shape_count  # exclusive
-            if _RIGID_COL_SCALE != 1.0:
-                for s in range(self._rigid_col_shape_start, self._rigid_col_shape_end):
-                    sx, sy, sz = builder.shape_scale[s]
-                    builder.shape_scale[s] = (
-                        sx * _RIGID_COL_SCALE,
-                        sy * _RIGID_COL_SCALE,
-                        sz * _RIGID_COL_SCALE,
-                    )
 
             rigid_vis_cfg = newton.ModelBuilder.ShapeConfig(
                 has_shape_collision=False,
@@ -697,7 +516,7 @@ class Example:
         # ``physics:approximation = convexHull``. We mirror that exactly: 29
         # sibling shapes attached to the world body (the USD's FixedJoint
         # pins the rigid to /root, so static-on-world is the same thing).
-        table_stage = Usd.Stage.Open(newton.examples.get_asset(_TABLE_USD_REL))
+        table_stage = Usd.Stage.Open(newton.examples.get_asset(tc.TABLE_USD_REL))
         table_xform = wp.transform(_TABLE_CENTER, _TABLE_ROT)
         table_col_cfg = newton.ModelBuilder.ShapeConfig(
             ke=_SHAPE_KE,
@@ -705,10 +524,10 @@ class Example:
             mu=_SHAPE_MU,
             is_visible=False,
         )
-        for i in range(1, _TABLE_COL_COUNT + 1):
-            col_prim = table_stage.GetPrimAtPath(_TABLE_COL_PRIM_FMT.format(i=i))
+        for i in range(1, tc.TABLE_COL_COUNT + 1):
+            col_prim = table_stage.GetPrimAtPath(tc.TABLE_COL_PRIM_FMT.format(i=i))
             if not col_prim:
-                raise RuntimeError(f"Table collider not found at {_TABLE_COL_PRIM_FMT.format(i=i)}")
+                raise RuntimeError(f"Table collider not found at {tc.TABLE_COL_PRIM_FMT.format(i=i)}")
             builder.add_shape_convex_hull(
                 body=-1,
                 xform=table_xform,
@@ -720,9 +539,9 @@ class Example:
         # ── Table visual mesh (Table256.usd) ────────────────────────────────
         # Render-only: both collision flags disabled so it never participates
         # in cloth/rigid contact.
-        table_vis_prim = table_stage.GetPrimAtPath(_TABLE_VIS_PRIM_PATH)
+        table_vis_prim = table_stage.GetPrimAtPath(tc.TABLE_VIS_PRIM_PATH)
         if not table_vis_prim:
-            raise RuntimeError(f"Table visual prim not found at {_TABLE_VIS_PRIM_PATH}")
+            raise RuntimeError(f"Table visual prim not found at {tc.TABLE_VIS_PRIM_PATH}")
         table_vis_cfg = newton.ModelBuilder.ShapeConfig(
             has_shape_collision=False,
             has_particle_collision=False,
@@ -746,7 +565,7 @@ class Example:
 
         # VBD needs color groups for both particles (cloth) and rigid bodies
         # (the pile). ``include_bending`` adds bending-edge coloring for cloth.
-        builder.color(include_bending=self._has_cloth)
+        builder.color(include_bending=True)
 
         self.model = builder.finalize()
 
@@ -836,14 +655,13 @@ class Example:
         # column straight ahead.
         self.viewer.set_camera(wp.vec3(0.8, -1.0, 1.6), -20.0, 140.0)
 
-        # Load the recorded HDF5 once we have the model+state ready. After
-        # warmup, ``step()`` will drive G1 joint_q from this data.
+        # Load the recorded HDF5 once we have the model+state ready.
+        # ``step()`` consumes one entry per call starting at frame 1.
         self._load_replay()
 
-        # Visible warmup pose: spread_tablecloth custom init (arms relaxed at
-        # pitch=-0.3, roll=±0.5, elbow=-0.5) — matches what Isaac Lab
-        # started the recording from, so the cloth settles around the
-        # same arm configuration the recording starts at.
+        # Frame-0 visible pose: spread_tablecloth custom init (arms
+        # relaxed at pitch=-0.3, roll=+-0.5, elbow=-0.5) — matches what
+        # Isaac Lab spawns the G1 with before the recording starts.
         if self._il_to_newton_qs is not None:
             self._snap_g1_to_init_pose()
 
@@ -860,9 +678,26 @@ class Example:
 
     def capture(self):
         if wp.get_device().is_cuda:
+            # ``wp.ScopedCapture`` records *and* executes the kernel
+            # launches into the graph, so simulate() inside it advances
+            # state by one frame. Snapshot the relevant arrays first
+            # and restore them after so frame 0 still shows the
+            # USD-loaded scene (no physics step yet).
+            snap_particle_q = self.state_0.particle_q.numpy().copy() if self.state_0.particle_q is not None else None
+            snap_particle_qd = self.state_0.particle_qd.numpy().copy() if self.state_0.particle_qd is not None else None
+            snap_body_q = self.state_0.body_q.numpy().copy() if self.state_0.body_q is not None else None
+            snap_body_qd = self.state_0.body_qd.numpy().copy() if self.state_0.body_qd is not None else None
             with wp.ScopedCapture() as cap:
                 self.simulate()
             self.graph = cap.graph
+            if snap_particle_q is not None:
+                self.state_0.particle_q.assign(wp.array(snap_particle_q, dtype=wp.vec3))
+            if snap_particle_qd is not None:
+                self.state_0.particle_qd.assign(wp.array(snap_particle_qd, dtype=wp.vec3))
+            if snap_body_q is not None:
+                self.state_0.body_q.assign(wp.array(snap_body_q, dtype=wp.transform))
+            if snap_body_qd is not None:
+                self.state_0.body_qd.assign(wp.array(snap_body_qd, dtype=wp.spatial_vector))
         else:
             self.graph = None
 
@@ -887,32 +722,23 @@ class Example:
         if self.capture_done:
             return
 
-        # Warmup: advance physics by exactly one frame on the very first
-        # call (so the cloth settles into the post-step pose that IL's
-        # PostStepStatesRecorder captures as recording[0]), then freeze
-        # both physics and the HDF5 playback for the remaining warmup
-        # frames so the post-settle pose stays on screen for inspection.
-        # The overlay was seeded with recording[0] in ``_load_replay``
-        # and stays there because we don't call ``_update_record_overlay``.
-        if self._frame_count < _WARMUP_FRAMES:
-            if self._frame_count == 0:
-                if self.graph:
-                    wp.capture_launch(self.graph)
-                else:
-                    self.simulate()
+        # Frame 0 is the post-load / pre-simulation snapshot: G1 at the
+        # spread_tablecloth init pose, cloth + pile at their authored USD
+        # positions. No physics step, no HDF5 playback. Frame 1 onward
+        # consumes ``replay_jq[frame_count - 1]`` (so display frame 1
+        # corresponds to the recording's first frame).
+        if self._frame_count == 0:
             self.sim_time += self.frame_dt
             self.frame_index += 1
             self._frame_count += 1
             return
 
-        # After warmup, drive the G1 from the recording and run physics.
         if self._replay_joint_q is not None:
-            if not self._replay_started:
-                self._replay_started = True
-                self._replay_frame = 0
-            self._apply_replay_frame(self._replay_frame)
-            self._update_record_overlay(self._replay_frame)
-            self._replay_frame += 1
+            replay_idx = self._frame_count - 1
+            self._replay_frame = replay_idx
+            self._apply_replay_frame(replay_idx)
+            self._update_record_overlay(replay_idx)
+            self._replay_started = True
 
         if self.graph:
             wp.capture_launch(self.graph)
@@ -926,7 +752,7 @@ class Example:
         # Per-frame cloth-tracking metric vs the recorded PhysX cloth (same
         # 2523 particles). Only meaningful once replay has started.
         if self._replay_started:
-            self._compute_cloth_metric(self._replay_frame - 1)
+            self._compute_cloth_metric(self._replay_frame)
 
     def render(self):
         if self.capture_done:
@@ -984,48 +810,41 @@ class Example:
 
         Populates ``self._replay_joint_q``, ``self._replay_cloth_pos`` and a
         few derived warp arrays used by render/metric paths. If the file is
-        missing, replay is silently disabled (warmup-only behaviour).
+        missing, replay is silently disabled and the G1 stays at its
+        spread_tablecloth init pose.
         """
-        path = newton.examples.get_asset(_REPLAY_HDF5_REL)
-        if not os.path.exists(path):
-            print(f"[table_cloth_vbd] {path} not found; G1 will hold its initial pose.")
+        replay = tc.load_replay()
+        if replay is None:
+            print("[table_cloth_vbd] G1 will hold its initial pose (no replay).")
             return
-
-        with h5py.File(path, "r") as f:
-            if "data" not in f or _REPLAY_EPISODE not in f["data"]:
-                print(f"[table_cloth_vbd] {path} has no episode '{_REPLAY_EPISODE}'; replay disabled.")
-                return
-            demo = f["data"][_REPLAY_EPISODE]
-            jq = np.array(demo["states/articulation/robot/joint_position"], dtype=np.float32)
-            cp = np.array(demo["states/deformable_object/cloth/nodal_position"], dtype=np.float32)
-
+        jq = replay["joint_position"]
+        cp = replay["nodal_position"]
         self._replay_joint_q = jq
         self._replay_cloth_pos = cp
-        self._replay_total_frames = int(jq.shape[0])
+        self._replay_total_frames = replay["n_frames"]
         print(
-            f"[table_cloth_vbd] Loaded {self._replay_total_frames} frames from {path} "
+            f"[table_cloth_vbd] Loaded {self._replay_total_frames} replay frames "
             f"(G1 dim={jq.shape[1]}, cloth nodes={cp.shape[1]})"
         )
         # Sanity check that the recorded cloth has the same particle count as
         # the proxy mesh we simulate. If not, the per-particle comparison is
         # meaningless.
-        if self._has_cloth:
-            ours = self._cloth_particle_end - self._cloth_particle_start
-            if ours != cp.shape[1]:
-                print(
-                    f"[table_cloth_vbd] WARNING: our cloth has {ours} particles but the "
-                    f"recording has {cp.shape[1]}. Per-particle metric will be skipped."
-                )
-                self._replay_cloth_pos = None
+        ours = self._cloth_particle_end - self._cloth_particle_start
+        if ours != cp.shape[1]:
+            print(
+                f"[table_cloth_vbd] WARNING: our cloth has {ours} particles but the "
+                f"recording has {cp.shape[1]}. Per-particle metric will be skipped."
+            )
+            self._replay_cloth_pos = None
 
         # Device-side buffer for the "Show record" overlay (one frame at
-        # a time). Decoupled from ``_has_cloth`` so ``--no-cloth`` only
-        # disables the simulated cloth and the overlay can still render.
+        # a time).
         if self._replay_cloth_pos is not None and self._cloth_indices_np is not None:
             n_nodes = cp.shape[1]
             self._record_points_wp = wp.zeros(n_nodes, dtype=wp.vec3)
             self._record_indices_wp = wp.array(self._cloth_indices_np, dtype=wp.int32)
-            # Seed with frame 0 so the overlay shows the spawn pose before warmup ends.
+            # Seed the overlay with HDF5 frame 0 so it lines up with the
+            # display at frame 1 (where the first replay step is applied).
             self._record_points_wp.assign(cp[0])
             # log_instances() needs xforms/colors arrays for the single instance;
             # red-orange so the overlay reads as distinct from our cloth.
@@ -1043,32 +862,21 @@ class Example:
     def _build_replay_qmaps(self) -> None:
         """Build the jp_slot → Newton joint_q index list used by replay.
 
-        For each (jp_slot, joint_name) pair in ``_JP_SLOT_TO_NAME``,
-        look up the corresponding Newton ``joint_q`` index by joint
-        name and store as ``(jp_slot, newton_qs)``. At replay time we
-        copy ``joint_position[t, jp_slot]`` to ``joint_q[newton_qs]``.
+        At replay time we copy ``joint_position[t, jp_slot]`` to
+        ``joint_q[newton_qs]`` for each pair returned here. See
+        :func:`table_cloth.jp_slot_to_newton_qs` for the composition.
         """
-        # Build Newton qs lookup by joint name from the builder labels
-        # we cached in ``_il_to_newton_qs`` (which keys off
-        # ``_IL_JOINT_NAMES``).
-        self._replay_slot_qs = []
-        for jp_slot, joint_name in _JP_SLOT_TO_NAME.items():
-            if joint_name not in _IL_JOINT_NAMES:
-                continue
-            il_idx = _IL_JOINT_NAMES.index(joint_name)
-            n_qs = self._il_to_newton_qs[il_idx]
-            if n_qs is not None:
-                self._replay_slot_qs.append((jp_slot, n_qs))
+        self._replay_slot_qs = tc.jp_slot_to_newton_qs(self._il_to_newton_qs)
         print(
             f"[table_cloth_vbd] Replay slot map: {len(self._replay_slot_qs)}/"
-            f"{len(_JP_SLOT_TO_NAME)} jp slots mapped to Newton joint_q"
+            f"{len(tc.JP_SLOT_TO_NAME)} jp slots mapped to Newton joint_q"
         )
 
     def _apply_replay_frame(self, hdf5_frame: int) -> None:
         """Drive the G1 joints from one recorded frame — full direct replay.
 
         For every (jp_slot, newton_qs) pair built by
-        ``_build_replay_qmaps``, copy ``joint_position[t, jp_slot]``
+        :meth:`_build_replay_qmaps`, copy ``joint_position[t, jp_slot]``
         into ``state_0.joint_q[newton_qs]``. This mirrors what Isaac
         Sim does in the minimal IL playback (``write_joint_state_to_sim``
         with the full 53-D vector) — every joint we drive comes from the
@@ -1100,16 +908,11 @@ class Example:
 
         Matches ``SPREAD_TABLECLOTH_CUSTOM_JOINT_POS`` from
         i4h-workflows' config/robot_config.py — arms held relaxed at
-        ±0.5 roll, -0.3 pitch, -0.5 elbow. Used as the visible warmup
-        pose before HDF5 replay starts.
+        +-0.5 roll, -0.3 pitch, -0.5 elbow. Used as the frame-0
+        pose before HDF5 replay takes over at frame 1.
         """
         jq = self.state_0.joint_q.numpy().copy()
-        for name, value in _SPREAD_TABLECLOTH_INIT_POSE.items():
-            if name in _IL_JOINT_NAMES:
-                il_idx = _IL_JOINT_NAMES.index(name)
-                n_qs = self._il_to_newton_qs[il_idx]
-                if n_qs is not None:
-                    jq[n_qs] = float(value)
+        tc.apply_init_pose(jq, self._il_to_newton_qs)
         self.state_0.joint_q.assign(wp.array(jq, dtype=float))
 
         body_q_np = self.state_0.body_q.numpy().copy() if self._has_pile else None
@@ -1130,8 +933,7 @@ class Example:
         """Compute per-particle L2 deviation between our cloth and the
         recorded cloth at the given HDF5 frame. Stores RMS/max/mean in mm."""
         if (
-            not self._has_cloth
-            or self._replay_cloth_pos is None
+            self._replay_cloth_pos is None
             or self._cloth_particle_end == self._cloth_particle_start
         ):
             return
@@ -1151,11 +953,11 @@ class Example:
         ui.text(f"frame: {self._frame_count}")
         ui.text(f"sim time: {self.sim_time:.2f} s")
         if self._replay_joint_q is not None:
-            if not self._replay_started:
-                ui.text(f"warmup: {self._frame_count}/{_WARMUP_FRAMES}")
-            else:
-                idx = min(self._replay_frame, self._replay_total_frames)
+            if self._replay_started:
+                idx = min(self._replay_frame + 1, self._replay_total_frames)
                 ui.text(f"replay: {idx}/{self._replay_total_frames}")
+            else:
+                ui.text("USD-loaded state (frame 0)")
             if not math.isnan(self._cloth_delta_rms_mm):
                 ui.text(f"cloth dRMS:  {self._cloth_delta_rms_mm:.2f} mm")
                 ui.text(f"cloth dMean: {self._cloth_delta_mean_mm:.2f} mm")
@@ -1188,16 +990,14 @@ if __name__ == "__main__":
     _add_capture_arguments(
         parser,
         replay_help="Capture rendered frames and auto-build a replay video",
-    )
-    parser.add_argument(
-        "--no-cloth",
-        action="store_true",
-        help="Skip adding the deformable tablecloth (useful for isolating per-component cost)",
+        # Default the encoded video FPS to the physics step rate so the
+        # captured MP4 plays back at real time (override with --capture-fps).
+        capture_fps_default=_FPS,
     )
     parser.add_argument(
         "--no-pile",
         action="store_true",
-        help="Skip adding the rigid cloth-pile body and its CoACD hull collider",
+        help="Skip adding the rigid cloth-pile body and its convex-hull collider",
     )
     parser.add_argument(
         "--show-record",
@@ -1217,7 +1017,6 @@ if __name__ == "__main__":
         capture_fps=int(args.capture_fps),
         capture_dir=str(args.capture_dir),
         capture_format=str(args.capture_format),
-        no_cloth=bool(args.no_cloth),
         no_pile=bool(args.no_pile),
         show_record=bool(args.show_record),
     )
