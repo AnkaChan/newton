@@ -146,39 +146,44 @@ _DEFAULT_JOB_DIR = Path("outputs/ppfcs/table_cloth")
 # ─────────────────────────────────────────────────────────────────────────────
 # PPFCS material parameters (Y-up, gravity -9.81 in Y)
 # ─────────────────────────────────────────────────────────────────────────────
-# PPFCS's ``young-mod`` is unit-normalised rather than SI; the values here are
-# tuned in the same range as :mod:`example_kfc_bag_lift_ppfcs`.
+# PPFCS's ``young-mod`` is unit-normalised rather than SI; the values here
+# target a disposable non-woven tablecloth: light, low-stretch, more papery
+# than woven cotton, and able to keep crease memory instead of behaving like
+# a fully elastic sheet.
 
-# Cloth (the actual tablecloth — soft, deformable shell). Young's
-# modulus controls in-plane stretch/shear stiffness; 1000 makes the
-# cloth noticeably softer than the lift example's bag (which is held
-# at 400 000 to support 3 kg of contents) and gentler than 2000.
-_CLOTH_YOUNG_MOD = 1000.0
+# Cloth (the actual tablecloth — deformable shell). Non-woven fabric has
+# noticeably less in-plane stretch than the previous soft-cloth tuning, but is
+# still far more compliant than the paper-bag setup in
+# :mod:`example_kfc_bag_lift_ppfcs`.
+_CLOTH_YOUNG_MOD = 4500.0
+# Lower Poisson's ratio reduces the rubber-like lateral contraction that looks
+# wrong for random-fiber non-woven material.
+_CLOTH_POISSON = 0.20
 # Total cloth mass [kg]. PPFCS's ``density`` for tri-shells is an areal
 # density in kg/m^2 (see frontend ``_param_.py``: tri density is "kg/m^2
 # areal"), so per-frame mass = density * triangle area sum. We derive
 # density at scene-build time from this constant divided by the folded
 # mesh's triangle-area sum so the cloth's true mass is exactly
-# ``_CLOTH_MASS`` no matter how the mesh changes. Matches the
-# ``example_table_cloth_vbd`` cloth mass for cross-solver consistency.
-_CLOTH_MASS = 0.27  # 270 g
-# Bending stiffness with the PPFCS default flat-rest pose (all hinge
-# dihedrals = 0). The folded USD mesh carries large stored bending
-# energy when rest=0, so a stiff spring constant drives the cloth to
-# unfold itself even before hand contact does any work. Bracketed by
-# 5.0 (too floppy) and 15.0 (auto-unwraps); 12.0 nudges the previous
-# 10.0 a touch stiffer so the cloth holds folds against light hand
-# contact while still letting the hands open it without much effort.
-_CLOTH_BEND = 12.0
-# Cloth friction. PPFCS combines per-contact friction as ``max(a, b)``,
-# so this also caps the effective grip the hand colliders / pile / table
-# exert on the cloth at their respective contact pairs. Reference values
-# from the kfc_bag_lift_ppfcs example: bag 1.5, finger pads 3.0,
-# interior bodies 0.45, floor 0.30. 1.3 sits between the previous 1.0
-# (cloth still slid off finger tips during the lift phase) and the
-# bag-lift example's 1.5; gives the hand more authority over the cloth
-# without making it stickier than the bag tuned for 3 kg of contents.
-_CLOTH_FRICTION = 1.3
+# ``_CLOTH_MASS`` no matter how the mesh changes. 90 g keeps the sheet in a
+# plausible non-woven tablecloth range while avoiding the extremely light
+# 45 g PhysX reference value that made earlier solver variants poorly
+# conditioned against the kinematic hand colliders.
+_CLOTH_MASS = 0.09  # 90 g
+# Use the folded USD pose as the initial bend rest. Non-woven fabric should
+# not spring all the way back to a manufactured flat sheet in a fraction of a
+# second; the authored fold is treated as pre-creased material.
+_CLOTH_BEND_REST_FROM_GEOMETRY = True
+# Moderate elastic bending plus bend plasticity gives partial recovery:
+# small bends recover, while larger folds drift the rest angle and retain a
+# crease.
+_CLOTH_BEND = 8.0
+_CLOTH_BEND_PLASTICITY = 1.0
+_CLOTH_BEND_PLASTICITY_THRESHOLD = 0.08  # rad
+# Cloth friction. PPFCS defaults to ``friction-mode = min`` at the session
+# level, so the lower of the two contacting surfaces wins. The table, robot,
+# and pile coefficients below are raised with the cloth coefficient so the
+# effective contact remains dry and grippy rather than satin-slippery.
+_CLOTH_FRICTION = 0.95
 
 # Pile (Cloth_In002 — a stiff, quasi-rigid tri-shell inside the cloth
 # fold). The hull is centroid-shrunk by ``tc.shrink_pile_hull_clear_of_cloth``
@@ -189,19 +194,19 @@ _CLOTH_FRICTION = 1.3
 _PILE_YOUNG_MOD = 2000.0
 # Total pile mass [kg]. Like ``_CLOTH_MASS``, the PPFCS areal density is
 # derived at scene-build time from this constant divided by the hull's
-# surface-area sum. Matches the VBD pile mass for cross-solver
-# consistency — the mass ratio cloth/pile is the same 2.7:1 in both
-# examples.
+# surface-area sum. Keep the pile at the VBD-tuned 100 g so it remains a
+# stable, quasi-rigid support inside the lighter non-woven shell.
 _PILE_MASS = 0.1  # 100 g
 _PILE_BEND = 5000.0
-_PILE_FRICTION = 0.6
+_PILE_FRICTION = 0.8
 _PILE_SHRINK_MIN = 0.30
 
-# Table (pinned tri-shell — material values don't affect dynamics).
-_TABLE_FRICTION = 0.5
+# Table (pinned tri-shell — friction affects cloth contact, while stiffness
+# values would not affect pinned dynamics).
+_TABLE_FRICTION = 0.85
 
-# Robot links (pinned tri-shells — material values don't affect dynamics).
-_ROBOT_FRICTION = 0.5
+# Robot links (pinned tri-shells — friction affects hand/cloth grip).
+_ROBOT_FRICTION = 0.95
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -772,15 +777,16 @@ def _start_ppfcs_streaming(
 
     cloth_obj = scene.add("cloth")
     cloth_obj.param.set("young-mod", _CLOTH_YOUNG_MOD)
+    cloth_obj.param.set("poiss-rat", _CLOTH_POISSON)
     cloth_obj.param.set("density", cloth_density)
+    cloth_obj.param.set("bend-rest-from-geometry", _CLOTH_BEND_REST_FROM_GEOMETRY)
     cloth_obj.param.set("bend", _CLOTH_BEND)
+    cloth_obj.param.set("bend-plasticity", _CLOTH_BEND_PLASTICITY)
+    cloth_obj.param.set("bend-plasticity-threshold", _CLOTH_BEND_PLASTICITY_THRESHOLD)
     cloth_obj.param.set("friction", _CLOTH_FRICTION)
-    # Intentionally NOT setting ``bend-rest-from-geometry`` — the
-    # tablecloth's natural rest is *flat* (zero dihedral on every
-    # hinge), not the folded shape that ships in the USD. Leaving the
-    # PPFCS default in place gives the folded mesh stored bending
-    # energy that drives it to relax open under hand contact and
-    # gravity, the way a real tablecloth behaves.
+    # The folded USD mesh is the initial bend rest for this non-woven variant.
+    # Bend plasticity below then lets newly introduced folds become partial
+    # creases instead of fully recovering elastically.
 
     if has_pile:
         pile_obj = scene.add("pile")
