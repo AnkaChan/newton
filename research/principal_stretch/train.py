@@ -16,6 +16,7 @@ import torch
 from . import torch_solver as ts
 from .model import StretchNet, build_face_adjacency, build_features
 from .potentials import incremental_potential
+from .torch_solver import compute_S_from_x
 
 
 def vert_to_tet_pin_flag(pinned: np.ndarray, tets: np.ndarray) -> np.ndarray:
@@ -41,6 +42,10 @@ def main():
     parser.add_argument("--dt", type=float, default=1.0 / 60.0)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--max-rollout", type=int, default=4,
+                        help="curriculum target: rollout steps per training sample at end of training")
+    parser.add_argument("--curriculum-frac", type=float, default=0.5,
+                        help="fraction of training over which to ramp rollout 1 -> max-rollout")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -65,11 +70,12 @@ def main():
 
     print(f"train: {n_total} frames, {n_traj} trajectories")
 
-    # Build per-trajectory triplet indices (t-1, t, t+1). t must be in [1, fpt-2].
-    triplets = []
+    # For curriculum: build (start_prev, start_t, traj_end_exclusive) windows.
+    # At each step we'll pick a rollout length K and use indices i_prev..i_t+K.
+    K_max = args.max_rollout
+    windows = []  # list of (i_prev, i_t, room) where room = max K possible
     for traj in range(n_traj):
         s = int(traj_start[traj])
-        # If this traj got truncated, skip; we only know traj_start. Use fpt for now.
         if traj + 1 < n_traj:
             e = int(traj_start[traj + 1])
         else:
@@ -77,10 +83,16 @@ def main():
         length = e - s
         if length < 3:
             continue
+        # i_prev = s+t-1, i_t = s+t, last reachable = e-1, so K_max_room = e-1-(s+t).
         for t_off in range(1, length - 1):
-            triplets.append((s + t_off - 1, s + t_off, s + t_off + 1))
-    triplets = np.array(triplets, dtype=np.int64)
-    print(f"  {len(triplets)} (t-1, t, t+1) triplets")
+            i_prev = s + t_off - 1
+            i_t = s + t_off
+            room = (e - 1) - i_t  # rollout length we can ground-truth (1..K_max)
+            if room < 1:
+                continue
+            windows.append((i_prev, i_t, min(room, K_max)))
+    windows = np.array(windows, dtype=np.int64)
+    print(f"  {len(windows)} training windows (with up to K={K_max} rollout)")
 
     # Build solver state and face adjacency.
     solver = ts.build_solver(rest_q, tets_np, poses_np, pinned_np, device=device, dtype=torch.float64)
@@ -115,52 +127,68 @@ def main():
 
     log = []
     t0 = time.time()
+    curriculum_end = max(1, int(args.steps * args.curriculum_frac))
     for step in range(args.steps):
-        idx = rng.choice(len(triplets), size=args.batch, replace=False)
-        batch = triplets[idx]
+        # Curriculum schedule for rollout length.
+        if step < curriculum_end:
+            K_target = 1 + int((args.max_rollout - 1) * step / curriculum_end)
+        else:
+            K_target = args.max_rollout
+
+        idx = rng.choice(len(windows), size=args.batch, replace=False)
+        batch = windows[idx]
         loss_accum = 0.0
+        last_pos_err = 0.0
         opt.zero_grad()
 
-        for (i_prev, i_t, i_next) in batch:
+        for (i_prev, i_t, room) in batch:
+            K = int(min(K_target, room))
+
             x_prev = x_gpu[i_prev]
             x_t = x_gpu[i_t]
-            x_target = x_gpu[i_next]  # only for monitoring, not loss
-            f_ext = f_ext_gpu[i_t]
+            S_prev = S_gpu[i_prev]
             S_now = S_gpu[i_t]
-            S_prev_tensor = S_gpu[i_prev]
 
-            gravity = gravity64
+            L_total_sample = torch.zeros((), dtype=torch.float64, device=device)
+            x_pred_acc = None
+            for k in range(K):
+                i_force = i_t + k  # use force at the current "now" step
+                f_ext = f_ext_gpu[i_force]
 
-            # Build features in fp32 for the net.
-            S_now_f = S_now.to(dtype=dtype)
-            S_prev_f = S_prev_tensor.to(dtype=dtype)
-            f_ext_f = f_ext.to(dtype=dtype)
-            gravity_f = gravity32
-            feat = build_features(
-                S_now_f, S_prev_f, gravity_f, f_ext_f,
-                mu_t, lam_t, pin_flag_tet, solver.tets, face_adj,
-            )
-            S_star = net(feat)  # (T, 3, 3), fp32
+                S_now_f = S_now.to(dtype=dtype)
+                S_prev_f = S_prev.to(dtype=dtype)
+                f_ext_f = f_ext.to(dtype=dtype)
+                feat = build_features(
+                    S_now_f, S_prev_f, gravity32, f_ext_f,
+                    mu_t, lam_t, pin_flag_tet, solver.tets, face_adj,
+                )
+                S_star = net(feat)
+                x_next = ts.solve(solver, S_star.double(), pinned_targets_t,
+                                  x_init=x_t, n_iters=args.solver_iters)
 
-            # Decode positions via differentiable local-global solver (upcast to fp64).
-            x_next = ts.solve(solver, S_star.double(), pinned_targets_t,
-                              x_init=x_t, n_iters=args.solver_iters)
+                losses = incremental_potential(
+                    x_next=x_next, x_t=x_t, x_prev=x_prev,
+                    mass=mass_t, gravity=gravity64, f_ext=f_ext,
+                    tets=solver.tets, J=solver.J,
+                    mu=mu_t64, lam=lam_t64, volume=volume,
+                    dt=args.dt,
+                    pin_idx=pinned_t, pin_target=pinned_targets_t,
+                )
+                L_total_sample = L_total_sample + losses["total"]
 
-            losses = incremental_potential(
-                x_next=x_next, x_t=x_t, x_prev=x_prev,
-                mass=mass_t, gravity=gravity, f_ext=f_ext,
-                tets=solver.tets, J=solver.J,
-                mu=mu_t64, lam=lam_t64, volume=volume,
-                dt=args.dt,
-                pin_idx=pinned_t, pin_target=pinned_targets_t,
-            )
-            L = losses["total"]
-            (L / args.batch).backward()
-            loss_accum += float(L.item())
+                # Advance state for next rollout step.
+                S_prev = S_now
+                S_now = compute_S_from_x(solver, x_next)
+                x_prev = x_t
+                x_t = x_next
+                x_pred_acc = x_next
 
-            # Monitor: position error vs FEM target (not used for grad).
+            ((L_total_sample / args.batch) / max(K, 1)).backward()
+            loss_accum += float(L_total_sample.item()) / max(K, 1)
+
             with torch.no_grad():
-                pos_err = (x_next - x_target).norm(dim=-1).mean().item()
+                x_target_final = x_gpu[int(i_t) + K]
+                last_pos_err = (x_pred_acc - x_target_final).norm(dim=-1).mean().item()
 
         torch.nn.utils.clip_grad_norm_(net.parameters(), 5.0)
         opt.step()
@@ -168,8 +196,8 @@ def main():
         if step % args.log_every == 0:
             elapsed = time.time() - t0
             mean_L = loss_accum / args.batch
-            print(f"step {step:5d}  L={mean_L:+.4e}  pos_err={pos_err:.4e}  {elapsed:.1f}s")
-            log.append({"step": step, "loss": mean_L, "pos_err": pos_err})
+            print(f"step {step:5d}  K={K_target}  L={mean_L:+.4e}  pos_err={last_pos_err:.4e}  {elapsed:.1f}s")
+            log.append({"step": step, "K": K_target, "loss": mean_L, "pos_err": last_pos_err})
 
     print(f"training done in {time.time()-t0:.1f}s")
     out = pathlib.Path(args.out)

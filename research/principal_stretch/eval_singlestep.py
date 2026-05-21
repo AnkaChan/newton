@@ -11,8 +11,8 @@ import torch
 
 from . import torch_solver as ts
 from .model import StretchNet, build_face_adjacency, build_features
-from .rollout import compute_S_from_x
-from .train import vert_to_tet_pin_flag
+from .torch_solver import compute_S_from_x
+from .rollout import vert_to_tet_pin_flag
 
 
 def main():

@@ -13,22 +13,20 @@ import numpy as np
 import torch
 
 from . import torch_solver as ts
+from .torch_solver import compute_S_from_x
 from .model import StretchNet, build_face_adjacency, build_features
-from .train import vert_to_tet_pin_flag
 
 
-def compute_S_from_x(state, x):
-    """Recompute per-tet symmetric S from current positions via polar."""
-    F = ts.compute_F(x, state.tets, state.J)
-    # S = R^T @ F where R = polar(F).  Use SVD with reflection correction.
-    U, sig, Vh = torch.linalg.svd(F)
-    det = torch.linalg.det(U @ Vh)
-    D = torch.eye(3, dtype=F.dtype, device=F.device).expand(F.shape[0], -1, -1).clone()
-    D[:, 2, 2] = det
-    R = U @ D @ Vh
-    S = R.transpose(-1, -2) @ F
-    S = 0.5 * (S + S.transpose(-1, -2))
-    return S
+def vert_to_tet_pin_flag(pinned, tets):
+    import numpy as np
+    pin_set = set(int(v) for v in pinned)
+    flag = np.zeros(tets.shape[0], dtype=np.float32)
+    for t in range(tets.shape[0]):
+        for k in range(4):
+            if int(tets[t, k]) in pin_set:
+                flag[t] = 1.0
+                break
+    return flag
 
 
 def main():

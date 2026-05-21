@@ -159,6 +159,18 @@ def build_solver(rest_q: np.ndarray, tet_indices: np.ndarray, tet_poses: np.ndar
     )
 
 
+def compute_S_from_x(state: "SolverState", x: torch.Tensor) -> torch.Tensor:
+    """Per-tet symmetric polar S = R^T F at current positions."""
+    F = compute_F(x, state.tets, state.J)
+    U, _s, Vh = torch.linalg.svd(F)
+    det = torch.linalg.det(U @ Vh)
+    D = torch.eye(3, dtype=F.dtype, device=F.device).expand(F.shape[0], -1, -1).clone()
+    D[:, 2, 2] = det
+    R = U @ D @ Vh
+    S = R.transpose(-1, -2) @ F
+    return 0.5 * (S + S.transpose(-1, -2))
+
+
 def solve(state: SolverState, S_target: torch.Tensor, pinned_targets: torch.Tensor,
           x_init: torch.Tensor | None = None, n_iters: int = 6) -> torch.Tensor:
     """Differentiable local-global decode: (S_target, pins) -> x.
