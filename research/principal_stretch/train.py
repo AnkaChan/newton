@@ -46,6 +46,8 @@ def main():
                         help="curriculum target: rollout steps per training sample at end of training")
     parser.add_argument("--curriculum-frac", type=float, default=0.5,
                         help="fraction of training over which to ramp rollout 1 -> max-rollout")
+    parser.add_argument("--init-ckpt", type=str, default=None,
+                        help="optional starting checkpoint")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -116,6 +118,10 @@ def main():
     gravity32 = gravity64.to(dtype)
 
     net = StretchNet().to(device=device, dtype=dtype)
+    if args.init_ckpt is not None:
+        ckpt = torch.load(args.init_ckpt, map_location=device, weights_only=False)
+        net.load_state_dict(ckpt["state_dict"])
+        print(f"loaded init weights from {args.init_ckpt}")
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
 
     # Move all data to GPU once (small enough).
