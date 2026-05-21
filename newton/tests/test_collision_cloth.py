@@ -25,12 +25,12 @@ from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert
 @wp.kernel
 def eval_triangles_contact(
     num_particles: int,  # size of particles
-    x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
-    indices: wp.array2d(dtype=int),
-    materials: wp.array2d(dtype=float),
-    particle_radius: wp.array(dtype=float),
-    f: wp.array(dtype=wp.vec3),
+    x: wp.array[wp.vec3],
+    v: wp.array[wp.vec3],
+    indices: wp.array2d[int],
+    materials: wp.array2d[float],
+    particle_radius: wp.array[float],
+    f: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     face_no = tid // num_particles  # which face
@@ -85,19 +85,19 @@ def eval_triangles_contact(
 def vertex_triangle_collision_detection_brute_force(
     query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    vertex_colliding_triangles: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_buffer_size: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_min_dist: wp.array(dtype=float),
-    triangle_colliding_vertices: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_count: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_buffer_offsets: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_buffer_sizes: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    vertex_colliding_triangles: wp.array[wp.int32],
+    vertex_colliding_triangles_count: wp.array[wp.int32],
+    vertex_colliding_triangles_offsets: wp.array[wp.int32],
+    vertex_colliding_triangles_buffer_size: wp.array[wp.int32],
+    vertex_colliding_triangles_min_dist: wp.array[float],
+    triangle_colliding_vertices: wp.array[wp.int32],
+    triangle_colliding_vertices_count: wp.array[wp.int32],
+    triangle_colliding_vertices_buffer_offsets: wp.array[wp.int32],
+    triangle_colliding_vertices_buffer_sizes: wp.array[wp.int32],
+    triangle_colliding_vertices_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     v_index = wp.tid()
     v = pos[v_index]
@@ -134,15 +134,15 @@ def vertex_triangle_collision_detection_brute_force(
 def vertex_triangle_collision_detection_brute_force_no_triangle_buffers(
     query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    vertex_colliding_triangles: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_buffer_size: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_min_dist: wp.array(dtype=float),
-    triangle_colliding_vertices_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    vertex_colliding_triangles: wp.array[wp.int32],
+    vertex_colliding_triangles_count: wp.array[wp.int32],
+    vertex_colliding_triangles_offsets: wp.array[wp.int32],
+    vertex_colliding_triangles_buffer_size: wp.array[wp.int32],
+    vertex_colliding_triangles_min_dist: wp.array[float],
+    triangle_colliding_vertices_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     v_index = wp.tid()
     v = pos[v_index]
@@ -178,14 +178,14 @@ def vertex_triangle_collision_detection_brute_force_no_triangle_buffers(
 def validate_vertex_collisions(
     query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    vertex_colliding_triangles: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_buffer_size: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    vertex_colliding_triangles: wp.array[wp.int32],
+    vertex_colliding_triangles_count: wp.array[wp.int32],
+    vertex_colliding_triangles_offsets: wp.array[wp.int32],
+    vertex_colliding_triangles_buffer_size: wp.array[wp.int32],
+    vertex_colliding_triangles_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     v_index = wp.tid()
     v = pos[v_index]
@@ -223,14 +223,14 @@ def validate_vertex_collisions(
 def validate_triangle_collisions(
     query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    triangle_colliding_vertices: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_count: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_buffer_offsets: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_buffer_sizes: wp.array(dtype=wp.int32),
-    triangle_colliding_vertices_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    triangle_colliding_vertices: wp.array[wp.int32],
+    triangle_colliding_vertices_count: wp.array[wp.int32],
+    triangle_colliding_vertices_buffer_offsets: wp.array[wp.int32],
+    triangle_colliding_vertices_buffer_sizes: wp.array[wp.int32],
+    triangle_colliding_vertices_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     tri_index = wp.tid()
 
@@ -263,16 +263,16 @@ def validate_triangle_collisions(
 def edge_edge_collision_detection_brute_force(
     query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_colliding_edges_offsets: wp.array(dtype=wp.int32),
-    edge_colliding_edges_buffer_sizes: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_colliding_edges_offsets: wp.array[wp.int32],
+    edge_colliding_edges_buffer_sizes: wp.array[wp.int32],
     edge_edge_parallel_epsilon: float,
     # outputs
-    edge_colliding_edges: wp.array(dtype=wp.int32),
-    edge_colliding_edges_count: wp.array(dtype=wp.int32),
-    edge_colliding_edges_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    edge_colliding_edges: wp.array[wp.int32],
+    edge_colliding_edges_count: wp.array[wp.int32],
+    edge_colliding_edges_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     e_index = wp.tid()
 
@@ -318,16 +318,16 @@ def edge_edge_collision_detection_brute_force(
 def validate_edge_collisions(
     query_radius: float,
     bvh_id: wp.uint64,
-    pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_colliding_edges_offsets: wp.array(dtype=wp.int32),
-    edge_colliding_edges_buffer_sizes: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_colliding_edges_offsets: wp.array[wp.int32],
+    edge_colliding_edges_buffer_sizes: wp.array[wp.int32],
     edge_edge_parallel_epsilon: float,
     # outputs
-    edge_colliding_edges: wp.array(dtype=wp.int32),
-    edge_colliding_edges_count: wp.array(dtype=wp.int32),
-    edge_colliding_edges_min_dist: wp.array(dtype=float),
-    resize_flags: wp.array(dtype=wp.int32),
+    edge_colliding_edges: wp.array[wp.int32],
+    edge_colliding_edges_count: wp.array[wp.int32],
+    edge_colliding_edges_min_dist: wp.array[float],
+    resize_flags: wp.array[wp.int32],
 ):
     e0_index = wp.tid()
 
@@ -780,64 +780,17 @@ def test_mesh_ground_collision_index(test, device):
     test.assertTrue(np.allclose(normals[:, 2], 0.0, atol=1e-6))
 
 
-def test_avbd_particle_ground_penalty_grows(test, device):
-    """Regression: AVBD soft-contact penalty updates with particles + static ground only.
-
-    When the model has particles and static shapes (shape_body == -1) but no rigid bodies
-    (body_count == 0), SolverVBD must still update the adaptive soft-contact penalty
-    (body-particle contact penalty k) so that particle-ground contacts do not remain
-    artificially soft.
-    """
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-
-    # Ensure the contact stiffness cap is well above the initial k_start so we can observe growth.
-    builder.default_shape_cfg.ke = 1.0e9
-    builder.default_shape_cfg.kd = 0.0
-
-    # Place a particle with positive penetration against the ground plane at z=0.
-    radius = 0.1
-    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0, radius=radius)
-    builder.add_ground_plane()
-    builder.color()
-
-    model = builder.finalize(device=device)
-    test.assertEqual(model.body_count, 0)
-    test.assertGreater(model.particle_count, 0)
-    test.assertGreater(model.shape_count, 0)
-
-    vbd = SolverVBD(model, iterations=1, rigid_contact_k_start=1.0e2, rigid_avbd_beta=1.0e5)
-
-    state_in = model.state()
-    state_out = model.state()
-    contacts = model.contacts()
-    model.collide(state_in, contacts)
-
-    soft_count = int(contacts.soft_contact_count.numpy()[0])
-    test.assertGreater(soft_count, 0)
-
-    dt = 1.0 / 60.0
-    control = model.control()
-    vbd._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid_history=True)
-
-    k_before = float(vbd.body_particle_contact_penalty_k.numpy()[0])
-
-    vbd._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
-
-    k_after = float(vbd.body_particle_contact_penalty_k.numpy()[0])
-    test.assertGreater(k_after, k_before)
-
-
 @wp.kernel
 def validate_vertex_collisions_distance_filter(
     max_query_radius: float,
     min_query_radius: float,
-    pos: wp.array(dtype=wp.vec3),
-    ref_pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32, ndim=2),
-    vertex_colliding_triangles: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_count: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_offsets: wp.array(dtype=wp.int32),
-    vertex_colliding_triangles_buffer_size: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    ref_pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    vertex_colliding_triangles: wp.array[wp.int32],
+    vertex_colliding_triangles_count: wp.array[wp.int32],
+    vertex_colliding_triangles_offsets: wp.array[wp.int32],
+    vertex_colliding_triangles_buffer_size: wp.array[wp.int32],
 ):
     v_index = wp.tid()
     v = pos[v_index]
@@ -881,16 +834,16 @@ def validate_vertex_collisions_distance_filter(
 def validate_edge_collisions_distance_filter(
     max_query_radius: float,
     min_query_radius: float,
-    pos: wp.array(dtype=wp.vec3),
-    ref_pos: wp.array(dtype=wp.vec3),
-    edge_indices: wp.array(dtype=wp.int32, ndim=2),
-    edge_colliding_edges_offsets: wp.array(dtype=wp.int32),
-    edge_colliding_edges_buffer_sizes: wp.array(dtype=wp.int32),
+    pos: wp.array[wp.vec3],
+    ref_pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_colliding_edges_offsets: wp.array[wp.int32],
+    edge_colliding_edges_buffer_sizes: wp.array[wp.int32],
     edge_edge_parallel_epsilon: float,
     # outputs
-    edge_colliding_edges: wp.array(dtype=wp.int32),
-    edge_colliding_edges_count: wp.array(dtype=wp.int32),
-    edge_colliding_edges_min_dist: wp.array(dtype=float),
+    edge_colliding_edges: wp.array[wp.int32],
+    edge_colliding_edges_count: wp.array[wp.int32],
+    edge_colliding_edges_min_dist: wp.array[float],
 ):
     e0_index = wp.tid()
 
@@ -1117,9 +1070,6 @@ add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_t
 add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_collision, devices=devices)
 add_function_test(TestCollision, "test_particle_collision", test_particle_collision, devices=devices)
 add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
-add_function_test(
-    TestCollision, "test_avbd_particle_ground_penalty_grows", test_avbd_particle_ground_penalty_grows, devices=devices
-)
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)
 
 if __name__ == "__main__":

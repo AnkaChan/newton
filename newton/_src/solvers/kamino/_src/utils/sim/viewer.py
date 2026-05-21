@@ -4,6 +4,7 @@
 """The customized debug viewer of Kamino"""
 
 # Python
+import copy
 import glob
 import os
 import threading
@@ -12,10 +13,10 @@ from typing import ClassVar
 # Thirdparty
 import warp as wp
 
+from ......geometry.types import GeoType
 from ......viewer import ViewerGL
 from ...core.builder import ModelBuilderKamino
 from ...core.geometry import GeometryDescriptor
-from ...core.shapes import ShapeType
 from ...core.types import vec3f
 from ...core.world import WorldDescriptor
 from ...geometry.contacts import ContactMode
@@ -30,18 +31,18 @@ from .simulator import Simulator
 @wp.kernel
 def compute_contact_box_transforms(
     # Kamino contact data
-    position_A: wp.array(dtype=wp.vec3),  # Contact position on body A
-    position_B: wp.array(dtype=wp.vec3),  # Contact position on body B
-    frame: wp.array(dtype=wp.quatf),  # Contact frames
-    mode: wp.array(dtype=wp.int32),  # Contact modes
-    wid: wp.array(dtype=wp.int32),
+    position_A: wp.array[wp.vec3],  # Contact position on body A
+    position_B: wp.array[wp.vec3],  # Contact position on body B
+    frame: wp.array[wp.quatf],  # Contact frames
+    mode: wp.array[wp.int32],  # Contact modes
+    wid: wp.array[wp.int32],
     num_contacts: int,
     world_spacing: wp.vec3,
     box_size: wp.vec3,  # Box dimensions
     # Output buffers
-    transforms: wp.array(dtype=wp.transform),
-    scales: wp.array(dtype=wp.vec3),
-    colors: wp.array(dtype=wp.vec3),
+    transforms: wp.array[wp.transform],
+    scales: wp.array[wp.vec3],
+    colors: wp.array[wp.vec3],
 ):
     """
     Compute transforms, scales, and colors for contact frame boxes.
@@ -90,21 +91,21 @@ def compute_contact_box_transforms(
 @wp.kernel
 def compute_contact_force_arrows(
     # Kamino contact data
-    position_A: wp.array(dtype=wp.vec3),
-    position_B: wp.array(dtype=wp.vec3),
-    frame: wp.array(dtype=wp.quatf),  # Contact frames
-    reaction: wp.array(dtype=wp.vec3),  # Contact forces in respective local contact frame
-    mode: wp.array(dtype=wp.int32),  # Contact modes
-    wid: wp.array(dtype=wp.int32),
+    position_A: wp.array[wp.vec3],
+    position_B: wp.array[wp.vec3],
+    frame: wp.array[wp.quatf],  # Contact frames
+    reaction: wp.array[wp.vec3],  # Contact forces in respective local contact frame
+    mode: wp.array[wp.int32],  # Contact modes
+    wid: wp.array[wp.int32],
     num_contacts: int,
     world_spacing: wp.vec3,
     force_scale: float,
     force_threshold: float,  # Minimum force to display
     # Output buffers
-    line_starts: wp.array(dtype=wp.vec3),
-    line_ends: wp.array(dtype=wp.vec3),
-    line_colors: wp.array(dtype=wp.vec3),
-    line_widths: wp.array(dtype=float),
+    line_starts: wp.array[wp.vec3],
+    line_ends: wp.array[wp.vec3],
+    line_colors: wp.array[wp.vec3],
+    line_widths: wp.array[float],
 ):
     """
     Compute line segments for visualizing contact forces as arrows.
@@ -226,7 +227,9 @@ class ViewerKamino(ViewerGL):
 
         # Declare and initialize geometry info cache
         self._worlds: list[WorldDescriptor] = builder.worlds
-        self._geometry: list[GeometryDescriptor] = builder.geoms
+        self._geometry: list[GeometryDescriptor] = copy.deepcopy(list(builder.all_geoms))
+        for geom in self._geometry:
+            geom.shape = builder.shapes[geom.uid]
 
         # Initialize video recording settings
         self._record_video = record_video
@@ -265,21 +268,13 @@ class ViewerKamino(ViewerGL):
         # Choose color based on body ID
         color = self.body_colors[geom.body % len(self.body_colors)]
 
-        # Convert shape parameters to Newton format w/ half-extents
+        # Shape params are already in Newton convention (half-extents, half-heights)
         params = geom.shape.params
-        if geom.shape.type == ShapeType.CYLINDER:
-            params = (params[0], 0.5 * params[1])
-        elif geom.shape.type == ShapeType.CONE:
-            params = (params[0], 0.5 * params[1])
-        elif geom.shape.type == ShapeType.CAPSULE:
-            params = (params[0], 0.5 * params[1])
-        elif geom.shape.type == ShapeType.BOX:
-            params = (0.5 * params[0], 0.5 * params[1], 0.5 * params[2])
 
         # Update the geometry data
         self.log_shapes(
             name=f"/world_{geom.wid}/body_{geom.body}/{scope}/{geom.gid}-{geom.name}",
-            geo_type=ShapeType.to_newton(shape_type=geom.shape.type)[0],
+            geo_type=geom.shape.type,
             geo_scale=params,
             xforms=wp.array([geom_transform], dtype=wp.transform),
             geo_is_solid=geom.shape.is_solid,
@@ -296,7 +291,7 @@ class ViewerKamino(ViewerGL):
 
         # Render each collision geom
         for geom in self._geometry:
-            if geom.shape.type == ShapeType.EMPTY:
+            if geom.shape.type == GeoType.NONE:
                 continue
             self.render_geometry(body_poses, geom, scope="geoms")
 

@@ -15,9 +15,9 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.model import ModelKamino
-from ...core.shapes import ShapeType
 from ...core.state import StateKamino
 from ...core.types import float32, int32, vec6f
 from ..contacts import DEFAULT_GEOM_PAIR_CONTACT_GAP, ContactsKamino
@@ -49,7 +49,6 @@ class CollisionPipelinePrimitive:
         model: ModelKamino | None = None,
         bvtype: Literal["aabb", "bs"] = "aabb",
         default_gap: float = DEFAULT_GEOM_PAIR_CONTACT_GAP,
-        device: wp.DeviceLike = None,
     ):
         """
         Initialize an instance of Kamino's optimized primitive collision detection pipeline.
@@ -64,15 +63,11 @@ class CollisionPipelinePrimitive:
                 Type of bounding volume to use in broad-phase.
             default_gap (`float`, optional):
                 Default detection gap [m] applied as a floor to per-geometry gaps.
-            device (`wp.DeviceLike`, optional):
-                The target Warp device for allocation and execution.\n
-                If `None`, the `model.device` will be used if a model is provided, otherwise
-                it will default to the device preferred by Warp on the given platform.
         """
         # Cache the model reference, target device and settings
         self._model: ModelKamino | None = model
         self._default_gap: float = default_gap
-        self._device: wp.DeviceLike = device
+        self._device: wp.DeviceLike = None
 
         # Convert the bounding volume type from string to enum if necessary
         self._bvtype: BoundingVolumeType = BoundingVolumeType.from_string(bvtype)
@@ -84,7 +79,7 @@ class CollisionPipelinePrimitive:
 
         # If a builder is provided, proceed to finalize all data allocations
         if model is not None:
-            self.finalize(model, bvtype, device)
+            self.finalize(model, bvtype)
 
     ###
     # Properties
@@ -103,7 +98,6 @@ class CollisionPipelinePrimitive:
         self,
         model: ModelKamino,
         bvtype: Literal["aabb", "bs"] | None = None,
-        device: wp.DeviceLike = None,
     ):
         """
         Finalizes the collision detection pipeline by allocating all necessary data structures.
@@ -116,10 +110,6 @@ class CollisionPipelinePrimitive:
                 can be finalized later by providing a model to the `finalize` method.\n
             bvtype (`Literal["aabb", "bs"]`, optional):
                 Type of bounding volume to use in broad-phase.
-            device (`wp.DeviceLike`, optional):
-                The target Warp device for allocation and execution.\n
-                If `None`, the `model.device` will be used if a model is provided, otherwise
-                it will default to the device preferred by Warp on the given platform.
         """
         # Override the model if specified
         if model is not None:
@@ -129,11 +119,10 @@ class CollisionPipelinePrimitive:
         elif not isinstance(self._model, ModelKamino):
             raise TypeError("CollisionPipelinePrimitive only supports models of type ModelKamino.")
 
-        # Override the device if specified
-        if device is not None:
-            self._device = device
+        # Use the model's device
+        self._device = model.device
 
-        # Override the device if specified
+        # Override the bounding volume type if specified
         if bvtype is not None:
             self._bvtype = BoundingVolumeType.from_string(bvtype)
 
@@ -251,8 +240,8 @@ class CollisionPipelinePrimitive:
             # Retrieve the shape types and world indices of the geometry pair
             gid_1 = geom_pairs[gid_12, 0]
             gid_2 = geom_pairs[gid_12, 1]
-            shape_1 = ShapeType(geom_type[gid_1])
-            shape_2 = ShapeType(geom_type[gid_2])
+            shape_1 = GeoType(geom_type[gid_1])
+            shape_2 = GeoType(geom_type[gid_2])
             candidate_pair = (min((shape_1, shape_2)), max((shape_1, shape_2)))
 
             # First check if both shapes are supported by the primitive broad-phase

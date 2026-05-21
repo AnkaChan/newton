@@ -4,7 +4,9 @@
 """Implicit MPM solver."""
 
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -14,6 +16,7 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
+from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .rasterized_collisions import (
@@ -117,6 +120,40 @@ def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
         max_points_per_cell = -1
 
     return fem.PointBasisSpace(pic, max_nodes_per_element=max_points_per_cell, use_evaluation_point_index=True)
+
+
+_RheologySolverName = Literal[
+    "auto",
+    "gs",
+    "gauss-seidel",
+    "gs-soa",
+    "gauss-seidel-soa",
+    "gs-batched",
+    "gauss-seidel-batched",
+    "jacobi",
+    "cg",
+    "cr",
+    "gmres",
+]
+_MPMVelocityBasisName = Literal["Q1", "B2", "B3"]
+# Python typing cannot express the accepted ``"pic"`` / ``"picN"`` basis family.
+_MPMColliderBasisName = Literal["Q1", "S2", "pic", "pic8", "pic27"] | str
+_MPMStrainBasisName = Literal["P0", "P1d", "Q1", "Q1d", "pic", "pic8", "pic27"] | str
+
+
+def _resolve_solver_spec(
+    solver: _RheologySolverName | Sequence[_RheologySolverName], velocity_basis: str
+) -> tuple[str, ...]:
+    solvers = (solver,) if isinstance(solver, str) else tuple(solver)
+    if len(solvers) == 0:
+        raise ValueError("Solver sequence must contain at least one solver.")
+
+    def resolve_auto(solver_name: _RheologySolverName) -> str:
+        if solver_name == "auto":
+            return "gs-batched" if velocity_basis in ("B2", "B3") else "gs"
+        return solver_name
+
+    return tuple(resolve_auto(solver_name) for solver_name in solvers)
 
 
 class ImplicitMPMScratchpad:
@@ -598,7 +635,8 @@ class SolverImplicitMPM(SolverBase):
         config: Solver configuration. See :class:`SolverImplicitMPM.Config`.
         temporary_store: Optional Warp FEM temporary store for reusing scratch
             allocations across steps.
-        verbose: Enable verbose solver output. Defaults to ``wp.config.verbose``.
+        verbose: If True, enable verbose solver output. If False, suppress details. If None, enable verbose output when
+            ``wp.config.log_level`` is configured for debug logging.
         enable_timers: Enable per-section wall-clock timings.
     """
 
@@ -615,26 +653,39 @@ class SolverImplicitMPM(SolverBase):
         """Maximum number of iterations for the rheology solver."""
         tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
-        solver: str = "gauss-seidel"
-        """Solver to use for the rheology solver. May be one of gauss-seidel, jacobi, cg."""
-        warmstart_mode: str = "auto"
-        """Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid, smoothed."""
-        collider_velocity_mode: str = "forward"
-        """Collider velocity computation mode, may be one of 'forward' or 'backward'. 'forward' uses the current velocity, 'backward' uses the previous timestep position. Deprecated aliases 'instantaneous' (='forward') and 'finite_difference' (='backward') are also accepted."""
+        solver: _RheologySolverName | Sequence[_RheologySolverName] = "auto"
+        """Solver to use for the rheology solver. ``"auto"`` selects ``"gs"``
+        for Q1 velocity basis and ``"gs-batched"`` for higher-order bases
+        (B2, B3).  Accepted values: ``"auto"``, ``"gs"`` (or
+        ``"gauss-seidel"``), ``"gs-soa"`` (or ``"gauss-seidel-soa"``),
+        ``"gs-batched"`` (or ``"gauss-seidel-batched"``), ``"jacobi"``,
+        ``"cg"``, ``"cr"``, ``"gmres"``.  Pass an ordered sequence to
+        warmstart solvers left-to-right, e.g. ``("cr", "gs")`` or
+        ``("cg", "jacobi", "gs")``."""
+        warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
+        """Warmstart mode to use for the rheology solver."""
+        collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
+        """Collider velocity computation mode. ``'forward'`` uses the current velocity,
+        ``'backward'`` uses the previous timestep position.
+
+        .. deprecated:: 1.1
+            Aliases ``'instantaneous'`` (= ``'forward'``) and ``'finite_difference'``
+            (= ``'backward'``) are deprecated and will be removed in a future release.
+        """
 
         # grid
         voxel_size: float = 0.1
         """Size of the grid voxels."""
-        grid_type: str = "sparse"
-        """Type of grid to use. May be one of sparse, dense, fixed."""
+        grid_type: Literal["sparse", "dense", "fixed"] = "sparse"
+        """Type of grid to use."""
         grid_padding: int = 0
         """Number of empty cells to add around particles when allocating the grid."""
         max_active_cell_count: int = -1
         """Maximum number of active cells to use for active subsets of dense grids. -1 means unlimited."""
-        transfer_scheme: str = "apic"
-        """Transfer scheme to use for particle-grid transfers. May be one of apic, pic."""
-        integration_scheme: str = "pic"
-        """Integration scheme controlling shape-function support. May be one of pic, gimp."""
+        transfer_scheme: Literal["apic", "pic"] = "apic"
+        """Transfer scheme to use for particle-grid transfers."""
+        integration_scheme: Literal["pic", "gimp"] = "pic"
+        """Integration scheme controlling shape-function support."""
 
         # material / background
         critical_fraction: float = 0.0
@@ -645,12 +696,20 @@ class SolverImplicitMPM(SolverBase):
         # experimental
         collider_normal_from_sdf_gradient: bool = False
         """Compute collider normals from sdf gradient rather than closest point"""
-        collider_basis: str = "Q1"
-        """Collider basis function string. Examples: P0 (piecewise constant), Q1 (trilinear), S2 (quadratic serendipity), pic8 (particle-based with max 8 points per cell)"""
-        strain_basis: str = "P0"
-        """Strain basis functions. May be one of P0, P1d, Q1, Q1d, or pic[n]."""
-        velocity_basis: str = "Q1"
-        """Velocity basis function string. Examples: B2 (quadratic b-spline), Q1 (trilinear)"""
+        collider_basis: _MPMColliderBasisName = "S2"
+        """Collider basis function. Defaults to ``"S2"``; pass ``"Q1"``
+        to restore the previous trilinear collider basis. Common values are
+        ``"Q1"`` (trilinear), ``"S2"`` (quadratic serendipity), or
+        ``"pic"``, ``"pic8"``, ``"pic27"``
+        (particle-based with optional max points per cell). Any ``"picN"``
+        form with integer ``N`` is accepted."""
+        strain_basis: _MPMStrainBasisName = "P0"
+        """Strain basis function. Common values are ``"P0"``, ``"P1d"``,
+        ``"Q1"``, ``"Q1d"``, or particle-based ``"pic"``, ``"pic8"``,
+        ``"pic27"``. Any ``"picN"`` form with integer ``N`` is accepted."""
+        velocity_basis: _MPMVelocityBasisName = "Q1"
+        """Velocity basis function. Common values are ``"Q1"``, ``"B2"``,
+        or ``"B3"``."""
 
     @classmethod
     def register_custom_attributes(cls, builder: newton.ModelBuilder) -> None:
@@ -871,7 +930,7 @@ class SolverImplicitMPM(SolverBase):
         self.tolerance = float(config.tolerance)
 
         self.temporary_store = temporary_store
-        self.verbose = verbose if verbose is not None else wp.config.verbose
+        self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
         self.enable_timers = enable_timers
 
         self.velocity_basis = "Q1"
@@ -880,8 +939,8 @@ class SolverImplicitMPM(SolverBase):
 
         self.grid_padding = config.grid_padding
         self.grid_type = config.grid_type
-        self.solver = config.solver
-        self.coloring = "gauss-seidel" in self.solver
+        self.solver = _resolve_solver_spec(config.solver, self.velocity_basis)
+        self.coloring = any("gauss-seidel" in solver or "gs" in solver for solver in self.solver)
         self.apic = config.transfer_scheme == "apic"
         self.gimp = config.integration_scheme == "gimp"
         self.max_active_cell_count = config.max_active_cell_count
@@ -1028,7 +1087,8 @@ class SolverImplicitMPM(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        self._mpm_model.notify_particle_material_changed()
+        if flags & SolverNotifyFlags.MODEL_PROPERTIES:
+            self._mpm_model.notify_particle_material_changed()
 
     def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
@@ -1357,9 +1417,9 @@ class SolverImplicitMPM(SolverBase):
         def particle_locations(
             cell_arg_value: domain.ElementArg,
             domain_index_arg_value: domain.ElementIndexArg,
-            positions: wp.array(dtype=wp.vec3),
-            cell_index: wp.array(dtype=fem.ElementIndex),
-            cell_coords: wp.array(dtype=fem.Coords),
+            positions: wp.array[wp.vec3],
+            cell_index: wp.array[fem.ElementIndex],
+            cell_coords: wp.array[fem.Coords],
         ):
             p = wp.tid()
             domain_arg = domain.DomainArg(cell_arg_value, domain_index_arg_value)
@@ -1398,9 +1458,9 @@ class SolverImplicitMPM(SolverBase):
 
         @wp.func
         def add_cell(
-            particle_cell_indices: wp.array(dtype=fem.ElementIndex),
-            particle_cell_coords: wp.array(dtype=fem.Coords),
-            particle_cell_fractions: wp.array(dtype=float),
+            particle_cell_indices: wp.array[fem.ElementIndex],
+            particle_cell_coords: wp.array[fem.Coords],
+            particle_cell_fractions: wp.array[float],
             cell_index: int,
             cell_coords: fem.Coords,
             cell_weight: float,
@@ -1420,11 +1480,11 @@ class SolverImplicitMPM(SolverBase):
         def particle_locations_gimp(
             cell_arg_value: domain.ElementArg,
             domain_index_arg_value: domain.ElementIndexArg,
-            positions: wp.array(dtype=wp.vec3),
-            radii: wp.array(dtype=float),
-            cell_index: wp.array2d(dtype=fem.ElementIndex),
-            cell_coords: wp.array2d(dtype=fem.Coords),
-            cell_fractions: wp.array2d(dtype=float),
+            positions: wp.array[wp.vec3],
+            radii: wp.array[float],
+            cell_index: wp.array2d[fem.ElementIndex],
+            cell_coords: wp.array2d[fem.Coords],
+            cell_fractions: wp.array2d[float],
         ):
             p = wp.tid()
             domain_arg = domain.DomainArg(cell_arg_value, domain_index_arg_value)
@@ -1836,6 +1896,7 @@ class SolverImplicitMPM(SolverBase):
                 fields={"phi": scratch.divergence_test},
                 values={"inv_cell_volume": inv_cell_volume},
                 output=scratch.strain_node_particle_volume,
+                temporary_store=self.temporary_store,
             )
 
         # Void fraction (unilateral incompressibility offset)
@@ -1918,11 +1979,11 @@ class SolverImplicitMPM(SolverBase):
     ):
         if self.strain_basis in ("Q1", "S2"):
             scratch.strain_node_particle_volume += EPSILON
-            return None
+            return None, None
         elif self.strain_basis[:3] == "pic":
             M_diag = scratch.strain_node_particle_volume
             M_diag.assign(self._mpm_model.particle_volume * inv_cell_volume)
-            return None
+            return None, None
 
         # build mass matrix of PIC integration
         M = fem.integrate(
@@ -1944,6 +2005,7 @@ class SolverImplicitMPM(SolverBase):
 
         M_ev = wp.empty(shape=(M_elt_wise.nrow, *M_elt_wise.block_shape), dtype=M_elt_wise.scalar_type)
         M_diag = scratch.strain_node_particle_volume.reshape((-1, nodes_per_elt))
+        rotated_volume = wp.empty_like(M_diag)
 
         wp.launch(
             compute_eigenvalues,
@@ -1952,20 +2014,23 @@ class SolverImplicitMPM(SolverBase):
                 M_elt_wise.offsets,
                 M_elt_wise.columns,
                 M_values,
+                M_diag,
                 scratch.strain_yield_parameters_field.dof_values,
             ],
             outputs=[
                 M_diag,
                 M_ev,
+                rotated_volume,
             ],
         )
 
-        return M_ev
+        return M_ev, rotated_volume.reshape((-1,))
 
     def _apply_strain_eigenbasis(
         self,
         scratch: ImplicitMPMScratchpad,
-        M_ev: wp.array3d(dtype=float),
+        M_ev: wp.array3d[float],
+        rotated_volume=None,
     ):
         node_count = scratch.strain_node_count
 
@@ -2015,17 +2080,19 @@ class SolverImplicitMPM(SolverBase):
                 inputs=[M_diag, scratch.stress_field.dof_values],
             )
 
-        # Yield parameters are integrated, need scale with inverse node volume
+        # Yield parameters are integrated, scale with inverse rotated volume
+        # to correctly recover uniform parameters after eigenbasis rotation
+        yield_volume = rotated_volume if rotated_volume is not None else M_diag
         wp.launch(
             inverse_scale_vector,
             dim=node_count,
-            inputs=[M_diag, scratch.strain_yield_parameters_field.dof_values],
+            inputs=[yield_volume, scratch.strain_yield_parameters_field.dof_values],
         )
 
     def _unapply_strain_eigenbasis(
         self,
         scratch: ImplicitMPMScratchpad,
-        M_ev: wp.array3d(dtype=float),
+        M_ev: wp.array3d[float],
     ):
         node_count = scratch.strain_node_count
 
@@ -2071,9 +2138,9 @@ class SolverImplicitMPM(SolverBase):
         last_step_data: LastStepData,
         inv_cell_volume: float,
     ):
-        M_ev = self._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
+        M_ev, rotated_volume = self._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
 
-        self._apply_strain_eigenbasis(scratch, M_ev)
+        self._apply_strain_eigenbasis(scratch, M_ev, rotated_volume)
 
         with self._timer("Strain solve"):
             momentum_data = MomentumData(
@@ -2105,9 +2172,10 @@ class SolverImplicitMPM(SolverBase):
                 collider_velocities=scratch.collider_velocity,
                 rigidity_operator=rigidity_operator,
                 collider_impulse=scratch.impulse_field.dof_values,
+                has_colliders=self._mpm_model.collider.collider_mesh.shape[0] > 0,
             )
 
-            # Retain graph to avoid immediate CPU synch
+            # Retain graph to avoid immediate CPU sync
             solve_graph = solve_rheology(
                 self.solver,
                 self.max_iterations,

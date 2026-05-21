@@ -5,7 +5,7 @@ import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 wp.config.enable_backward = False
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 
 import math
 
@@ -70,7 +70,6 @@ class SensorTiledCameraBenchmark:
 
         self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
         self.tiled_camera_sensor.utils.create_default_light(enable_shadows=False)
-        self.tiled_camera_sensor.utils.assign_random_colors_per_shape()
         self.tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
 
         self.camera_rays = self.tiled_camera_sensor.utils.compute_pinhole_camera_rays(
@@ -79,6 +78,8 @@ class SensorTiledCameraBenchmark:
         self.color_image = self.tiled_camera_sensor.utils.create_color_image_output(resolution, resolution)
         self.depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(resolution, resolution)
 
+        newton.geometry.build_bvh_shape(self.model, self.state)
+        newton.geometry.build_bvh_particle(self.model, self.state)
         self.tiled_camera_sensor.sync_transforms(self.state)
 
         # Warmup Kernels
@@ -88,7 +89,7 @@ class SensorTiledCameraBenchmark:
         for out_color, out_depth in [(True, True), (True, False), (False, True)]:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(
-                    None,
+                    self.state,
                     self.camera_transforms,
                     self.camera_rays,
                     color_image=self.color_image if out_color else None,
@@ -99,7 +100,7 @@ class SensorTiledCameraBenchmark:
         for out_color, out_depth in [(True, True), (True, False), (False, True)]:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(
-                    None,
+                    self.state,
                     self.camera_transforms,
                     self.camera_rays,
                     color_image=self.color_image if out_color else None,
@@ -112,12 +113,11 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 color_image=self.color_image,
                 depth_image=self.depth_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -127,11 +127,10 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 color_image=self.color_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -141,11 +140,10 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 depth_image=self.depth_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -157,12 +155,11 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.tile_height = 8
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 color_image=self.color_image,
                 depth_image=self.depth_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -174,11 +171,10 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.tile_height = 8
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 color_image=self.color_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -190,11 +186,10 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_config.tile_height = 8
         for _ in range(iterations):
             self.tiled_camera_sensor.update(
-                None,
+                self.state,
                 self.camera_transforms,
                 self.camera_rays,
                 depth_image=self.depth_image,
-                refit_bvh=False,
             )
         wp.synchronize()
 
@@ -221,7 +216,31 @@ def print_fps_results(results: dict[tuple[str, tuple[int, int, int]], float]):
 
 
 if __name__ == "__main__":
+    import argparse
+
     from newton.utils import run_benchmark
 
-    results = run_benchmark(SensorTiledCameraBenchmark)
-    print_fps_results(results)
+    benchmark_list = {
+        "SensorTiledCameraBenchmark": SensorTiledCameraBenchmark,
+    }
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        "-b",
+        "--bench",
+        default=None,
+        action="append",
+        choices=benchmark_list.keys(),
+        help="Run a specific benchmark; may be repeated to run multiple (e.g., --bench A --bench B).",
+    )
+    args = parser.parse_known_args()[0]
+
+    if args.bench is None:
+        benchmarks = benchmark_list.keys()
+    else:
+        benchmarks = args.bench
+
+    for key in benchmarks:
+        benchmark = benchmark_list[key]
+        result = run_benchmark(benchmark)
+        print_fps_results(result)

@@ -10,6 +10,7 @@ import datetime
 import importlib
 import inspect
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -32,22 +33,24 @@ project = "Newton Physics"
 copyright = f"{datetime.date.today().year}, The Newton Developers. Documentation licensed under CC-BY-4.0"
 author = "The Newton Developers"
 
-# Read version from _version.py
+# Read version from pyproject.toml
+# TODO: When minimum Python version is >=3.11, replace with:
+#   import tomllib
+#   with open(project_root / "pyproject.toml", "rb") as f:
+#       project_version = tomllib.load(f)["project"]["version"]
 project_root = Path(__file__).parent.parent
-version_file_path = project_root / "newton" / "_version.py"
 try:
-    # Get version from _version.py
-    version_globals: dict[str, str] = {}
-    with open(version_file_path, encoding="utf-8") as f:
-        exec(f.read(), version_globals)
-    project_version = version_globals["__version__"]
-    if not project_version:
-        raise ValueError("__version__ in _version.py is empty.")
-except FileNotFoundError:
-    print(f"Error: _version.py not found at {version_file_path}", file=sys.stderr)
-    sys.exit(1)
+    with open(project_root / "pyproject.toml", encoding="utf-8") as f:
+        content = f.read()
+    project_section = re.search(r"^\[project\]\s*\n(.*?)(?=^\[|\Z)", content, re.MULTILINE | re.DOTALL)
+    if not project_section:
+        raise ValueError("Could not find [project] section in pyproject.toml")
+    match = re.search(r'^version\s*=\s*"([^"]+)"', project_section.group(1), re.MULTILINE)
+    if not match:
+        raise ValueError("Could not find version in [project] section of pyproject.toml")
+    project_version = match.group(1)
 except Exception as e:
-    print(f"Error reading or parsing {version_file_path}: {e}", file=sys.stderr)
+    print(f"Error reading version from pyproject.toml: {e}", file=sys.stderr)
     sys.exit(1)
 
 release = project_version
@@ -113,14 +116,42 @@ exclude_patterns = [
     "**/lib/**",
 ]
 
+
+def _ensure_pandoc_on_path() -> str | None:
+    """Return a usable pandoc executable path, preferring the bundled docs dependency."""
+
+    # Try the bundled pypandoc_binary first so local docs builds work out of
+    # the box even when a stale or incompatible system pandoc is on PATH.
+    try:
+        import pypandoc  # noqa: PLC0415
+
+        bundled_path = Path(pypandoc.get_pandoc_path())
+        search_dir = bundled_path.parent
+        if search_dir.is_dir():
+            resolved_path = shutil.which("pandoc", path=str(search_dir))
+            if resolved_path is not None:
+                existing_path = os.environ.get("PATH", "")
+                os.environ["PATH"] = str(Path(resolved_path).parent) + os.pathsep + existing_path
+                os.environ.setdefault("PYPANDOC_PANDOC", resolved_path)
+                return resolved_path
+    except (ImportError, OSError):
+        pass
+
+    # Fall back to whatever pandoc is already on PATH.
+    return shutil.which("pandoc")
+
+
 # nbsphinx requires pandoc to convert Jupyter notebooks.  When pandoc is not
 # installed we exclude the notebook tutorials so the rest of the docs can still
 # be built locally without a hard error.  CI workflows install pandoc explicitly
-# so published docs always include the tutorials.
+# so published docs always include the tutorials.  Prefer the bundled
+# ``pypandoc_binary`` executable when available so local docs builds work out of
+# the box in the docs environment.
 #
 # Set NEWTON_REQUIRE_PANDOC=1 to turn the missing-pandoc warning into an error
 # (used in CI to guarantee tutorials are never silently skipped).
-if shutil.which("pandoc") is None:
+pandoc_path = _ensure_pandoc_on_path()
+if pandoc_path is None:
     if os.environ.get("NEWTON_REQUIRE_PANDOC", "") == "1":
         raise RuntimeError(
             "pandoc is required but not found. Install pandoc "
@@ -137,8 +168,8 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
     "jax": ("https://docs.jax.dev/en/latest", None),
-    "pytorch": ("https://docs.pytorch.org/docs/stable", None),
-    "warp": ("https://nvidia.github.io/warp", None),
+    "pytorch": ("https://pytorch.org/docs/stable", None),
+    "warp": ("https://nvidia.github.io/warp/stable", None),
     "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
 }
 
@@ -152,6 +183,7 @@ autodoc_type_aliases = {
     "UsdGeom.Mesh": "pxr.UsdGeom.Mesh",
     "UsdShade.Material": "pxr.UsdShade.Material",
     "UsdShade.Shader": "pxr.UsdShade.Shader",
+    "State": "newton.State",
 }
 
 
@@ -165,17 +197,15 @@ extlinks = {
 }
 
 doctest_global_setup = """
+import warnings
 from typing import Any
 import numpy as np
 import warp as wp
 import newton
 
-# Suppress warnings by setting warp_showwarning to an empty function
-def empty_warning(*args, **kwargs):
-    pass
-wp.utils.warp_showwarning = empty_warning
+warnings.filterwarnings("ignore")
 
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 wp.init()
 """
 
@@ -195,7 +225,7 @@ autodoc_default_options = {
     "member-order": "groupwise",
     "special-members": "__init__",
     "undoc-members": False,
-    "exclude-members": "__weakref__",
+    "exclude-members": "__weakref__, State",
     "imported-members": True,
     "autosummary": True,
 }
@@ -217,6 +247,7 @@ html_title = "Newton Physics"
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
+html_js_files = [*globals().get("html_js_files", []), "mermaid-nbsphinx.js"]
 html_show_sourcelink = False
 
 # PyData theme configuration
@@ -392,30 +423,20 @@ def _copy_viser_client_into_output_static(*, outdir: Path) -> None:
     """Ensure the Viser web client assets are available at `{outdir}/_static/viser/`.
 
     This avoids relying on repo-relative `html_static_path` entries (which can break under `uv`),
-    and avoids writing generated assets into `docs/_static` in the working tree.
+    avoids writing generated assets into `docs/_static` in the working tree, and
+    keeps the copied client aligned with the installed `viser` package.
     """
 
     dest_dir = outdir / "_static" / "viser"
 
-    src_candidates: list[Path] = []
-
-    # Repo checkout layout (most common for local builds).
-    src_candidates.append(project_root / "newton" / "_src" / "viewer" / "viser" / "static")
-
-    # Installed package layout (e.g. building docs from an environment where `newton` is installed).
     try:
-        import newton  # noqa: PLC0415
+        from newton.viewer import ViewerViser  # noqa: PLC0415
 
-        src_candidates.append(Path(newton.__file__).resolve().parent / "_src" / "viewer" / "viser" / "static")
-    except Exception:
-        pass
-
-    src_dir = next((p for p in src_candidates if (p / "index.html").is_file()), None)
-    if src_dir is None:
+        src_dir = ViewerViser.get_viser_client_dir()
+    except Exception as e:
         # Don't hard-fail doc builds; the viewer docs can still build without the embedded client.
-        expected = ", ".join(str(p) for p in src_candidates)
         print(
-            f"Warning: could not find Viser client assets to copy. Expected `index.html` under one of: {expected}",
+            f"Warning: could not find installed Viser client assets to copy: {e}",
             file=sys.stderr,
         )
         return

@@ -15,7 +15,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton import Mesh
+from newton import GeoType, Mesh
 from newton._src.geometry.sdf_texture import (
     QuantizationMode,
     TextureSDFData,
@@ -29,6 +29,7 @@ from newton._src.geometry.sdf_texture import (
 )
 from newton._src.geometry.sdf_utils import (
     SDFData,
+    _compute_sdf_from_shape_impl,
     get_distance_to_mesh,
     sample_sdf_extrapolated,
     sample_sdf_grad_extrapolated,
@@ -170,8 +171,8 @@ def _create_sphere_mesh(radius: float = 0.5, subdivisions: int = 3) -> Mesh:
 @wp.kernel
 def _sample_texture_sdf_kernel(
     sdf: TextureSDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = texture_sample_sdf(sdf, query_points[tid])
@@ -180,9 +181,9 @@ def _sample_texture_sdf_kernel(
 @wp.kernel
 def _sample_texture_sdf_grad_kernel(
     sdf: TextureSDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
-    gradients: wp.array(dtype=wp.vec3),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
+    gradients: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, grad = texture_sample_sdf_grad(sdf, query_points[tid])
@@ -193,8 +194,8 @@ def _sample_texture_sdf_grad_kernel(
 @wp.kernel
 def _sample_nanovdb_value_kernel(
     sdf_data: SDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = sample_sdf_extrapolated(sdf_data, query_points[tid])
@@ -203,9 +204,9 @@ def _sample_nanovdb_value_kernel(
 @wp.kernel
 def _sample_nanovdb_grad_kernel(
     sdf_data: SDFData,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
-    gradients: wp.array(dtype=wp.vec3),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
+    gradients: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     dist, grad = sample_sdf_grad_extrapolated(sdf_data, query_points[tid])
@@ -215,10 +216,10 @@ def _sample_nanovdb_grad_kernel(
 
 @wp.kernel
 def _sample_texture_sdf_from_array_kernel(
-    sdf_table: wp.array(dtype=TextureSDFData),
+    sdf_table: wp.array[TextureSDFData],
     sdf_idx: int,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = texture_sample_sdf(sdf_table[sdf_idx], query_points[tid])
@@ -227,8 +228,8 @@ def _sample_texture_sdf_from_array_kernel(
 @wp.kernel
 def _bvh_ground_truth_kernel(
     mesh: wp.uint64,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
 ):
     tid = wp.tid()
     results[tid] = get_distance_to_mesh(mesh, query_points[tid], 10000.0, 0.5)
@@ -237,9 +238,9 @@ def _bvh_ground_truth_kernel(
 @wp.kernel
 def _bvh_ground_truth_grad_kernel(
     mesh: wp.uint64,
-    query_points: wp.array(dtype=wp.vec3),
-    results: wp.array(dtype=float),
-    gradients: wp.array(dtype=wp.vec3),
+    query_points: wp.array[wp.vec3],
+    results: wp.array[float],
+    gradients: wp.array[wp.vec3],
 ):
     """Compute BVH ground truth distance and finite-difference gradient."""
     tid = wp.tid()
@@ -260,6 +261,26 @@ def _bvh_ground_truth_grad_kernel(
     gradients[tid] = wp.vec3(dx * inv_2eps, dy * inv_2eps, dz * inv_2eps)
 
 
+def _build_nanovdb_data(mesh, resolution=64, margin=0.05, narrow_band_range=(-0.1, 0.1), device="cuda:0"):
+    """Build NanoVDB SDF volumes explicitly via :func:`_compute_sdf_from_shape_impl`.
+
+    ``Mesh.build_sdf`` no longer creates NanoVDB volumes, so tests that need
+    them for ground-truth comparison must construct them directly.
+
+    Returns ``(sdf_data, sparse_volume, coarse_volume)`` — callers must keep
+    the volume objects alive to prevent GPU memory from being freed.
+    """
+    sdf_data, sparse_vol, coarse_vol, _block_coords = _compute_sdf_from_shape_impl(
+        shape_type=GeoType.MESH,
+        shape_geo=mesh,
+        narrow_band_distance=narrow_band_range,
+        margin=margin,
+        max_resolution=resolution,
+        device=device,
+    )
+    return sdf_data, sparse_vol, coarse_vol
+
+
 def _build_texture_and_nanovdb(mesh, resolution=64, margin=0.05, narrow_band_range=(-0.1, 0.1), device="cuda:0"):
     """Build both texture SDF and NanoVDB SDF for comparison."""
     wp_mesh = wp.Mesh(
@@ -278,16 +299,16 @@ def _build_texture_and_nanovdb(mesh, resolution=64, margin=0.05, narrow_band_ran
         device=device,
     )
 
-    # Build NanoVDB SDF on the same device so volume pointers are valid
-    mesh.build_sdf(
-        device=device,
-        max_resolution=resolution,
-        narrow_band_range=narrow_band_range,
+    # Build NanoVDB SDF explicitly for ground-truth comparison
+    nanovdb_data, sparse_vol, coarse_vol = _build_nanovdb_data(
+        mesh,
+        resolution=resolution,
         margin=margin,
+        narrow_band_range=narrow_band_range,
+        device=device,
     )
-    nanovdb_data = mesh.sdf.to_kernel_data()
 
-    return tex_sdf, coarse_tex, subgrid_tex, nanovdb_data, wp_mesh
+    return tex_sdf, coarse_tex, subgrid_tex, nanovdb_data, wp_mesh, sparse_vol, coarse_vol
 
 
 def _generate_query_points(mesh, num_points=1000, seed=42):
@@ -319,7 +340,7 @@ class TestTextureSDF(unittest.TestCase):
 def test_texture_sdf_construction(test, device):
     """Build TextureSDFData and verify fields are populated."""
     mesh = _create_box_mesh()
-    tex_sdf, _coarse_tex, _subgrid_tex, _, _wp_mesh = _build_texture_and_nanovdb(mesh, device=device)
+    tex_sdf, _coarse_tex, _subgrid_tex, _, _wp_mesh, _, _ = _build_texture_and_nanovdb(mesh, device=device)
 
     test.assertGreater(tex_sdf.inv_sdf_dx[0], 0.0)
     test.assertGreater(tex_sdf.inv_sdf_dx[1], 0.0)
@@ -406,7 +427,9 @@ def test_texture_sdf_values_match_nanovdb(test, device):
     where contacts actually happen.
     """
     mesh = _create_box_mesh()
-    tex_sdf, _coarse_tex, _subgrid_tex, nanovdb_data, _wp_mesh = _build_texture_and_nanovdb(mesh, device=device)
+    tex_sdf, _coarse_tex, _subgrid_tex, nanovdb_data, _wp_mesh, _sv, _cv = _build_texture_and_nanovdb(
+        mesh, device=device
+    )
 
     query_np = _generate_query_points(mesh, num_points=2000)
     query_points = wp.array(query_np, dtype=wp.vec3, device=device)
@@ -433,7 +456,9 @@ def test_texture_sdf_gradient_accuracy(test, device):
     gradient is multi-valued.
     """
     mesh = _create_box_mesh()
-    tex_sdf, _coarse_tex, _subgrid_tex, nanovdb_data, _wp_mesh = _build_texture_and_nanovdb(mesh, device=device)
+    tex_sdf, _coarse_tex, _subgrid_tex, nanovdb_data, _wp_mesh, _sv, _cv = _build_texture_and_nanovdb(
+        mesh, device=device
+    )
 
     query_np = _generate_query_points(mesh, num_points=2000)
     query_points = wp.array(query_np, dtype=wp.vec3, device=device)
@@ -453,7 +478,7 @@ def test_texture_sdf_gradient_accuracy(test, device):
 def test_texture_sdf_extrapolation(test, device):
     """Points outside box have correct extrapolated distance."""
     mesh = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
-    tex_sdf, _coarse_tex, _subgrid_tex, _, _wp_mesh = _build_texture_and_nanovdb(mesh, device=device)
+    tex_sdf, _coarse_tex, _subgrid_tex, _, _wp_mesh, _, _ = _build_texture_and_nanovdb(mesh, device=device)
 
     # Points well outside the box along +X axis
     outside_points = np.array(
@@ -477,7 +502,7 @@ def test_texture_sdf_extrapolation(test, device):
 
 
 def test_texture_sdf_array_indexing(test, device):
-    """Create wp.array(dtype=TextureSDFData) with 2 entries, sample from kernel via index."""
+    """Create wp.array[TextureSDFData] with 2 entries, sample from kernel via index."""
     mesh1 = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
     mesh2 = _create_box_mesh(half_extents=(0.3, 0.3, 0.3))
 
@@ -546,9 +571,7 @@ def test_texture_sdf_multi_resolution(test, device):
     query_points = wp.array(query_np, dtype=wp.vec3, device=device)
 
     # Build NanoVDB reference at high resolution
-    mesh_copy = _create_box_mesh()
-    mesh_copy.build_sdf(device=device, max_resolution=256, narrow_band_range=(-0.1, 0.1), margin=0.05)
-    ref_data = mesh_copy.sdf.to_kernel_data()
+    ref_data, _sv, _cv = _build_nanovdb_data(mesh, resolution=256, device=device)
     ref_results = wp.zeros(500, dtype=float, device=device)
     wp.launch(_sample_nanovdb_value_kernel, dim=500, inputs=[ref_data, query_points, ref_results], device=device)
     ref_np = ref_results.numpy()
@@ -750,6 +773,60 @@ def test_texture_sdf_isomesh_extraction(test, device):
     test.assertGreater(len(iso_mesh.indices), 0, "Isomesh should have faces")
 
 
+def test_texture_sdf_isomesh_with_isovalue(test, device):
+    """Extract offset isosurface from texture SDF and validate vertex positions.
+
+    Every vertex of the offset mesh should sit at approximately ``isovalue``
+    signed distance from the original box surface, measured with the analytical
+    box SDF as ground truth.
+    """
+    half = 0.3
+    mesh = _create_box_mesh(half_extents=(half, half, half))
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+
+    tex_sdf, _coarse_tex, _subgrid_tex, _block_coords = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=32,
+        device=device,
+    )
+
+    tex_array = wp.array([tex_sdf], dtype=TextureSDFData, device=device)
+    coarse_dims = (_coarse_tex.width - 1, _coarse_tex.height - 1, _coarse_tex.depth - 1)
+
+    offset = 0.03
+    iso_mesh = compute_isomesh_from_texture_sdf(
+        tex_array,
+        0,
+        tex_sdf.subgrid_start_slots,
+        coarse_dims,
+        device=device,
+        isovalue=offset,
+    )
+
+    test.assertIsNotNone(iso_mesh, "Offset isomesh should not be None")
+    test.assertGreater(len(iso_mesh.vertices), 0, "Offset isomesh should have vertices")
+
+    def box_sdf(v):
+        q = np.abs(v) - np.array([half, half, half])
+        return float(np.linalg.norm(np.maximum(q, 0.0)) + min(max(q[0], q[1], q[2]), 0.0))
+
+    errors = np.array([abs(box_sdf(v) - offset) for v in iso_mesh.vertices])
+    max_err = float(errors.max())
+    atol = 0.04
+    test.assertLess(
+        max_err,
+        atol,
+        f"Max vertex SDF error {max_err:.4f} exceeds {atol} for isovalue={offset} "
+        f"(mean {errors.mean():.4f}, {len(iso_mesh.vertices)} verts)",
+    )
+
+
 def test_block_coords_from_subgrid_required(test, device):
     """Verify block_coords_from_subgrid_required produces correct coordinates."""
     coarse_dims = (3, 2, 2)
@@ -806,11 +883,19 @@ def test_texture_sdf_scale_baked(test, device):
 
 def test_texture_sdf_from_volume(test, device):
     """Build texture SDF from NanoVDB volumes and verify sampling."""
-    mesh = _create_box_mesh()
-    mesh.build_sdf(device=device, max_resolution=32, narrow_band_range=(-0.1, 0.1), margin=0.05)
+    from newton._src.geometry.sdf_utils import _compute_sdf_from_shape_impl  # noqa: PLC0415
 
-    sdf = mesh.sdf
-    sdf_data = sdf.to_kernel_data()
+    mesh = _create_box_mesh()
+    sdf_data, sparse_volume, coarse_volume, _ = _compute_sdf_from_shape_impl(
+        shape_type=GeoType.MESH,
+        shape_geo=mesh,
+        shape_scale=(1.0, 1.0, 1.0),
+        shape_margin=0.0,
+        narrow_band_distance=(-0.1, 0.1),
+        margin=0.05,
+        max_resolution=32,
+        device=device,
+    )
 
     min_ext = np.array(
         [
@@ -835,8 +920,8 @@ def test_texture_sdf_from_volume(test, device):
     )
 
     tex_sdf, coarse_tex, _subgrid_tex = create_texture_sdf_from_volume(
-        sdf.sparse_volume,
-        sdf.coarse_volume,
+        sparse_volume,
+        coarse_volume,
         min_ext=min_ext,
         max_ext=max_ext,
         voxel_size=voxel_size,
@@ -911,9 +996,7 @@ def test_uint16_vs_nanovdb_distance(test, device):
         device=device,
     )
 
-    mesh_copy = _create_box_mesh()
-    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05, device=device)
-    nanovdb_data = mesh_copy.sdf.to_kernel_data()
+    nanovdb_data, _sv, _cv = _build_nanovdb_data(mesh, resolution=64, device=device)
 
     query_np = _generate_query_points(mesh, num_points=2000)
     query_points = wp.array(query_np, dtype=wp.vec3, device=device)
@@ -945,9 +1028,7 @@ def test_uint16_vs_nanovdb_gradient(test, device):
         device=device,
     )
 
-    mesh_copy = _create_box_mesh()
-    mesh_copy.build_sdf(max_resolution=64, narrow_band_range=(-0.1, 0.1), margin=0.05, device=device)
-    nanovdb_data = mesh_copy.sdf.to_kernel_data()
+    nanovdb_data, _sv, _cv = _build_nanovdb_data(mesh, resolution=64, device=device)
 
     query_np = _generate_query_points(mesh, num_points=2000)
     query_points = wp.array(query_np, dtype=wp.vec3, device=device)
@@ -1161,6 +1242,155 @@ def test_build_sdf_texture_format_parameter(test, device):
     test.assertEqual(sdf_f32._subgrid_texture.dtype, wp.float32)
 
 
+def test_texture_sdf_target_voxel_size_scales(test, device):
+    """Regression test for #2407: create_texture_sdf_from_mesh must honor target_voxel_size.
+
+    Prior to the fix, the texture SDF path ignored ``target_voxel_size`` and
+    always fell back to ``max_resolution=64`` (or whatever was passed), so
+    sweeping ``target_voxel_size`` produced identical block counts. After the
+    fix, halving ``target_voxel_size`` should roughly ~8x the block count
+    (2^3 in 3D) for a cube mesh until the coarse grid saturates.
+    """
+    mesh = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+
+    counts = []
+    for vox in (0.2, 0.1, 0.05):
+        _tex_sdf, _ct, _st, block_coords = create_texture_sdf_from_mesh(
+            wp_mesh,
+            margin=0.05,
+            narrow_band_range=(-0.1, 0.1),
+            target_voxel_size=vox,
+            device=device,
+        )
+        counts.append(len(block_coords))
+
+    # Block count must strictly increase as voxels get smaller — the old
+    # bug produced identical counts across all target_voxel_size values.
+    test.assertLess(
+        counts[0],
+        counts[1],
+        f"target_voxel_size=0.2 produced {counts[0]} blocks but 0.1 produced {counts[1]}; "
+        f"target_voxel_size was likely ignored (see #2407).",
+    )
+    test.assertLess(
+        counts[1],
+        counts[2],
+        f"target_voxel_size=0.1 produced {counts[1]} blocks but 0.05 produced {counts[2]}; "
+        f"target_voxel_size was likely ignored (see #2407).",
+    )
+
+
+def test_texture_sdf_target_voxel_size_takes_precedence(test, device):
+    """Regression test for #2407: target_voxel_size must override max_resolution.
+
+    Documented precedence in ``SDF.create_from_mesh`` is that
+    ``target_voxel_size`` wins over ``max_resolution`` when both are provided.
+    The sparse SDF path already honored this; this test guards the texture
+    SDF path.
+    """
+    mesh = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+
+    # Low max_resolution alone produces a coarse SDF.
+    _s1, _c1, _sub1, blocks_low_res = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=8,
+        device=device,
+    )
+
+    # A small target_voxel_size paired with the same low max_resolution
+    # must produce a higher-resolution SDF (more blocks), because
+    # target_voxel_size takes precedence.
+    _s2, _c2, _sub2, blocks_override = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=8,
+        target_voxel_size=0.05,
+        device=device,
+    )
+
+    test.assertGreater(
+        len(blocks_override),
+        len(blocks_low_res),
+        f"target_voxel_size=0.05 with max_resolution=8 produced "
+        f"{len(blocks_override)} blocks, but max_resolution=8 alone produced "
+        f"{len(blocks_low_res)}; target_voxel_size should take precedence (see #2407).",
+    )
+
+
+def test_mesh_build_sdf_target_voxel_size_propagates_to_texture(test, device):
+    """Regression test for #2407: Mesh.build_sdf(target_voxel_size=...) must
+    drive the texture SDF resolution, not just the sparse SDF.
+
+    Validates the end-to-end user-facing path: the reporter's observation was
+    that ``SDF.texture_block_coords`` did not vary with ``target_voxel_size``.
+    """
+    counts = []
+    for vox in (0.2, 0.1, 0.05):
+        mesh = _create_box_mesh(half_extents=(0.5, 0.5, 0.5))
+        sdf = mesh.build_sdf(
+            device=device,
+            target_voxel_size=vox,
+            narrow_band_range=(-0.1, 0.1),
+            margin=0.05,
+        )
+        test.assertIsNotNone(sdf.texture_block_coords)
+        counts.append(len(sdf.texture_block_coords))
+
+    test.assertLess(
+        counts[0],
+        counts[1],
+        f"Mesh.build_sdf(target_voxel_size=0.2) -> {counts[0]} texture blocks, "
+        f"target_voxel_size=0.1 -> {counts[1]}; expected strict increase (see #2407).",
+    )
+    test.assertLess(
+        counts[1],
+        counts[2],
+        f"Mesh.build_sdf(target_voxel_size=0.1) -> {counts[1]} texture blocks, "
+        f"target_voxel_size=0.05 -> {counts[2]}; expected strict increase (see #2407).",
+    )
+
+
+def test_create_texture_sdf_from_mesh_validates_target_voxel_size(test, device):
+    """Invalid target_voxel_size values must raise a clear error."""
+    mesh = _create_box_mesh()
+    wp_mesh = wp.Mesh(
+        points=wp.array(mesh.vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(mesh.indices, dtype=wp.int32, device=device),
+        support_winding_number=True,
+    )
+
+    with test.assertRaises(ValueError):
+        create_texture_sdf_from_mesh(
+            wp_mesh,
+            margin=0.05,
+            narrow_band_range=(-0.1, 0.1),
+            target_voxel_size=0.0,
+            device=device,
+        )
+
+    with test.assertRaises(ValueError):
+        create_texture_sdf_from_mesh(
+            wp_mesh,
+            margin=0.05,
+            narrow_band_range=(-0.1, 0.1),
+            target_voxel_size=-0.1,
+            device=device,
+        )
+
+
 # Register tests for CUDA devices
 devices = get_cuda_test_devices()
 add_function_test(TestTextureSDF, "test_texture_sdf_construction", test_texture_sdf_construction, devices=devices)
@@ -1187,6 +1417,9 @@ add_function_test(
     TestTextureSDF, "test_texture_sdf_isomesh_extraction", test_texture_sdf_isomesh_extraction, devices=devices
 )
 add_function_test(
+    TestTextureSDF, "test_texture_sdf_isomesh_with_isovalue", test_texture_sdf_isomesh_with_isovalue, devices=devices
+)
+add_function_test(
     TestTextureSDF,
     "test_block_coords_from_subgrid_required",
     test_block_coords_from_subgrid_required,
@@ -1202,6 +1435,30 @@ add_function_test(
 )
 add_function_test(
     TestTextureSDF, "test_build_sdf_texture_format_parameter", test_build_sdf_texture_format_parameter, devices=devices
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_target_voxel_size_scales",
+    test_texture_sdf_target_voxel_size_scales,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_target_voxel_size_takes_precedence",
+    test_texture_sdf_target_voxel_size_takes_precedence,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_mesh_build_sdf_target_voxel_size_propagates_to_texture",
+    test_mesh_build_sdf_target_voxel_size_propagates_to_texture,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_create_texture_sdf_from_mesh_validates_target_voxel_size",
+    test_create_texture_sdf_from_mesh_validates_target_voxel_size,
+    devices=devices,
 )
 add_function_test(
     TestTextureSDF,

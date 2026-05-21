@@ -102,7 +102,7 @@ Supported Features
      - 🟨 :ref:`limited joint support <Joint feature support>`
      - ✅
      - ✅
-     - ❌
+     - ✅
      - ❌
    * - :class:`~newton.solvers.SolverXPBD`
      - Implicit
@@ -360,7 +360,7 @@ control, or model arrays. In practice, this starts by calling
     import newton
 
     @wp.kernel
-    def loss_kernel(particle_q: wp.array(dtype=wp.vec3), target: wp.vec3, loss: wp.array(dtype=float)):
+    def loss_kernel(particle_q: wp.array[wp.vec3], target: wp.vec3, loss: wp.array[float]):
         delta = particle_q[0] - target
         loss[0] = wp.dot(delta, delta)
 
@@ -370,8 +370,8 @@ control, or model arrays. In practice, this starts by calling
     model = builder.finalize(requires_grad=True)
     solver = newton.solvers.SolverSemiImplicit(model)
 
-    state_in = model.state()
-    state_out = model.state()
+    state_in = model.state(requires_grad=True)
+    state_out = model.state(requires_grad=True)
     control = model.control()
     loss = wp.zeros(1, dtype=float, requires_grad=True)
     target = wp.vec3(0.25, 0.0, 0.0)

@@ -4,11 +4,13 @@
 newton
 ======
 
+.. py:module:: newton
 .. currentmodule:: newton
 
 .. toctree::
    :hidden:
 
+   newton_actuators
    newton_geometry
    newton_ik
    newton_math
@@ -21,6 +23,7 @@ newton
 
 .. rubric:: Submodules
 
+- :doc:`newton.actuators <newton_actuators>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
 - :doc:`newton.math <newton_math>`
@@ -79,4 +82,4 @@ newton
    * - ``MAXVAL``
      - ``10000000000.0``
    * - ``__version__``
-     - ``1.1.0.dev0``
+     - ``1.3.0.dev0``

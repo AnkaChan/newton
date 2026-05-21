@@ -37,13 +37,13 @@ def compute_neo_hookean_energy_and_force_and_hessian(
     # inputs
     tet_id: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     # outputs: particle force and hessian
-    particle_forces: wp.array(dtype=wp.vec3),
-    particle_hessians: wp.array(dtype=wp.mat33),
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
 ):
     v_order = wp.tid()
     f, h = evaluate_volumetric_neo_hookean_force_and_hessian(
@@ -69,13 +69,13 @@ def compute_neo_hookean_energy_and_force(
     # inputs
     tet_id: int,
     dt: float,
-    pos: wp.array(dtype=wp.vec3),
-    tet_indices: wp.array(dtype=wp.int32, ndim=2),
-    tet_poses: wp.array(dtype=wp.mat33),
-    tet_materials: wp.array(dtype=float, ndim=2),
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     # outputs: particle force and hessian
-    tet_energy: wp.array(dtype=float),
-    particle_forces: wp.array(dtype=float),
+    tet_energy: wp.array[float],
+    particle_forces: wp.array[float],
 ):
     v0_idx = tet_indices[tet_id, 0]
     v1_idx = tet_indices[tet_id, 1]
@@ -100,13 +100,19 @@ def compute_neo_hookean_energy_and_force(
 
     F = Ds * Dm_inv
 
-    # Guard against division by zero in lambda (Lamé's first parameter)
-    lmbd_safe = wp.sign(lmbd) * wp.max(wp.abs(lmbd), 1e-6)
-    a = 1.0 + mu / lmbd_safe
+    # Convert Lamé parameters to stable Neo-Hookean parameters per Smith et al.
+    # 2018, §3.4 (eq. 13): the symbols (mu, lambda) appearing in the NH energy
+    # are not directly the Lamé parameters; matching the small-strain limit
+    # gives mu_NH = mu_Lamé, lambda_NH = lambda_Lamé + mu_Lamé.
+    mu_nh = mu
+    lmbd_nh = lmbd + mu
+    # Guard against division by zero in lambda_NH
+    lmbd_safe = wp.sign(lmbd_nh) * wp.max(wp.abs(lmbd_nh), 1e-6)
+    a = 1.0 + mu_nh / lmbd_safe
 
     det_F = wp.determinant(F)
 
-    E = rest_volume * 0.5 * (mu * (wp.trace(F * wp.transpose(F)) - 3.0) + lmbd * (det_F - a) * (det_F - a))
+    E = rest_volume * 0.5 * (mu_nh * (wp.trace(F * wp.transpose(F)) - 3.0) + lmbd_nh * (det_F - a) * (det_F - a))
     tet_energy[tet_id] = E
 
     F1_1 = F[0, 0]
@@ -144,8 +150,8 @@ def compute_neo_hookean_energy_and_force(
     )
 
     k = det_F - a
-    dPhi_D_dF = dPhi_D_dF * mu
-    dPhi_H_dF = ddetF_dF * lmbd * k
+    dPhi_D_dF = dPhi_D_dF * mu_nh
+    dPhi_H_dF = ddetF_dF * lmbd_nh * k
 
     dE_dF = (dPhi_D_dF + dPhi_H_dF) * rest_volume
 
@@ -498,8 +504,18 @@ def test_tet_energy(test, device):
         test.assertTrue(force_comparison.all())
 
         for i in range(4):
+            # The analytical Hessian drops the s * d^2 J / dF^2 term (zero per-vertex
+            # contribution by the Levi-Civita / m x m = 0 identity). The autodiff
+            # path computes it explicitly and only cancels at fp32 precision, so the
+            # residual scales with the magnitude of the analytical Hessian itself.
+            ref = max(np.max(np.abs(particle_hessian_analytical[i])), 1.0)
             test.assertTrue(
-                np.isclose(particle_hessian_auto_diff[i], particle_hessian_analytical[i], rtol=1.0e-2, atol=0.1).all()
+                np.isclose(
+                    particle_hessian_auto_diff[i],
+                    particle_hessian_analytical[i],
+                    rtol=1.0e-2,
+                    atol=1.0e-3 * ref,
+                ).all()
             )
 
 
