@@ -70,7 +70,7 @@ PARAMS = {
     # ── PD drive gains ─────────────────────────────────────────────────
     "gantry_drive_ke": 5.0e4,
     "gantry_drive_kd": 5.0e3,
-    "finger_drive_ke": 1.0e3,
+    "finger_drive_ke": 1.0e5,
     "finger_drive_kd": 1.0e2,
     # ── gantry carrier link mass ───────────────────────────────────────
     "gantry_link_mass": 0.01,
