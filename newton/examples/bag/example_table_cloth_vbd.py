@@ -43,6 +43,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import warp as wp
@@ -109,9 +110,9 @@ _PILE_MU = 0.95  # USD material's static/dynamic friction
 # Single-hull approximation lives inside the cloth's hollow. The hull is
 # centroid-shrunk until ``shrink_pile_hull_clear_of_cloth`` reports no
 # overlap with the cloth surface; the helper binary-searches in
-# ``[_PILE_SHRINK_MIN, 1.0]`` and uses ppfcs's intersection checker for
-# the test so the same hull is also a valid pinned-shell collider for the
-# PPFCS variant.
+# ``[_PILE_SHRINK_MIN, 1.0]`` and uses ppfcs's intersection checker when
+# available so the same hull is also a valid pinned-shell collider for
+# the PPFCS variant.
 _PILE_SHRINK_MIN = 0.30
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -120,17 +121,10 @@ _PILE_SHRINK_MIN = 0.30
 _TRI_KE = 1.0e3
 _TRI_KA = 1.0e3
 _TRI_KD = 1.0e-3
-# Bending stiffness paired with the flat-rest override below: every cloth
-# edge has its rest dihedral re-zeroed after ``add_cloth_mesh``, so the
-# folded USD mesh carries elastic bending energy that drives the cloth to
-# relax open under gravity / hand contact (real tablecloth behaviour). With
-# rest=0 a stiff edge_ke makes the folds explode open on frame 0; at
-# ``_EDGE_KE = 1.0`` the unfolding was vigorous enough that the pile slipped
-# out of the cloth's hollow before the surfaces could drape over it. The
-# weaker spring + boosted damper here gives the cloth a gentle restoration
-# toward flat that lingers in contact with the pile and the hands instead
-# of snapping past them.
-_EDGE_KE = 0.3
+# Bending stiffness for the folded USD rest pose. ``add_cloth_mesh`` stores
+# each edge's rest dihedral from the input geometry, so the cloth starts with
+# little bending energy and should not try to flatten itself around the pile.
+_EDGE_KE = 0.05
 _EDGE_KD = 1.0e-1
 # Total cloth mass [kg]. The areal density passed to ``add_cloth_mesh``
 # is derived from this at runtime as ``mass / Σ triangle_area`` — the
@@ -155,11 +149,11 @@ _SOFT_CONTACT_MARGIN = 1.0e-2
 
 _SOFT_CONTACT_KE = 1.0e4
 _SOFT_CONTACT_KD = 1.0e-1
-_SOFT_CONTACT_MU = 0.5
+_SOFT_CONTACT_MU = 1.0
 
 _SHAPE_KE = 1.0e5
 _SHAPE_KD = 1.0e0
-_SHAPE_MU = 0.5
+_SHAPE_MU = 1.0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Solver
@@ -172,6 +166,29 @@ _FPS = 30
 _SIM_SUBSTEPS = 40
 _VBD_ITERS = 10
 
+# The rigid pile keeps a few folded cloth layers in persistent contact. A
+# light frame-level velocity damping term removes the resulting AVBD/VBD
+# contact jitter while preserving the no-pile settling behavior.
+_CLOTH_FRAME_VELOCITY_DAMPING = 0.65
+
+
+def _default_ppfcs_dir() -> Path | None:
+    """Return the repo-local ppf-contact-solver checkout when present."""
+    ppfcs_dir = Path(__file__).resolve().parents[3] / "ppf-contact-solver"
+    return ppfcs_dir if ppfcs_dir.is_dir() else None
+
+
+@wp.kernel
+def _damp_particle_velocities(
+    particle_qd: wp.array(dtype=wp.vec3),
+    start: int,
+    end: int,
+    damping: float,
+):
+    i = wp.tid() + start
+    if i < end:
+        particle_qd[i] = particle_qd[i] * damping
+
 
 class Example:
     """Drop a tablecloth onto a table next to a kinematic Unitree G1.
@@ -181,6 +198,8 @@ class Example:
     are integrated by :class:`newton.solvers.SolverVBD` and contact the
     table box and ground plane through the soft-contact pipeline.
     """
+
+    _log_prefix = "[table_cloth_vbd]"
 
     def __init__(
         self,
@@ -296,7 +315,7 @@ class Example:
                 builder.add_shape_mesh(body=b, mesh=mesh, cfg=robot_col_cfg)
             n_robot_colliders += 1
         print(
-            f"[table_cloth_vbd] Added {n_robot_colliders} G1 link colliders from USD "
+            f"{self._log_prefix} Added {n_robot_colliders} G1 link colliders from USD "
             f"(``physics:approximation`` + ``<link>/collisions`` meshes)"
         )
 
@@ -307,7 +326,7 @@ class Example:
         self._il_to_newton_qs = tc.build_il_to_newton_qs(builder)
         _missing = [tc.IL_JOINT_NAMES[i] for i, qs in enumerate(self._il_to_newton_qs) if qs is None]
         if _missing:
-            print(f"[table_cloth_vbd] WARNING: IL joints not found in Newton model: {_missing}")
+            print(f"{self._log_prefix} WARNING: IL joints not found in Newton model: {_missing}")
 
         # ── Cloth from assets/cloth/Cloth_fold10.usd ────────────────────────
         # The cloth USD also carries the rigid pile (Cloth_In002), so we open
@@ -322,7 +341,6 @@ class Example:
         vertices = [wp.vec3(float(v[0]), float(v[1]), float(v[2])) for v in cloth_mesh.vertices]
         indices = list(map(int, cloth_mesh.indices))
         self._cloth_indices_np = np.array(indices, dtype=np.int32)
-        cloth_edge_start = len(builder.edge_rest_angle)
         # Areal density (kg/m^2) derived from the target total mass and the
         # folded mesh's triangle-area sum. ``add_cloth_mesh`` distributes
         # ``density * area`` to each particle (1/3 per triangle corner),
@@ -348,21 +366,12 @@ class Example:
             edge_ke=_EDGE_KE,
             edge_kd=_EDGE_KD,
             particle_radius=_PARTICLE_RADIUS,
+            **self._cloth_mesh_solver_kwargs(),
         )
         print(
-            f"[table_cloth_vbd] Cloth mass {_CLOTH_MASS * 1000:.1f} g "
+            f"{self._log_prefix} Cloth mass {_CLOTH_MASS * 1000:.1f} g "
             f"(area {cloth_area:.3f} m^2, density {cloth_density:.3f} kg/m^2)"
         )
-        # Override the per-edge bending rest angles to 0 (flat). By
-        # default ``add_cloth_mesh`` reads the rest dihedral from the
-        # input geometry, so the folded USD mesh would have *zero*
-        # stored bending energy — the cloth would not want to unfold
-        # at all. A real tablecloth's natural rest is flat; using 0
-        # everywhere gives the folded shape the elastic energy it
-        # needs to relax open under gravity and hand contact, mirroring
-        # the ``bend-rest-from-geometry`` removal in the PPFCS variant.
-        for e in range(cloth_edge_start, len(builder.edge_rest_angle)):
-            builder.edge_rest_angle[e] = 0.0
         self._cloth_particle_end = builder.particle_count
 
         # ── Rigid "cloth pile" (Cloth_In002) ────────────────────────────────
@@ -445,20 +454,20 @@ class Example:
                 np.asarray(vertices, dtype=np.float64).reshape(-1, 3) @ R_cloth.T + T_cloth
             )
             cloth_F_np = self._cloth_indices_np.reshape(-1, 3)
-            # Default to the SciPy half-space inside-hull test (the
-            # helper's no-ppfcs path) — orders of magnitude faster
-            # than ppf-contact-solver's tri-tri checker, and the
-            # cloth has 2.5 k verts so it's a dense enough sample
-            # of the surface. VBD penalty-resolves any sub-mm
-            # residual overlap that the conservative test misses.
-            V_pile_world_shrunk, _shrink_s = tc.shrink_pile_hull_clear_of_cloth(
-                V_pile_world,
-                V_cloth_world,
-                cloth_F_np,
-                s_min=_PILE_SHRINK_MIN,
-                ppfcs_dir=None,
+            # Use the same ppf-contact-solver intersection checker as
+            # ``example_table_cloth_ppfcs`` when the repo-local checkout
+            # is available. If it is absent or cannot be imported, the
+            # shared helper falls back to its SciPy half-space test.
+            V_pile_world_shrunk, _shrink_s = (
+                tc.shrink_pile_hull_clear_of_cloth(
+                    V_pile_world,
+                    V_cloth_world,
+                    cloth_F_np,
+                    s_min=_PILE_SHRINK_MIN,
+                    ppfcs_dir=_default_ppfcs_dir(),
+                )
             )
-            print(f"[table_cloth_vbd] Pile hull shrunk to s={_shrink_s:.3f} of original size")
+            print(f"{self._log_prefix} Pile hull shrunk to s={_shrink_s:.3f} of original size")
             # Back to body-local for ``add_shape_convex_hull``.
             V_pile_body = (V_pile_world_shrunk - T_pile) @ R_pile
 
@@ -479,7 +488,7 @@ class Example:
             V_pile_body_hull = V_pile_body[_used]
             F_pile_body_hull = _remap[_h.simplices].astype(np.int32)
             print(
-                f"[table_cloth_vbd] Pile hull compacted to {len(V_pile_body_hull)} verts "
+                f"{self._log_prefix} Pile hull compacted to {len(V_pile_body_hull)} verts "
                 f"(from {len(V_pile_body)} input points)"
             )
             rigid_col_cfg = newton.ModelBuilder.ShapeConfig(
@@ -563,9 +572,7 @@ class Example:
         )
         builder.add_ground_plane(cfg=ground_cfg)
 
-        # VBD needs color groups for both particles (cloth) and rigid bodies
-        # (the pile). ``include_bending`` adds bending-edge coloring for cloth.
-        builder.color(include_bending=True)
+        self._finalize_builder_for_solver(builder)
 
         self.model = builder.finalize()
 
@@ -603,39 +610,7 @@ class Example:
         wp.copy(self.state_1.body_q, self.state_0.body_q)
         wp.copy(self.model.body_q, self.state_0.body_q)
 
-        # ── VBD solver ──────────────────────────────────────────────────────
-        # ``integrate_with_external_rigid_solver=False`` lets AVBD inside VBD
-        # integrate the dynamic cloth-pile body. The G1 bodies stay put
-        # because their inverse masses were zeroed above (kinematic).
-        # ``particle_rest_shape_contact_exclusion_radius`` filters out the
-        # self-contact pairs that start within 8 mm in the rest state — without
-        # this the folded cloth's overlapping layers freeze the sheet in place.
-        #
-        # Tuning for the compound (~40-hull) cloth-pile collider:
-        #   - ``rigid_body_particle_contact_buffer_size`` is per-body and
-        #     defaults to 256; many hulls x cloth particles can blow past
-        #     that, silently dropping contacts. We raise it to 2048.
-        #   - ``rigid_avbd_beta`` is the penalty ramp rate. AVBD is designed
-        #     around a low ``rigid_contact_k_start`` and lets the penalty
-        #     adapt. With many sibling-hull contacts all ramping
-        #     independently the effective stiffness can explode; we lower
-        #     beta to slow that.
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=_VBD_ITERS,
-            integrate_with_external_rigid_solver=False,
-            particle_enable_self_contact=True,
-            particle_self_contact_radius=_SELF_CONTACT_RADIUS,
-            particle_self_contact_margin=_SELF_CONTACT_MARGIN,
-            particle_rest_shape_contact_exclusion_radius=_REST_EXCLUSION_RADIUS,
-            particle_topological_contact_filter_threshold=1,
-            particle_vertex_contact_buffer_size=16,
-            particle_edge_contact_buffer_size=20,
-            particle_collision_detection_interval=-1,
-            rigid_contact_k_start=1.0e5,
-            rigid_avbd_beta=1.0e3,
-            rigid_body_particle_contact_buffer_size=2048,
-        )
+        self.solver = self._create_solver()
 
         # ── Collision pipeline ──────────────────────────────────────────────
         # broad_phase="nxn" is required for particle-rigid-body contact.
@@ -675,6 +650,37 @@ class Example:
 
         if self.save_mp4:
             self._init_video_capture()
+
+    def _cloth_mesh_solver_kwargs(self):
+        return {}
+
+    def _finalize_builder_for_solver(self, builder):
+        # VBD needs color groups for both particles (cloth) and rigid bodies
+        # (the pile). ``include_bending`` adds bending-edge coloring for cloth.
+        builder.color(include_bending=True)
+
+    def _create_solver(self):
+        # ``integrate_with_external_rigid_solver=False`` lets AVBD inside VBD
+        # integrate the dynamic cloth-pile body. The G1 bodies stay put
+        # because their inverse masses were zeroed above (kinematic).
+        # ``particle_rest_shape_contact_exclusion_radius`` filters out the
+        # self-contact pairs that start within 8 mm in the rest state.
+        return newton.solvers.SolverVBD(
+            self.model,
+            iterations=_VBD_ITERS,
+            integrate_with_external_rigid_solver=False,
+            particle_enable_self_contact=True,
+            particle_self_contact_radius=_SELF_CONTACT_RADIUS,
+            particle_self_contact_margin=_SELF_CONTACT_MARGIN,
+            particle_rest_shape_contact_exclusion_radius=_REST_EXCLUSION_RADIUS,
+            particle_topological_contact_filter_threshold=1,
+            particle_vertex_contact_buffer_size=16,
+            particle_edge_contact_buffer_size=20,
+            particle_collision_detection_interval=-1,
+            rigid_contact_k_start=1.0e5,
+            rigid_avbd_beta=1.0e3,
+            rigid_body_particle_contact_buffer_size=2048,
+        )
 
     def capture(self):
         if wp.get_device().is_cuda:
@@ -717,6 +723,22 @@ class Example:
                 self.sim_dt,
             )
             self.state_0, self.state_1 = self.state_1, self.state_0
+
+        self._damp_cloth_velocities()
+
+    def _damp_cloth_velocities(self):
+        if _CLOTH_FRAME_VELOCITY_DAMPING >= 1.0:
+            return
+        wp.launch(
+            _damp_particle_velocities,
+            dim=self._cloth_particle_end - self._cloth_particle_start,
+            inputs=[
+                self.state_0.particle_qd,
+                self._cloth_particle_start,
+                self._cloth_particle_end,
+                _CLOTH_FRAME_VELOCITY_DAMPING,
+            ],
+        )
 
     def step(self):
         if self.capture_done:
@@ -815,7 +837,7 @@ class Example:
         """
         replay = tc.load_replay()
         if replay is None:
-            print("[table_cloth_vbd] G1 will hold its initial pose (no replay).")
+            print(f"{self._log_prefix} G1 will hold its initial pose (no replay).")
             return
         jq = replay["joint_position"]
         cp = replay["nodal_position"]
@@ -823,7 +845,7 @@ class Example:
         self._replay_cloth_pos = cp
         self._replay_total_frames = replay["n_frames"]
         print(
-            f"[table_cloth_vbd] Loaded {self._replay_total_frames} replay frames "
+            f"{self._log_prefix} Loaded {self._replay_total_frames} replay frames "
             f"(G1 dim={jq.shape[1]}, cloth nodes={cp.shape[1]})"
         )
         # Sanity check that the recorded cloth has the same particle count as
@@ -832,7 +854,7 @@ class Example:
         ours = self._cloth_particle_end - self._cloth_particle_start
         if ours != cp.shape[1]:
             print(
-                f"[table_cloth_vbd] WARNING: our cloth has {ours} particles but the "
+                f"{self._log_prefix} WARNING: our cloth has {ours} particles but the "
                 f"recording has {cp.shape[1]}. Per-particle metric will be skipped."
             )
             self._replay_cloth_pos = None
@@ -868,7 +890,7 @@ class Example:
         """
         self._replay_slot_qs = tc.jp_slot_to_newton_qs(self._il_to_newton_qs)
         print(
-            f"[table_cloth_vbd] Replay slot map: {len(self._replay_slot_qs)}/"
+            f"{self._log_prefix} Replay slot map: {len(self._replay_slot_qs)}/"
             f"{len(tc.JP_SLOT_TO_NAME)} jp slots mapped to Newton joint_q"
         )
 
