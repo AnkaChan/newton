@@ -128,6 +128,8 @@ PARAMS = {
     "franka_scale": 1.0,
     "franka_enable_self_collisions": False,
     "franka_parse_visuals_as_colliders": True,
+    "franka_zero_mass_body_mass": 0.05,
+    "franka_zero_mass_body_inertia": 1.0e-4,
     "franka_init_q": (-3.6802e-03, 2.3902e-02, 3.6804e-03, -2.3683, -1.2919e-04, 2.3922, 7.8549e-01),
     "arm_joint_count": 7,
     "left_finger_body_suffix": "fr3_leftfinger",
@@ -163,6 +165,7 @@ PARAMS = {
     "pregrasp_ik_iterations": 48,
     "enable_ik_cuda_graph": True,
     "gripper_gap_test_tolerance": 1.0e-8,
+    "hand_lift_test_min_z": 0.55,
 }
 
 
@@ -441,21 +444,9 @@ class Example:
         self.model.soft_contact_kd = self.params["soft_contact_kd"]
         self.model.soft_contact_mu = self.params["soft_contact_mu"]
 
+        self._regularize_robot_zero_mass_bodies()
         self._configure_robot_contacts()
         self._configure_joint_drives()
-
-        self.solver = newton.solvers.SolverVBD(
-            model=self.model,
-            iterations=self.params["solver_iterations"],
-            integrate_with_external_rigid_solver=self.params["integrate_with_external_rigid_solver"],
-            rigid_body_particle_contact_buffer_size=self.params["rigid_body_particle_contact_buffer_size"],
-            rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
-            particle_enable_self_contact=self.params["particle_enable_self_contact"],
-            particle_self_contact_radius=self.params["particle_self_contact_radius"],
-            particle_self_contact_margin=self.params["particle_self_contact_margin"],
-            particle_topological_contact_filter_threshold=self.params["particle_topological_contact_filter_threshold"],
-            rigid_contact_hard=self.params["rigid_contact_hard"],
-        )
 
         self.pipeline = newton.CollisionPipeline(
             self.model,
@@ -476,6 +467,19 @@ class Example:
         self._setup_ik()
         self._initialize_robot_pregrasp()
 
+        self.solver = newton.solvers.SolverVBD(
+            model=self.model,
+            iterations=self.params["solver_iterations"],
+            integrate_with_external_rigid_solver=self.params["integrate_with_external_rigid_solver"],
+            rigid_body_particle_contact_buffer_size=self.params["rigid_body_particle_contact_buffer_size"],
+            rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
+            particle_enable_self_contact=self.params["particle_enable_self_contact"],
+            particle_self_contact_radius=self.params["particle_self_contact_radius"],
+            particle_self_contact_margin=self.params["particle_self_contact_margin"],
+            particle_topological_contact_filter_threshold=self.params["particle_topological_contact_filter_threshold"],
+            rigid_contact_hard=self.params["rigid_contact_hard"],
+        )
+
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = self.params["draw_wireframe"]
@@ -489,6 +493,35 @@ class Example:
             )
         if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
             self.viewer.camera.fov = self.params["camera_fov"]
+
+    def _regularize_robot_zero_mass_bodies(self):
+        body_mass = self.model.body_mass.numpy().copy()
+        zero_mass_indices = [
+            i
+            for i, label in enumerate(self.model.body_label[: self._robot_body_count])
+            if body_mass[i] == 0.0 and not label.endswith("/base")
+        ]
+        if not zero_mass_indices:
+            return
+
+        mass = self.params["franka_zero_mass_body_mass"]
+        inertia = self.params["franka_zero_mass_body_inertia"]
+        body_inv_mass = self.model.body_inv_mass.numpy().copy()
+        body_inertia = self.model.body_inertia.numpy().copy()
+        body_inv_inertia = self.model.body_inv_inertia.numpy().copy()
+        inertia_matrix = np.eye(3, dtype=np.float32) * inertia
+        inv_inertia_matrix = np.eye(3, dtype=np.float32) / inertia
+
+        for body_index in zero_mass_indices:
+            body_mass[body_index] = mass
+            body_inv_mass[body_index] = 1.0 / mass
+            body_inertia[body_index] = inertia_matrix
+            body_inv_inertia[body_index] = inv_inertia_matrix
+
+        self.model.body_mass = wp.array(body_mass, dtype=float, device=self.model.device)
+        self.model.body_inv_mass = wp.array(body_inv_mass, dtype=float, device=self.model.device)
+        self.model.body_inertia = wp.array(body_inertia, dtype=wp.mat33, device=self.model.device)
+        self.model.body_inv_inertia = wp.array(body_inv_inertia, dtype=wp.mat33, device=self.model.device)
 
     def _add_robot(self, builder):
         asset_path = newton.utils.download_asset(self.params["franka_asset_name"])
@@ -772,14 +805,12 @@ class Example:
         min_particle_z = float(np.min(particle_q[:, self.params["vertical_axis"]]))
         ground_tolerance = self.params["particle_radius"] * self.params["ground_tolerance_particle_radius_scale"]
         assert min_particle_z > -ground_tolerance, f"Bag penetrated below ground: z={min_particle_z:.4f}"
-        open_gap = self._gripper_joint_value(self.params["gripper_open_frac"]) * len(
-            self.params["gripper_joint_indices"]
-        )
-        closed_gap = self._gripper_joint_value(self.params["gripper_closed_frac"]) * len(
-            self.params["gripper_joint_indices"]
-        )
-        assert abs(open_gap - self.params["gripper_open_gap"]) < self.params["gripper_gap_test_tolerance"]
-        assert abs(closed_gap - self.params["gripper_closed_gap"]) < self.params["gripper_gap_test_tolerance"]
+        open_joint_value = self._gripper_joint_value(self.params["gripper_open_frac"])
+        closed_joint_value = self._gripper_joint_value(self.params["gripper_closed_frac"])
+        assert abs(open_joint_value - self.params["gripper_open_gap"]) < self.params["gripper_gap_test_tolerance"]
+        assert abs(closed_joint_value - self.params["gripper_closed_gap"]) < self.params["gripper_gap_test_tolerance"]
+        hand_z = float(self.state_0.body_q.numpy()[self._hand_body][self.params["vertical_axis"]])
+        assert hand_z > self.params["hand_lift_test_min_z"], f"Franka hand did not lift: z={hand_z:.4f}"
 
     @staticmethod
     def create_parser():

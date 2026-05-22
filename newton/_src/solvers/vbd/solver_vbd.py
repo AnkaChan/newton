@@ -450,8 +450,9 @@ class SolverVBD(SolverBase):
         particle_external_edge_contact_filtering_map: dict | None,
     ):
         """Initialize particle-specific data structures and settings."""
-        # Early exit if no particles
+        # Early exit if no particles, but keep attribute defaults available.
         if model.particle_count == 0:
+            self.particle_enable_self_contact = False
             return
 
         self.particle_collision_detection_interval = particle_collision_detection_interval
