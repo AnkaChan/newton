@@ -33,8 +33,7 @@ from pxr import Usd, UsdGeom
 import newton
 import newton.examples
 
-# BAG_MESH_PATH = r"C:\Code\Graphics\warp-dev-demos\Newton-Debug\BagSim\sim_mesh_lift_old_default_f1320.obj"
-BAG_MESH_PATH = r"C:\Code\Graphics\warp-dev-demos\Newton-Debug\BagSim\sim_mesh_lift_old_default_f1320.obj"
+BAG_MESH_PATH = os.path.join(os.path.dirname(__file__), "sim_mesh_lift_old_default_f1320.usda")
 
 PARAMS = {
     "shape_names": [
@@ -67,7 +66,7 @@ PARAMS = {
     "cloth_tri_ka": 2e4,
     "cloth_tri_kd": 1e2,
     "cloth_edge_ke": 200.0,
-    "cloth_edge_kd": 0.1,
+    "cloth_edge_kd": 0.01,
     "shape_density": 1000.0,
     "shape_ke": 5.0e5,
     "shape_kd": 5.0e1,
@@ -231,33 +230,39 @@ def _generate_box_bag(half_x, half_y, height, res, z_base):
     return np.array(vertices, dtype=np.float32), faces
 
 
-def _load_obj_bag(mesh_path, half_x, half_y, height, z_base):
-    """Load an OBJ bag mesh and fit its bounding box to the existing bag dimensions."""
-    vertices = []
+def _load_usda_bag(mesh_path, half_x, half_y, height, z_base):
+    """Load a USDA bag mesh and fit its bounding box to the existing bag dimensions."""
+    stage = Usd.Stage.Open(mesh_path)
+    if stage is None:
+        raise FileNotFoundError(f"Bag mesh USDA not found: {mesh_path}")
+
+    prim = stage.GetPrimAtPath("/root/bag/bag")
+    if not prim.IsValid():
+        raise ValueError(f"Bag mesh USDA has no /root/bag/bag mesh: {mesh_path}")
+
+    mesh = UsdGeom.Mesh(prim)
+    vertices = np.array(mesh.GetPointsAttr().Get(), dtype=np.float32)
+    face_counts = np.array(mesh.GetFaceVertexCountsAttr().Get(), dtype=np.int32)
+    face_indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
     faces = []
 
-    with open(mesh_path, encoding="utf-8") as obj_file:
-        for line in obj_file:
-            if line.startswith("v "):
-                vertices.append([float(value) for value in line.split()[1:4]])
-            elif line.startswith("f "):
-                face = []
-                for token in line.split()[1:]:
-                    raw_index = int(token.split("/")[0])
-                    face.append(len(vertices) + raw_index if raw_index < 0 else raw_index - 1)
-                for i in range(1, len(face) - 1):
-                    faces.extend([face[0], face[i], face[i + 1]])
+    index_offset = 0
+    for count in face_counts:
+        face = face_indices[index_offset : index_offset + count]
+        index_offset += count
+        for i in range(1, count - 1):
+            faces.extend([int(face[0]), int(face[i]), int(face[i + 1])])
 
-    if not vertices:
-        raise ValueError(f"Bag mesh OBJ has no vertices: {mesh_path}")
+    if vertices.size == 0:
+        raise ValueError(f"Bag mesh USDA has no vertices: {mesh_path}")
     if not faces:
-        raise ValueError(f"Bag mesh OBJ has no faces: {mesh_path}")
+        raise ValueError(f"Bag mesh USDA has no faces: {mesh_path}")
 
-    bag_verts = np.array(vertices, dtype=np.float32)
+    bag_verts = vertices
     source_min = bag_verts.min(axis=0)
     source_extent = bag_verts.max(axis=0) - source_min
     if np.any(source_extent <= 0.0):
-        raise ValueError(f"Bag mesh OBJ has non-positive extent: {source_extent}")
+        raise ValueError(f"Bag mesh USDA has non-positive extent: {source_extent}")
 
     target_min = np.array([-half_x, -half_y, z_base], dtype=np.float32)
     target_extent = np.array([2.0 * half_x, 2.0 * half_y, height], dtype=np.float32)
@@ -332,7 +337,7 @@ def build_model(builder, params, seed=42):
         label=params["ground_label"],
     )
 
-    bag_verts, bag_faces = _load_obj_bag(
+    bag_verts, bag_faces = _load_usda_bag(
         BAG_MESH_PATH,
         params["bag_size_x"] / 2,
         params["bag_size_y"] / 2,

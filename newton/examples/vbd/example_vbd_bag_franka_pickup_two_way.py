@@ -64,7 +64,7 @@ PARAMS = {
     "cloth_tri_ka": 2e4,
     "cloth_tri_kd": 1e2,
     "cloth_edge_ke": 200.0,
-    "cloth_edge_kd": 2e-1,
+    "cloth_edge_kd": 2e-2,
     "shape_density": 1000.0,
     "shape_ke": 5.0e5,
     "shape_kd": 5.0e1,
