@@ -52,12 +52,12 @@ PARAMS = {
     "particle_radius": 0.004,
     "fps": 60,
     "settle_frames": 420,
-    "sim_substeps": 20,
-    "solver_iterations": 5,
+    "sim_substeps": 10,
+    "solver_iterations": 10,
     "cloth_density": 0.08,
     "cloth_tri_ke": 5e4,
     "cloth_tri_ka": 1e4,
-    "cloth_tri_kd": 1e1,
+    "cloth_tri_kd": 1e2,
     "cloth_edge_ke": 200.0,
     "cloth_edge_kd": 2e-1,
     "shape_density": 1000.0,
@@ -69,7 +69,7 @@ PARAMS = {
     "ground_mu": 0.9,
     "soft_contact_ke": 5.0e5,
     "soft_contact_kd": 1.0e1,
-    "soft_contact_mu": 0.5,
+    "soft_contact_mu": 1.0,
     "gravity": -9.8,
     "initial_paused": False,
     "initial_sim_time": 0.0,
@@ -91,7 +91,7 @@ PARAMS = {
     "particle_self_contact_radius": 0.005,
     "particle_self_contact_margin": 0.01,
     "particle_topological_contact_filter_threshold": 3,
-    "rigid_contact_hard": False,
+    "rigid_contact_hard": True,
     "collision_broad_phase": "nxn",
     "ground_body": -1,
     "ground_center_xy": (0.0, 0.0),
@@ -109,7 +109,7 @@ PARAMS = {
     "finger_shape_mu": 1.0,
     "finger_shape_ke": 1.0e6,
     "finger_shape_kd": 1.0e1,
-    "finger_pad_density": 1.0,
+    "finger_pad_density": 1000.0,
     "finger_pad_half_width_scale": 0.5,
     "finger_pad_half_thickness": 0.0075,
     "finger_pad_half_height": 0.026,
@@ -117,7 +117,7 @@ PARAMS = {
     "finger_pad_left_label": "left_finger_bag_pad",
     "finger_pad_right_label": "right_finger_bag_pad",
     "gripper_open_gap": 0.08,
-    "gripper_closed_gap": 0.003,
+    "gripper_closed_gap": 0.001,
     "gripper_open_frac": 0.0,
     "gripper_closed_frac": 1.0,
     "gripper_joint_indices": (7, 8),
@@ -137,10 +137,10 @@ PARAMS = {
     "hand_body_suffix": "fr3_hand",
     "mesh_approximation_method": "convex_hull",
     "keep_visual_shapes": True,
-    "arm_drive_ke": (4500.0, 4500.0, 3500.0, 3500.0, 2000.0, 2000.0, 2000.0),
-    "arm_drive_kd": (450.0, 450.0, 350.0, 350.0, 200.0, 200.0, 200.0),
-    "gripper_drive_ke": 100.0,
-    "gripper_drive_kd": 10.0,
+    "arm_drive_ke": (1.0e6, 1.0e6, 8.0e5, 8.0e5, 6.0e5, 6.0e5, 6.0e5),
+    "arm_drive_kd": (1.0e5, 1.0e5, 8.0e4, 8.0e4, 6.0e4, 6.0e4, 6.0e4),
+    "gripper_drive_ke": 1.0e6,
+    "gripper_drive_kd": 1.0e5,
     "ee_link_offset": (0.0, 0.0, 0.0),
     "grasp_xy": (0.0, 0.0),
     "grab_clearance": 0.09,
@@ -165,7 +165,9 @@ PARAMS = {
     "pregrasp_ik_iterations": 48,
     "enable_ik_cuda_graph": True,
     "gripper_gap_test_tolerance": 1.0e-8,
-    "hand_lift_test_min_z": 0.55,
+    "hand_lift_test_min_z": 0.53,
+    "bag_lift_test_min_delta": 0.08,
+    "finger_contact_test_min": 250,
 }
 
 
@@ -445,6 +447,11 @@ class Example:
         self.model.soft_contact_mu = self.params["soft_contact_mu"]
 
         self._regularize_robot_zero_mass_bodies()
+        self._finger_contact_shape_indices = {
+            shape_index
+            for shape_index, body_index in enumerate(self.model.shape_body.numpy())
+            if int(body_index) in self._finger_contact_body_indices
+        }
         self._configure_robot_contacts()
         self._configure_joint_drives()
 
@@ -466,6 +473,7 @@ class Example:
         newton.eval_fk(self._model_single, self._model_single.joint_q, self._model_single.joint_qd, self._state_single)
         self._setup_ik()
         self._initialize_robot_pregrasp()
+        self._initial_bag_top_z = float(np.max(self.state_0.particle_q.numpy()[:, self.params["vertical_axis"]]))
 
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
@@ -811,6 +819,18 @@ class Example:
         assert abs(closed_joint_value - self.params["gripper_closed_gap"]) < self.params["gripper_gap_test_tolerance"]
         hand_z = float(self.state_0.body_q.numpy()[self._hand_body][self.params["vertical_axis"]])
         assert hand_z > self.params["hand_lift_test_min_z"], f"Franka hand did not lift: z={hand_z:.4f}"
+        bag_top_z = float(np.max(particle_q[:, self.params["vertical_axis"]]))
+        bag_lift = bag_top_z - self._initial_bag_top_z
+        assert bag_lift > self.params["bag_lift_test_min_delta"], f"Bag did not lift: dz={bag_lift:.4f}"
+        self.pipeline.collide(self.state_0, self.contacts)
+        contact_count = int(self.contacts.soft_contact_count.numpy()[0])
+        contact_shapes = self.contacts.soft_contact_shape.numpy()[:contact_count]
+        finger_contact_count = sum(
+            1 for shape_index in contact_shapes if int(shape_index) in self._finger_contact_shape_indices
+        )
+        assert finger_contact_count >= self.params["finger_contact_test_min"], (
+            f"Gripper lost pinch contacts: count={finger_contact_count}"
+        )
 
     @staticmethod
     def create_parser():
