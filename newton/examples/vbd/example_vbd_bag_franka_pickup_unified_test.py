@@ -92,6 +92,10 @@ PARAMS = {
     "particle_self_contact_margin": 0.01,
     "particle_topological_contact_filter_threshold": 3,
     "rigid_contact_hard": True,
+    "rigid_joint_linear_ke": 1.0e6,
+    "rigid_joint_angular_ke": 1.0e6,
+    "rigid_joint_linear_kd": 1.0e3,
+    "rigid_joint_angular_kd": 1.0e2,
     "collision_broad_phase": "nxn",
     "ground_body": -1,
     "ground_center_xy": (0.0, 0.0),
@@ -137,7 +141,7 @@ PARAMS = {
     "hand_body_suffix": "fr3_hand",
     "mesh_approximation_method": "convex_hull",
     "keep_visual_shapes": True,
-    "arm_drive_ke": (1.5e6, 1.5e6, 1.2e6, 1.2e6, 9.0e5, 9.0e5, 9.0e5),
+    "arm_drive_ke": (1.0e6, 1.0e6, 8.0e5, 8.0e5, 6.0e5, 6.0e5, 6.0e5),
     "arm_drive_kd": (1.0e5, 1.0e5, 8.0e4, 8.0e4, 6.0e4, 6.0e4, 6.0e4),
     "gripper_drive_ke": 1.0e6,
     "gripper_drive_kd": 1.0e5,
@@ -486,6 +490,10 @@ class Example:
             particle_self_contact_margin=self.params["particle_self_contact_margin"],
             particle_topological_contact_filter_threshold=self.params["particle_topological_contact_filter_threshold"],
             rigid_contact_hard=self.params["rigid_contact_hard"],
+            rigid_joint_linear_ke=self.params["rigid_joint_linear_ke"],
+            rigid_joint_angular_ke=self.params["rigid_joint_angular_ke"],
+            rigid_joint_linear_kd=self.params["rigid_joint_linear_kd"],
+            rigid_joint_angular_kd=self.params["rigid_joint_angular_kd"],
         )
 
         self.viewer.set_model(self.model)
