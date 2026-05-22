@@ -137,7 +137,7 @@ PARAMS = {
     "hand_body_suffix": "fr3_hand",
     "mesh_approximation_method": "convex_hull",
     "keep_visual_shapes": True,
-    "arm_drive_ke": (1.0e6, 1.0e6, 8.0e5, 8.0e5, 6.0e5, 6.0e5, 6.0e5),
+    "arm_drive_ke": (1.5e6, 1.5e6, 1.2e6, 1.2e6, 9.0e5, 9.0e5, 9.0e5),
     "arm_drive_kd": (1.0e5, 1.0e5, 8.0e4, 8.0e4, 6.0e4, 6.0e4, 6.0e4),
     "gripper_drive_ke": 1.0e6,
     "gripper_drive_kd": 1.0e5,
