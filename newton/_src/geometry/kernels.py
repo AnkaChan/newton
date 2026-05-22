@@ -1102,15 +1102,32 @@ def create_soft_contacts(
         sign = float(0.0)
 
         min_scale = wp.min(geo_scale)
-        if wp.mesh_query_point_sign_normal(
-            mesh,
-            wp.cw_div(x_local, geo_scale),
-            margin + s_margin / min_scale + radius / min_scale,
-            sign,
-            face_index,
-            face_u,
-            face_v,
-        ):
+        query_point = wp.cw_div(x_local, geo_scale)
+        query_dist = margin + s_margin / min_scale + radius / min_scale
+        query_hit = bool(False)
+
+        if geo_type == GeoType.CONVEX_MESH:
+            # Convex meshes are watertight; parity gives an orientation-independent sign.
+            parity = wp.mesh_query_point_sign_parity(mesh, query_point, query_dist)
+            if parity.result:
+                sign = parity.sign
+                face_index = parity.face
+                face_u = parity.u
+                face_v = parity.v
+                query_hit = True
+        else:
+            # General meshes may be open, where parity classification is undefined.
+            query_hit = wp.mesh_query_point_sign_normal(
+                mesh,
+                query_point,
+                query_dist,
+                sign,
+                face_index,
+                face_u,
+                face_v,
+            )
+
+        if query_hit:
             shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
             shape_v = wp.mesh_eval_velocity(mesh, face_index, face_u, face_v)
 
