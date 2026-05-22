@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example VBD Bag Pickup (Two-Way Coupled)
+# Example VBD Bag Pickup (Two-Way Coupled, OBJ Bag)
 #
 # A parallel-jaw gripper on a Cartesian gantry grasps the open top of a
 # lunch-bag-sized VBD cloth bag containing rigid bodies, then lifts and
@@ -18,7 +18,7 @@
 # gripper dynamics, cloth, and rigid content bodies
 # (integrate_with_external_rigid_solver=False).
 #
-# Command: python -m newton.examples vbd_bag_franka_pickup_two_way
+# Command: python -m newton.examples vbd_bag_franka_pickup_two_way_obj
 #
 ###########################################################################
 
@@ -32,6 +32,9 @@ from pxr import Usd, UsdGeom
 
 import newton
 import newton.examples
+
+# BAG_MESH_PATH = r"C:\Code\Graphics\warp-dev-demos\Newton-Debug\BagSim\sim_mesh_lift_old_default_f1320.obj"
+BAG_MESH_PATH = r"C:\Code\Graphics\warp-dev-demos\Newton-Debug\BagSim\sim_mesh_lift_old_default_f1320.obj"
 
 PARAMS = {
     "shape_names": [
@@ -64,7 +67,7 @@ PARAMS = {
     "cloth_tri_ka": 2e4,
     "cloth_tri_kd": 1e2,
     "cloth_edge_ke": 200.0,
-    "cloth_edge_kd": 2e-1,
+    "cloth_edge_kd": 0.1,
     "shape_density": 1000.0,
     "shape_ke": 5.0e5,
     "shape_kd": 5.0e1,
@@ -86,7 +89,7 @@ PARAMS = {
     "body_drop_offset": 0.06,
     "rigid_body_particle_contact_buffer_size": 2048,
     "rigid_body_contact_buffer_size": 512,
-    "particle_enable_self_contact": True,
+    "particle_enable_self_contact": False,
     "particle_self_contact_radius": 0.005,
     "particle_self_contact_margin": 0.01,
     "particle_topological_contact_filter_threshold": 3,
@@ -228,6 +231,41 @@ def _generate_box_bag(half_x, half_y, height, res, z_base):
     return np.array(vertices, dtype=np.float32), faces
 
 
+def _load_obj_bag(mesh_path, half_x, half_y, height, z_base):
+    """Load an OBJ bag mesh and fit its bounding box to the existing bag dimensions."""
+    vertices = []
+    faces = []
+
+    with open(mesh_path, encoding="utf-8") as obj_file:
+        for line in obj_file:
+            if line.startswith("v "):
+                vertices.append([float(value) for value in line.split()[1:4]])
+            elif line.startswith("f "):
+                face = []
+                for token in line.split()[1:]:
+                    raw_index = int(token.split("/")[0])
+                    face.append(len(vertices) + raw_index if raw_index < 0 else raw_index - 1)
+                for i in range(1, len(face) - 1):
+                    faces.extend([face[0], face[i], face[i + 1]])
+
+    if not vertices:
+        raise ValueError(f"Bag mesh OBJ has no vertices: {mesh_path}")
+    if not faces:
+        raise ValueError(f"Bag mesh OBJ has no faces: {mesh_path}")
+
+    bag_verts = np.array(vertices, dtype=np.float32)
+    source_min = bag_verts.min(axis=0)
+    source_extent = bag_verts.max(axis=0) - source_min
+    if np.any(source_extent <= 0.0):
+        raise ValueError(f"Bag mesh OBJ has non-positive extent: {source_extent}")
+
+    target_min = np.array([-half_x, -half_y, z_base], dtype=np.float32)
+    target_extent = np.array([2.0 * half_x, 2.0 * half_y, height], dtype=np.float32)
+    bag_verts = (bag_verts - source_min) / source_extent * target_extent + target_min
+
+    return bag_verts.astype(np.float32), faces
+
+
 def _load_bear_mesh(target_size):
     bear_path = os.path.join(newton.examples.get_asset_directory(), "bear.usd")
     stage = Usd.Stage.Open(bear_path)
@@ -294,11 +332,11 @@ def build_model(builder, params, seed=42):
         label=params["ground_label"],
     )
 
-    bag_verts, bag_faces = _generate_box_bag(
+    bag_verts, bag_faces = _load_obj_bag(
+        BAG_MESH_PATH,
         params["bag_size_x"] / 2,
         params["bag_size_y"] / 2,
         params["bag_size_z"],
-        params["bag_res"],
         params["bag_floor_height"],
     )
 
