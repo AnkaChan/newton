@@ -105,6 +105,11 @@ class Example:
         self.simulate()
         self.sim_time += self.frame_dt
 
+    def render(self):
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.end_frame()
+
     def test_final(self):
         """Verify joint constraint satisfaction after simulation."""
         state = self.state_0
