@@ -77,6 +77,7 @@ from .rigid_vbd_kernels import (
     update_duals_body_particle_contacts,
     update_duals_joint,
 )
+from .reduced_projection import project_to_reduced_coordinates
 from .tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
@@ -233,6 +234,10 @@ class SolverVBD(SolverBase):
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-cable angular joint constraints
         rigid_enable_dahl_friction: bool | None = None,  # Deprecated: auto-detected from model attributes
+        # Reduced coordinate projection (RVBD)
+        body_enable_reduced_solve: bool = False,
+        reduced_gn_iterations: int = 3,
+        reduced_gn_damping: float = 1e-6,
     ):
         """
         Args:
@@ -342,6 +347,11 @@ class SolverVBD(SolverBase):
                 Negative values are clamped to 0.
             rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is auto-detected
                 from ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
+            body_enable_reduced_solve: Enable reduced-coordinate projection after each timestep. When True,
+                the maximal AVBD solve is followed by a Gauss-Newton projection that snaps body poses onto
+                the kinematic manifold defined by the articulation joints.
+            reduced_gn_iterations: Number of Gauss-Newton iterations for the reduced projection (0 = analytical IK only).
+            reduced_gn_damping: Levenberg-Marquardt damping for the Gauss-Newton normal equations.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -383,6 +393,11 @@ class SolverVBD(SolverBase):
         # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
         # participate in particle-rigid interaction on the particle side.
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
+
+        # Reduced-coordinate projection (RVBD)
+        self.body_enable_reduced_solve = body_enable_reduced_solve
+        self.reduced_gn_iterations = reduced_gn_iterations
+        self.reduced_gn_damping = reduced_gn_damping
 
         # Initialize particle system
         self._init_particle_system(
@@ -1586,6 +1601,16 @@ class SolverVBD(SolverBase):
 
         # Snapshot solved rigid contact state for next-frame warm-start.
         self._snapshot_rigid_contact_history(contacts)
+
+        # Project maximal body poses onto kinematic manifold before velocity finalize
+        if self.body_enable_reduced_solve and not self.integrate_with_external_rigid_solver:
+            project_to_reduced_coordinates(
+                self.model,
+                state_out,
+                gn_iterations=self.reduced_gn_iterations,
+                damping=self.reduced_gn_damping,
+            )
+
         self._finalize_rigid_bodies(
             state_in, state_out, dt, apply_stick_deadzone=contacts is not None and self.rigid_contact_hard
         )
