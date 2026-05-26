@@ -101,6 +101,13 @@ PARAMS = {
     "rigid_joint_angular_ke": 1.0e6,
     "rigid_joint_linear_kd": 1.0e3,
     "rigid_joint_angular_kd": 1.0e2,
+    # RVBD reduced-coordinate projection is plumbed through but disabled by
+    # default: the projection's IK/FK + BDF1 cycle destabilizes the soft
+    # contacts between the cloth bag and the gripper fingers in this
+    # scenario. Set body_enable_reduced_solve=True to experiment.
+    "body_enable_reduced_solve": False,
+    "reduced_gn_iterations": 1,
+    "reduced_gn_damping": 1.0e-6,
     "collision_broad_phase": "nxn",
     "ground_body": -1,
     "ground_center_xy": (0.0, 0.0),
@@ -539,6 +546,9 @@ class Example:
             rigid_joint_angular_ke=self.params["rigid_joint_angular_ke"],
             rigid_joint_linear_kd=self.params["rigid_joint_linear_kd"],
             rigid_joint_angular_kd=self.params["rigid_joint_angular_kd"],
+            body_enable_reduced_solve=self.params["body_enable_reduced_solve"],
+            reduced_gn_iterations=self.params["reduced_gn_iterations"],
+            reduced_gn_damping=self.params["reduced_gn_damping"],
         )
 
         self.viewer.set_model(self.model)
