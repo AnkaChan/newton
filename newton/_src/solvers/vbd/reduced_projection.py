@@ -13,8 +13,15 @@ import numpy as np
 import warp as wp
 
 from ...sim.articulation import eval_fk, eval_ik, eval_jacobian
+from ...sim.enums import JointType
 from ...sim.model import Model
 from ...sim.state import State
+
+# Joint types for which n_coords == n_dofs and the DOF delta maps directly into
+# the coord array. BALL/FREE/DISTANCE use quaternion parametrization, and D6 may
+# also mix unit-quaternion components; those need a proper exp-map update and
+# are excluded from the per-DOF coord write below.
+_SIMPLE_JOINT_TYPES = {int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.FIXED)}
 
 
 def _quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
@@ -101,6 +108,40 @@ def project_to_reduced_coordinates(
     if model.articulation_count == 0 or model.body_count == 0:
         return
 
+    # --- Pre-fetch model topology (CPU) ---
+    art_start_np = model.articulation_start.numpy()
+    joint_child_np = model.joint_child.numpy()
+    joint_type_np = model.joint_type.numpy()
+    joint_qd_start_np = model.joint_qd_start.numpy()
+    joint_q_start_np = model.joint_q_start.numpy()
+    total_coords = int(state.joint_q.shape[0])
+    total_dofs = int(state.joint_qd.shape[0])
+
+    # --- Identify articulations whose every joint is 1-coord-per-DOF
+    # (PRISMATIC/REVOLUTE/FIXED). Articulations containing BALL/FREE/D6/DISTANCE
+    # are left untouched: their joint_q includes quaternion components that
+    # cannot be safely updated by a DOF-space delta or per-coord clamp. ---
+    managed_arts: list[int] = []
+    managed_coord_mask = np.zeros(total_coords, dtype=bool)
+    managed_dof_mask = np.zeros(total_dofs, dtype=bool)
+    for art_idx in range(model.articulation_count):
+        joint_start = int(art_start_np[art_idx])
+        joint_end = int(art_start_np[art_idx + 1])
+        if joint_end <= joint_start:
+            continue
+        if not all(int(joint_type_np[j]) in _SIMPLE_JOINT_TYPES for j in range(joint_start, joint_end)):
+            continue
+        managed_arts.append(art_idx)
+        q_start = int(joint_q_start_np[joint_start])
+        q_end = int(joint_q_start_np[joint_end])
+        d_start = int(joint_qd_start_np[joint_start])
+        d_end = int(joint_qd_start_np[joint_end])
+        managed_coord_mask[q_start:q_end] = True
+        managed_dof_mask[d_start:d_end] = True
+
+    if not managed_arts:
+        return
+
     # --- Save AVBD maximal result as projection target ---
     body_q_target = wp.clone(state.body_q)
 
@@ -108,11 +149,6 @@ def project_to_reduced_coordinates(
     eval_ik(model, state, state.joint_q, state.joint_qd)
 
     if gn_iterations > 0:
-        # --- Pre-fetch model topology (CPU) ---
-        art_start_np = model.articulation_start.numpy()
-        joint_child_np = model.joint_child.numpy()
-        joint_qd_start_np = model.joint_qd_start.numpy()
-        joint_q_start_np = model.joint_q_start.numpy()
         body_q_target_np = body_q_target.numpy().reshape(-1, 7)
 
         # --- Gauss-Newton iterations ---
@@ -128,10 +164,10 @@ def project_to_reduced_coordinates(
             body_q_fk_np = state.body_q.numpy().reshape(-1, 7)
             joint_q_np = state.joint_q.numpy().copy()
 
-            # Solve per articulation
-            for art_idx in range(model.articulation_count):
-                joint_start = art_start_np[art_idx]
-                joint_end = art_start_np[art_idx + 1]
+            # Solve per managed articulation
+            for art_idx in managed_arts:
+                joint_start = int(art_start_np[art_idx])
+                joint_end = int(art_start_np[art_idx + 1])
                 n_links = joint_end - joint_start
 
                 # Body indices for this articulation's links
@@ -156,26 +192,32 @@ def project_to_reduced_coordinates(
                 Jtr = J_art.T @ r
                 delta_q = np.linalg.solve(JtJ, -Jtr)
 
-                # Map DOF delta to coordinate update.
+                # Map DOF delta to coordinate update (safe: managed joints have
+                # n_coords == n_dofs).
                 q_start = int(joint_q_start_np[joint_start])
                 joint_q_np[q_start : q_start + n_dofs] += delta_q
 
             # Push updated joint_q back to GPU
             state.joint_q.assign(wp.array(joint_q_np, dtype=float, device=state.joint_q.device))
 
-    # --- Clamp joint_q change to enforce velocity limit ---
-    joint_q_np = state.joint_q.numpy()
+    # --- Clamp joint_q change to enforce velocity limit (managed coords only) ---
+    joint_q_np = state.joint_q.numpy().copy()
     joint_q_prev_np = joint_q_prev.numpy()
     max_dq = max_joint_vel * dt
     delta = joint_q_np - joint_q_prev_np
-    delta_clamped = np.clip(delta, -max_dq, max_dq)
+    delta_clamped = np.where(managed_coord_mask, np.clip(delta, -max_dq, max_dq), delta)
     joint_q_clamped = joint_q_prev_np + delta_clamped
+    # Preserve unmanaged coords exactly as VBD/IK left them.
+    joint_q_clamped = np.where(managed_coord_mask, joint_q_clamped, joint_q_np)
     state.joint_q.assign(wp.array(joint_q_clamped, dtype=float, device=state.joint_q.device))
 
-    # --- Compute joint_qd via BDF1 ---
-    n_dof = state.joint_qd.shape[0]
-    if dt > 0.0:
-        joint_qd_np = delta_clamped[:n_dof] / dt
+    # --- BDF1 velocity for managed DOFs; leave others as VBD/IK set them ---
+    # For managed (PRISMATIC/REVOLUTE/FIXED) joints, n_coords == n_dofs so the
+    # coord-mask positions align 1:1 with the dof-mask positions.
+    if dt > 0.0 and managed_dof_mask.any():
+        joint_qd_np = state.joint_qd.numpy().copy()
+        managed_delta_per_dof = delta_clamped[managed_coord_mask]
+        joint_qd_np[managed_dof_mask] = managed_delta_per_dof / dt
         state.joint_qd.assign(wp.array(joint_qd_np, dtype=float, device=state.joint_qd.device))
 
     # --- Final FK → body_q and body_qd ---
