@@ -68,6 +68,7 @@ from .rigid_vbd_kernels import (
     init_body_body_contact_materials,
     init_body_body_contacts_avbd,
     init_body_particle_contacts,
+    propagate_kinematic_through_fixed,
     snapshot_body_body_contact_history,
     solve_rigid_body,
     step_body_body_contact_C0_lambda,
@@ -696,6 +697,7 @@ class SolverVBD(SolverBase):
             self._init_joint_constraint_layout()
             self.joint_penalty_k, self.joint_penalty_k_min, self.joint_penalty_k_max = self._init_joint_penalty_k()
             self.joint_rest_angle = self._init_joint_rest_angle()
+            self._init_fixed_kinematic_propagation()
 
             # Body-body contact state (pre-allocated in __init__ when possible, resized on first step otherwise).
             self.body_body_contact_penalty_k = wp.zeros(0, dtype=float, device=self.device)
@@ -1118,6 +1120,32 @@ class SolverVBD(SolverBase):
                         rest_angle_np[qd_start + lin_count + ai] = float(jq[q_start + lin_count + ai])
 
         return wp.array(rest_angle_np, dtype=float, device=self.device)
+
+    def _init_fixed_kinematic_propagation(self) -> None:
+        """Build FIXED joints where a zero-mass child must follow a dynamic parent."""
+        model = self.model
+        with wp.ScopedDevice("cpu"):
+            joint_type = model.joint_type.to("cpu").numpy()
+            joint_parent = model.joint_parent.to("cpu").numpy()
+            joint_child = model.joint_child.to("cpu").numpy()
+            body_inv_mass = model.body_inv_mass.to("cpu").numpy()
+
+        kin_joints = []
+        for joint_idx in range(model.joint_count):
+            if int(joint_type[joint_idx]) != int(JointType.FIXED):
+                continue
+
+            parent = int(joint_parent[joint_idx])
+            child = int(joint_child[joint_idx])
+            if parent < 0 or child < 0:
+                continue
+
+            if body_inv_mass[parent] > 0.0 and body_inv_mass[child] == 0.0:
+                kin_joints.append(joint_idx)
+
+        self._fixed_kinematic_joints = (
+            wp.array(np.asarray(kin_joints, dtype=np.int32), dtype=wp.int32, device=self.device) if kin_joints else None
+        )
 
     @override
     @classmethod
@@ -1627,6 +1655,7 @@ class SolverVBD(SolverBase):
                 damping=self.reduced_gn_damping,
             )
             self._joint_q_prev.assign(state_out.joint_q)
+            wp.copy(self.body_q_prev, state_out.body_q)
 
     def _snapshot_rigid_contact_history(self, contacts: Contacts | None):
         """Write solved contact state for next frame's match-index warm-start."""
@@ -2008,6 +2037,27 @@ class SolverVBD(SolverBase):
                 dim=model.body_count,
                 device=self.device,
             )
+
+            if self._fixed_kinematic_joints is not None:
+                wp.launch(
+                    kernel=propagate_kinematic_through_fixed,
+                    dim=self._fixed_kinematic_joints.shape[0],
+                    inputs=[
+                        self._fixed_kinematic_joints,
+                        model.joint_parent,
+                        model.joint_child,
+                        model.joint_X_p,
+                        model.joint_X_c,
+                        model.body_com,
+                    ],
+                    outputs=[
+                        state_in.body_q,
+                        state_in.body_qd,
+                        self.body_inertia_q,
+                        self.body_q_prev,
+                    ],
+                    device=self.device,
+                )
 
             if model.joint_count > 0:
                 # Warm-started lambda decays by alpha * gamma, while penalty k uses gamma only.

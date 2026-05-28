@@ -1886,6 +1886,46 @@ def forward_step_rigid_bodies(
 
 
 @wp.kernel
+def propagate_kinematic_through_fixed(
+    fixed_kin_joints: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_inertia_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+):
+    """Propagate a dynamic parent pose and twist to a kinematic child through a FIXED joint."""
+    k = wp.tid()
+    j = fixed_kin_joints[k]
+    parent = joint_parent[j]
+    child = joint_child[j]
+
+    X_pj = joint_X_p[j]
+    X_cj_inv = wp.transform_inverse(joint_X_c[j])
+
+    parent_pose = body_q[parent]
+    child_pose = parent_pose * X_pj * X_cj_inv
+
+    body_q[child] = child_pose
+    body_inertia_q[child] = child_pose
+    body_q_prev[child] = child_pose
+
+    parent_qd = body_qd[parent]
+    omega_p = wp.spatial_bottom(parent_qd)
+    v_p = wp.spatial_top(parent_qd)
+
+    parent_com_w = wp.transform_point(parent_pose, body_com[parent])
+    child_com_w = wp.transform_point(child_pose, body_com[child])
+    v_c = v_p + wp.cross(omega_p, child_com_w - parent_com_w)
+
+    body_qd[child] = wp.spatial_vector(v_c, omega_p)
+
+
+@wp.kernel
 def build_body_body_contact_lists(
     rigid_contact_count: wp.array[int],
     rigid_contact_shape0: wp.array[int],

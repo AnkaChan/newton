@@ -726,10 +726,10 @@ class Example:
             joint_limit_lower=self._model_single.joint_limit_lower,
             joint_limit_upper=self._model_single.joint_limit_upper,
         )
-        self._joint_q_ik = wp.array(
-            self._model_single.joint_q,
-            shape=(self.params["ik_n_problems"], self._model_single.joint_coord_count),
+        joint_q_seed = self._model_single.joint_q.numpy().reshape(
+            self.params["ik_n_problems"], self._model_single.joint_coord_count
         )
+        self._joint_q_ik = wp.array(joint_q_seed.copy(), dtype=float, device=self._model_single.device)
         self._ik_solver = ik.IKSolver(
             model=self._model_single,
             n_problems=self.params["ik_n_problems"],
@@ -769,8 +769,10 @@ class Example:
             self._graph_ik = None
 
     def _gripper_joint_value(self, gripper_frac):
-        open_value = self.params["gripper_open_gap"]
-        closed_value = self.params["gripper_closed_gap"]
+        # The Franka hand command is the total aperture between two fingers,
+        # while the URDF prismatic joints store per-finger displacement.
+        open_value = 0.5 * self.params["gripper_open_gap"]
+        closed_value = 0.5 * self.params["gripper_closed_gap"]
         open_frac = self.params["gripper_open_frac"]
         closed_frac = self.params["gripper_closed_frac"]
         frac_range = closed_frac - open_frac
@@ -809,6 +811,15 @@ class Example:
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         wp.copy(self.state_1.body_q, self.state_0.body_q)
         wp.copy(self.model.body_q, self.state_0.body_q)
+
+        single_coord_count = self._model_single.joint_coord_count
+        joint_q_single = joint_q[:single_coord_count]
+        joint_q_single_wp = wp.array(joint_q_single, dtype=float, device=self._model_single.device)
+        self._model_single.joint_q.assign(joint_q_single_wp)
+        self._model_single.joint_qd.zero_()
+        self._state_single.joint_q.assign(joint_q_single_wp)
+        self._state_single.joint_qd.zero_()
+        newton.eval_fk(self._model_single, self._state_single.joint_q, self._state_single.joint_qd, self._state_single)
 
         self._update_drive_targets()
 
@@ -878,8 +889,11 @@ class Example:
         assert min_particle_z > -ground_tolerance, f"Bag penetrated below ground: z={min_particle_z:.4f}"
         open_joint_value = self._gripper_joint_value(self.params["gripper_open_frac"])
         closed_joint_value = self._gripper_joint_value(self.params["gripper_closed_frac"])
-        assert abs(open_joint_value - self.params["gripper_open_gap"]) < self.params["gripper_gap_test_tolerance"]
-        assert abs(closed_joint_value - self.params["gripper_closed_gap"]) < self.params["gripper_gap_test_tolerance"]
+        assert abs(open_joint_value - 0.5 * self.params["gripper_open_gap"]) < self.params["gripper_gap_test_tolerance"]
+        assert (
+            abs(closed_joint_value - 0.5 * self.params["gripper_closed_gap"])
+            < self.params["gripper_gap_test_tolerance"]
+        )
         hand_z = float(self.state_0.body_q.numpy()[self._hand_body][self.params["vertical_axis"]])
         assert hand_z > self.params["hand_lift_test_min_z"], f"Franka hand did not lift: z={hand_z:.4f}"
         bag_top_z = float(np.max(particle_q[:, self.params["vertical_axis"]]))

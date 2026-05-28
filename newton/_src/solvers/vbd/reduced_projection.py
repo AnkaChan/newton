@@ -62,11 +62,13 @@ def _compute_body_residual(
         pos_target = body_q_target[body_idx, :3]
         residual[i * 6 : i * 6 + 3] = pos_fk - pos_target
 
-        # Orientation error: q_err = q_fk^{-1} * q_target → rotation vector
+        # Orientation error in the same sign convention as position:
+        # current FK pose minus target pose. For small angles this is
+        # q_target^{-1} * q_fk, so the GN update -J^T r moves toward target.
         q_fk = body_q_fk[body_idx, 3:]  # (x, y, z, w)
         q_target = body_q_target[body_idx, 3:]
-        q_fk_inv = np.array([-q_fk[0], -q_fk[1], -q_fk[2], q_fk[3]])
-        q_err = _quat_multiply(q_fk_inv, q_target)
+        q_target_inv = np.array([-q_target[0], -q_target[1], -q_target[2], q_target[3]])
+        q_err = _quat_multiply(q_target_inv, q_fk)
 
         # Shortest path
         if q_err[3] < 0.0:
@@ -89,16 +91,16 @@ def project_to_reduced_coordinates(
     """Project maximal body_q onto the reduced-coordinate manifold.
 
     After the GN solve finds the closest on-manifold joint_q, the joint
-    velocity is derived via BDF1 and clamped to ``max_joint_vel`` to prevent
-    explosion from large projection corrections.  FK then produces consistent
-    ``body_q`` and ``body_qd``.
+    velocity recovered from the AVBD maximal velocity is clamped to
+    ``max_joint_vel`` and FK maps it back to maximal ``body_qd``.  This avoids
+    treating position projection corrections as physical velocity.
 
     Args:
         model: The model containing articulation definitions.
         state: The state to project (body_q is read as the AVBD target, then
             overwritten with the FK-projected result).
-        joint_q_prev: Previous step's projected joint coordinates (used for
-            BDF1 velocity).
+        joint_q_prev: Previous step's projected joint coordinates (used to
+            clamp large position-projection corrections).
         dt: Timestep [s].
         gn_iterations: Number of Gauss-Newton iterations (0 = analytical IK
             projection only).
@@ -118,6 +120,7 @@ def project_to_reduced_coordinates(
     joint_limit_upper_np = model.joint_limit_upper.numpy() if model.joint_limit_upper is not None else None
     total_coords = int(state.joint_q.shape[0])
     total_dofs = int(state.joint_qd.shape[0])
+    joint_q_prev_np = joint_q_prev.numpy()
 
     # --- Identify articulations whose every joint is 1-coord-per-DOF
     # (PRISMATIC/REVOLUTE/FIXED). Articulations containing BALL/FREE/D6/DISTANCE
@@ -146,7 +149,6 @@ def project_to_reduced_coordinates(
 
     # --- Save AVBD maximal result as projection target ---
     body_q_target = wp.clone(state.body_q)
-    body_qd_keep = wp.clone(state.body_qd)
 
     # --- Warm-start joint_q via analytical per-joint IK ---
     eval_ik(model, state, state.joint_q, state.joint_qd)
@@ -154,26 +156,39 @@ def project_to_reduced_coordinates(
     # --- Clamp managed joint coords to URDF joint limits ---
     # eval_ik writes whatever joint_q matches the maximal body_q, with no
     # awareness of joint_limit_lower/upper. For PRISMATIC gripper fingers in
-    # particular this lets the joint position drift past its [0, 0.08] limit,
+    # particular this lets the joint position drift past its URDF limit,
     # visually detaching the finger from the hand. Clip every managed coord
     # in-place. Joints whose limits are non-finite (or absent) are left alone.
+    # Both arrays are length joint_dof_count. For managed (1-coord-per-DOF)
+    # joints, the coord index equals the DOF index within the managed subset,
+    # so the same boolean mask indexes both.
+    managed_coord_indices = np.where(managed_coord_mask)[0]
+    managed_dof_indices = np.where(managed_dof_mask)[0]
+    joint_q_np = state.joint_q.numpy().copy()
+    if managed_coord_indices.size:
+        managed_q = joint_q_np[managed_coord_indices]
+        nonfinite = ~np.isfinite(managed_q)
+        if np.any(nonfinite):
+            joint_q_np[managed_coord_indices[nonfinite]] = joint_q_prev_np[managed_coord_indices[nonfinite]]
+
+    joint_qd_np = state.joint_qd.numpy().copy()
+    if managed_dof_indices.size:
+        managed_qd = joint_qd_np[managed_dof_indices]
+        nonfinite = ~np.isfinite(managed_qd)
+        if np.any(nonfinite):
+            joint_qd_np[managed_dof_indices[nonfinite]] = 0.0
+            state.joint_qd.assign(wp.array(joint_qd_np, dtype=float, device=state.joint_qd.device))
+
     if joint_limit_lower_np is not None and joint_limit_upper_np is not None:
-        # Both arrays are length joint_dof_count. For managed (1-coord-per-DOF)
-        # joints, the coord index equals the DOF index within the managed
-        # subset, so the same boolean mask indexes both.
-        joint_q_np = state.joint_q.numpy().copy()
         lo = np.where(np.isfinite(joint_limit_lower_np), joint_limit_lower_np, -np.inf)
         hi = np.where(np.isfinite(joint_limit_upper_np), joint_limit_upper_np, np.inf)
-        managed_coord_indices = np.where(managed_coord_mask)[0]
-        managed_dof_indices = np.where(managed_dof_mask)[0]
-        # Sanity: for managed joints, n_coords == n_dofs so these arrays match.
         if managed_coord_indices.size == managed_dof_indices.size:
             joint_q_np[managed_coord_indices] = np.clip(
                 joint_q_np[managed_coord_indices],
                 lo[managed_dof_indices],
                 hi[managed_dof_indices],
             )
-            state.joint_q.assign(wp.array(joint_q_np, dtype=float, device=state.joint_q.device))
+    state.joint_q.assign(wp.array(joint_q_np, dtype=float, device=state.joint_q.device))
 
     if gn_iterations > 0:
         body_q_target_np = body_q_target.numpy().reshape(-1, 7)
@@ -217,7 +232,12 @@ def project_to_reduced_coordinates(
                 # Normal equations: (J^T J + λI) Δq = -J^T r
                 JtJ = J_art.T @ J_art + damping * np.eye(n_dofs)
                 Jtr = J_art.T @ r
-                delta_q = np.linalg.solve(JtJ, -Jtr)
+                try:
+                    delta_q = np.linalg.solve(JtJ, -Jtr)
+                except np.linalg.LinAlgError:
+                    continue
+                if not np.all(np.isfinite(delta_q)):
+                    continue
 
                 # Map DOF delta to coordinate update (safe: managed joints have
                 # n_coords == n_dofs).
@@ -226,8 +246,6 @@ def project_to_reduced_coordinates(
 
             # Clamp managed coords to joint limits before the next GN iter / FK.
             if joint_limit_lower_np is not None and joint_limit_upper_np is not None:
-                managed_coord_indices = np.where(managed_coord_mask)[0]
-                managed_dof_indices = np.where(managed_dof_mask)[0]
                 if managed_coord_indices.size == managed_dof_indices.size:
                     lo = np.where(np.isfinite(joint_limit_lower_np), joint_limit_lower_np, -np.inf)
                     hi = np.where(np.isfinite(joint_limit_upper_np), joint_limit_upper_np, np.inf)
@@ -236,28 +254,41 @@ def project_to_reduced_coordinates(
                         lo[managed_dof_indices],
                         hi[managed_dof_indices],
                     )
+            if managed_coord_indices.size:
+                managed_q = joint_q_np[managed_coord_indices]
+                nonfinite = ~np.isfinite(managed_q)
+                if np.any(nonfinite):
+                    joint_q_np[managed_coord_indices[nonfinite]] = joint_q_prev_np[managed_coord_indices[nonfinite]]
 
             # Push updated joint_q back to GPU
             state.joint_q.assign(wp.array(joint_q_np, dtype=float, device=state.joint_q.device))
 
-    # Note on velocity handling: the original RVBD design did NOT overwrite
-    # joint_qd; eval_ik already wrote joint_qd from the AVBD-finalized body_qd,
-    # and the final eval_fk below propagates that velocity through the chain
-    # consistently with the projected joint_q. The BDF1-with-clamp variant
-    # added in a11eb35f destabilizes high-stiffness PD-driven scenarios
-    # (bag pickup config): once joint_qd hits the clamp the drive's
-    # kd × (target_qd - joint_qd) damping force grows unbounded, exploding
-    # body_qd in subsequent substeps. Keeping VBD's body_qd-derived joint_qd
-    # restores stability on the bag-pickup-config Franka.
-    #
-    # max_joint_vel and joint_q_prev are kept in the signature for callers
-    # written against the BDF1 variant; they are unused here.
-    del joint_q_prev, max_joint_vel  # silence unused-param
+    # --- Clamp managed joint_q change to keep projection corrections local. ---
+    joint_q_np = state.joint_q.numpy().copy()
+    max_dq = max_joint_vel * dt
+    delta = joint_q_np - joint_q_prev_np
+    nonfinite_delta = ~np.isfinite(delta[managed_coord_indices])
+    if np.any(nonfinite_delta):
+        delta[managed_coord_indices[nonfinite_delta]] = 0.0
+    delta_clamped = delta.copy()
+    delta_clamped[managed_coord_indices] = np.clip(delta[managed_coord_indices], -max_dq, max_dq)
+    joint_q_np[managed_coord_indices] = joint_q_prev_np[managed_coord_indices] + delta_clamped[managed_coord_indices]
+    state.joint_q.assign(wp.array(joint_q_np, dtype=float, device=state.joint_q.device))
 
-    # --- Final FK → body_q from projected joint_q. ---
-    # We deliberately do NOT use eval_fk's body_qd, because under high-stiffness
-    # PD drives the IK-derived joint_qd → FK-propagated body_qd disagrees with
-    # the AVBD-finalized body_qd, and that disagreement compounds across
-    # substeps until the chain shoots off. Keep VBD's authoritative body_qd.
+    # --- Project AVBD maximal velocity to the reduced tangent space. ---
+    #
+    # eval_ik() already recovered joint_qd from the AVBD maximal body_qd
+    # before GN/FK overwrote body_qd.  Preserve that velocity interpretation
+    # instead of converting the position correction above into BDF1 velocity.
+    if managed_dof_indices.size:
+        joint_qd_np = state.joint_qd.numpy().copy()
+        managed_qd = joint_qd_np[managed_dof_indices]
+        nonfinite_qd = ~np.isfinite(managed_qd)
+        if np.any(nonfinite_qd):
+            managed_qd[nonfinite_qd] = 0.0
+        managed_qd = np.clip(managed_qd, -max_joint_vel, max_joint_vel)
+        joint_qd_np[managed_dof_indices] = managed_qd
+        state.joint_qd.assign(wp.array(joint_qd_np, dtype=float, device=state.joint_qd.device))
+
+    # --- Final FK → projected body_q and tangent-space projected body_qd. ---
     eval_fk(model, state.joint_q, state.joint_qd, state)
-    wp.copy(state.body_qd, body_qd_keep)

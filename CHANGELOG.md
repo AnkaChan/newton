@@ -96,6 +96,10 @@
 - Fix `remesh_convex_hull` raising `QhullError` on degenerate (coincident, collinear, or coplanar) point clouds; it now returns a zero-volume fallback mesh with a `UserWarning`, raises `ValueError` on empty input, and retries Qhull with `QJ` joggle as a last resort on the 3D path
 - Fix SolverVBD no-particle initialization and the unified VBD Franka bag example's robot drive setup
 - Fix narrow-phase CPU launches using GPU-sized block dimensions with kernels that observe `wp.block_dim() == 1`, avoiding out-of-bounds tile and strided-loop indexing until Warp GH-1413 is fixed
+- Fix VBD/AVBD steady-state joint gap when a FIXED joint's child is a zero-mass body. The kinematic child now follows its dynamic parent through the FIXED joint.
+- Fix RVBD reduced projection feeding stale pre-projection poses into the next velocity update, which caused the online reduced solve to diverge after projection.
+- Fix RVBD projection producing non-finite prismatic joint coordinates by falling back to the previous projected coordinate before clamping and velocity update.
+- Fix the two-way Franka VBD example so its duplicated IK robot starts from the same pregrasp joint state as the simulated robot.
 - Fix the unified VBD Franka bag pickup example so the gripper pinches and lifts the bag
 - Increase unified VBD Franka bag pickup joint-constraint stiffness for better link rigidity
 - Fix `ViewerGL` Step button remaining clickable while the simulation is running; the button is now greyed out when not paused
