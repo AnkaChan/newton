@@ -1015,6 +1015,7 @@ class Model:
         contacts: Contacts | None = None,
         *,
         collision_pipeline: CollisionPipeline | None = None,
+        enable_water_tight_rigid_soft_contact: bool = False,
     ) -> Contacts:
         """
         Generate contact points for the particles and rigid bodies in the model using the default collision
@@ -1025,6 +1026,14 @@ class Model:
             contacts: The contacts buffer to populate (will be cleared first). If None, a new
                 contacts buffer is allocated via :meth:`contacts`.
             collision_pipeline: Optional collision pipeline override.
+            enable_water_tight_rigid_soft_contact: When ``True``, run the triangle-driven kernel
+                in addition to the legacy per-particle kernel to detect the edge-edge and
+                triangle-vertex soft contacts that per-particle SDF queries cannot see. The extra
+                records land in the E/F range of ``Contacts.soft_contact_*`` (shared fields at
+                indices ``[soft_contact_count[0], soft_contact_count[0] + soft_contact_count[1])``;
+                new-only fields ``soft_contact_primitive`` / ``_kind`` / ``_barycentric`` at local
+                indices ``[0, soft_contact_count[1])``). The particle range stays bit-for-bit
+                identical to the flag-off case. Defaults to ``False``.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
@@ -1034,7 +1043,11 @@ class Model:
         if contacts is None:
             contacts = self._collision_pipeline.contacts()
 
-        self._collision_pipeline.collide(state, contacts)
+        self._collision_pipeline.collide(
+            state,
+            contacts,
+            enable_water_tight_rigid_soft_contact=enable_water_tight_rigid_soft_contact,
+        )
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
