@@ -144,7 +144,7 @@ def _tri_vs_point_emit(
     triangle. ``p`` is the rigid contact point; the normal points from the
     rigid feature toward the soft triangle.
     """
-    cp, bary, ft = triangle_closest_point(a, b, c, p)
+    cp, bary, _ft = triangle_closest_point(a, b, c, p)
     d = wp.length(cp - p)
     if d > _DEGENERATE_EPS and d < threshold:
         nrm = wp.transform_vector(X_ws, (cp - p) / d)
@@ -196,7 +196,7 @@ def _tri_vs_sphere_emit(
     offset ``surf_radius`` (sphere, or a cone base disk approximated as a disk
     of that radius). Emits a FACE record at the offset surface point.
     """
-    cp, bary, ft = triangle_closest_point(a, b, c, center)
+    cp, bary, _ft = triangle_closest_point(a, b, c, center)
     dc = wp.length(cp - center)
     if dc > _DEGENERATE_EPS and dc < surf_radius + margin_radius:
         direction = (cp - center) / dc
@@ -426,10 +426,25 @@ def _process_box_shape(
     for ci in range(8):
         corner = _box_corner(ci, geo_scale)
         _tri_vs_point_emit(
-            a, b, c, corner, mr, soft_tri_id, shape_index, X_ws, X_bs,
-            particle_count, soft_contact_max, soft_contact_count,
-            soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-            soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+            a,
+            b,
+            c,
+            corner,
+            mr,
+            soft_tri_id,
+            shape_index,
+            X_ws,
+            X_bs,
+            particle_count,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
         )
 
     # E x E: 12 box edges (corners differing in exactly one axis bit).
@@ -443,10 +458,26 @@ def _process_box_shape(
                     if (int(soft_flag) >> (i + 3)) & 1:
                         sa, sb = _soft_edge_endpoints(i, a, b, c)
                         _edge_vs_edge_emit(
-                            sa, sb, corner_i, corner_j, i, mr, soft_tri_id, shape_index, X_ws, X_bs,
-                            particle_count, soft_contact_max, soft_contact_count,
-                            soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-                            soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+                            sa,
+                            sb,
+                            corner_i,
+                            corner_j,
+                            i,
+                            mr,
+                            soft_tri_id,
+                            shape_index,
+                            X_ws,
+                            X_bs,
+                            particle_count,
+                            soft_contact_max,
+                            soft_contact_count,
+                            soft_contact_primitive,
+                            soft_contact_kind,
+                            soft_contact_barycentric,
+                            soft_contact_shape,
+                            soft_contact_body_pos,
+                            soft_contact_body_vel,
+                            soft_contact_normal,
                         )
 
 
@@ -476,11 +507,26 @@ def _process_sphere_shape(
 ):
     """Sphere: a single T x surface record (no 1D feature)."""
     _tri_vs_sphere_emit(
-        a, b, c, wp.vec3(0.0, 0.0, 0.0), geo_scale[0], margin + radius,
-        soft_tri_id, shape_index, X_ws, X_bs,
-        particle_count, soft_contact_max, soft_contact_count,
-        soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-        soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+        a,
+        b,
+        c,
+        wp.vec3(0.0, 0.0, 0.0),
+        geo_scale[0],
+        margin + radius,
+        soft_tri_id,
+        shape_index,
+        X_ws,
+        X_bs,
+        particle_count,
+        soft_contact_max,
+        soft_contact_count,
+        soft_contact_primitive,
+        soft_contact_kind,
+        soft_contact_barycentric,
+        soft_contact_shape,
+        soft_contact_body_pos,
+        soft_contact_body_vel,
+        soft_contact_normal,
     )
 
 
@@ -517,20 +563,54 @@ def _process_capsule_shape(
     p1 = wp.vec3(0.0, 0.0, -geo_scale[1])
 
     _tri_vs_segment_emit(
-        a, b, c, p0, p1, capsule_radius, mr, soft_tri_id, shape_index, X_ws, X_bs,
-        particle_count, soft_contact_max, soft_contact_count,
-        soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-        soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+        a,
+        b,
+        c,
+        p0,
+        p1,
+        capsule_radius,
+        mr,
+        soft_tri_id,
+        shape_index,
+        X_ws,
+        X_bs,
+        particle_count,
+        soft_contact_max,
+        soft_contact_count,
+        soft_contact_primitive,
+        soft_contact_kind,
+        soft_contact_barycentric,
+        soft_contact_shape,
+        soft_contact_body_pos,
+        soft_contact_body_vel,
+        soft_contact_normal,
     )
 
     for i in range(3):
         if (int(soft_flag) >> (i + 3)) & 1:
             sa, sb = _soft_edge_endpoints(i, a, b, c)
             _edge_vs_segment_emit(
-                sa, sb, p0, p1, capsule_radius, mr, i, soft_tri_id, shape_index, X_ws, X_bs,
-                particle_count, soft_contact_max, soft_contact_count,
-                soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-                soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+                sa,
+                sb,
+                p0,
+                p1,
+                capsule_radius,
+                mr,
+                i,
+                soft_tri_id,
+                shape_index,
+                X_ws,
+                X_bs,
+                particle_count,
+                soft_contact_max,
+                soft_contact_count,
+                soft_contact_primitive,
+                soft_contact_kind,
+                soft_contact_barycentric,
+                soft_contact_shape,
+                soft_contact_body_pos,
+                soft_contact_body_vel,
+                soft_contact_normal,
             )
 
 
@@ -562,11 +642,27 @@ def _process_cylinder_shape(
     approximating the body by its axis segment. E x lateral is deferred.
     """
     _tri_vs_segment_emit(
-        a, b, c, wp.vec3(0.0, 0.0, geo_scale[1]), wp.vec3(0.0, 0.0, -geo_scale[1]),
-        geo_scale[0], margin + radius, soft_tri_id, shape_index, X_ws, X_bs,
-        particle_count, soft_contact_max, soft_contact_count,
-        soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-        soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+        a,
+        b,
+        c,
+        wp.vec3(0.0, 0.0, geo_scale[1]),
+        wp.vec3(0.0, 0.0, -geo_scale[1]),
+        geo_scale[0],
+        margin + radius,
+        soft_tri_id,
+        shape_index,
+        X_ws,
+        X_bs,
+        particle_count,
+        soft_contact_max,
+        soft_contact_count,
+        soft_contact_primitive,
+        soft_contact_kind,
+        soft_contact_barycentric,
+        soft_contact_shape,
+        soft_contact_body_pos,
+        soft_contact_body_vel,
+        soft_contact_normal,
     )
 
 
@@ -603,16 +699,47 @@ def _process_cone_shape(
     base_centre = wp.vec3(0.0, 0.0, -geo_scale[1])
 
     _tri_vs_point_emit(
-        a, b, c, apex, mr, soft_tri_id, shape_index, X_ws, X_bs,
-        particle_count, soft_contact_max, soft_contact_count,
-        soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-        soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+        a,
+        b,
+        c,
+        apex,
+        mr,
+        soft_tri_id,
+        shape_index,
+        X_ws,
+        X_bs,
+        particle_count,
+        soft_contact_max,
+        soft_contact_count,
+        soft_contact_primitive,
+        soft_contact_kind,
+        soft_contact_barycentric,
+        soft_contact_shape,
+        soft_contact_body_pos,
+        soft_contact_body_vel,
+        soft_contact_normal,
     )
     _tri_vs_sphere_emit(
-        a, b, c, base_centre, geo_scale[0], mr, soft_tri_id, shape_index, X_ws, X_bs,
-        particle_count, soft_contact_max, soft_contact_count,
-        soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-        soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+        a,
+        b,
+        c,
+        base_centre,
+        geo_scale[0],
+        mr,
+        soft_tri_id,
+        shape_index,
+        X_ws,
+        X_bs,
+        particle_count,
+        soft_contact_max,
+        soft_contact_count,
+        soft_contact_primitive,
+        soft_contact_kind,
+        soft_contact_barycentric,
+        soft_contact_shape,
+        soft_contact_body_pos,
+        soft_contact_body_vel,
+        soft_contact_normal,
     )
 
 
@@ -686,24 +813,69 @@ def _process_mesh_shape(
         # T x V: rigid vertices owned by this rigid triangle.
         if (rigid_flag & 1) != 0:
             _tri_vs_point_emit(
-                a, b, c, rv0, mr, soft_tri_id, shape_index, X_ws, X_bs,
-                particle_count, soft_contact_max, soft_contact_count,
-                soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-                soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+                a,
+                b,
+                c,
+                rv0,
+                mr,
+                soft_tri_id,
+                shape_index,
+                X_ws,
+                X_bs,
+                particle_count,
+                soft_contact_max,
+                soft_contact_count,
+                soft_contact_primitive,
+                soft_contact_kind,
+                soft_contact_barycentric,
+                soft_contact_shape,
+                soft_contact_body_pos,
+                soft_contact_body_vel,
+                soft_contact_normal,
             )
         if (rigid_flag & 2) != 0:
             _tri_vs_point_emit(
-                a, b, c, rv1, mr, soft_tri_id, shape_index, X_ws, X_bs,
-                particle_count, soft_contact_max, soft_contact_count,
-                soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-                soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+                a,
+                b,
+                c,
+                rv1,
+                mr,
+                soft_tri_id,
+                shape_index,
+                X_ws,
+                X_bs,
+                particle_count,
+                soft_contact_max,
+                soft_contact_count,
+                soft_contact_primitive,
+                soft_contact_kind,
+                soft_contact_barycentric,
+                soft_contact_shape,
+                soft_contact_body_pos,
+                soft_contact_body_vel,
+                soft_contact_normal,
             )
         if (rigid_flag & 4) != 0:
             _tri_vs_point_emit(
-                a, b, c, rv2, mr, soft_tri_id, shape_index, X_ws, X_bs,
-                particle_count, soft_contact_max, soft_contact_count,
-                soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-                soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+                a,
+                b,
+                c,
+                rv2,
+                mr,
+                soft_tri_id,
+                shape_index,
+                X_ws,
+                X_bs,
+                particle_count,
+                soft_contact_max,
+                soft_contact_count,
+                soft_contact_primitive,
+                soft_contact_kind,
+                soft_contact_barycentric,
+                soft_contact_shape,
+                soft_contact_body_pos,
+                soft_contact_body_vel,
+                soft_contact_normal,
             )
 
         # E x E: rigid edges owned by this rigid triangle vs soft owned edges.
@@ -721,10 +893,25 @@ def _process_mesh_shape(
                             if (int(soft_flag) >> (i + 3)) & 1:
                                 sa, sb = _soft_edge_endpoints(i, a, b, c)
                                 _edge_vs_edge_emit(
-                                    sa, sb, re0, re1, i, mr, soft_tri_id, shape_index, X_ws, X_bs,
-                                    particle_count, soft_contact_max, soft_contact_count,
-                                    soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-                                    soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel,
+                                    sa,
+                                    sb,
+                                    re0,
+                                    re1,
+                                    i,
+                                    mr,
+                                    soft_tri_id,
+                                    shape_index,
+                                    X_ws,
+                                    X_bs,
+                                    particle_count,
+                                    soft_contact_max,
+                                    soft_contact_count,
+                                    soft_contact_primitive,
+                                    soft_contact_kind,
+                                    soft_contact_barycentric,
+                                    soft_contact_shape,
+                                    soft_contact_body_pos,
+                                    soft_contact_body_vel,
                                     soft_contact_normal,
                                 )
 
@@ -787,11 +974,7 @@ def create_soft_contacts_triangle_driven(
     v2 = soft_tri_indices[soft_tri_id, 2]
 
     # World check (skip across-world pairs).
-    if (
-        particle_world[v0] != -1
-        and shape_world[shape_index] != -1
-        and particle_world[v0] != shape_world[shape_index]
-    ):
+    if particle_world[v0] != -1 and shape_world[shape_index] != -1 and particle_world[v0] != shape_world[shape_index]:
         return
 
     # Conservative soft contact radius for this triangle.
@@ -818,49 +1001,153 @@ def create_soft_contacts_triangle_driven(
 
     if geo == GeoType.MESH or geo == GeoType.CONVEX_MESH:
         _process_mesh_shape(
-            soft_tri_id, soft_flag, a, b, c, shape_index, geo_scale,
+            soft_tri_id,
+            soft_flag,
+            a,
+            b,
+            c,
+            shape_index,
+            geo_scale,
             shape_source_ptr[shape_index],
-            shape_mesh_tri_edges, shape_mesh_tri_feature_owner_flag,
-            shape_mesh_ownership_range, mesh_edge_indices, shape_edge_range,
-            margin, radius, X_ws, X_bs,
-            particle_count, soft_contact_max, soft_contact_count,
-            soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-            soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+            shape_mesh_tri_edges,
+            shape_mesh_tri_feature_owner_flag,
+            shape_mesh_ownership_range,
+            mesh_edge_indices,
+            shape_edge_range,
+            margin,
+            radius,
+            X_ws,
+            X_bs,
+            particle_count,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
         )
     elif geo == GeoType.BOX:
         _process_box_shape(
-            soft_tri_id, soft_flag, a, b, c, shape_index, geo_scale, margin, radius, X_ws, X_bs,
-            particle_count, soft_contact_max, soft_contact_count,
-            soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-            soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+            soft_tri_id,
+            soft_flag,
+            a,
+            b,
+            c,
+            shape_index,
+            geo_scale,
+            margin,
+            radius,
+            X_ws,
+            X_bs,
+            particle_count,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
         )
     elif geo == GeoType.CAPSULE:
         _process_capsule_shape(
-            soft_tri_id, soft_flag, a, b, c, shape_index, geo_scale, margin, radius, X_ws, X_bs,
-            particle_count, soft_contact_max, soft_contact_count,
-            soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-            soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+            soft_tri_id,
+            soft_flag,
+            a,
+            b,
+            c,
+            shape_index,
+            geo_scale,
+            margin,
+            radius,
+            X_ws,
+            X_bs,
+            particle_count,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
         )
     elif geo == GeoType.SPHERE:
         _process_sphere_shape(
-            soft_tri_id, soft_flag, a, b, c, shape_index, geo_scale, margin, radius, X_ws, X_bs,
-            particle_count, soft_contact_max, soft_contact_count,
-            soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-            soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+            soft_tri_id,
+            soft_flag,
+            a,
+            b,
+            c,
+            shape_index,
+            geo_scale,
+            margin,
+            radius,
+            X_ws,
+            X_bs,
+            particle_count,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
         )
     elif geo == GeoType.CYLINDER:
         _process_cylinder_shape(
-            soft_tri_id, soft_flag, a, b, c, shape_index, geo_scale, margin, radius, X_ws, X_bs,
-            particle_count, soft_contact_max, soft_contact_count,
-            soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-            soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+            soft_tri_id,
+            soft_flag,
+            a,
+            b,
+            c,
+            shape_index,
+            geo_scale,
+            margin,
+            radius,
+            X_ws,
+            X_bs,
+            particle_count,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
         )
     elif geo == GeoType.CONE:
         _process_cone_shape(
-            soft_tri_id, soft_flag, a, b, c, shape_index, geo_scale, margin, radius, X_ws, X_bs,
-            particle_count, soft_contact_max, soft_contact_count,
-            soft_contact_primitive, soft_contact_kind, soft_contact_barycentric,
-            soft_contact_shape, soft_contact_body_pos, soft_contact_body_vel, soft_contact_normal,
+            soft_tri_id,
+            soft_flag,
+            a,
+            b,
+            c,
+            shape_index,
+            geo_scale,
+            margin,
+            radius,
+            X_ws,
+            X_bs,
+            particle_count,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
         )
     # GeoType.PLANE / ELLIPSOID / SDF / HFIELD: no triangle-driven branch; their
     # V x surface contacts come from the legacy kernel into the particle range.
