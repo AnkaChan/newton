@@ -755,6 +755,17 @@ add_example_test(
 )
 add_example_test(
     TestMultiphysicsExamples,
+    name="cloth.example_cloth_poker_cards",
+    devices=cuda_test_devices,
+    # Cards land flat-centered on the cube top (no edge/face contacts); the new
+    # path first fires near frame ~34 when the kinematic sphere knocks cards off
+    # the cube edge, so this variant runs longer than the flag-off default.
+    test_options={"num-frames": 50, "water-tight-soft-rigid": True},
+    use_viewer=True,
+    test_suffix="water_tight",
+)
+add_example_test(
+    TestMultiphysicsExamples,
     name="multiphysics.example_softbody_dropping_to_cloth",
     devices=cuda_test_devices,
     test_options={"num-frames": 200},

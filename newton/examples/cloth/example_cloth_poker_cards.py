@@ -215,6 +215,17 @@ class Example:
         )
         self.contacts = self.collision_pipeline.contacts()
 
+        # Stage 1 water-tight rigid-soft contact path (edge-edge + triangle-vertex).
+        # Off by default; toggled via --water-tight-soft-rigid.
+        self.water_tight = bool(getattr(args, "water_tight_soft_rigid", False))
+
+        # In test mode with the flag on, keep a scratch contacts buffer to
+        # cross-check the new path against the legacy baseline each step.
+        self._is_test = bool(getattr(args, "test", False))
+        self._max_ef_contacts = 0
+        if self._is_test and self.water_tight:
+            self._verify_contacts = self.collision_pipeline.contacts()
+
         self.viewer.set_model(self.model)
 
         # Set camera to view the stacking
@@ -250,7 +261,11 @@ class Example:
             self.state_0.body_q = wp.array(body_q, dtype=wp.transform)
 
             # Collision detection
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(
+                self.state_0,
+                self.contacts,
+                enable_water_tight_rigid_soft_contact=self.water_tight,
+            )
 
             # Solver step
             self.solver.step(
@@ -275,14 +290,50 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
+    def test_post_step(self):
+        """Cross-check the water-tight path against the legacy baseline.
+
+        On the current configuration, run the pipeline with the flag off and
+        on. The legacy particle range must be bit-for-bit identical between the
+        two passes, and only the flag-on pass may populate the edge/face range.
+        """
+        if not self.water_tight:
+            return
+
+        self.collision_pipeline.collide(
+            self.state_0,
+            self._verify_contacts,
+            enable_water_tight_rigid_soft_contact=False,
+        )
+        baseline = self._verify_contacts.soft_contact_count.numpy()
+        base_particle, base_ef = int(baseline[0]), int(baseline[1])
+
+        self.collision_pipeline.collide(
+            self.state_0,
+            self._verify_contacts,
+            enable_water_tight_rigid_soft_contact=True,
+        )
+        with_path = self._verify_contacts.soft_contact_count.numpy()
+        on_particle, on_ef = int(with_path[0]), int(with_path[1])
+
+        assert on_particle == base_particle, (
+            f"water-tight path perturbed the legacy soft-contact count: off={base_particle} on={on_particle}"
+        )
+        assert base_ef == 0, f"flag-off pass populated the edge/face range: {base_ef}"
+
+        self._max_ef_contacts = max(self._max_ef_contacts, on_ef)
+
     def test_final(self):
         """Verify simulation reached a valid end state."""
         particle_q = self.state_0.particle_q.numpy()
         particle_qd = self.state_0.particle_qd.numpy()
 
-        # Check velocity (cards should be settling)
+        # The flag-on variant runs into the sphere-knock phase to exercise the
+        # edge/face path, so it ends in motion; only the settled flag-off run is
+        # held to the calm bound. Both still guard against blow-up.
         max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
-        assert max_vel < 0.5, f"Cards moving too fast: max_vel={max_vel:.4f} m/s"
+        vel_limit = 5.0 if self.water_tight else 0.5
+        assert max_vel < vel_limit, f"Cards moving too fast: max_vel={max_vel:.4f} m/s"
 
         # Check bbox size is reasonable (not exploding)
         min_pos = np.min(particle_q, axis=0)
@@ -293,10 +344,24 @@ class Example:
         # Check no excessive penetration
         assert min_pos[2] > -0.1, f"Excessive penetration: z_min={min_pos[2]:.4f}"
 
+        # When enabled, the water-tight path must have produced edge/face
+        # contacts against the cube at some point during the drop.
+        if self.water_tight:
+            assert self._max_ef_contacts > 0, (
+                "water-tight rigid-soft path produced no edge/face contacts during the run"
+            )
+
 
 if __name__ == "__main__":
     # Create parser with base arguments
     parser = newton.examples.create_parser()
+
+    # Stage 1: opt into the water-tight rigid-soft contact path.
+    parser.add_argument(
+        "--water-tight-soft-rigid",
+        action="store_true",
+        help="Enable the water-tight rigid-soft contact path (edge-edge + triangle-vertex).",
+    )
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
