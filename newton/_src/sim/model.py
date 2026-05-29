@@ -313,6 +313,19 @@ class Model:
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
 
+        # Rigid-mesh feature ownership (flat-packed for the triangle-driven soft-contact path)
+        self.shape_mesh_tri_edges: wp.array2d[wp.int32] | None = None
+        """Flat-packed ``Mesh.tri_edges`` across all (MESH, CONVEX_MESH) shapes with COLLIDE_PARTICLES set,
+        shape [sum_tri_count, 3]. Each entry is an ownership-space edge id (``edge_start`` offset applied)."""
+        self.shape_mesh_vertex_owner_tri: wp.array[wp.int32] | None = None
+        """Flat-packed ``Mesh.vertex_owner_tri``, shape [sum_vertex_count]. Each entry is an ownership-space
+        tri id (``tri_start`` offset applied); -1 for unreferenced vertices."""
+        self.shape_mesh_tri_feature_owner_flag: wp.array[wp.uint8] | None = None
+        """Flat-packed ``Mesh.tri_feature_owner_flag``, shape [sum_tri_count]. Bit layout matches ``MeshAdjacency``."""
+        self.shape_mesh_ownership_range: wp.array[wp.vec3i] | None = None
+        """Per-shape (tri_start, vert_start, edge_start) offsets into the three flat arrays above,
+        shape [shape_count]. (-1, -1, -1) for non-mesh or non-COLLIDE_PARTICLES shapes."""
+
         # SDF storage (compact table + per-shape index indirection)
         self.shape_sdf_index: wp.array[wp.int32] | None = None
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""

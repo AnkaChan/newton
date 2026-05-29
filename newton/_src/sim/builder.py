@@ -9800,6 +9800,60 @@ class ModelBuilder:
         adjacency.init_empty_vertex_adjacency(device=device)
         return adjacency
 
+    def _build_rigid_mesh_ownership(self, model: Model) -> None:
+        """Flat-pack rigid-mesh feature ownership for the triangle-driven soft-contact path.
+
+        Concatenates each qualifying ``Mesh``'s ``tri_edges`` / ``vertex_owner_tri`` /
+        ``tri_feature_owner_flag`` (lazy numpy properties) into model-level Warp arrays,
+        recording per-shape (tri, vertex, edge) offsets in ``shape_mesh_ownership_range``.
+        Built eagerly so graph-captured ``Model.collide()`` calls only read stable pointers.
+        """
+        device = model.device
+        tri_edges_chunks: list[np.ndarray] = []
+        vertex_owner_chunks: list[np.ndarray] = []
+        tri_flag_chunks: list[np.ndarray] = []
+        ranges = np.full((max(self.shape_count, 1), 3), -1, dtype=np.int32)
+        tri_cursor = 0
+        vert_cursor = 0
+        edge_cursor = 0
+
+        for shape_id, source in enumerate(self.shape_source):
+            if not isinstance(source, Mesh):
+                continue
+            if (self.shape_flags[shape_id] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+                continue
+            if self.shape_type[shape_id] not in (GeoType.MESH, GeoType.CONVEX_MESH):
+                continue
+
+            local_tri_edges = source.tri_edges.copy()
+            local_tri_edges[local_tri_edges >= 0] += edge_cursor
+            tri_edges_chunks.append(local_tri_edges)
+
+            local_vertex_owner = source.vertex_owner_tri.copy()
+            local_vertex_owner[local_vertex_owner >= 0] += tri_cursor
+            vertex_owner_chunks.append(local_vertex_owner)
+
+            tri_flag_chunks.append(source.tri_feature_owner_flag.copy())
+            ranges[shape_id] = (tri_cursor, vert_cursor, edge_cursor)
+            tri_cursor += len(source.indices) // 3
+            vert_cursor += len(source.vertices)
+            edge_cursor += len(source.edges)
+
+        if tri_edges_chunks:
+            model.shape_mesh_tri_edges = wp.array(np.concatenate(tri_edges_chunks), dtype=wp.int32, device=device)
+            model.shape_mesh_vertex_owner_tri = wp.array(
+                np.concatenate(vertex_owner_chunks), dtype=wp.int32, device=device
+            )
+            model.shape_mesh_tri_feature_owner_flag = wp.array(
+                np.concatenate(tri_flag_chunks), dtype=wp.uint8, device=device
+            )
+        else:
+            model.shape_mesh_tri_edges = wp.empty((0, 3), dtype=wp.int32, device=device)
+            model.shape_mesh_vertex_owner_tri = wp.empty(0, dtype=wp.int32, device=device)
+            model.shape_mesh_tri_feature_owner_flag = wp.empty(0, dtype=wp.uint8, device=device)
+
+        model.shape_mesh_ownership_range = wp.array(ranges, dtype=wp.vec3i, device=device)
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -10411,6 +10465,11 @@ class ModelBuilder:
                 if edge_chunks
                 else wp.zeros(1, dtype=wp.vec2i, device=device)
             )
+
+            # ---------------------
+            # rigid-mesh feature ownership (triangle-driven soft-contact path)
+
+            self._build_rigid_mesh_ownership(m)
 
             # ---------------------
             # springs
