@@ -766,7 +766,10 @@ class CollisionPipeline:
             )
 
         if soft_contact_max is None:
-            soft_contact_max = shape_count * particle_count
+            # Headroom over the per-particle bound (shape_count * particle_count):
+            # the same buffer also holds the edge/face contact range used by the
+            # water-tight rigid-soft contact path, packed after the particle range.
+            soft_contact_max = 2 * shape_count * particle_count
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
         self.requires_grad = requires_grad

@@ -9,6 +9,12 @@ from warp import DeviceLike as Devicelike
 GENERATION_SENTINEL = -1
 """Value reserved as an impossible generation; the increment kernel skips it."""
 
+SOFT_CONTACT_KIND_EDGE = wp.constant(wp.uint8(2))
+"""``soft_contact_kind`` tag for a soft owned edge vs rigid 1D feature (E x E) record."""
+
+SOFT_CONTACT_KIND_FACE = wp.constant(wp.uint8(3))
+"""``soft_contact_kind`` tag for a soft triangle vs rigid 0D feature or surface (T x V) record."""
+
 
 @wp.kernel(enable_backward=False)
 def _increment_contact_generation(generation: wp.array[wp.int32]):
@@ -136,12 +142,12 @@ class Contacts:
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
         with wp.ScopedDevice(device):
-            # Packed counter array [rigid_contact_count, soft_contact_count] so
-            # all counts can be zeroed together in one fused kernel launch.
-            # Every entry must be safe to reset to zero at the start of a
-            # collision pass.
-            self.contact_counters = wp.zeros(2, dtype=wp.int32)
-            # Create sliced views for individual counters (no additional allocation)
+            # Packed counter array [rigid_contact_count, soft_particle_count,
+            # soft_ef_count] so all counts can be zeroed together in one fused
+            # kernel launch. Every entry must be safe to reset to zero at the
+            # start of a collision pass.
+            self.contact_counters = wp.zeros(3, dtype=wp.int32)
+            # Create sliced views for individual counters (no additional allocation).
             self.rigid_contact_count = self.contact_counters[0:1]
 
             self.contact_generation = wp.zeros(1, dtype=wp.int32)
@@ -261,7 +267,12 @@ class Contacts:
                 self.rigid_contact_broken_count = None
 
             # soft contacts — requires_grad flows through here for differentiable simulation
-            self.soft_contact_count = self.contact_counters[1:2]
+            # Length-2 view: [0] = legacy particle-contact count (written by the
+            # per-particle SDF kernel), [1] = edge/face contact count (written by
+            # the triangle-driven water-tight kernel). Both ranges share the
+            # soft_contact_max-length buffers below; the E/F range is packed right
+            # after the particle range at offset soft_contact_count[0].
+            self.soft_contact_count = self.contact_counters[1:3]
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
@@ -271,6 +282,23 @@ class Contacts:
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
+
+            # Water-tight edge/face (E/F) contact fields, written by the
+            # triangle-driven kernel for soft owned edge x rigid 1D feature (EDGE)
+            # and soft triangle x rigid 0D feature/surface (FACE) contacts.
+            # New-only fields are indexed locally by [0, soft_contact_count[1]);
+            # the shared fields above (shape/body_pos/body_vel/normal) carry the
+            # matching records at [soft_contact_count[0], soft_contact_count[0] +
+            # soft_contact_count[1]).
+            self.soft_contact_primitive = wp.full(soft_contact_max, -1, dtype=int)
+            """Soft triangle id for an E/F contact (index into ``model.tri_indices``).
+            Populated at local indices ``[0, soft_contact_count[1])``; higher slots stay ``-1``."""
+            self.soft_contact_kind = wp.zeros(soft_contact_max, dtype=wp.uint8)
+            """Contact-kind tag, :data:`SOFT_CONTACT_KIND_EDGE` or :data:`SOFT_CONTACT_KIND_FACE`.
+            No VERTEX tag — single-particle (V x surface) contacts live in the particle range."""
+            self.soft_contact_barycentric = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            """Barycentric coordinate on the soft triangle for an E/F contact (two non-zero
+            entries for EDGE, three for FACE), shape (soft_contact_max,), dtype :class:`vec3`."""
 
             # Extended contact attributes (optional, allocated on demand)
             self.force: wp.array | None = None
@@ -346,6 +374,9 @@ class Contacts:
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)
+            self.soft_contact_primitive.fill_(-1)
+            self.soft_contact_kind.zero_()
+            self.soft_contact_barycentric.zero_()
         # else: Optimized path (default) - only counter clear needed
         #   Collision detection overwrites all active contacts [0, contact_count)
         #   Solvers only read [0, contact_count), so stale data is never accessed
