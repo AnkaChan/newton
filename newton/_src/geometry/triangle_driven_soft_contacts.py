@@ -753,11 +753,8 @@ def _process_mesh_shape(
     shape_index: wp.int32,
     geo_scale: wp.vec3,
     mesh_id: wp.uint64,
-    shape_mesh_tri_edges: wp.array2d[wp.int32],
     shape_mesh_tri_feature_owner_flag: wp.array[wp.uint8],
     shape_mesh_ownership_range: wp.array[wp.vec3i],
-    mesh_edge_indices: wp.array[wp.vec2i],
-    shape_edge_range: wp.array[wp.vec2i],
     margin: float,
     radius: float,
     X_ws: wp.transform,
@@ -781,15 +778,10 @@ def _process_mesh_shape(
     """
     rng = shape_mesh_ownership_range[shape_index]
     tri_start = rng[0]
-    edge_start = rng[2]
     if tri_start < 0:
         return
 
     mr = margin + radius
-
-    er = shape_edge_range[shape_index]
-    edge_lo = er[0]
-    edge_count = er[1]
 
     # Inflate the soft triangle AABB (shape-local), then unscale into the mesh
     # BVH's unscaled local space.
@@ -803,12 +795,12 @@ def _process_mesh_shape(
     while wp.mesh_query_aabb_next(query, rigid_tri):
         rigid_flag = int(shape_mesh_tri_feature_owner_flag[tri_start + rigid_tri])
 
-        i0 = wp.mesh_get_index(mesh_id, rigid_tri * 3 + 0)
-        i1 = wp.mesh_get_index(mesh_id, rigid_tri * 3 + 1)
-        i2 = wp.mesh_get_index(mesh_id, rigid_tri * 3 + 2)
-        rv0 = wp.cw_mul(wp.mesh_get_point(mesh_id, i0), geo_scale)
-        rv1 = wp.cw_mul(wp.mesh_get_point(mesh_id, i1), geo_scale)
-        rv2 = wp.cw_mul(wp.mesh_get_point(mesh_id, i2), geo_scale)
+        # ``mesh_get_point`` takes a face-vertex (corner) index and returns
+        # ``points[indices[corner]]``, so pass the corner index directly. Feeding
+        # it the vertex id from ``mesh_get_index`` would double-index the points.
+        rv0 = wp.cw_mul(wp.mesh_get_point(mesh_id, rigid_tri * 3 + 0), geo_scale)
+        rv1 = wp.cw_mul(wp.mesh_get_point(mesh_id, rigid_tri * 3 + 1), geo_scale)
+        rv2 = wp.cw_mul(wp.mesh_get_point(mesh_id, rigid_tri * 3 + 2), geo_scale)
 
         # T x V: rigid vertices owned by this rigid triangle.
         if (rigid_flag & 1) != 0:
@@ -879,41 +871,39 @@ def _process_mesh_shape(
             )
 
         # E x E: rigid edges owned by this rigid triangle vs soft owned edges.
-        # Skipped when the mesh is absent from mesh_edge_indices (no COLLIDE_SHAPES).
-        if edge_lo >= 0:
-            for jr in range(3):
-                if (rigid_flag >> (jr + 3)) & 1:
-                    own_eid = shape_mesh_tri_edges[tri_start + rigid_tri, jr]
-                    local_e = own_eid - edge_start
-                    if own_eid >= 0 and local_e >= 0 and local_e < edge_count:
-                        ep = mesh_edge_indices[edge_lo + local_e]
-                        re0 = wp.cw_mul(wp.mesh_get_point(mesh_id, ep[0]), geo_scale)
-                        re1 = wp.cw_mul(wp.mesh_get_point(mesh_id, ep[1]), geo_scale)
-                        for i in range(3):
-                            if (int(soft_flag) >> (i + 3)) & 1:
-                                sa, sb = _soft_edge_endpoints(i, a, b, c)
-                                _edge_vs_edge_emit(
-                                    sa,
-                                    sb,
-                                    re0,
-                                    re1,
-                                    i,
-                                    mr,
-                                    soft_tri_id,
-                                    shape_index,
-                                    X_ws,
-                                    X_bs,
-                                    particle_count,
-                                    soft_contact_max,
-                                    soft_contact_count,
-                                    soft_contact_primitive,
-                                    soft_contact_kind,
-                                    soft_contact_barycentric,
-                                    soft_contact_shape,
-                                    soft_contact_body_pos,
-                                    soft_contact_body_vel,
-                                    soft_contact_normal,
-                                )
+        # Edge slot ``jr`` joins corners ``jr`` and ``(jr + 1) % 3``; owner bits
+        # 3-5 gate which rigid edge each triangle drives, so every shared rigid
+        # edge is tested by exactly one triangle. Endpoints come straight from
+        # the mesh corners (``mesh_get_point`` takes a corner index).
+        for jr in range(3):
+            if (rigid_flag >> (jr + 3)) & 1:
+                re0 = wp.cw_mul(wp.mesh_get_point(mesh_id, rigid_tri * 3 + jr), geo_scale)
+                re1 = wp.cw_mul(wp.mesh_get_point(mesh_id, rigid_tri * 3 + ((jr + 1) % 3)), geo_scale)
+                for i in range(3):
+                    if (int(soft_flag) >> (i + 3)) & 1:
+                        sa, sb = _soft_edge_endpoints(i, a, b, c)
+                        _edge_vs_edge_emit(
+                            sa,
+                            sb,
+                            re0,
+                            re1,
+                            i,
+                            mr,
+                            soft_tri_id,
+                            shape_index,
+                            X_ws,
+                            X_bs,
+                            particle_count,
+                            soft_contact_max,
+                            soft_contact_count,
+                            soft_contact_primitive,
+                            soft_contact_kind,
+                            soft_contact_barycentric,
+                            soft_contact_shape,
+                            soft_contact_body_pos,
+                            soft_contact_body_vel,
+                            soft_contact_normal,
+                        )
 
 
 @wp.kernel
@@ -936,11 +926,8 @@ def create_soft_contacts_triangle_driven(
     body_q: wp.array[wp.transform],
     shape_source_ptr: wp.array[wp.uint64],
     # Rigid-mesh ownership (Model-level).
-    shape_mesh_tri_edges: wp.array2d[wp.int32],
     shape_mesh_tri_feature_owner_flag: wp.array[wp.uint8],
     shape_mesh_ownership_range: wp.array[wp.vec3i],
-    mesh_edge_indices: wp.array[wp.vec2i],
-    shape_edge_range: wp.array[wp.vec2i],
     # Contact config.
     margin: float,
     soft_contact_max: wp.int32,
@@ -1009,11 +996,8 @@ def create_soft_contacts_triangle_driven(
             shape_index,
             geo_scale,
             shape_source_ptr[shape_index],
-            shape_mesh_tri_edges,
             shape_mesh_tri_feature_owner_flag,
             shape_mesh_ownership_range,
-            mesh_edge_indices,
-            shape_edge_range,
             margin,
             radius,
             X_ws,
@@ -1198,11 +1182,8 @@ def launch_create_soft_contacts_triangle_driven(
             model.shape_scale,
             state.body_q,
             model.shape_source_ptr,
-            model.shape_mesh_tri_edges,
             model.shape_mesh_tri_feature_owner_flag,
             model.shape_mesh_ownership_range,
-            model.mesh_edge_indices,
-            model.shape_edge_range,
             margin,
             contacts.soft_contact_max,
         ],
