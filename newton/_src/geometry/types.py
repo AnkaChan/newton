@@ -98,6 +98,51 @@ class GeoType(enum.IntEnum):
         return self in {GeoType.MESH, GeoType.CONVEX_MESH, GeoType.HFIELD}
 
 
+def _remap_tri_edges_to_geometric_edges(
+    topo_tri_edges: np.ndarray,
+    tris: np.ndarray,
+    vertices: np.ndarray,
+    geo_edges: np.ndarray,
+) -> np.ndarray:
+    """Rewrite topological tri-edge ids onto the rows of the geometric edge table.
+
+    ``_compute_soft_mesh_edge_adjacency`` dedups edges topologically (by raw
+    vertex-id pair), but :attr:`Mesh.edges` dedups geometrically (vertices at the
+    same quantized position collapse). Both index the same vertex array, so each
+    topological edge is matched to its geometric row by the canonical
+    ``(min, max)`` pair of quantized endpoint ids -- identical bucketing to
+    :attr:`Mesh.edges`.
+    """
+    if topo_tri_edges.size == 0:
+        return np.empty((0, 3), dtype=np.int32)
+    # Canonical (quantized) vertex ids -- must match Mesh.edges exactly.
+    q = np.round(vertices * 1e7).astype(np.int64)
+    q_contig = np.ascontiguousarray(q)
+    void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
+    _, canonical = np.unique(void_verts, return_inverse=True)
+    canonical = canonical.ravel()
+    # Geometric edge rows -> canonical key -> row lookup.
+    geo_a = canonical[geo_edges[:, 0]]
+    geo_b = canonical[geo_edges[:, 1]]
+    geo_keys = np.stack((np.minimum(geo_a, geo_b), np.maximum(geo_a, geo_b)), axis=1)
+    geo_lookup = {(int(k0), int(k1)): row for row, (k0, k1) in enumerate(geo_keys)}
+    # Reconstruct each topological edge's canonical key from the triangle slots.
+    slot_pairs = ((0, 1), (1, 2), (2, 0))
+    topo_edge_count = int(topo_tri_edges.max()) + 1
+    topo_keys = np.zeros((topo_edge_count, 2), dtype=np.int64)
+    for k, (a, b) in enumerate(slot_pairs):
+        ca = canonical[tris[:, a]]
+        cb = canonical[tris[:, b]]
+        eids = topo_tri_edges[:, k]
+        topo_keys[eids, 0] = np.minimum(ca, cb)
+        topo_keys[eids, 1] = np.maximum(ca, cb)
+    topo_to_geo = np.array([geo_lookup[(int(k0), int(k1))] for k0, k1 in topo_keys], dtype=np.int32)
+    result = np.full(topo_tri_edges.shape, -1, dtype=np.int32)
+    valid = topo_tri_edges >= 0
+    result[valid] = topo_to_geo[topo_tri_edges[valid]]
+    return result
+
+
 class Mesh:
     """
     Represents a triangle mesh for collision and simulation.
@@ -193,6 +238,9 @@ class Mesh:
         self._cached_hash = None
         self._texture_hash = None
         self._edges = None
+        self._tri_edges: np.ndarray | None = None
+        self._vertex_owner_tri: np.ndarray | None = None
+        self._tri_feature_owner_flag: np.ndarray | None = None
         self._is_watertight: bool | None = None
         self.sdf = sdf
 
@@ -814,6 +862,9 @@ class Mesh:
         self._vertices = np.array(value, dtype=np.float32).reshape(-1, 3)
         self._cached_hash = None
         self._edges = None
+        self._tri_edges = None
+        self._vertex_owner_tri = None
+        self._tri_feature_owner_flag = None
         self._is_watertight = None
 
     @property
@@ -825,6 +876,9 @@ class Mesh:
         self._indices = np.array(value, dtype=np.int32).flatten()
         self._cached_hash = None
         self._edges = None
+        self._tri_edges = None
+        self._vertex_owner_tri = None
+        self._tri_feature_owner_flag = None
         self._is_watertight = None
 
     @property
@@ -863,6 +917,74 @@ class Mesh:
             first_idx.sort()
             self._edges = orig_edges[first_idx]
         return self._edges
+
+    @property
+    def tri_edges(self) -> np.ndarray:
+        """Triangle-to-edge mapping, shape ``(tri_count, 3)``, dtype int32.
+
+        ``tri_edges[t, k]`` is the row in :attr:`edges` corresponding to the
+        k-th local edge slot of triangle ``t`` (slot 0 = (V0, V1), slot 1 =
+        (V1, V2), slot 2 = (V2, V0)).
+
+        Computed lazily on first access and cached. Invalidated when
+        :attr:`vertices` or :attr:`indices` change.
+        """
+        if self._tri_edges is None:
+            if self._indices.size == 0:
+                self._tri_edges = np.empty((0, 3), dtype=np.int32)
+            else:
+                from ..utils.mesh import _compute_soft_mesh_edge_adjacency  # noqa: PLC0415
+
+                _, _, topo_tri_edges = _compute_soft_mesh_edge_adjacency(self._indices.reshape(-1, 3))
+                self._tri_edges = _remap_tri_edges_to_geometric_edges(
+                    topo_tri_edges, self._indices.reshape(-1, 3), self._vertices, self.edges
+                )
+        return self._tri_edges
+
+    @property
+    def vertex_owner_tri(self) -> np.ndarray:
+        """Canonical owner triangle id per mesh vertex, shape ``(vertex_count,)``,
+        dtype int32. ``-1`` for unreferenced vertices.
+
+        Computed lazily on first access and cached. Invalidated when
+        :attr:`vertices` or :attr:`indices` change.
+        """
+        if self._vertex_owner_tri is None:
+            self._populate_ownership_cache()
+        return self._vertex_owner_tri
+
+    @property
+    def tri_feature_owner_flag(self) -> np.ndarray:
+        """Per-triangle ownership bitmask, shape ``(tri_count,)``, dtype uint8.
+
+        Bit layout matches :class:`newton._src.utils.mesh.MeshAdjacency`:
+
+        - bits 0-2: this tri owns its local V0 / V1 / V2.
+        - bits 3-5: this tri owns its local E0 / E1 / E2.
+
+        Computed lazily on first access and cached. Invalidated when
+        :attr:`vertices` or :attr:`indices` change.
+        """
+        if self._tri_feature_owner_flag is None:
+            self._populate_ownership_cache()
+        return self._tri_feature_owner_flag
+
+    def _populate_ownership_cache(self) -> None:
+        """Build :attr:`vertex_owner_tri` and :attr:`tri_feature_owner_flag` in one pass."""
+        from ..utils.mesh import _compute_soft_mesh_feature_ownership  # noqa: PLC0415
+
+        if self._indices.size == 0:
+            self._tri_feature_owner_flag = np.empty((0,), dtype=np.uint8)
+            self._vertex_owner_tri = np.empty((0,), dtype=np.int32)
+            return
+        tris = self._indices.reshape(-1, 3)
+        flags, owner = _compute_soft_mesh_feature_ownership(
+            tri_indices=tris,
+            tri_edge_indices=self.tri_edges,
+            particle_count=len(self._vertices),
+        )
+        self._tri_feature_owner_flag = flags
+        self._vertex_owner_tri = owner
 
     @property
     def is_watertight(self) -> bool:
