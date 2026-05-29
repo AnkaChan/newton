@@ -129,6 +129,129 @@ def triangle_closest_point(a: wp.vec3, b: wp.vec3, c: wp.vec3, p: wp.vec3):
 
 
 @wp.func
+def closest_point_on_tri_to_segment(
+    a: wp.vec3,
+    b: wp.vec3,
+    c: wp.vec3,
+    p0: wp.vec3,
+    p1: wp.vec3,
+):
+    """Closest pair between a triangle (a, b, c) and a line segment (p0, p1).
+
+    Closed-form decomposition over six features plus a pierce test:
+
+    - each of the three triangle edges versus the segment (edge-edge),
+    - each of the two segment endpoints versus the triangle,
+    - whether the segment pierces the triangle through its interior, in which
+      case the closest pair coincides at distance ``0``.
+
+    Degenerate ``p0 == p1`` reduces to point-versus-triangle, used by the
+    sphere branch which passes the sphere centre as both endpoints.
+
+    Args:
+        a: First triangle vertex.
+        b: Second triangle vertex.
+        c: Third triangle vertex.
+        p0: First segment endpoint.
+        p1: Second segment endpoint.
+
+    Returns:
+        closest_on_tri: Closest point on the triangle.
+        bary: Barycentric coordinates of ``closest_on_tri`` on (a, b, c).
+        closest_on_segment: Closest point on the segment.
+        distance: Distance between the pair, ``0`` when the segment pierces
+        the triangle interior.
+    """
+    eps = 1.0e-6
+
+    ab = b - a
+    ac = c - a
+
+    # Pierce test: if the segment crosses the triangle plane and the crossing
+    # point lies inside the triangle, the closest pair coincides there.
+    n = wp.cross(ab, ac)
+    n_len = wp.length(n)
+    if n_len > eps:
+        nn = n / n_len
+        d0 = wp.dot(nn, p0 - a)
+        d1 = wp.dot(nn, p1 - a)
+        if d0 * d1 < 0.0:
+            t = d0 / (d0 - d1)
+            pierce = p0 + (p1 - p0) * t
+            ap = pierce - a
+            d00 = wp.dot(ab, ab)
+            d01 = wp.dot(ab, ac)
+            d11 = wp.dot(ac, ac)
+            d20 = wp.dot(ap, ab)
+            d21 = wp.dot(ap, ac)
+            denom = d00 * d11 - d01 * d01
+            v_bc = (d11 * d20 - d01 * d21) / denom
+            w_bc = (d00 * d21 - d01 * d20) / denom
+            u_bc = 1.0 - v_bc - w_bc
+            if u_bc >= 0.0 and v_bc >= 0.0 and w_bc >= 0.0:
+                bary = wp.vec3(u_bc, v_bc, w_bc)
+                return pierce, bary, pierce, 0.0
+
+    best_dist = float(1.0e30)
+    best_on_tri = a
+    best_bary = wp.vec3(1.0, 0.0, 0.0)
+    best_on_seg = p0
+
+    # Triangle edge AB versus the segment.
+    st = wp.closest_point_edge_edge(a, b, p0, p1, eps)
+    on_tri = a + ab * st[0]
+    on_seg = p0 + (p1 - p0) * st[1]
+    d = wp.length(on_tri - on_seg)
+    if d < best_dist:
+        best_dist = d
+        best_on_tri = on_tri
+        best_bary = wp.vec3(1.0 - st[0], st[0], 0.0)
+        best_on_seg = on_seg
+
+    # Triangle edge BC versus the segment.
+    st = wp.closest_point_edge_edge(b, c, p0, p1, eps)
+    on_tri = b + (c - b) * st[0]
+    on_seg = p0 + (p1 - p0) * st[1]
+    d = wp.length(on_tri - on_seg)
+    if d < best_dist:
+        best_dist = d
+        best_on_tri = on_tri
+        best_bary = wp.vec3(0.0, 1.0 - st[0], st[0])
+        best_on_seg = on_seg
+
+    # Triangle edge CA versus the segment.
+    st = wp.closest_point_edge_edge(c, a, p0, p1, eps)
+    on_tri = c + (a - c) * st[0]
+    on_seg = p0 + (p1 - p0) * st[1]
+    d = wp.length(on_tri - on_seg)
+    if d < best_dist:
+        best_dist = d
+        best_on_tri = on_tri
+        best_bary = wp.vec3(st[0], 0.0, 1.0 - st[0])
+        best_on_seg = on_seg
+
+    # Segment endpoint p0 versus the triangle.
+    cp0, bary0, _ft0 = triangle_closest_point(a, b, c, p0)
+    d = wp.length(cp0 - p0)
+    if d < best_dist:
+        best_dist = d
+        best_on_tri = cp0
+        best_bary = bary0
+        best_on_seg = p0
+
+    # Segment endpoint p1 versus the triangle.
+    cp1, bary1, _ft1 = triangle_closest_point(a, b, c, p1)
+    d = wp.length(cp1 - p1)
+    if d < best_dist:
+        best_dist = d
+        best_on_tri = cp1
+        best_bary = bary1
+        best_on_seg = p1
+
+    return best_on_tri, best_bary, best_on_seg, best_dist
+
+
+@wp.func
 def _sdf_point_to_z_up(point: wp.vec3, up_axis: int):
     if up_axis == int(Axis.X):
         return wp.vec3(point[1], point[2], point[0])
