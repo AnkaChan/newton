@@ -45,8 +45,9 @@ DEFAULTS = {
     "D": 0.12,  # depth        (y extent = 2b)  -> flattened (W/D = 2.5)
     "H": 0.40,  # height       (z from 0 at bottom seam to H at fold/rim)
     "rc": 0.045,  # rounded-rect corner radius of the cross-section
-    "h_hem": 0.05,  # flap height (how far the inward hem hangs below the fold)
-    "t_tunnel": 0.016,  # inward offset of the flap from the wall = channel width
+    "fold": "out",  # "out" = hem folds outward (stripe band + handles on outside); "in" = inward
+    "h_hem": 0.028,  # flap height = width of the folded hem/stripe band (kept narrow)
+    "t_tunnel": 0.014,  # offset of the flap from the wall = channel (drawstring) thickness
     "ds": 0.012,  # target perimeter edge length (controls n around)
     "n_z": 28,  # vertical wall divisions (rows = n_z+1, plus fold-base row)
     "n_flap": 5,  # vertical flap divisions
@@ -159,20 +160,26 @@ def build_mesh(p):
     # --- flap columns along the front flat and back flat (inward hem) ---
     flap_zs = np.linspace(H, H - h_hem, p["n_flap"] + 1)  # k=0 at fold, last at free edge
 
-    def build_flap(col_perimeter_indices, inward_sign):
-        # inward_sign: +1 for front (y=-b -> -b+t), -1 for back (y=+b -> +b-t)
+    # Fold direction: "out" puts the hem/stripe band + handles on the OUTSIDE
+    # (front wall at y=-b folds toward -y); "in" folds toward the interior.
+    fold_out = p.get("fold", "out") == "out"
+    front_sign = -1.0 if fold_out else +1.0  # offset of +t off the front wall (y=-b)
+    back_sign = +1.0 if fold_out else -1.0  # offset of +t off the back wall  (y=+b)
+
+    def build_flap(col_perimeter_indices, sign):
+        # flap column offset off the wall by sign*t (sign chooses the in/out side)
         cols = []
         for pi in col_perimeter_indices:
             x = peri[pi][0]
-            y_flap = peri[pi][1] + inward_sign * t
+            y_flap = peri[pi][1] + sign * t
             col = [add_v(x, y_flap, z) for z in flap_zs]
             cols.append(col)
         return cols
 
     front_cols_pidx = list(range(idx["front_lo"], idx["front_hi"] + 1))
     back_cols_pidx = list(range(idx["back_lo"], idx["back_hi"] + 1))
-    flap_front = build_flap(front_cols_pidx, +1.0)
-    flap_back = build_flap(back_cols_pidx, -1.0)
+    flap_front = build_flap(front_cols_pidx, front_sign)
+    flap_back = build_flap(back_cols_pidx, back_sign)
 
     # --- faces (triangles, 0-indexed) ---
     faces: list[tuple[int, int, int]] = []
@@ -193,7 +200,11 @@ def build_mesh(p):
         pn = (pi + 1) % P
         faces.append((center_b, wall[pn][0], wall[pi][0]))
 
+    # the folded hem band ("stripe") = fold-strip + flap faces; record their indices
+    stripe_faces: list[int] = []
+
     def attach_flap(col_perimeter_indices, cols):
+        start = len(faces)
         # fold strip: wall top row -> flap top row
         for c in range(len(cols) - 1):
             pi = col_perimeter_indices[c]
@@ -203,6 +214,7 @@ def build_mesh(p):
         for c in range(len(cols) - 1):
             for k in range(len(flap_zs) - 1):
                 quad(cols[c][k], cols[c + 1][k], cols[c + 1][k + 1], cols[c][k + 1])
+        stripe_faces.extend(range(start, len(faces)))
 
     attach_flap(front_cols_pidx, flap_front)
     attach_flap(back_cols_pidx, flap_back)
@@ -230,6 +242,8 @@ def build_mesh(p):
         "flap_front": flap_front,
         "flap_back": flap_back,
         "spring_pairs": spring_pairs,
+        "stripe_faces": stripe_faces,
+        "fold_out": fold_out,
         "z_fold_base": z_fold_base,
         "b": b,
     }
@@ -246,8 +260,11 @@ def build_drawstring(p, mesh_meta):
     t = p["t_tunnel"]
     H, h_hem = p["H"], p["h_hem"]
     rope_z = H - p["rope_z_frac"] * h_hem
-    y_front = -b + 0.5 * t
-    y_back = b - 0.5 * t
+    fold_out = p.get("fold", "out") == "out"
+    front_sign = -1.0 if fold_out else +1.0
+    back_sign = +1.0 if fold_out else -1.0
+    y_front = -b + front_sign * 0.5 * t  # mid-channel on the folded side
+    y_back = b + back_sign * 0.5 * t
 
     n_tun = max(2, int(round(2 * fx / p["ds_rope"])))
 
@@ -449,18 +466,33 @@ def render(verts, faces, layout, out_prefix, p):
                 ax.plot([path[i, 0], path[j, 0]], [path[i, 1], path[j, 1]], color=c, lw=2.5)
 
     tris = verts[faces]
+    stripe_set = set(layout["stripe"]["face_indices"])
+    stripe_mask = np.array([i in stripe_set for i in range(len(faces))])
+    fold_out = layout["stripe"]["fold"] == "out"
+    CLOTH = "#9bb6d6"
+    STRIPE = "#f0820a"  # the colored drawstring stripe band
+
+    def add_cloth(ax, mask=None):
+        sel = np.ones(len(faces), bool) if mask is None else mask
+        ax.add_collection3d(
+            Poly3DCollection(
+                tris[sel & ~stripe_mask], alpha=0.20, facecolor=CLOTH, edgecolor="#6a86a8", linewidths=0.08
+            )
+        )
+        ax.add_collection3d(
+            Poly3DCollection(tris[sel & stripe_mask], alpha=0.95, facecolor=STRIPE, edgecolor="#9a5200", linewidths=0.2)
+        )
 
     # ---- view 1: oblique 3D (full bag) ----
     fig = plt.figure(figsize=(8, 10))
     ax = fig.add_subplot(111, projection="3d")
-    pc = Poly3DCollection(tris, alpha=0.28, facecolor="#9bb6d6", edgecolor="#5a7aa0", linewidths=0.1)
-    ax.add_collection3d(pc)
+    add_cloth(ax)
     draw_rope(ax, three_d=True)
     for hp in holes.values():
         ax.scatter([hp[0]], [hp[1]], [hp[2]], color="k", s=45, marker="o")
-    ax.text(0, -p["D"] / 2, p["H"] + 0.04, "FRONT tunnel", color=seg_colors["front_tunnel"], fontsize=11, ha="center")
-    ax.text(0, p["D"] / 2, p["H"] + 0.04, "BACK tunnel", color=seg_colors["back_tunnel"], fontsize=11, ha="center")
-    ax.set_title("Drawstring trash bag — full shell\n(blue = cloth, colored = drawstring, dots = 4 exit holes)")
+    ax.set_title(
+        "Drawstring trash bag — full shell\n(orange = folded-out hem stripe, colored lines = drawstring, dots = 4 holes)"
+    )
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_zlabel("z")
@@ -470,21 +502,20 @@ def render(verts, faces, layout, out_prefix, p):
     fig.savefig(f"{out_prefix}_oblique.png", dpi=130, bbox_inches="tight")
     plt.close(fig)
 
-    # ---- view 1b: 3D close-up of the folded top (tunnels + flaps + drawstring) ----
-    z_cut = p["H"] - 2.2 * p["h_hem"]
+    # ---- view 1b: 3D close-up of the folded top (stripe band + drawstring) ----
+    z_cut = p["H"] - 3.0 * p["h_hem"]
     keep = verts[faces][:, :, 2].max(axis=1) > z_cut
     fig = plt.figure(figsize=(9, 8))
     ax = fig.add_subplot(111, projection="3d")
-    pc = Poly3DCollection(tris[keep], alpha=0.30, facecolor="#9bb6d6", edgecolor="#3f5d80", linewidths=0.25)
-    ax.add_collection3d(pc)
+    add_cloth(ax, keep)
     draw_rope(ax, three_d=True)
     for name, hp in holes.items():
         ax.scatter([hp[0]], [hp[1]], [hp[2]], color="k", s=55, marker="o")
         ax.text(hp[0], hp[1], hp[2] + 0.006, name.replace("_", "-"), fontsize=8)
-    ax.text(0, -p["D"] / 2, p["H"] + 0.015, "FRONT tunnel", color=seg_colors["front_tunnel"], fontsize=11, ha="center")
-    ax.text(0, p["D"] / 2, p["H"] + 0.015, "BACK tunnel", color=seg_colors["back_tunnel"], fontsize=11, ha="center")
+    ax.text(0, -p["D"] / 2, p["H"] + 0.012, "FRONT", color=seg_colors["front_tunnel"], fontsize=11, ha="center")
+    ax.text(0, p["D"] / 2, p["H"] + 0.012, "BACK", color=seg_colors["back_tunnel"], fontsize=11, ha="center")
     ax.set_title(
-        "Top close-up: inward-folded hem flaps form the two tunnels;\ndrawstring threads both and exits the 4 holes as 2 side handles"
+        "Top close-up: outward-folded hem (orange stripe) forms the two tunnels;\ndrawstring threads both and exits the 4 holes as 2 side handles"
     )
     ax.set_xlabel("x")
     ax.set_ylabel("y")
@@ -499,18 +530,34 @@ def render(verts, faces, layout, out_prefix, p):
 
     # ---- view 2: top-down (xy) ----
     fig, ax = plt.subplots(figsize=(9, 6))
-    # draw cloth edges projected (just the top rim + flap edges look busy; show all faintly)
-    for tri in tris:
+    for i, tri in enumerate(tris):
         xy = tri[:, :2]
-        ax.fill(xy[:, 0], xy[:, 1], color="#ccc", alpha=0.04, lw=0)
+        if stripe_mask[i]:
+            ax.fill(xy[:, 0], xy[:, 1], color=STRIPE, alpha=0.22, lw=0)
+        else:
+            ax.fill(xy[:, 0], xy[:, 1], color="#ccc", alpha=0.03, lw=0)
     draw_rope(ax, three_d=False)
     for name, hp in holes.items():
         ax.scatter([hp[0]], [hp[1]], color="k", s=45, zorder=5)
         ax.annotate(name.replace("_", "-"), (hp[0], hp[1]), fontsize=8, textcoords="offset points", xytext=(4, 4))
-    ax.text(0, -p["D"] / 2 - 0.02, "FRONT tunnel", color=seg_colors["front_tunnel"], ha="center", fontsize=10)
-    ax.text(0, p["D"] / 2 + 0.015, "BACK tunnel", color=seg_colors["back_tunnel"], ha="center", fontsize=10)
+    ax.text(
+        0,
+        -p["D"] / 2 - 0.025,
+        "FRONT tunnel (in orange stripe)",
+        color=seg_colors["front_tunnel"],
+        ha="center",
+        fontsize=9,
+    )
+    ax.text(
+        0,
+        p["D"] / 2 + 0.018,
+        "BACK tunnel (in orange stripe)",
+        color=seg_colors["back_tunnel"],
+        ha="center",
+        fontsize=9,
+    )
     ax.set_aspect("equal")
-    ax.set_title("Top-down (xy): two tunnels (front/back), 4 holes, drawstring loop with side handles")
+    ax.set_title("Top-down (xy): orange stripe = the two tunnels (front/back); 4 holes; drawstring loop + side handles")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.grid(alpha=0.3)
@@ -523,28 +570,39 @@ def render(verts, faces, layout, out_prefix, p):
     H, h_hem, t = p["H"], p["h_hem"], p["t_tunnel"]
     zfb = H - h_hem
     rz = layout["drawstring"]["rope_z"]
-    # FRONT side (y around -b): wall at y=-b, flap at y=-b+t
-    ax.plot([-b, -b], [zfb - 0.04, H], color="#333", lw=3, label="outer wall")
-    ax.plot([-b, -b + t], [H, H], color="#333", lw=3)  # fold cap (top)
-    ax.plot([-b + t, -b + t], [H, zfb], color="#e07b00", lw=3, label="inward flap (hem)")
-    ax.plot([-b + t, -b], [zfb, zfb], color="#1f77b4", lw=2, ls="--", label="closure spring (flap<->wall)")
-    circ = plt.Circle((-b + 0.5 * t, rz), p["rope_radius"], color=seg_colors["front_tunnel"], zorder=5)
-    ax.add_patch(circ)
-    ax.annotate("drawstring", (-b + 0.5 * t, rz), textcoords="offset points", xytext=(10, 0), fontsize=9)
+    sf = -1.0 if fold_out else +1.0  # front flap offset sign (out = -y)
+    sb = +1.0 if fold_out else -1.0  # back flap offset sign
+    flap_lbl = "outward-folded hem (stripe band)" if fold_out else "inward-folded hem (stripe band)"
+    # FRONT side (wall at y=-b, flap at y=-b+sf*t)
+    ax.plot([-b, -b], [zfb - 0.03, H], color="#333", lw=3, label="bag wall")
+    ax.plot([-b, -b + sf * t], [H, H], color=STRIPE, lw=4)  # fold cap (top)
+    ax.plot([-b + sf * t, -b + sf * t], [H, zfb], color=STRIPE, lw=4, label=flap_lbl)
+    ax.plot([-b + sf * t, -b], [zfb, zfb], color="#1f77b4", lw=2, ls="--", label="closure spring (flap<->wall)")
+    ax.add_patch(plt.Circle((-b + sf * 0.5 * t, rz), p["rope_radius"], color=seg_colors["front_tunnel"], zorder=5))
+    ax.annotate(
+        "drawstring",
+        (-b + sf * 0.5 * t, rz),
+        textcoords="offset points",
+        xytext=(-10 if fold_out else 10, 0),
+        ha="right" if fold_out else "left",
+        fontsize=9,
+    )
     # BACK side mirror
-    ax.plot([b, b], [zfb - 0.04, H], color="#333", lw=3)
-    ax.plot([b, b - t], [H, H], color="#333", lw=3)
-    ax.plot([b - t, b - t], [H, zfb], color="#2ca02c", lw=3)
-    ax.plot([b - t, b], [zfb, zfb], color="#1f77b4", lw=2, ls="--")
-    circ2 = plt.Circle((b - 0.5 * t, rz), p["rope_radius"], color=seg_colors["back_tunnel"], zorder=5)
-    ax.add_patch(circ2)
+    ax.plot([b, b], [zfb - 0.03, H], color="#333", lw=3)
+    ax.plot([b, b + sb * t], [H, H], color=STRIPE, lw=4)
+    ax.plot([b + sb * t, b + sb * t], [H, zfb], color=STRIPE, lw=4)
+    ax.plot([b + sb * t, b], [zfb, zfb], color="#1f77b4", lw=2, ls="--")
+    ax.add_patch(plt.Circle((b + sb * 0.5 * t, rz), p["rope_radius"], color=seg_colors["back_tunnel"], zorder=5))
     ax.annotate("fold line (rim, z=H)", (0, H), ha="center", fontsize=9, textcoords="offset points", xytext=(0, 6))
     ax.set_aspect("equal")
     ax.set_xlabel("y  (depth)")
     ax.set_ylabel("z  (height)")
-    ax.set_title("Folded-hem cross-section (y-z): manifold flap + closure springs form each tunnel")
+    ax.set_title(
+        "Folded-hem cross-section (y-z): manifold flap + closure springs form each tunnel\n(hem folds OUTWARD = stripe on the outside)"
+    )
     ax.legend(loc="lower center", fontsize=8)
-    ax.set_ylim(zfb - 0.05, H + 0.03)
+    ax.set_xlim(-b - t - 0.02, b + t + 0.02)
+    ax.set_ylim(zfb - 0.04, H + 0.03)
     fig.savefig(f"{out_prefix}_hem_section.png", dpi=130, bbox_inches="tight")
     plt.close(fig)
 
@@ -592,11 +650,20 @@ def main():
             "num_vertices": int(len(verts)),
             "num_faces": int(len(faces)),
             "num_tunnel_springs": int(len(mesh_meta["spring_pairs"])),
+            "num_stripe_faces": int(len(mesh_meta["stripe_faces"])),
         },
         "frame": "Z-up, local; bag bottom seam at z=0, fold/rim at z=H. Apply the same pos "
         "offset to both the cloth mesh and this layout in the demo.",
         # tunnel-closure springs: each [flap_free_edge_vertex, wall_vertex_at_fold_base]
         "tunnel_spring_pairs": mesh_meta["spring_pairs"],
+        # the folded hem band = the classic colored drawstring "stripe" (fold is OUTward)
+        "stripe": {
+            "description": "Folded-over hem band (the colored drawstring stripe). Indices into "
+            "trash_bag.obj; color these faces distinctly to render the stripe.",
+            "fold": "out" if mesh_meta["fold_out"] else "in",
+            "face_indices": [int(f) for f in mesh_meta["stripe_faces"]],
+            "vertex_indices": sorted({int(v) for f in mesh_meta["stripe_faces"] for v in faces[f]}),
+        },
         "drawstring": drawstring,
         "holes": holes,
         "validation": report,
