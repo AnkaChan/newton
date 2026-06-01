@@ -12,14 +12,16 @@
 # open folded flap (its free edge is a mesh boundary, NOT sewn back into the
 # wall). The channel is closed at runtime by springs between each flap
 # free-edge vertex and the wall vertex directly behind it (emitted to the
-# layout JSON). A drawstring rope (particles+springs, built in the demo
-# script) threads both tunnels and exits at the four flat/arc corners,
-# forming two side handles you can pull to cinch the bag shut.
+# layout JSON). The drawstring tie is a SEPARATE single-layer cloth ribbon
+# (trash_bag_rope.obj) swept along a closed centerline that threads both
+# tunnels and exits at the four flat/arc corners, forming two side handles you
+# pull to cinch the bag shut.
 #
 # Outputs (all under this directory):
-#   trash_bag.obj          - the cloth mesh (wall + bottom cap + folds + flaps)
-#   trash_bag_layout.json  - tunnel spring pairs, ordered drawstring path,
-#                            4 exit/hole locations, handle spans, params, counts
+#   trash_bag.obj          - the bag cloth shell (wall + bottom cap + folds + flaps)
+#   trash_bag_rope.obj     - the drawstring tie (single-layer cloth ribbon)
+#   trash_bag_layout.json  - tunnel spring pairs, stripe band, drawstring centerline,
+#                            rope ribbon info, 4 holes, params, counts
 #
 # Run:
 #   python make_trash_bag.py                 # write obj + json + validate
@@ -52,8 +54,9 @@ DEFAULTS = {
     "bottom_ds": 0.014,  # bottom-cap ring spacing (O-grid); ~matches perimeter ds
     "n_z": 28,  # vertical wall divisions (rows = n_z+1, plus fold-base row)
     "n_flap": 5,  # vertical flap divisions
-    "ds_rope": 0.018,  # target drawstring segment length
-    "rope_radius": 0.005,
+    "ds_rope": 0.008,  # centerline segment length for the drawstring ribbon
+    "rope_width": 0.012,  # width of the single-layer cloth drawstring ribbon
+    "rope_n_width": 3,  # segments across the ribbon width
     "rope_z_frac": 0.45,  # rope sits at z = H - rope_z_frac*h_hem (inside the channel)
     "handle_bulge": 0.03,  # how far (m) the handle arc bows outward past the side rim
 }
@@ -348,7 +351,8 @@ def build_drawstring(p, mesh_meta):
     y_front = -b + front_sign * 0.5 * t  # mid-channel on the folded side
     y_back = b + back_sign * 0.5 * t
 
-    n_tun = max(2, int(round(2 * fx / p["ds_rope"])))
+    ds = p["ds_rope"]
+    n_tun = max(2, int(round(2 * fx / ds)))
 
     path = []  # list of [x,y,z]
     seg = []  # per-node label
@@ -357,42 +361,43 @@ def build_drawstring(p, mesh_meta):
         path.append([float(x), float(y), float(z)])
         seg.append(label)
 
+    def bezier_interior(P0, C, P1):
+        # quadratic-Bezier interior nodes (excludes endpoints), spaced ~ds by arc length
+        us = np.linspace(0.0, 1.0, 64)
+        pts = [(1 - u) ** 2 * P0 + 2 * (1 - u) * u * C + u * u * P1 for u in us]
+        length = sum(float(np.linalg.norm(pts[i + 1] - pts[i])) for i in range(len(pts) - 1))
+        n = max(2, int(round(length / ds)))
+        return [(1 - u) ** 2 * P0 + 2 * (1 - u) * u * C + u * u * P1 for u in (np.arange(1, n) / n)]
+
     # front tunnel: x:-fx -> +fx (inclusive both ends)
     for i in range(n_tun + 1):
-        x = -fx + (i / n_tun) * 2 * fx
-        add(x, y_front, rope_z, "front_tunnel")
+        add(-fx + (i / n_tun) * 2 * fx, y_front, rope_z, "front_tunnel")
     front_lo_node = 0
     front_hi_node = len(path) - 1
 
-    # right handle: quadratic Bezier A=(+fx,y_front) -> B=(+fx,y_back), bow out +x
-    A = np.array([fx, y_front, rope_z])
-    B = np.array([fx, y_back, rope_z])
-    Cr = np.array([a + p["handle_bulge"], 0.0, rope_z])
-    n_handle = 6
-    for i in range(1, n_handle):  # interior nodes only (A,B already in tunnels)
-        u = i / n_handle
-        pt = (1 - u) ** 2 * A + 2 * (1 - u) * u * Cr + u**2 * B
+    # right handle: Bezier front-right -> back-right, bowing out +x
+    for pt in bezier_interior(
+        np.array([fx, y_front, rope_z]), np.array([a + p["handle_bulge"], 0.0, rope_z]), np.array([fx, y_back, rope_z])
+    ):
         add(pt[0], pt[1], pt[2], "right_handle")
 
     # back tunnel: x:+fx -> -fx (inclusive both ends)
+    back_lo_node = len(path)
     for i in range(n_tun + 1):
-        x = fx - (i / n_tun) * 2 * fx
-        add(x, y_back, rope_z, "back_tunnel")
-    back_lo_node = front_hi_node + (n_handle - 1) + 1
+        add(fx - (i / n_tun) * 2 * fx, y_back, rope_z, "back_tunnel")
     back_hi_node = len(path) - 1
 
-    # left handle: Bezier from back-left -> front-left, bow out -x
-    A2 = np.array([-fx, y_back, rope_z])
-    B2 = np.array([-fx, y_front, rope_z])
-    Cl = np.array([-a - p["handle_bulge"], 0.0, rope_z])
-    for i in range(1, n_handle):
-        u = i / n_handle
-        pt = (1 - u) ** 2 * A2 + 2 * (1 - u) * u * Cl + u**2 * B2
+    # left handle: Bezier back-left -> front-left, bowing out -x
+    for pt in bezier_interior(
+        np.array([-fx, y_back, rope_z]),
+        np.array([-a - p["handle_bulge"], 0.0, rope_z]),
+        np.array([-fx, y_front, rope_z]),
+    ):
         add(pt[0], pt[1], pt[2], "left_handle")
 
     drawstring = {
         "closed": True,
-        "rope_radius_hint": p["rope_radius"],
+        "rope_width": p["rope_width"],
         "rope_z": rope_z,
         "n_nodes": len(path),
         "path": path,
@@ -422,6 +427,54 @@ def build_drawstring(p, mesh_meta):
         "back_left": [-fx, b, rope_z],
     }
     return drawstring, holes
+
+
+# ---------------------------------------------------------------------------
+# Drawstring as a thin SINGLE-LAYER cloth ribbon (its own OBJ) -- NOT a tube.
+# Sweep a short line segment (the ribbon width) along the closed centerline.
+# The path is planar (z = rope_z), so a twist-free frame is tangent x world-up;
+# the width runs along the (near-vertical) normal so the ribbon stands in the
+# channel, facing the wall/flap. Closed loop => an open band (cylinder topology:
+# 2 long boundary edges, no caps) -> a single sheet of cloth. Vertices ordered
+# row-by-row: vertex(i, k) = i*(n_width+1) + k; segment label = labels[i].
+# ---------------------------------------------------------------------------
+def build_rope_strip(drawstring, p):
+    path = np.array(drawstring["path"], dtype=np.float64)
+    labels = drawstring["labels"]
+    n = len(path)
+    w = p["rope_width"]
+    nw = p["rope_n_width"]
+    up = np.array([0.0, 0.0, 1.0])
+
+    verts = []
+    vlabels = []
+    rows = []
+    for i in range(n):
+        tang = path[(i + 1) % n] - path[(i - 1) % n]
+        tn = np.linalg.norm(tang)
+        tang = tang / tn if tn > 1e-12 else np.array([1.0, 0.0, 0.0])
+        binormal = np.cross(tang, up)
+        bn = np.linalg.norm(binormal)
+        binormal = binormal / bn if bn > 1e-9 else np.array([1.0, 0.0, 0.0])
+        normal = np.cross(binormal, tang)  # ~ world up, perpendicular to tangent
+        normal = normal / (np.linalg.norm(normal) + 1e-12)
+        row = []
+        for k in range(nw + 1):
+            s = (k / nw - 0.5) * w  # -w/2 .. +w/2 across the ribbon width
+            row.append(len(verts))
+            verts.append((path[i] + s * normal).tolist())
+            vlabels.append(labels[i])
+        rows.append(row)
+
+    faces = []
+    for i in range(n):
+        j = (i + 1) % n
+        for k in range(nw):
+            v00, v10, v11, v01 = rows[i][k], rows[i][k + 1], rows[j][k + 1], rows[j][k]
+            faces.append((v00, v10, v11))
+            faces.append((v00, v11, v01))
+
+    return np.array(verts, dtype=np.float64), np.array(faces, dtype=np.int64), vlabels
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +572,7 @@ def validate(verts, faces):
 # ---------------------------------------------------------------------------
 # Optional annotated render (matplotlib).
 # ---------------------------------------------------------------------------
-def render(verts, faces, layout, out_prefix, p):
+def render(verts, faces, layout, out_prefix, p, rope_verts=None, rope_faces=None):
     import matplotlib  # noqa: PLC0415  (render-only deps, kept lazy)
 
     matplotlib.use("Agg")
@@ -660,7 +713,13 @@ def render(verts, faces, layout, out_prefix, p):
     ax.plot([-b, -b + sf * t], [H, H], color=STRIPE, lw=4)  # fold cap (top)
     ax.plot([-b + sf * t, -b + sf * t], [H, zfb], color=STRIPE, lw=4, label=flap_lbl)
     ax.plot([-b + sf * t, -b], [zfb, zfb], color="#1f77b4", lw=2, ls="--", label="closure spring (flap<->wall)")
-    ax.add_patch(plt.Circle((-b + sf * 0.5 * t, rz), p["rope_radius"], color=seg_colors["front_tunnel"], zorder=5))
+    ax.plot(
+        [-b + sf * 0.5 * t, -b + sf * 0.5 * t],
+        [rz - p["rope_width"] / 2, rz + p["rope_width"] / 2],
+        color=seg_colors["front_tunnel"],
+        lw=4,
+        solid_capstyle="butt",
+    )  # single-layer ribbon (edge-on)
     ax.annotate(
         "drawstring",
         (-b + sf * 0.5 * t, rz),
@@ -674,7 +733,13 @@ def render(verts, faces, layout, out_prefix, p):
     ax.plot([b, b + sb * t], [H, H], color=STRIPE, lw=4)
     ax.plot([b + sb * t, b + sb * t], [H, zfb], color=STRIPE, lw=4)
     ax.plot([b + sb * t, b], [zfb, zfb], color="#1f77b4", lw=2, ls="--")
-    ax.add_patch(plt.Circle((b + sb * 0.5 * t, rz), p["rope_radius"], color=seg_colors["back_tunnel"], zorder=5))
+    ax.plot(
+        [b + sb * 0.5 * t, b + sb * 0.5 * t],
+        [rz - p["rope_width"] / 2, rz + p["rope_width"] / 2],
+        color=seg_colors["back_tunnel"],
+        lw=4,
+        solid_capstyle="butt",
+    )  # single-layer ribbon (edge-on)
     ax.annotate("fold line (rim, z=H)", (0, H), ha="center", fontsize=9, textcoords="offset points", xytext=(0, 6))
     ax.set_aspect("equal")
     ax.set_xlabel("y  (depth)")
@@ -702,13 +767,55 @@ def render(verts, faces, layout, out_prefix, p):
     fig.savefig(f"{out_prefix}_bottom.png", dpi=130, bbox_inches="tight")
     plt.close(fig)
 
-    return [
+    out = [
         f"{out_prefix}_oblique.png",
         f"{out_prefix}_top_closeup.png",
         f"{out_prefix}_top.png",
         f"{out_prefix}_hem_section.png",
         f"{out_prefix}_bottom.png",
     ]
+
+    # ---- view 5: the drawstring tie as its own single-layer cloth ribbon ----
+    if rope_verts is not None and rope_faces is not None:
+        rtris = rope_verts[rope_faces]
+        # (a) ribbon alone
+        fig = plt.figure(figsize=(9, 6))
+        ax = fig.add_subplot(111, projection="3d")
+        ax.add_collection3d(
+            Poly3DCollection(rtris, alpha=0.85, facecolor="#d62728", edgecolor="#5a0000", linewidths=0.3)
+        )
+        ax.set_title(
+            f"Drawstring tie — single-layer cloth ribbon (separate OBJ)\n{len(rope_verts)} verts / {len(rope_faces)} tris, width {p['rope_width']} m"
+        )
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
+        _set_axes_equal(ax, rope_verts)
+        ax.view_init(elev=38, azim=-62)
+        fig.savefig(f"{out_prefix}_rope.png", dpi=130, bbox_inches="tight")
+        plt.close(fig)
+        out.append(f"{out_prefix}_rope.png")
+
+        # (b) ribbon + bag together (bag translucent)
+        fig = plt.figure(figsize=(8, 9))
+        ax = fig.add_subplot(111, projection="3d")
+        ax.add_collection3d(Poly3DCollection(tris[~stripe_mask], alpha=0.10, facecolor=CLOTH, edgecolor="none"))
+        ax.add_collection3d(Poly3DCollection(tris[stripe_mask], alpha=0.30, facecolor=STRIPE, edgecolor="none"))
+        ax.add_collection3d(
+            Poly3DCollection(rtris, alpha=0.95, facecolor="#d62728", edgecolor="#5a0000", linewidths=0.2)
+        )
+        ax.set_title("Drawstring tie (red ribbon) threaded through the bag's stripe band + handles")
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
+        _set_axes_equal(ax, verts)
+        ax.set_box_aspect((p["W"], p["D"], p["H"]))
+        ax.view_init(elev=16, azim=-72)
+        fig.savefig(f"{out_prefix}_rope_in_bag.png", dpi=130, bbox_inches="tight")
+        plt.close(fig)
+        out.append(f"{out_prefix}_rope_in_bag.png")
+
+    return out
 
 
 def _set_axes_equal(ax, verts):
@@ -735,9 +842,17 @@ def main():
     drawstring, holes = build_drawstring(p, mesh_meta)
     report = validate(verts, faces)
 
+    # drawstring tie = its own single-layer cloth ribbon (separate OBJ)
+    rope_verts, rope_faces, rope_vlabels = build_rope_strip(drawstring, p)
+    rope_report = validate(rope_verts, rope_faces)
+    right_handle_v = [i for i, lbl in enumerate(rope_vlabels) if lbl == "right_handle"]
+    left_handle_v = [i for i, lbl in enumerate(rope_vlabels) if lbl == "left_handle"]
+
     obj_path = os.path.join(args.out_dir, "trash_bag.obj")
+    rope_obj_path = os.path.join(args.out_dir, "trash_bag_rope.obj")
     json_path = os.path.join(args.out_dir, "trash_bag_layout.json")
     write_obj(obj_path, verts, faces)
+    write_obj(rope_obj_path, rope_verts, rope_faces)
 
     layout = {
         "description": "Drawstring trash bag layout. Vertex indices are 0-based into "
@@ -762,6 +877,21 @@ def main():
             "vertex_indices": sorted({int(v) for f in mesh_meta["stripe_faces"] for v in faces[f]}),
         },
         "drawstring": drawstring,
+        # the tie itself = a separate single-layer cloth ribbon (its own OBJ)
+        "rope": {
+            "obj": "trash_bag_rope.obj",
+            "description": "Single-layer cloth ribbon = the drawstring tie (a separate cloth mesh, "
+            "NOT a tube). Load with process=False. Vertex(i,k) = i*(n_width+1)+k along the centerline.",
+            "width": p["rope_width"],
+            "n_width": p["rope_n_width"],
+            "n_centerline": len(drawstring["path"]),
+            "num_vertices": int(len(rope_verts)),
+            "num_faces": int(len(rope_faces)),
+            "vertex_labels": rope_vlabels,
+            # rope vertices forming each exposed handle (pin/pull these to cinch):
+            "handle_vertex_indices": {"right": right_handle_v, "left": left_handle_v},
+            "validation": rope_report,
+        },
         "holes": holes,
         "validation": report,
     }
@@ -770,6 +900,7 @@ def main():
 
     print("=" * 70)
     print(f"wrote {obj_path}")
+    print(f"wrote {rope_obj_path}")
     print(f"wrote {json_path}")
     print("-" * 70)
     for k in [
@@ -793,10 +924,15 @@ def main():
             print(f"  {k:28s}: {report[k]}")
     print(f"  num_tunnel_springs          : {len(mesh_meta['spring_pairs'])}")
     print(f"  drawstring_nodes            : {drawstring['n_nodes']}")
+    print(f"  rope(ribbon) verts/faces    : {len(rope_verts)} / {len(rope_faces)}")
+    print(
+        f"  rope is_manifold            : {rope_report['is_manifold']} "
+        f"(boundary edges={rope_report['num_boundary_edges']}, components={rope_report['num_connected_components']})"
+    )
     print("=" * 70)
 
     if args.render:
-        pngs = render(verts, faces, layout, os.path.join(args.out_dir, "trash_bag"), p)
+        pngs = render(verts, faces, layout, os.path.join(args.out_dir, "trash_bag"), p, rope_verts, rope_faces)
         print("rendered:")
         for pp in pngs:
             print("  ", pp)
