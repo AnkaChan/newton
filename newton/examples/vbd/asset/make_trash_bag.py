@@ -58,7 +58,8 @@ DEFAULTS = {
     "rope_width": 0.012,  # width of the single-layer cloth drawstring ribbon
     "rope_n_width": 3,  # segments across the ribbon width
     "rope_z_frac": 0.45,  # rope sits at z = H - rope_z_frac*h_hem (inside the channel)
-    "handle_bulge": 0.03,  # how far (m) the handle arc bows outward past the side rim
+    "handle_bulge": 0.05,  # how far (m) the handle arc bows outward past the side rim
+    "handle_lift": 0.12,  # how far (m) the handle arc loops up ABOVE the rim (clears the bag)
 }
 
 
@@ -126,6 +127,24 @@ def build_perimeter(p):
         "back_hi": n_front + 2 * n_arc + n_side + n_front,  # (-fx,+b) back-left exit
     }
     return np.array(pts, dtype=np.float64), labels, idx
+
+
+def _rr_sdf(x, y, a, b, rc):
+    """Signed distance to the rounded-rectangle cross-section (<0 inside)."""
+    qx = abs(x) - (a - rc)
+    qy = abs(y) - (b - rc)
+    return math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - rc
+
+
+def count_rope_penetrations(rope_verts, p, eps=1e-4):
+    """Rope vertices that lie INSIDE the bag wall: inside the cross-section
+    (sdf<0) and below the open rim (z<H). Those penetrate the bag."""
+    a, b, rc, H = p["W"] / 2.0, p["D"] / 2.0, p["rc"], p["H"]
+    n = 0
+    for x, y, z in rope_verts:
+        if z < H - eps and _rr_sdf(x, y, a, b, rc) < -eps:
+            n += 1
+    return n
 
 
 def _rounded_rect_outline(fx, sy, rc, spacing):
@@ -375,9 +394,12 @@ def build_drawstring(p, mesh_meta):
     front_lo_node = 0
     front_hi_node = len(path) - 1
 
-    # right handle: Bezier front-right -> back-right, bowing out +x
+    # right handle: Bezier front-right -> back-right, bowing out +x AND up over the rim
+    # (control point is outside the side wall and above z=H so the handle clears the bag)
     for pt in bezier_interior(
-        np.array([fx, y_front, rope_z]), np.array([a + p["handle_bulge"], 0.0, rope_z]), np.array([fx, y_back, rope_z])
+        np.array([fx, y_front, rope_z]),
+        np.array([a + p["handle_bulge"], 0.0, H + p["handle_lift"]]),
+        np.array([fx, y_back, rope_z]),
     ):
         add(pt[0], pt[1], pt[2], "right_handle")
 
@@ -387,10 +409,10 @@ def build_drawstring(p, mesh_meta):
         add(fx - (i / n_tun) * 2 * fx, y_back, rope_z, "back_tunnel")
     back_hi_node = len(path) - 1
 
-    # left handle: Bezier back-left -> front-left, bowing out -x
+    # left handle: Bezier back-left -> front-left, bowing out -x AND up over the rim
     for pt in bezier_interior(
         np.array([-fx, y_back, rope_z]),
-        np.array([-a - p["handle_bulge"], 0.0, rope_z]),
+        np.array([-a - p["handle_bulge"], 0.0, H + p["handle_lift"]]),
         np.array([-fx, y_front, rope_z]),
     ):
         add(pt[0], pt[1], pt[2], "left_handle")
@@ -929,6 +951,7 @@ def main():
         f"  rope is_manifold            : {rope_report['is_manifold']} "
         f"(boundary edges={rope_report['num_boundary_edges']}, components={rope_report['num_connected_components']})"
     )
+    print(f"  rope penetrations into bag  : {count_rope_penetrations(rope_verts, p)} (want 0)")
     print("=" * 70)
 
     if args.render:
