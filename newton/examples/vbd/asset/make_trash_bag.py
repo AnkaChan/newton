@@ -58,8 +58,7 @@ DEFAULTS = {
     "rope_width": 0.012,  # width of the single-layer cloth drawstring ribbon
     "rope_n_width": 3,  # segments across the ribbon width
     "rope_z_frac": 0.45,  # rope sits at z = H - rope_z_frac*h_hem (inside the channel)
-    "handle_bulge": 0.05,  # how far (m) the handle arc bows outward past the side rim
-    "handle_lift": 0.12,  # how far (m) the handle arc loops up ABOVE the rim (clears the bag)
+    "rope_offset": 0.008,  # rope follows the bag contour, offset this far OUTWARD (no penetration)
 }
 
 
@@ -355,73 +354,45 @@ def build_mesh(p):
 
 
 # ---------------------------------------------------------------------------
-# Drawstring path (closed loop): front tunnel -> right handle -> back tunnel
-# -> left handle -> close. Emitted to JSON; particles/springs built in Step 2.
+# Drawstring centerline = the bag's perimeter contour OFFSET OUTWARD by a small
+# amount, at z = rope_z. An outward offset of a rounded rectangle is the same
+# shape with corner radius rc+offset (core half-extents unchanged), so we reuse
+# build_perimeter with enlarged params -> the rope is guaranteed `offset` outside
+# the wall everywhere (no penetration). The front/back flats run inside the hem
+# tunnels; the exposed left/right rounded ends are the two handles.
 # ---------------------------------------------------------------------------
 def build_drawstring(p, mesh_meta):
     a, b = p["W"] / 2.0, p["D"] / 2.0
     fx = a - p["rc"]
-    t = p["t_tunnel"]
     H, h_hem = p["H"], p["h_hem"]
     rope_z = H - p["rope_z_frac"] * h_hem
-    fold_out = p.get("fold", "out") == "out"
-    front_sign = -1.0 if fold_out else +1.0
-    back_sign = +1.0 if fold_out else -1.0
-    y_front = -b + front_sign * 0.5 * t  # mid-channel on the folded side
-    y_back = b + back_sign * 0.5 * t
+    offset = p["rope_offset"]
 
-    ds = p["ds_rope"]
-    n_tun = max(2, int(round(2 * fx / ds)))
+    # offset contour: same flats (fx, sy), corner radius rc+offset
+    pp = dict(p)
+    pp["W"] = p["W"] + 2.0 * offset
+    pp["D"] = p["D"] + 2.0 * offset
+    pp["rc"] = p["rc"] + offset
+    pp["ds"] = p["ds_rope"]
+    cxy, clabels, cidx = build_perimeter(pp)
 
-    path = []  # list of [x,y,z]
-    seg = []  # per-node label
+    seg_map = {"front": "front_tunnel", "back": "back_tunnel", "right": "right_handle", "left": "left_handle"}
+    path = [[float(x), float(y), rope_z] for (x, y) in cxy]
+    seg = [seg_map[lbl] for lbl in clabels]
+    n = len(path)
 
-    def add(x, y, z, label):
-        path.append([float(x), float(y), float(z)])
-        seg.append(label)
-
-    def bezier_interior(P0, C, P1):
-        # quadratic-Bezier interior nodes (excludes endpoints), spaced ~ds by arc length
-        us = np.linspace(0.0, 1.0, 64)
-        pts = [(1 - u) ** 2 * P0 + 2 * (1 - u) * u * C + u * u * P1 for u in us]
-        length = sum(float(np.linalg.norm(pts[i + 1] - pts[i])) for i in range(len(pts) - 1))
-        n = max(2, int(round(length / ds)))
-        return [(1 - u) ** 2 * P0 + 2 * (1 - u) * u * C + u * u * P1 for u in (np.arange(1, n) / n)]
-
-    # front tunnel: x:-fx -> +fx (inclusive both ends)
-    for i in range(n_tun + 1):
-        add(-fx + (i / n_tun) * 2 * fx, y_front, rope_z, "front_tunnel")
-    front_lo_node = 0
-    front_hi_node = len(path) - 1
-
-    # right handle: Bezier front-right -> back-right, bowing out +x AND up over the rim
-    # (control point is outside the side wall and above z=H so the handle clears the bag)
-    for pt in bezier_interior(
-        np.array([fx, y_front, rope_z]),
-        np.array([a + p["handle_bulge"], 0.0, H + p["handle_lift"]]),
-        np.array([fx, y_back, rope_z]),
-    ):
-        add(pt[0], pt[1], pt[2], "right_handle")
-
-    # back tunnel: x:+fx -> -fx (inclusive both ends)
-    back_lo_node = len(path)
-    for i in range(n_tun + 1):
-        add(fx - (i / n_tun) * 2 * fx, y_back, rope_z, "back_tunnel")
-    back_hi_node = len(path) - 1
-
-    # left handle: Bezier back-left -> front-left, bowing out -x AND up over the rim
-    for pt in bezier_interior(
-        np.array([-fx, y_back, rope_z]),
-        np.array([-a - p["handle_bulge"], 0.0, H + p["handle_lift"]]),
-        np.array([-fx, y_front, rope_z]),
-    ):
-        add(pt[0], pt[1], pt[2], "left_handle")
+    # exit/hole nodes = the four flat/arc corners (where the hem flap ends)
+    front_lo_node = cidx["front_lo"]
+    front_hi_node = cidx["front_hi"]
+    back_lo_node = cidx["back_lo"]
+    back_hi_node = cidx["back_hi"]
 
     drawstring = {
         "closed": True,
         "rope_width": p["rope_width"],
+        "rope_offset": offset,
         "rope_z": rope_z,
-        "n_nodes": len(path),
+        "n_nodes": n,
         "path": path,
         "labels": seg,
         # the four exit/hole nodes on the rope (where it leaves a channel):
@@ -438,10 +409,10 @@ def build_drawstring(p, mesh_meta):
         },
         "handle_node_indices": {
             "right": list(range(front_hi_node, back_lo_node + 1)),
-            "left": [*range(back_hi_node, len(path)), front_lo_node],
+            "left": [*range(back_hi_node, n), front_lo_node],
         },
     }
-    # 4 hole locations in the cloth (the flat/arc corners at the rope height)
+    # 4 hole locations on the cloth (the flat/arc corners at the rope height)
     holes = {
         "front_left": [-fx, -b, rope_z],
         "front_right": [fx, -b, rope_z],
