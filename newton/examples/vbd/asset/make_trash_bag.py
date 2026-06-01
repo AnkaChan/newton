@@ -209,12 +209,14 @@ def build_mesh(p):
     peri, labels, idx = build_perimeter(p)
     P = len(peri)
 
-    # z levels for the wall: uniform + guarantee a row exactly at the fold base.
-    z_fold_base = H - h_hem
-    zs = sorted({*np.linspace(0.0, H, p["n_z"] + 1).tolist(), z_fold_base})
-    zs = np.array(zs, dtype=np.float64)
-    k_top = int(np.argmin(np.abs(zs - H)))  # row at the fold line z=H
-    k_fb = int(np.argmin(np.abs(zs - z_fold_base)))  # row at z=H-h_hem
+    # Uniform wall rows. Rather than inserting an extra row at H-h_hem (which lands
+    # next to a grid row and makes a ring of sliver triangles), SNAP the flap-attach
+    # height to the nearest uniform row so the wall stays evenly spaced.
+    zs = np.linspace(0.0, H, p["n_z"] + 1)
+    k_top = len(zs) - 1  # top row at z=H (the fold line)
+    k_fb = int(np.argmin(np.abs(zs - (H - h_hem))))  # nearest row to the requested fold base
+    z_fold_base = float(zs[k_fb])
+    h_hem = H - z_fold_base  # effective hem height (flap free edge sits on this wall row)
 
     verts: list[list[float]] = []
 
