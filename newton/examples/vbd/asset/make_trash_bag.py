@@ -49,7 +49,7 @@ DEFAULTS = {
     "h_hem": 0.028,  # flap height = width of the folded hem/stripe band (kept narrow)
     "t_tunnel": 0.014,  # offset of the flap from the wall = channel (drawstring) thickness
     "ds": 0.012,  # target perimeter edge length (controls n around)
-    "bottom_ds": 0.02,  # bottom-cap interior grid spacing (controls cap tessellation)
+    "bottom_ds": 0.014,  # bottom-cap ring spacing (O-grid); ~matches perimeter ds
     "n_z": 28,  # vertical wall divisions (rows = n_z+1, plus fold-base row)
     "n_flap": 5,  # vertical flap divisions
     "ds_rope": 0.018,  # target drawstring segment length
@@ -125,32 +125,75 @@ def build_perimeter(p):
     return np.array(pts, dtype=np.float64), labels, idx
 
 
+def _rounded_rect_outline(fx, sy, rc, spacing):
+    """Points around a rounded rectangle (core half-extents fx,sy; corner radius rc),
+    sampled at ~`spacing` arc length, CCW. rc may be 0 (sharp rectangle). Each piece
+    excludes its end point so consecutive pieces share corners without duplicates."""
+    pts: list[tuple[float, float]] = []
+
+    def line(p0, p1):
+        p0 = np.asarray(p0, float)
+        p1 = np.asarray(p1, float)
+        n = max(1, int(round(np.linalg.norm(p1 - p0) / spacing)))
+        for i in range(n):
+            pts.append(tuple(p0 + (i / n) * (p1 - p0)))
+
+    def arc(cx, cy, a0, a1):
+        if rc <= 1e-9:
+            return
+        n = max(1, int(round(rc * abs(a1 - a0) / spacing)))
+        for i in range(n):
+            ang = a0 + (i / n) * (a1 - a0)
+            pts.append((cx + rc * math.cos(ang), cy + rc * math.sin(ang)))
+
+    line((-fx, -(sy + rc)), (fx, -(sy + rc)))
+    arc(fx, -sy, -math.pi / 2, 0.0)
+    line((fx + rc, -sy), (fx + rc, sy))
+    arc(fx, sy, 0.0, math.pi / 2)
+    line((fx, sy + rc), (-fx, sy + rc))
+    arc(-fx, sy, math.pi / 2, math.pi)
+    line((-fx - rc, sy), (-fx - rc, -sy))
+    arc(-fx, -sy, math.pi, 1.5 * math.pi)
+    return pts
+
+
 # ---------------------------------------------------------------------------
 # Bottom-cap triangulation. The cross-section is convex, so a Delaunay
-# triangulation of (perimeter boundary + an interior grid) fills it with
-# well-shaped triangles while keeping the exact boundary vertices (welded to
-# the wall). This replaces a single-centroid fan, which made skinny triangles.
+# triangulation of (perimeter + interior points) fills it cleanly while keeping
+# the exact boundary vertices (welded to the wall). The interior points are
+# placed on boundary-parallel inset rings (an "O-grid") plus a central spine
+# segment, so triangles run PARALLEL to the rim (no zig-zag) and there is no
+# skinny centroid fan -- the shape collapses to the medial line, not a point.
 # ---------------------------------------------------------------------------
 def triangulate_bottom(peri, p):
     from scipy.spatial import Delaunay  # noqa: PLC0415  (build-time only)
 
     a, b, rc = p["W"] / 2.0, p["D"] / 2.0, p["rc"]
     h = p["bottom_ds"]
+    fx0, sy0 = a - rc, b - rc  # core half-extents (invariant under inset while rc>0)
 
-    def sdf(x, y):  # signed distance to the rounded rectangle (<0 inside)
-        qx = abs(x) - (a - rc)
-        qy = abs(y) - (b - rc)
-        return math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - rc
+    interior: list[tuple[float, float]] = []
+    d = h
+    while True:
+        if d < rc:
+            fxr, syr, rcr = fx0, sy0, rc - d  # straight extents fixed, corner shrinks
+        else:
+            e = d - rc
+            fxr, syr, rcr = fx0 - e, sy0 - e, 0.0  # sharp rect, shrinking
+        if (b - d) < 0.7 * h or (fxr + rcr) < 0.7 * h:  # ring too thin -> stop, use spine
+            break
+        interior += _rounded_rect_outline(fxr, syr, rcr, h)
+        d += h
 
-    nx = max(1, int(math.ceil(2 * a / h)))
-    ny = max(1, int(math.ceil(2 * b / h)))
-    interior = []
-    for ix in range(nx + 1):
-        x = -a + ix * (2 * a / nx)
-        for iy in range(ny + 1):
-            y = -b + iy * (2 * b / ny)
-            if sdf(x, y) < -0.55 * h:  # comfortably inside (avoids boundary slivers)
-                interior.append((x, y))
+    # central spine: the medial segment along x at y=0 (so the mesh collapses to a
+    # line, not a point -> no skinny fan)
+    x_sp = max(0.0, a - b)
+    if x_sp > 0.3 * h:
+        n = max(1, int(round(2 * x_sp / h)))
+        interior += [(-x_sp + (i / n) * 2 * x_sp, 0.0) for i in range(n + 1)]
+    else:
+        interior += [(0.0, 0.0)]
+
     interior = np.array(interior, dtype=np.float64).reshape(-1, 2)
     pts = np.vstack([peri, interior]) if len(interior) else np.asarray(peri)
     return interior, Delaunay(pts).simplices
