@@ -49,6 +49,7 @@ DEFAULTS = {
     "h_hem": 0.028,  # flap height = width of the folded hem/stripe band (kept narrow)
     "t_tunnel": 0.014,  # offset of the flap from the wall = channel (drawstring) thickness
     "ds": 0.012,  # target perimeter edge length (controls n around)
+    "bottom_ds": 0.02,  # bottom-cap interior grid spacing (controls cap tessellation)
     "n_z": 28,  # vertical wall divisions (rows = n_z+1, plus fold-base row)
     "n_flap": 5,  # vertical flap divisions
     "ds_rope": 0.018,  # target drawstring segment length
@@ -125,6 +126,37 @@ def build_perimeter(p):
 
 
 # ---------------------------------------------------------------------------
+# Bottom-cap triangulation. The cross-section is convex, so a Delaunay
+# triangulation of (perimeter boundary + an interior grid) fills it with
+# well-shaped triangles while keeping the exact boundary vertices (welded to
+# the wall). This replaces a single-centroid fan, which made skinny triangles.
+# ---------------------------------------------------------------------------
+def triangulate_bottom(peri, p):
+    from scipy.spatial import Delaunay  # noqa: PLC0415  (build-time only)
+
+    a, b, rc = p["W"] / 2.0, p["D"] / 2.0, p["rc"]
+    h = p["bottom_ds"]
+
+    def sdf(x, y):  # signed distance to the rounded rectangle (<0 inside)
+        qx = abs(x) - (a - rc)
+        qy = abs(y) - (b - rc)
+        return math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - rc
+
+    nx = max(1, int(math.ceil(2 * a / h)))
+    ny = max(1, int(math.ceil(2 * b / h)))
+    interior = []
+    for ix in range(nx + 1):
+        x = -a + ix * (2 * a / nx)
+        for iy in range(ny + 1):
+            y = -b + iy * (2 * b / ny)
+            if sdf(x, y) < -0.55 * h:  # comfortably inside (avoids boundary slivers)
+                interior.append((x, y))
+    interior = np.array(interior, dtype=np.float64).reshape(-1, 2)
+    pts = np.vstack([peri, interior]) if len(interior) else np.asarray(peri)
+    return interior, Delaunay(pts).simplices
+
+
+# ---------------------------------------------------------------------------
 # Mesh assembly.
 # ---------------------------------------------------------------------------
 def build_mesh(p):
@@ -154,8 +186,10 @@ def build_mesh(p):
         for k, z in enumerate(zs):
             wall[pi][k] = add_v(x, y, z)
 
-    # --- bottom cap centroid ---
-    center_b = add_v(0.0, 0.0, 0.0)
+    # --- bottom cap: quality Delaunay triangulation (perimeter + interior grid) ---
+    bottom_interior, bottom_simplices = triangulate_bottom(peri, p)
+    bottom_pts2d = np.vstack([peri, bottom_interior]) if len(bottom_interior) else np.asarray(peri)
+    bottom_gmap = [wall[i][0] for i in range(P)] + [add_v(float(x), float(y), 0.0) for (x, y) in bottom_interior]
 
     # --- flap columns along the front flat and back flat (inward hem) ---
     flap_zs = np.linspace(H, H - h_hem, p["n_flap"] + 1)  # k=0 at fold, last at free edge
@@ -195,10 +229,13 @@ def build_mesh(p):
         for k in range(len(zs) - 1):
             quad(wall[pi][k], wall[pn][k], wall[pn][k + 1], wall[pi][k + 1])
 
-    # bottom cap fan (normal pointing down): center, next, this
-    for pi in range(P):
-        pn = (pi + 1) % P
-        faces.append((center_b, wall[pn][0], wall[pi][0]))
+    # bottom cap (Delaunay tris, oriented so the normal faces down, -z)
+    for s in bottom_simplices:
+        g = [bottom_gmap[s[0]], bottom_gmap[s[1]], bottom_gmap[s[2]]]
+        q0, q1, q2 = bottom_pts2d[s[0]], bottom_pts2d[s[1]], bottom_pts2d[s[2]]
+        if (q1[0] - q0[0]) * (q2[1] - q0[1]) - (q2[0] - q0[0]) * (q1[1] - q0[1]) > 0.0:
+            g[1], g[2] = g[2], g[1]
+        faces.append((g[0], g[1], g[2]))
 
     # the folded hem band ("stripe") = fold-strip + flap faces; record their indices
     stripe_faces: list[int] = []
@@ -606,11 +643,26 @@ def render(verts, faces, layout, out_prefix, p):
     fig.savefig(f"{out_prefix}_hem_section.png", dpi=130, bbox_inches="tight")
     plt.close(fig)
 
+    # ---- view 4: bottom-cap tessellation (xy wireframe) ----
+    zc = verts[:, 2]
+    cap_mask = (zc[faces] < 1e-6).all(axis=1)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for f in faces[cap_mask]:
+        loop = np.vstack([verts[f][:, :2], verts[f][0, :2]])
+        ax.plot(loop[:, 0], loop[:, 1], color="#3f5d80", lw=0.6)
+    ax.set_aspect("equal")
+    ax.set_title(f"Bottom cap: Delaunay tessellation ({int(cap_mask.sum())} triangles) — even sizing, no skinny fan")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    fig.savefig(f"{out_prefix}_bottom.png", dpi=130, bbox_inches="tight")
+    plt.close(fig)
+
     return [
         f"{out_prefix}_oblique.png",
         f"{out_prefix}_top_closeup.png",
         f"{out_prefix}_top.png",
         f"{out_prefix}_hem_section.png",
+        f"{out_prefix}_bottom.png",
     ]
 
 
