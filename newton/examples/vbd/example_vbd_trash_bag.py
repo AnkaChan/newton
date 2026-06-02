@@ -92,8 +92,8 @@ PARAMS = {
     # --- pin + cinch ---
     "settle_frames": 150,
     "cinch_frames": 200,
-    "cinch_up": 0.22,  # how far the handles rise [m]
-    "cinch_apart": 0.12,  # how far each handle pulls outward in x [m] (collapses the loop in depth)
+    "cinch_up": 0.26,  # how far the handles rise [m]
+    "cinch_together": 0.13,  # how far each handle pulls INWARD in x [m] (gathers the neck shut)
     "cinch_ramp": 1.4,  # ease the cinch in over this many seconds
     # --- view (fixed for the whole clip; framed for full motion z in [0, ~0.62]) ---
     "camera_pos": (0.52, -0.98, 0.58),
@@ -321,8 +321,9 @@ class Example:
         t_c = (self.frame - self.params["settle_frames"]) * self.frame_dt
         ramp = min(1.0, t_c / self.params["cinch_ramp"])
         up = self.params["cinch_up"] * ramp
-        ap = self.params["cinch_apart"] * ramp
-        return wp.vec3(ap, 0.0, up), wp.vec3(-ap, 0.0, up)  # right pulls +x, left pulls -x, both up
+        tg = self.params["cinch_together"] * ramp
+        # gather the neck: right handle pulls inward (-x), left inward (+x), both lift up
+        return wp.vec3(-tg, 0.0, up), wp.vec3(tg, 0.0, up)
 
     def simulate(self):
         off_r, off_l = self._cinch()
