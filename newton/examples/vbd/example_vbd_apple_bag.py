@@ -8,8 +8,9 @@
 # carrier bag -- a single welded thin-shell cloth mesh with two side
 # handles, loaded from vbd/asset/supermarket_bag.obj.  The handle tops are
 # pinned, so the bag hangs open as if held by its handles.  After the
-# apples drop and settle, the pinned handles wiggle left and right,
-# swinging the loaded bag so the thin plastic shell deforms and wrinkles.
+# apples drop and settle, the pinned handles wiggle in x and y,
+# swinging the loaded bag from different directions so the thin plastic shell
+# deforms and wrinkles.
 #
 # A single VBD solver integrates the cloth bag and the rigid apples with
 # two-way coupling.  Contact / cloth parameters follow
@@ -74,6 +75,9 @@ PARAMS = {
     "settle_frames": 150,  # let the apples drop and settle before wiggling
     "wiggle_amplitude": 0.085,  # left<->right travel of the pinned handles [m]
     "wiggle_freq": 0.55,  # wiggle frequency [Hz]
+    "wiggle_y_amplitude": 0.055,  # front<->back travel of the pinned handles [m]
+    "wiggle_y_freq": 0.37,  # y-axis wiggle frequency [Hz]
+    "wiggle_y_phase": 0.5 * math.pi,  # phase offset from the x wiggle [rad]
     "wiggle_bob": 0.035,  # vertical bob of the pinned handles [m] (adds bounce/jostle)
     "wiggle_bob_freq": 1.1,  # bob frequency [Hz] (~2x swing -> lively shake)
     "wiggle_ramp": 0.6,  # ease the wiggle in over this many seconds
@@ -305,9 +309,15 @@ class Example:
         t_w = (self.frame - self.params["settle_frames"]) * self.frame_dt
         ramp = min(1.0, t_w / self.params["wiggle_ramp"])
         dx = self.params["wiggle_amplitude"] * ramp * math.sin(2.0 * math.pi * self.params["wiggle_freq"] * t_w)
+        dy = (
+            self.params["wiggle_y_amplitude"]
+            * ramp
+            * math.sin(2.0 * math.pi * self.params["wiggle_y_freq"] * t_w + self.params["wiggle_y_phase"])
+        )
         dz = self.params["wiggle_bob"] * ramp * math.sin(2.0 * math.pi * self.params["wiggle_bob_freq"] * t_w)
         off = [0.0, 0.0, 0.0]
-        off[self.params["wiggle_axis"]] = dx
+        off[self.params["wiggle_axis"]] += dx
+        off[1] += dy
         off[self.params["vertical_axis"]] += dz
         return wp.vec3(*off)
 
@@ -351,8 +361,11 @@ class Example:
         assert np.all(az > self.info["z_floor"] - 0.06), f"An apple fell through the bag bottom: min z {az.min():.3f}"
         assert np.all(az < self.info["z_top"] + 0.02), f"An apple is above the handles: max z {az.max():.3f}"
 
-        x_lim = self.info["half_width"] + self.params["wiggle_amplitude"] + self.params["apple_radius"] + 0.08
-        y_lim = self.info["half_depth"] + self.params["apple_radius"] + 0.06
+        motion_limits = [0.0, 0.0, 0.0]
+        motion_limits[self.params["wiggle_axis"]] += self.params["wiggle_amplitude"]
+        motion_limits[1] += self.params["wiggle_y_amplitude"]
+        x_lim = self.info["half_width"] + motion_limits[0] + self.params["apple_radius"] + 0.08
+        y_lim = self.info["half_depth"] + motion_limits[1] + self.params["apple_radius"] + 0.06
         assert np.all(np.abs(apple_pos[:, 0]) < x_lim), "An apple escaped the bag in x"
         assert np.all(np.abs(apple_pos[:, 1]) < y_lim), "An apple escaped the bag in y"
 
