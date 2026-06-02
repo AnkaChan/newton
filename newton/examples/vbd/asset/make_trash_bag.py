@@ -59,6 +59,7 @@ DEFAULTS = {
     "rope_n_width": 3,  # segments across the ribbon width
     "rope_z_frac": 0.45,  # rope sits at z = H - rope_z_frac*h_hem (inside the channel)
     "rope_offset": 0.008,  # rope follows the bag contour, offset this far OUTWARD (no penetration)
+    "handle_gap": 0.05,  # exposed handle gap at each side middle; tunnels cover the rest (incl. corners)
 }
 
 
@@ -144,6 +145,50 @@ def count_rope_penetrations(rope_verts, p, eps=1e-4):
         if z < H - eps and _rr_sdf(x, y, a, b, rc) < -eps:
             n += 1
     return n
+
+
+def _outward_normals(peri):
+    """Per-vertex outward (xy) unit normals for a CCW closed polygon."""
+    tang = np.roll(peri, -1, axis=0) - np.roll(peri, 1, axis=0)
+    nrm = np.stack([tang[:, 1], -tang[:, 0]], axis=1)  # tangent rotated -90deg = outward (CCW)
+    return nrm / (np.linalg.norm(nrm, axis=1, keepdims=True) + 1e-12)
+
+
+def _tunnel_runs(peri, gap_len):
+    """Split a closed perimeter into the front/back TUNNEL runs and the two side
+    handle GAPs. Each gap is centered on a side middle (+/- max|x|, y=0) and spans
+    ~gap_len. Returns ordered contiguous (wrapping) index lists:
+    (front_run, back_run, right_gap, left_gap)."""
+    peri = np.asarray(peri)
+    n = len(peri)
+    a = float(np.max(np.abs(peri[:, 0])))
+    half = 0.5 * gap_len
+    dr = np.linalg.norm(peri - np.array([a, 0.0]), axis=1)
+    dl = np.linalg.norm(peri - np.array([-a, 0.0]), axis=1)
+    is_gap = (dr < half) | (dl < half)
+    if not is_gap.any():
+        return list(range(n)), [], [], []
+    g0 = int(np.argmax(is_gap))  # start at a gap so non-gap runs come out contiguous
+    runs, cur = [], []
+    for k in range(n):
+        i = (g0 + k) % n
+        if is_gap[i]:
+            if cur:
+                runs.append(cur)
+                cur = []
+        else:
+            cur.append(i)
+    if cur:
+        runs.append(cur)
+    front_run, back_run = [], []
+    for run in runs:
+        if float(np.mean(peri[run, 1])) < 0.0:
+            front_run = run
+        else:
+            back_run = run
+    right_gap = [i for i in range(n) if is_gap[i] and peri[i, 0] >= 0.0]
+    left_gap = [i for i in range(n) if is_gap[i] and peri[i, 0] < 0.0]
+    return front_run, back_run, right_gap, left_gap
 
 
 def _rounded_rect_outline(fx, sy, rc, spacing):
@@ -257,29 +302,26 @@ def build_mesh(p):
     bottom_pts2d = np.vstack([peri, bottom_interior]) if len(bottom_interior) else np.asarray(peri)
     bottom_gmap = [wall[i][0] for i in range(P)] + [add_v(float(x), float(y), 0.0) for (x, y) in bottom_interior]
 
-    # --- flap columns along the front flat and back flat (inward hem) ---
+    # --- folded hem flaps, EXTENDED around the corners to the side ends; only a
+    # small handle gap remains at each side middle ---
     flap_zs = np.linspace(H, H - h_hem, p["n_flap"] + 1)  # k=0 at fold, last at free edge
-
-    # Fold direction: "out" puts the hem/stripe band + handles on the OUTSIDE
-    # (front wall at y=-b folds toward -y); "in" folds toward the interior.
     fold_out = p.get("fold", "out") == "out"
-    front_sign = -1.0 if fold_out else +1.0  # offset of +t off the front wall (y=-b)
-    back_sign = +1.0 if fold_out else -1.0  # offset of +t off the back wall  (y=+b)
+    fold_sign = 1.0 if fold_out else -1.0  # +1 = fold outward (stripe band on the outside)
+    normals = _outward_normals(peri)
 
-    def build_flap(col_perimeter_indices, sign):
-        # flap column offset off the wall by sign*t (sign chooses the in/out side)
+    def build_flap(run):
+        # flap columns offset off the wall along the local OUTWARD normal, so the hem
+        # folds correctly around the corners (not just along +/-y)
         cols = []
-        for pi in col_perimeter_indices:
-            x = peri[pi][0]
-            y_flap = peri[pi][1] + sign * t
-            col = [add_v(x, y_flap, z) for z in flap_zs]
+        for pi in run:
+            base = peri[pi] + fold_sign * t * normals[pi]
+            col = [add_v(base[0], base[1], z) for z in flap_zs]
             cols.append(col)
         return cols
 
-    front_cols_pidx = list(range(idx["front_lo"], idx["front_hi"] + 1))
-    back_cols_pidx = list(range(idx["back_lo"], idx["back_hi"] + 1))
-    flap_front = build_flap(front_cols_pidx, front_sign)
-    flap_back = build_flap(back_cols_pidx, back_sign)
+    front_cols_pidx, back_cols_pidx = _tunnel_runs(peri, p["handle_gap"])[:2]
+    flap_front = build_flap(front_cols_pidx)
+    flap_back = build_flap(back_cols_pidx)
 
     # --- faces (triangles, 0-indexed) ---
     faces: list[tuple[int, int, int]] = []
@@ -362,8 +404,7 @@ def build_mesh(p):
 # tunnels; the exposed left/right rounded ends are the two handles.
 # ---------------------------------------------------------------------------
 def build_drawstring(p, mesh_meta):
-    a, b = p["W"] / 2.0, p["D"] / 2.0
-    fx = a - p["rc"]
+    a = p["W"] / 2.0
     H, h_hem = p["H"], p["h_hem"]
     rope_z = H - p["rope_z_frac"] * h_hem
     offset = p["rope_offset"]
@@ -374,50 +415,38 @@ def build_drawstring(p, mesh_meta):
     pp["D"] = p["D"] + 2.0 * offset
     pp["rc"] = p["rc"] + offset
     pp["ds"] = p["ds_rope"]
-    cxy, clabels, cidx = build_perimeter(pp)
-
-    seg_map = {"front": "front_tunnel", "back": "back_tunnel", "right": "right_handle", "left": "left_handle"}
+    cxy, _clabels, _cidx = build_perimeter(pp)
+    n = len(cxy)
     path = [[float(x), float(y), rope_z] for (x, y) in cxy]
-    seg = [seg_map[lbl] for lbl in clabels]
-    n = len(path)
 
-    # exit/hole nodes = the four flat/arc corners (where the hem flap ends)
-    front_lo_node = cidx["front_lo"]
-    front_hi_node = cidx["front_hi"]
-    back_lo_node = cidx["back_lo"]
-    back_hi_node = cidx["back_hi"]
+    # tunnels extend around the corners; only the small side-middle gaps are exposed
+    front_run, back_run, right_gap, left_gap = _tunnel_runs(cxy, p["handle_gap"])
+    seg = ["front_tunnel"] * n
+    for i in front_run:
+        seg[i] = "front_tunnel"
+    for i in back_run:
+        seg[i] = "back_tunnel"
+    for i in right_gap:
+        seg[i] = "right_handle"
+    for i in left_gap:
+        seg[i] = "left_handle"
 
     drawstring = {
         "closed": True,
         "rope_width": p["rope_width"],
         "rope_offset": offset,
+        "handle_gap": p["handle_gap"],
         "rope_z": rope_z,
         "n_nodes": n,
         "path": path,
         "labels": seg,
-        # the four exit/hole nodes on the rope (where it leaves a channel):
-        "exit_rope_nodes": {
-            "front_left": front_lo_node,
-            "front_right": front_hi_node,
-            "back_right": back_lo_node,
-            "back_left": back_hi_node,
-        },
-        # rope index ranges that form the two exposed handles (to pull/cinch):
-        "handle_spans": {
-            "right": [front_hi_node, back_lo_node],
-            "left": [back_hi_node, front_lo_node],
-        },
-        "handle_node_indices": {
-            "right": list(range(front_hi_node, back_lo_node + 1)),
-            "left": [*range(back_hi_node, n), front_lo_node],
-        },
+        # rope vertices forming each exposed handle (the side-middle gaps):
+        "handle_node_indices": {"right": list(right_gap), "left": list(left_gap)},
     }
-    # 4 hole locations on the cloth (the flat/arc corners at the rope height)
+    # the two exposed exit regions (side middles), where the drawstring leaves the tunnels
     holes = {
-        "front_left": [-fx, -b, rope_z],
-        "front_right": [fx, -b, rope_z],
-        "back_right": [fx, b, rope_z],
-        "back_left": [-fx, b, rope_z],
+        "right": [a, 0.0, rope_z],
+        "left": [-a, 0.0, rope_z],
     }
     return drawstring, holes
 
