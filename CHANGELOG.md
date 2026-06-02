@@ -32,6 +32,7 @@
 - Add VBD Franka bag pickup-and-wave example with a 0.003 m gripper gap.
 - Add VBD bag plasticity example with robot clamp-and-release deformation.
 - Add VBD bag-on-ground example for staging a rigid-filled bag before robot pickup.
+- Add per-frame PLY export to the VBD trash-bag example.
 - Add VBD hard/soft controls for body-body contacts and structural joint slots, including `rigid_contact_hard`, `SolverVBD.set_joint_constraint_mode()`, and `SolverVBD.JointSlot`
 - Add AVBD contact/joint alpha overrides and linear/angular beta overrides to `SolverVBD` for stabilization and penalty-ramping control
 - Add `enable_multiccd` parameter to `SolverMuJoCo` for multi-CCD contact generation (up to 4 contact points per geom pair)
@@ -60,6 +61,7 @@
 - Change GL viewer scroll to dolly toward the orbit pivot; use Ctrl+scroll for FOV zoom
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
 - Adjust grouping of `reset`, `step`, and `pause` controls so they appear together
+- Run a 10-frame preroll before the VBD trash-bag example starts rendering or exporting frames, clearing velocities after each preroll solver step.
 - Bump `Pillow` floor to `>=11.3.0`
 - Bump `jupyterlab` lower bound to `>=4.5.7` to pick up the fix for CVE-2026-40171
 - Replace `ModelBuilder.add_actuator(actuator_class, input_indices=..., output_indices=..., **kwargs)` with `ModelBuilder.add_actuator(controller_class, index=..., clamping=[...], delay_steps=..., pos_index=..., **ctrl_kwargs)` where each call registers a single DOF
@@ -105,6 +107,8 @@
 - Fix `ModelBuilder.finalize()` crashing with 3+ articulations after `collapse_fixed_joints()` reordered `articulation_start` and dropped per-articulation metadata
 - Fix VBD collision damping to use relative normal gap rate so uniform contact-stencil motion and tangential sliding do not create artificial normal damping.
 - Fix Sphinx docs builds to auto-discover bundled ``pypandoc_binary`` pandoc so notebook tutorials build without manual PATH configuration
+- Fix the VBD trash-bag example to use self-contact for bag/rope interaction instead of rope-to-bag tether springs.
+- Fix the VBD trash-bag tunnel seam to use zero-rest stitching springs and filter stitched self-contact pairs while preserving global self-contact.
 - Fix `SolverStyle3D` initialization to precompute its fixed PD matrix from the finalized model
 - Fix connect constraint anchor computation to account for joint reference positions when `SolverMuJoCo` is the chosen solver.
 - Fix joint-synthesized CONNECT constraint anchors not updating when `dof_ref` or `joint_X_p` changes at runtime via `notify_model_changed()`

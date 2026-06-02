@@ -26,6 +26,7 @@
 # Commands:
 #   python newton/examples/vbd/example_vbd_trash_bag.py --num-frames 360
 #   python newton/examples/vbd/example_vbd_trash_bag.py --viewer null --num-frames 360 --test
+#   python newton/examples/vbd/example_vbd_trash_bag.py --num-frames 360 --export-ply --ply-output-dir trash_bag_ply
 ###########################################################################
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from itertools import pairwise
 
 import numpy as np
 import warp as wp
@@ -60,26 +62,27 @@ PARAMS = {
     "cloth_density": 0.08,
     "cloth_tri_ke": 2.0e4,
     "cloth_tri_ka": 2.0e3,
-    "cloth_tri_kd": 1.0e2,
+    "cloth_tri_kd": 1.0e0,
     "cloth_edge_ke": 0.05,  # low bending -> floppy, wrinkly plastic
     "cloth_edge_kd": 0.001,
     # --- rope cloth (the tie): stiff/inextensible so pulling collapses the loop ---
-    "rope_density": 0.2,
-    "rope_tri_ke": 3.0e5,
-    "rope_tri_ka": 1.0e4,
+    "rope_density": 0.08,
+    "rope_tri_ke": 1.0e5,
+    "rope_tri_ka": 2.0e4,
     "rope_tri_kd": 1.0e2,
-    "rope_edge_ke": 0.2,
+    "rope_edge_ke": 0.05,
     "rope_edge_kd": 0.01,
     # --- springs ---
-    "closure_ke": 2.0e3,  # tunnel closure: flap free edge <-> wall
-    "closure_kd": 1.0e0,
-    "tether_ke": 6.0e3,  # rope tunnel verts <-> nearest bag wall vert (hangs bag on the tie)
-    "tether_kd": 1.0e0,
+    "closure_ke": 2.0e5,  # tunnel closure: flap free edge <-> wall
+    "closure_kd": 1.0e-3,
+    "closure_rest_length": 0.0,
     # --- contacts ---
     "soft_contact_ke": 5.0e5,
     "soft_contact_kd": 1.0e1,
     "soft_contact_mu": 1.0,
     "soft_contact_creation_margin": 0.012,
+    "particle_self_contact_radius": 0.002,
+    "particle_self_contact_margin": 0.004,
     "rigid_body_particle_contact_buffer_size": 4096,
     "rigid_body_contact_buffer_size": 1024,
     "rigid_contact_hard": True,
@@ -89,6 +92,7 @@ PARAMS = {
     "solver_iterations": 12,
     "gravity": -9.8,
     "vertical_axis": 2,
+    "preroll_frames": 10,
     # --- pin + cinch ---
     "settle_frames": 150,
     "cinch_frames": 200,
@@ -129,6 +133,126 @@ def _load_obj(path):
     return np.array(vertices, dtype=np.float32), faces
 
 
+def _as_numpy(array):
+    if hasattr(array, "numpy"):
+        return array.numpy()
+    return np.asarray(array)
+
+
+def _add_filter_entries(filter_map, key, values):
+    if not values:
+        return
+    filter_map.setdefault(int(key), set()).update(int(value) for value in values)
+
+
+def _triangles_by_vertex(tri_indices):
+    tri_indices = np.asarray(tri_indices, dtype=np.int32).reshape(-1, 3)
+    vertex_triangles = {}
+    for tri_id, tri in enumerate(tri_indices):
+        for vertex in tri:
+            vertex_triangles.setdefault(int(vertex), set()).add(int(tri_id))
+    return vertex_triangles
+
+
+def _edges_by_vertex(edge_indices):
+    edge_indices = np.asarray(edge_indices, dtype=np.int32).reshape(-1, 4)
+    vertex_edges = {}
+    for edge_id, edge in enumerate(edge_indices):
+        for vertex in edge[2:4]:
+            if vertex >= 0:
+                vertex_edges.setdefault(int(vertex), set()).add(int(edge_id))
+    return vertex_edges
+
+
+def _split_tunnel_sides(tunnel_pairs):
+    pairs = [(int(i), int(j)) for i, j in np.asarray(tunnel_pairs, dtype=np.int32).reshape(-1, 2)]
+    if len(pairs) < 2:
+        return [pairs]
+    # The asset generator emits front tunnel pairs first, then back tunnel pairs.
+    midpoint = len(pairs) // 2
+    return [pairs[:midpoint], pairs[midpoint:]]
+
+
+def _build_tunnel_seam_contact_filters(model, tunnel_pairs):
+    """Build external VBD self-contact filters across tunnel closure seams."""
+    vertex_triangles = _triangles_by_vertex(_as_numpy(model.tri_indices))
+    vertex_edges = _edges_by_vertex(_as_numpy(model.edge_indices))
+    vertex_filter = {}
+    edge_filter = {}
+
+    def add_vertex_triangle_filter(vertices, other_vertices):
+        other_tris = set()
+        for vertex in other_vertices:
+            other_tris.update(vertex_triangles.get(int(vertex), ()))
+        for vertex in vertices:
+            _add_filter_entries(vertex_filter, vertex, other_tris)
+
+    for side_pairs in _split_tunnel_sides(tunnel_pairs):
+        for flap_vertex, wall_vertex in side_pairs:
+            add_vertex_triangle_filter((flap_vertex,), (wall_vertex,))
+            add_vertex_triangle_filter((wall_vertex,), (flap_vertex,))
+            flap_edges = vertex_edges.get(int(flap_vertex), ())
+            wall_edges = vertex_edges.get(int(wall_vertex), ())
+            for edge in flap_edges:
+                _add_filter_entries(edge_filter, edge, wall_edges)
+            for edge in wall_edges:
+                _add_filter_entries(edge_filter, edge, flap_edges)
+
+        for (flap_a, wall_a), (flap_b, wall_b) in pairwise(side_pairs):
+            add_vertex_triangle_filter((flap_a, flap_b), (wall_a, wall_b))
+            add_vertex_triangle_filter((wall_a, wall_b), (flap_a, flap_b))
+
+    vertex_filter = {key: sorted(values) for key, values in vertex_filter.items()}
+    edge_filter = {key: sorted(values) for key, values in edge_filter.items()}
+    return vertex_filter, edge_filter
+
+
+def _combined_cloth_mesh(positions, info):
+    positions = np.asarray(positions, dtype=np.float32)
+
+    bag_start = int(info["bag_start"])
+    bag_count = int(info["bag_count"])
+    rope_start = int(info["rope_start"])
+    rope_count = int(info["rope_count"])
+
+    bag_vertices = positions[bag_start : bag_start + bag_count]
+    rope_vertices = positions[rope_start : rope_start + rope_count]
+    vertices = np.vstack((bag_vertices, rope_vertices))
+
+    bag_faces = np.asarray(info["bag_faces"], dtype=np.int32).reshape(-1, 3)
+    rope_faces = np.asarray(info["rope_faces"], dtype=np.int32).reshape(-1, 3) + bag_count
+    faces = np.vstack((bag_faces, rope_faces))
+    return vertices, faces
+
+
+def _write_ply(path, vertices, faces):
+    vertices = np.asarray(vertices, dtype=np.float32)
+    faces = np.asarray(faces, dtype=np.int32).reshape(-1, 3)
+
+    with open(path, "w", encoding="utf-8") as file:
+        file.write("ply\n")
+        file.write("format ascii 1.0\n")
+        file.write(f"element vertex {len(vertices)}\n")
+        file.write("property float x\n")
+        file.write("property float y\n")
+        file.write("property float z\n")
+        file.write(f"element face {len(faces)}\n")
+        file.write("property list uchar int vertex_indices\n")
+        file.write("end_header\n")
+        for vertex in vertices:
+            file.write(f"{float(vertex[0]):.9g} {float(vertex[1]):.9g} {float(vertex[2]):.9g}\n")
+        for face in faces:
+            file.write(f"3 {int(face[0])} {int(face[1])} {int(face[2])}\n")
+
+
+def _export_ply_frame(output_dir, frame, positions, info):
+    os.makedirs(output_dir, exist_ok=True)
+    vertices, faces = _combined_cloth_mesh(positions, info)
+    path = os.path.join(output_dir, f"trash_bag_{frame:06d}.ply")
+    _write_ply(path, vertices, faces)
+    return path
+
+
 @wp.kernel
 def move_pinned_vertices(
     pinned_indices: wp.array[wp.int32],
@@ -146,11 +270,13 @@ def move_pinned_vertices(
 
 def build_model(builder, params, seed):
     rng = np.random.default_rng(seed)
-    layout = json.load(open(LAYOUT_JSON))
+    with open(LAYOUT_JSON, encoding="utf-8") as file:
+        layout = json.load(file)
     pr = params["particle_radius"]
 
     # --- bag shell ---
     bag_verts, bag_faces = _load_obj(BAG_OBJ)
+    bag_faces_array = np.array(bag_faces, dtype=np.int32).reshape(-1, 3)
     bag_start = len(builder.particle_q)
     builder.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 0.0),
@@ -170,6 +296,7 @@ def build_model(builder, params, seed):
 
     # --- drawstring tie (ribbon) ---
     rope_verts, rope_faces = _load_obj(ROPE_OBJ)
+    rope_faces_array = np.array(rope_faces, dtype=np.int32).reshape(-1, 3)
     rope_start = len(builder.particle_q)
     builder.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 0.0),
@@ -188,16 +315,12 @@ def build_model(builder, params, seed):
     )
 
     # --- tunnel-closure springs: flap free edge <-> wall (bag-local indices) ---
-    for i, j in layout["tunnel_spring_pairs"]:
-        builder.add_spring(bag_start + i, bag_start + j, params["closure_ke"], params["closure_kd"], 0.0)
-
-    # --- tethers: rope tunnel verts <-> nearest bag wall vert (hang the bag on the tie) ---
-    rope_labels = layout["rope"]["vertex_labels"]
-    tunnel_rope_local = [i for i, lbl in enumerate(rope_labels) if lbl in ("front_tunnel", "back_tunnel")]
-    for i in tunnel_rope_local:
-        d = np.linalg.norm(bag_verts - rope_verts[i], axis=1)
-        j = int(np.argmin(d))
-        builder.add_spring(rope_start + i, bag_start + j, params["tether_ke"], params["tether_kd"], 0.0)
+    tunnel_spring_pairs = np.array(
+        [[bag_start + i, bag_start + j] for i, j in layout["tunnel_spring_pairs"]], dtype=np.int32
+    )
+    for i, j in tunnel_spring_pairs:
+        builder.add_spring(i, j, params["closure_ke"], params["closure_kd"], 0.0)
+        builder.spring_rest_length[-1] = params["closure_rest_length"]
 
     # --- pinned drawstring handles (the two exposed side ends) ---
     hv = layout["rope"]["handle_vertex_indices"]
@@ -234,12 +357,15 @@ def build_model(builder, params, seed):
         "rope_start": rope_start,
         "bag_count": rope_start - bag_start,
         "rope_count": len(rope_verts),
+        "bag_faces": bag_faces_array,
+        "rope_faces": rope_faces_array,
         "right_idx": right_idx,
         "left_idx": left_idx,
         "body_indices": body_indices,
         "z_floor": z_floor,
         "num_tunnel_springs": len(layout["tunnel_spring_pairs"]),
-        "num_tethers": len(tunnel_rope_local),
+        "tunnel_spring_pairs": tunnel_spring_pairs,
+        "num_tethers": 0,
     }
 
 
@@ -260,13 +386,18 @@ def setup_sim(builder, info, params):
     left = wp.array(info["left_idx"], dtype=wp.int32)
     right_orig = wp.array(pq[info["right_idx"]].copy(), dtype=wp.vec3)
     left_orig = wp.array(pq[info["left_idx"]].copy(), dtype=wp.vec3)
+    vertex_filter, edge_filter = _build_tunnel_seam_contact_filters(model, info["tunnel_spring_pairs"])
 
     solver = newton.solvers.SolverVBD(
         model=model,
         iterations=params["solver_iterations"],
         rigid_body_particle_contact_buffer_size=params["rigid_body_particle_contact_buffer_size"],
         rigid_body_contact_buffer_size=params["rigid_body_contact_buffer_size"],
-        particle_enable_self_contact=False,
+        particle_enable_self_contact=True,
+        particle_self_contact_radius=params["particle_self_contact_radius"],
+        particle_self_contact_margin=params["particle_self_contact_margin"],
+        particle_external_vertex_contact_filtering_map=vertex_filter,
+        particle_external_edge_contact_filtering_map=edge_filter,
         rigid_contact_hard=params["rigid_contact_hard"],
     )
     pipeline = newton.CollisionPipeline(
@@ -285,6 +416,8 @@ class Example:
         self.sim_substeps = self.params["sim_substeps"]
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.frame = 0
+        self.export_ply = bool(getattr(args, "export_ply", False))
+        self.ply_output_dir = getattr(args, "ply_output_dir", os.path.join("outputs", "vbd_trash_bag_ply"))
 
         seed = getattr(args, "seed", self.params["seed"])
         builder = newton.ModelBuilder(gravity=self.params["gravity"])
@@ -314,6 +447,21 @@ class Example:
         if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
             self.viewer.camera.fov = self.params["camera_fov"]
 
+        self._preroll()
+        if self.export_ply:
+            os.makedirs(self.ply_output_dir, exist_ok=True)
+            print(f"[trash_bag] exporting PLY frames to {self.ply_output_dir}")
+
+    def _zero_velocities(self):
+        if self.state_0.particle_qd is not None:
+            self.state_0.particle_qd.zero_()
+        if self.state_0.body_qd is not None:
+            self.state_0.body_qd.zero_()
+
+    def _preroll(self):
+        for _ in range(self.params["preroll_frames"]):
+            self.simulate(zero_velocities_each_step=True)
+
     def _cinch(self):
         """Offsets for the right and left pinned handles."""
         if self.frame <= self.params["settle_frames"]:
@@ -325,7 +473,7 @@ class Example:
         # gather the neck: right handle pulls inward (-x), left inward (+x), both lift up
         return wp.vec3(-tg, 0.0, up), wp.vec3(tg, 0.0, up)
 
-    def simulate(self):
+    def simulate(self, zero_velocities_each_step=False):
         off_r, off_l = self._cinch()
         for _ in range(self.sim_substeps):
             wp.launch(
@@ -345,11 +493,15 @@ class Example:
             self.pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
+            if zero_velocities_each_step:
+                self._zero_velocities()
 
     def step(self):
         self.frame += 1
         self.simulate()
         self.sim_time += self.frame_dt
+        if self.export_ply:
+            _export_ply_frame(self.ply_output_dir, self.frame, self.state_0.particle_q.numpy(), self.info)
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -371,6 +523,18 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=PARAMS["seed"])
+        parser.add_argument(
+            "--export-ply",
+            action="store_true",
+            default=False,
+            help="Export one combined bag/rope PLY mesh per simulated frame.",
+        )
+        parser.add_argument(
+            "--ply-output-dir",
+            type=str,
+            default=os.path.join("outputs", "vbd_trash_bag_ply"),
+            help="Directory for per-frame PLY files when --export-ply is set.",
+        )
         parser.set_defaults(num_frames=PARAMS["settle_frames"] + PARAMS["cinch_frames"])
         return parser
 
