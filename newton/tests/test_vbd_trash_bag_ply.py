@@ -190,6 +190,60 @@ class TestVbdTrashBagContacts(unittest.TestCase):
         self.assertIn(5, edge_filter[4])
         self.assertIn(4, edge_filter[5])
 
+    def test_tunnel_seam_collision_filters_do_not_exclude_rope_primitives(self):
+        rope_start = 8
+        model = _FakeModel(
+            particle_count=12,
+            tri_indices=np.array(
+                [
+                    [0, 1, 4],
+                    [2, 3, 5],
+                    [rope_start, rope_start + 1, rope_start + 2],
+                ],
+                dtype=np.int32,
+            ),
+            edge_indices=np.array(
+                [
+                    [-1, -1, 0, 1],
+                    [-1, -1, 2, 3],
+                    [-1, -1, rope_start, rope_start + 1],
+                ],
+                dtype=np.int32,
+            ),
+        )
+
+        vertex_filter, edge_filter = example_vbd_trash_bag._build_tunnel_seam_contact_filters(
+            model,
+            np.array(
+                [
+                    [0, 2],
+                    [1, 3],
+                ],
+                dtype=np.int32,
+            ),
+        )
+        tri_indices = model.tri_indices.numpy()
+        edge_indices = model.edge_indices.numpy()
+
+        self.assertFalse(any(vertex >= rope_start for vertex in vertex_filter))
+        self.assertFalse(
+            any(
+                np.any(tri_indices[triangle] >= rope_start)
+                for triangles in vertex_filter.values()
+                for triangle in triangles
+            )
+        )
+        self.assertFalse(any(np.any(edge_indices[edge_id, 2:4] >= rope_start) for edge_id in edge_filter))
+        self.assertFalse(
+            any(np.any(edge_indices[edge_id, 2:4] >= rope_start) for edges in edge_filter.values() for edge_id in edges)
+        )
+
+    def test_particle_self_contact_radius_matches_cloth_collision_scale(self):
+        params = example_vbd_trash_bag.PARAMS
+
+        self.assertGreaterEqual(params["particle_self_contact_radius"], params["particle_radius"])
+        self.assertGreaterEqual(params["particle_self_contact_margin"], 2.0 * params["particle_self_contact_radius"])
+
     def test_build_model_keeps_springs_within_bag_mesh(self):
         builder = _FakeBuilder()
 
