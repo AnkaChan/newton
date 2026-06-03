@@ -407,6 +407,13 @@ add_example_test(
     test_options={"num-frames": 200},
     use_viewer=True,
 )
+add_example_test(
+    TestVolumetricExamples,
+    name="vbd.example_soft_poisson_volume",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 80},
+    use_viewer=True,
+)
 
 
 class TestRobotExamples(unittest.TestCase):
