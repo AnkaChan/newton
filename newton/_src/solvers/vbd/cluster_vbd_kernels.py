@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import warp as wp
 
+from .particle_vbd_kernels import compute_angle_derivative, compute_normalized_vector_derivative
+
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 
@@ -109,20 +111,20 @@ def psd_clamp6(a: mat66):
 
 @wp.kernel
 def eval_elem_hessian(
-    pos: wp.array(dtype=wp.vec3),
-    tri_indices: wp.array(dtype=wp.int32),
-    tri_poses: wp.array(dtype=wp.mat22),
-    tri_mu: wp.array(dtype=wp.float32),
-    tri_lam: wp.array(dtype=wp.float32),
-    tri_area: wp.array(dtype=wp.float32),
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_mu: wp.array[wp.float32],
+    tri_lam: wp.array[wp.float32],
+    tri_area: wp.array[wp.float32],
     eps: wp.float32,
-    elem_h: wp.array(dtype=mat66),
+    elem_h: wp.array[mat66],
 ):
     """Per-triangle stable-Neo-Hookean element Hessian elem_h[e] = area * PSD(d2Psi/dF2) (6x6)."""
     e = wp.tid()
-    v0 = tri_indices[3 * e + 0]
-    v1 = tri_indices[3 * e + 1]
-    v2 = tri_indices[3 * e + 2]
+    v0 = tri_indices[e, 0]
+    v1 = tri_indices[e, 1]
+    v2 = tri_indices[e, 2]
     x01 = pos[v1] - pos[v0]
     x02 = pos[v2] - pos[v0]
     dm = tri_poses[e]
@@ -216,22 +218,92 @@ def solve12_spd(a: mat12, b: vec12, ridge: float):
 
 
 @wp.func
+def dihedral_grads(
+    edge_idx: int,
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_length: wp.array[wp.float32],
+    stiffness: float,
+):
+    """Return (dtheta/dx0, dx1, dx2, dx3, k) for one dihedral bending edge; zeros if degenerate.
+
+    Mirrors the geometry in evaluate_dihedral_angle_based_bending_force_hessian (vi0/vi1 are the
+    wing tips, vi2/vi3 the shared edge). The per-edge Gauss-Newton bending Hessian is the rank-1
+    k * g g^T over the 12-vector g = [dx0;dx1;dx2;dx3]."""
+    z = wp.vec3(0.0)
+    if edge_indices[edge_idx, 0] == -1 or edge_indices[edge_idx, 1] == -1:
+        return z, z, z, z, float(0.0)
+    eps = 1.0e-6
+    x0 = pos[edge_indices[edge_idx, 0]]
+    x1 = pos[edge_indices[edge_idx, 1]]
+    x2 = pos[edge_indices[edge_idx, 2]]
+    x3 = pos[edge_indices[edge_idx, 3]]
+    x02 = x2 - x0
+    x03 = x3 - x0
+    x13 = x3 - x1
+    x12 = x2 - x1
+    e = x3 - x2
+    n1 = wp.cross(x02, x03)
+    n2 = wp.cross(x13, x12)
+    n1n = wp.length(n1)
+    n2n = wp.length(n2)
+    en = wp.length(e)
+    if n1n < eps or n2n < eps or en < eps:
+        return z, z, z, z, float(0.0)
+    n1h = n1 / n1n
+    n2h = n2 / n2n
+    eh = e / en
+    sin_t = wp.dot(wp.cross(n1h, n2h), eh)
+    cos_t = wp.dot(n1h, n2h)
+    skew_e = wp.skew(e)
+    skew_x03 = wp.skew(x03)
+    skew_x02 = wp.skew(x02)
+    skew_x13 = wp.skew(x13)
+    skew_x12 = wp.skew(x12)
+    skew_n1 = wp.skew(n1h)
+    skew_n2 = wp.skew(n2h)
+    dn1_dx0 = compute_normalized_vector_derivative(n1n, n1h, skew_e)
+    dn2_dx0 = wp.mat33(0.0)
+    dn1_dx1 = wp.mat33(0.0)
+    dn2_dx1 = compute_normalized_vector_derivative(n2n, n2h, -skew_e)
+    dn1_dx2 = compute_normalized_vector_derivative(n1n, n1h, -skew_x03)
+    dn2_dx2 = compute_normalized_vector_derivative(n2n, n2h, skew_x13)
+    dn1_dx3 = compute_normalized_vector_derivative(n1n, n1h, skew_x02)
+    dn2_dx3 = compute_normalized_vector_derivative(n2n, n2h, -skew_x12)
+    g0 = compute_angle_derivative(n1h, n2h, eh, dn1_dx0, dn2_dx0, sin_t, cos_t, skew_n1, skew_n2)
+    g1 = compute_angle_derivative(n1h, n2h, eh, dn1_dx1, dn2_dx1, sin_t, cos_t, skew_n1, skew_n2)
+    g2 = compute_angle_derivative(n1h, n2h, eh, dn1_dx2, dn2_dx2, sin_t, cos_t, skew_n1, skew_n2)
+    g3 = compute_angle_derivative(n1h, n2h, eh, dn1_dx3, dn2_dx3, sin_t, cos_t, skew_n1, skew_n2)
+    return g0, g1, g2, g3, stiffness * edge_rest_length[edge_idx]
+
+
+@wp.func
 def cluster_assemble_solve(
     c: int,
-    clu_vert_offsets: wp.array(dtype=wp.int32),
-    clu_vert: wp.array(dtype=wp.int32),
-    clu_vert_r: wp.array(dtype=wp.vec3),
-    clu_ent_offsets: wp.array(dtype=wp.int32),
-    ent_tri: wp.array(dtype=wp.int32),
-    ent_k: wp.array(dtype=wp.int32),
-    ent_l: wp.array(dtype=wp.int32),
-    ent_rk: wp.array(dtype=wp.int32),
-    ent_rl: wp.array(dtype=wp.int32),
-    tri_coeff: wp.array(dtype=wp.vec2),
-    elem_h: wp.array(dtype=mat66),
-    g_vertex: wp.array(dtype=wp.vec3),
-    minv_dt2: wp.array(dtype=wp.float32),
-    contact_h: wp.array(dtype=wp.mat33),
+    clu_vert_offsets: wp.array[wp.int32],
+    clu_vert: wp.array[wp.int32],
+    clu_vert_r: wp.array[wp.vec3],
+    clu_ent_offsets: wp.array[wp.int32],
+    ent_tri: wp.array[wp.int32],
+    ent_k: wp.array[wp.int32],
+    ent_l: wp.array[wp.int32],
+    ent_rk: wp.array[wp.int32],
+    ent_rl: wp.array[wp.int32],
+    tri_coeff: wp.array[wp.vec2],
+    elem_h: wp.array[mat66],
+    g_vertex: wp.array[wp.vec3],
+    minv_dt2: wp.array[wp.float32],
+    contact_h: wp.array[wp.mat33],
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_length: wp.array[wp.float32],
+    edge_bending_properties: wp.array2d[wp.float32],
+    bend_offsets: wp.array[wp.int32],
+    bend_edge: wp.array[wp.int32],
+    bend_r0: wp.array[wp.int32],
+    bend_r1: wp.array[wp.int32],
+    bend_r2: wp.array[wp.int32],
+    bend_r3: wp.array[wp.int32],
     ridge_rel: float,
 ):
     """Assemble g_c + Galerkin H_c for cluster c and return the 12-DOF affine increment dq."""
@@ -252,6 +324,24 @@ def cluster_assemble_solve(
         g = accum_ptg(g, ri, g_vertex[vi])
         d = minv_dt2[vi] * wp.identity(n=3, dtype=wp.float32) + contact_h[vi]
         a = accum_ptbp(a, ri, ri, d)
+    # Galerkin dihedral bending: rank-1 per edge, k * G_c G_c^T with G_c the restricted angle gradient
+    for bi in range(bend_offsets[c], bend_offsets[c + 1]):
+        ed = bend_edge[bi]
+        stiff = edge_bending_properties[ed, 0]
+        if stiff > 0.0:
+            g0, g1, g2, g3, kk = dihedral_grads(ed, pos, edge_indices, edge_rest_length, stiff)
+            gc = vec12(0.0)
+            if bend_r0[bi] >= 0:
+                gc = accum_ptg(gc, clu_vert_r[bend_r0[bi]], g0)
+            if bend_r1[bi] >= 0:
+                gc = accum_ptg(gc, clu_vert_r[bend_r1[bi]], g1)
+            if bend_r2[bi] >= 0:
+                gc = accum_ptg(gc, clu_vert_r[bend_r2[bi]], g2)
+            if bend_r3[bi] >= 0:
+                gc = accum_ptg(gc, clu_vert_r[bend_r3[bi]], g3)
+            for i in range(12):
+                for j in range(12):
+                    a[i, j] = a[i, j] + kk * gc[i] * gc[j]
     tr = float(0.0)
     for d in range(12):
         tr = tr + a[d, d]
@@ -265,32 +355,69 @@ def cluster_assemble_solve(
 @wp.kernel
 def cluster_solve(
     color_lo: int,
-    color_clusters: wp.array(dtype=wp.int32),
-    clu_vert_offsets: wp.array(dtype=wp.int32),
-    clu_vert: wp.array(dtype=wp.int32),
-    clu_vert_r: wp.array(dtype=wp.vec3),
-    clu_ent_offsets: wp.array(dtype=wp.int32),
-    ent_tri: wp.array(dtype=wp.int32),
-    ent_k: wp.array(dtype=wp.int32),
-    ent_l: wp.array(dtype=wp.int32),
-    ent_rk: wp.array(dtype=wp.int32),
-    ent_rl: wp.array(dtype=wp.int32),
-    tri_coeff: wp.array(dtype=wp.vec2),
-    elem_h: wp.array(dtype=mat66),
-    g_vertex: wp.array(dtype=wp.vec3),
-    minv_dt2: wp.array(dtype=wp.float32),
-    contact_h: wp.array(dtype=wp.mat33),
+    color_clusters: wp.array[wp.int32],
+    clu_vert_offsets: wp.array[wp.int32],
+    clu_vert: wp.array[wp.int32],
+    clu_vert_r: wp.array[wp.vec3],
+    clu_ent_offsets: wp.array[wp.int32],
+    ent_tri: wp.array[wp.int32],
+    ent_k: wp.array[wp.int32],
+    ent_l: wp.array[wp.int32],
+    ent_rk: wp.array[wp.int32],
+    ent_rl: wp.array[wp.int32],
+    tri_coeff: wp.array[wp.vec2],
+    elem_h: wp.array[mat66],
+    g_vertex: wp.array[wp.vec3],
+    minv_dt2: wp.array[wp.float32],
+    contact_h: wp.array[wp.mat33],
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_length: wp.array[wp.float32],
+    edge_bending_properties: wp.array2d[wp.float32],
+    bend_offsets: wp.array[wp.int32],
+    bend_edge: wp.array[wp.int32],
+    bend_r0: wp.array[wp.int32],
+    bend_r1: wp.array[wp.int32],
+    bend_r2: wp.array[wp.int32],
+    bend_r3: wp.array[wp.int32],
     ridge_rel: float,
-    dq_out: wp.array(dtype=vec12),
-    displacement: wp.array(dtype=wp.vec3),
+    maxstep: float,
+    dq_out: wp.array[vec12],
+    displacement: wp.array[wp.vec3],
 ):
     """One thread per cluster (launched per colour). Solve the 12-DOF affine and prolong it to the
-    cluster's free members. Colours are vertex-disjoint -> the displacement writes don't race."""
+    cluster's free members, clamping each per-vertex step to ``maxstep`` (no bias at convergence;
+    guards the coarse Newton step against overshoot far from equilibrium). Colours are vertex-
+    disjoint -> the displacement writes don't race."""
     c = color_clusters[color_lo + wp.tid()]
     dq = cluster_assemble_solve(
-        c, clu_vert_offsets, clu_vert, clu_vert_r, clu_ent_offsets,
-        ent_tri, ent_k, ent_l, ent_rk, ent_rl, tri_coeff, elem_h,
-        g_vertex, minv_dt2, contact_h, ridge_rel)
+        c,
+        clu_vert_offsets,
+        clu_vert,
+        clu_vert_r,
+        clu_ent_offsets,
+        ent_tri,
+        ent_k,
+        ent_l,
+        ent_rk,
+        ent_rl,
+        tri_coeff,
+        elem_h,
+        g_vertex,
+        minv_dt2,
+        contact_h,
+        pos,
+        edge_indices,
+        edge_rest_length,
+        edge_bending_properties,
+        bend_offsets,
+        bend_edge,
+        bend_r0,
+        bend_r1,
+        bend_r2,
+        bend_r3,
+        ridge_rel,
+    )
     dq_out[c] = dq
     for mi in range(clu_vert_offsets[c], clu_vert_offsets[c + 1]):
         vi = clu_vert[mi]
@@ -300,4 +427,104 @@ def cluster_solve(
             dq[3] * r[0] + dq[4] * r[1] + dq[5] * r[2] + dq[10],
             dq[6] * r[0] + dq[7] * r[1] + dq[8] * r[2] + dq[11],
         )
+        nrm = wp.length(dx)
+        if nrm > maxstep:
+            dx = dx * (maxstep / nrm)
         displacement[vi] = displacement[vi] + dx
+
+
+# --------------------------------------------------------------------------- #
+# energy evaluation + line-search helpers for the coarse step
+# --------------------------------------------------------------------------- #
+@wp.func
+def nh_energy(f0: wp.vec3, f1: wp.vec3, mu: float, lam: float):
+    """Stable Neo-Hookean membrane energy density (per unit area), matching nh_piola_vec."""
+    f00 = wp.dot(f0, f0)
+    f11 = wp.dot(f1, f1)
+    f01 = wp.dot(f0, f1)
+    js = wp.sqrt(wp.max(f00 * f11 - f01 * f01, 1.0e-20))
+    lmbd_nh = lam + mu
+    alpha = 1.0 + mu / (wp.sign(lmbd_nh) * wp.max(wp.abs(lmbd_nh), 1.0e-6))
+    # Rest-relative energy (subtract the constant rest density 0.5*lmbd_nh*(1-alpha)^2): the line
+    # search uses only energy differences, and removing the large constant offset (~mu^2/2 lmbd_nh
+    # per area) keeps the float32 atomic sum from being swamped by it.
+    return 0.5 * mu * (f00 + f11 - 2.0) + 0.5 * lmbd_nh * ((js - alpha) * (js - alpha) - (1.0 - alpha) * (1.0 - alpha))
+
+
+@wp.kernel
+def eval_membrane_energy(
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_mu: wp.array[wp.float32],
+    tri_lam: wp.array[wp.float32],
+    tri_area: wp.array[wp.float32],
+    e_out: wp.array[wp.float32],
+):
+    e = wp.tid()
+    dm = tri_poses[e]
+    x01 = pos[tri_indices[e, 1]] - pos[tri_indices[e, 0]]
+    x02 = pos[tri_indices[e, 2]] - pos[tri_indices[e, 0]]
+    f0 = x01 * dm[0, 0] + x02 * dm[1, 0]
+    f1 = x01 * dm[0, 1] + x02 * dm[1, 1]
+    wp.atomic_add(e_out, 0, tri_area[e] * nh_energy(f0, f1, tri_mu[e], tri_lam[e]))
+
+
+@wp.kernel
+def eval_inertia_energy(
+    pos: wp.array[wp.vec3],
+    mass: wp.array[wp.float32],
+    inertia: wp.array[wp.vec3],
+    inv_dt2: float,
+    e_out: wp.array[wp.float32],
+):
+    i = wp.tid()
+    d = pos[i] - inertia[i]
+    wp.atomic_add(e_out, 0, 0.5 * mass[i] * inv_dt2 * wp.dot(d, d))
+
+
+@wp.kernel
+def eval_bending_energy(
+    pos: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angle: wp.array[wp.float32],
+    edge_rest_length: wp.array[wp.float32],
+    edge_bending_properties: wp.array2d[wp.float32],
+    e_out: wp.array[wp.float32],
+):
+    """Dihedral bending energy 0.5*k*(theta - theta_rest)^2, k = stiffness*rest_length."""
+    ei = wp.tid()
+    stiff = edge_bending_properties[ei, 0]
+    if edge_indices[ei, 0] == -1 or edge_indices[ei, 1] == -1 or stiff <= 0.0:
+        return
+    eps = 1.0e-6
+    x0 = pos[edge_indices[ei, 0]]
+    x1 = pos[edge_indices[ei, 1]]
+    x2 = pos[edge_indices[ei, 2]]
+    x3 = pos[edge_indices[ei, 3]]
+    n1 = wp.cross(x2 - x0, x3 - x0)
+    n2 = wp.cross(x3 - x1, x2 - x1)
+    e = x3 - x2
+    n1n = wp.length(n1)
+    n2n = wp.length(n2)
+    en = wp.length(e)
+    if n1n < eps or n2n < eps or en < eps:
+        return
+    n1h = n1 / n1n
+    n2h = n2 / n2n
+    eh = e / en
+    theta = wp.atan2(wp.dot(wp.cross(n1h, n2h), eh), wp.dot(n1h, n2h))
+    d = theta - edge_rest_angle[ei]
+    wp.atomic_add(e_out, 0, 0.5 * stiff * edge_rest_length[ei] * d * d)
+
+
+@wp.kernel
+def axpy_trial(base: wp.array[wp.vec3], s: float, delta: wp.array[wp.vec3], out: wp.array[wp.vec3]):
+    i = wp.tid()
+    out[i] = base[i] + s * delta[i]
+
+
+@wp.kernel
+def apply_scaled(s: float, delta: wp.array[wp.vec3], pos: wp.array[wp.vec3]):
+    i = wp.tid()
+    pos[i] = pos[i] + s * delta[i]

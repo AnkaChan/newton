@@ -66,11 +66,11 @@ def multi_source_dijkstra(n: int, adj, sources):
         if d > dist[u]:
             continue
         for v, w in adj[u]:
-            nd = d + w
-            if nd < dist[v]:
-                dist[v] = nd
+            ndist = d + w
+            if ndist < dist[v]:
+                dist[v] = ndist
                 label[v] = lu
-                heapq.heappush(pq, (nd, v, lu))
+                heapq.heappush(pq, (ndist, v, lu))
     return dist, label
 
 
@@ -135,22 +135,31 @@ class ClusterData:
     """
 
     num_clusters: int
-    elem_label: np.ndarray            # (num_tris,) tri -> cluster
+    elem_label: np.ndarray  # (num_tris,) tri -> cluster
     # cluster -> free-vertex members (CSR), with rest offsets r_i = X_i - centroid_c
-    clu_vert_offsets: np.ndarray      # (num_clusters+1,)
-    clu_vert: np.ndarray              # (M,) vertex ids
-    clu_vert_r: np.ndarray            # (M,3) rest offsets
+    clu_vert_offsets: np.ndarray  # (num_clusters+1,)
+    clu_vert: np.ndarray  # (M,) vertex ids
+    clu_vert_r: np.ndarray  # (M,3) rest offsets
     # cluster -> Galerkin element-corner-pair entries (CSR)
-    clu_ent_offsets: np.ndarray       # (num_clusters+1,)
-    ent_tri: np.ndarray               # (E,) triangle id
-    ent_k: np.ndarray                 # (E,) corner k (0..2)
-    ent_l: np.ndarray                 # (E,) corner l (0..2)
-    ent_rk: np.ndarray                # (E,) row into clu_vert for corner k's vertex
-    ent_rl: np.ndarray                # (E,) row into clu_vert for corner l's vertex
+    clu_ent_offsets: np.ndarray  # (num_clusters+1,)
+    ent_tri: np.ndarray  # (E,) triangle id
+    ent_k: np.ndarray  # (E,) corner k (0..2)
+    ent_l: np.ndarray  # (E,) corner l (0..2)
+    ent_rk: np.ndarray  # (E,) row into clu_vert for corner k's vertex
+    ent_rl: np.ndarray  # (E,) row into clu_vert for corner l's vertex
+    # cluster -> Galerkin dihedral-bending entries (CSR). Each entry is one bending edge owning
+    # >=1 free stencil vertex of cluster c; bend_r0..3 are rows into clu_vert for the edge's four
+    # stencil vertices (-1 if that vertex is not a free member of c).
+    bend_offsets: np.ndarray  # (num_clusters+1,)
+    bend_edge: np.ndarray  # (B,) bending-edge id
+    bend_r0: np.ndarray  # (B,) row into clu_vert for stencil vert 0 (-1 if absent)
+    bend_r1: np.ndarray  # (B,)
+    bend_r2: np.ndarray  # (B,)
+    bend_r3: np.ndarray  # (B,)
     # cluster coloring (CSR): clusters in a colour are vertex-disjoint
-    color_offsets: np.ndarray         # (num_colors+1,)
-    color_clusters: np.ndarray        # (num_clusters,)
-    tri_coeff: np.ndarray             # (num_tris,3,2) per-corner dF/dx coefficients
+    color_offsets: np.ndarray  # (num_colors+1,)
+    color_clusters: np.ndarray  # (num_clusters,)
+    tri_coeff: np.ndarray  # (num_tris,3,2) per-corner dF/dx coefficients
     # stats
     num_colors: int
     avg_overlap: float
@@ -163,6 +172,7 @@ def build_cluster_system(
     faces: np.ndarray,
     free_mask: np.ndarray,
     tri_poses: np.ndarray,
+    edges: np.ndarray | None = None,
     target_elems_per_cluster: int = 32,
     cluster_count: int | None = None,
     start: int = 0,
@@ -189,7 +199,7 @@ def build_cluster_system(
     adj, _cent = build_dual_graph(verts, faces)
     seeds = fps_seeds(m, adj, k, start=start)
     _, e_label = multi_source_dijkstra(m, adj, seeds)
-    if np.any(e_label < 0):                                            # disconnected tris -> nearest seed (Euclidean)
+    if np.any(e_label < 0):  # disconnected tris -> nearest seed (Euclidean)
         tri_cent = verts[faces].mean(1)
         sc = tri_cent[seeds]
         for t in np.where(e_label < 0)[0]:
@@ -204,7 +214,8 @@ def build_cluster_system(
     m_clu = free_vc[:, 1].astype(np.int64)
 
     # cluster centroid over ALL touched verts (incl. fixed) for a stable rest frame
-    cl_sum = np.zeros((num_clusters, 3)); cl_cnt = np.zeros(num_clusters)
+    cl_sum = np.zeros((num_clusters, 3))
+    cl_cnt = np.zeros(num_clusters)
     np.add.at(cl_sum, vc[:, 1], verts[vc[:, 0]])
     np.add.at(cl_cnt, vc[:, 1], 1.0)
     centroid = cl_sum / np.maximum(cl_cnt[:, None], 1.0)
@@ -230,25 +241,68 @@ def build_cluster_system(
         for kk in range(3):
             for ll in range(3):
                 for c in set(cs[kk]) & set(cs[ll]):
-                    ent_c.append(c); ent_tri.append(e); ent_k.append(kk); ent_l.append(ll)
-                    ent_rk.append(row_of[(vs[kk], c)]); ent_rl.append(row_of[(vs[ll], c)])
+                    ent_c.append(c)
+                    ent_tri.append(e)
+                    ent_k.append(kk)
+                    ent_l.append(ll)
+                    ent_rk.append(row_of[(vs[kk], c)])
+                    ent_rl.append(row_of[(vs[ll], c)])
     ent_c = np.asarray(ent_c, np.int64)
-    ent_tri = np.asarray(ent_tri, np.int64); ent_k = np.asarray(ent_k, np.int64)
+    ent_tri = np.asarray(ent_tri, np.int64)
+    ent_k = np.asarray(ent_k, np.int64)
     ent_l = np.asarray(ent_l, np.int64)
-    ent_rk = np.asarray(ent_rk, np.int64); ent_rl = np.asarray(ent_rl, np.int64)
+    ent_rk = np.asarray(ent_rk, np.int64)
+    ent_rl = np.asarray(ent_rl, np.int64)
     eorder = np.argsort(ent_c, kind="stable")
     ent_c, ent_tri, ent_k, ent_l, ent_rk, ent_rl = (
-        ent_c[eorder], ent_tri[eorder], ent_k[eorder], ent_l[eorder], ent_rk[eorder], ent_rl[eorder])
+        ent_c[eorder],
+        ent_tri[eorder],
+        ent_k[eorder],
+        ent_l[eorder],
+        ent_rk[eorder],
+        ent_rl[eorder],
+    )
     clu_ent_offsets = np.zeros(num_clusters + 1, np.int64)
     np.add.at(clu_ent_offsets, ent_c + 1, 1)
     clu_ent_offsets = np.cumsum(clu_ent_offsets)
+
+    # Galerkin dihedral-bending entries: for each bending edge (4 stencil verts vi0..vi3, with
+    # (vi0,vi1) the opposite/wing tips and (vi2,vi3) the shared edge), each cluster c owning >=1
+    # free stencil vertex -> a rank-1 entry k * G_c G_c^T with G_c = sum_{k in c} P_k^T dtheta/dx_k.
+    bend_c, bend_edge, bend_rows = [], [], []
+    if edges is not None and len(edges):
+        edges = np.asarray(edges, np.int64).reshape(-1, 4)
+        for e in range(len(edges)):
+            st = edges[e]
+            if st[0] < 0 or st[1] < 0:  # boundary edge -> no bending
+                continue
+            cand: set[int] = set()
+            for vk in st:
+                if vk >= 0:
+                    cand.update(clusters_of_vertex.get(int(vk), ()))
+            for c in cand:
+                rows = [row_of.get((int(vk), c), -1) if vk >= 0 else -1 for vk in st]
+                if any(r >= 0 for r in rows):
+                    bend_c.append(c)
+                    bend_edge.append(e)
+                    bend_rows.append(rows)
+    bend_c = np.asarray(bend_c, np.int64)
+    bend_edge = np.asarray(bend_edge, np.int64)
+    bend_rows = np.asarray(bend_rows, np.int64).reshape(-1, 4) if len(bend_edge) else np.zeros((0, 4), np.int64)
+    if len(bend_edge):
+        border = np.argsort(bend_c, kind="stable")
+        bend_c, bend_edge, bend_rows = bend_c[border], bend_edge[border], bend_rows[border]
+    bend_offsets = np.zeros(num_clusters + 1, np.int64)
+    np.add.at(bend_offsets, bend_c + 1, 1)
+    bend_offsets = np.cumsum(bend_offsets)
 
     # cluster coloring: clusters adjacent iff they share a free vertex
     cadj = [set() for _ in range(num_clusters)]
     for v, cl_list in clusters_of_vertex.items():
         for i in range(len(cl_list)):
             for j in range(i + 1, len(cl_list)):
-                cadj[cl_list[i]].add(cl_list[j]); cadj[cl_list[j]].add(cl_list[i])
+                cadj[cl_list[i]].add(cl_list[j])
+                cadj[cl_list[j]].add(cl_list[i])
     color = greedy_coloring(cadj, num_clusters)
     num_colors = int(color.max()) + 1 if num_clusters else 0
     corder = np.argsort(color, kind="stable")
@@ -267,14 +321,30 @@ def build_cluster_system(
     num_disconnected = _count_disconnected(adj, e_label, num_clusters)
 
     return ClusterData(
-        num_clusters=num_clusters, elem_label=e_label,
-        clu_vert_offsets=clu_vert_offsets, clu_vert=m_vid, clu_vert_r=m_r.astype(np.float32),
-        clu_ent_offsets=clu_ent_offsets, ent_tri=ent_tri, ent_k=ent_k.astype(np.int32),
-        ent_l=ent_l.astype(np.int32), ent_rk=ent_rk, ent_rl=ent_rl,
-        color_offsets=color_offsets, color_clusters=color_clusters,
+        num_clusters=num_clusters,
+        elem_label=e_label,
+        clu_vert_offsets=clu_vert_offsets,
+        clu_vert=m_vid,
+        clu_vert_r=m_r.astype(np.float32),
+        clu_ent_offsets=clu_ent_offsets,
+        ent_tri=ent_tri,
+        ent_k=ent_k.astype(np.int32),
+        ent_l=ent_l.astype(np.int32),
+        ent_rk=ent_rk,
+        ent_rl=ent_rl,
+        bend_offsets=bend_offsets,
+        bend_edge=bend_edge.astype(np.int32),
+        bend_r0=bend_rows[:, 0].astype(np.int32),
+        bend_r1=bend_rows[:, 1].astype(np.int32),
+        bend_r2=bend_rows[:, 2].astype(np.int32),
+        bend_r3=bend_rows[:, 3].astype(np.int32),
+        color_offsets=color_offsets,
+        color_clusters=color_clusters,
         tri_coeff=tri_corner_coeffs(tri_poses).astype(np.float32),
-        num_colors=num_colors, avg_overlap=avg_overlap,
-        num_boundary_verts=num_boundary, num_disconnected=num_disconnected,
+        num_colors=num_colors,
+        avg_overlap=avg_overlap,
+        num_boundary_verts=num_boundary,
+        num_disconnected=num_disconnected,
     )
 
 
@@ -286,12 +356,14 @@ def _count_disconnected(adj, label: np.ndarray, k: int) -> int:
         if len(members) == 0:
             continue
         mset = set(int(x) for x in members)
-        seen = {int(members[0])}; stack = [int(members[0])]
+        seen = {int(members[0])}
+        stack = [int(members[0])]
         while stack:
             u = stack.pop()
             for v, _ in adj[u]:
                 if v in mset and v not in seen:
-                    seen.add(v); stack.append(v)
+                    seen.add(v)
+                    stack.append(v)
         if len(seen) != len(mset):
             bad += 1
     return bad

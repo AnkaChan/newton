@@ -211,6 +211,12 @@ class SolverVBD(SolverBase):
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
         particle_external_edge_contact_filtering_map: dict | None = None,
+        # Multi-resolution (cluster-affine) coarse step — optional accelerator for low-frequency
+        # convergence of stiff cloth. Off by default (byte-for-byte vanilla VBD when disabled).
+        enable_cluster_multires: bool = False,
+        cluster_target_elems_per_cluster: int = 32,
+        cluster_ridge_rel: float = 1e-8,
+        cluster_maxstep_rel: float = 1.0,
         # Rigid body parameters — AVBD hyperparameters
         rigid_avbd_alpha: float = 0.95,  # C0 stabilization strength (C_stab = C - alpha * C0)
         rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override; None uses rigid_avbd_alpha
@@ -366,6 +372,12 @@ class SolverVBD(SolverBase):
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
 
+        # Multi-resolution cluster-affine coarse step (set up in _init_particle_system if enabled)
+        self.enable_cluster_multires = enable_cluster_multires
+        self.cluster_target_elems_per_cluster = cluster_target_elems_per_cluster
+        self.cluster_ridge_rel = cluster_ridge_rel
+        self.cluster_maxstep_rel = cluster_maxstep_rel
+
         # Rigid integration mode: when True, rigid bodies are integrated by an external
         # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
         # participate in particle-rigid interaction on the particle side.
@@ -516,6 +528,258 @@ class SolverVBD(SolverBase):
         self.pos_prev_collision_detection = wp.zeros_like(model.particle_q, device=self.device)
         self.particle_displacements = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
         self.truncation_ts = wp.zeros(self.model.particle_count, dtype=float, device=self.device)
+
+        if self.enable_cluster_multires and self.model.tri_count > 0:
+            self._init_cluster_system(model)
+
+    def _init_cluster_system(self, model: Model):
+        """Build the multi-resolution cluster system (host triangle clustering) and upload the
+        device-side CSR/colour/entry arrays. Done once at solver construction; assumes
+        ``model.particle_q`` is the rest configuration used for the cluster rest frame."""
+        from ...geometry import ParticleFlags
+        from . import cluster_vbd_kernels as cvk
+        from .cluster_multires import build_cluster_system
+
+        verts = model.particle_q.numpy()
+        faces = model.tri_indices.numpy().reshape(-1, 3)
+        flags = model.particle_flags.numpy()
+        mass = model.particle_mass.numpy()
+        inv_mass = model.particle_inv_mass.numpy()
+        free = ((flags & int(ParticleFlags.ACTIVE)) != 0) & (mass > 0.0) & (inv_mass > 0.0)
+        tri_poses = model.tri_poses.numpy()
+        edges = model.edge_indices.numpy() if model.edge_count > 0 else None
+        cd = build_cluster_system(
+            verts,
+            faces,
+            free,
+            tri_poses,
+            edges=edges,
+            target_elems_per_cluster=self.cluster_target_elems_per_cluster,
+        )
+        self._cluster_data = cd  # keep host struct for stats / debugging
+        # per-vertex step clamp for the coarse prolongation (median mesh edge length)
+        e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], 0)
+        med_edge = float(np.median(np.linalg.norm(verts[e[:, 0]] - verts[e[:, 1]], axis=1)))
+        self.cluster_maxstep = self.cluster_maxstep_rel * med_edge
+        dev = self.device
+
+        def up(a, dtype):
+            return wp.array(np.ascontiguousarray(a), dtype=dtype, device=dev)
+
+        self.cluster_vert_offsets = up(cd.clu_vert_offsets.astype(np.int32), wp.int32)
+        self.cluster_vert = up(cd.clu_vert.astype(np.int32), wp.int32)
+        self.cluster_vert_r = up(cd.clu_vert_r, wp.vec3)
+        self.cluster_ent_offsets = up(cd.clu_ent_offsets.astype(np.int32), wp.int32)
+        self.cluster_ent_tri = up(cd.ent_tri.astype(np.int32), wp.int32)
+        self.cluster_ent_k = up(cd.ent_k.astype(np.int32), wp.int32)
+        self.cluster_ent_l = up(cd.ent_l.astype(np.int32), wp.int32)
+        self.cluster_ent_rk = up(cd.ent_rk.astype(np.int32), wp.int32)
+        self.cluster_ent_rl = up(cd.ent_rl.astype(np.int32), wp.int32)
+        self.cluster_tri_coeff = up(cd.tri_coeff.reshape(-1, 2).astype(np.float32), wp.vec2)
+        self.cluster_color_clusters = up(cd.color_clusters.astype(np.int32), wp.int32)
+        self.cluster_color_offsets = cd.color_offsets.astype(np.int32)  # host (kernel launch bounds)
+        # Galerkin dihedral-bending entries (empty arrays when the cloth has no bending edges)
+        self.cluster_bend_offsets = up(cd.bend_offsets.astype(np.int32), wp.int32)
+        self.cluster_bend_edge = up(cd.bend_edge.astype(np.int32), wp.int32)
+        self.cluster_bend_r0 = up(cd.bend_r0.astype(np.int32), wp.int32)
+        self.cluster_bend_r1 = up(cd.bend_r1.astype(np.int32), wp.int32)
+        self.cluster_bend_r2 = up(cd.bend_r2.astype(np.int32), wp.int32)
+        self.cluster_bend_r3 = up(cd.bend_r3.astype(np.int32), wp.int32)
+        tm = model.tri_materials.numpy()
+        self.cluster_tri_mu = up(tm[:, 0].astype(np.float32), wp.float32)
+        self.cluster_tri_lam = up(tm[:, 1].astype(np.float32), wp.float32)
+        n = self.model.particle_count
+        self.cluster_g_vertex = wp.zeros(n, dtype=wp.vec3, device=dev)
+        self.cluster_elem_H = wp.zeros(model.tri_count, dtype=cvk.mat66, device=dev)
+        self.cluster_disp = wp.zeros(n, dtype=wp.vec3, device=dev)
+        self.cluster_dq = wp.zeros(cd.num_clusters, dtype=cvk.vec12, device=dev)
+        self.cluster_minv_dt2 = wp.zeros(n, dtype=wp.float32, device=dev)
+        self.cluster_contact_h = wp.zeros(n, dtype=wp.mat33, device=dev)  # v1: no contact in H_c
+        self.cluster_trial = wp.zeros(n, dtype=wp.vec3, device=dev)  # line-search trial positions
+        self.cluster_energy_buf = wp.zeros(1, dtype=wp.float32, device=dev)
+
+    def _cluster_energy(self, pos, dt: float) -> float:
+        """Incremental potential E(pos) = membrane + inertia (the energy whose gradient is g_vertex;
+        bending omitted in v1 / edge-free cloth). Used for the coarse-step Armijo line search."""
+        from . import cluster_vbd_kernels as cvk
+
+        model = self.model
+        self.cluster_energy_buf.zero_()
+        wp.launch(
+            cvk.eval_membrane_energy,
+            dim=model.tri_count,
+            inputs=[
+                pos,
+                model.tri_indices,
+                model.tri_poses,
+                self.cluster_tri_mu,
+                self.cluster_tri_lam,
+                model.tri_areas,
+                self.cluster_energy_buf,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            cvk.eval_inertia_energy,
+            dim=model.particle_count,
+            inputs=[pos, model.particle_mass, self.inertia, 1.0 / (dt * dt), self.cluster_energy_buf],
+            device=self.device,
+        )
+        if model.edge_count > 0:
+            wp.launch(
+                cvk.eval_bending_energy,
+                dim=model.edge_count,
+                inputs=[
+                    pos,
+                    model.edge_indices,
+                    model.edge_rest_angle,
+                    model.edge_rest_length,
+                    model.edge_bending_properties,
+                    self.cluster_energy_buf,
+                ],
+                device=self.device,
+            )
+        return float(self.cluster_energy_buf.numpy()[0])
+
+    def _solve_cluster_iteration(self, state_in: State, dt: float):
+        """One coarse cluster sweep (before the per-vertex sweep): evaluate the lagged element
+        Hessian, then for each cluster colour evaluate the exact gradient at current positions,
+        solve the 12-DOF affine per cluster, and prolong it into ``state_in.particle_q`` under an
+        Armijo line search (guarantees the coarse step never increases energy). Elasticity only
+        (membrane + inertia + bending in g); contact path skipped in v1."""
+        from . import cluster_vbd_kernels as cvk
+        from .particle_vbd_kernels import eval_vertex_gradient, scale_inv_dt2
+
+        model = self.model
+        n = model.particle_count
+        self.particle_forces.zero_()  # v1: no contact contribution to the coarse gradient
+        wp.launch(
+            scale_inv_dt2,
+            dim=n,
+            inputs=[model.particle_mass, 1.0 / (dt * dt), self.cluster_minv_dt2],
+            device=self.device,
+        )
+        # lagged element Hessian at iteration-start positions
+        wp.launch(
+            cvk.eval_elem_hessian,
+            dim=model.tri_count,
+            inputs=[
+                state_in.particle_q,
+                model.tri_indices,
+                model.tri_poses,
+                self.cluster_tri_mu,
+                self.cluster_tri_lam,
+                model.tri_areas,
+                1.0e-4,
+                self.cluster_elem_H,
+            ],
+            device=self.device,
+        )
+        self._cluster_alphas = []  # debug: (slope, alpha_used, max|dx|) per colour
+        for co in range(len(self.cluster_color_offsets) - 1):
+            lo = int(self.cluster_color_offsets[co])
+            hi = int(self.cluster_color_offsets[co + 1])
+            if hi <= lo:
+                continue
+            wp.launch(
+                eval_vertex_gradient,
+                dim=n,
+                inputs=[
+                    dt,
+                    self.particle_q_prev,
+                    state_in.particle_q,
+                    model.particle_mass,
+                    self.inertia,
+                    model.particle_flags,
+                    model.tri_indices,
+                    model.tri_poses,
+                    model.tri_materials,
+                    model.tri_areas,
+                    model.edge_indices,
+                    model.edge_rest_angle,
+                    model.edge_rest_length,
+                    model.edge_bending_properties,
+                    model.tet_indices,
+                    model.tet_poses,
+                    model.tet_materials,
+                    self.particle_adjacency,
+                    self.particle_forces,
+                    self.cluster_g_vertex,
+                ],
+                device=self.device,
+            )
+            self.cluster_disp.zero_()
+            wp.launch(
+                cvk.cluster_solve,
+                dim=hi - lo,
+                inputs=[
+                    lo,
+                    self.cluster_color_clusters,
+                    self.cluster_vert_offsets,
+                    self.cluster_vert,
+                    self.cluster_vert_r,
+                    self.cluster_ent_offsets,
+                    self.cluster_ent_tri,
+                    self.cluster_ent_k,
+                    self.cluster_ent_l,
+                    self.cluster_ent_rk,
+                    self.cluster_ent_rl,
+                    self.cluster_tri_coeff,
+                    self.cluster_elem_H,
+                    self.cluster_g_vertex,
+                    self.cluster_minv_dt2,
+                    self.cluster_contact_h,
+                    state_in.particle_q,
+                    model.edge_indices,
+                    model.edge_rest_length,
+                    model.edge_bending_properties,
+                    self.cluster_bend_offsets,
+                    self.cluster_bend_edge,
+                    self.cluster_bend_r0,
+                    self.cluster_bend_r1,
+                    self.cluster_bend_r2,
+                    self.cluster_bend_r3,
+                    float(self.cluster_ridge_rel),
+                    float(self.cluster_maxstep),
+                    self.cluster_dq,
+                    self.cluster_disp,
+                ],
+                device=self.device,
+            )
+            if not getattr(self, "cluster_line_search", True):
+                # Apply the clamped coarse Newton step directly (alpha = 1, no line search).
+                wp.launch(
+                    cvk.apply_scaled, dim=n, inputs=[1.0, self.cluster_disp, state_in.particle_q], device=self.device
+                )
+                self._cluster_alphas.append((0.0, 1.0, float(np.abs(self.cluster_disp.numpy()).max())))
+                continue
+            # Armijo line search: dxf is a descent direction (g_c·dq = -g_c^T H_c^{-1} g_c < 0).
+            slope = float(np.sum(self.cluster_g_vertex.numpy() * self.cluster_disp.numpy()))
+            a_used = 0.0
+            if slope < 0.0:
+                e0 = self._cluster_energy(state_in.particle_q, dt)
+                alpha = 1.0
+                applied = False
+                for _ in range(25):
+                    wp.launch(
+                        cvk.axpy_trial,
+                        dim=n,
+                        inputs=[state_in.particle_q, alpha, self.cluster_disp, self.cluster_trial],
+                        device=self.device,
+                    )
+                    if self._cluster_energy(self.cluster_trial, dt) <= e0 + 1.0e-4 * alpha * slope:
+                        applied = True
+                        break
+                    alpha *= 0.5
+                if applied:
+                    wp.launch(
+                        cvk.apply_scaled,
+                        dim=n,
+                        inputs=[alpha, self.cluster_disp, state_in.particle_q],
+                        device=self.device,
+                    )
+                    a_used = alpha
+            self._cluster_alphas.append((slope, a_used, float(np.abs(self.cluster_disp.numpy()).max())))
 
     def _init_rigid_system(
         self,
@@ -1549,6 +1813,8 @@ class SolverVBD(SolverBase):
 
         for iter_num in range(self.iterations):
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
+            if self.enable_cluster_multires and self.model.particle_count > 0:
+                self._solve_cluster_iteration(state_in, dt)  # coarse-then-fine
             self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
 
         # Snapshot solved rigid contact state for next-frame warm-start.

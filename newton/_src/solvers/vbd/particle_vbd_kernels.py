@@ -3274,6 +3274,120 @@ def solve_elasticity(
 
 
 @wp.kernel
+def eval_vertex_gradient(
+    dt: float,
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    mass: wp.array[float],
+    inertia: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_materials: wp.array2d[float],
+    tri_areas: wp.array[float],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angles: wp.array[float],
+    edge_rest_length: wp.array[float],
+    edge_bending_properties: wp.array2d[float],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
+    particle_adjacency: ParticleForceElementAdjacencyInfo,
+    particle_forces: wp.array[wp.vec3],
+    # output
+    g_vertex: wp.array[wp.vec3],
+):
+    """Per-vertex gradient g_i = grad E = -(force) for the multi-res coarse step, mirroring the
+    force accumulation in solve_elasticity (inertia + membrane + dihedral bending + tet + contact/
+    spring) but emitting the gradient instead of solving. Runs over all particles (no colour split)."""
+    particle_index = wp.tid()
+    if not particle_flags[particle_index] & ParticleFlags.ACTIVE or mass[particle_index] == 0.0:
+        g_vertex[particle_index] = wp.vec3(0.0)
+        return
+
+    dt_sqr_reciprocal = 1.0 / (dt * dt)
+    f = mass[particle_index] * (inertia[particle_index] - pos[particle_index]) * dt_sqr_reciprocal
+
+    if tri_indices:
+        for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
+            tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
+            if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
+                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                    tri_index,
+                    vertex_order,
+                    pos,
+                    pos_prev,
+                    tri_indices,
+                    tri_poses[tri_index],
+                    tri_areas[tri_index],
+                    tri_materials[tri_index, 0],
+                    tri_materials[tri_index, 1],
+                    tri_materials[tri_index, 2],
+                    dt,
+                )
+                f = f + f_tri
+
+    if edge_indices:
+        for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
+            nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(
+                particle_adjacency, particle_index, i_adj_edge
+            )
+            if edge_bending_properties[nei_edge_index, 0] > 0.0:
+                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                    nei_edge_index,
+                    vertex_order_on_edge,
+                    pos,
+                    pos_prev,
+                    edge_indices,
+                    edge_rest_angles,
+                    edge_rest_length,
+                    edge_bending_properties[nei_edge_index, 0],
+                    edge_bending_properties[nei_edge_index, 1],
+                    dt,
+                )
+                f = f + f_edge
+
+    if tet_indices:
+        for adj_tet_counter in range(get_vertex_num_adjacent_tets(particle_adjacency, particle_index)):
+            nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
+                particle_adjacency, particle_index, adj_tet_counter
+            )
+            if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
+                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
+                    nei_tet_index,
+                    vertex_order_on_tet,
+                    pos_prev,
+                    pos,
+                    tet_indices,
+                    tet_poses[nei_tet_index],
+                    tet_materials[nei_tet_index, 0],
+                    tet_materials[nei_tet_index, 1],
+                    tet_materials[nei_tet_index, 2],
+                    dt,
+                )
+                f = f + f_tet
+
+    f = f + particle_forces[particle_index]
+    g_vertex[particle_index] = -f
+
+
+@wp.kernel
+def apply_cluster_displacement(
+    displacement: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+):
+    """pos += displacement (cluster prolongation applied to positions; collision path skipped)."""
+    i = wp.tid()
+    pos[i] = pos[i] + displacement[i]
+
+
+@wp.kernel
+def scale_inv_dt2(mass: wp.array[float], inv_dt2: float, out: wp.array[wp.float32]):
+    i = wp.tid()
+    out[i] = mass[i] * inv_dt2
+
+
+@wp.kernel
 def accumulate_contact_force_and_hessian(
     # inputs
     dt: float,
