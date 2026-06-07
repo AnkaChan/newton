@@ -428,9 +428,14 @@ def cluster_solve(
             dq[6] * r[0] + dq[7] * r[1] + dq[8] * r[2] + dq[11],
         )
         nrm = wp.length(dx)
-        if nrm > maxstep:
-            dx = dx * (maxstep / nrm)
-        displacement[vi] = displacement[vi] + dx
+        # Robust clamp: only apply a finite, bounded coarse step. NaN fails `nrm < 1e18`, and inf
+        # would make `maxstep/nrm == 0` (inf*0 = NaN) -> skip such steps entirely (e.g. a degenerate
+        # flat / rank-deficient cluster where solve12_spd overflowed). Skipping just leaves that
+        # cluster to the per-vertex sweep this iteration; the affine never injects a non-finite move.
+        if nrm < 1.0e18:
+            if nrm > maxstep:
+                dx = dx * (maxstep / nrm)
+            displacement[vi] = displacement[vi] + dx
 
 
 # --------------------------------------------------------------------------- #

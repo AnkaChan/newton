@@ -588,6 +588,9 @@ class SolverVBD(SolverBase):
         tm = model.tri_materials.numpy()
         self.cluster_tri_mu = up(tm[:, 0].astype(np.float32), wp.float32)
         self.cluster_tri_lam = up(tm[:, 1].astype(np.float32), wp.float32)
+        # host triangle data for the line-search element-inversion guard (_cluster_min_js)
+        self._js_tri = model.tri_indices.numpy().reshape(-1, 3).astype(np.int64)
+        self._js_dm = model.tri_poses.numpy().astype(np.float64)
         n = self.model.particle_count
         self.cluster_g_vertex = wp.zeros(n, dtype=wp.vec3, device=dev)
         self.cluster_elem_H = wp.zeros(model.tri_count, dtype=cvk.mat66, device=dev)
@@ -641,6 +644,18 @@ class SolverVBD(SolverBase):
             )
         return float(self.cluster_energy_buf.numpy()[0])
 
+    def _cluster_min_js(self, pos) -> float:
+        """Minimum membrane area ratio J_s = sqrt(det(F^T F)) over all triangles at ``pos``.
+        Used by the coarse line search to reject element-collapsing/inverting coarse steps."""
+        x = pos.numpy().astype(np.float64)
+        i = self._js_tri
+        e1 = x[i[:, 1]] - x[i[:, 0]]
+        e2 = x[i[:, 2]] - x[i[:, 0]]
+        f = np.stack([e1, e2], axis=-1) @ self._js_dm  # (T, 3, 2) deformation gradient
+        ftf = np.transpose(f, (0, 2, 1)) @ f
+        det = ftf[:, 0, 0] * ftf[:, 1, 1] - ftf[:, 0, 1] * ftf[:, 1, 0]
+        return float(np.sqrt(np.clip(det, 0.0, None)).min())
+
     def _solve_cluster_iteration(self, state_in: State, dt: float):
         """One coarse cluster sweep (before the per-vertex sweep): evaluate the lagged element
         Hessian, then for each cluster colour evaluate the exact gradient at current positions,
@@ -659,28 +674,31 @@ class SolverVBD(SolverBase):
             inputs=[model.particle_mass, 1.0 / (dt * dt), self.cluster_minv_dt2],
             device=self.device,
         )
-        # lagged element Hessian at iteration-start positions
-        wp.launch(
-            cvk.eval_elem_hessian,
-            dim=model.tri_count,
-            inputs=[
-                state_in.particle_q,
-                model.tri_indices,
-                model.tri_poses,
-                self.cluster_tri_mu,
-                self.cluster_tri_lam,
-                model.tri_areas,
-                1.0e-4,
-                self.cluster_elem_H,
-            ],
-            device=self.device,
-        )
         self._cluster_alphas = []  # debug: (slope, alpha_used, max|dx|) per colour
         for co in range(len(self.cluster_color_offsets) - 1):
             lo = int(self.cluster_color_offsets[co])
             hi = int(self.cluster_color_offsets[co + 1])
             if hi <= lo:
                 continue
+            # Gauss-Seidel: recompute the Neo-Hookean element Hessian at the CURRENT positions before
+            # each colour's solve (clusters from earlier colours have already moved). The coarse moves
+            # are large and global, so a Hessian lagged across colours would make this a Jacobi-like
+            # solve; the bending block (below, in cluster_solve) is likewise recomputed on the fly.
+            wp.launch(
+                cvk.eval_elem_hessian,
+                dim=model.tri_count,
+                inputs=[
+                    state_in.particle_q,
+                    model.tri_indices,
+                    model.tri_poses,
+                    self.cluster_tri_mu,
+                    self.cluster_tri_lam,
+                    model.tri_areas,
+                    1.0e-4,
+                    self.cluster_elem_H,
+                ],
+                device=self.device,
+            )
             wp.launch(
                 eval_vertex_gradient,
                 dim=n,
@@ -756,8 +774,9 @@ class SolverVBD(SolverBase):
             # Armijo line search: dxf is a descent direction (g_c·dq = -g_c^T H_c^{-1} g_c < 0).
             slope = float(np.sum(self.cluster_g_vertex.numpy() * self.cluster_disp.numpy()))
             a_used = 0.0
-            if slope < 0.0:
+            if slope < 0.0 and np.isfinite(slope):
                 e0 = self._cluster_energy(state_in.particle_q, dt)
+                js0 = self._cluster_min_js(state_in.particle_q)  # current min element area ratio
                 alpha = 1.0
                 applied = False
                 for _ in range(25):
@@ -767,7 +786,14 @@ class SolverVBD(SolverBase):
                         inputs=[state_in.particle_q, alpha, self.cluster_disp, self.cluster_trial],
                         device=self.device,
                     )
-                    if self._cluster_energy(self.cluster_trial, dt) <= e0 + 1.0e-4 * alpha * slope:
+                    et = self._cluster_energy(self.cluster_trial, dt)
+                    # Accept only an energy-decreasing step that does not collapse/invert an element
+                    # (J_s -> 0 would make the fine sweep's Neo-Hookean 1/J_s force blow up -> NaN).
+                    if (
+                        np.isfinite(et)
+                        and et <= e0 + 1.0e-4 * alpha * slope
+                        and self._cluster_min_js(self.cluster_trial) >= 0.6
+                    ):
                         applied = True
                         break
                     alpha *= 0.5
@@ -779,7 +805,7 @@ class SolverVBD(SolverBase):
                         device=self.device,
                     )
                     a_used = alpha
-            self._cluster_alphas.append((slope, a_used, float(np.abs(self.cluster_disp.numpy()).max())))
+            self._cluster_alphas.append((slope, a_used, 0.0))
 
     def _init_rigid_system(
         self,
