@@ -30,6 +30,7 @@
 - Add frame-to-frame contact matching via `CollisionPipeline(contact_matching=...)` with modes `"latest"` (populates `contacts.rigid_contact_match_index`) and `"sticky"` (experimental; additionally replays previous-frame contact geometry on matched contacts — the sticky update strategy may change without warning). Optional `contact_report=True` exposes new/broken contact index lists on `Contacts`.
 - Add VBD rigid-contact warm-starting via `rigid_contact_history`, backed by `Contacts.rigid_contact_match_index` from `CollisionPipeline(contact_matching="latest")`.
 - Add VBD Franka bag pickup-and-wave example with a 0.003 m gripper gap.
+- Add VBD apple-bag Franka example that hangs one handle from an open gripper finger.
 - Add VBD bag plasticity example with robot clamp-and-release deformation.
 - Add VBD bag-on-ground example for staging a rigid-filled bag before robot pickup.
 - Add per-frame PLY export to the VBD trash-bag example.

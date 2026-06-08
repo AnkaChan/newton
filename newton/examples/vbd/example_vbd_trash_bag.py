@@ -31,6 +31,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -61,10 +62,10 @@ PARAMS = {
     "particle_radius": 0.004,
     "cloth_density": 0.08,
     "cloth_tri_ke": 2.0e4,
-    "cloth_tri_ka": 2.0e3,
-    "cloth_tri_kd": 1.0e0,
+    "cloth_tri_ka": 5.0e3,
+    "cloth_tri_kd": 1.0e1,
     "cloth_edge_ke": 0.05,  # low bending -> floppy, wrinkly plastic
-    "cloth_edge_kd": 0.001,
+    "cloth_edge_kd": 0.1,
     # --- rope cloth (the tie): stiff/inextensible so pulling collapses the loop ---
     "rope_density": 0.08,
     "rope_tri_ke": 1.0e5,
@@ -73,16 +74,16 @@ PARAMS = {
     "rope_edge_ke": 0.05,
     "rope_edge_kd": 0.01,
     # --- springs ---
-    "closure_ke": 2.0e5,  # tunnel closure: flap free edge <-> wall
+    "closure_ke": 2.0e4,  # tunnel closure: flap free edge <-> wall
     "closure_kd": 1.0e-3,
     "closure_rest_length": 0.0,
     # --- contacts ---
-    "soft_contact_ke": 5.0e5,
+    "soft_contact_ke": 5.0e4,
     "soft_contact_kd": 1.0e1,
-    "soft_contact_mu": 1.0,
+    "soft_contact_mu": 0.3,
     "soft_contact_creation_margin": 0.012,
-    "particle_self_contact_radius": 0.004,
-    "particle_self_contact_margin": 0.008,
+    "particle_self_contact_radius": 0.0015,
+    "particle_self_contact_margin": 0.003,
     "rigid_body_particle_contact_buffer_size": 4096,
     "rigid_body_contact_buffer_size": 1024,
     "rigid_contact_hard": True,
@@ -105,6 +106,7 @@ PARAMS = {
     "camera_fov": 45.0,
     "draw_wireframe": True,
     "initial_paused": False,
+    "enable_cuda_graph": True,
     "seed": 42,
 }
 
@@ -257,13 +259,13 @@ def _export_ply_frame(output_dir, frame, positions, info):
 def move_pinned_vertices(
     pinned_indices: wp.array[wp.int32],
     original_positions: wp.array[wp.vec3],
-    offset: wp.vec3,
+    offset: wp.array[wp.vec3],
     pos_0: wp.array[wp.vec3],
     pos_1: wp.array[wp.vec3],
 ):
     tid = wp.tid()
     vi = pinned_indices[tid]
-    new_p = original_positions[tid] + offset
+    new_p = original_positions[tid] + offset[0]
     pos_0[vi] = new_p
     pos_1[vi] = new_p
 
@@ -409,7 +411,8 @@ def setup_sim(builder, info, params):
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
-        self.params = PARAMS
+        self.params = dict(PARAMS)
+        self.params["enable_cuda_graph"] = bool(getattr(args, "enable_cuda_graph", self.params["enable_cuda_graph"]))
         self.sim_time = 0.0
         self.fps = self.params["fps"]
         self.frame_dt = 1.0 / self.fps
@@ -424,6 +427,9 @@ class Example:
         self.info = build_model(builder, self.params, seed=seed)
         self.model, self.solver, self.pipeline, pins = setup_sim(builder, self.info, self.params)
         self.right, self.left, self.right_orig, self.left_orig = pins
+        self.device = self.model.device
+        self.right_offset = wp.zeros(1, dtype=wp.vec3, device=self.device)
+        self.left_offset = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -448,6 +454,7 @@ class Example:
             self.viewer.camera.fov = self.params["camera_fov"]
 
         self._preroll()
+        self._capture_graph()
         if self.export_ply:
             os.makedirs(self.ply_output_dir, exist_ok=True)
             print(f"[trash_bag] exporting PLY frames to {self.ply_output_dir}")
@@ -473,20 +480,35 @@ class Example:
         # gather the neck: right handle pulls inward (-x), left inward (+x), both lift up
         return wp.vec3(-tg, 0.0, up), wp.vec3(tg, 0.0, up)
 
-    def simulate(self, zero_velocities_each_step=False):
+    def _set_cinch_offsets(self):
         off_r, off_l = self._cinch()
+        self.right_offset.assign(np.array([[float(off_r[0]), float(off_r[1]), float(off_r[2])]], dtype=np.float32))
+        self.left_offset.assign(np.array([[float(off_l[0]), float(off_l[1]), float(off_l[2])]], dtype=np.float32))
+
+    def _capture_graph(self):
+        self.graph = None
+        if not self.params["enable_cuda_graph"] or not wp.get_device().is_cuda:
+            return
+        self._set_cinch_offsets()
+        with wp.ScopedCapture() as capture:
+            self._simulate_substeps()
+        self.graph = capture.graph
+
+    def _simulate_substeps(self, zero_velocities_each_step=False):
         for _ in range(self.sim_substeps):
             wp.launch(
                 move_pinned_vertices,
                 dim=self.right.shape[0],
-                inputs=[self.right, self.right_orig, off_r],
+                inputs=[self.right, self.right_orig, self.right_offset],
                 outputs=[self.state_0.particle_q, self.state_1.particle_q],
+                device=self.device,
             )
             wp.launch(
                 move_pinned_vertices,
                 dim=self.left.shape[0],
-                inputs=[self.left, self.left_orig, off_l],
+                inputs=[self.left, self.left_orig, self.left_offset],
                 outputs=[self.state_0.particle_q, self.state_1.particle_q],
+                device=self.device,
             )
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
@@ -496,9 +518,17 @@ class Example:
             if zero_velocities_each_step:
                 self._zero_velocities()
 
+    def simulate(self, zero_velocities_each_step=False):
+        self._set_cinch_offsets()
+        self._simulate_substeps(zero_velocities_each_step=zero_velocities_each_step)
+
     def step(self):
         self.frame += 1
-        self.simulate()
+        self._set_cinch_offsets()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self._simulate_substeps()
         self.sim_time += self.frame_dt
         if self.export_ply:
             _export_ply_frame(self.ply_output_dir, self.frame, self.state_0.particle_q.numpy(), self.info)
@@ -523,6 +553,12 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=PARAMS["seed"])
+        parser.add_argument(
+            "--enable-cuda-graph",
+            action=argparse.BooleanOptionalAction,
+            default=PARAMS["enable_cuda_graph"],
+            help="Capture the simulation step into a CUDA graph when running on CUDA.",
+        )
         parser.add_argument(
             "--export-ply",
             action="store_true",
