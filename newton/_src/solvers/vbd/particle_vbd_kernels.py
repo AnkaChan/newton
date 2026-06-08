@@ -3294,12 +3294,16 @@ def eval_vertex_gradient(
     tet_materials: wp.array2d[float],
     particle_adjacency: ParticleForceElementAdjacencyInfo,
     particle_forces: wp.array[wp.vec3],
+    include_damping: bool,
     # output
     g_vertex: wp.array[wp.vec3],
 ):
-    """Per-vertex gradient g_i = grad E = -(force) for the multi-res coarse step, mirroring the
-    force accumulation in solve_elasticity (inertia + membrane + dihedral bending + tet + contact/
-    spring) but emitting the gradient instead of solving. Runs over all particles (no colour split)."""
+    """Per-vertex gradient g_i = grad E = -(force) for the multi-res coarse step.
+
+    Proof-of-concept scope is the elastic cloth objective used by the coarse reduced Hessian:
+    inertia + membrane + dihedral bending. Tets/contact/springs are intentionally omitted, and
+    damping is disabled by default until its matching reduced Hessian/merit terms are added.
+    """
     particle_index = wp.tid()
     if not particle_flags[particle_index] & ParticleFlags.ACTIVE or mass[particle_index] == 0.0:
         g_vertex[particle_index] = wp.vec3(0.0)
@@ -3312,7 +3316,10 @@ def eval_vertex_gradient(
         for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
             tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
             if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                tri_damping = float(0.0)
+                if include_damping:
+                    tri_damping = tri_materials[tri_index, 2]
+                f_tri, _h_tri = evaluate_neo_hookean_membrane_force_hessian(
                     tri_index,
                     vertex_order,
                     pos,
@@ -3322,7 +3329,7 @@ def eval_vertex_gradient(
                     tri_areas[tri_index],
                     tri_materials[tri_index, 0],
                     tri_materials[tri_index, 1],
-                    tri_materials[tri_index, 2],
+                    tri_damping,
                     dt,
                 )
                 f = f + f_tri
@@ -3333,7 +3340,10 @@ def eval_vertex_gradient(
                 particle_adjacency, particle_index, i_adj_edge
             )
             if edge_bending_properties[nei_edge_index, 0] > 0.0:
-                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                edge_damping = float(0.0)
+                if include_damping:
+                    edge_damping = edge_bending_properties[nei_edge_index, 1]
+                f_edge, _h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
                     nei_edge_index,
                     vertex_order_on_edge,
                     pos,
@@ -3342,31 +3352,13 @@ def eval_vertex_gradient(
                     edge_rest_angles,
                     edge_rest_length,
                     edge_bending_properties[nei_edge_index, 0],
-                    edge_bending_properties[nei_edge_index, 1],
+                    edge_damping,
                     dt,
                 )
                 f = f + f_edge
 
-    if tet_indices:
-        for adj_tet_counter in range(get_vertex_num_adjacent_tets(particle_adjacency, particle_index)):
-            nei_tet_index, vertex_order_on_tet = get_vertex_adjacent_tet_id_order(
-                particle_adjacency, particle_index, adj_tet_counter
-            )
-            if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
-                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
-                    nei_tet_index,
-                    vertex_order_on_tet,
-                    pos_prev,
-                    pos,
-                    tet_indices,
-                    tet_poses[nei_tet_index],
-                    tet_materials[nei_tet_index, 0],
-                    tet_materials[nei_tet_index, 1],
-                    tet_materials[nei_tet_index, 2],
-                    dt,
-                )
-                f = f + f_tet
-
+    # Tets are intentionally excluded until the coarse path has matching tet Galerkin Hessian and
+    # line-search energy terms.
     f = f + particle_forces[particle_index]
     g_vertex[particle_index] = -f
 

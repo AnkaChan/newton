@@ -3,17 +3,20 @@
 
 """Tests for the VBD solver."""
 
+import inspect
 import unittest
 
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.solvers.vbd.particle_vbd_kernels import evaluate_self_contact_force_norm
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
     init_body_body_contacts_avbd,
     snapshot_body_body_contact_history,
 )
+from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices(mode="basic")
@@ -114,6 +117,47 @@ def test_self_contact_barrier_c2_at_d_min(test, device):
         d2E[1],
         rtol=1e-3,
         err_msg="Self-contact barrier Hessian is not C2-continuous at d = d_min",
+    )
+
+
+def test_cluster_coarse_only_outputs_solved_particle_positions(test, device):
+    builder = newton.ModelBuilder()
+    builder.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=3,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+        fix_left=True,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=0.0,
+        edge_ke=1.0,
+        edge_kd=0.0,
+    )
+    builder.color(include_bending=True)
+    model = builder.finalize(device=device)
+    state_in = model.state()
+    state_out = model.state()
+    solver = SolverVBD(
+        model,
+        iterations=1,
+        particle_enable_tile_solve=False,
+        enable_cluster_multires=True,
+        cluster_solve_mode="coarse_only",
+    )
+
+    solver.step(state_in, state_out, model.control(), None, 1.0 / 60.0)
+
+    np.testing.assert_allclose(
+        state_out.particle_q.numpy(),
+        state_in.particle_q.numpy(),
+        rtol=1e-6,
+        atol=1e-6,
+        err_msg="coarse_only must publish the solved positions into state_out",
     )
 
 
@@ -300,7 +344,17 @@ def _rigid_contact_history_snapshot_copies_active_rows(test, device):
 
 
 class TestSolverVBD(unittest.TestCase):
-    pass
+    def test_cluster_multires_controls_default_to_direct_newton(self):
+        params = inspect.signature(SolverVBD.__init__).parameters
+
+        self.assertIn("cluster_line_search", params)
+        self.assertIs(params["cluster_line_search"].default, False)
+
+        self.assertIn("cluster_solve_mode", params)
+        self.assertEqual(params["cluster_solve_mode"].default, "coarse_then_fine")
+
+        self.assertIn("cluster_include_damping", params)
+        self.assertIs(params["cluster_include_damping"].default, False)
 
 
 add_function_test(
@@ -308,6 +362,12 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD, "test_self_contact_barrier_c2_at_d_min", test_self_contact_barrier_c2_at_d_min, devices=devices
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cluster_coarse_only_outputs_solved_particle_positions",
+    test_cluster_coarse_only_outputs_solved_particle_positions,
+    devices=devices,
 )
 add_function_test(
     TestSolverVBD,

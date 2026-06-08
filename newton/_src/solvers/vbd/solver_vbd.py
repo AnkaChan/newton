@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
+from ...geometry import ParticleFlags
 from ...sim import (
     Contacts,
     Control,
@@ -21,6 +22,8 @@ from ...sim import (
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
+from . import cluster_vbd_kernels as cvk
+from .cluster_multires import build_cluster_system
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -43,8 +46,10 @@ from .particle_vbd_kernels import (
     apply_truncation_ts,
     build_edge_n_ring_edge_collision_filter,
     build_vertex_n_ring_tris_collision_filter,
+    eval_vertex_gradient,
     # Solver kernels (particle VBD)
     forward_step,
+    scale_inv_dt2,
     set_to_csr,
     solve_elasticity,
     solve_elasticity_tile,
@@ -217,6 +222,9 @@ class SolverVBD(SolverBase):
         cluster_target_elems_per_cluster: int = 32,
         cluster_ridge_rel: float = 1e-8,
         cluster_maxstep_rel: float = 1.0,
+        cluster_line_search: bool = False,
+        cluster_solve_mode: str = "coarse_then_fine",
+        cluster_include_damping: bool = False,
         # Rigid body parameters — AVBD hyperparameters
         rigid_avbd_alpha: float = 0.95,  # C0 stabilization strength (C_stab = C - alpha * C0)
         rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override; None uses rigid_avbd_alpha
@@ -377,6 +385,18 @@ class SolverVBD(SolverBase):
         self.cluster_target_elems_per_cluster = cluster_target_elems_per_cluster
         self.cluster_ridge_rel = cluster_ridge_rel
         self.cluster_maxstep_rel = cluster_maxstep_rel
+        if cluster_solve_mode not in ("coarse_then_fine", "coarse_only"):
+            raise ValueError(
+                f"cluster_solve_mode must be 'coarse_then_fine' or 'coarse_only', got {cluster_solve_mode!r}"
+            )
+        if cluster_include_damping:
+            raise ValueError(
+                "cluster_include_damping=True is not supported yet because the coarse damping "
+                "gradient needs matching reduced damping Hessian/merit function terms."
+            )
+        self.cluster_line_search = cluster_line_search
+        self.cluster_solve_mode = cluster_solve_mode
+        self.cluster_include_damping = cluster_include_damping
 
         # Rigid integration mode: when True, rigid bodies are integrated by an external
         # solver (one-way coupling). SolverVBD will not move rigid bodies, but can still
@@ -536,10 +556,6 @@ class SolverVBD(SolverBase):
         """Build the multi-resolution cluster system (host triangle clustering) and upload the
         device-side CSR/colour/entry arrays. Done once at solver construction; assumes
         ``model.particle_q`` is the rest configuration used for the cluster rest frame."""
-        from ...geometry import ParticleFlags
-        from . import cluster_vbd_kernels as cvk
-        from .cluster_multires import build_cluster_system
-
         verts = model.particle_q.numpy()
         faces = model.tri_indices.numpy().reshape(-1, 3)
         flags = model.particle_flags.numpy()
@@ -602,10 +618,12 @@ class SolverVBD(SolverBase):
         self.cluster_energy_buf = wp.zeros(1, dtype=wp.float32, device=dev)
 
     def _cluster_energy(self, pos, dt: float) -> float:
-        """Incremental potential E(pos) = membrane + inertia (the energy whose gradient is g_vertex;
-        bending omitted in v1 / edge-free cloth). Used for the coarse-step Armijo line search."""
-        from . import cluster_vbd_kernels as cvk
+        """Elastic cloth-only incremental potential for optional coarse-step Armijo search.
 
+        This intentionally matches the proof-of-concept coarse objective: membrane + inertia +
+        elastic dihedral bending. Damping, tets, contact, and springs are omitted from the coarse
+        path until their matching reduced Hessian/merit terms are added.
+        """
         model = self.model
         self.cluster_energy_buf.zero_()
         wp.launch(
@@ -657,14 +675,11 @@ class SolverVBD(SolverBase):
         return float(np.sqrt(np.clip(det, 0.0, None)).min())
 
     def _solve_cluster_iteration(self, state_in: State, dt: float):
-        """One coarse cluster sweep (before the per-vertex sweep): evaluate the lagged element
-        Hessian, then for each cluster colour evaluate the exact gradient at current positions,
+        """One coarse cluster sweep: evaluate the lagged element Hessian, then for each cluster colour
+        evaluate the elastic cloth-only gradient at current positions,
         solve the 12-DOF affine per cluster, and prolong it into ``state_in.particle_q`` under an
-        Armijo line search (guarantees the coarse step never increases energy). Elasticity only
-        (membrane + inertia + bending in g); contact path skipped in v1."""
-        from . import cluster_vbd_kernels as cvk
-        from .particle_vbd_kernels import eval_vertex_gradient, scale_inv_dt2
-
+        optional Armijo line search. Proof-of-concept scope is membrane + inertia + elastic bending;
+        damping, tets, contact, and springs are skipped to keep gradient/Hessian terms consistent."""
         model = self.model
         n = model.particle_count
         self.particle_forces.zero_()  # v1: no contact contribution to the coarse gradient
@@ -722,6 +737,7 @@ class SolverVBD(SolverBase):
                     model.tet_materials,
                     self.particle_adjacency,
                     self.particle_forces,
+                    self.cluster_include_damping,
                     self.cluster_g_vertex,
                 ],
                 device=self.device,
@@ -764,7 +780,7 @@ class SolverVBD(SolverBase):
                 ],
                 device=self.device,
             )
-            if not getattr(self, "cluster_line_search", True):
+            if not self.cluster_line_search:
                 # Apply the clamped coarse Newton step directly (alpha = 1, no line search).
                 wp.launch(
                     cvk.apply_scaled, dim=n, inputs=[1.0, self.cluster_disp, state_in.particle_q], device=self.device
@@ -776,7 +792,6 @@ class SolverVBD(SolverBase):
             a_used = 0.0
             if slope < 0.0 and np.isfinite(slope):
                 e0 = self._cluster_energy(state_in.particle_q, dt)
-                js0 = self._cluster_min_js(state_in.particle_q)  # current min element area ratio
                 alpha = 1.0
                 applied = False
                 for _ in range(25):
@@ -1841,7 +1856,11 @@ class SolverVBD(SolverBase):
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             if self.enable_cluster_multires and self.model.particle_count > 0:
                 self._solve_cluster_iteration(state_in, dt)  # coarse-then-fine
-            self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
+            if not (self.enable_cluster_multires and self.cluster_solve_mode == "coarse_only"):
+                self._solve_particle_iteration(state_in, state_out, contacts, dt, iter_num)
+
+        if self.enable_cluster_multires and self.cluster_solve_mode == "coarse_only" and self.model.particle_count > 0:
+            wp.copy(state_out.particle_q, state_in.particle_q)
 
         # Snapshot solved rigid contact state for next-frame warm-start.
         self._snapshot_rigid_contact_history(contacts)

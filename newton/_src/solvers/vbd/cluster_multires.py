@@ -109,9 +109,9 @@ def tri_corner_coeffs(tri_poses: np.ndarray) -> np.ndarray:
     """Per-(triangle, corner) dF/dx scalar coefficients (m,3,2) from the rest pose Dm_inv (m,2,2).
 
     Matches Newton's membrane F definition (particle_vbd_kernels.py): with DmInv = tri_poses,
-    f0 = x01·DmInv00 + x02·DmInv10, f1 = x01·DmInv01 + x02·DmInv11. So corner 1 (=x1) has
-    coeffs (DmInv00, DmInv01), corner 2 (=x2) has (DmInv10, DmInv11), corner 0 (=x0) is −(c1+c2).
-    Corner k's vec(F) Jacobian is then J_k = [coeff[k,0]·I3 ; coeff[k,1]·I3] (6×3).
+    f0 = x01*DmInv00 + x02*DmInv10, f1 = x01*DmInv01 + x02*DmInv11. So corner 1 (=x1) has
+    coeffs (DmInv00, DmInv01), corner 2 (=x2) has (DmInv10, DmInv11), corner 0 (=x0) is -(c1+c2).
+    Corner k's vec(F) Jacobian is then J_k = [coeff[k,0]*I3 ; coeff[k,1]*I3] (6x3).
     """
     m = tri_poses.shape[0]
     coeff = np.zeros((m, 3, 2))
@@ -227,9 +227,11 @@ def build_cluster_system(
     clu_vert_offsets = np.zeros(num_clusters + 1, np.int64)
     np.add.at(clu_vert_offsets, m_clu + 1, 1)
     clu_vert_offsets = np.cumsum(clu_vert_offsets)
-    row_of: dict[tuple[int, int], int] = {(int(v), int(c)): r for r, (v, c) in enumerate(zip(m_vid, m_clu))}
+    row_of: dict[tuple[int, int], int] = {
+        (int(v), int(c)): r for r, (v, c) in enumerate(zip(m_vid, m_clu, strict=True))
+    }
     clusters_of_vertex: dict[int, list[int]] = {}
-    for v, c in zip(m_vid, m_clu):
+    for v, c in zip(m_vid, m_clu, strict=True):
         clusters_of_vertex.setdefault(int(v), []).append(int(c))
 
     # Galerkin element-corner-pair entries: for each triangle, each ordered corner pair (k,l) whose
@@ -298,7 +300,7 @@ def build_cluster_system(
 
     # cluster coloring: clusters adjacent iff they share a free vertex
     cadj = [set() for _ in range(num_clusters)]
-    for v, cl_list in clusters_of_vertex.items():
+    for _v, cl_list in clusters_of_vertex.items():
         for i in range(len(cl_list)):
             for j in range(i + 1, len(cl_list)):
                 cadj[cl_list[i]].add(cl_list[j])
@@ -355,7 +357,7 @@ def _count_disconnected(adj, label: np.ndarray, k: int) -> int:
         members = np.where(label == c)[0]
         if len(members) == 0:
             continue
-        mset = set(int(x) for x in members)
+        mset = {int(x) for x in members}
         seen = {int(members[0])}
         stack = [int(members[0])]
         while stack:
