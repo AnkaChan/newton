@@ -19,9 +19,26 @@ from __future__ import annotations
 
 import warp as wp
 
+from ..core.types import Axis
 from ..sim.contacts import SOFT_CONTACT_KIND_EDGE, SOFT_CONTACT_KIND_FACE
 from .flags import ShapeFlags
-from .kernels import closest_point_on_tri_to_segment, triangle_closest_point
+from .kernels import (
+    sdf_box,
+    sdf_box_grad,
+    sdf_capsule,
+    sdf_capsule_grad,
+    sdf_cone,
+    sdf_cone_grad,
+    sdf_cylinder,
+    sdf_cylinder_grad,
+    sdf_ellipsoid,
+    sdf_ellipsoid_grad,
+    sdf_plane,
+    sdf_plane_grad,
+    sdf_sphere,
+    sdf_sphere_grad,
+    triangle_closest_point,
+)
 from .types import GeoType
 
 _DEGENERATE_EPS = wp.constant(1.0e-9)
@@ -29,6 +46,23 @@ _DEGENERATE_EPS = wp.constant(1.0e-9)
 
 _EDGE_EDGE_EPS = wp.constant(1.0e-6)
 """Parallel-edge tolerance passed to :func:`wp.closest_point_edge_edge`."""
+
+_INV_GOLDEN = wp.constant(0.6180339887498949)
+"""(sqrt(5) - 1) / 2, the golden-section contraction ratio for edge search."""
+
+_AXIS_Z = wp.constant(int(Axis.Z))
+"""Capsule / cylinder / cone long axis in Newton's shape-local frame."""
+
+_INTERIOR_EPS = wp.constant(1.0e-3)
+"""Minimizers within this of a triangle vertex / edge endpoint are lower-dimensional
+features owned by the legacy per-particle (vertex) or edge path; gating here keeps
+each contact emitted by exactly one feature dimension (no double counting)."""
+
+SDF_FACE_ITERS = 12
+"""Fixed projected-gradient iteration count for the face (triangle-interior) optimization."""
+
+SDF_EDGE_ITERS = 24
+"""Fixed golden-section iteration count for the edge optimization."""
 
 
 @wp.func
@@ -65,15 +99,161 @@ def _soft_edge_endpoints(i: int, a: wp.vec3, b: wp.vec3, c: wp.vec3):
 
 
 @wp.func
-def _box_corner(ci: int, half: wp.vec3):
-    """Corner ``ci`` (0..7) of an axis-aligned box with half-extents ``half``.
+def eval_shape_sdf(geo: wp.int32, scale: wp.vec3, x_local: wp.vec3):
+    """Signed distance and outward gradient of a non-mesh rigid shape.
 
-    Bit 0 selects +/-x, bit 1 selects +/-y, bit 2 selects +/-z.
+    Evaluates the analytic SDF of the primitive at ``x_local`` (the shape's
+    scaled local frame, the same frame the soft-triangle vertices are mapped
+    into). Returns ``(phi, grad)`` with ``grad`` the unit outward gradient (the
+    rigid -> soft direction at the surface). Mesh shapes never reach here; they
+    take the BVH path.
+
+    Args:
+        geo: :class:`GeoType` of the shape.
+        scale: Shape scale ``(s0, s1, s2)``; primitive dimensions follow the
+            same convention as the SDF generators in ``sdf_utils`` (sphere
+            radius ``s0``; box half-extents ``s``; capsule/cylinder/cone
+            ``radius=s0, half_height=s1`` about ``Axis.Z``; ellipsoid radii
+            ``s``; plane half-extents ``s0, s1``).
+        x_local: Query point in the shape's scaled local frame [m].
+
+    Returns:
+        Tuple ``(phi [m], grad [unitless])``.
     """
-    fx = 2.0 * float(ci & 1) - 1.0
-    fy = 2.0 * float((ci >> 1) & 1) - 1.0
-    fz = 2.0 * float((ci >> 2) & 1) - 1.0
-    return wp.vec3(fx * half[0], fy * half[1], fz * half[2])
+    if geo == GeoType.SPHERE:
+        return sdf_sphere(x_local, scale[0]), sdf_sphere_grad(x_local, scale[0])
+    if geo == GeoType.BOX:
+        return sdf_box(x_local, scale[0], scale[1], scale[2]), sdf_box_grad(x_local, scale[0], scale[1], scale[2])
+    if geo == GeoType.CAPSULE:
+        return (
+            sdf_capsule(x_local, scale[0], scale[1], _AXIS_Z),
+            sdf_capsule_grad(x_local, scale[0], scale[1], _AXIS_Z),
+        )
+    if geo == GeoType.CYLINDER:
+        return (
+            sdf_cylinder(x_local, scale[0], scale[1], _AXIS_Z),
+            sdf_cylinder_grad(x_local, scale[0], scale[1], _AXIS_Z),
+        )
+    if geo == GeoType.CONE:
+        return sdf_cone(x_local, scale[0], scale[1], _AXIS_Z), sdf_cone_grad(x_local, scale[0], scale[1], _AXIS_Z)
+    if geo == GeoType.ELLIPSOID:
+        return sdf_ellipsoid(x_local, scale), sdf_ellipsoid_grad(x_local, scale)
+    if geo == GeoType.PLANE:
+        return sdf_plane(x_local, scale[0], scale[1]), sdf_plane_grad(x_local, scale[0], scale[1])
+    # Unsupported non-mesh geo: report "far" so no contact is emitted.
+    return wp.float32(1.0e10), wp.vec3(0.0, 0.0, 1.0)
+
+
+@wp.func
+def optimize_face_sdf(
+    geo: wp.int32,
+    scale: wp.vec3,
+    a: wp.vec3,
+    b: wp.vec3,
+    c: wp.vec3,
+    n_iter: wp.int32,
+):
+    """Minimize the rigid SDF over the soft-triangle interior (Macklin sec. 3).
+
+    Projected gradient descent with step control on the triangle. Each step
+    moves the iterate along the in-plane steepest-descent direction (the SDF
+    gradient projected into the triangle plane), clamps it back onto the
+    triangle, and accepts the move only if ``phi`` decreased, halving the step
+    otherwise. This descends the signed field, so it converges to the deepest /
+    closest triangle point for both separation (``phi > 0``) and penetration
+    (``phi < 0``) -- unlike a closest-point projection, which amplifies the
+    offset when the triangle plane cuts inside the shape. Fixed iteration count
+    for CUDA-graph capture.
+
+    Args:
+        geo: :class:`GeoType` of the rigid shape.
+        scale: Shape scale.
+        a, b, c: Soft-triangle vertices in shape-local frame [m].
+        n_iter: Fixed iteration count.
+
+    Returns:
+        Tuple ``(bary, x_local, phi, grad)`` at the minimizer.
+    """
+    n_tri = wp.cross(b - a, c - a)
+    n_len = wp.length(n_tri)
+    if n_len > _DEGENERATE_EPS:
+        n_tri = n_tri / n_len
+    else:
+        n_tri = wp.vec3(0.0, 0.0, 1.0)
+
+    x = (a + b + c) / 3.0
+    bary = wp.vec3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+    phi, grad = eval_shape_sdf(geo, scale, x)
+
+    # Initial step: a fraction of the triangle's extent.
+    step = wp.max(wp.length(a - x), wp.max(wp.length(b - x), wp.length(c - x)))
+    for _it in range(n_iter):
+        g_tan = grad - wp.dot(grad, n_tri) * n_tri
+        gl = wp.length(g_tan)
+        if gl > _DEGENERATE_EPS:
+            cand = x - step * (g_tan / gl)
+            cp, bary_c, _ft = triangle_closest_point(a, b, c, cand)
+            phi_c, grad_c = eval_shape_sdf(geo, scale, cp)
+            if phi_c < phi:
+                x = cp
+                bary = bary_c
+                phi = phi_c
+                grad = grad_c
+            else:
+                step = step * 0.5
+        else:
+            step = step * 0.5
+    return bary, x, phi, grad
+
+
+@wp.func
+def optimize_edge_sdf(
+    geo: wp.int32,
+    scale: wp.vec3,
+    p: wp.vec3,
+    q: wp.vec3,
+    n_iter: wp.int32,
+):
+    """Minimize the rigid SDF along a soft edge (Macklin sec. 4).
+
+    Golden-section search on ``t in [0, 1]`` of ``phi(p + t*(q - p))``. ``t``
+    runs from the first endpoint ``p`` (``t = 0``) to the second ``q``
+    (``t = 1``), matching :func:`edge_bary`'s parameter. Fixed iteration count
+    for graph capture; phi is unimodal along the segment for convex shapes, and
+    golden-section still returns a local minimum otherwise.
+
+    Args:
+        geo: :class:`GeoType` of the rigid shape.
+        scale: Shape scale.
+        p, q: Soft-edge endpoints in shape-local frame [m].
+        n_iter: Fixed golden-section iteration count.
+
+    Returns:
+        Tuple ``(t, x_local, phi, grad)`` at the minimizer.
+    """
+    lo = float(0.0)
+    hi = float(1.0)
+    t1 = hi - _INV_GOLDEN * (hi - lo)
+    t2 = lo + _INV_GOLDEN * (hi - lo)
+    f1, _g1 = eval_shape_sdf(geo, scale, p + t1 * (q - p))
+    f2, _g2 = eval_shape_sdf(geo, scale, p + t2 * (q - p))
+    for _it in range(n_iter):
+        if f1 < f2:
+            hi = t2
+            t2 = t1
+            f2 = f1
+            t1 = hi - _INV_GOLDEN * (hi - lo)
+            f1, _g1 = eval_shape_sdf(geo, scale, p + t1 * (q - p))
+        else:
+            lo = t1
+            t1 = t2
+            f1 = f2
+            t2 = lo + _INV_GOLDEN * (hi - lo)
+            f2, _g2 = eval_shape_sdf(geo, scale, p + t2 * (q - p))
+    t = 0.5 * (lo + hi)
+    x = p + t * (q - p)
+    phi, grad = eval_shape_sdf(geo, scale, x)
+    return t, x, phi, grad
 
 
 @wp.func
@@ -170,117 +350,6 @@ def _tri_vs_point_emit(
 
 
 @wp.func
-def _tri_vs_sphere_emit(
-    a: wp.vec3,
-    b: wp.vec3,
-    c: wp.vec3,
-    center: wp.vec3,
-    surf_radius: float,
-    margin_radius: float,
-    soft_tri_id: wp.int32,
-    shape_index: wp.int32,
-    X_ws: wp.transform,
-    X_bs: wp.transform,
-    particle_count: wp.int32,
-    soft_contact_max: wp.int32,
-    soft_contact_count: wp.array[wp.int32],
-    soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
-    soft_contact_barycentric: wp.array[wp.vec3],
-    soft_contact_shape: wp.array[wp.int32],
-    soft_contact_body_pos: wp.array[wp.vec3],
-    soft_contact_body_vel: wp.array[wp.vec3],
-    soft_contact_normal: wp.array[wp.vec3],
-):
-    """T x surface for a sphere-like feature: a point ``center`` carrying an
-    offset ``surf_radius`` (sphere, or a cone base disk approximated as a disk
-    of that radius). Emits a FACE record at the offset surface point.
-    """
-    cp, bary, _ft = triangle_closest_point(a, b, c, center)
-    dc = wp.length(cp - center)
-    if dc > _DEGENERATE_EPS and dc < surf_radius + margin_radius:
-        direction = (cp - center) / dc
-        rpt = center + surf_radius * direction
-        nrm = wp.transform_vector(X_ws, direction)
-        _emit_into_tri_range(
-            particle_count,
-            soft_contact_max,
-            soft_contact_count,
-            soft_contact_primitive,
-            soft_contact_kind,
-            soft_contact_barycentric,
-            soft_contact_shape,
-            soft_contact_body_pos,
-            soft_contact_body_vel,
-            soft_contact_normal,
-            soft_tri_id,
-            SOFT_CONTACT_KIND_FACE,
-            bary,
-            shape_index,
-            wp.transform_point(X_bs, rpt),
-            wp.vec3(0.0, 0.0, 0.0),
-            nrm,
-        )
-
-
-@wp.func
-def _tri_vs_segment_emit(
-    a: wp.vec3,
-    b: wp.vec3,
-    c: wp.vec3,
-    p0: wp.vec3,
-    p1: wp.vec3,
-    surf_radius: float,
-    margin_radius: float,
-    soft_tri_id: wp.int32,
-    shape_index: wp.int32,
-    X_ws: wp.transform,
-    X_bs: wp.transform,
-    particle_count: wp.int32,
-    soft_contact_max: wp.int32,
-    soft_contact_count: wp.array[wp.int32],
-    soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
-    soft_contact_barycentric: wp.array[wp.vec3],
-    soft_contact_shape: wp.array[wp.int32],
-    soft_contact_body_pos: wp.array[wp.vec3],
-    soft_contact_body_vel: wp.array[wp.vec3],
-    soft_contact_normal: wp.array[wp.vec3],
-):
-    """T x surface for a capped axis segment (capsule, or cylinder approximated
-    by its axis). The rigid contact point sits ``surf_radius`` off the closest
-    axis point toward the triangle. Emits a FACE record.
-    """
-    cp_tri, bary, cp_seg, dist = closest_point_on_tri_to_segment(a, b, c, p0, p1)
-    if dist < surf_radius + margin_radius:
-        if dist > _DEGENERATE_EPS:
-            direction = (cp_tri - cp_seg) / dist
-        else:
-            direction = wp.normalize(wp.cross(b - a, c - a))
-        rpt = cp_seg + surf_radius * direction
-        nrm = wp.transform_vector(X_ws, direction)
-        _emit_into_tri_range(
-            particle_count,
-            soft_contact_max,
-            soft_contact_count,
-            soft_contact_primitive,
-            soft_contact_kind,
-            soft_contact_barycentric,
-            soft_contact_shape,
-            soft_contact_body_pos,
-            soft_contact_body_vel,
-            soft_contact_normal,
-            soft_tri_id,
-            SOFT_CONTACT_KIND_FACE,
-            bary,
-            shape_index,
-            wp.transform_point(X_bs, rpt),
-            wp.vec3(0.0, 0.0, 0.0),
-            nrm,
-        )
-
-
-@wp.func
 def _edge_vs_edge_emit(
     sa: wp.vec3,
     sb: wp.vec3,
@@ -336,16 +405,19 @@ def _edge_vs_edge_emit(
 
 
 @wp.func
-def _edge_vs_segment_emit(
-    sa: wp.vec3,
-    sb: wp.vec3,
-    p0: wp.vec3,
-    p1: wp.vec3,
-    surf_radius: float,
-    margin_radius: float,
-    soft_edge_i: int,
+def _process_sdf_shape(
     soft_tri_id: wp.int32,
+    soft_flag: wp.uint8,
+    geo: wp.int32,
+    a: wp.vec3,
+    b: wp.vec3,
+    c: wp.vec3,
     shape_index: wp.int32,
+    geo_scale: wp.vec3,
+    sdf_face_iters: wp.int32,
+    sdf_edge_iters: wp.int32,
+    margin: float,
+    radius: float,
     X_ws: wp.transform,
     X_bs: wp.transform,
     particle_count: wp.int32,
@@ -359,19 +431,32 @@ def _edge_vs_segment_emit(
     soft_contact_body_vel: wp.array[wp.vec3],
     soft_contact_normal: wp.array[wp.vec3],
 ):
-    """E x surface: soft edge (sa, sb) vs a capped axis segment (capsule).
+    """Non-mesh shape via SDF local optimization (Macklin et al. 2020).
 
-    The rigid contact point sits ``surf_radius`` off the closest axis point
-    toward the soft edge. Emits an EDGE record.
+    One face optimization over the soft-triangle interior emits at most one
+    FACE record; one edge optimization per soft owned edge emits at most one
+    EDGE record. ``phi`` is a single smooth field, so there is no rigid-side
+    feature dedup -- only the soft-side owned-edge gate (flag bits 3-5) keeps
+    each soft edge emitted once across the launch. The normal is the SDF
+    outward gradient (rigid -> soft); ``body_pos`` is the rigid-side closest
+    point ``x - phi * grad`` mapped to body-local coordinates.
     """
-    st = wp.closest_point_edge_edge(sa, sb, p0, p1, _EDGE_EDGE_EPS)
-    spt = sa + (sb - sa) * st[0]
-    apt = p0 + (p1 - p0) * st[1]
-    d = wp.length(spt - apt)
-    if d > _DEGENERATE_EPS and d < surf_radius + margin_radius:
-        direction = (spt - apt) / d
-        rpt = apt + surf_radius * direction
-        nrm = wp.transform_vector(X_ws, direction)
+    centroid = (a + b + c) / 3.0
+    phi_c, _gc = eval_shape_sdf(geo, geo_scale, centroid)
+    reach = wp.max(
+        wp.length(a - centroid),
+        wp.max(wp.length(b - centroid), wp.length(c - centroid)),
+    )
+    if phi_c > margin + radius + reach:
+        return
+
+    contact_dist = margin + radius
+
+    # Face contact: one optimization over the soft-triangle interior.
+    bary, xf, phi_f, grad_f = optimize_face_sdf(geo, geo_scale, a, b, c, sdf_face_iters)
+    bary_min = wp.min(bary[0], wp.min(bary[1], bary[2]))
+    if phi_f < contact_dist and bary_min > _INTERIOR_EPS and wp.length(grad_f) > _DEGENERATE_EPS:
+        yf = xf - phi_f * grad_f
         _emit_into_tri_range(
             particle_count,
             soft_contact_max,
@@ -384,363 +469,45 @@ def _edge_vs_segment_emit(
             soft_contact_body_vel,
             soft_contact_normal,
             soft_tri_id,
-            SOFT_CONTACT_KIND_EDGE,
-            edge_bary(soft_edge_i, st[0]),
+            SOFT_CONTACT_KIND_FACE,
+            bary,
             shape_index,
-            wp.transform_point(X_bs, rpt),
+            wp.transform_point(X_bs, yf),
             wp.vec3(0.0, 0.0, 0.0),
-            nrm,
+            wp.transform_vector(X_ws, grad_f),
         )
 
-
-@wp.func
-def _process_box_shape(
-    soft_tri_id: wp.int32,
-    soft_flag: wp.uint8,
-    a: wp.vec3,
-    b: wp.vec3,
-    c: wp.vec3,
-    shape_index: wp.int32,
-    geo_scale: wp.vec3,
-    margin: float,
-    radius: float,
-    X_ws: wp.transform,
-    X_bs: wp.transform,
-    particle_count: wp.int32,
-    soft_contact_max: wp.int32,
-    soft_contact_count: wp.array[wp.int32],
-    soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
-    soft_contact_barycentric: wp.array[wp.vec3],
-    soft_contact_shape: wp.array[wp.int32],
-    soft_contact_body_pos: wp.array[wp.vec3],
-    soft_contact_body_vel: wp.array[wp.vec3],
-    soft_contact_normal: wp.array[wp.vec3],
-):
-    """Box: 8 corners (T x V) and 12 edges (E x E). Box features are unique, so
-    no rigid-side ownership dedup is needed.
-    """
-    mr = margin + radius
-
-    # T x V: 8 corners.
-    for ci in range(8):
-        corner = _box_corner(ci, geo_scale)
-        _tri_vs_point_emit(
-            a,
-            b,
-            c,
-            corner,
-            mr,
-            soft_tri_id,
-            shape_index,
-            X_ws,
-            X_bs,
-            particle_count,
-            soft_contact_max,
-            soft_contact_count,
-            soft_contact_primitive,
-            soft_contact_kind,
-            soft_contact_barycentric,
-            soft_contact_shape,
-            soft_contact_body_pos,
-            soft_contact_body_vel,
-            soft_contact_normal,
-        )
-
-    # E x E: 12 box edges (corners differing in exactly one axis bit).
-    for axis in range(3):
-        bit = 1 << axis
-        for ci in range(8):
-            if (ci & bit) == 0:
-                corner_i = _box_corner(ci, geo_scale)
-                corner_j = _box_corner(ci | bit, geo_scale)
-                for i in range(3):
-                    if (int(soft_flag) >> (i + 3)) & 1:
-                        sa, sb = _soft_edge_endpoints(i, a, b, c)
-                        _edge_vs_edge_emit(
-                            sa,
-                            sb,
-                            corner_i,
-                            corner_j,
-                            i,
-                            mr,
-                            soft_tri_id,
-                            shape_index,
-                            X_ws,
-                            X_bs,
-                            particle_count,
-                            soft_contact_max,
-                            soft_contact_count,
-                            soft_contact_primitive,
-                            soft_contact_kind,
-                            soft_contact_barycentric,
-                            soft_contact_shape,
-                            soft_contact_body_pos,
-                            soft_contact_body_vel,
-                            soft_contact_normal,
-                        )
-
-
-@wp.func
-def _process_sphere_shape(
-    soft_tri_id: wp.int32,
-    soft_flag: wp.uint8,
-    a: wp.vec3,
-    b: wp.vec3,
-    c: wp.vec3,
-    shape_index: wp.int32,
-    geo_scale: wp.vec3,
-    margin: float,
-    radius: float,
-    X_ws: wp.transform,
-    X_bs: wp.transform,
-    particle_count: wp.int32,
-    soft_contact_max: wp.int32,
-    soft_contact_count: wp.array[wp.int32],
-    soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
-    soft_contact_barycentric: wp.array[wp.vec3],
-    soft_contact_shape: wp.array[wp.int32],
-    soft_contact_body_pos: wp.array[wp.vec3],
-    soft_contact_body_vel: wp.array[wp.vec3],
-    soft_contact_normal: wp.array[wp.vec3],
-):
-    """Sphere: a single T x surface record (no 1D feature)."""
-    _tri_vs_sphere_emit(
-        a,
-        b,
-        c,
-        wp.vec3(0.0, 0.0, 0.0),
-        geo_scale[0],
-        margin + radius,
-        soft_tri_id,
-        shape_index,
-        X_ws,
-        X_bs,
-        particle_count,
-        soft_contact_max,
-        soft_contact_count,
-        soft_contact_primitive,
-        soft_contact_kind,
-        soft_contact_barycentric,
-        soft_contact_shape,
-        soft_contact_body_pos,
-        soft_contact_body_vel,
-        soft_contact_normal,
-    )
-
-
-@wp.func
-def _process_capsule_shape(
-    soft_tri_id: wp.int32,
-    soft_flag: wp.uint8,
-    a: wp.vec3,
-    b: wp.vec3,
-    c: wp.vec3,
-    shape_index: wp.int32,
-    geo_scale: wp.vec3,
-    margin: float,
-    radius: float,
-    X_ws: wp.transform,
-    X_bs: wp.transform,
-    particle_count: wp.int32,
-    soft_contact_max: wp.int32,
-    soft_contact_count: wp.array[wp.int32],
-    soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
-    soft_contact_barycentric: wp.array[wp.vec3],
-    soft_contact_shape: wp.array[wp.int32],
-    soft_contact_body_pos: wp.array[wp.vec3],
-    soft_contact_body_vel: wp.array[wp.vec3],
-    soft_contact_normal: wp.array[wp.vec3],
-):
-    """Capsule (Axis.Z, scale = (radius, half_height, _)): T x surface vs the
-    axis segment plus E x surface for each soft owned edge.
-    """
-    mr = margin + radius
-    capsule_radius = geo_scale[0]
-    p0 = wp.vec3(0.0, 0.0, geo_scale[1])
-    p1 = wp.vec3(0.0, 0.0, -geo_scale[1])
-
-    _tri_vs_segment_emit(
-        a,
-        b,
-        c,
-        p0,
-        p1,
-        capsule_radius,
-        mr,
-        soft_tri_id,
-        shape_index,
-        X_ws,
-        X_bs,
-        particle_count,
-        soft_contact_max,
-        soft_contact_count,
-        soft_contact_primitive,
-        soft_contact_kind,
-        soft_contact_barycentric,
-        soft_contact_shape,
-        soft_contact_body_pos,
-        soft_contact_body_vel,
-        soft_contact_normal,
-    )
-
+    # Edge contact: one optimization per soft owned edge.
     for i in range(3):
         if (int(soft_flag) >> (i + 3)) & 1:
-            sa, sb = _soft_edge_endpoints(i, a, b, c)
-            _edge_vs_segment_emit(
-                sa,
-                sb,
-                p0,
-                p1,
-                capsule_radius,
-                mr,
-                i,
-                soft_tri_id,
-                shape_index,
-                X_ws,
-                X_bs,
-                particle_count,
-                soft_contact_max,
-                soft_contact_count,
-                soft_contact_primitive,
-                soft_contact_kind,
-                soft_contact_barycentric,
-                soft_contact_shape,
-                soft_contact_body_pos,
-                soft_contact_body_vel,
-                soft_contact_normal,
-            )
-
-
-@wp.func
-def _process_cylinder_shape(
-    soft_tri_id: wp.int32,
-    soft_flag: wp.uint8,
-    a: wp.vec3,
-    b: wp.vec3,
-    c: wp.vec3,
-    shape_index: wp.int32,
-    geo_scale: wp.vec3,
-    margin: float,
-    radius: float,
-    X_ws: wp.transform,
-    X_bs: wp.transform,
-    particle_count: wp.int32,
-    soft_contact_max: wp.int32,
-    soft_contact_count: wp.array[wp.int32],
-    soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
-    soft_contact_barycentric: wp.array[wp.vec3],
-    soft_contact_shape: wp.array[wp.int32],
-    soft_contact_body_pos: wp.array[wp.vec3],
-    soft_contact_body_vel: wp.array[wp.vec3],
-    soft_contact_normal: wp.array[wp.vec3],
-):
-    """Cylinder (Axis.Z, scale = (cap_radius, half_height, _)): T x surface only,
-    approximating the body by its axis segment. E x lateral is deferred.
-    """
-    _tri_vs_segment_emit(
-        a,
-        b,
-        c,
-        wp.vec3(0.0, 0.0, geo_scale[1]),
-        wp.vec3(0.0, 0.0, -geo_scale[1]),
-        geo_scale[0],
-        margin + radius,
-        soft_tri_id,
-        shape_index,
-        X_ws,
-        X_bs,
-        particle_count,
-        soft_contact_max,
-        soft_contact_count,
-        soft_contact_primitive,
-        soft_contact_kind,
-        soft_contact_barycentric,
-        soft_contact_shape,
-        soft_contact_body_pos,
-        soft_contact_body_vel,
-        soft_contact_normal,
-    )
-
-
-@wp.func
-def _process_cone_shape(
-    soft_tri_id: wp.int32,
-    soft_flag: wp.uint8,
-    a: wp.vec3,
-    b: wp.vec3,
-    c: wp.vec3,
-    shape_index: wp.int32,
-    geo_scale: wp.vec3,
-    margin: float,
-    radius: float,
-    X_ws: wp.transform,
-    X_bs: wp.transform,
-    particle_count: wp.int32,
-    soft_contact_max: wp.int32,
-    soft_contact_count: wp.array[wp.int32],
-    soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
-    soft_contact_barycentric: wp.array[wp.vec3],
-    soft_contact_shape: wp.array[wp.int32],
-    soft_contact_body_pos: wp.array[wp.vec3],
-    soft_contact_body_vel: wp.array[wp.vec3],
-    soft_contact_normal: wp.array[wp.vec3],
-):
-    """Cone (Axis.Z, scale = (base_radius, half_height, _)): apex (0D) and base
-    disk (approximated as a disk of base_radius) are geometrically distinct, so
-    they run as two independent T tests. Both can fire. E x lateral deferred.
-    """
-    mr = margin + radius
-    apex = wp.vec3(0.0, 0.0, geo_scale[1])
-    base_centre = wp.vec3(0.0, 0.0, -geo_scale[1])
-
-    _tri_vs_point_emit(
-        a,
-        b,
-        c,
-        apex,
-        mr,
-        soft_tri_id,
-        shape_index,
-        X_ws,
-        X_bs,
-        particle_count,
-        soft_contact_max,
-        soft_contact_count,
-        soft_contact_primitive,
-        soft_contact_kind,
-        soft_contact_barycentric,
-        soft_contact_shape,
-        soft_contact_body_pos,
-        soft_contact_body_vel,
-        soft_contact_normal,
-    )
-    _tri_vs_sphere_emit(
-        a,
-        b,
-        c,
-        base_centre,
-        geo_scale[0],
-        mr,
-        soft_tri_id,
-        shape_index,
-        X_ws,
-        X_bs,
-        particle_count,
-        soft_contact_max,
-        soft_contact_count,
-        soft_contact_primitive,
-        soft_contact_kind,
-        soft_contact_barycentric,
-        soft_contact_shape,
-        soft_contact_body_pos,
-        soft_contact_body_vel,
-        soft_contact_normal,
-    )
+            p, q = _soft_edge_endpoints(i, a, b, c)
+            t, xe, phi_e, grad_e = optimize_edge_sdf(geo, geo_scale, p, q, sdf_edge_iters)
+            if (
+                phi_e < contact_dist
+                and t > _INTERIOR_EPS
+                and t < 1.0 - _INTERIOR_EPS
+                and wp.length(grad_e) > _DEGENERATE_EPS
+            ):
+                ye = xe - phi_e * grad_e
+                _emit_into_tri_range(
+                    particle_count,
+                    soft_contact_max,
+                    soft_contact_count,
+                    soft_contact_primitive,
+                    soft_contact_kind,
+                    soft_contact_barycentric,
+                    soft_contact_shape,
+                    soft_contact_body_pos,
+                    soft_contact_body_vel,
+                    soft_contact_normal,
+                    soft_tri_id,
+                    SOFT_CONTACT_KIND_EDGE,
+                    edge_bary(i, t),
+                    shape_index,
+                    wp.transform_point(X_bs, ye),
+                    wp.vec3(0.0, 0.0, 0.0),
+                    wp.transform_vector(X_ws, grad_e),
+                )
 
 
 @wp.func
@@ -925,9 +692,12 @@ def create_soft_contacts_triangle_driven(
     shape_scale: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
     shape_source_ptr: wp.array[wp.uint64],
-    # Rigid-mesh ownership (Model-level).
+    # Rigid-mesh ownership (Model-level; BVH back-end only).
     shape_mesh_tri_feature_owner_flag: wp.array[wp.uint8],
     shape_mesh_ownership_range: wp.array[wp.vec3i],
+    # SDF back-end optimizer iteration counts (fixed for graph capture).
+    sdf_face_iters: wp.int32,
+    sdf_edge_iters: wp.int32,
     # Contact config.
     margin: float,
     soft_contact_max: wp.int32,
@@ -1013,15 +783,23 @@ def create_soft_contacts_triangle_driven(
             soft_contact_body_vel,
             soft_contact_normal,
         )
-    elif geo == GeoType.BOX:
-        _process_box_shape(
+    else:
+        # SDF back-end: one shape-agnostic local-optimization path covering
+        # box / sphere / capsule / cylinder / cone / ellipsoid / plane. ``geo``
+        # only selects which analytic phi/grad-phi evaluator runs inside
+        # ``eval_shape_sdf``. Unsupported non-mesh geo (e.g. HFIELD) reports a
+        # far phi and emits nothing.
+        _process_sdf_shape(
             soft_tri_id,
             soft_flag,
+            geo,
             a,
             b,
             c,
             shape_index,
             geo_scale,
+            sdf_face_iters,
+            sdf_edge_iters,
             margin,
             radius,
             X_ws,
@@ -1037,104 +815,6 @@ def create_soft_contacts_triangle_driven(
             soft_contact_body_vel,
             soft_contact_normal,
         )
-    elif geo == GeoType.CAPSULE:
-        _process_capsule_shape(
-            soft_tri_id,
-            soft_flag,
-            a,
-            b,
-            c,
-            shape_index,
-            geo_scale,
-            margin,
-            radius,
-            X_ws,
-            X_bs,
-            particle_count,
-            soft_contact_max,
-            soft_contact_count,
-            soft_contact_primitive,
-            soft_contact_kind,
-            soft_contact_barycentric,
-            soft_contact_shape,
-            soft_contact_body_pos,
-            soft_contact_body_vel,
-            soft_contact_normal,
-        )
-    elif geo == GeoType.SPHERE:
-        _process_sphere_shape(
-            soft_tri_id,
-            soft_flag,
-            a,
-            b,
-            c,
-            shape_index,
-            geo_scale,
-            margin,
-            radius,
-            X_ws,
-            X_bs,
-            particle_count,
-            soft_contact_max,
-            soft_contact_count,
-            soft_contact_primitive,
-            soft_contact_kind,
-            soft_contact_barycentric,
-            soft_contact_shape,
-            soft_contact_body_pos,
-            soft_contact_body_vel,
-            soft_contact_normal,
-        )
-    elif geo == GeoType.CYLINDER:
-        _process_cylinder_shape(
-            soft_tri_id,
-            soft_flag,
-            a,
-            b,
-            c,
-            shape_index,
-            geo_scale,
-            margin,
-            radius,
-            X_ws,
-            X_bs,
-            particle_count,
-            soft_contact_max,
-            soft_contact_count,
-            soft_contact_primitive,
-            soft_contact_kind,
-            soft_contact_barycentric,
-            soft_contact_shape,
-            soft_contact_body_pos,
-            soft_contact_body_vel,
-            soft_contact_normal,
-        )
-    elif geo == GeoType.CONE:
-        _process_cone_shape(
-            soft_tri_id,
-            soft_flag,
-            a,
-            b,
-            c,
-            shape_index,
-            geo_scale,
-            margin,
-            radius,
-            X_ws,
-            X_bs,
-            particle_count,
-            soft_contact_max,
-            soft_contact_count,
-            soft_contact_primitive,
-            soft_contact_kind,
-            soft_contact_barycentric,
-            soft_contact_shape,
-            soft_contact_body_pos,
-            soft_contact_body_vel,
-            soft_contact_normal,
-        )
-    # GeoType.PLANE / ELLIPSOID / SDF / HFIELD: no triangle-driven branch; their
-    # V x surface contacts come from the legacy kernel into the particle range.
 
 
 def launch_create_soft_contacts_triangle_driven(
@@ -1184,6 +864,8 @@ def launch_create_soft_contacts_triangle_driven(
             model.shape_source_ptr,
             model.shape_mesh_tri_feature_owner_flag,
             model.shape_mesh_ownership_range,
+            SDF_FACE_ITERS,
+            SDF_EDGE_ITERS,
             margin,
             contacts.soft_contact_max,
         ],

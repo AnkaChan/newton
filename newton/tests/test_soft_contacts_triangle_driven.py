@@ -600,11 +600,13 @@ def _cylinder(b):
 
 
 def _test_cylinder_cap_face_no_edge(test, device):
-    # C6.2: horizontal tri above the top cap; T x axis-segment picks the top
-    # endpoint.  Cylinder has NO edge branch -> zero EDGE records.
+    # C6.2 [water-tight gap]: large horizontal tri just above the top cap
+    # (z=0.5), centroid over the axis.  The SDF face minimizer is the cap point
+    # (0,0,0.5).  Vertices (radial 0.7) and edges (inradius 0.35 > cap radius
+    # 0.3) stay clear of the cap -> no legacy, no EDGE records.
     model, state = _soft_tri_model(
         device,
-        [(0.4, 0.0, 0.6), (-0.2, 0.35, 0.6), (-0.2, -0.35, 0.6)],
+        [(0.7, 0.0, 0.505), (-0.35, 0.606, 0.505), (-0.35, -0.606, 0.505)],
         shapes=(_cylinder,),
     )
     contacts = _collide(model, state, water_tight=True)
@@ -613,7 +615,7 @@ def _test_cylinder_cap_face_no_edge(test, device):
     test.assertEqual(len(_edge_records(records)), 0)
     faces = _face_records(records)
     test.assertEqual(len(faces), 1)
-    _assert_vec(test, faces[0]["body_pos"], (0.0, 0.0, 0.8), tol=3e-3, msg="cylinder cap body_pos")
+    _assert_vec(test, faces[0]["body_pos"], (0.0, 0.0, 0.5), tol=3e-3, msg="cylinder cap body_pos")
     _assert_vec(test, faces[0]["normal"], (0.0, 0.0, 1.0), tol=2e-2, msg="cylinder cap normal")
 
 
@@ -638,25 +640,25 @@ def _test_cone_apex_face(test, device):
     _assert_vec(test, faces[0]["bary"], (1.0 / 3, 1.0 / 3, 1.0 / 3), tol=5e-2, msg="cone apex bary")
 
 
-def _test_cone_straddle_two_faces(test, device):
-    # C7.4: tri straddles the cone, near the apex at top and below the base.
-    # Apex test and base test both fire -> two FACE records.
+def _test_cone_base_face(test, device):
+    # C7.4 [water-tight gap]: large horizontal tri just below the base cap
+    # (z=-0.5), centroid over the axis.  A single smooth phi field yields ONE
+    # face minimizer per triangle -> the base point (0,0,-0.5).  Vertices
+    # (radial 0.7) and edges (inradius 0.35 > base radius 0.3) stay clear of the
+    # base -> no legacy, no EDGE records.
     model, state = _soft_tri_model(
         device,
-        [(0.003, 0.0, 0.502), (0.4, 0.08, -0.6), (-0.4, 0.08, -0.6)],
+        [(0.7, 0.0, -0.505), (-0.35, 0.606, -0.505), (-0.35, -0.606, -0.505)],
         shapes=(_cone,),
     )
     contacts = _collide(model, state, water_tight=True)
+    test.assertEqual(len(_legacy_records(contacts)), 0)
     records = _tri_records(contacts)
     test.assertEqual(len(_edge_records(records)), 0)
     faces = _face_records(records)
-    test.assertEqual(len(faces), 2)
-    # One face at the apex, one near the base plane z=-0.5.
-    apex = [f for f in faces if abs(f["body_pos"][2] - 0.5) < 5e-2]
-    base = [f for f in faces if abs(f["body_pos"][2] + 0.5) < 5e-2]
-    test.assertEqual(len(apex), 1)
-    test.assertEqual(len(base), 1)
-    _assert_vec(test, apex[0]["body_pos"], (0.0, 0.0, 0.5), tol=3e-3, msg="cone straddle apex")
+    test.assertEqual(len(faces), 1)
+    _assert_vec(test, faces[0]["body_pos"], (0.0, 0.0, -0.5), tol=3e-3, msg="cone base body_pos")
+    _assert_vec(test, faces[0]["normal"], (0.0, 0.0, -1.0), tol=2e-2, msg="cone base normal")
 
 
 # --- Mesh -------------------------------------------------------------------
@@ -879,7 +881,7 @@ _CONTACT_TESTS = [
     ("test_capsule_edge_gap", _test_capsule_edge_gap),
     ("test_cylinder_cap_face_no_edge", _test_cylinder_cap_face_no_edge),
     ("test_cone_apex_face", _test_cone_apex_face),
-    ("test_cone_straddle_two_faces", _test_cone_straddle_two_faces),
+    ("test_cone_base_face", _test_cone_base_face),
     ("test_mesh_corner_face", _test_mesh_corner_face),
     ("test_mesh_edge_gap", _test_mesh_edge_gap),
     ("test_dedup_soft_shared_edge", _test_dedup_soft_shared_edge),
