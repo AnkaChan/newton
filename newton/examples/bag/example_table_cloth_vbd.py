@@ -196,6 +196,60 @@ def _damp_particle_velocities(
         particle_qd[i] = particle_qd[i] * damping
 
 
+@wp.kernel
+def _interpolate_replay_joint_q(
+    replay_joint_q: wp.array2d[float],
+    replay_slot_indices: wp.array[int],
+    replay_q_indices: wp.array[int],
+    replay_frame_start: wp.array[float],
+    replay_total_frames: int,
+    substep: int,
+    substeps: int,
+    replay_fps: float,
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+):
+    i = wp.tid()
+    replay_t = replay_frame_start[0] + float(substep) / float(substeps)
+    max_frame = float(replay_total_frames - 1)
+    replay_t = wp.min(wp.max(replay_t, 0.0), max_frame)
+
+    idx0 = int(wp.floor(replay_t))
+    idx1 = wp.min(idx0 + 1, replay_total_frames - 1)
+    alpha = replay_t - float(idx0)
+
+    jp_slot = replay_slot_indices[i]
+    q_idx = replay_q_indices[i]
+    q0 = replay_joint_q[idx0, jp_slot]
+    q1 = replay_joint_q[idx1, jp_slot]
+    joint_q[q_idx] = q0 + (q1 - q0) * alpha
+    joint_qd[q_idx] = (q1 - q0) * replay_fps
+
+
+@wp.kernel
+def _save_body_state(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_index: int,
+    saved_body_q: wp.array[wp.transform],
+    saved_body_qd: wp.array[wp.spatial_vector],
+):
+    saved_body_q[0] = body_q[body_index]
+    saved_body_qd[0] = body_qd[body_index]
+
+
+@wp.kernel
+def _restore_body_state(
+    saved_body_q: wp.array[wp.transform],
+    saved_body_qd: wp.array[wp.spatial_vector],
+    body_index: int,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    body_q[body_index] = saved_body_q[0]
+    body_qd[body_index] = saved_body_qd[0]
+
+
 class Example:
     """Drop a tablecloth onto a table next to a kinematic Unitree G1.
 
@@ -233,10 +287,14 @@ class Example:
         # Joint motion comes from joint_position: the PD-tracked physical
         # state Isaac Lab rendered (read straight from PhysX in IL).
         self._replay_joint_q = None  # (T, 53)  G1 joint positions per frame (PhysX order)
+        self._replay_joint_q_wp = None
         self._replay_cloth_pos = None  # (T, 2523, 3)  PhysX cloth particle world positions
         self._replay_total_frames = 0
         self._replay_frame = 0  # latest HDF5 frame index applied to joint_q
         self._replay_started = False  # set True once frame 1's step() runs
+        self._replay_slot_indices_wp = None
+        self._replay_q_indices_wp = None
+        self._replay_frame_start_wp = wp.array([0.0], dtype=float)
         # Last metric values for the HUD.
         self._cloth_delta_rms_mm = float("nan")
         self._cloth_delta_max_mm = float("nan")
@@ -622,6 +680,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        self._pile_body_q_save = wp.empty(1, dtype=wp.transform) if self._has_pile else None
+        self._pile_body_qd_save = wp.empty(1, dtype=wp.spatial_vector) if self._has_pile else None
 
         # Initialise the robot FK once. The robot pose is then frozen because
         # body_inv_mass is zero — VBD will not integrate those bodies.
@@ -712,8 +772,10 @@ class Example:
             snap_particle_qd = self.state_0.particle_qd.numpy().copy() if self.state_0.particle_qd is not None else None
             snap_body_q = self.state_0.body_q.numpy().copy() if self.state_0.body_q is not None else None
             snap_body_qd = self.state_0.body_qd.numpy().copy() if self.state_0.body_qd is not None else None
+            snap_joint_q = self.state_0.joint_q.numpy().copy() if self.state_0.joint_q is not None else None
+            snap_joint_qd = self.state_0.joint_qd.numpy().copy() if self.state_0.joint_qd is not None else None
             with wp.ScopedCapture() as cap:
-                self.simulate()
+                self.simulate(apply_replay=self._replay_joint_q_wp is not None)
             self.graph = cap.graph
             if snap_particle_q is not None:
                 self.state_0.particle_q.assign(wp.array(snap_particle_q, dtype=wp.vec3))
@@ -723,11 +785,18 @@ class Example:
                 self.state_0.body_q.assign(wp.array(snap_body_q, dtype=wp.transform))
             if snap_body_qd is not None:
                 self.state_0.body_qd.assign(wp.array(snap_body_qd, dtype=wp.spatial_vector))
+            if snap_joint_q is not None:
+                self.state_0.joint_q.assign(wp.array(snap_joint_q, dtype=float))
+            if snap_joint_qd is not None:
+                self.state_0.joint_qd.assign(wp.array(snap_joint_qd, dtype=float))
         else:
             self.graph = None
 
-    def simulate(self, zero_velocities_each_substep: bool = False):
-        for _ in range(self.sim_substeps):
+    def simulate(self, zero_velocities_each_substep: bool = False, apply_replay: bool = False):
+        for substep in range(self.sim_substeps):
+            if apply_replay:
+                self._apply_replay_substep_pose(substep)
+
             # Robot stays kinematic — its body_q never changes — but copying
             # into state_1 keeps the contact pipeline consistent.
             wp.copy(self.state_1.body_q, self.state_0.body_q)
@@ -745,6 +814,9 @@ class Example:
             if zero_velocities_each_substep:
                 self.state_0.particle_qd.zero_()
                 self.state_0.body_qd.zero_()
+
+        if apply_replay:
+            self._apply_replay_substep_pose(self.sim_substeps)
 
         # self._damp_cloth_velocities()
 
@@ -775,26 +847,29 @@ class Example:
 
         # Frame 0 is the post-preroll snapshot: G1 at the spread_tablecloth
         # init pose, with cloth + pile settled by the uncaptured preroll. No
-        # HDF5 playback is consumed. Frame 1 onward consumes
-        # ``replay_jq[frame_count - 1]`` (so display frame 1 corresponds to
-        # the recording's first frame).
+        # HDF5 playback is consumed. Frame 1 onward simulates the replay
+        # interval starting at ``replay_jq[frame_count - 1]`` and applies
+        # interpolated robot poses at every VBD substep.
         if self._frame_count == 0:
             self.sim_time += self.frame_dt
             self.frame_index += 1
             self._frame_count += 1
             return
 
-        if self._replay_joint_q is not None:
+        apply_replay = self._replay_joint_q is not None
+        if apply_replay:
             replay_idx = self._frame_count - 1
-            self._replay_frame = replay_idx
-            self._apply_replay_frame(replay_idx)
-            self._update_record_overlay(replay_idx)
+            self._set_replay_frame_start(replay_idx)
+            self._replay_frame = int(min(replay_idx + 1, self._replay_total_frames - 1))
             self._replay_started = True
 
         if self.graph:
             wp.capture_launch(self.graph)
         else:
-            self.simulate()
+            self.simulate(apply_replay=apply_replay)
+
+        if apply_replay:
+            self._update_record_overlay(self._replay_frame)
 
         self.sim_time += self.frame_dt
         self.frame_index += 1
@@ -871,6 +946,7 @@ class Example:
         jq = replay["joint_position"]
         cp = replay["nodal_position"]
         self._replay_joint_q = jq
+        self._replay_joint_q_wp = wp.array(jq, dtype=float)
         self._replay_cloth_pos = cp
         self._replay_total_frames = replay["n_frames"]
         print(
@@ -918,10 +994,98 @@ class Example:
         :func:`table_cloth.jp_slot_to_newton_qs` for the composition.
         """
         self._replay_slot_qs = tc.jp_slot_to_newton_qs(self._il_to_newton_qs)
+        if self._replay_slot_qs:
+            self._replay_slot_indices_wp = wp.array(
+                np.array([jp_slot for jp_slot, _ in self._replay_slot_qs], dtype=np.int32),
+                dtype=int,
+            )
+            self._replay_q_indices_wp = wp.array(
+                np.array([n_qs for _, n_qs in self._replay_slot_qs], dtype=np.int32),
+                dtype=int,
+            )
         print(
             f"{self._log_prefix} Replay slot map: {len(self._replay_slot_qs)}/"
             f"{len(tc.JP_SLOT_TO_NAME)} jp slots mapped to Newton joint_q"
         )
+
+    def _set_replay_frame_start(self, hdf5_frame: float) -> None:
+        if self._replay_frame_start_wp is None or self._replay_total_frames <= 0:
+            return
+        frame = min(max(float(hdf5_frame), 0.0), float(self._replay_total_frames - 1))
+        self._replay_frame_start_wp.assign(np.array([frame], dtype=np.float32))
+
+    def _save_pile_body_state(self) -> bool:
+        if (
+            not self._has_pile
+            or self._rigid_body_idx is None
+            or self._pile_body_q_save is None
+            or self._pile_body_qd_save is None
+        ):
+            return False
+        wp.launch(
+            _save_body_state,
+            dim=1,
+            inputs=[
+                self.state_0.body_q,
+                self.state_0.body_qd,
+                int(self._rigid_body_idx),
+                self._pile_body_q_save,
+                self._pile_body_qd_save,
+            ],
+        )
+        return True
+
+    def _restore_pile_body_state(self) -> None:
+        if (
+            not self._has_pile
+            or self._rigid_body_idx is None
+            or self._pile_body_q_save is None
+            or self._pile_body_qd_save is None
+        ):
+            return
+        wp.launch(
+            _restore_body_state,
+            dim=1,
+            inputs=[
+                self._pile_body_q_save,
+                self._pile_body_qd_save,
+                int(self._rigid_body_idx),
+                self.state_0.body_q,
+                self.state_0.body_qd,
+            ],
+        )
+
+    def _apply_replay_substep_pose(self, substep: int) -> None:
+        """Interpolate scalar replay joints and update G1 FK for one substep."""
+        if (
+            self._replay_joint_q_wp is None
+            or self._replay_slot_indices_wp is None
+            or self._replay_q_indices_wp is None
+            or self._replay_total_frames <= 0
+            or not self._replay_slot_qs
+        ):
+            return
+
+        saved_pile = self._save_pile_body_state()
+        wp.launch(
+            _interpolate_replay_joint_q,
+            dim=len(self._replay_slot_qs),
+            inputs=[
+                self._replay_joint_q_wp,
+                self._replay_slot_indices_wp,
+                self._replay_q_indices_wp,
+                self._replay_frame_start_wp,
+                self._replay_total_frames,
+                int(substep),
+                self.sim_substeps,
+                float(self.fps),
+                self.state_0.joint_q,
+                self.state_0.joint_qd,
+            ],
+        )
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+        if saved_pile:
+            self._restore_pile_body_state()
 
     def _apply_replay_frame(self, hdf5_frame: int) -> None:
         """Drive the G1 joints from one recorded frame — full direct replay.
@@ -938,21 +1102,10 @@ class Example:
         """
         if self._replay_joint_q is None:
             return
-        idx = int(min(hdf5_frame, self._replay_total_frames - 1))
-        jp_frame = self._replay_joint_q[idx]
-        jq = self.state_0.joint_q.numpy().copy()
-        for jp_slot, n_qs in self._replay_slot_qs:
-            jq[n_qs] = float(jp_frame[jp_slot])
-        self.state_0.joint_q.assign(wp.array(jq, dtype=float))
-
-        # eval_fk would teleport the pile (free-joint) body back to its
-        # FREE-joint origin coords, so save and restore its body_q.
-        body_q_np = self.state_0.body_q.numpy().copy() if self._has_pile else None
-        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
-        if self._has_pile and self._rigid_body_idx is not None:
-            new_bq = self.state_0.body_q.numpy().copy()
-            new_bq[self._rigid_body_idx] = body_q_np[self._rigid_body_idx]
-            self.state_0.body_q.assign(wp.array(new_bq, dtype=wp.transform))
+        idx = int(min(max(hdf5_frame, 0), self._replay_total_frames - 1))
+        self._set_replay_frame_start(float(idx))
+        self._apply_replay_substep_pose(0)
+        wp.copy(self.state_1.body_q, self.state_0.body_q)
 
     def _snap_g1_to_init_pose(self) -> None:
         """Set Newton's G1 joint_q to the spread_tablecloth custom init pose.

@@ -44,21 +44,23 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 DEFAULTS = {
     "W": 0.30,  # flat width   (x extent = 2a)
-    "D": 0.12,  # depth        (y extent = 2b)  -> flattened (W/D = 2.5)
+    "D": 0.08,  # depth        (y extent = 2b)  -> flattened (W/D = 3.75)
     "H": 0.40,  # height       (z from 0 at bottom seam to H at fold/rim)
-    "rc": 0.045,  # rounded-rect corner radius of the cross-section
+    "rc": 0.030,  # rounded-rect corner radius of the cross-section
     "fold": "out",  # "out" = hem folds outward (stripe band + handles on outside); "in" = inward
-    "h_hem": 0.028,  # flap height = width of the folded hem/stripe band (kept narrow)
-    "t_tunnel": 0.014,  # offset of the flap from the wall = channel (drawstring) thickness
+    "h_hem": 0.020,  # flap height = width of the folded hem/stripe band (kept narrow)
+    "t_tunnel": 0.010,  # offset of the flap from the wall = channel (drawstring) thickness
+    "fold_slope_drop": 0.005,  # top of flap drops below the rim so the fold slopes, not shelves
+    "n_fold_slope": 2,  # divisions along the sloped fold before the vertical flap
     "ds": 0.012,  # target perimeter edge length (controls n around)
     "bottom_ds": 0.014,  # bottom-cap ring spacing (O-grid); ~matches perimeter ds
-    "n_z": 28,  # vertical wall divisions (rows = n_z+1, plus fold-base row)
-    "n_flap": 5,  # vertical flap divisions
+    "n_z": 40,  # vertical wall divisions (rows = n_z+1, plus fold-base row)
+    "n_flap": 3,  # vertical flap divisions
     "ds_rope": 0.008,  # centerline segment length for the drawstring ribbon
-    "rope_width": 0.012,  # width of the single-layer cloth drawstring ribbon
+    "rope_width": 0.008,  # width of the single-layer cloth drawstring ribbon
     "rope_n_width": 3,  # segments across the ribbon width
     "rope_z_frac": 0.45,  # rope sits at z = H - rope_z_frac*h_hem (inside the channel)
-    "rope_offset": 0.008,  # rope follows the bag contour, offset this far OUTWARD (no penetration)
+    "rope_offset": 0.006,  # rope follows the bag contour, offset this far OUTWARD (no penetration)
     "handle_gap": 0.05,  # exposed handle gap at each side middle; tunnels cover the rest (incl. corners)
 }
 
@@ -304,7 +306,10 @@ def build_mesh(p):
 
     # --- folded hem flaps, EXTENDED around the corners to the side ends; only a
     # small handle gap remains at each side middle ---
-    flap_zs = np.linspace(H, H - h_hem, p["n_flap"] + 1)  # k=0 at fold, last at free edge
+    fold_slope_drop = max(0.0, min(float(p.get("fold_slope_drop", 0.0)), h_hem - 1e-6))
+    n_fold_slope = max(1, int(p.get("n_fold_slope", 1)))
+    z_flap_top = H - fold_slope_drop
+    flap_zs = np.linspace(z_flap_top, H - h_hem, p["n_flap"] + 1)[1:]
     fold_out = p.get("fold", "out") == "out"
     fold_sign = 1.0 if fold_out else -1.0  # +1 = fold outward (stripe band on the outside)
     normals = _outward_normals(peri)
@@ -315,7 +320,12 @@ def build_mesh(p):
         cols = []
         for pi in run:
             base = peri[pi] + fold_sign * t * normals[pi]
-            col = [add_v(base[0], base[1], z) for z in flap_zs]
+            col = []
+            for step in range(1, n_fold_slope + 1):
+                u = step / n_fold_slope
+                fold_xy = peri[pi] + u * fold_sign * t * normals[pi]
+                col.append(add_v(fold_xy[0], fold_xy[1], H - u * fold_slope_drop))
+            col.extend(add_v(base[0], base[1], z) for z in flap_zs)
             cols.append(col)
         return cols
 
@@ -350,14 +360,14 @@ def build_mesh(p):
 
     def attach_flap(col_perimeter_indices, cols):
         start = len(faces)
-        # fold strip: wall top row -> flap top row
+        # fold strip: wall top row -> first sloped fold row
         for c in range(len(cols) - 1):
             pi = col_perimeter_indices[c]
             pn = col_perimeter_indices[c + 1]
             quad(wall[pi][k_top], wall[pn][k_top], cols[c + 1][0], cols[c][0])
-        # flap patch grid
+        # remaining sloped rows and the vertical folded flap grid
         for c in range(len(cols) - 1):
-            for k in range(len(flap_zs) - 1):
+            for k in range(len(cols[c]) - 1):
                 quad(cols[c][k], cols[c + 1][k], cols[c + 1][k + 1], cols[c][k + 1])
         stripe_faces.extend(range(start, len(faces)))
 
@@ -390,6 +400,9 @@ def build_mesh(p):
         "stripe_faces": stripe_faces,
         "fold_out": fold_out,
         "z_fold_base": z_fold_base,
+        "z_flap_top": z_flap_top,
+        "fold_slope_drop": fold_slope_drop,
+        "n_fold_slope": n_fold_slope,
         "b": b,
     }
     return verts, faces, meta

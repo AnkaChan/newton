@@ -53,13 +53,13 @@ PARAMS = {
     "cloth_density": 0.08,
     "cloth_tri_ke": 2.0e4,
     "cloth_tri_ka": 2.0e3,
-    "cloth_tri_kd": 1.0e2,
-    "cloth_edge_ke": 0.01,  # low bending -> floppy plastic that wrinkles (high tri_ke keeps it from stretching)
-    "cloth_edge_kd": 0.001,
+    "cloth_tri_kd": 1.0e-3,
+    "cloth_edge_ke": 0.001,  # low bending -> floppy plastic that wrinkles (high tri_ke keeps it from stretching)
+    "cloth_edge_kd": 0.01,
     # --- contacts ---
     "soft_contact_ke": 5.0e5,
-    "soft_contact_kd": 1.0e1,
-    "soft_contact_mu": 1.0,
+    "soft_contact_kd": 1.0e0,
+    "soft_contact_mu": 0.2,
     "soft_contact_creation_margin": 0.012,
     "rigid_body_particle_contact_buffer_size": 4096,
     "rigid_body_contact_buffer_size": 1024,

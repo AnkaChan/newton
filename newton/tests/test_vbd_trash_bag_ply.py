@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
 import tempfile
 import types
@@ -86,6 +87,13 @@ class TestVbdTrashBagPlyExport(unittest.TestCase):
         self.assertTrue(args.export_ply)
         self.assertEqual(args.ply_output_dir, "mesh_frames")
 
+    def test_parser_adds_cuda_graph_option(self):
+        parser = example_vbd_trash_bag.Example.create_parser()
+
+        args = parser.parse_args(["--no-enable-cuda-graph"])
+
+        self.assertFalse(args.enable_cuda_graph)
+
     def test_export_ply_frame_combines_bag_and_rope_meshes(self):
         positions = np.array(
             [
@@ -136,6 +144,37 @@ class TestVbdTrashBagPlyExport(unittest.TestCase):
                 "3 3 4 5",
             ],
         )
+
+
+class TestVbdTrashBagAssetGeometry(unittest.TestCase):
+    def test_generated_layout_uses_thinner_narrow_sloped_tunnel(self):
+        with open(example_vbd_trash_bag.LAYOUT_JSON, encoding="utf-8") as file:
+            layout = json.load(file)
+
+        params = layout["params"]
+
+        self.assertLess(params["D"], 0.12)
+        self.assertAlmostEqual(params["h_hem"], 0.02)
+        self.assertLess(params["rope_width"], 0.012)
+        self.assertGreater(params["fold_slope_drop"], 0.0)
+
+    def test_folded_band_vertex_spacing_is_uniform_without_over_refinement(self):
+        with open(example_vbd_trash_bag.LAYOUT_JSON, encoding="utf-8") as file:
+            layout = json.load(file)
+
+        params = layout["params"]
+        self.assertIn("n_fold_slope", params)
+        self.assertLessEqual(params["n_fold_slope"] + params["n_flap"], 5)
+
+        sloped_segment_length = (params["t_tunnel"] ** 2 + params["fold_slope_drop"] ** 2) ** 0.5 / params[
+            "n_fold_slope"
+        ]
+        flap_segment_length = (params["h_hem"] - params["fold_slope_drop"]) / params["n_flap"]
+
+        spacing_ratio = max(sloped_segment_length, flap_segment_length) / min(
+            sloped_segment_length, flap_segment_length
+        )
+        self.assertLessEqual(spacing_ratio, 1.15)
 
 
 class TestVbdTrashBagContacts(unittest.TestCase):
@@ -367,7 +406,7 @@ class TestVbdTrashBagPreroll(unittest.TestCase):
         self.assertEqual(example.frame, 3)
         self.assertEqual(example.sim_time, 1.25)
 
-    def test_simulate_zeros_velocities_after_each_substep_when_requested(self):
+    def test_simulate_substeps_zero_velocities_after_each_substep_when_requested(self):
         state_a = types.SimpleNamespace(
             particle_q=object(),
             particle_qd=mock.Mock(),
@@ -386,6 +425,8 @@ class TestVbdTrashBagPreroll(unittest.TestCase):
             left=types.SimpleNamespace(shape=(0,)),
             right_orig=object(),
             left_orig=object(),
+            right_offset=object(),
+            left_offset=object(),
             state_0=state_a,
             state_1=state_b,
             viewer=mock.Mock(),
@@ -394,15 +435,82 @@ class TestVbdTrashBagPreroll(unittest.TestCase):
             control=object(),
             contacts=object(),
             sim_dt=1.0 / 60.0,
+            device=None,
         )
-        example._cinch = lambda: (object(), object())
         example._zero_velocities = types.MethodType(example_vbd_trash_bag.Example._zero_velocities, example)
 
         with mock.patch.object(example_vbd_trash_bag.wp, "launch"):
-            example_vbd_trash_bag.Example.simulate(example, zero_velocities_each_step=True)
+            example_vbd_trash_bag.Example._simulate_substeps(example, zero_velocities_each_step=True)
 
         self.assertEqual(state_a.particle_qd.zero_.call_count + state_b.particle_qd.zero_.call_count, 3)
         self.assertEqual(state_a.body_qd.zero_.call_count + state_b.body_qd.zero_.call_count, 3)
+
+
+class TestVbdTrashBagCudaGraph(unittest.TestCase):
+    def test_capture_graph_records_substeps_on_cuda(self):
+        graph = object()
+
+        class _FakeCapture:
+            def __enter__(self):
+                self.graph = graph
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                del exc_type, exc_value, traceback
+
+        example = types.SimpleNamespace(
+            params={"enable_cuda_graph": True},
+            _set_cinch_offsets=mock.Mock(),
+            _simulate_substeps=mock.Mock(),
+            graph=None,
+        )
+
+        with (
+            mock.patch.object(example_vbd_trash_bag.wp, "get_device", return_value=types.SimpleNamespace(is_cuda=True)),
+            mock.patch.object(example_vbd_trash_bag.wp, "ScopedCapture", _FakeCapture),
+        ):
+            example_vbd_trash_bag.Example._capture_graph(example)
+
+        self.assertIs(example.graph, graph)
+        example._set_cinch_offsets.assert_called_once_with()
+        example._simulate_substeps.assert_called_once_with()
+
+    def test_capture_graph_falls_back_when_cuda_graph_disabled(self):
+        example = types.SimpleNamespace(
+            params={"enable_cuda_graph": False},
+            _set_cinch_offsets=mock.Mock(),
+            _simulate_substeps=mock.Mock(),
+            graph=object(),
+        )
+
+        with mock.patch.object(example_vbd_trash_bag.wp, "ScopedCapture") as scoped_capture:
+            example_vbd_trash_bag.Example._capture_graph(example)
+
+        self.assertIsNone(example.graph)
+        scoped_capture.assert_not_called()
+        example._set_cinch_offsets.assert_not_called()
+        example._simulate_substeps.assert_not_called()
+
+    def test_step_launches_captured_graph_after_updating_cinch_offsets(self):
+        graph = object()
+        example = types.SimpleNamespace(
+            frame=0,
+            graph=graph,
+            frame_dt=0.25,
+            sim_time=1.0,
+            export_ply=False,
+            _set_cinch_offsets=mock.Mock(),
+            _simulate_substeps=mock.Mock(),
+        )
+
+        with mock.patch.object(example_vbd_trash_bag.wp, "capture_launch") as capture_launch:
+            example_vbd_trash_bag.Example.step(example)
+
+        self.assertEqual(example.frame, 1)
+        self.assertEqual(example.sim_time, 1.25)
+        example._set_cinch_offsets.assert_called_once_with()
+        capture_launch.assert_called_once_with(graph)
+        example._simulate_substeps.assert_not_called()
 
 
 if __name__ == "__main__":

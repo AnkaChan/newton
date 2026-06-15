@@ -63,6 +63,8 @@
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
 - Adjust grouping of `reset`, `step`, and `pause` controls so they appear together
 - Run a 10-frame preroll before the VBD trash-bag example starts rendering or exporting frames, clearing velocities after each preroll solver step.
+- Retune the VBD trash-bag asset with a thinner body, a 2 cm drawstring tunnel, a narrower rope, and a sloped folded hem.
+- Capture the VBD trash-bag example simulation step in a CUDA graph by default on CUDA devices.
 - Bump `Pillow` floor to `>=11.3.0`
 - Bump `jupyterlab` lower bound to `>=4.5.7` to pick up the fix for CVE-2026-40171
 - Replace `ModelBuilder.add_actuator(actuator_class, input_indices=..., output_indices=..., **kwargs)` with `ModelBuilder.add_actuator(controller_class, index=..., clamping=[...], delay_steps=..., pos_index=..., **ctrl_kwargs)` where each call registers a single DOF
