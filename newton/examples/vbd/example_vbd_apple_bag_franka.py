@@ -39,7 +39,7 @@ PARAMS = {
     "handle_side": "left",  # hang one side handle of the bag
     "hanger_finger": "right",
     "add_finger_pads": False,  # use the original smaller FR3 gripper
-    "franka_grip_offset": (-0.058, 0.0, 0.0),  # hand target offset before choosing the open hanger finger [m]
+    "franka_grip_offset": (-0.088, 0.0, 0.0),  # hand target offset before choosing the open hanger finger [m]
     "hanger_finger_drop": 0.025,
     "close_gripper": False,
     "gripper_close_frames": 45,
@@ -117,6 +117,7 @@ PARAMS = {
     "handle_lift_test_min_delta": 0.06,
     "finger_hang_contact_test_min": 1,
     # --- view ---
+    "initial_paused": True,
     "camera_pos": (0.54, -1.12, 0.62),
     "camera_target": (-0.02, 0.0, 0.24),
     "camera_fov": 45.0,
@@ -618,7 +619,21 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
+        self._log_world_axes()
         self.viewer.end_frame()
+
+    def _log_world_axes(self, length=0.2):
+        o = wp.vec3(0.0, 0.0, 0.0)
+        starts = wp.array([o, o, o], dtype=wp.vec3)
+        ends = wp.array(
+            [wp.vec3(length, 0.0, 0.0), wp.vec3(0.0, length, 0.0), wp.vec3(0.0, 0.0, length)],
+            dtype=wp.vec3,
+        )
+        colors = wp.array(
+            [wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)],
+            dtype=wp.vec3,
+        )
+        self.viewer.log_arrows("world_axes", starts, ends, colors)
 
     def test_final(self):
         pq = self.state_0.particle_q.numpy()
