@@ -7,7 +7,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.examples.vbd import example_vbd_apple_bag, example_vbd_apple_bag_franka
+from newton.examples.vbd import example_vbd_apple_bag_franka
 
 
 def _assert_selected_handle_matches_config(test_case, bag_verts, selected, params):
@@ -21,7 +21,7 @@ def _assert_selected_handle_matches_config(test_case, bag_verts, selected, param
 
 class TestVBDAppleBagFranka(unittest.TestCase):
     def test_select_handle_top_indices_uses_one_side_handle(self):
-        bag_verts, _ = example_vbd_apple_bag._load_obj(example_vbd_apple_bag.BAG_OBJ)
+        bag_verts, _ = example_vbd_apple_bag_franka._load_obj(example_vbd_apple_bag_franka.BAG_OBJ)
 
         selected = example_vbd_apple_bag_franka._select_handle_top_indices(
             bag_verts,
@@ -30,7 +30,7 @@ class TestVBDAppleBagFranka(unittest.TestCase):
         )
 
         self.assertGreater(selected.shape[0], 0)
-        self.assertLess(selected.shape[0], example_vbd_apple_bag.PARAMS["pin_band"] * 10000)
+        self.assertLess(selected.shape[0], example_vbd_apple_bag_franka.PARAMS["pin_band"] * 10000)
         _assert_selected_handle_matches_config(
             self,
             bag_verts,
@@ -56,7 +56,7 @@ class TestVBDAppleBagFranka(unittest.TestCase):
         builder = newton.ModelBuilder(gravity=params["gravity"])
         info = example_vbd_apple_bag_franka.build_model(builder, params, seed=params["seed"])
 
-        bag_verts, _ = example_vbd_apple_bag._load_obj(example_vbd_apple_bag.BAG_OBJ)
+        bag_verts, _ = example_vbd_apple_bag_franka._load_obj(example_vbd_apple_bag_franka.BAG_OBJ)
         selected = example_vbd_apple_bag_franka._select_handle_top_indices(
             bag_verts,
             bag_start_particle=0,
@@ -83,13 +83,21 @@ class TestVBDAppleBagFranka(unittest.TestCase):
         self.assertFalse(example_vbd_apple_bag_franka.PARAMS["add_finger_pads"])
         self.assertNotIn("finger_pad_half_width_scale", example_vbd_apple_bag_franka.PARAMS)
 
-    def test_gripper_stays_open_for_handle_hang(self):
+    def test_gripper_closes_during_lift(self):
         params = example_vbd_apple_bag_franka.PARAMS.copy()
 
-        self.assertFalse(params["close_gripper"])
-        for frame in (0, params["lift_start_frame"], params["lift_start_frame"] + params["lift_frames"]):
-            frac = example_vbd_apple_bag_franka._gripper_frac_for_frame(params, frame)
-            self.assertEqual(frac, params["gripper_open_frac"])
+        self.assertTrue(params["close_gripper"])
+        close_start = params.get("gripper_close_start_frame", params["lift_start_frame"])
+        close_end = close_start + params["gripper_close_frames"]
+        frac = example_vbd_apple_bag_franka._gripper_frac_for_frame
+
+        # Open before/at the lift start, easing shut across the close window, fully closed by the end.
+        self.assertEqual(frac(params, 0), params["gripper_open_frac"])
+        self.assertEqual(frac(params, close_start), params["gripper_open_frac"])
+        mid = frac(params, (close_start + close_end) // 2)
+        self.assertGreater(mid, params["gripper_open_frac"])
+        self.assertLess(mid, params["gripper_closed_frac"])
+        self.assertEqual(frac(params, close_end), params["gripper_closed_frac"])
 
     def test_self_contact_uses_small_radius_and_margin(self):
         params = example_vbd_apple_bag_franka.PARAMS
@@ -109,7 +117,7 @@ class TestVBDAppleBagFranka(unittest.TestCase):
 
     def test_open_finger_wiggle_stays_inside_handle_loop(self):
         params = example_vbd_apple_bag_franka.PARAMS
-        bag_verts, _ = example_vbd_apple_bag._load_obj(example_vbd_apple_bag.BAG_OBJ)
+        bag_verts, _ = example_vbd_apple_bag_franka._load_obj(example_vbd_apple_bag_franka.BAG_OBJ)
         selected = example_vbd_apple_bag_franka._select_handle_top_indices(
             bag_verts,
             bag_start_particle=0,

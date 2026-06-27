@@ -23,26 +23,88 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 
 import numpy as np
 import warp as wp
+from tqdm import tqdm
 
 import newton
 import newton.examples
 import newton.ik as ik
 import newton.utils
-from newton.examples.vbd import example_vbd_apple_bag as apple_bag
+
+# This example was adapted from example_vbd_apple_bag.py.  The bag asset, the
+# base simulation parameters, and the cloth-bag + apples builder are inlined
+# below (see ``_BAG_PARAMS`` and ``_build_apple_bag``) so this file is fully
+# self-contained and does not import that module.
+BAG_OBJ = os.path.join(os.path.dirname(__file__), "asset", "supermarket_bag.obj")
+
+_BAG_PARAMS = {
+    # --- apples (rigid spheres) ---
+    "num_apples": 5,
+    "apple_radius": 0.036,
+    "apple_margin": 0.005,
+    "apple_density": 1000.0,  # ~0.2 kg per apple at r=0.036
+    "apple_ke": 5.0e5,
+    "apple_kd": 5.0e1,
+    "apple_mu": 0.5,
+    "apple_drop_offset": 0.045,  # start this far above the rest layer so they drop in
+    # --- cloth (plastic bag) ---
+    "particle_radius": 0.004,
+    "cloth_density": 0.08,
+    "cloth_tri_ke": 2.0e5,
+    "cloth_tri_ka": 2.0e5,
+    "cloth_tri_kd": 1.0e1,
+    "cloth_edge_ke": 0.001,  # low bending -> floppy plastic that wrinkles (high tri_ke keeps it from stretching)
+    "cloth_edge_kd": 0.001,
+    # --- contacts ---
+    "soft_contact_ke": 5.0e5,
+    "soft_contact_kd": 1.0e0,
+    "soft_contact_mu": 0.2,
+    "soft_contact_creation_margin": 0.012,
+    "rigid_body_particle_contact_buffer_size": 4096,
+    "rigid_body_contact_buffer_size": 1024,
+    "rigid_contact_hard": True,
+    # --- solver / time ---
+    "fps": 60,
+    "sim_substeps": 10,
+    "solver_iterations": 12,
+    "gravity": -9.8,
+    "vertical_axis": 2,
+    # --- pin + wiggle ---
+    "pin_band": 0.03,  # pin bag vertices within this many m of the topmost vertex
+    "settle_frames": 150,  # let the apples drop and settle before wiggling
+    "wiggle_amplitude": 0.085,  # left<->right travel of the pinned handles [m]
+    "wiggle_freq": 0.55,  # wiggle frequency [Hz]
+    "wiggle_y_amplitude": 0.055,  # front<->back travel of the pinned handles [m]
+    "wiggle_y_freq": 0.37,  # y-axis wiggle frequency [Hz]
+    "wiggle_y_phase": 0.5 * math.pi,  # phase offset from the x wiggle [rad]
+    "wiggle_bob": 0.035,  # vertical bob of the pinned handles [m] (adds bounce/jostle)
+    "wiggle_bob_freq": 1.1,  # bob frequency [Hz] (~2x swing -> lively shake)
+    "wiggle_ramp": 0.6,  # ease the wiggle in over this many seconds
+    "wiggle_axis": 0,  # 0 = x (left<->right)
+    # --- view --- 3/4 elevated front view (wireframe shows the apples sloshing inside)
+    "camera_pos": (0.22, -1.0, 0.48),
+    "camera_target": (0.0, 0.0, 0.14),
+    "camera_fov": 45.0,
+    "draw_wireframe": True,
+    "initial_paused": False,
+    "seed": 42,
+}
 
 PARAMS = {
-    **apple_bag.PARAMS,
+    **_BAG_PARAMS,
+    # --- scene contents ---
+    "include_payload": True,  # include cloth bag + apples; False = robot-only (debug arm motion)
     # --- handle grip ---
     "handle_side": "left",  # hang one side handle of the bag
     "hanger_finger": "right",
     "add_finger_pads": False,  # use the original smaller FR3 gripper
-    "franka_grip_offset": (-0.088, 0.0, 0.0),  # hand target offset before choosing the open hanger finger [m]
+    "franka_grip_offset": (-0.086, 0.0, 0.0),  # hand target offset before choosing the open hanger finger [m]
     "hanger_finger_drop": 0.025,
-    "close_gripper": False,
-    "gripper_close_frames": 45,
+    "close_gripper": True,  # ease the gripper shut during the lift to secure the handle
+    "gripper_close_frames": 45,  # frames to fully close, starting at gripper_close_start_frame (default: lift_start_frame)
     "lift_start_frame": 75,
     "lift_frames": 120,
     "lift_height_delta": 0.20,
@@ -64,7 +126,7 @@ PARAMS = {
     # --- Franka ---
     "franka_asset_name": "franka_emika_panda",
     "franka_urdf_path": "urdf/fr3_franka_hand.urdf",
-    "franka_base_pos": (-0.50, 0.0, 0.05),
+    "franka_base_pos": (-0.58, 0.0, -0.03),
     "franka_floating": False,
     "franka_scale": 1.0,
     "franka_enable_self_collisions": False,
@@ -81,7 +143,7 @@ PARAMS = {
     "arm_drive_ke": (1.0e6, 1.0e6, 8.0e5, 8.0e5, 6.0e5, 6.0e5, 6.0e5),
     "arm_drive_kd": (1.0e5, 1.0e5, 8.0e4, 8.0e4, 6.0e4, 6.0e4, 6.0e4),
     "gripper_drive_ke": 1.0e6,
-    "gripper_drive_kd": 1.0e5,
+    "gripper_drive_kd": 1.0e4,
     "gripper_open_gap": 0.08,
     "gripper_closed_gap": 0.002,
     "gripper_open_frac": 0.0,
@@ -90,6 +152,7 @@ PARAMS = {
     "finger_shape_mu": 1.0,
     "finger_shape_ke": 1.0e6,
     "finger_shape_kd": 1.0e1,
+    "finger_shape_margin": 0.003,  # outward contact offset on the finger shapes [m]
     "ee_link_offset": (0.0, 0.0, 0.0),
     "tool_rotation_quat": (0.70710678, 0.0, 0.70710678, 0.0),
     "tool_rotation_axis": (1.0, 0.0, 0.0),
@@ -101,6 +164,7 @@ PARAMS = {
     "ik_iterations": 24,
     "pregrasp_ik_iterations": 48,
     "enable_ik_cuda_graph": True,
+    "enable_physics_cuda_graph": True,  # replay the VBD + collision substep loop from a CUDA graph
     "waypoint_interp_max": 1.0,
     "integrate_with_external_rigid_solver": False,
     "particle_enable_self_contact": True,
@@ -110,7 +174,7 @@ PARAMS = {
     "rigid_joint_linear_ke": 1.0e6,
     "rigid_joint_angular_ke": 1.0e6,
     "rigid_joint_linear_kd": 1.0e3,
-    "rigid_joint_angular_kd": 1.0e2,
+    "rigid_joint_angular_kd": 1.0e3,
     "collision_broad_phase": "nxn",
     "gripper_gap_test_tolerance": 1.0e-8,
     "gripper_open_test_tolerance": 1.0e-5,
@@ -122,6 +186,131 @@ PARAMS = {
     "camera_target": (-0.02, 0.0, 0.24),
     "camera_fov": 45.0,
 }
+
+
+def _pitch_yaw(pos, target):
+    """Pitch/yaw (deg) to look from pos toward target, Z-up convention (see camera.py)."""
+    d = np.array(target, dtype=np.float64) - np.array(pos, dtype=np.float64)
+    d /= np.linalg.norm(d) + 1e-9
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, float(d[2])))))
+    yaw = math.degrees(math.atan2(float(d[1]), float(d[0])))
+    return pitch, yaw
+
+
+def _load_obj(path):
+    """Load a triangle-mesh OBJ as (vertices [V,3] float32, faces flat int list)."""
+    vertices = []
+    faces = []
+    with open(path) as fh:
+        for line in fh:
+            if line.startswith("v "):
+                _, x, y, z = line.split()[:4]
+                vertices.append([float(x), float(y), float(z)])
+            elif line.startswith("f "):
+                idx = [int(tok.split("/")[0]) for tok in line.split()[1:]]
+                # OBJ is 1-indexed; fan-triangulate any polygon into triangles.
+                for k in range(1, len(idx) - 1):
+                    faces.extend([idx[0] - 1, idx[k] - 1, idx[k + 1] - 1])
+    if not vertices or not faces:
+        raise ValueError(f"OBJ has no geometry: {path}")
+    return np.array(vertices, dtype=np.float32), faces
+
+
+def _apple_layout(num, r, margin, half_x, half_y, z_floor, drop_offset, rng):
+    """Lay apples out in x-rows stacked in layers, centered, with a small drop."""
+    half_x_in = max(r, half_x - r - margin)
+    spacing = 2.0 * r + 0.022
+    per_layer = max(1, int((2.0 * half_x_in) / spacing) + 1)
+    layer_gap = 2.0 * r + 0.008
+    base_z = z_floor + r + 0.012
+
+    positions = []
+    for k in range(num):
+        layer = k // per_layer
+        col = k % per_layer
+        n_here = min(per_layer, num - layer * per_layer)
+        xs = (np.arange(n_here) - (n_here - 1) * 0.5) * spacing
+        stagger = 0.5 * spacing if (layer % 2 == 1) else 0.0
+        x = float(xs[col] + stagger)
+        x = float(np.clip(x, -half_x_in, half_x_in))
+        y = float(rng.uniform(-0.4, 0.4) * max(0.0, half_y - r - margin))
+        z = base_z + layer * layer_gap + drop_offset
+        positions.append((x, y, z))
+    return positions
+
+
+def _build_apple_bag(builder, params, seed):
+    """Add the welded cloth bag and the rigid apples (inlined from example_vbd_apple_bag.py)."""
+    rng = np.random.default_rng(seed)
+
+    bag_verts, bag_faces = _load_obj(BAG_OBJ)
+    va = params["vertical_axis"]
+
+    pr = params["particle_radius"]
+    bag_start_particle = len(builder.particle_q)
+
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        vertices=bag_verts.tolist(),
+        indices=bag_faces,
+        density=params["cloth_density"],
+        tri_ke=params["cloth_tri_ke"],
+        tri_ka=params["cloth_tri_ka"],
+        tri_kd=params["cloth_tri_kd"],
+        edge_ke=params["cloth_edge_ke"],
+        edge_kd=params["cloth_edge_kd"],
+        particle_radius=pr,
+    )
+
+    bag_end_particle = len(builder.particle_q)
+
+    # Pin the handle tops: bag vertices within pin_band of the topmost vertex.
+    z_top = float(bag_verts[:, va].max())
+    z_floor = float(bag_verts[:, va].min())
+    pin_mask = bag_verts[:, va] >= z_top - params["pin_band"]
+    top_global_indices = np.where(pin_mask)[0] + bag_start_particle
+
+    half_x = 0.5 * float(bag_verts[:, 0].max() - bag_verts[:, 0].min())
+    half_y = 0.5 * float(bag_verts[:, 1].max() - bag_verts[:, 1].min())
+
+    # Rigid apples
+    r = params["apple_radius"]
+    positions = _apple_layout(
+        params["num_apples"], r, params["apple_margin"], half_x, half_y, z_floor, params["apple_drop_offset"], rng
+    )
+
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.density = params["apple_density"]
+    cfg.ke = params["apple_ke"]
+    cfg.kd = params["apple_kd"]
+    cfg.mu = params["apple_mu"]
+    cfg.has_particle_collision = True
+    cfg.margin = params["apple_margin"]
+
+    body_indices = []
+    shape_indices = []
+    for i, (px, py, pz) in enumerate(positions):
+        body = builder.add_body(xform=wp.transform(wp.vec3(px, py, pz), wp.quat_identity()), label=f"apple_{i}")
+        body_indices.append(body)
+        shape_indices.append(len(builder.shape_type))
+        builder.add_shape_sphere(body, radius=r, cfg=cfg)
+
+    builder.color(include_bending=True)
+
+    return {
+        "bag_particle_count": bag_end_particle - bag_start_particle,
+        "top_global_indices": top_global_indices,
+        "body_indices": body_indices,
+        "shape_indices": shape_indices,
+        "particle_radius": pr,
+        "z_floor": z_floor,
+        "z_top": z_top,
+        "half_width": half_x,
+        "half_depth": half_y,
+    }
 
 
 def _quat_to_vec4(q: wp.quat) -> wp.vec4:
@@ -251,22 +440,42 @@ def _add_table(builder, params):
 
 
 def build_model(builder, params, seed=PARAMS["seed"]):
-    bag_verts, _ = apple_bag._load_obj(apple_bag.BAG_OBJ)
+    bag_verts, _ = _load_obj(BAG_OBJ)
     bag_start_particle = len(builder.particle_q)
     table_shape_index = _add_table(builder, params)
-    info = apple_bag.build_model(builder, params, seed=seed)
+    include_payload = params.get("include_payload", True)
 
+    # The grip target is derived from the rest OBJ, so the gripper follows the
+    # same trajectory whether or not the cloth bag is actually instantiated.
     handle_indices = _select_handle_top_indices(bag_verts, bag_start_particle, params)
     if handle_indices.size == 0:
         raise ValueError("No handle particles selected for Franka grip")
+    handle_center = bag_verts[handle_indices - bag_start_particle].mean(axis=0).astype(np.float32)
 
-    local_handle_indices = handle_indices - bag_start_particle
-    handle_center = bag_verts[local_handle_indices].mean(axis=0).astype(np.float32)
+    if include_payload:
+        info = _build_apple_bag(builder, params, seed=seed)
+    else:
+        # Robot-only build: no cloth, no apples. Provide the keys downstream needs.
+        va = params["vertical_axis"]
+        info = {
+            "bag_particle_count": 0,
+            "top_global_indices": np.zeros(0, dtype=np.int32),
+            "body_indices": [],
+            "shape_indices": [],
+            "particle_radius": params["particle_radius"],
+            "z_floor": float(bag_verts[:, va].min()),
+            "z_top": float(bag_verts[:, va].max()),
+            "half_width": 0.5 * float(bag_verts[:, 0].max() - bag_verts[:, 0].min()),
+            "half_depth": 0.5 * float(bag_verts[:, 1].max() - bag_verts[:, 1].min()),
+        }
+        handle_indices = np.zeros(0, dtype=np.int32)  # no real particles to track
+        builder.color()  # SolverVBD needs body_color_groups even with no cloth particles
 
     info["handle_global_indices"] = handle_indices
     info["handle_center"] = tuple(float(x) for x in handle_center)
     info["table_shape_index"] = table_shape_index
     info["table_top_z"] = params["table_top_z"]
+    info["include_payload"] = include_payload
     return info
 
 
@@ -274,18 +483,23 @@ def _gripper_frac_for_frame(params, frame):
     if not params["close_gripper"]:
         return params["gripper_open_frac"]
 
+    # Close gradually across the lift stage: stay open until the lift starts,
+    # then ease shut over ``gripper_close_frames`` frames.
+    close_start = params.get("gripper_close_start_frame", params["lift_start_frame"])
     close_frames = params["gripper_close_frames"]
     if close_frames <= 0:
-        return params["gripper_closed_frac"]
+        return params["gripper_closed_frac"] if frame >= close_start else params["gripper_open_frac"]
 
-    t = min(1.0, frame / close_frames)
-    return params["gripper_open_frac"] * (1.0 - t) + params["gripper_closed_frac"] * t
+    alpha = _smoothstep((frame - close_start) / close_frames)
+    return params["gripper_open_frac"] * (1.0 - alpha) + params["gripper_closed_frac"] * alpha
 
 
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
-        self.params = PARAMS
+        self.params = dict(PARAMS)
+        if getattr(args, "no_payload", False):
+            self.params["include_payload"] = False
         self.sim_time = 0.0
         self.fps = self.params["fps"]
         self.frame_dt = 1.0 / self.fps
@@ -332,7 +546,12 @@ class Example:
         newton.eval_fk(self._model_single, self._model_single.joint_q, self._model_single.joint_qd, self._state_single)
         self._setup_ik()
         self._initialize_robot_pregrasp()
-        self._initial_handle_center = self.state_0.particle_q.numpy()[self.info["handle_global_indices"]].mean(axis=0)
+        if self.info["include_payload"]:
+            self._initial_handle_center = self.state_0.particle_q.numpy()[self.info["handle_global_indices"]].mean(
+                axis=0
+            )
+        else:
+            self._initial_handle_center = self._handle_rest_center.copy()
 
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
@@ -350,6 +569,7 @@ class Example:
             rigid_joint_linear_kd=self.params["rigid_joint_linear_kd"],
             rigid_joint_angular_kd=self.params["rigid_joint_angular_kd"],
         )
+        self._physics_graph = None  # captured lazily on the first CUDA step()
 
         print(
             f"[apple_bag_franka] bag particles: {self.info['bag_particle_count']}  "
@@ -364,10 +584,12 @@ class Example:
         if hasattr(self.viewer, "_paused"):
             self.viewer._paused = self.params["initial_paused"]
         if hasattr(self.viewer, "set_camera"):
-            pitch, yaw = apple_bag._pitch_yaw(self.params["camera_pos"], self.params["camera_target"])
+            pitch, yaw = _pitch_yaw(self.params["camera_pos"], self.params["camera_target"])
             self.viewer.set_camera(wp.vec3(*self.params["camera_pos"]), pitch, yaw)
         if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
             self.viewer.camera.fov = self.params["camera_fov"]
+
+        self._pbar = tqdm(total=getattr(args, "num_frames", None), desc="frame", unit="f")
 
     def _add_robot(self, builder):
         asset_path = newton.utils.download_asset(self.params["franka_asset_name"])
@@ -447,6 +669,7 @@ class Example:
         shape_mu = self.model.shape_material_mu.numpy().copy()
         shape_ke = self.model.shape_material_ke.numpy().copy()
         shape_kd = self.model.shape_material_kd.numpy().copy()
+        shape_margin = self.model.shape_margin.numpy().copy()
 
         for shape_index, shape_body_index in enumerate(shape_body):
             body_index = int(shape_body_index)
@@ -456,6 +679,7 @@ class Example:
                 shape_mu[shape_index] = self.params["finger_shape_mu"]
                 shape_ke[shape_index] = self.params["finger_shape_ke"]
                 shape_kd[shape_index] = self.params["finger_shape_kd"]
+                shape_margin[shape_index] = self.params["finger_shape_margin"]
 
         self.model.shape_flags = wp.array(
             shape_flags,
@@ -465,6 +689,7 @@ class Example:
         self.model.shape_material_mu = wp.array(shape_mu, dtype=float, device=self.model.device)
         self.model.shape_material_ke = wp.array(shape_ke, dtype=float, device=self.model.device)
         self.model.shape_material_kd = wp.array(shape_kd, dtype=float, device=self.model.device)
+        self.model.shape_margin = wp.array(shape_margin, dtype=float, device=self.model.device)
 
     def _configure_joint_drives(self):
         ke = self.model.joint_target_ke.numpy().copy()
@@ -600,8 +825,11 @@ class Example:
             target_pos[joint_index] = gripper_value
         self.control.joint_target_pos.assign(wp.array(target_pos, dtype=float, device=self.model.device))
 
-    def simulate(self):
-        self._update_drive_targets()
+    def _simulate_substeps(self):
+        # Pure device-side substep loop -- safe to run inside a CUDA graph
+        # capture.  Per-frame host work (IK readback, drive targets) runs in
+        # step() before launch and writes into the fixed control/state buffers
+        # these captured kernels read from.
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
@@ -609,11 +837,39 @@ class Example:
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
+    def simulate(self):
+        self._update_drive_targets()
+        self._simulate_substeps()
+
+    def _capture_physics_graph(self):
+        # The state buffers ping-pong each substep, so the captured graph only
+        # chains correctly across frames when the swap count is even -- it then
+        # reads from and writes back to the same buffer on every replay.
+        if self.sim_substeps % 2 != 0:
+            raise ValueError(f"Physics CUDA graph capture requires an even sim_substeps; got {self.sim_substeps}.")
+        # Stream capture records the launches without executing them, so this
+        # does not advance the sim; the warmup run in step() pre-loads every
+        # kernel so none compile mid-capture.
+        with wp.ScopedCapture() as capture:
+            self._simulate_substeps()
+        self._physics_graph = capture.graph
+
     def step(self):
         self.frame += 1
         self._set_joint_targets()
-        self.simulate()
+        self._update_drive_targets()
+        if self._physics_graph is not None:
+            wp.capture_launch(self._physics_graph)
+        elif self.params["enable_physics_cuda_graph"] and wp.get_device().is_cuda:
+            # First CUDA frame: run once eagerly to compile the kernels, then
+            # capture the identical loop to replay on every subsequent frame.
+            self._simulate_substeps()
+            self._capture_physics_graph()
+        else:
+            self._simulate_substeps()
         self.sim_time += self.frame_dt
+        self._pbar.update(1)
+        self._pbar.set_postfix_str(f"id={self.frame}")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -636,14 +892,7 @@ class Example:
         self.viewer.log_arrows("world_axes", starts, ends, colors)
 
     def test_final(self):
-        pq = self.state_0.particle_q.numpy()
-        assert np.all(np.isfinite(pq)), "Bag particle positions contain non-finite values"
-
         body_q = self.state_0.body_q.numpy()
-        body_indices = self.info["body_indices"]
-        apple_pos = body_q[body_indices][:, :3]
-        assert np.all(np.isfinite(apple_pos)), "Apple positions contain non-finite values"
-
         hand_pos = body_q[self._hand_body][:3]
         assert np.all(np.isfinite(hand_pos)), "Franka hand position contains non-finite values"
 
@@ -651,11 +900,25 @@ class Example:
         closed_joint_value = self._gripper_joint_value(self.params["gripper_closed_frac"])
         assert abs(open_joint_value - self.params["gripper_open_gap"]) < self.params["gripper_gap_test_tolerance"]
         assert abs(closed_joint_value - self.params["gripper_closed_gap"]) < self.params["gripper_gap_test_tolerance"]
+        expected_gripper_value = self._gripper_joint_value(self._gripper_frac_for_frame())
         joint_target = self.control.joint_target_pos.numpy()
         for joint_index in self.params["gripper_joint_indices"]:
-            assert abs(joint_target[joint_index] - open_joint_value) < self.params["gripper_open_test_tolerance"], (
-                f"Gripper closed during hang: q_target[{joint_index}]={joint_target[joint_index]:.6f}"
+            assert (
+                abs(joint_target[joint_index] - expected_gripper_value) < self.params["gripper_open_test_tolerance"]
+            ), (
+                f"Gripper target mismatch during hang: "
+                f"q_target[{joint_index}]={joint_target[joint_index]:.6f} expected {expected_gripper_value:.6f}"
             )
+
+        if not self.info["include_payload"]:
+            return  # robot-only run: no cloth/apples to validate
+
+        pq = self.state_0.particle_q.numpy()
+        assert np.all(np.isfinite(pq)), "Bag particle positions contain non-finite values"
+
+        body_indices = self.info["body_indices"]
+        apple_pos = body_q[body_indices][:, :3]
+        assert np.all(np.isfinite(apple_pos)), "Apple positions contain non-finite values"
 
         va = self.params["vertical_axis"]
         min_particle_z = float(np.min(pq[:, va]))
@@ -703,6 +966,11 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=PARAMS["seed"])
+        parser.add_argument(
+            "--no-payload",
+            action="store_true",
+            help="Run the robot + table only (skip the cloth bag and apples).",
+        )
         parser.set_defaults(num_frames=PARAMS["lift_start_frame"] + PARAMS["lift_frames"] + 270)
         return parser
 
