@@ -48,7 +48,7 @@ _BAG_PARAMS = {
     "apple_density": 1000.0,  # ~0.2 kg per apple at r=0.036
     "apple_ke": 5.0e5,
     "apple_kd": 5.0e1,
-    "apple_mu": 0.5,
+    "apple_mu": 0.2,
     "apple_drop_offset": 0.045,  # start this far above the rest layer so they drop in
     # --- cloth (plastic bag) ---
     "particle_radius": 0.004,
@@ -103,8 +103,9 @@ PARAMS = {
     "add_finger_pads": False,  # use the original smaller FR3 gripper
     "franka_grip_offset": (-0.086, 0.0, 0.0),  # hand target offset before choosing the open hanger finger [m]
     "hanger_finger_drop": 0.025,
-    "close_gripper": True,  # ease the gripper shut during the lift to secure the handle
-    "gripper_close_frames": 45,  # frames to fully close, starting at gripper_close_start_frame (default: lift_start_frame)
+    "close_gripper": True,  # ease the gripper shut at the start to grip the handle before lifting
+    "gripper_close_start_frame": 0,  # grip early, once the apples have dropped in (before the lift)
+    "gripper_close_frames": 45,  # frames to fully close (closed by lift_start_frame=75)
     "lift_start_frame": 75,
     "lift_frames": 120,
     "lift_height_delta": 0.20,
