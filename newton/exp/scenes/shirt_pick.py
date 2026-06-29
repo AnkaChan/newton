@@ -45,14 +45,17 @@ _CLOTH_NPZ = os.path.join(os.path.dirname(__file__), "..", "assets", "unisex_shi
 #   init_state.pos = (0.5, 1.25, 0.10)
 CLOTH_SCALE = 0.01
 CLOTH_ROT = (1.0, 0.0, 0.0, 0.0)  # (qx, qy, qz, qw)
-CLOTH_POS = (0.5, 1.25, 0.10)
+# CLOTH_POS = (0.5, 1.25, 0.10)
+CLOTH_POS = (0.45, 1.20, 0.10)
 
 # Spawn joint configuration (7 arm + 2 finger).
-ROBOT_INIT_Q = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# ROBOT_INIT_Q = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+ROBOT_INIT_Q = [0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741, 0.04, 0.04]
 
 # Home / hover EE pose (IsaacLab AVBD env preset _ee_tf) and pick_cloth_sm
 # descent height.
-HOME_POS = (0.7302, 0.0836, 0.3713)
+# HOME_POS = (0.7302, 0.0836, 0.3713)
+HOME_POS = (0.69, 0.180, 0.48)
 HOME_QUAT = (0.7140, -0.6664, -0.0916, 0.1943)  # (qx, qy, qz, qw)
 GRASP_Z = 0.0981
 
