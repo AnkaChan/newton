@@ -44,20 +44,20 @@ _BAG_PARAMS = {
     # --- apples (rigid spheres) ---
     "num_apples": 5,
     "apple_radius": 0.036,
-    "apple_margin": 0.005,
+    "apple_margin": 0.003,
     "apple_density": 1000.0,  # ~0.2 kg per apple at r=0.036
     "apple_ke": 5.0e5,
     "apple_kd": 5.0e1,
     "apple_mu": 0.2,
     "apple_drop_offset": 0.045,  # start this far above the rest layer so they drop in
     # --- cloth (plastic bag) ---
-    "particle_radius": 0.004,
+    "particle_radius": 0.003,
     "cloth_density": 0.08,
     "cloth_tri_ke": 2.0e5,
     "cloth_tri_ka": 2.0e5,
     "cloth_tri_kd": 1.0e1,
     "cloth_edge_ke": 0.001,  # low bending -> floppy plastic that wrinkles (high tri_ke keeps it from stretching)
-    "cloth_edge_kd": 0.001,
+    "cloth_edge_kd": 0.0001,
     # --- contacts ---
     "soft_contact_ke": 5.0e5,
     "soft_contact_kd": 1.0e0,
