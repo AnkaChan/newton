@@ -44,9 +44,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 DEFAULTS = {
     "W": 0.30,  # flat width   (x extent = 2a)
-    "D": 0.08,  # depth        (y extent = 2b)  -> flattened (W/D = 3.75)
+    "D": 0.30,  # depth        (y extent = 2b)  -> round cross-section (W/D = 1.0)
     "H": 0.40,  # height       (z from 0 at bottom seam to H at fold/rim)
-    "rc": 0.030,  # rounded-rect corner radius of the cross-section
+    "rc": 0.145,  # rounded-rect corner radius (~W/2 -> near-circular cross-section)
     "fold": "out",  # "out" = hem folds outward (stripe band + handles on outside); "in" = inward
     "h_hem": 0.020,  # flap height = width of the folded hem/stripe band (kept narrow)
     "t_tunnel": 0.010,  # offset of the flap from the wall = channel (drawstring) thickness
