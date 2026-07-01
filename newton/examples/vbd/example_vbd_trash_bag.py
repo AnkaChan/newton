@@ -47,10 +47,16 @@ from newton import ParticleFlags
 ASSET = os.path.join(os.path.dirname(__file__), "asset")
 BAG_OBJ = os.path.join(ASSET, "trash_bag.obj")
 ROPE_OBJ = os.path.join(ASSET, "trash_bag_rope.obj")
+# Round INITIAL positions (same topology as the flat rest OBJs): the flat bag
+# unflattened onto a cylinder so it starts round, lining a round bin, while its
+# rest shape stays the flat pressed tube.
+BAG_INIT_OBJ = os.path.join(ASSET, "trash_bag_init.obj")
+ROPE_INIT_OBJ = os.path.join(ASSET, "trash_bag_rope_init.obj")
 LAYOUT_JSON = os.path.join(ASSET, "trash_bag_layout.json")
 
 PARAMS = {
     # --- apples (rigid spheres) ---
+    "enable_apples": False,  # set False to drop no rigid spheres (bag/can only)
     "num_apples": 5,
     "apple_radius": 0.034,
     "apple_margin": 0.005,
@@ -58,17 +64,31 @@ PARAMS = {
     "apple_ke": 5.0e5,
     "apple_kd": 5.0e1,
     "apple_mu": 0.5,
+    # --- round trash can: thin watertight truncated-cone bin the bag sits INSIDE ---
+    "can_bottom_radius": 0.12,  # inner radius at the base (just > bag cylinder r ~0.113)
+    "can_top_radius": 0.14,  # inner radius at the rim (flared -> truncated cone)
+    "can_height": 0.31,  # shorter than the bag (H=0.40) so the bag stands above the rim
+    "can_z_bottom": -0.01,  # outer floor just below the bag bottom (z=0)
+    "can_wall_thickness": 0.0025,  # thin volumetric wall (closed shell)
+    "can_floor_thickness": 0.004,
+    "can_ke": 5.0e5,
+    "can_kd": 5.0e1,
+    "can_mu": 0.4,
+    "can_margin": 0.002,  # contact margin for the can
+    "can_n_around": 72,
+    "can_n_rows": 28,
     # --- bag cloth (floppy plastic) ---
+    "bag_rest_scale": 1.5,  # rest shape (bag AND rope) this much bigger than the round init -> expands to fill the can
     "particle_radius": 0.004,
     "cloth_density": 0.08,
-    "cloth_tri_ke": 2.0e4,
-    "cloth_tri_ka": 5.0e3,
+    "cloth_tri_ke": 1.0e5,
+    "cloth_tri_ka": 5.0e4,
     "cloth_tri_kd": 1.0e1,
-    "cloth_edge_ke": 0.05,  # low bending -> floppy, wrinkly plastic
+    "cloth_edge_ke": 0.2,  # low bending -> floppy, wrinkly plastic
     "cloth_edge_kd": 0.1,
     # --- rope cloth (the tie): stiff/inextensible so pulling collapses the loop ---
-    "rope_density": 0.08,
-    "rope_tri_ke": 1.0e6,
+    "rope_density": 0.008,
+    "rope_tri_ke": 2.0e5,
     "rope_tri_ka": 2.0e5,
     "rope_tri_kd": 1.0e2,
     "rope_edge_ke": 0.05,
@@ -78,23 +98,25 @@ PARAMS = {
     "closure_kd": 1.0e-3,
     "closure_rest_length": 0.0,
     # --- contacts ---
-    "soft_contact_ke": 5.0e4,
+    "soft_contact_ke": 1.0e5,
     "soft_contact_kd": 1.0e1,
     "soft_contact_mu": 0.3,
     "soft_contact_creation_margin": 0.012,
-    "particle_self_contact_radius": 0.003,
+    "particle_self_contact_radius": 0.004,
     "particle_self_contact_margin": 0.008,
-    "rigid_body_particle_contact_buffer_size": 4096,
+    "rigid_body_particle_contact_buffer_size": 16384,
     "rigid_body_contact_buffer_size": 1024,
     "rigid_contact_hard": True,
+    "enable_water_tight": True,  # water-tight rigid-soft SDF edge/face contacts (no tunneling through the thin can)
     # --- solver / time ---
     "fps": 60,
     "sim_substeps": 10,
     "solver_iterations": 12,
     "gravity": -9.8,
     "vertical_axis": 2,
-    "preroll_frames": 10,
+    "preroll_frames": 0,
     # --- pin + cinch ---
+    "pin_handles": False,  # unpinned for now: handles are free, no cinch drive
     "settle_frames": 150,
     "cinch_frames": 200,
     "cinch_up": 0.26,  # how far the handles rise [m]
@@ -105,7 +127,7 @@ PARAMS = {
     "camera_target": (0.0, 0.0, 0.3),
     "camera_fov": 45.0,
     "draw_wireframe": True,
-    "initial_paused": False,
+    "initial_paused": True,
     "enable_cuda_graph": True,
     "seed": 42,
 }
@@ -270,6 +292,67 @@ def move_pinned_vertices(
     pos_1[vi] = new_p
 
 
+def build_can_mesh(bottom_radius, top_radius, z_bottom, height, wall_thickness, floor_thickness, n_around, n_rows):
+    """Thin, WATERTIGHT truncated-cone bin (open top) the bag sits INSIDE.
+
+    Revolves a closed cup cross-section (outer floor -> outer wall -> top rim ->
+    inner wall -> inner floor) around the z-axis. Because the shell is a closed
+    solid with a thin wall, its signed distance is negative only inside the wall
+    material; a bag particle in the cavity stays on the cavity side and cannot
+    cross the wall -> the bag is contained regardless of triangle facing.
+    """
+    z_top = z_bottom + height
+    z_floor_top = z_bottom + floor_thickness
+    r_bot_out = bottom_radius + wall_thickness
+    r_top_out = top_radius + wall_thickness
+
+    # closed cross-section profile in (r, z); r==0 marks an on-axis center vertex.
+    profile = [(0.0, z_bottom), (r_bot_out, z_bottom)]
+    for j in range(1, n_rows + 1):  # outer wall, bottom -> rim
+        u = j / n_rows
+        profile.append((r_bot_out + u * (r_top_out - r_bot_out), z_bottom + u * height))
+    profile.append((top_radius, z_top))  # inner rim
+    for j in range(1, n_rows + 1):  # inner wall, rim -> floor
+        u = j / n_rows
+        profile.append((top_radius + u * (bottom_radius - top_radius), z_top + u * (z_floor_top - z_top)))
+    profile.append((0.0, z_floor_top))  # inner floor center
+
+    verts = []
+    rings = []  # ('ring', [indices]) per profile point, or ('center', index)
+    for r, z in profile:
+        if r <= 1e-9:
+            rings.append(("center", len(verts)))
+            verts.append([0.0, 0.0, float(z)])
+        else:
+            ring = []
+            for k in range(n_around):
+                th = 2.0 * math.pi * k / n_around
+                ring.append(len(verts))
+                verts.append([r * math.cos(th), r * math.sin(th), float(z)])
+            rings.append(("ring", ring))
+
+    faces = []
+    for i in range(len(profile) - 1):  # no wrap: the two centers bound the solid, no axis face
+        a, b = rings[i], rings[i + 1]
+        if a[0] == "ring" and b[0] == "ring":
+            ra, rb = a[1], b[1]
+            for k in range(n_around):
+                k2 = (k + 1) % n_around
+                faces.append([ra[k], rb[k], rb[k2]])
+                faces.append([ra[k], rb[k2], ra[k2]])
+        elif a[0] == "center":
+            c, rb = a[1], b[1]
+            for k in range(n_around):
+                faces.append([c, rb[k], rb[(k + 1) % n_around]])
+        else:  # ring -> center
+            ra, c = a[1], b[1]
+            for k in range(n_around):
+                faces.append([ra[k], c, ra[(k + 1) % n_around]])
+    # reverse winding so the shell's triangles face outward (was rendering inverted)
+    faces = np.array(faces, dtype=np.int32)[:, ::-1]
+    return np.array(verts, dtype=np.float32), faces.reshape(-1)
+
+
 def build_model(builder, params, seed):
     rng = np.random.default_rng(seed)
     with open(LAYOUT_JSON, encoding="utf-8") as file:
@@ -283,7 +366,7 @@ def build_model(builder, params, seed):
     builder.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 0.0),
         rot=wp.quat_identity(),
-        scale=1.0,
+        scale=params["bag_rest_scale"],  # oversize the REST shape; initial particle_q is overridden below
         vel=wp.vec3(0.0, 0.0, 0.0),
         vertices=bag_verts.tolist(),
         indices=bag_faces,
@@ -295,6 +378,12 @@ def build_model(builder, params, seed):
         edge_kd=params["cloth_edge_kd"],
         particle_radius=pr,
     )
+    # Rest state was built from the flat OBJ above; override only the INITIAL
+    # positions with the round (unflattened) shape so the bag starts in the can.
+    bag_init_verts, _ = _load_obj(BAG_INIT_OBJ)
+    assert len(bag_init_verts) == len(bag_verts), "bag init/rest vertex count mismatch"
+    for i, (x, y, z) in enumerate(bag_init_verts):
+        builder.particle_q[bag_start + i] = wp.vec3(float(x), float(y), float(z))
 
     # --- drawstring tie (ribbon) ---
     rope_verts, rope_faces = _load_obj(ROPE_OBJ)
@@ -303,7 +392,7 @@ def build_model(builder, params, seed):
     builder.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 0.0),
         rot=wp.quat_identity(),
-        scale=1.0,
+        scale=params["bag_rest_scale"],  # enlarge the rope REST with the bag so it doesn't choke expansion
         vel=wp.vec3(0.0, 0.0, 0.0),
         vertices=rope_verts.tolist(),
         indices=rope_faces,
@@ -315,6 +404,11 @@ def build_model(builder, params, seed):
         edge_kd=params["rope_edge_kd"],
         particle_radius=pr,
     )
+    # override rope initial positions to the matching round (unflattened) shape
+    rope_init_verts, _ = _load_obj(ROPE_INIT_OBJ)
+    assert len(rope_init_verts) == len(rope_verts), "rope init/rest vertex count mismatch"
+    for i, (x, y, z) in enumerate(rope_init_verts):
+        builder.particle_q[rope_start + i] = wp.vec3(float(x), float(y), float(z))
 
     # --- tunnel-closure springs: flap free edge <-> wall (bag-local indices) ---
     tunnel_spring_pairs = np.array(
@@ -329,10 +423,31 @@ def build_model(builder, params, seed):
     right_idx = np.array([rope_start + i for i in hv["right"]], dtype=np.int32)
     left_idx = np.array([rope_start + i for i in hv["left"]], dtype=np.int32)
 
-    # --- rigid apples dropped inside ---
+    # --- static round trash can (rigid container) the bag is rounded inside ---
+    can_cfg = newton.ModelBuilder.ShapeConfig()
+    can_cfg.ke = params["can_ke"]
+    can_cfg.kd = params["can_kd"]
+    can_cfg.mu = params["can_mu"]
+    can_cfg.has_particle_collision = True
+    can_cfg.margin = params["can_margin"]
+    can_v, can_f = build_can_mesh(
+        params["can_bottom_radius"],
+        params["can_top_radius"],
+        params["can_z_bottom"],
+        params["can_height"],
+        params["can_wall_thickness"],
+        params["can_floor_thickness"],
+        params["can_n_around"],
+        params["can_n_rows"],
+    )
+    builder.add_shape_mesh(-1, mesh=newton.Mesh(can_v, can_f), cfg=can_cfg, label="trash_can")
+
+    # --- rigid apples dropped into the round bag ---
     r = params["apple_radius"]
-    z_floor = float(bag_verts[:, 2].min())
-    half_x = 0.5 * float(bag_verts[:, 0].max() - bag_verts[:, 0].min()) - r - 0.02
+    z_floor = float(bag_init_verts[:, 2].min())
+    mid = bag_init_verts[(bag_init_verts[:, 2] > 0.05) & (bag_init_verts[:, 2] < 0.30)]
+    bag_r = float(np.median(np.hypot(mid[:, 0], mid[:, 1]))) if len(mid) else params["can_radius"]
+    rad_in = max(0.0, bag_r - r - 0.015)  # keep apples inside the round wall
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = params["apple_density"]
     cfg.ke = params["apple_ke"]
@@ -342,12 +457,13 @@ def build_model(builder, params, seed):
     cfg.margin = params["apple_margin"]
 
     body_indices = []
-    n = params["num_apples"]
-    xs = (np.arange(n) - (n - 1) * 0.5) * (2.0 * r + 0.01)
+    n = params["num_apples"] if params["enable_apples"] else 0
     for i in range(n):
-        px = float(np.clip(xs[i], -half_x, half_x))
-        py = float(rng.uniform(-0.012, 0.012))
-        pz = z_floor + r + 0.03 + (i % 2) * 0.05 + 0.10  # staggered, drop into the bottom
+        ang = i * 2.39996  # golden angle -> even spread across the round mouth
+        rr = rad_in * math.sqrt((i + 0.5) / n)  # spiral fill within the round radius
+        px = float(rr * math.cos(ang) + rng.uniform(-0.004, 0.004))
+        py = float(rr * math.sin(ang) + rng.uniform(-0.004, 0.004))
+        pz = z_floor + r + 0.05 + i * 0.06  # stacked so they drop in one by one
         body = builder.add_body(xform=wp.transform(wp.vec3(px, py, pz), wp.quat_identity()), label=f"apple_{i}")
         body_indices.append(body)
         builder.add_shape_sphere(body, radius=r, cfg=cfg)
@@ -372,22 +488,31 @@ def build_model(builder, params, seed):
 
 
 def setup_sim(builder, info, params):
-    model = builder.finalize()
+    model = builder.finalize(enable_water_tight_rigid_soft_contact=params["enable_water_tight"])
     model.soft_contact_ke = params["soft_contact_ke"]
     model.soft_contact_kd = params["soft_contact_kd"]
     model.soft_contact_mu = params["soft_contact_mu"]
 
-    pin_idx = np.concatenate([info["right_idx"], info["left_idx"]])
+    # Handle pinning (and the cinch that drives the pinned handles) is optional.
+    # When disabled, use empty index sets so the ACTIVE flags stay set and the
+    # per-substep move kernel is a no-op -> the handles are fully free.
+    if params.get("pin_handles", True):
+        right_idx = np.asarray(info["right_idx"], dtype=np.int32)
+        left_idx = np.asarray(info["left_idx"], dtype=np.int32)
+    else:
+        right_idx = np.empty(0, dtype=np.int32)
+        left_idx = np.empty(0, dtype=np.int32)
+
     flags = model.particle_flags.numpy()
-    for vi in pin_idx:
+    for vi in np.concatenate([right_idx, left_idx]):
         flags[vi] = flags[vi] & ~int(ParticleFlags.ACTIVE)
     model.particle_flags = wp.array(flags, dtype=wp.int32)
 
     pq = model.state().particle_q.numpy()
-    right = wp.array(info["right_idx"], dtype=wp.int32)
-    left = wp.array(info["left_idx"], dtype=wp.int32)
-    right_orig = wp.array(pq[info["right_idx"]].copy(), dtype=wp.vec3)
-    left_orig = wp.array(pq[info["left_idx"]].copy(), dtype=wp.vec3)
+    right = wp.array(right_idx, dtype=wp.int32)
+    left = wp.array(left_idx, dtype=wp.int32)
+    right_orig = wp.array(pq[right_idx].copy().reshape(-1, 3), dtype=wp.vec3)
+    left_orig = wp.array(pq[left_idx].copy().reshape(-1, 3), dtype=wp.vec3)
     vertex_filter, edge_filter = _build_tunnel_seam_contact_filters(model, info["tunnel_spring_pairs"])
 
     solver = newton.solvers.SolverVBD(
@@ -403,7 +528,10 @@ def setup_sim(builder, info, params):
         rigid_contact_hard=params["rigid_contact_hard"],
     )
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=params["soft_contact_creation_margin"]
+        model,
+        broad_phase="nxn",
+        soft_contact_margin=params["soft_contact_creation_margin"],
+        enable_water_tight_rigid_soft_contact=params["enable_water_tight"],
     )
     return model, solver, pipeline, (right, left, right_orig, left_orig)
 
@@ -542,12 +670,13 @@ class Example:
     def test_final(self):
         pq = self.state_0.particle_q.numpy()
         assert np.all(np.isfinite(pq)), "Cloth positions contain non-finite values"
-        body_q = self.state_0.body_q.numpy()
-        apple_pos = body_q[self.info["body_indices"]][:, :3]
-        assert np.all(np.isfinite(apple_pos)), "Apple positions contain non-finite values"
-        # apples stay roughly within the loaded/lifted bag (no escape / explosion)
-        assert np.all(np.abs(apple_pos[:, 0]) < 0.4), "An apple escaped in x"
-        assert np.all(np.abs(apple_pos[:, 1]) < 0.3), "An apple escaped in y"
+        if self.info["body_indices"]:  # apples optional
+            body_q = self.state_0.body_q.numpy()
+            apple_pos = body_q[self.info["body_indices"]][:, :3]
+            assert np.all(np.isfinite(apple_pos)), "Apple positions contain non-finite values"
+            # apples stay roughly within the loaded/lifted bag (no escape / explosion)
+            assert np.all(np.abs(apple_pos[:, 0]) < 0.4), "An apple escaped in x"
+            assert np.all(np.abs(apple_pos[:, 1]) < 0.3), "An apple escaped in y"
 
     @staticmethod
     def create_parser():

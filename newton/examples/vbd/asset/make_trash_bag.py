@@ -44,9 +44,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 DEFAULTS = {
     "W": 0.30,  # flat width   (x extent = 2a)
-    "D": 0.30,  # depth        (y extent = 2b)  -> round cross-section (W/D = 1.0)
+    "D": 0.08,  # depth        (y extent = 2b)  -> flattened (W/D = 3.75), the rest shape
     "H": 0.40,  # height       (z from 0 at bottom seam to H at fold/rim)
-    "rc": 0.145,  # rounded-rect corner radius (~W/2 -> near-circular cross-section)
+    "rc": 0.030,  # rounded-rect corner radius of the cross-section
     "fold": "out",  # "out" = hem folds outward (stripe band + handles on outside); "in" = inward
     "h_hem": 0.020,  # flap height = width of the folded hem/stripe band (kept narrow)
     "t_tunnel": 0.010,  # offset of the flap from the wall = channel (drawstring) thickness
@@ -147,6 +147,44 @@ def count_rope_penetrations(rope_verts, p, eps=1e-4):
         if z < H - eps and _rr_sdf(x, y, a, b, rc) < -eps:
             n += 1
     return n
+
+
+def unflatten_to_cylinder(verts, p):
+    """Map vertices of the flat (pressed-tube) rest bag onto a round cylinder of
+    the SAME cross-section perimeter, so loop edge lengths are ~preserved (low
+    membrane strain -> stable as a deformed INITIAL state over a flat rest shape).
+
+    Each (x, y) is sent to polar coordinates: angle = its CCW arc-length fraction
+    around the rounded-rect boundary, radius = R * (rho / rb(dir)) where R =
+    perimeter / 2*pi and rb(dir) is the boundary radius in that direction. z is
+    preserved. Works uniformly for wall (rho==rb -> R), bottom-cap interior
+    (rho<rb -> inside the disk), folded flaps and the rope (rho>rb -> outside).
+    """
+    peri, _, _ = build_perimeter(p)  # ordered CCW boundary of the flat cross-section
+    closed = np.vstack([peri, peri[:1]])
+    seg = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+    total = float(seg.sum())
+    cum = np.concatenate([[0.0], np.cumsum(seg)])  # arc-length param at each peri point (+closing)
+    radius = total / (2.0 * math.pi)
+
+    # boundary polar angle (unwrapped, monotonic since the convex section contains
+    # the origin) and boundary radius, closed by appending the first point + 2*pi
+    ang = np.unwrap(np.arctan2(peri[:, 1], peri[:, 0]))
+    ang_closed = np.append(ang, ang[0] + 2.0 * math.pi)
+    rb_closed = np.append(np.hypot(peri[:, 0], peri[:, 1]), np.hypot(peri[0, 0], peri[0, 1]))
+
+    out = np.array(verts, dtype=np.float64).copy()
+    for i in range(len(out)):
+        x, y, z = out[i]
+        rho = math.hypot(x, y)
+        # bring the query direction into the unwrapped boundary range [ang[0], ang[0]+2pi)
+        theta_q = ang[0] + math.fmod(math.atan2(y, x) - ang[0] + 2.0 * math.pi, 2.0 * math.pi)
+        s = float(np.interp(theta_q, ang_closed, cum))
+        rb_dir = float(np.interp(theta_q, ang_closed, rb_closed))
+        phi = 2.0 * math.pi * (s / total)
+        rr = radius * (rho / rb_dir) if rb_dir > 1e-9 else 0.0
+        out[i] = [rr * math.cos(phi), rr * math.sin(phi), z]
+    return out
 
 
 def _outward_normals(peri):
@@ -888,6 +926,15 @@ def main():
     json_path = os.path.join(args.out_dir, "trash_bag_layout.json")
     write_obj(obj_path, verts, faces)
     write_obj(rope_obj_path, rope_verts, rope_faces)
+
+    # round INITIAL positions (same topology) = the flat rest bag unflattened onto
+    # a cylinder, so the demo can start the bag round (e.g. lining a round bin)
+    # while its rest shape stays the flat pressed tube. The example loads these as
+    # the starting particle_q and builds the cloth rest state from the flat OBJ.
+    verts_init = unflatten_to_cylinder(verts, p)
+    rope_verts_init = unflatten_to_cylinder(rope_verts, p)
+    write_obj(os.path.join(args.out_dir, "trash_bag_init.obj"), verts_init, faces)
+    write_obj(os.path.join(args.out_dir, "trash_bag_rope_init.obj"), rope_verts_init, rope_faces)
 
     layout = {
         "description": "Drawstring trash bag layout. Vertex indices are 0-based into "
