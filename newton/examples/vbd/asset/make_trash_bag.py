@@ -56,7 +56,7 @@ DEFAULTS = {
     "bottom_ds": 0.014,  # bottom-cap ring spacing (O-grid); ~matches perimeter ds
     "n_z": 40,  # vertical wall divisions (rows = n_z+1, plus fold-base row)
     "n_flap": 3,  # vertical flap divisions
-    "ds_rope": 0.003,  # centerline segment length for the drawstring ribbon (fine: keeps the bulged handles smooth)
+    "ds_rope": 0.003,  # centerline segment length for the in-tunnel drawstring runs (handles resample themselves)
     "rope_width": 0.008,  # width of the single-layer cloth drawstring ribbon
     "rope_n_width": 3,  # segments across the ribbon width
     "rope_z_frac": 0.45,  # rope sits at z = H - rope_z_frac*h_hem (inside the channel)
@@ -448,6 +448,41 @@ def build_mesh(p):
     return verts, faces, meta
 
 
+def _resample_handle(base_xy, stickout, lift, rope_z, target_ds):
+    """Build one exposed drawstring handle and resample it to ~square ribbon quads.
+
+    ``base_xy`` are the flat contour points of the gap, in order. The handle bulges
+    OUTWARD by ``stickout`` and UP by ``lift`` with a half-sine profile (zero at the
+    holes, peak at the side middle), then is resampled by arc length so consecutive
+    nodes sit ~``target_ds`` apart -- matching the ribbon's per-width spacing, so the
+    stretched loop keeps ~square quads instead of long, skinny ones. Returns a list
+    of ``[x, y, z]`` nodes; the endpoints stay unbulged and join the tunnel runs.
+    """
+    m = len(base_xy)
+    if m <= 1:
+        return [[float(x), float(y), rope_z] for (x, y) in base_xy]
+
+    def bulged(t):
+        f = t * (m - 1)
+        i0 = min(int(f), m - 2)
+        a = f - i0
+        x = base_xy[i0][0] * (1 - a) + base_xy[i0 + 1][0] * a
+        y = base_xy[i0][1] * (1 - a) + base_xy[i0 + 1][1] * a
+        bump = math.sin(math.pi * t)
+        rad = math.hypot(x, y)
+        ux, uy = (x / rad, y / rad) if rad > 1e-9 else (1.0, 0.0)
+        return [x + stickout * bump * ux, y + stickout * bump * uy, rope_z + lift * bump]
+
+    # densely sample the bulged curve, measure its arc length, then resample evenly
+    dense = np.array([bulged(j / 400.0) for j in range(401)])
+    cum = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(dense, axis=0), axis=1))])
+    length = float(cum[-1])
+    n_seg = max(m - 1, int(round(length / target_ds)))
+    ss = np.linspace(0.0, length, n_seg + 1)
+    xs, ys, zs = (np.interp(ss, cum, dense[:, c]) for c in range(3))
+    return [[float(x), float(y), float(z)] for x, y, z in zip(xs, ys, zs, strict=True)]
+
+
 # ---------------------------------------------------------------------------
 # Drawstring centerline = the bag's perimeter contour OFFSET OUTWARD by a small
 # amount, at z = rope_z. An outward offset of a rounded rectangle is the same
@@ -470,35 +505,48 @@ def build_drawstring(p, mesh_meta):
     pp["ds"] = p["ds_rope"]
     cxy, _clabels, _cidx = build_perimeter(pp)
     n = len(cxy)
-    path = [[float(x), float(y), rope_z] for (x, y) in cxy]
 
     # tunnels extend around the corners; only the small side-middle gaps are exposed
-    front_run, back_run, right_gap, left_gap = _tunnel_runs(cxy, p["handle_gap"])
-    seg = ["front_tunnel"] * n
-    for i in front_run:
-        seg[i] = "front_tunnel"
+    _front_run, back_run, right_gap, left_gap = _tunnel_runs(cxy, p["handle_gap"])
+    kind = ["front_tunnel"] * n
     for i in back_run:
-        seg[i] = "back_tunnel"
+        kind[i] = "back_tunnel"
     for i in right_gap:
-        seg[i] = "right_handle"
+        kind[i] = "right_handle"
     for i in left_gap:
-        seg[i] = "left_handle"
+        kind[i] = "left_handle"
 
-    # Bulge each exposed handle OUTWARD (and up) so the drawstring is longer than
-    # the bag rim: the slack stands out of the side holes as a grab loop. The bump
-    # is a half-sine along the gap (zero at the holes, peak at the side middle) so
-    # it joins the in-tunnel run smoothly.
+    # Each exposed handle bulges OUTWARD (and up) into a grab loop whose arc length is
+    # several times the flat gap it spans, so the slack stands out of the side holes.
+    # Sweeping the ribbon over the original (coarse) gap nodes would leave long, skinny
+    # quads there; instead resample each bulged handle at the ribbon's per-width
+    # spacing so its quads stay ~square. Tunnel runs keep the coarse ds_rope spacing.
     stickout = p.get("handle_stickout", 0.0)
     lift = p.get("handle_lift", 0.0)
-    for gap in (right_gap, left_gap):
-        m = len(gap)
-        for rank, idx in enumerate(sorted(gap)):
-            t = rank / (m - 1) if m > 1 else 0.5
-            bump = math.sin(math.pi * t)
-            x, y, z = path[idx]
-            rad = math.hypot(x, y)
-            ux, uy = (x / rad, y / rad) if rad > 1e-9 else (1.0, 0.0)
-            path[idx] = [x + stickout * bump * ux, y + stickout * bump * uy, z + lift * bump]
+    target_ds = p["rope_width"] / p["rope_n_width"]
+
+    # walk the contour in order: keep tunnel nodes as-is, replace each contiguous
+    # handle gap with its resampled bulged loop (gaps do not wrap the seam)
+    path: list[list[float]] = []
+    seg: list[str] = []
+    handle_node_indices = {"right": [], "left": []}
+    i = 0
+    while i < n:
+        k = kind[i]
+        if k in ("right_handle", "left_handle"):
+            j = i
+            while j < n and kind[j] == k:
+                j += 1
+            loop = _resample_handle([cxy[t] for t in range(i, j)], stickout, lift, rope_z, target_ds)
+            side = "right" if k == "right_handle" else "left"
+            handle_node_indices[side] = list(range(len(path), len(path) + len(loop)))
+            path.extend(loop)
+            seg.extend([k] * len(loop))
+            i = j
+        else:
+            path.append([float(cxy[i][0]), float(cxy[i][1]), rope_z])
+            seg.append(k)
+            i += 1
 
     drawstring = {
         "closed": True,
@@ -506,11 +554,11 @@ def build_drawstring(p, mesh_meta):
         "rope_offset": offset,
         "handle_gap": p["handle_gap"],
         "rope_z": rope_z,
-        "n_nodes": n,
+        "n_nodes": len(path),
         "path": path,
         "labels": seg,
         # rope vertices forming each exposed handle (the side-middle gaps):
-        "handle_node_indices": {"right": list(right_gap), "left": list(left_gap)},
+        "handle_node_indices": handle_node_indices,
     }
     # the two exposed exit regions (side middles), where the drawstring leaves the tunnels
     holes = {
