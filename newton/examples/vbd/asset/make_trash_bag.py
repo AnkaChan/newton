@@ -56,12 +56,14 @@ DEFAULTS = {
     "bottom_ds": 0.014,  # bottom-cap ring spacing (O-grid); ~matches perimeter ds
     "n_z": 40,  # vertical wall divisions (rows = n_z+1, plus fold-base row)
     "n_flap": 3,  # vertical flap divisions
-    "ds_rope": 0.008,  # centerline segment length for the drawstring ribbon
+    "ds_rope": 0.003,  # centerline segment length for the drawstring ribbon (fine: keeps the bulged handles smooth)
     "rope_width": 0.008,  # width of the single-layer cloth drawstring ribbon
     "rope_n_width": 3,  # segments across the ribbon width
     "rope_z_frac": 0.45,  # rope sits at z = H - rope_z_frac*h_hem (inside the channel)
     "rope_offset": 0.006,  # rope follows the bag contour, offset this far OUTWARD (no penetration)
     "handle_gap": 0.05,  # exposed handle gap at each side middle; tunnels cover the rest (incl. corners)
+    "handle_stickout": 0.05,  # exposed handles bulge this far radially OUT of the holes (extra rope length)
+    "handle_lift": 0.03,  # ...and rise this far, so the drawstring slack stands out above the rim
 }
 
 
@@ -481,6 +483,22 @@ def build_drawstring(p, mesh_meta):
         seg[i] = "right_handle"
     for i in left_gap:
         seg[i] = "left_handle"
+
+    # Bulge each exposed handle OUTWARD (and up) so the drawstring is longer than
+    # the bag rim: the slack stands out of the side holes as a grab loop. The bump
+    # is a half-sine along the gap (zero at the holes, peak at the side middle) so
+    # it joins the in-tunnel run smoothly.
+    stickout = p.get("handle_stickout", 0.0)
+    lift = p.get("handle_lift", 0.0)
+    for gap in (right_gap, left_gap):
+        m = len(gap)
+        for rank, idx in enumerate(sorted(gap)):
+            t = rank / (m - 1) if m > 1 else 0.5
+            bump = math.sin(math.pi * t)
+            x, y, z = path[idx]
+            rad = math.hypot(x, y)
+            ux, uy = (x / rad, y / rad) if rad > 1e-9 else (1.0, 0.0)
+            path[idx] = [x + stickout * bump * ux, y + stickout * bump * uy, z + lift * bump]
 
     drawstring = {
         "closed": True,

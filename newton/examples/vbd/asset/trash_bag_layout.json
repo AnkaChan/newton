@@ -14,12 +14,14 @@
     "bottom_ds": 0.014,
     "n_z": 40,
     "n_flap": 3,
-    "ds_rope": 0.008,
+    "ds_rope": 0.003,
     "rope_width": 0.008,
     "rope_n_width": 3,
     "rope_z_frac": 0.45,
     "rope_offset": 0.006,
-    "handle_gap": 0.05
+    "handle_gap": 0.05,
+    "handle_stickout": 0.05,
+    "handle_lift": 0.03
   },
   "counts": {
     "num_vertices": 2811,
@@ -1024,7 +1026,7 @@
     "rope_offset": 0.006,
     "handle_gap": 0.05,
     "rope_z": 0.391,
-    "n_nodes": 94,
+    "n_nodes": 250,
     "path": [
       [
         -0.12,
@@ -1032,12 +1034,37 @@
         0.391
       ],
       [
-        -0.11199999999999999,
+        -0.11699999999999999,
         -0.046,
         0.391
       ],
       [
-        -0.104,
+        -0.11399999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.111,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.108,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.105,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.102,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.099,
         -0.046,
         0.391
       ],
@@ -1047,12 +1074,37 @@
         0.391
       ],
       [
-        -0.088,
+        -0.093,
         -0.046,
         0.391
       ],
       [
-        -0.08,
+        -0.09,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.087,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.08399999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.08099999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.078,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.075,
         -0.046,
         0.391
       ],
@@ -1062,12 +1114,37 @@
         0.391
       ],
       [
-        -0.064,
+        -0.069,
         -0.046,
         0.391
       ],
       [
-        -0.055999999999999994,
+        -0.066,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.063,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.06,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.056999999999999995,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.05399999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.051000000000000004,
         -0.046,
         0.391
       ],
@@ -1077,12 +1154,37 @@
         0.391
       ],
       [
-        -0.04000000000000001,
+        -0.045,
         -0.046,
         0.391
       ],
       [
-        -0.032,
+        -0.041999999999999996,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.03899999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.036000000000000004,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.033,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.03,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.026999999999999996,
         -0.046,
         0.391
       ],
@@ -1092,12 +1194,37 @@
         0.391
       ],
       [
-        -0.016,
+        -0.021000000000000005,
         -0.046,
         0.391
       ],
       [
-        -0.007999999999999993,
+        -0.018000000000000002,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.015,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.011999999999999997,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.008999999999999994,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.006000000000000005,
+        -0.046,
+        0.391
+      ],
+      [
+        -0.0030000000000000027,
         -0.046,
         0.391
       ],
@@ -1107,12 +1234,37 @@
         0.391
       ],
       [
-        0.008000000000000007,
+        0.002999999999999989,
         -0.046,
         0.391
       ],
       [
-        0.015999999999999986,
+        0.006000000000000005,
+        -0.046,
+        0.391
+      ],
+      [
+        0.009000000000000008,
+        -0.046,
+        0.391
+      ],
+      [
+        0.01200000000000001,
+        -0.046,
+        0.391
+      ],
+      [
+        0.015000000000000013,
+        -0.046,
+        0.391
+      ],
+      [
+        0.017999999999999988,
+        -0.046,
+        0.391
+      ],
+      [
+        0.02099999999999999,
         -0.046,
         0.391
       ],
@@ -1122,12 +1274,37 @@
         0.391
       ],
       [
-        0.032,
+        0.026999999999999996,
         -0.046,
         0.391
       ],
       [
-        0.03999999999999998,
+        0.03,
+        -0.046,
+        0.391
+      ],
+      [
+        0.033,
+        -0.046,
+        0.391
+      ],
+      [
+        0.036000000000000004,
+        -0.046,
+        0.391
+      ],
+      [
+        0.03900000000000001,
+        -0.046,
+        0.391
+      ],
+      [
+        0.04200000000000001,
+        -0.046,
+        0.391
+      ],
+      [
+        0.044999999999999984,
         -0.046,
         0.391
       ],
@@ -1137,12 +1314,37 @@
         0.391
       ],
       [
-        0.055999999999999994,
+        0.05099999999999999,
         -0.046,
         0.391
       ],
       [
-        0.064,
+        0.05399999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        0.056999999999999995,
+        -0.046,
+        0.391
+      ],
+      [
+        0.06,
+        -0.046,
+        0.391
+      ],
+      [
+        0.063,
+        -0.046,
+        0.391
+      ],
+      [
+        0.066,
+        -0.046,
+        0.391
+      ],
+      [
+        0.069,
         -0.046,
         0.391
       ],
@@ -1152,12 +1354,37 @@
         0.391
       ],
       [
-        0.08000000000000002,
+        0.07500000000000001,
         -0.046,
         0.391
       ],
       [
-        0.088,
+        0.07799999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        0.08099999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        0.08399999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        0.087,
+        -0.046,
+        0.391
+      ],
+      [
+        0.09,
+        -0.046,
+        0.391
+      ],
+      [
+        0.093,
         -0.046,
         0.391
       ],
@@ -1167,12 +1394,37 @@
         0.391
       ],
       [
-        0.10400000000000001,
+        0.099,
         -0.046,
         0.391
       ],
       [
-        0.11199999999999999,
+        0.10200000000000001,
+        -0.046,
+        0.391
+      ],
+      [
+        0.10499999999999998,
+        -0.046,
+        0.391
+      ],
+      [
+        0.10799999999999998,
+        -0.046,
+        0.391
+      ],
+      [
+        0.11099999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        0.11399999999999999,
+        -0.046,
+        0.391
+      ],
+      [
+        0.11699999999999999,
         -0.046,
         0.391
       ],
@@ -1182,83 +1434,223 @@
         0.391
       ],
       [
-        0.1280107536224273,
-        -0.04509740483854565,
+        0.12297285643700395,
+        -0.045877041748240116,
         0.391
       ],
       [
-        0.13561981460823208,
-        -0.04243487924448709,
+        0.12592540525010643,
+        -0.045509006922498006,
         0.391
       ],
       [
-        0.14244563286691442,
-        -0.03814593336884907,
+        0.12883747753706876,
+        -0.04489840957381589,
         0.391
       ],
       [
-        0.14814593336884907,
-        -0.03244563286691441,
+        0.1316891808913686,
+        -0.04404942070122285,
         0.391
       ],
       [
-        0.1524348792444871,
-        -0.025619814608232087,
+        0.13446103528750689,
+        -0.04296783975958207,
         0.391
       ],
       [
-        0.15509740483854564,
-        -0.018010753622427322,
+        0.13713410614933463,
+        -0.041661055043433606,
         0.391
       ],
       [
-        0.156,
-        -0.010000000000000002,
+        0.13969013369240735,
+        -0.040137993217451026,
         0.391
       ],
       [
-        0.156,
-        -0.003333333333333334,
+        0.14211165765682804,
+        -0.03840905833827017,
         0.391
       ],
       [
-        0.156,
-        0.003333333333333334,
+        0.14438213657852667,
+        -0.03648606078423274,
         0.391
       ],
       [
-        0.156,
-        0.010000000000000002,
+        0.14648606078423274,
+        -0.03438213657852668,
         0.391
       ],
       [
-        0.15509740483854564,
-        0.01801075362242732,
+        0.14840905833827017,
+        -0.03211165765682804,
         0.391
       ],
       [
-        0.1524348792444871,
-        0.02561981460823209,
+        0.15013799321745103,
+        -0.029690133692407368,
         0.391
       ],
       [
-        0.14814593336884907,
-        0.0324456328669144,
+        0.1516610550434336,
+        -0.027134106149334647,
         0.391
       ],
       [
-        0.14244563286691442,
-        0.03814593336884907,
+        0.15296783975958206,
+        -0.024461035287506906,
         0.391
       ],
       [
-        0.13561981460823208,
-        0.04243487924448709,
+        0.16314716743340868,
+        -0.02297008590016407,
+        0.39651248553449714
+      ],
+      [
+        0.17282839235773484,
+        -0.021017975379889735,
+        0.4018372499856146
+      ],
+      [
+        0.18169366802859133,
+        -0.018606930569466603,
+        0.40679296488632066
+      ],
+      [
+        0.1894457695006177,
+        -0.01576661157259232,
+        0.4112108693093967
+      ],
+      [
+        0.19581913406226975,
+        -0.012552508593735242,
+        0.4149405168184072
+      ],
+      [
+        0.2007113204799031,
+        -0.00919007877655234,
+        0.4178548987406519
+      ],
+      [
+        0.2040731442235461,
+        -0.005606405061086433,
+        0.41985476929518456
+      ],
+      [
+        0.2057846213899867,
+        -0.0018844745548533602,
+        0.42087202528885104
+      ],
+      [
+        0.20578462138998674,
+        0.001884474554853358,
+        0.42087202528885104
+      ],
+      [
+        0.2040731442235461,
+        0.005606405061086433,
+        0.41985476929518456
+      ],
+      [
+        0.2007113204799031,
+        0.009190078776552337,
+        0.4178548987406519
+      ],
+      [
+        0.19581913406226975,
+        0.012552508593735244,
+        0.4149405168184072
+      ],
+      [
+        0.1894457695006177,
+        0.015766611572592317,
+        0.4112108693093967
+      ],
+      [
+        0.18169366802859135,
+        0.018606930569466607,
+        0.4067929648863207
+      ],
+      [
+        0.17282839235773484,
+        0.02101797537988973,
+        0.4018372499856146
+      ],
+      [
+        0.16314716743340868,
+        0.02297008590016407,
+        0.39651248553449714
+      ],
+      [
+        0.15296783975958206,
+        0.0244610352875069,
         0.391
       ],
       [
-        0.1280107536224273,
-        0.04509740483854565,
+        0.1516610550434336,
+        0.027134106149334647,
+        0.391
+      ],
+      [
+        0.15013799321745103,
+        0.029690133692407365,
+        0.391
+      ],
+      [
+        0.14840905833827017,
+        0.03211165765682804,
+        0.391
+      ],
+      [
+        0.14648606078423274,
+        0.03438213657852668,
+        0.391
+      ],
+      [
+        0.14438213657852667,
+        0.036486060784232735,
+        0.391
+      ],
+      [
+        0.14211165765682804,
+        0.03840905833827017,
+        0.391
+      ],
+      [
+        0.13969013369240735,
+        0.040137993217451026,
+        0.391
+      ],
+      [
+        0.13713410614933463,
+        0.041661055043433606,
+        0.391
+      ],
+      [
+        0.13446103528750689,
+        0.042967839759582065,
+        0.391
+      ],
+      [
+        0.1316891808913686,
+        0.04404942070122285,
+        0.391
+      ],
+      [
+        0.12883747753706876,
+        0.04489840957381589,
+        0.391
+      ],
+      [
+        0.12592540525010643,
+        0.045509006922498006,
+        0.391
+      ],
+      [
+        0.12297285643700397,
+        0.045877041748240116,
         0.391
       ],
       [
@@ -1267,12 +1659,37 @@
         0.391
       ],
       [
-        0.11199999999999999,
+        0.11699999999999999,
         0.046,
         0.391
       ],
       [
-        0.104,
+        0.11399999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        0.111,
+        0.046,
+        0.391
+      ],
+      [
+        0.108,
+        0.046,
+        0.391
+      ],
+      [
+        0.105,
+        0.046,
+        0.391
+      ],
+      [
+        0.102,
+        0.046,
+        0.391
+      ],
+      [
+        0.099,
         0.046,
         0.391
       ],
@@ -1282,12 +1699,37 @@
         0.391
       ],
       [
-        0.088,
+        0.093,
         0.046,
         0.391
       ],
       [
-        0.08,
+        0.09,
+        0.046,
+        0.391
+      ],
+      [
+        0.087,
+        0.046,
+        0.391
+      ],
+      [
+        0.08399999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        0.08099999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        0.078,
+        0.046,
+        0.391
+      ],
+      [
+        0.075,
         0.046,
         0.391
       ],
@@ -1297,12 +1739,37 @@
         0.391
       ],
       [
-        0.064,
+        0.069,
         0.046,
         0.391
       ],
       [
-        0.055999999999999994,
+        0.066,
+        0.046,
+        0.391
+      ],
+      [
+        0.063,
+        0.046,
+        0.391
+      ],
+      [
+        0.06,
+        0.046,
+        0.391
+      ],
+      [
+        0.056999999999999995,
+        0.046,
+        0.391
+      ],
+      [
+        0.05399999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        0.051000000000000004,
         0.046,
         0.391
       ],
@@ -1312,12 +1779,37 @@
         0.391
       ],
       [
-        0.04000000000000001,
+        0.045,
         0.046,
         0.391
       ],
       [
-        0.032,
+        0.041999999999999996,
+        0.046,
+        0.391
+      ],
+      [
+        0.03899999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        0.036000000000000004,
+        0.046,
+        0.391
+      ],
+      [
+        0.033,
+        0.046,
+        0.391
+      ],
+      [
+        0.03,
+        0.046,
+        0.391
+      ],
+      [
+        0.026999999999999996,
         0.046,
         0.391
       ],
@@ -1327,12 +1819,37 @@
         0.391
       ],
       [
-        0.016,
+        0.021000000000000005,
         0.046,
         0.391
       ],
       [
-        0.007999999999999993,
+        0.018000000000000002,
+        0.046,
+        0.391
+      ],
+      [
+        0.015,
+        0.046,
+        0.391
+      ],
+      [
+        0.011999999999999997,
+        0.046,
+        0.391
+      ],
+      [
+        0.008999999999999994,
+        0.046,
+        0.391
+      ],
+      [
+        0.006000000000000005,
+        0.046,
+        0.391
+      ],
+      [
+        0.0030000000000000027,
         0.046,
         0.391
       ],
@@ -1342,12 +1859,37 @@
         0.391
       ],
       [
-        -0.008000000000000007,
+        -0.002999999999999989,
         0.046,
         0.391
       ],
       [
-        -0.015999999999999986,
+        -0.006000000000000005,
+        0.046,
+        0.391
+      ],
+      [
+        -0.009000000000000008,
+        0.046,
+        0.391
+      ],
+      [
+        -0.01200000000000001,
+        0.046,
+        0.391
+      ],
+      [
+        -0.015000000000000013,
+        0.046,
+        0.391
+      ],
+      [
+        -0.017999999999999988,
+        0.046,
+        0.391
+      ],
+      [
+        -0.02099999999999999,
         0.046,
         0.391
       ],
@@ -1357,12 +1899,37 @@
         0.391
       ],
       [
-        -0.032,
+        -0.026999999999999996,
         0.046,
         0.391
       ],
       [
-        -0.03999999999999998,
+        -0.03,
+        0.046,
+        0.391
+      ],
+      [
+        -0.033,
+        0.046,
+        0.391
+      ],
+      [
+        -0.036000000000000004,
+        0.046,
+        0.391
+      ],
+      [
+        -0.03900000000000001,
+        0.046,
+        0.391
+      ],
+      [
+        -0.04200000000000001,
+        0.046,
+        0.391
+      ],
+      [
+        -0.044999999999999984,
         0.046,
         0.391
       ],
@@ -1372,12 +1939,37 @@
         0.391
       ],
       [
-        -0.055999999999999994,
+        -0.05099999999999999,
         0.046,
         0.391
       ],
       [
-        -0.064,
+        -0.05399999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        -0.056999999999999995,
+        0.046,
+        0.391
+      ],
+      [
+        -0.06,
+        0.046,
+        0.391
+      ],
+      [
+        -0.063,
+        0.046,
+        0.391
+      ],
+      [
+        -0.066,
+        0.046,
+        0.391
+      ],
+      [
+        -0.069,
         0.046,
         0.391
       ],
@@ -1387,12 +1979,37 @@
         0.391
       ],
       [
-        -0.08000000000000002,
+        -0.07500000000000001,
         0.046,
         0.391
       ],
       [
-        -0.088,
+        -0.07799999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        -0.08099999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        -0.08399999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        -0.087,
+        0.046,
+        0.391
+      ],
+      [
+        -0.09,
+        0.046,
+        0.391
+      ],
+      [
+        -0.093,
         0.046,
         0.391
       ],
@@ -1402,12 +2019,37 @@
         0.391
       ],
       [
-        -0.10400000000000001,
+        -0.099,
         0.046,
         0.391
       ],
       [
-        -0.11199999999999999,
+        -0.10200000000000001,
+        0.046,
+        0.391
+      ],
+      [
+        -0.10499999999999998,
+        0.046,
+        0.391
+      ],
+      [
+        -0.10799999999999998,
+        0.046,
+        0.391
+      ],
+      [
+        -0.11099999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        -0.11399999999999999,
+        0.046,
+        0.391
+      ],
+      [
+        -0.11699999999999999,
         0.046,
         0.391
       ],
@@ -1417,83 +2059,223 @@
         0.391
       ],
       [
-        -0.1280107536224273,
-        0.04509740483854565,
+        -0.12297285643700395,
+        0.045877041748240116,
         0.391
       ],
       [
-        -0.13561981460823208,
-        0.04243487924448709,
+        -0.12592540525010643,
+        0.045509006922498006,
         0.391
       ],
       [
-        -0.1424456328669144,
-        0.03814593336884908,
+        -0.12883747753706876,
+        0.04489840957381589,
         0.391
       ],
       [
-        -0.14814593336884907,
-        0.03244563286691441,
+        -0.1316891808913686,
+        0.04404942070122285,
         0.391
       ],
       [
-        -0.15243487924448706,
-        0.025619814608232098,
+        -0.13446103528750689,
+        0.04296783975958207,
         0.391
       ],
       [
-        -0.15509740483854564,
-        0.018010753622427322,
+        -0.13713410614933463,
+        0.041661055043433606,
         0.391
       ],
       [
-        -0.156,
-        0.010000000000000002,
+        -0.13969013369240738,
+        0.040137993217451026,
         0.391
       ],
       [
-        -0.156,
-        0.003333333333333334,
+        -0.14211165765682804,
+        0.03840905833827017,
         0.391
       ],
       [
-        -0.156,
-        -0.003333333333333334,
+        -0.14438213657852667,
+        0.03648606078423274,
         0.391
       ],
       [
-        -0.156,
-        -0.009999999999999997,
+        -0.1464860607842327,
+        0.03438213657852669,
         0.391
       ],
       [
-        -0.15509740483854564,
-        -0.018010753622427315,
+        -0.14840905833827017,
+        0.032111657656828045,
         0.391
       ],
       [
-        -0.1524348792444871,
-        -0.025619814608232087,
+        -0.15013799321745103,
+        0.029690133692407365,
         0.391
       ],
       [
-        -0.14814593336884907,
-        -0.0324456328669144,
+        -0.15166105504343358,
+        0.027134106149334654,
         0.391
       ],
       [
-        -0.14244563286691442,
-        -0.03814593336884907,
+        -0.15296783975958206,
+        0.0244610352875069,
         0.391
       ],
       [
-        -0.13561981460823208,
-        -0.042434879244487085,
+        -0.16314716743340868,
+        0.022970085900164076,
+        0.39651248553449714
+      ],
+      [
+        -0.17282839235773484,
+        0.021017975379889742,
+        0.4018372499856146
+      ],
+      [
+        -0.18169366802859135,
+        0.018606930569466593,
+        0.40679296488632066
+      ],
+      [
+        -0.1894457695006177,
+        0.01576661157259233,
+        0.4112108693093967
+      ],
+      [
+        -0.19581913406226975,
+        0.012552508593735242,
+        0.4149405168184072
+      ],
+      [
+        -0.2007113204799031,
+        0.00919007877655234,
+        0.4178548987406519
+      ],
+      [
+        -0.2040731442235461,
+        0.005606405061086433,
+        0.41985476929518456
+      ],
+      [
+        -0.2057846213899867,
+        0.0018844745548533602,
+        0.42087202528885104
+      ],
+      [
+        -0.20578462138998674,
+        -0.001884474554853358,
+        0.42087202528885104
+      ],
+      [
+        -0.2040731442235461,
+        -0.005606405061086433,
+        0.41985476929518456
+      ],
+      [
+        -0.2007113204799031,
+        -0.009190078776552337,
+        0.4178548987406519
+      ],
+      [
+        -0.19581913406226975,
+        -0.012552508593735237,
+        0.4149405168184072
+      ],
+      [
+        -0.1894457695006177,
+        -0.0157666115725923,
+        0.4112108693093967
+      ],
+      [
+        -0.18169366802859135,
+        -0.018606930569466603,
+        0.4067929648863207
+      ],
+      [
+        -0.17282839235773484,
+        -0.021017975379889735,
+        0.4018372499856146
+      ],
+      [
+        -0.16314716743340868,
+        -0.022970085900164066,
+        0.39651248553449714
+      ],
+      [
+        -0.15296783975958206,
+        -0.024461035287506892,
         0.391
       ],
       [
-        -0.12801075362242736,
-        -0.04509740483854564,
+        -0.1516610550434336,
+        -0.027134106149334643,
+        0.391
+      ],
+      [
+        -0.15013799321745103,
+        -0.029690133692407375,
+        0.391
+      ],
+      [
+        -0.14840905833827017,
+        -0.03211165765682804,
+        0.391
+      ],
+      [
+        -0.14648606078423274,
+        -0.03438213657852667,
+        0.391
+      ],
+      [
+        -0.1443821365785267,
+        -0.03648606078423272,
+        0.391
+      ],
+      [
+        -0.14211165765682804,
+        -0.038409058338270165,
+        0.391
+      ],
+      [
+        -0.13969013369240735,
+        -0.040137993217451026,
+        0.391
+      ],
+      [
+        -0.13713410614933466,
+        -0.04166105504343359,
+        0.391
+      ],
+      [
+        -0.13446103528750689,
+        -0.04296783975958207,
+        0.391
+      ],
+      [
+        -0.1316891808913686,
+        -0.04404942070122285,
+        0.391
+      ],
+      [
+        -0.12883747753706876,
+        -0.04489840957381589,
+        0.391
+      ],
+      [
+        -0.1259254052501064,
+        -0.045509006922498006,
+        0.391
+      ],
+      [
+        -0.12297285643700398,
+        -0.045877041748240116,
         0.391
       ]
     ],
@@ -1534,6 +2316,76 @@
       "front_tunnel",
       "front_tunnel",
       "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
       "right_handle",
       "right_handle",
       "right_handle",
@@ -1581,12 +2433,98 @@
       "back_tunnel",
       "back_tunnel",
       "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
       "left_handle",
       "left_handle",
       "left_handle",
       "left_handle",
       "left_handle",
       "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
       "front_tunnel",
       "front_tunnel",
       "front_tunnel",
@@ -1595,20 +2533,44 @@
     ],
     "handle_node_indices": {
       "right": [
-        36,
-        37,
-        38,
-        39,
-        40,
-        41
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111
       ],
       "left": [
-        83,
-        84,
-        85,
-        86,
-        87,
-        88
+        219,
+        220,
+        221,
+        222,
+        223,
+        224,
+        225,
+        226,
+        227,
+        228,
+        229,
+        230,
+        231,
+        232,
+        233,
+        234,
+        235,
+        236
       ]
     }
   },
@@ -1617,9 +2579,9 @@
     "description": "Single-layer cloth ribbon = the drawstring tie (a separate cloth mesh, NOT a tube). Load with process=False. Vertex(i,k) = i*(n_width+1)+k along the centerline.",
     "width": 0.008,
     "n_width": 3,
-    "n_centerline": 94,
-    "num_vertices": 376,
-    "num_faces": 564,
+    "n_centerline": 250,
+    "num_vertices": 1000,
+    "num_faces": 1500,
     "vertex_labels": [
       "front_tunnel",
       "front_tunnel",
@@ -1765,6 +2727,286 @@
       "front_tunnel",
       "front_tunnel",
       "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
+      "right_handle",
       "right_handle",
       "right_handle",
       "right_handle",
@@ -1953,6 +3195,270 @@
       "back_tunnel",
       "back_tunnel",
       "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
+      "back_tunnel",
       "left_handle",
       "left_handle",
       "left_handle",
@@ -1977,6 +3483,86 @@
       "left_handle",
       "left_handle",
       "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "left_handle",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
+      "front_tunnel",
       "front_tunnel",
       "front_tunnel",
       "front_tunnel",
@@ -2000,67 +3586,163 @@
     ],
     "handle_vertex_indices": {
       "right": [
-        144,
-        145,
-        146,
-        147,
-        148,
-        149,
-        150,
-        151,
-        152,
-        153,
-        154,
-        155,
-        156,
-        157,
-        158,
-        159,
-        160,
-        161,
-        162,
-        163,
-        164,
-        165,
-        166,
-        167
+        376,
+        377,
+        378,
+        379,
+        380,
+        381,
+        382,
+        383,
+        384,
+        385,
+        386,
+        387,
+        388,
+        389,
+        390,
+        391,
+        392,
+        393,
+        394,
+        395,
+        396,
+        397,
+        398,
+        399,
+        400,
+        401,
+        402,
+        403,
+        404,
+        405,
+        406,
+        407,
+        408,
+        409,
+        410,
+        411,
+        412,
+        413,
+        414,
+        415,
+        416,
+        417,
+        418,
+        419,
+        420,
+        421,
+        422,
+        423,
+        424,
+        425,
+        426,
+        427,
+        428,
+        429,
+        430,
+        431,
+        432,
+        433,
+        434,
+        435,
+        436,
+        437,
+        438,
+        439,
+        440,
+        441,
+        442,
+        443,
+        444,
+        445,
+        446,
+        447
       ],
       "left": [
-        332,
-        333,
-        334,
-        335,
-        336,
-        337,
-        338,
-        339,
-        340,
-        341,
-        342,
-        343,
-        344,
-        345,
-        346,
-        347,
-        348,
-        349,
-        350,
-        351,
-        352,
-        353,
-        354,
-        355
+        876,
+        877,
+        878,
+        879,
+        880,
+        881,
+        882,
+        883,
+        884,
+        885,
+        886,
+        887,
+        888,
+        889,
+        890,
+        891,
+        892,
+        893,
+        894,
+        895,
+        896,
+        897,
+        898,
+        899,
+        900,
+        901,
+        902,
+        903,
+        904,
+        905,
+        906,
+        907,
+        908,
+        909,
+        910,
+        911,
+        912,
+        913,
+        914,
+        915,
+        916,
+        917,
+        918,
+        919,
+        920,
+        921,
+        922,
+        923,
+        924,
+        925,
+        926,
+        927,
+        928,
+        929,
+        930,
+        931,
+        932,
+        933,
+        934,
+        935,
+        936,
+        937,
+        938,
+        939,
+        940,
+        941,
+        942,
+        943,
+        944,
+        945,
+        946,
+        947
       ]
     },
     "validation": {
-      "num_vertices": 376,
-      "num_faces": 564,
-      "min_face_area": 8.888888888879949e-06,
+      "num_vertices": 1000,
+      "num_faces": 1500,
+      "min_face_area": 2.786734514420982e-06,
       "num_degenerate_faces": 0,
-      "num_edges": 940,
+      "num_edges": 2500,
       "max_faces_per_edge": 2,
       "num_nonmanifold_edges": 0,
-      "num_boundary_edges": 188,
+      "num_boundary_edges": 500,
       "is_manifold": true,
       "num_duplicate_vertices": 0,
       "num_connected_components": 1,
@@ -2068,14 +3750,14 @@
       "trimesh_body_count": 1,
       "trimesh_euler_number": 0,
       "bbox_min": [
-        -0.156,
+        -0.20590155093236193,
         -0.046,
         0.387000000000004
       ],
       "bbox_max": [
-        0.156,
+        0.20590155093236193,
         0.046,
-        0.394999999999996
+        0.42483742634288274
       ]
     }
   },
