@@ -792,7 +792,6 @@ class Example:
         left = _HandCursor(tracks, "left")
 
         plate_r = p["plate_radius"]
-        plate_h = 2.0 * p["plate_half_height"]
         pinch_dx = p["plate_center_to_pinch_dx"]
         wash_pinch = np.asarray([p["wash_x"] + pinch_dx, p["wash_y"], 0.0])
         sponge_size = p["sponge_size"]
