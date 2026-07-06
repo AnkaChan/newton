@@ -71,15 +71,20 @@ PARAMS = {
     # the plate re-graspable after the rub)
     "wash_x": -0.173,
     "wash_y": -0.02,
-    # clean spot: fully on the table on the other side
-    "clean_x": -0.125,
+    # clean spot: same overhang line (the index needs free air below the rim
+    # to slide out from under a set-down plate)
+    "clean_x": -0.173,
     "clean_y": 0.16,
-    # sponge: soft FEM block at the front edge, also overhanging for the pinch
-    "sponge_size": (0.09, 0.06, 0.032),
-    "sponge_cells": (6, 4, 2),
-    "sponge_x": -0.19,
-    "sponge_y": 0.28,
-    "sponge_density": 400.0,
+    # sponge: a flat soft FEM pad the same thickness as the plate rim, so the
+    # calibrated edge-pinch that lifts a plate also grips the sponge (a thick
+    # foam cube squirts out of the H1 pinch; a pad is caught at its edge like
+    # the soft grid in example_vbd_gripper_soft_grid). Its -x edge overhangs
+    # the front table edge so the index can slide underneath.
+    "sponge_size": (0.10, 0.075, 0.016),
+    "sponge_cells": (7, 5, 1),
+    "sponge_x": -0.185,
+    "sponge_y": 0.27,
+    "sponge_density": 250.0,
     "sponge_k_mu": 2.0e4,
     "sponge_k_lambda": 1.0e5,
     "sponge_k_damp": 1.0e-4,
@@ -113,35 +118,51 @@ PARAMS = {
     "rest_left": (-0.48, 0.24, 1.24),
     "rest_right": (-0.48, -0.24, 1.24),
     # grasp primitive (hand pinch-point targets relative to the grabbed rim).
-    # The pinch point sits between the curled index tip and the thumb tip;
-    # z offsets are relative to the plate underside.
+    # Calibrated against the H1 hand meshes (kinematic probe): with the index
+    # curled to 0.75 the index tip spans z in [P-0.029, P+0.004] and reaches
+    # x <= P+0.017 around the pinch target P; the thumb tip bottom sits at
+    # P+0.032 / P+0.007 / P-0.003 for fractions 0.5 / 0.85 / 1.0.
     "grab_hover_dx": -0.085,
     "grab_hover_dz": 0.10,
-    "grab_insert_hand_dz": -0.045,
+    # Pinch target P is the hand-frame pinch point. With index curled to 0.75
+    # the index tip top rides at P+0.004 and the thumb tip bottom at ~P+0.018
+    # (frac 0.70) to ~P+0.007 (frac 0.85). Plate is 16 mm thick; underside at
+    # bottom_z. Slide the index in with its top ~2 mm below the underside, then
+    # raise so the index top sits ~2 mm into the plate (a gentle upward support,
+    # not the old 10 mm overdrive that detonated the solve).
+    "grab_insert_hand_dz": -0.010,
     "grab_insert_depth": 0.012,
-    "grab_raise_hand_dz": -0.024,
+    "grab_raise_hand_dz": -0.002,
     "grab_index_fraction": 0.75,
-    "grab_thumb_fraction": 0.85,
+    # thumb bottom lands ~ at the plate top for a light clamp on the rim
+    "grab_thumb_fraction": 0.72,
     "other_finger_fraction": 0.8,
-    # sponge pinch (relative to the sponge underside at its -x edge)
-    "sponge_insert_hand_dz": -0.042,
-    "sponge_raise_hand_dz": -0.018,
-    "sponge_thumb_fraction": 0.95,
+    # sponge pinch: the pad is the same 16 mm thickness as the plate rim, so it
+    # reuses the plate insert/raise/thumb offsets (see the k == 0 grab below).
     # pinch-point x offset from the held plate's center while carried
-    "plate_center_to_pinch_dx": -0.056,
+    "plate_center_to_pinch_dx": -0.050,
     "carry_lift": 0.055,
+    # set-down: pinch height that rests the carried plate on the support
+    # surface (the plate underside rides at P+0.004 on the index)
+    "setdown_pinch_dz": -0.002,
+    # after opening the thumb, drop the index clear of the rim before
+    # sliding it out (finger mu is huge; sliding under load drags the plate)
+    "release_drop": 0.012,
     # drag primitive (script 2): press curled fingertips onto the top plate
     # and slide it toward the table edge until the rim overhangs
-    "drag_press_hand_dz": -0.040,
-    "drag_hand_dx": -0.012,
+    "drag_press_hand_dz": 0.025,
+    "drag_hand_dx": -0.020,
     "drag_slip_allowance": 0.012,
-    # rub trajectory
-    "rub_center_dx": 0.02,
-    "rub_radius": 0.016,
+    # rub trajectory: the sponge is pinch-held at its -x edge, so the pinch
+    # stays behind the plate rim (the index must never cross above it) and
+    # the sponge body scrubs the near half of the plate in flat ellipses
+    "rub_pinch_behind_rim": 0.037,
+    "rub_radius_x": 0.008,
+    "rub_radius_y": 0.026,
     "rub_circles": 3,
     "rub_circle_time": 1.2,
     "rub_press": 0.008,
-    "rub_hover_dz": 0.07,
+    "rub_hover_dz": 0.09,
     # durations [s]
     "settle_time": 0.5,
     "approach_time": 0.7,
@@ -354,8 +375,12 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
     }
     body_indices = {name: _find_suffix(builder.body_label, suffix) for name, suffix in body_names.items()}
 
-    # Keep every imported rigid collider active for both AVBD rigid contact and
-    # sponge contact. The complete thumb/index chains use a finer texture SDF.
+    # Only the thumb/index grasp shapes carry particle collision (the sponge)
+    # and a finer texture SDF. Every other robot collider keeps shape-shape
+    # contact for pose stability but is filtered against the table and plates
+    # in the caller (a humanoid's forearm otherwise rests on the tabletop and
+    # explodes the AVBD contact solve). The four grasp chains are what actually
+    # touch the dishes and sponge.
     shape_collision_flag = int(newton.ShapeFlags.COLLIDE_SHAPES)
     particle_collision_flag = int(newton.ShapeFlags.COLLIDE_PARTICLES)
     collision_mask = shape_collision_flag | particle_collision_flag
@@ -367,13 +392,14 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
     }
     finger_contact_shape_count = 0
     robot_rigid_shapes = []
+    grasp_shapes = []
     for shape in range(robot_shape_start, robot_shape_end):
         original_flags = int(builder.shape_flags[shape])
         is_rigid_collider = bool(original_flags & shape_collision_flag)
         is_grasp_collider = is_rigid_collider and builder.shape_body[shape] in finger_bodies
         builder.shape_flags[shape] &= ~collision_mask
         if is_rigid_collider:
-            builder.shape_flags[shape] |= shape_collision_flag | particle_collision_flag
+            builder.shape_flags[shape] |= shape_collision_flag
             builder.shape_gap[shape] = params["rigid_contact_gap"]
             builder.shape_material_ke[shape] = params["robot_contact_ke"]
             builder.shape_material_kd[shape] = params["robot_contact_kd"]
@@ -384,6 +410,7 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
             builder.shape_sdf_target_voxel_size[shape] = None
             robot_rigid_shapes.append(shape)
         if is_grasp_collider:
+            builder.shape_flags[shape] |= particle_collision_flag
             builder.shape_material_ke[shape] = params["finger_contact_ke"]
             builder.shape_material_kd[shape] = params["finger_contact_kd"]
             builder.shape_material_mu[shape] = params["finger_contact_mu"]
@@ -391,14 +418,15 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
             builder.shape_sdf_padding[shape] = params["finger_sdf_padding"]
             builder.shape_sdf_max_resolution[shape] = params["finger_sdf_max_resolution"]
             builder.shape_sdf_target_voxel_size[shape] = None
+            grasp_shapes.append(shape)
             finger_contact_shape_count += 1
 
     if finger_contact_shape_count != 12:
         raise RuntimeError(f"Expected 12 H1 thumb/index colliders, found {finger_contact_shape_count}")
-    return body_indices, robot_rigid_shapes
+    return body_indices, robot_rigid_shapes, grasp_shapes
 
 
-def _add_table(builder: newton.ModelBuilder, params: dict):
+def _add_table(builder: newton.ModelBuilder, params: dict) -> list[int]:
     table_cfg = newton.ModelBuilder.ShapeConfig(
         ke=params["shape_ke"],
         kd=params["shape_kd"],
@@ -409,38 +437,43 @@ def _add_table(builder: newton.ModelBuilder, params: dict):
     top_z = params["table_top_z"]
     half_height = params["tabletop_half_height"]
     wood = wp.vec3(0.46, 0.24, 0.10)
-    builder.add_shape_box(
-        -1,
-        xform=wp.transform(wp.vec3(0.0, 0.0, top_z - half_height), wp.quat_identity()),
-        hx=params["table_half_width"],
-        hy=params["table_half_depth"],
-        hz=half_height,
-        cfg=table_cfg,
-        color=wood,
-    )
+    shapes = [
+        builder.add_shape_box(
+            -1,
+            xform=wp.transform(wp.vec3(0.0, 0.0, top_z - half_height), wp.quat_identity()),
+            hx=params["table_half_width"],
+            hy=params["table_half_depth"],
+            hz=half_height,
+            cfg=table_cfg,
+            color=wood,
+        )
+    ]
 
     leg_half_width = 0.03
     leg_half_height = 0.5 * (top_z - 2.0 * half_height)
     for x_sign, y_sign in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
-        builder.add_shape_box(
-            -1,
-            xform=wp.transform(
-                wp.vec3(
-                    x_sign * (params["table_half_width"] - 0.05),
-                    y_sign * (params["table_half_depth"] - 0.06),
-                    leg_half_height,
+        shapes.append(
+            builder.add_shape_box(
+                -1,
+                xform=wp.transform(
+                    wp.vec3(
+                        x_sign * (params["table_half_width"] - 0.05),
+                        y_sign * (params["table_half_depth"] - 0.06),
+                        leg_half_height,
+                    ),
+                    wp.quat_identity(),
                 ),
-                wp.quat_identity(),
-            ),
-            hx=leg_half_width,
-            hy=leg_half_width,
-            hz=leg_half_height,
-            cfg=table_cfg,
-            color=wood,
+                hx=leg_half_width,
+                hy=leg_half_width,
+                hz=leg_half_height,
+                cfg=table_cfg,
+                color=wood,
+            )
         )
+    return shapes
 
 
-def _add_plates(builder: newton.ModelBuilder, params: dict) -> list[int]:
+def _add_plates(builder: newton.ModelBuilder, params: dict) -> tuple[list[int], list[int]]:
     plate_cfg = newton.ModelBuilder.ShapeConfig(
         density=params["plate_density"],
         ke=params["shape_ke"],
@@ -451,6 +484,7 @@ def _add_plates(builder: newton.ModelBuilder, params: dict) -> list[int]:
         margin=0.0,
     )
     plates = []
+    plate_shapes = []
     count = params["plate_count"]
     colors = params["plate_colors"]
     for level in range(count):
@@ -458,24 +492,31 @@ def _add_plates(builder: newton.ModelBuilder, params: dict) -> list[int]:
         x = params["grab_overhang_x"] if level == count - 1 else params["dirty_pile_x"]
         z = params["table_top_z"] + (2 * level + 1) * params["plate_half_height"]
         body = builder.add_body(xform=wp.transform(wp.vec3(x, params["dirty_pile_y"], z), wp.quat_identity()))
-        builder.add_shape_cylinder(
-            body,
-            radius=params["plate_radius"],
-            half_height=params["plate_half_height"],
-            cfg=plate_cfg,
-            color=wp.vec3(*colors[level % len(colors)]),
-            label=f"plate_{level}",
+        plate_shapes.append(
+            builder.add_shape_cylinder(
+                body,
+                radius=params["plate_radius"],
+                half_height=params["plate_half_height"],
+                cfg=plate_cfg,
+                color=wp.vec3(*colors[level % len(colors)]),
+                label=f"plate_{level}",
+            )
         )
         plates.append(body)
-    return plates
+    return plates, plate_shapes
 
 
 def _add_sponge(builder: newton.ModelBuilder, params: dict) -> dict:
     size = params["sponge_size"]
     cells = params["sponge_cells"]
     particle_start = len(builder.particle_q)
+    # spawn just above the tabletop so the block settles instead of ejecting
     builder.add_soft_grid(
-        pos=wp.vec3(params["sponge_x"] - 0.5 * size[0], params["sponge_y"] - 0.5 * size[1], params["table_top_z"]),
+        pos=wp.vec3(
+            params["sponge_x"] - 0.5 * size[0],
+            params["sponge_y"] - 0.5 * size[1],
+            params["table_top_z"] + params["sponge_particle_radius"],
+        ),
         rot=wp.quat_identity(),
         vel=wp.vec3(0.0, 0.0, 0.0),
         dim_x=cells[0],
@@ -515,10 +556,10 @@ class Example:
         self._rub_min_gap: dict[int, float] = {}
 
         builder = newton.ModelBuilder(gravity=p["gravity"])
-        self.robot_bodies, robot_rigid_shapes = _add_h1(builder, p)
+        self.robot_bodies, robot_rigid_shapes, grasp_shapes = _add_h1(builder, p)
         self.robot_coord_count = builder.joint_coord_count
-        _add_table(builder, p)
-        self.plate_bodies = _add_plates(builder, p)
+        table_shapes = _add_table(builder, p)
+        self.plate_bodies, plate_shapes = _add_plates(builder, p)
         self.sponge_info = _add_sponge(builder, p)
         ground_cfg = newton.ModelBuilder.ShapeConfig(
             ke=p["shape_ke"],
@@ -527,8 +568,21 @@ class Example:
             gap=p["rigid_contact_gap"],
         )
         ground_shape = builder.add_ground_plane(cfg=ground_cfg)
+        # A humanoid working over a table plants its forearm on the tabletop.
+        # Only the four grasp chains should touch the furniture and dishes; the
+        # rest of the robot is filtered against the table, plates, and ground so
+        # a resting forearm can't detonate the AVBD contact solve. The grasp
+        # fingers are likewise filtered against the table (mu=200 vs the grippy
+        # top would stick) but keep plate contact — that pinch is the demo.
+        grasp_set = set(grasp_shapes)
+        non_grasp = [s for s in robot_rigid_shapes if s not in grasp_set]
         for robot_shape in robot_rigid_shapes:
             builder.add_shape_collision_filter_pair(robot_shape, ground_shape)
+            for table_shape in table_shapes:
+                builder.add_shape_collision_filter_pair(robot_shape, table_shape)
+        for robot_shape in non_grasp:
+            for plate_shape in plate_shapes:
+                builder.add_shape_collision_filter_pair(robot_shape, plate_shape)
         builder.color(include_bending=True)
 
         if p["enable_water_tight_rigid_soft_contact"]:
@@ -617,13 +671,23 @@ class Example:
     def _mark(self, time: float, name: str):
         self._phase_marks.append((time, name))
 
-    def _grab_plate(self, hand: _HandCursor, rim_x: float, y: float, plate_bottom_z: float):
-        """Pinch a plate rim: hover behind it, slide the curled index underneath,
-        raise until the rim rests on the index, then close the thumb."""
+    def _grab_rim(
+        self,
+        hand: _HandCursor,
+        rim_x: float,
+        y: float,
+        bottom_z: float,
+        insert_dz: float | None = None,
+        raise_dz: float | None = None,
+        thumb: float | None = None,
+    ):
+        """Pinch an overhanging rim: hover behind it, slide the curled index
+        underneath, raise until the rim rests on the index, close the thumb."""
         p = self.params
-        insert_z = plate_bottom_z + p["grab_insert_hand_dz"]
+        insert_z = bottom_z + (p["grab_insert_hand_dz"] if insert_dz is None else insert_dz)
+        raise_z = bottom_z + (p["grab_raise_hand_dz"] if raise_dz is None else raise_dz)
         self._mark(hand.time, "approach")
-        hand.move(p["approach_time"], pos=(rim_x + p["grab_hover_dx"], y, plate_bottom_z + p["grab_hover_dz"]))
+        hand.move(p["approach_time"], pos=(rim_x + p["grab_hover_dx"], y, bottom_z + p["grab_hover_dz"]))
         hand.move(
             p["descend_time"],
             pos=(rim_x + p["grab_hover_dx"], y, insert_z),
@@ -632,18 +696,20 @@ class Example:
         )
         self._mark(hand.time, "insert")
         hand.move(p["insert_time"], pos=(rim_x + p["grab_insert_depth"], y, insert_z))
-        hand.move(p["raise_time"], pos=(rim_x + p["grab_insert_depth"], y, plate_bottom_z + p["grab_raise_hand_dz"]))
+        hand.move(p["raise_time"], pos=(rim_x + p["grab_insert_depth"], y, raise_z))
         self._mark(hand.time, "close")
-        hand.move(p["close_time"], thumb=p["grab_thumb_fraction"])
+        hand.move(p["close_time"], thumb=p["grab_thumb_fraction"] if thumb is None else thumb)
         hand.wait(p["dwell_time"])
 
     def _release_and_retract(self, hand: _HandCursor, retreat_pos):
-        """Open the thumb, slide the still-curled index out backward, then retreat."""
+        """Open the thumb, drop the index clear of the rim, slide it out
+        backward, then retreat (sliding under load would drag the object)."""
         p = self.params
         self._mark(hand.time, "release")
         hand.move(p["release_time"], thumb=0.0)
         pos = hand.pos()
-        hand.move(p["retract_time"], pos=(pos[0] - 0.09, pos[1], pos[2] + 0.03))
+        hand.move(0.25, pos=(pos[0], pos[1], pos[2] - p["release_drop"]))
+        hand.move(p["retract_time"], pos=(pos[0] - 0.09, pos[1], pos[2] - p["release_drop"]))
         hand.move(p["retract_time"], pos=retreat_pos, index=0.0, other=0.0)
 
     def _build_choreography(self):
@@ -695,89 +761,86 @@ class Example:
                 right.move(p["lift_time"], pos=(press_x - drag, pile_y, press_z + 0.09), thumb=0.0)
 
             # grab the top plate off the pile
-            self._grab_plate(right, grab_rim_x, pile_y, plate_bottom)
+            self._grab_rim(right, grab_rim_x, pile_y, plate_bottom)
 
             # carry to the washing spot at the table edge and set it down
             self._mark(right.time, "carry_to_wash")
             carry_z = plate_bottom + p["grab_raise_hand_dz"] + p["carry_lift"]
             right.move(p["lift_time"], pos=(grab_rim_x + p["grab_insert_depth"], pile_y, carry_z))
             right.move(p["carry_time"], pos=(wash_pinch[0], wash_pinch[1], carry_z))
-            wash_pinch_z = p["table_top_z"] + p["plate_half_height"] + p["grab_raise_hand_dz"] + 0.004
+            wash_pinch_z = p["table_top_z"] + p["setdown_pinch_dz"]
             right.move(p["lower_time"], pos=(wash_pinch[0], wash_pinch[1], wash_pinch_z))
             self._release_and_retract(right, (wash_pinch[0] - 0.13, pile_y - 0.02, p["table_top_z"] + 0.16))
-            plate_down_time = right.time - 2.0 * p["retract_time"] + p["release_time"]
+            plate_down_time = right.time - 2.0 * p["retract_time"] - 0.25
 
             if k == 0:
-                # fetch the sponge while the right hand carries the first plate
+                # fetch the sponge while the right hand carries the first plate;
+                # the pad reuses the plate edge-pinch primitive
                 left.wait_until(p["settle_time"] + p["approach_time"] + p["descend_time"])
-                sponge_bottom = p["table_top_z"]
+                sponge_bottom = p["table_top_z"] + p["sponge_particle_radius"]
                 sponge_rim_x = p["sponge_x"] - 0.5 * sponge_size[0]
-                self._grab_plate(left, sponge_rim_x, p["sponge_y"], sponge_bottom)
-                # sponge pinch overrides: squeeze deeper than the plate pinch
-                tracks["left_thumb"].add(left.time + 0.15, p["sponge_thumb_fraction"])
-                left.wait(0.15)
+                self._grab_rim(left, sponge_rim_x, p["sponge_y"], sponge_bottom)
                 lift_z = sponge_bottom + p["grab_raise_hand_dz"] + p["carry_lift"] + 0.03
                 left.move(p["lift_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], lift_z))
 
-            # rub: circles over the plate's top face with light pressure
+            # rub: flat ellipses over the plate's near half with light pressure.
+            # The pinch stays behind the plate rim so the index (which carries
+            # the sponge from below) never crosses above the plate.
             left.wait_until(plate_down_time + 0.2)
             plate_top_z = p["table_top_z"] + plate_h
-            rub_center = np.asarray([p["wash_x"] + p["rub_center_dx"], p["wash_y"]])
-            # pinch point sits at the sponge's -x edge
-            rub_pinch_x = rub_center[0] - 0.5 * sponge_size[0] + 0.01
-            rub_z = plate_top_z + sponge_size[2] * 0.55 - p["rub_press"]
+            plate_rim_x = p["wash_x"] - plate_r
+            rub_pinch = np.asarray([plate_rim_x - p["rub_pinch_behind_rim"], p["wash_y"]])
+            # the sponge underside rides at P+0.004 on the index
+            rub_z = plate_top_z - p["rub_press"] - 0.004
             self._mark(left.time, "rub_approach")
-            left.move(p["carry_time"], pos=(rub_pinch_x, rub_center[1], rub_z + p["rub_hover_dz"]))
-            left.move(p["lower_time"], pos=(rub_pinch_x, rub_center[1], rub_z))
+            left.move(p["carry_time"], pos=(rub_pinch[0], rub_pinch[1], rub_z + p["rub_hover_dz"]))
+            left.move(p["lower_time"], pos=(rub_pinch[0], rub_pinch[1], rub_z))
             self._mark(left.time, "rub")
             rub_start = left.time
             steps_per_circle = 24
             for c in range(p["rub_circles"] * steps_per_circle):
                 angle = 2.0 * np.pi * (c + 1) / steps_per_circle
-                offset = p["rub_radius"] * np.asarray([np.cos(angle) - 1.0, np.sin(angle)])
+                dx = p["rub_radius_x"] * (np.cos(angle) - 1.0)
+                dy = p["rub_radius_y"] * np.sin(angle)
                 left.move(
                     p["rub_circle_time"] / steps_per_circle,
-                    pos=(rub_pinch_x + offset[0], rub_center[1] + offset[1], rub_z),
+                    pos=(rub_pinch[0] + dx, rub_pinch[1] + dy, rub_z),
                     ease="linear",
                 )
             self._rub_windows.append((rub_start, left.time, k))
             self._mark(left.time, "rub_done")
-            left.move(p["lower_time"], pos=(rub_pinch_x, rub_center[1], rub_z + p["rub_hover_dz"] + 0.03))
+            left.move(p["lower_time"], pos=(rub_pinch[0], rub_pinch[1], rub_z + p["rub_hover_dz"]))
             # park the sponge high on the left while the right hand swaps plates
-            left.move(p["carry_time"], pos=(-0.30, 0.16, p["table_top_z"] + 0.16))
+            left.move(p["carry_time"], pos=(-0.32, 0.10, p["table_top_z"] + 0.17))
 
             # re-grab the washed plate at the wash spot and place it on the clean side
             right.wait_until(left.time - p["carry_time"] + 0.1)
-            self._grab_plate(right, wash_pinch[0] - pinch_dx - plate_r, p["wash_y"], p["table_top_z"])
+            self._grab_rim(right, p["wash_x"] - plate_r, p["wash_y"], p["table_top_z"])
             self._mark(right.time, "carry_to_clean")
             clean_z_bottom = p["table_top_z"] + clean_count * plate_h
             carry_z = p["table_top_z"] + p["grab_raise_hand_dz"] + p["carry_lift"] + clean_count * plate_h
-            right.move(p["lift_time"], pos=(wash_pinch[0], p["wash_y"], carry_z + 0.02))
+            right.move(p["lift_time"], pos=(wash_pinch[0], p["wash_y"], carry_z))
             clean_pinch_x = p["clean_x"] + pinch_dx
-            right.move(p["carry_time"], pos=(clean_pinch_x, p["clean_y"], carry_z + 0.02))
-            right.move(
-                p["lower_time"], pos=(clean_pinch_x, p["clean_y"], clean_z_bottom + p["grab_raise_hand_dz"] + 0.012)
-            )
+            right.move(p["carry_time"], pos=(clean_pinch_x, p["clean_y"], carry_z))
+            right.move(p["lower_time"], pos=(clean_pinch_x, p["clean_y"], clean_z_bottom + p["setdown_pinch_dz"]))
             self._release_and_retract(right, (clean_pinch_x - 0.12, p["wash_y"], p["table_top_z"] + 0.18))
             clean_count += 1
             pile_count -= 1
 
         # epilogue: return the sponge home and rest both hands
         sponge_rim_x = p["sponge_x"] - 0.5 * sponge_size[0]
+        sponge_home_pinch_x = sponge_rim_x + p["grab_insert_depth"]
         self._mark(left.time, "sponge_home")
-        left.move(p["carry_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], p["table_top_z"] + 0.10))
+        left.move(p["carry_time"], pos=(sponge_home_pinch_x, p["sponge_y"], p["table_top_z"] + 0.10))
         left.move(
             p["lower_time"],
-            pos=(
-                sponge_rim_x + p["grab_insert_depth"],
-                p["sponge_y"],
-                p["table_top_z"] + p["grab_raise_hand_dz"] + 0.008,
-            ),
+            pos=(sponge_home_pinch_x, p["sponge_y"], p["table_top_z"] + p["sponge_particle_radius"] - 0.002),
         )
         self._release_and_retract(left, p["rest_left"])
         right.wait_until(left.time)
         right.move(p["retract_time"], pos=p["rest_right"])
         self._mark(max(left.time, right.time), "done")
+        self._phase_marks.sort(key=lambda mark: mark[0])
         self.total_time = max(left.time, right.time) + 0.6
 
     # ── IK ───────────────────────────────────────────────────────────────
