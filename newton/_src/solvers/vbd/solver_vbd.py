@@ -50,7 +50,7 @@ from .particle_vbd_kernels import (
     solve_elasticity_tile,
     update_velocity,
 )
-from .reduced_projection import project_to_reduced_coordinates
+from .reduced_projection import ReducedCoordinateProjection
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     RigidContactHistory,
@@ -239,6 +239,7 @@ class SolverVBD(SolverBase):
         body_enable_reduced_solve: bool = False,
         reduced_gn_iterations: int = 3,
         reduced_gn_damping: float = 1e-6,
+        reduced_max_joint_vel: float = 20.0,
     ):
         """
         Args:
@@ -353,6 +354,8 @@ class SolverVBD(SolverBase):
                 the kinematic manifold defined by the articulation joints.
             reduced_gn_iterations: Number of Gauss-Newton iterations for the reduced projection (0 = analytical IK only).
             reduced_gn_damping: Levenberg-Marquardt damping for the Gauss-Newton normal equations.
+            reduced_max_joint_vel: Maximum joint velocity [rad/s or m/s] for the reduced projection. Clamps both
+                the per-step joint coordinate change (``reduced_max_joint_vel * dt``) and the recovered joint velocity.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -399,13 +402,19 @@ class SolverVBD(SolverBase):
         self.body_enable_reduced_solve = body_enable_reduced_solve
         self.reduced_gn_iterations = reduced_gn_iterations
         self.reduced_gn_damping = reduced_gn_damping
+        self.reduced_max_joint_vel = reduced_max_joint_vel
         if body_enable_reduced_solve and model.joint_coord_count > 0:
-            # Initialize joint_q_prev from the model's initial joint config.
-            # eval_fk should be called on state before the first step() so that
-            # body_q is consistent with joint_q.
-            self._joint_q_prev = wp.clone(model.joint_q).to(self.device)
+            # The projection's joint_q_prev starts at the model's initial joint
+            # config. eval_fk should be called on state before the first step()
+            # so that body_q is consistent with joint_q.
+            self._reduced_projection = ReducedCoordinateProjection(
+                model,
+                gn_iterations=reduced_gn_iterations,
+                damping=reduced_gn_damping,
+                max_joint_vel=reduced_max_joint_vel,
+            )
         else:
-            self._joint_q_prev = None
+            self._reduced_projection = None
 
         # Initialize particle system
         self._init_particle_system(
@@ -1642,19 +1651,11 @@ class SolverVBD(SolverBase):
         )
         self._finalize_particles(state_out, dt)
 
-        # Project maximal body poses onto kinematic manifold after finalize.
-        # Uses BDF1 on joint_q with velocity clamping to prevent explosion from
-        # large manifold corrections.  FK produces consistent body_q + body_qd.
-        if self.body_enable_reduced_solve and not self.integrate_with_external_rigid_solver:
-            project_to_reduced_coordinates(
-                self.model,
-                state_out,
-                joint_q_prev=self._joint_q_prev,
-                dt=dt,
-                gn_iterations=self.reduced_gn_iterations,
-                damping=self.reduced_gn_damping,
-            )
-            self._joint_q_prev.assign(state_out.joint_q)
+        # Project maximal body poses onto the kinematic manifold after finalize.
+        # FK produces consistent body_q + body_qd; body_q_prev is synced so the
+        # next step's BDF velocity is computed against the projected poses.
+        if self._reduced_projection is not None and not self.integrate_with_external_rigid_solver:
+            self._reduced_projection.project(state_out, dt)
             wp.copy(self.body_q_prev, state_out.body_q)
 
     def _snapshot_rigid_contact_history(self, contacts: Contacts | None):

@@ -173,7 +173,7 @@
 - Interactive example browser in the GL viewer with tree-view navigation and switch/reset support
 - Add `TetMesh` class and USD loading API for tetrahedral mesh geometry
 - Support kinematic bodies in VBD solver
-- Add `body_enable_reduced_solve` option to `SolverVBD` that runs a Gauss-Newton reduced-coordinate projection after each step so articulated rigid bodies satisfy exact joint constraints. Tunable via `reduced_gn_iterations` and `reduced_gn_damping`. See `examples/robot/example_robot_franka_rvbd.py`.
+- Add `body_enable_reduced_solve` option to `SolverVBD` that runs a Gauss-Newton reduced-coordinate projection after each step so articulated rigid bodies satisfy exact joint constraints. The projection runs entirely on the device and is CUDA-graph capturable. Tunable via `reduced_gn_iterations`, `reduced_gn_damping`, and `reduced_max_joint_vel`. See `examples/robot/example_robot_franka_rvbd.py`.
 - Add brick stacking example
 - Add box pyramid example and ASV benchmark for dense convex-on-convex contacts
 - Add plotting example showing how to access and visualize per-step simulation diagnostics
