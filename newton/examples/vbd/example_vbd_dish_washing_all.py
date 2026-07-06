@@ -31,15 +31,16 @@ from newton.examples.vbd.example_vbd_dish_washing import Example as _DishWashing
 PARAMS = copy.deepcopy(_BASE_PARAMS)
 PARAMS.update(
     {
-        # wash every dish
-        "plate_count": 3,
-        "wash_count": 3,
-        # dirty dishes in a row on the right along the front edge, each
-        # independently graspable; washed dishes stack into a pile on the clean
-        # (left) side, reusing the 1-dish example's proven clean placement
+        # wash two dishes and stack them on the clean side. Both start in a row
+        # on the robot's right, where the right arm grabs and (cross-body) places
+        # reliably; a plate grabbed from nearer centre leaves the fixed-base arm
+        # in a pose from which it can't place cross-body onto the table without
+        # dropping the plate at the front-edge lip.
+        "plate_count": 2,
+        "wash_count": 2,
         "dirty_layout": "row",
-        "dirty_pile_y": -0.22,
-        "row_spacing": 0.125,
+        "dirty_pile_y": -0.24,
+        "row_spacing": 0.12,
         # a full run through all three dishes is much longer
         "num_frames": 2900,
     }
