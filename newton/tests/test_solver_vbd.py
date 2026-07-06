@@ -2703,6 +2703,83 @@ def test_rigid_dat_sphere_drop_penetration_free(test, device):
     )
 
 
+def _build_rigid_rigid_impact(device):
+    """A fast sphere shot at a resting sphere above a ground plane.
+
+    ``rigid_gap`` makes the pipeline emit rigid-rigid contacts (and thus DAT division
+    planes) before first touch; the shape ``margin`` keeps a penalty-force shell outside
+    the geometric surface so the resting geometric gap stays positive.
+    """
+    radius = 0.2
+    builder = newton.ModelBuilder()  # Z up, gravity -Z
+    builder.rigid_gap = 0.05
+    builder.default_shape_cfg.margin = 0.01
+    builder.add_ground_plane()
+    inertia_val = 0.4 * 5.0 * radius * radius
+    inertia = wp.mat33(inertia_val, 0.0, 0.0, 0.0, inertia_val, 0.0, 0.0, 0.0, inertia_val)
+    bodies = []
+    for x in (0.0, -1.5):
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(x, 0.0, radius + 0.012), wp.quat_identity()),
+            mass=5.0,
+            inertia=inertia,
+            lock_inertia=True,
+        )
+        builder.add_shape_sphere(body=body, radius=radius)
+        bodies.append(body)
+    builder.color()
+    model = builder.finalize(device=device)
+    return model, bodies, radius
+
+
+def _run_rigid_rigid_impact(device, enable_dat, speed=8.0, frames=90):
+    model, bodies, radius = _build_rigid_rigid_impact(device)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=6,
+        rigid_enable_penetration_free=enable_dat,
+        rigid_penetration_free_query_margin=0.05,
+    )
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    qd = state_in.body_qd.numpy()
+    qd[bodies[1]][:3] = [speed, 0.0, 0.0]
+    state_in.body_qd.assign(qd)
+
+    worst_sphere_sphere = 0.0
+    worst_sphere_ground = 0.0
+    for _frame in range(frames):
+        pipeline.collide(state_in, contacts)
+        solver.step(state_in, state_out, None, contacts, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+        body_q = state_in.body_q.numpy()
+        if not np.isfinite(body_q).all():
+            raise AssertionError("simulation produced non-finite state")
+        c0, c1 = body_q[bodies[0]][:3], body_q[bodies[1]][:3]
+        worst_sphere_sphere = max(worst_sphere_sphere, -(float(np.linalg.norm(c1 - c0)) - 2.0 * radius))
+        worst_sphere_ground = max(worst_sphere_ground, -(min(float(c0[2]), float(c1[2])) - radius))
+    return worst_sphere_sphere, worst_sphere_ground
+
+
+def test_rigid_dat_rigid_rigid_impact(test, device):
+    """Rigid-rigid DAT keeps a fast sphere impact penetration-free (spheres + ground).
+
+    The control run (DAT off) sinks visibly into the ground under the same conditions,
+    verifying that the assertion is meaningful.
+    """
+    sphere_pen, ground_pen = _run_rigid_rigid_impact(device, enable_dat=True)
+    test.assertLessEqual(sphere_pen, 1.0e-4, "spheres must not interpenetrate")
+    test.assertLessEqual(ground_pen, 1.0e-4, "spheres must not sink into the ground")
+
+    _sphere_pen_ctrl, ground_pen_ctrl = _run_rigid_rigid_impact(device, enable_dat=False)
+    test.assertGreater(
+        ground_pen_ctrl,
+        1.0e-3,
+        "control without DAT should penetrate the ground; if it no longer does, strengthen this stress",
+    )
+
+
 class TestVBDRigidDAT(unittest.TestCase):
     pass
 
@@ -2717,6 +2794,12 @@ add_function_test(
     TestVBDRigidDAT,
     "test_rigid_dat_sphere_drop_penetration_free",
     test_rigid_dat_sphere_drop_penetration_free,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_rigid_dat_rigid_rigid_impact",
+    test_rigid_dat_rigid_rigid_impact,
     devices=devices,
 )
 

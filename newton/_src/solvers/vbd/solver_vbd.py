@@ -47,6 +47,7 @@ from .rigid_vbd_kernels import (
     accumulate_body_body_contacts_per_body,
     accumulate_body_particle_contacts_per_body,
     apply_body_truncation_ts,
+    apply_rigid_rigid_truncation,
     apply_rigid_soft_truncation,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
@@ -343,16 +344,18 @@ class SolverVBD(SolverBase):
             rigid_joint_angular_kd: Damping coefficient for non-cable angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
             rigid_enable_penetration_free: Whether to apply Divide-and-Truncate (DAT) penetration-free
-                truncation to rigid bodies against rigid-soft contacts. Each contact reported by the
+                truncation to rigid bodies. Each rigid-soft and rigid-rigid contact reported by the
                 collision pipeline defines a division plane; particle displacements and rigid pose updates
                 are truncated so neither side crosses its plane during the step. Rigid bodies follow curved
                 point trajectories, handled with sampling + bisection along the interpolated pose update.
                 Requires passing ``contacts`` to :meth:`step`. The guarantee is only as complete as the
-                contact set: pairs farther apart than the collision pipeline's ``soft_contact_margin`` are
-                covered by a conservative per-step motion bound derived from
-                ``rigid_penetration_free_query_margin``.
+                contact set: rigid-rigid planes constrain only the recorded contact anchors (locally
+                penetration-free, not a global guarantee), and pairs farther apart than the collision
+                pipeline's contact margins are covered by a conservative per-step motion bound derived
+                from ``rigid_penetration_free_query_margin``.
             rigid_penetration_free_query_margin: Contact query margin [m] assumed by the rigid DAT motion
-                bound. Must match the collision pipeline's ``soft_contact_margin``; per step, no surface
+                bound. Must not exceed the collision pipeline's ``soft_contact_margin`` (nor the rigid
+                contact margin when rigid-rigid coverage matters); per step, no surface
                 point of a rigid body (nor any particle) is allowed to move farther than half this margin
                 (scaled by ``rigid_conservative_bound_relaxation``), so that pairs without a contact record
                 cannot tunnel. Only used when ``rigid_enable_penetration_free`` is ``True``.
@@ -1597,6 +1600,93 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
+    def _rigid_penetration_free_truncation(self, contacts: Contacts | None, body_q):
+        """Truncate accumulated rigid pose updates against rigid-rigid and rigid-soft
+        division planes (rigid-phase DAT pass).
+
+        Applied after the rigid bodies move (forward step and each AVBD iteration).
+        Particle displacements are not modified here; the particle-phase joint pass
+        (:meth:`_penetration_free_truncation`) re-enforces the rigid-soft planes on both
+        sides. Later passes only scale poses back along the already-verified trajectory,
+        so earlier rigid-rigid truncations are never undone.
+        """
+        if not self.rigid_enable_penetration_free or contacts is None or body_q is None:
+            return
+
+        self.body_truncation_ts.fill_(1.0)
+
+        if contacts.rigid_contact_max > 0:
+            wp.launch(
+                kernel=apply_rigid_rigid_truncation,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    self.model.shape_body,
+                    self.model.shape_margin,
+                    self.body_q_prev,
+                    body_q,
+                    self.model.body_com,
+                    self.rigid_conservative_bound_relaxation,
+                ],
+                outputs=[
+                    self.body_truncation_ts,
+                ],
+                device=self.device,
+            )
+
+        if self.model.particle_count > 0 and contacts.soft_contact_max > 0:
+            # Also respect the rigid-soft planes; the write to truncation_ts is a
+            # harmless side effect (it is refilled before its next particle-phase use).
+            wp.launch(
+                kernel=apply_rigid_soft_truncation,
+                dim=contacts.soft_contact_max,
+                inputs=[
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_primitive,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_normal,
+                    contacts.soft_contact_barycentric,
+                    self.model.tri_indices,
+                    self.model.shape_body,
+                    self.pos_prev_collision_detection,
+                    self.particle_displacements,
+                    self.body_q_prev,
+                    body_q,
+                    self.model.body_com,
+                    self.rigid_dat_parallel_epsilon,
+                    self.rigid_conservative_bound_relaxation,
+                ],
+                outputs=[
+                    self.truncation_ts,
+                    self.body_truncation_ts,
+                ],
+                device=self.device,
+            )
+
+        wp.launch(
+            kernel=apply_body_truncation_ts,
+            dim=self.model.body_count,
+            inputs=[
+                self.body_q_prev,
+                self.model.body_com,
+                self.body_truncation_ts,
+                self.body_bounding_radius,
+                self.rigid_penetration_free_query_margin * self.rigid_conservative_bound_relaxation * 0.5,
+            ],
+            outputs=[
+                body_q,
+            ],
+            device=self.device,
+        )
+
     def _initialize_particles(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
         """Initialize particle positions for the VBD iteration."""
         model = self.model
@@ -1884,6 +1974,10 @@ class SolverVBD(SolverBase):
                 dim=model.body_count,
                 device=self.device,
             )
+
+            # Truncate the forward step against the division planes before any
+            # solve iterations run on the predicted poses.
+            self._rigid_penetration_free_truncation(contacts, state_in.body_q)
 
             if model.joint_count > 0:
                 # Warm-started lambda decays by alpha * gamma, while penalty k uses gamma only.
@@ -2416,6 +2510,9 @@ class SolverVBD(SolverBase):
                 dim=color_group.size,
                 device=self.device,
             )
+
+        # Truncate the accumulated pose updates before the dual updates read them.
+        self._rigid_penetration_free_truncation(contacts, state_in.body_q)
 
         if contacts is not None:
             contact_launch_dim = contacts.rigid_contact_max

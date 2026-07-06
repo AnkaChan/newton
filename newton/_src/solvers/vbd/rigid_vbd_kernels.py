@@ -4469,6 +4469,134 @@ def apply_rigid_soft_truncation(
 
 
 @wp.kernel
+def apply_rigid_rigid_truncation(
+    # inputs
+    rigid_contact_count: wp.array[wp.int32],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    shape_body: wp.array[wp.int32],
+    shape_margin: wp.array[float],
+    body_q_ref: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    gamma: float,
+    # outputs
+    body_truncation_ts: wp.array[float],
+):
+    """DAT truncation for one rigid-rigid contact reported by the collision pipeline.
+
+    The contact's skeleton points and normal (recorded at the reference poses) define a
+    division plane between the two geometric surfaces (skeleton point + effective radius
+    along the normal). The per-shape contact margin is deliberately excluded: penalty
+    forces act inside the margin shell, while the plane guards the true surface — matching
+    the soft path, where forces act at radius + margin but truncation is purely geometric.
+    Both bodies' truncation scalars are min-reduced against the same plane in this launch:
+    each side's contact anchor must stay on its side along its curved trajectory. The radii
+    are treated as spherical about the skeleton points (their body-frame rotation is
+    ignored), and only the recorded anchor of each body is checked — a locally
+    penetration-free plane, not a global guarantee.
+    """
+    tid = wp.tid()
+
+    if tid >= rigid_contact_count[0]:
+        return
+
+    s0 = rigid_contact_shape0[tid]
+    s1 = rigid_contact_shape1[tid]
+    if s0 < 0 or s1 < 0:
+        return
+    b0 = shape_body[s0]
+    b1 = shape_body[s1]
+    if b0 < 0 and b1 < 0:
+        return
+
+    X_w0_ref = wp.transform_identity()
+    if b0 >= 0:
+        X_w0_ref = body_q_ref[b0]
+    X_w1_ref = wp.transform_identity()
+    if b1 >= 0:
+        X_w1_ref = body_q_ref[b1]
+
+    p0 = wp.transform_point(X_w0_ref, rigid_contact_point0[tid])
+    p1 = wp.transform_point(X_w1_ref, rigid_contact_point1[tid])
+    n = rigid_contact_normal[tid]  # unit, points from shape 0 toward shape 1
+
+    # Geometric surface distance from each skeleton point (effective radius): the stored
+    # contact margins are radius_eff + shape_margin.
+    margin0 = rigid_contact_margin0[tid]
+    margin1 = rigid_contact_margin1[tid]
+    if shape_margin.shape[0] > 0:
+        margin0 -= shape_margin[s0]
+        margin1 -= shape_margin[s1]
+    margin0 = wp.max(margin0, 0.0)
+    margin1 = wp.max(margin1, 0.0)
+
+    gap = wp.dot(n, p1 - p0) - margin0 - margin1
+    # No separating plane exists for a touching or penetrating reference pair; leave
+    # recovery to the contact forces.
+    if gap < 1.0e-9:
+        return
+
+    # Accumulated pose updates since the reference poses.
+    c0_a = wp.vec3(0.0)
+    dx_a = wp.vec3(0.0)
+    axis_a = wp.vec3(0.0)
+    angle_a = float(0.0)
+    moving_a = bool(False)
+    if b0 >= 0:
+        c0_a, dx_a, axis_a, angle_a = rigid_pose_delta(X_w0_ref, body_q[b0], body_com[b0])
+        moving_a = wp.length_sq(dx_a) > 0.0 or angle_a != 0.0
+
+    c0_b = wp.vec3(0.0)
+    dx_b = wp.vec3(0.0)
+    axis_b = wp.vec3(0.0)
+    angle_b = float(0.0)
+    moving_b = bool(False)
+    if b1 >= 0:
+        c0_b, dx_b, axis_b, angle_b = rigid_pose_delta(X_w1_ref, body_q[b1], body_com[b1])
+        moving_b = wp.length_sq(dx_b) > 0.0 or angle_b != 0.0
+
+    if not moving_a and not moving_b:
+        return
+
+    # Adaptive plane placement between the effective surfaces, proportional to each
+    # side's approach speed along the normal.
+    delta_0 = float(0.0)
+    if moving_a:
+        end_a = rigid_point_trajectory(1.0, c0_a, dx_a, axis_a, angle_a, p0 - c0_a)
+        delta_0 = wp.max(wp.dot(n, end_a - p0), 0.0)
+    delta_1 = float(0.0)
+    if moving_b:
+        end_b = rigid_point_trajectory(1.0, c0_b, dx_b, axis_b, angle_b, p1 - c0_b)
+        delta_1 = wp.max(-wp.dot(n, end_b - p1), 0.0)
+
+    if delta_0 + delta_1 == 0.0:
+        lmbd = 0.5
+    else:
+        lmbd = wp.clamp(delta_0 / (delta_0 + delta_1), 0.05, 0.95)
+
+    # Division plane point between the two effective surfaces along n.
+    d = p0 + (margin0 + lmbd * gap) * n
+
+    # Side 0 stays on the -n side of the plane shifted back by its margin.
+    if moving_a:
+        t_a = rigid_trajectory_truncation_t(n, d - margin0 * n, c0_a, dx_a, axis_a, angle_a, p0 - c0_a, gamma)
+        if t_a < 1.0:
+            wp.atomic_min(body_truncation_ts, b0, t_a)
+
+    # Side 1 stays on the +n side of the plane shifted forward by its margin.
+    if moving_b:
+        t_b = rigid_trajectory_truncation_t(-n, d + margin1 * n, c0_b, dx_b, axis_b, angle_b, p1 - c0_b, gamma)
+        if t_b < 1.0:
+            wp.atomic_min(body_truncation_ts, b1, t_b)
+
+
+@wp.kernel
 def apply_body_truncation_ts(
     # inputs
     body_q_ref: wp.array[wp.transform],
