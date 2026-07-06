@@ -37,13 +37,18 @@ import newton.utils
 PARAMS = {
     # simulation
     "fps": 60,
-    "sim_substeps": 16,
-    "solver_iterations": 8,
+    # 20 substeps stabilises the soft sponge grip contact (matches
+    # example_vbd_gripper_soft_grid); the rigid plate work is fine at this rate too
+    "sim_substeps": 20,
+    "solver_iterations": 12,
     "gravity": -9.81,
     "num_frames": 1000,
     # how many plates are washed (script 2 raises this to the full pile)
     "wash_count": 1,
     "plate_count": 3,
+    # debug: only the left hand grabs+lifts+holds the sponge (isolates the
+    # sponge grip from the plate work and the shared solver)
+    "sponge_only": False,
     # presentation
     "camera_position": (1.05, -1.55, 1.62),
     "camera_pitch": -14.0,
@@ -95,26 +100,27 @@ PARAMS = {
     "sponge_x": -0.185,
     "sponge_y": 0.27,
     "sponge_density": 250.0,
-    # Stiff, shear-dominant Neo-Hookean (k_mu >> k_lambda): high shear keeps the
-    # pad holding its shape in the pinch (it doesn't squirt out), low bulk keeps
-    # it compressible so the fingers can compress it a little. The stable
-    # Neo-Hookean material tolerates inverted (negative-volume) tets, so a
-    # fingertip pressing in does not detonate the solve.
-    "sponge_k_mu": 8.0e4,
-    "sponge_k_lambda": 1.5e4,
+    # Shear-dominant Neo-Hookean (k_mu > k_lambda): shear keeps the pad holding
+    # its shape in the pinch (it doesn't squirt out), lower bulk keeps it
+    # compressible. Moderate stiffness — too stiff and the pad fights the
+    # fingertip like a rigid body and spikes the contact. The stable material
+    # tolerates inverted (negative-volume) tets, so modest penetration is fine.
+    "sponge_k_mu": 1.5e4,
+    "sponge_k_lambda": 4.0e3,
     "sponge_k_damp": 1.0e-3,
-    # particle radius = per-particle finger contact standoff. Small enough that
-    # the fingers actually clamp the pad (a large standoff pushes it away
-    # mushily and it slides out); the stiff Neo-Hookean pad tolerates the modest
-    # penetration this allows.
-    "sponge_particle_radius": 0.006,
+    # particle radius = per-particle finger contact standoff. Matches the stable
+    # recipe of example_vbd_gripper_soft_grid (radius ~0.01, low contact ke, high
+    # damping, 20 substeps): a firm-but-soft contact that clamps without the
+    # force spike a small gap + stiff contact produces.
+    "sponge_particle_radius": 0.012,
     "sponge_color": (0.95, 0.85, 0.25),
-    # rigid-soft contact for the sponge grip: firm, well damped, high friction
-    # so the pinched pad does not slip out of the fingers.
-    "soft_contact_ke": 4.0e3,
-    "soft_contact_kd": 8.0,
-    "soft_contact_mu": 1.5,
-    "soft_contact_margin": 0.007,
+    # rigid-soft contact for the sponge grip: soft + heavily damped to avoid a
+    # contact-force spike (a stiff contact spears/drags the edge tets and blows
+    # the mesh up), grippy friction so the clamped pad doesn't slip.
+    "soft_contact_ke": 1.0e3,
+    "soft_contact_kd": 15.0,
+    "soft_contact_mu": 1.2,
+    "soft_contact_margin": 0.014,
     "enable_water_tight_rigid_soft_contact": True,
     "shape_ke": 1.0e3,
     "shape_kd": 1.0e-4,
@@ -161,9 +167,20 @@ PARAMS = {
     # thumb closes on top, clamping the edge (the pad's particle-radius standoff
     # + the extra contact margin keep the fingers from spearing the tets). The
     # thumb closes further than the plate to compress the thicker, stiff pad.
-    "sponge_insert_hand_dz": -0.012,
-    "sponge_raise_hand_dz": -0.004,
-    "sponge_thumb_fraction": 0.72,
+    # insert the index clearly BELOW the pad (in the free air in front of the
+    # table edge) so it slides UNDER the overhanging edge instead of hitting the
+    # pad's side and shoving it away; then rise to lift the edge onto the index.
+    "sponge_insert_hand_dz": -0.020,
+    "sponge_raise_hand_dz": -0.014,
+    # command the thumb to just SLIGHTLY compress the pad, not close all the way:
+    # a large commanded-vs-blocked angle error times the drive stiffness is a
+    # huge crushing torque that spikes/ejects the pad. Just-compress keeps the
+    # clamp force bounded; friction + the index shelf then hold it.
+    "sponge_thumb_fraction": 0.62,
+    # curl the index a bit more than for the plate: a moderate hook keeps the
+    # soft pad from sliding off the fingertip (too tight and the tip drives hard
+    # into the pad and spikes the contact)
+    "sponge_index_fraction": 0.80,
     # pinch-point x offset from the held plate's center while carried
     "plate_center_to_pinch_dx": -0.050,
     "carry_lift": 0.055,
@@ -192,7 +209,7 @@ PARAMS = {
     "descend_time": 0.55,
     "insert_time": 0.5,
     "raise_time": 0.4,
-    "close_time": 0.4,
+    "close_time": 0.7,
     "dwell_time": 0.25,
     "lift_time": 0.45,
     "carry_time": 0.9,
@@ -208,7 +225,11 @@ PARAMS = {
     "joint_drive_kd": 5.0e2,
     "torso_drive_ke": 2.0e5,
     "torso_drive_kd": 2.0e3,
-    "finger_drive_ke": 4.0e4,
+    # compliant finger drive: the position-controlled fingers must YIELD against
+    # the soft sponge (force-limited grip) instead of driving to their commanded
+    # angle and crushing/ejecting it. Tuned between crushing (too stiff) and
+    # dropping (too soft): the thumb squeezes until the sponge balances it.
+    "finger_drive_ke": 2.0e4,
     "finger_drive_kd": 1.0e2,
     "joint_target_velocity_limit": 40.0,
     "torso_ik_position_weight": 50.0,
@@ -724,26 +745,58 @@ class Example:
         insert_dz: float | None = None,
         raise_dz: float | None = None,
         thumb: float | None = None,
+        index: float | None = None,
     ):
         """Pinch an overhanging rim: hover behind it, slide the curled index
         underneath, raise until the rim rests on the index, close the thumb."""
         p = self.params
         insert_z = bottom_z + (p["grab_insert_hand_dz"] if insert_dz is None else insert_dz)
         raise_z = bottom_z + (p["grab_raise_hand_dz"] if raise_dz is None else raise_dz)
+        index_frac = p["grab_index_fraction"] if index is None else index
         self._mark(hand.time, "approach")
         hand.move(p["approach_time"], pos=(rim_x + p["grab_hover_dx"], y, bottom_z + p["grab_hover_dz"]))
         hand.move(
             p["descend_time"],
             pos=(rim_x + p["grab_hover_dx"], y, insert_z),
-            index=p["grab_index_fraction"],
+            index=index_frac,
             other=p["other_finger_fraction"],
         )
         self._mark(hand.time, "insert")
         hand.move(p["insert_time"], pos=(rim_x + p["grab_insert_depth"], y, insert_z))
-        hand.move(p["raise_time"], pos=(rim_x + p["grab_insert_depth"], y, raise_z))
+        hand.move(p["raise_time"], pos=(rim_x + p["grab_insert_depth"], y, raise_z), index=index_frac)
         self._mark(hand.time, "close")
-        hand.move(p["close_time"], thumb=p["grab_thumb_fraction"] if thumb is None else thumb)
+        # curl the index further as the thumb closes: a firm index hook keeps a
+        # soft pad from sliding off backward during the lift
+        hand.move(
+            p["close_time"],
+            thumb=p["grab_thumb_fraction"] if thumb is None else thumb,
+            index=index_frac,
+        )
         hand.wait(p["dwell_time"])
+
+    def _grab_sponge(self, hand: _HandCursor, sponge_size) -> None:
+        """Physically pinch the sponge pad's -x edge and lift it. The curled
+        index slides under the overhanging edge and the thumb clamps on top."""
+        p = self.params
+        hand.wait_until(p["settle_time"] + p["approach_time"] + p["descend_time"])
+        sponge_bottom = p["table_top_z"] + p["sponge_particle_radius"]
+        sponge_rim_x = p["sponge_x"] - 0.5 * sponge_size[0]
+        self._grab_rim(
+            hand,
+            sponge_rim_x,
+            p["sponge_y"],
+            sponge_bottom,
+            insert_dz=p["sponge_insert_hand_dz"],
+            raise_dz=p["sponge_raise_hand_dz"],
+            thumb=p["sponge_thumb_fraction"],
+            index=p["sponge_index_fraction"],
+        )
+        lift_z = sponge_bottom + p["sponge_raise_hand_dz"] + p["carry_lift"] + 0.03
+        pinch_x = sponge_rim_x + p["grab_insert_depth"]
+        # lift slowly (2x) so inertia does not flick the pad off the fingers
+        hand.move(2.0 * p["lift_time"], pos=(pinch_x, p["sponge_y"], lift_z))
+        # hold the sponge up briefly so the grip can be inspected
+        hand.move(p["sponge_hold_time"], pos=(pinch_x, p["sponge_y"], lift_z))
 
     def _release_and_retract(self, hand: _HandCursor, retreat_pos):
         """Open the whole hand at once so the object drops the last few cm and
@@ -778,6 +831,15 @@ class Example:
         right.wait(p["settle_time"])
         left.wait(p["settle_time"])
 
+        if p.get("sponge_only", False):
+            # isolated sponge-grip test: only the left hand grabs + lifts + holds
+            # the sponge; the right hand and plates are untouched.
+            self._grab_sponge(left, sponge_size)
+            self._mark(left.time, "done")
+            self._phase_marks.sort(key=lambda mark: mark[0])
+            self.total_time = left.time + 0.6
+            return
+
         wash_count = p["wash_count"]
         clean_count = 0
         for k in range(wash_count):
@@ -802,25 +864,8 @@ class Example:
             plate_ready_time = right.time
 
             if k == 0:
-                # fetch the sponge while the right hand carries the first plate;
-                # the pad reuses the plate edge-pinch primitive (physical grip)
-                left.wait_until(p["settle_time"] + p["approach_time"] + p["descend_time"])
-                sponge_bottom = p["table_top_z"] + p["sponge_particle_radius"]
-                sponge_rim_x = p["sponge_x"] - 0.5 * sponge_size[0]
-                self._grab_rim(
-                    left,
-                    sponge_rim_x,
-                    p["sponge_y"],
-                    sponge_bottom,
-                    insert_dz=p["sponge_insert_hand_dz"],
-                    raise_dz=p["sponge_raise_hand_dz"],
-                    thumb=p["sponge_thumb_fraction"],
-                )
-                lift_z = sponge_bottom + p["sponge_raise_hand_dz"] + p["carry_lift"] + 0.03
-                # lift slowly (2x) so inertia does not flick the pad off the fingers
-                left.move(2.0 * p["lift_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], lift_z))
-                # hold the sponge up briefly so the grip can be inspected
-                left.move(p["sponge_hold_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], lift_z))
+                # fetch the sponge while the right hand carries the first plate
+                self._grab_sponge(left, sponge_size)
 
             # rub: flat ellipses grazing the top of the airborne plate. The plate
             # centre rides ~ wash_hold_z + (plate_half_height - grab_raise_hand_dz)
