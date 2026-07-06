@@ -56,7 +56,7 @@ LAYOUT_JSON = os.path.join(ASSET, "trash_bag_layout.json")
 
 PARAMS = {
     # --- apples (rigid spheres) ---
-    "enable_apples": False,  # set False to drop no rigid spheres (bag/can only)
+    "enable_apples": True,  # set False to drop no rigid spheres (bag/can only)
     "num_apples": 5,
     "apple_radius": 0.034,
     "apple_margin": 0.005,
@@ -98,12 +98,12 @@ PARAMS = {
     "closure_kd": 1.0e-3,
     "closure_rest_length": 0.0,
     # --- contacts ---
-    "soft_contact_ke": 1.0e5,
+    "soft_contact_ke": 2.0e5,
     "soft_contact_kd": 1.0e1,
     "soft_contact_mu": 0.3,
     "soft_contact_creation_margin": 0.012,
-    "particle_self_contact_radius": 0.004,
-    "particle_self_contact_margin": 0.008,
+    "particle_self_contact_radius": 0.003,
+    "particle_self_contact_margin": 0.006,
     "rigid_body_particle_contact_buffer_size": 16384,
     "rigid_body_contact_buffer_size": 1024,
     "rigid_contact_hard": True,
@@ -488,7 +488,8 @@ def build_model(builder, params, seed):
 
 
 def setup_sim(builder, info, params):
-    model = builder.finalize(enable_water_tight_rigid_soft_contact=params["enable_water_tight"])
+    builder.enable_rigid_mesh_sdfs()
+    model = builder.finalize()
     model.soft_contact_ke = params["soft_contact_ke"]
     model.soft_contact_kd = params["soft_contact_kd"]
     model.soft_contact_mu = params["soft_contact_mu"]

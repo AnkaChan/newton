@@ -56,9 +56,9 @@ DEFAULTS = {
     "bottom_ds": 0.014,  # bottom-cap ring spacing (O-grid); ~matches perimeter ds
     "n_z": 40,  # vertical wall divisions (rows = n_z+1, plus fold-base row)
     "n_flap": 3,  # vertical flap divisions
-    "ds_rope": 0.003,  # centerline segment length for the in-tunnel drawstring runs (handles resample themselves)
+    "ds_rope": 0.004,  # centerline segment length for the in-tunnel drawstring runs (handles resample themselves)
     "rope_width": 0.008,  # width of the single-layer cloth drawstring ribbon
-    "rope_n_width": 3,  # segments across the ribbon width
+    "rope_n_width": 2,  # segments across the ribbon width
     "rope_z_frac": 0.45,  # rope sits at z = H - rope_z_frac*h_hem (inside the channel)
     "rope_offset": 0.006,  # rope follows the bag contour, offset this far OUTWARD (no penetration)
     "handle_gap": 0.05,  # exposed handle gap at each side middle; tunnels cover the rest (incl. corners)
