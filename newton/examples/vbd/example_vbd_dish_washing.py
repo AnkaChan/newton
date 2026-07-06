@@ -85,6 +85,9 @@ PARAMS = {
     # good margin inside the front edge
     "clean_x": -0.11,
     "clean_y": 0.12,
+    # washed plates are placed side by side (not stacked — dropping a thin plate
+    # onto another spikes the AVBD contact); this is the y-pitch between them
+    "clean_side_offset": 0.14,
     # sponge: a flat soft FEM pad the same thickness as the plate rim, so the
     # calibrated edge-pinch that lifts a plate also grips the sponge (a thick
     # foam cube squirts out of the H1 pinch; a pad is caught at its edge like
@@ -873,18 +876,20 @@ class Example:
             left.move(p["carry_time"], pos=(-0.32, 0.10, p["table_top_z"] + 0.17))
 
             # the right hand still holds the plate: lift it straight up and carry
-            # it to the clean pile (no re-grasp needed)
+            # it to the clean spot (no re-grasp needed). Washed plates go side by
+            # side, not stacked — dropping a thin plate onto another spikes the
+            # AVBD contact between the two and blows up the solve.
             right.wait_until(left.time - p["carry_time"] - p["lift_time"])
             self._mark(right.time, "carry_to_clean")
-            clean_z_bottom = p["table_top_z"] + clean_count * plate_h
-            carry_z = p["table_top_z"] + p["grab_raise_hand_dz"] + p["carry_lift"] + clean_count * plate_h
+            carry_z = p["table_top_z"] + p["grab_raise_hand_dz"] + p["carry_lift"]
+            clean_y = p["clean_y"] - clean_count * p["clean_side_offset"]
             right.move(p["lift_time"], pos=(wash_pinch[0], p["wash_y"], carry_z))
             clean_pinch_x = p["clean_x"] + pinch_dx
             # carry slowly to the clean spot so the plate does not swing/overshoot
-            right.move(2.0 * p["carry_time"], pos=(clean_pinch_x, p["clean_y"], carry_z))
-            # lower to a few cm above the pile and settle, then drop the plate
-            drop_pinch_z = clean_z_bottom + p["grab_raise_hand_dz"] + p["release_gap"]
-            right.move(p["carry_time"], pos=(clean_pinch_x, p["clean_y"], drop_pinch_z))
+            right.move(2.0 * p["carry_time"], pos=(clean_pinch_x, clean_y, carry_z))
+            # lower to a few cm above the table and settle, then drop the plate
+            drop_pinch_z = p["table_top_z"] + p["grab_raise_hand_dz"] + p["release_gap"]
+            right.move(p["carry_time"], pos=(clean_pinch_x, clean_y, drop_pinch_z))
             right.wait(p["place_dwell"])
             self._release_and_retract(right, p["rest_right"])
             clean_count += 1
@@ -1157,14 +1162,15 @@ class Example:
         assert np.all(np.isfinite(particle_q)), "Sponge state contains non-finite values"
         assert np.all(np.isfinite(body_q)), "Rigid state contains non-finite values"
 
-        # washed plates are stacked on the clean spot
+        # washed plates rest side by side on the clean side of the table
+        expected_z = p["table_top_z"] + p["plate_half_height"]
         for k in range(p["wash_count"]):
             level = p["plate_count"] - 1 - k
             pos = body_q[self.plate_bodies[level], :3]
-            xy_err = float(np.linalg.norm(pos[:2] - (p["clean_x"], p["clean_y"])))
-            assert xy_err < 0.09, f"Washed plate {k} is {xy_err:.3f} m from the clean spot"
-            expected_z = p["table_top_z"] + (2 * k + 1) * p["plate_half_height"]
-            assert abs(pos[2] - expected_z) < 0.04, f"Washed plate {k} is not resting on the clean pile: z={pos[2]:.3f}"
+            clean_spot = (p["clean_x"], p["clean_y"] - k * p["clean_side_offset"])
+            xy_err = float(np.linalg.norm(pos[:2] - clean_spot))
+            assert xy_err < 0.09, f"Washed plate {k} is {xy_err:.3f} m from its clean spot"
+            assert abs(pos[2] - expected_z) < 0.03, f"Washed plate {k} is not resting on the table: z={pos[2]:.3f}"
         # unwashed plates never left their starting spot
         for level in range(p["plate_count"] - p["wash_count"]):
             pos = body_q[self.plate_bodies[level], :3]
