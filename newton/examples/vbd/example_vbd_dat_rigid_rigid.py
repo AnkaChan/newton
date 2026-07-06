@@ -37,20 +37,25 @@ PARAMS = {
     # rigid DAT penetration-free truncation (the feature under demonstration)
     "enable_dat": True,
     # rigid contact detection gap = DAT query margin: contacts and division planes
-    # appear at this separation, and per-substep body motion is capped accordingly
-    "rigid_gap": 0.08,
-    # penalty-force shell outside the geometric surface
-    "shape_margin": 0.01,
+    # appear at this separation, and per-substep body motion is capped at
+    # 0.5 * relaxation * gap — it must exceed the fastest per-substep body motion
+    # (|dx| + |omega| * bounding_radius), or DAT drains the body's momentum
+    "rigid_gap": 0.12,
+    # penalty-force shell outside the geometric surface. Contact stiffness must stop a
+    # body within this shell (stopping distance ~ v * sqrt(m / ke) < margin), otherwise
+    # bodies reach the geometric surface and DAT freezes them there (momentum drain)
+    "shape_margin": 0.02,
+    "shape_ke": 1.0e6,
     # box pyramid
     "box_half": 0.15,
     "box_mass": 1.0,
     "pyramid_rows": 3,
     # projectile
     "sphere_radius": 0.25,
-    "sphere_mass": 20.0,
+    "sphere_mass": 10.0,
     "sphere_start": (-3.0, 0.0, 0.3),
     "sphere_velocity": (7.0, 0.0, 0.5),
-    "sphere_spin": (0.0, -10.0, 0.0),
+    "sphere_spin": (0.0, -6.0, 0.0),
     # camera (fixed side view)
     "camera_pos": (1.2, -3.6, 1.1),
     "camera_pitch": -9.0,
@@ -73,6 +78,7 @@ class Example:
         builder = newton.ModelBuilder()  # Z up, gravity -Z
         builder.rigid_gap = p["rigid_gap"]
         builder.default_shape_cfg.margin = p["shape_margin"]
+        builder.default_shape_cfg.ke = p["shape_ke"]
         builder.add_ground_plane()
 
         self._boxes = []
@@ -113,6 +119,8 @@ class Example:
 
         self.max_ground_penetration = 0.0
         self.max_sphere_penetration = 0.0
+        self.max_sphere_x = float(self.state_0.body_q.numpy()[self._sphere][0])
+        self._top_box_start = self.state_0.body_q.numpy()[self._boxes[-1]][:3].copy()
 
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "set_camera"):
@@ -203,6 +211,7 @@ class Example:
         ground_pen, sphere_pen = self._penetrations()
         self.max_ground_penetration = max(self.max_ground_penetration, ground_pen)
         self.max_sphere_penetration = max(self.max_sphere_penetration, sphere_pen)
+        self.max_sphere_x = max(self.max_sphere_x, float(self.state_0.body_q.numpy()[self._sphere][0]))
 
     def test_final(self):
         body_q = self.state_0.body_q.numpy()
@@ -212,6 +221,13 @@ class Example:
             raise AssertionError(f"a body sank {self.max_ground_penetration:.6f} m into the ground")
         if self.max_sphere_penetration > 1.0e-3:
             raise AssertionError(f"a box corner entered the sphere by {self.max_sphere_penetration:.6f} m")
+        # Guard against the DAT motion cap silently draining the projectile's momentum:
+        # the sphere must actually reach the pyramid and scatter it.
+        if self.max_sphere_x < -1.0:
+            raise AssertionError(f"projectile stalled at x={self.max_sphere_x:.3f}; it never reached the pyramid")
+        top_box_disp = float(np.linalg.norm(body_q[self._boxes[-1]][:3] - self._top_box_start))
+        if top_box_disp < 0.2:
+            raise AssertionError("the pyramid was not scattered by the impact")
 
     @staticmethod
     def create_parser():
