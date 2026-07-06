@@ -34,8 +34,11 @@ PARAMS.update(
         # wash every plate in the pile
         "plate_count": 3,
         "wash_count": 3,
+        # staircase pile so every plate overhangs the edge when it becomes the
+        # top and is directly graspable (no fragile drag-to-edge step)
+        "pile_stagger": 0.012,
         # a full run through the pile is much longer
-        "num_frames": 2600,
+        "num_frames": 2900,
     }
 )
 

@@ -69,6 +69,11 @@ PARAMS = {
     "dirty_pile_x": -0.138,
     "dirty_pile_y": -0.24,
     "grab_overhang_x": -0.173,
+    # staircase pile: shift each lower plate this far toward the table interior
+    # so every plate overhangs the edge when it becomes the top and is directly
+    # graspable (0 = flush pile with only the top overhanging, for the 1-dish
+    # example; the all-dishes example sets this > 0)
+    "pile_stagger": 0.0,
     # washing spot: also at the front edge (the rim overhang is what makes
     # the plate re-graspable after the rub)
     "wash_x": -0.173,
@@ -164,11 +169,6 @@ PARAMS = {
     # hand mid-air, rather than extracting the index from under a placed plate,
     # which drags/tips it)
     "release_gap": 0.028,
-    # drag primitive (script 2): press curled fingertips onto the top plate
-    # and slide it toward the table edge until the rim overhangs
-    "drag_press_hand_dz": 0.025,
-    "drag_hand_dx": -0.020,
-    "drag_slip_allowance": 0.012,
     # rub trajectory: the sponge is pinch-held at its -x edge, so the pinch
     # stays behind the plate rim (the index must never cross above it) and
     # the sponge body scrubs the near half of the plate in flat ellipses
@@ -194,7 +194,6 @@ PARAMS = {
     "lower_time": 0.5,
     "release_time": 0.35,
     "retract_time": 0.55,
-    "drag_time": 0.7,
     # settle time after lowering a plate onto the pile before opening the grip
     "place_dwell": 0.45,
     # AVBD joint drives; Newton IK only generates their targets
@@ -522,9 +521,15 @@ def _add_plates(builder: newton.ModelBuilder, params: dict) -> tuple[list[int], 
     plate_shapes = []
     count = params["plate_count"]
     colors = params["plate_colors"]
+    stagger = params["pile_stagger"]
     for level in range(count):
-        # flush pile, except the top plate which already overhangs the edge
-        x = params["grab_overhang_x"] if level == count - 1 else params["dirty_pile_x"]
+        if stagger > 0.0:
+            # staircase: the top plate overhangs most, each lower one a bit less,
+            # so whichever plate is currently on top overhangs and is graspable
+            x = params["grab_overhang_x"] + (count - 1 - level) * stagger
+        else:
+            # flush pile, only the top plate overhangs the edge
+            x = params["grab_overhang_x"] if level == count - 1 else params["dirty_pile_x"]
         z = params["table_top_z"] + (2 * level + 1) * params["plate_half_height"]
         body = builder.add_body(xform=wp.transform(wp.vec3(x, params["dirty_pile_y"], z), wp.quat_identity()))
         plate_shapes.append(
@@ -787,25 +792,10 @@ class Example:
         for k in range(wash_count):
             top_level = pile_count - 1
             plate_bottom = self._plate_pile_z(top_level) - p["plate_half_height"]
-            grab_rim_x = p["grab_overhang_x"] - plate_r
-
-            if k > 0:
-                # The new top plate sits flush in the pile: press the curled
-                # fingertips onto it and drag it out until its rim overhangs.
-                self._mark(right.time, "drag")
-                press_x = p["dirty_pile_x"] + p["drag_hand_dx"]
-                press_z = plate_bottom + plate_h + p["drag_press_hand_dz"]
-                right.move(
-                    p["approach_time"],
-                    pos=(press_x, pile_y, press_z + 0.09),
-                    index=p["grab_index_fraction"],
-                    thumb=0.25,
-                    other=0.9,
-                )
-                right.move(p["descend_time"], pos=(press_x, pile_y, press_z))
-                drag = p["dirty_pile_x"] - p["grab_overhang_x"] + p["drag_slip_allowance"]
-                right.move(p["drag_time"], pos=(press_x - drag, pile_y, press_z))
-                right.move(p["lift_time"], pos=(press_x - drag, pile_y, press_z + 0.09), thumb=0.0)
+            # in a staircase pile the current top plate sits k steps in from the
+            # most-overhanging start, so its rim is staggered inward accordingly
+            top_plate_x = p["grab_overhang_x"] + k * p["pile_stagger"]
+            grab_rim_x = top_plate_x - plate_r
 
             # grab the top plate off the pile
             self._grab_rim(right, grab_rim_x, pile_y, plate_bottom)
