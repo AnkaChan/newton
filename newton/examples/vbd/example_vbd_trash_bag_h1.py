@@ -18,14 +18,20 @@
 #     out of the four side holes) are rotated to +y / -y so they face the
 #     H1's left / right hands
 #
-# The handles are pinned from the start (the bag settles around them, as
-# in the base example's pin+cinch mode).  The H1 approaches, hooks its
-# curled fingers through both handle loops, and on grasp each handle is
-# re-parented from its world pin to the corresponding hand body, so the
-# hands kinematically carry the handles.  The arms then pull the handles
-# UP and APART -- the nearly inextensible rope loop collapses and gathers
-# the bag mouth shut (the cinch of the base example) -- and finally lift
-# and carry the bag up and out of the can.
+# The handles -- and the bag hem patches around the side holes they exit
+# through, which is where a grabbed trash bag actually carries its load --
+# are pinned from the start (the bag settles around them, as in the base
+# example's pin+cinch mode).  The H1 approaches, hooks its curled fingers
+# through both handle loops, and on grasp the pinned vertices are
+# re-parented from their world pins to the corresponding hand bodies, so
+# the hands kinematically carry the handles.  The arms then pull the
+# handles UP and APART -- the nearly inextensible rope loop collapses and
+# gathers the bag mouth (the cinch of the base example) -- then lift the
+# bag and drag it out over the can rim toward the robot.
+#
+# The H1 itself is kinematic (zero inverse mass): Newton IK tracks the
+# task-space waypoints and eval_fk drives the body transforms directly,
+# as in example_vbd_bag_franka_pickup_kinematic.py.
 #
 # Commands:
 #   python newton/examples/vbd/example_vbd_trash_bag_h1.py
@@ -61,33 +67,37 @@ LAYOUT_JSON = os.path.join(ASSET, "trash_bag_layout.json")
 PARAMS = {
     # --- simulation ---
     "fps": 60,
-    "sim_substeps": 12,
-    "solver_iterations": 10,
+    "sim_substeps": 16,
+    "solver_iterations": 12,
     "gravity": -9.81,
     # --- scene layout ---
+    # H1 shoulders sit at z=1.54 with a ~0.6 m comfortable pinch reach, so the
+    # pedestal raises the handles (bag base + 0.41) to z=1.21: 0.48 m ahead of
+    # and 0.33 m below the shoulders.
     "bag_center_x": -0.22,  # bag/can/pedestal center
-    "pedestal_top_z": 0.60,  # bag base height (pedestal surface + can floor)
+    "pedestal_top_z": 0.80,  # bag base height (pedestal surface + can floor)
     "pedestal_half_x": 0.17,
     "pedestal_half_y": 0.17,
-    "robot_base_x": -0.90,  # H1 pelvis x (fixed base)
+    "robot_base_x": -0.70,  # H1 pelvis x (fixed base)
     # --- task-space trajectory (seconds) ---
     "settle_time": 2.0,  # bag expands into the can, trash drops in
     "approach_time": 1.0,  # hands travel from rest to above the handles
     "descend_time": 0.8,  # hands descend so fingers thread the handle loops
     "close_time": 0.6,  # thumbs/indexes curl shut; handles attach at the end
-    "cinch_time": 1.5,  # pull up + apart: rope gathers the bag mouth shut
-    "lift_time": 1.2,  # raise the bag out of the can
-    "carry_time": 1.0,  # carry toward the robot, clear of the can
+    "cinch_time": 1.8,  # pull up + apart: rope gathers the bag mouth shut
+    "lift_time": 1.5,  # raise the bag out of the can
+    "carry_time": 1.2,  # carry toward the robot, clear of the can
     "hold_time": 1.0,
     # --- grasp geometry ---
     "hover_height": 0.12,  # hover this far above the handle before descending
     "grasp_z_offset": 0.01,  # pinch point height relative to the handle centroid
+    "hole_patch_radius": 0.05,  # bag hem within this range of a handle is held with it
     "cinch_up": 0.26,  # how far the handles rise during the cinch [m]
-    "cinch_apart": 0.13,  # how far each handle pulls outward in y [m]
-    "lift_up": 0.24,  # additional rise during the lift [m]
+    "cinch_apart": 0.10,  # how far each handle pulls outward in y [m]
+    "lift_up": 0.16,  # additional rise during the lift [m]
     "lift_back": 0.10,  # pull toward the robot during the lift [m]
-    "carry_back": 0.14,  # additional pull toward the robot during the carry [m]
-    "carry_drop": 0.05,  # settle down slightly while carrying [m]
+    "carry_back": 0.08,  # additional pull toward the robot: the bag drags out over the rim [m]
+    "carry_drop": 0.0,  # keep height while carrying [m]
     # --- rest pose of the hands ---
     "rest_offset_x": 0.30,  # ahead of the robot base
     "rest_y": 0.32,
@@ -97,8 +107,8 @@ PARAMS = {
     "trash_radius": 0.034,
     "trash_margin": 0.005,
     "trash_density": 1000.0,
-    "trash_ke": 5.0e5,
-    "trash_kd": 5.0e1,
+    "trash_ke": 1.0e5,
+    "trash_kd": 1.0e2,
     "trash_mu": 0.5,
     # --- round trash can (as in example_vbd_trash_bag.py, translated) ---
     "can_bottom_radius": 0.12,
@@ -122,6 +132,10 @@ PARAMS = {
     "cloth_edge_ke": 0.2,
     "cloth_edge_kd": 0.1,
     # --- rope cloth (the tie): stiff so pulling collapses the loop ---
+    # The bag rest is oversized 1.5x for the floppy billowed look, but the rope
+    # rest stays nearly tight: the bag only expands ~2% into the can, and a
+    # slack drawstring would dump long loops out of the tunnels when lifted.
+    "rope_rest_scale": 1.12,
     "rope_density": 0.008,
     "rope_tri_ke": 2.0e5,
     "rope_tri_ka": 2.0e5,
@@ -138,7 +152,7 @@ PARAMS = {
     "soft_contact_creation_margin": 0.012,
     "particle_self_contact_radius": 0.004,
     "particle_self_contact_margin": 0.008,
-    "rigid_body_particle_contact_buffer_size": 16384,
+    "rigid_body_particle_contact_buffer_size": 49152,
     "rigid_body_contact_buffer_size": 1024,
     "enable_water_tight": True,
     "rigid_contact_gap": 0.001,
@@ -159,7 +173,6 @@ PARAMS = {
     "torso_drive_kd": 2.0e3,
     "finger_drive_ke": 4.0e4,
     "finger_drive_kd": 1.0e2,
-    "joint_target_velocity_limit": 40.0,
     "torso_ik_position_weight": 50.0,
     "torso_ik_rotation_weight": 50.0,
     # finger curl fractions
@@ -170,8 +183,8 @@ PARAMS = {
     # --- presentation ---
     "bag_color": (0.16, 0.42, 0.19),  # green plastic
     "rope_color": (0.82, 0.15, 0.12),  # red drawstring
-    "camera_pos": (1.05, -1.90, 1.45),
-    "camera_target": (-0.30, 0.0, 0.85),
+    "camera_pos": (1.05, -1.90, 1.55),
+    "camera_target": (-0.30, 0.0, 1.05),
     "camera_fov": 45.0,
     "seed": 42,
 }
@@ -224,26 +237,6 @@ def set_finger_targets(
     elif group == _FINGER_GROUP_RIGHT_INDEX:
         fraction = right_index_fraction
     joint_q[finger_indices[i]] = fraction * closed_values[i]
-
-
-@wp.kernel
-def update_control_targets(
-    desired_q: wp.array[float],
-    previous_q: wp.array[float],
-    inv_dt: float,
-    velocity_limit: float,
-    target_q: wp.array[float],
-    target_qd: wp.array[float],
-):
-    i = wp.tid()
-    q_prev = previous_q[i]
-    max_delta = velocity_limit / inv_dt
-    delta = wp.clamp(desired_q[i] - q_prev, -max_delta, max_delta)
-    q = q_prev + delta
-    qd = delta * inv_dt
-    target_q[i] = q
-    target_qd[i] = qd
-    previous_q[i] = q
 
 
 @wp.kernel
@@ -493,6 +486,7 @@ def _add_h1(builder: newton.ModelBuilder, params: dict):
         "right_hand": "right_hand_link",
     }
     body_indices = {name: _find_suffix(builder.body_label, suffix) for name, suffix in body_names.items()}
+    body_indices["robot_body_count"] = robot_body_end - robot_body_start
 
     # Rigid colliders stay active for AVBD rigid contact and for cloth contact,
     # EXCEPT the hand/finger colliders: the handles they hold are kinematically
@@ -612,7 +606,7 @@ def _add_bag_and_rope(builder: newton.ModelBuilder, params: dict):
     builder.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 0.0),
         rot=wp.quat_identity(),
-        scale=params["bag_rest_scale"],
+        scale=params["rope_rest_scale"],
         vel=wp.vec3(0.0, 0.0, 0.0),
         vertices=rope_verts.tolist(),
         indices=rope_faces,
@@ -653,6 +647,17 @@ def _add_bag_and_rope(builder: newton.ModelBuilder, params: dict):
     left_centroid = rope_init_world[hv["left"]].mean(axis=0)
     right_centroid = rope_init_world[hv["right"]].mean(axis=0)
 
+    # Bag hem patches around the side holes each handle exits through.  The
+    # hands hold these together with the rope handles: a grabbed trash bag
+    # carries its weight through the hole rims, not through the free
+    # drawstring (whose thin ribbon would otherwise stretch under the full
+    # bag load faster than VBD can converge).
+    radius = params["hole_patch_radius"]
+    left_patch = np.where(np.linalg.norm(bag_init_world - left_centroid, axis=1) < radius)[0]
+    right_patch = np.where(np.linalg.norm(bag_init_world - right_centroid, axis=1) < radius)[0]
+    left_patch_idx = (left_patch + bag_start).astype(np.int32)
+    right_patch_idx = (right_patch + bag_start).astype(np.int32)
+
     return {
         "bag_start": bag_start,
         "bag_count": len(bag_verts),
@@ -662,6 +667,8 @@ def _add_bag_and_rope(builder: newton.ModelBuilder, params: dict):
         "rope_faces": rope_faces_array,
         "left_idx": left_idx,
         "right_idx": right_idx,
+        "left_patch_idx": left_patch_idx,
+        "right_patch_idx": right_patch_idx,
         "left_centroid": left_centroid,
         "right_centroid": right_centroid,
         "tunnel_spring_pairs": tunnel_spring_pairs,
@@ -700,7 +707,7 @@ def _add_trash(builder: newton.ModelBuilder, bag_info: dict, params: dict, seed:
         rr = rad_in * math.sqrt((i + 0.5) / n)
         px = float(center[0] + rr * math.cos(ang) + rng.uniform(-0.004, 0.004))
         py = float(center[1] + rr * math.sin(ang) + rng.uniform(-0.004, 0.004))
-        pz = float(center[2] + r + 0.05 + i * 0.07)
+        pz = float(center[2] + r + 0.03 + i * 0.06)
         body = builder.add_body(xform=wp.transform(wp.vec3(px, py, pz), wp.quat_identity()), label=f"trash_{i}")
         body_indices.append(body)
         builder.add_shape_sphere(body, radius=r, cfg=cfg, color=colors[i % len(colors)])
@@ -719,6 +726,7 @@ class Example:
         self.frame = 0
         self.phase = "settle"
         self.attached = False
+        self._ik_debug_state = None
 
         seed = getattr(args, "seed", self.params["seed"])
         builder = newton.ModelBuilder(gravity=self.params["gravity"])
@@ -747,9 +755,22 @@ class Example:
         self.model.soft_contact_mu = self.params["soft_contact_mu"]
         self.device = self.model.device
 
-        # --- pinned drawstring handles: inactive particles, kinematically driven ---
-        left_idx = self.bag_info["left_idx"]
-        right_idx = self.bag_info["right_idx"]
+        # The H1 is kinematic: zero inverse mass/inertia, body_q driven directly
+        # from the per-frame IK solution via eval_fk (as in
+        # example_vbd_bag_franka_pickup_kinematic.py).  The trash spheres stay
+        # dynamic; robot-cloth coupling is one-way (robot pushes cloth).
+        self.robot_body_count = self.robot_bodies["robot_body_count"]
+        inv_mass = self.model.body_inv_mass.numpy()
+        inv_inertia = self.model.body_inv_inertia.numpy()
+        inv_mass[: self.robot_body_count] = 0.0
+        inv_inertia[: self.robot_body_count] = 0.0
+        self.model.body_inv_mass = wp.array(inv_mass, dtype=float, device=self.device)
+        self.model.body_inv_inertia = wp.array(inv_inertia, dtype=wp.mat33, device=self.device)
+
+        # --- pinned drawstring handles + bag hole patches: inactive particles,
+        # kinematically driven (world pins before the grasp, hand frames after) ---
+        left_idx = np.concatenate([self.bag_info["left_idx"], self.bag_info["left_patch_idx"]])
+        right_idx = np.concatenate([self.bag_info["right_idx"], self.bag_info["right_patch_idx"]])
         handle_idx = np.concatenate([left_idx, right_idx])
         flags = self.model.particle_flags.numpy()
         for vi in handle_idx:
@@ -772,6 +793,7 @@ class Example:
         )
         self.handle_hand_body = wp.array(handle_hand, dtype=wp.int32, device=self.device)
         self._handle_idx_np = handle_idx
+        self._left_driven_count = len(left_idx)
 
         vertex_filter, edge_filter = _build_tunnel_seam_contact_filters(
             self.model, self.bag_info["tunnel_spring_pairs"]
@@ -848,6 +870,16 @@ class Example:
             self._phase_ends[name] = t
         self.total_time = t
 
+        # Seed the arms in a natural elbows-down pose so the initial IK solve
+        # converges to the human-like branch instead of an elbows-up one.
+        q = self.model.joint_q.numpy()
+        q_starts = self.model.joint_q_start.numpy()
+        for side in ("left", "right"):
+            for name, value in (("shoulder_pitch_joint", 0.6), ("elbow_joint", 0.9)):
+                joint = _find_suffix(self.model.joint_label, f"{side}_{name}")
+                q[q_starts[joint]] = value
+        self.model.joint_q.assign(q)
+
         self._setup_ik()
         self._solve_ik(
             self.rest_positions,
@@ -856,7 +888,7 @@ class Example:
             left_index_fraction=0.0,
             right_index_fraction=0.0,
             other_fraction=0.0,
-            iterations=48,
+            iterations=96,
         )
         self.model.joint_q.assign(self.ik_joint_q_flat)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
@@ -867,9 +899,12 @@ class Example:
         self.contacts = self.collision_pipeline.contacts()
         wp.copy(self.state_1.body_q, self.state_0.body_q)
         wp.copy(self.state_1.body_qd, self.state_0.body_qd)
-        wp.copy(self.control.joint_target_q, self.model.joint_q, count=self.robot_coord_count)
-        self.control.joint_target_qd.zero_()
-        self.previous_joint_targets = wp.clone(self.model.joint_q[: self.robot_coord_count])
+
+        # kinematic robot driving: FK scratch state + previous body transforms
+        self._fk_state = self.model.state()
+        self._fk_joint_qd = wp.zeros(self.model.joint_dof_count, dtype=float, device=self.device)
+        self._prev_fk_body_q = self.state_0.body_q.numpy()[: self.robot_body_count].copy()
+        self._robot_body_com = self.model.body_com.numpy()[: self.robot_body_count].copy()
 
         # combined mesh index buffers for per-frame colored rendering
         bag_start = self.bag_info["bag_start"]
@@ -1122,23 +1157,60 @@ class Example:
             right_index_fraction=index,
             other_fraction=other,
         )
-        wp.launch(
-            update_control_targets,
-            dim=self.robot_coord_count,
-            inputs=[
-                self.ik_joint_q_flat,
-                self.previous_joint_targets,
-                1.0 / self.frame_dt,
-                self.params["joint_target_velocity_limit"],
+        self._drive_robot_kinematic()
+
+    def _drive_robot_kinematic(self):
+        """FK the IK joint solution into the robot body transforms and twists.
+
+        Body twists ([v_com, omega], world frame) are finite-differenced from
+        the FK transforms: the joint coordinate and DOF counts differ for the
+        H1, so per-joint velocity mapping would be more work for no gain.
+        """
+        newton.eval_fk(self.model, self.ik_joint_q_flat, self._fk_joint_qd, self._fk_state)
+
+        n = self.robot_body_count
+        dt = self.frame_dt
+        fk_body_q = self._fk_state.body_q.numpy()[:n]
+        pos_new, quat_new = fk_body_q[:, :3], fk_body_q[:, 3:7]
+        pos_old, quat_old = self._prev_fk_body_q[:, :3], self._prev_fk_body_q[:, 3:7]
+
+        # omega from the relative quaternion q_rel = q_new * conj(q_old)
+        x1, y1, z1, w1 = quat_new.T
+        x2, y2, z2, w2 = (quat_old * np.array([-1.0, -1.0, -1.0, 1.0])).T
+        q_rel = np.stack(
+            [
+                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
             ],
-            outputs=[self.control.joint_target_q, self.control.joint_target_qd],
+            axis=1,
         )
+        omega = (2.0 / dt) * q_rel[:, :3] * np.sign(q_rel[:, 3:4])
+
+        # linear velocity of the COM
+        def rotate(quat, vec):
+            t = 2.0 * np.cross(quat[:, :3], vec)
+            return vec + quat[:, 3:4] * t + np.cross(quat[:, :3], t)
+
+        com = self._robot_body_com
+        v_com = ((pos_new + rotate(quat_new, com)) - (pos_old + rotate(quat_old, com))) / dt
+
+        self._prev_fk_body_q = fk_body_q.copy()
+        for state in (self.state_0, self.state_1):
+            body_q = state.body_q.numpy()
+            body_qd = state.body_qd.numpy()
+            body_q[:n] = fk_body_q
+            body_qd[:n, :3] = v_com
+            body_qd[:n, 3:] = omega
+            state.body_q.assign(body_q)
+            state.body_qd.assign(body_qd)
 
     def _attach_handles(self):
         """Re-parent both pinned handles from their world pins to the hand bodies."""
         body_q = self.state_0.body_q.numpy()
         pinned = self.handle_pinned_positions.numpy()
-        left_count = len(self.bag_info["left_idx"])
+        left_count = self._left_driven_count
         locals_np = np.empty_like(pinned)
         for hand_slot, (start, count) in enumerate(((0, left_count), (left_count, len(pinned) - left_count))):
             hand_tf = wp.transform(*body_q[self.hand_bodies[hand_slot]])
@@ -1147,7 +1219,16 @@ class Example:
                 locals_np[k] = wp.transform_point(inv_tf, wp.vec3(*pinned[k]))
         self.handle_local_positions.assign(locals_np)
         self.attached = True
-        print(f"[trash_bag_h1] handles attached to hands at t={self.sim_time:.2f}s")
+        errors = []
+        for hand_slot, centroid_key in enumerate(("left_centroid", "right_centroid")):
+            hand_tf = wp.transform(*body_q[self.hand_bodies[hand_slot]])
+            pinch = np.asarray(wp.transform_point(hand_tf, self.hand_offsets[hand_slot]))
+            errors.append(float(np.linalg.norm(pinch - self.bag_info[centroid_key])))
+        print(
+            f"[trash_bag_h1] handles attached at t={self.sim_time:.2f}s  "
+            f"pinch-to-handle error L={errors[0]:.3f}m R={errors[1]:.3f}m",
+            flush=True,
+        )
 
     # -------------------------------------------------------------- sim ---
     def simulate(self):
@@ -1172,11 +1253,30 @@ class Example:
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
+    def _debug_tracking(self):
+        """Print IK convergence vs AVBD tracking errors at the pinch points."""
+        if self._ik_debug_state is None:
+            self._ik_debug_state = self.model.state()
+        newton.eval_fk(self.model, self.ik_joint_q_flat, self.model.joint_qd, self._ik_debug_state)
+        ik_body_q = self._ik_debug_state.body_q.numpy()
+        sim_body_q = self.state_0.body_q.numpy()
+        rows = []
+        for slot, (body, offset) in enumerate(zip(self.hand_bodies, self.hand_offsets, strict=True)):
+            target = self.target_hand_positions[slot]
+            ik_pinch = np.asarray(wp.transform_point(wp.transform(*ik_body_q[body]), offset))
+            sim_pinch = np.asarray(wp.transform_point(wp.transform(*sim_body_q[body]), offset))
+            rows.append(
+                f"ik_err={np.linalg.norm(ik_pinch - target):.3f} sim_err={np.linalg.norm(sim_pinch - target):.3f}"
+            )
+        print(f"[trash_bag_h1] frame {self.frame}  phase {self.phase}  L({rows[0]})  R({rows[1]})", flush=True)
+
     def step(self):
         self._update_trajectory()
         self.simulate()
         self.sim_time += self.frame_dt
         self.frame += 1
+        if self.frame % 30 == 0:
+            self._debug_tracking()
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
