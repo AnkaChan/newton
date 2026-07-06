@@ -759,6 +759,7 @@ class Example:
         seed = getattr(args, "seed", self.params["seed"])
         builder = newton.ModelBuilder(gravity=self.params["gravity"])
         self.robot_bodies, robot_rigid_shapes = _add_h1(builder, self.params)
+        self._robot_rigid_shapes = robot_rigid_shapes
         self.robot_coord_count = builder.joint_coord_count
         _add_pedestal_and_can(builder, self.params)
         self.bag_info = _add_bag_and_rope(builder, self.params)

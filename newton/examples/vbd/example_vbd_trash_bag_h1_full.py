@@ -38,11 +38,14 @@ FULL_PARAMS.update(
     {
         # --- trash starts on a side table at the robot's right ---
         "num_trash": 3,
-        "trash_table_x": -0.45,
-        "trash_table_y": -0.42,
-        "trash_table_top_z": 1.02,
-        "trash_table_half_x": 0.13,
-        "trash_table_half_y": 0.10,
+        # margin 0 like the tablecloth tableware: a 5 mm rigid-contact margin
+        # on a 34 mm sphere resting on a box produces explosive contact kicks
+        "trash_margin": 0.0,
+        "trash_table_x": -0.48,
+        "trash_table_y": -0.36,
+        "trash_table_top_z": 1.10,
+        "trash_table_half_x": 0.11,
+        "trash_table_half_y": 0.09,
         "trash_spacing": 0.07,  # sphere spacing along x on the table
         # --- per-sphere transfer segments (seconds) ---
         "initial_settle_time": 1.2,
@@ -130,7 +133,12 @@ class Example(base.Example):
             pz = top + r + 0.002
             body = builder.add_body(xform=wp.transform(wp.vec3(px, py, pz), wp.quat_identity()), label=f"trash_{i}")
             body_indices.append(body)
-            builder.add_shape_sphere(body, radius=r, cfg=cfg, color=colors[i % len(colors)])
+            shape = builder.add_shape_sphere(body, radius=r, cfg=cfg, color=colors[i % len(colors)])
+            # The spheres are picked and carried kinematically; rigid contact
+            # against the (infinite-mass) robot would only punt them off the
+            # table while the fingers close around them.
+            for robot_shape in self._robot_rigid_shapes:
+                builder.add_shape_collision_filter_pair(robot_shape, shape)
             self.ball_homes.append(np.array([px, py, pz], dtype=np.float32))
         return body_indices
 
@@ -228,7 +236,13 @@ class Example(base.Example):
         ball_tf = wp.transform(*body_q[ball])
         self._ball_local = wp.transform_multiply(wp.transform_inverse(hand_tf), ball_tf)
         self.held_ball = ball
-        print(f"[trash_bag_h1_full] picked sphere (body {ball}) at t={self.sim_time:.2f}s", flush=True)
+        pinch = np.asarray(wp.transform_point(hand_tf, self.hand_offsets[1]))
+        offset = float(np.linalg.norm(pinch - body_q[ball][:3]))
+        print(
+            f"[trash_bag_h1_full] picked sphere (body {ball}) at t={self.sim_time:.2f}s  "
+            f"pinch-to-ball offset {offset:.3f}m",
+            flush=True,
+        )
 
     def _release_ball(self, ball_slot):
         ball = self.held_ball
