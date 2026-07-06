@@ -69,65 +69,72 @@ class ProxyCouplingStrategy(SolverStrategy):
     def post_finalize(self, model, handles):
         self._handles = handles
 
-    def build_solver(self, model, handles, args):
-        self.solver = SolverCoupledProxy(
-            model=model,
-            entries=[
-                SolverCoupled.Entry(
-                    name="mjc",
-                    # IsaacLab MJWarpSolverCfg: defaults + proxy overrides.
-                    solver=lambda v: SolverMuJoCo(
-                        model=v,
-                        solver="newton",
-                        integrator="implicitfast",
-                        cone="elliptic",
-                        impratio=1.0,
-                        tolerance=1.0e-6,
-                        iterations=int(args.mujoco_iterations),
-                        ls_iterations=int(args.mujoco_ls_iterations),
-                        ls_parallel=True,
-                        ccd_iterations=35,
-                        use_mujoco_contacts=True,
-                        njmax=300,
-                        nconmax=None,
-                    ),
-                    bodies=handles.robot_bodies,
-                    joints=handles.robot_joints,
-                    shapes=handles.robot_shapes,
+    def _build_entries_and_coupling(self, model, handles, args):
+        """Assemble the MuJoCo+VBD entries and the proxy coupling config.
+
+        Shared by the proxy and soft-constraint strategies, which differ only in
+        the coupled-solver class they instantiate (see ``build_solver``).
+        """
+        entries = [
+            SolverCoupled.Entry(
+                name="mjc",
+                # IsaacLab MJWarpSolverCfg: defaults + proxy overrides.
+                solver=lambda v: SolverMuJoCo(
+                    model=v,
+                    solver="newton",
+                    integrator="implicitfast",
+                    cone="elliptic",
+                    impratio=1.0,
+                    tolerance=1.0e-6,
+                    iterations=int(args.mujoco_iterations),
+                    ls_iterations=int(args.mujoco_ls_iterations),
+                    ls_parallel=True,
+                    ccd_iterations=35,
+                    use_mujoco_contacts=True,
+                    njmax=300,
+                    nconmax=None,
                 ),
-                SolverCoupled.Entry(
-                    name="vbd",
-                    solver=lambda v: SolverVBD(
-                        model=v,
-                        iterations=int(args.vbd_iterations),
-                        particle_enable_self_contact=True,
-                        particle_self_contact_radius=2.0e-3,
-                        particle_self_contact_margin=2.0e-3,
-                        particle_topological_contact_filter_threshold=1,
-                        particle_rest_shape_contact_exclusion_radius=0.0,
-                        particle_vertex_contact_buffer_size=16,
-                        particle_edge_contact_buffer_size=20,
-                        particle_collision_detection_interval=-1,
-                    ),
-                    particles=list(range(model.particle_count)),
-                    shapes=handles.static_shapes,
+                bodies=handles.robot_bodies,
+                joints=handles.robot_joints,
+                shapes=handles.robot_shapes,
+            ),
+            SolverCoupled.Entry(
+                name="vbd",
+                solver=lambda v: SolverVBD(
+                    model=v,
+                    iterations=int(args.vbd_iterations),
+                    particle_enable_self_contact=True,
+                    particle_self_contact_radius=2.0e-3,
+                    particle_self_contact_margin=2.0e-3,
+                    particle_topological_contact_filter_threshold=1,
+                    particle_rest_shape_contact_exclusion_radius=0.0,
+                    particle_vertex_contact_buffer_size=16,
+                    particle_edge_contact_buffer_size=20,
+                    particle_collision_detection_interval=-1,
+                ),
+                particles=list(range(model.particle_count)),
+                shapes=handles.static_shapes,
+            ),
+        ]
+        coupling = SolverCoupledProxy.Config(
+            proxies=[
+                SolverCoupledProxy.Proxy(
+                    source="mjc",
+                    destination="vbd",
+                    bodies=handles.gripper_bodies,
+                    mass_scale=float(args.mass_scale),
+                    mode=args.coupling_mode,
+                    collision_pipeline=lambda m: newton.CollisionPipeline(m, broad_phase="explicit"),
+                    collide_interval=1,
                 ),
             ],
-            coupling=SolverCoupledProxy.Config(
-                proxies=[
-                    SolverCoupledProxy.Proxy(
-                        source="mjc",
-                        destination="vbd",
-                        bodies=handles.gripper_bodies,
-                        mass_scale=float(args.mass_scale),
-                        mode=args.coupling_mode,
-                        collision_pipeline=lambda m: newton.CollisionPipeline(m, broad_phase="explicit"),
-                        collide_interval=1,
-                    ),
-                ],
-                iterations=int(args.proxy_iterations),
-            ),
+            iterations=int(args.proxy_iterations),
         )
+        return entries, coupling
+
+    def build_solver(self, model, handles, args):
+        entries, coupling = self._build_entries_and_coupling(model, handles, args)
+        self.solver = SolverCoupledProxy(model=model, entries=entries, coupling=coupling)
         return self.solver
 
     def sync_initial(self, state):

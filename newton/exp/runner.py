@@ -208,6 +208,18 @@ class Experiment:
         # measured joint state) and writes joint targets; sim.step runs one
         # _simulate_physics_only. We mirror that exactly here.
         pos, quat, finger = self.controller.update(self.sim_time, self.frame_dt)
+        # Print the commanded IK target position every 60 simulation steps
+        # (mirrors IsaacLab _apply_ik_action). This is the single point where
+        # the per-step target is produced, before it is fed to the IK solve.
+        self._ik_print_count = getattr(self, "_ik_print_count", 0)
+        if self._ik_print_count % 60 == 0:
+            print(
+                f"[IK Target] step={self._ik_print_count} t={self.sim_time:6.2f}s  "
+                f"pos=({float(pos[0]):.4f}, {float(pos[1]):.4f}, {float(pos[2]):.4f})  "
+                f"quat=({float(quat[0]):.4f}, {float(quat[1]):.4f}, "
+                f"{float(quat[2]):.4f}, {float(quat[3]):.4f})"
+            )
+        self._ik_print_count += 1
         if self.controller.consume_reset():
             self.reset()
         for _ in range(self.decimation):

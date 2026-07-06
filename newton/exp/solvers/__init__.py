@@ -24,5 +24,6 @@ def make_solver(key: str, args) -> SolverStrategy:
 # Register built-in strategies.
 from . import monolithic  # noqa: E402,F401
 from . import proxy  # noqa: E402,F401
+from . import soft_constraint  # noqa: E402,F401
 
 __all__ = ["SOLVERS", "SolverStrategy", "make_solver", "register"]

@@ -13,6 +13,7 @@ and the scripted pick state machine (``pick_cloth_sm``).
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
@@ -46,18 +47,47 @@ _CLOTH_NPZ = os.path.join(os.path.dirname(__file__), "..", "assets", "unisex_shi
 CLOTH_SCALE = 0.01
 CLOTH_ROT = (1.0, 0.0, 0.0, 0.0)  # (qx, qy, qz, qw)
 # CLOTH_POS = (0.5, 1.25, 0.10)
-CLOTH_POS = (0.45, 1.20, 0.10)
+# CLOTH_POS = (0.45, 1.20, 0.10)
+CLOTH_POS = (0.5, 1.25, 0.10)
 
 # Spawn joint configuration (7 arm + 2 finger).
 # ROBOT_INIT_Q = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ROBOT_INIT_Q = [0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741, 0.04, 0.04]
 
 # Home / hover EE pose (IsaacLab AVBD env preset _ee_tf) and pick_cloth_sm
-# descent height.
-# HOME_POS = (0.7302, 0.0836, 0.3713)
-HOME_POS = (0.69, 0.180, 0.48)
-HOME_QUAT = (0.7140, -0.6664, -0.0916, 0.1943)  # (qx, qy, qz, qw)
-GRASP_Z = 0.0981
+# descent height. Task parameters that differ by coupling solver live in a
+# per-solver profile (see :class:`SolverProfile` / :data:`SOLVER_PROFILES`),
+# resolved once from ``--solver`` in :meth:`ShirtPickScene.__init__`.
+# Historical single-value home positions, for reference:
+# (0.7302, 0.0836, 0.3713), (0.69, 0.180, 0.48).
+HOME_POS_DEFAULT = (0.2676, 0.3762, 0.40)
+
+
+@dataclass(frozen=True)
+class SolverProfile:
+    """Shirt-pick task parameters that differ by coupling solver (``--solver``).
+
+    Only the home EE position is solver-conditioned for now. To condition more
+    fields later (e.g. ``home_quat``, ``grasp_z``), add them here with a default
+    so existing presets in :data:`SOLVER_PROFILES` need not be updated.
+    """
+
+    home_pos: tuple[float, float, float]
+
+
+_PENALTY_PROFILE = SolverProfile(home_pos=HOME_POS_DEFAULT)  # proxy + soft_constraint
+SOLVER_PROFILES = {
+    "avbd": SolverProfile(home_pos=(0.2863, 0.3960, 0.40)),
+    "proxy": _PENALTY_PROFILE,
+    "soft_constraint": _PENALTY_PROFILE,
+}
+# Profile used when --solver is unknown or unset.
+DEFAULT_PROFILE = _PENALTY_PROFILE
+
+# HOME_QUAT = (0.7140, -0.6664, -0.0916, 0.1943)  # (qx, qy, qz, qw)
+HOME_QUAT = (0.8859, -0.4521, 0.0874, 0.0565)
+# GRASP_Z = 0.0981
+GRASP_Z = 0.12
 
 
 @register
@@ -72,6 +102,8 @@ class ShirtPickScene(Scene):
     def __init__(self, args):
         super().__init__(args)
         self.grasp_z = float(args.grasp_z)
+        # Select the per-solver task profile (--solver); only home_pos varies for now.
+        self.profile = SOLVER_PROFILES.get(getattr(args, "solver", None), DEFAULT_PROFILE)
         data = np.load(_CLOTH_NPZ)
         verts = data["vertices"].astype(np.float64)  # raw, cm, local frame
         tri = data["tri_indices"].astype(np.int32)  # (n_tri, 3) into verts
@@ -114,7 +146,7 @@ class ShirtPickScene(Scene):
 
     # -- task -------------------------------------------------------------
     def home_pose(self):
-        return np.array(HOME_POS, dtype=np.float64), np.array(HOME_QUAT, dtype=np.float64)
+        return np.array(self.profile.home_pos, dtype=np.float64), np.array(HOME_QUAT, dtype=np.float64)
 
     def sequences(self, home_pos, home_quat):
         from ..controllers.base import Keyframe
