@@ -38,6 +38,11 @@ PARAMS.update(
         # dropping the plate at the front-edge lip.
         "plate_count": 2,
         "wash_count": 2,
+        # more AVBD iterations: the washed plate is dropped near the front-edge
+        # lip (the arm's cross-body reach limit) where the rigid contact is
+        # marginally stable, and extra iterations keep that placement from
+        # spiking as a second dish is handled
+        "solver_iterations": 12,
         "dirty_layout": "row",
         "dirty_pile_y": -0.20,
         "row_spacing": 0.20,
