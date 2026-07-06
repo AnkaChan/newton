@@ -73,10 +73,10 @@ PARAMS = {
     # the plate re-graspable after the rub)
     "wash_x": -0.173,
     "wash_y": -0.02,
-    # clean spot: same overhang line (the index needs free air below the rim
-    # to slide out from under a set-down plate)
-    "clean_x": -0.173,
-    "clean_y": 0.16,
+    # clean spot: well onto the table (not at the edge) so the plate is released
+    # by dropping it the last few cm and it lands stably, with no edge to fall off
+    "clean_x": -0.08,
+    "clean_y": 0.14,
     # sponge: a flat soft FEM pad the same thickness as the plate rim, so the
     # calibrated edge-pinch that lifts a plate also grips the sponge (a thick
     # foam cube squirts out of the H1 pinch; a pad is caught at its edge like
@@ -159,9 +159,10 @@ PARAMS = {
     # height the plate is held above the table during the rub (kept airborne so
     # the pinch stays loaded and secure — see the carry_to_wash comment)
     "wash_hold_lift": 0.045,
-    # after opening the thumb, drop the hand well below the rim before sliding
-    # it out (finger mu is huge; sliding under load drags the plate off the edge)
-    "release_drop": 0.028,
+    # release the plate by dropping it this far onto the pile (opening the whole
+    # hand mid-air, rather than extracting the index from under a placed plate,
+    # which drags/tips it)
+    "release_gap": 0.028,
     # drag primitive (script 2): press curled fingertips onto the top plate
     # and slide it toward the table edge until the rim overhangs
     "drag_press_hand_dz": 0.025,
@@ -193,6 +194,8 @@ PARAMS = {
     "release_time": 0.35,
     "retract_time": 0.55,
     "drag_time": 0.7,
+    # settle time after lowering a plate onto the pile before opening the grip
+    "place_dwell": 0.45,
     # AVBD joint drives; Newton IK only generates their targets
     "joint_drive_ke": 5.0e4,
     "joint_drive_kd": 5.0e2,
@@ -743,16 +746,15 @@ class Example:
         hand.wait(p["dwell_time"])
 
     def _release_and_retract(self, hand: _HandCursor, retreat_pos):
-        """Open the thumb, then drop the hand well below the rim (into the free
-        air in front of the table edge) BEFORE sliding out — the index stays
-        curled but now clears the underside, so it can't drag the set-down plate
-        off the edge. Uncurl only once the hand is clear, then retreat."""
+        """Open the whole hand at once so the object drops the last few cm and
+        lands where it is — extracting the still-curled index from under a
+        placed plate drags it off the edge, and a stuck plate spikes the solve.
+        Then lift the open hand up and away."""
         p = self.params
         self._mark(hand.time, "release")
-        hand.move(p["release_time"], thumb=0.0)
+        hand.move(p["release_time"], thumb=0.0, index=0.0, other=0.0)
         pos = hand.pos()
-        hand.move(0.3, pos=(pos[0], pos[1], pos[2] - p["release_drop"]))
-        hand.move(p["retract_time"], pos=(pos[0] - 0.11, pos[1], pos[2] - p["release_drop"]), index=0.0, other=0.0)
+        hand.move(p["retract_time"], pos=(pos[0] - 0.06, pos[1], pos[2] + 0.09))
         hand.move(p["retract_time"], pos=retreat_pos)
 
     def _build_choreography(self):
@@ -878,8 +880,12 @@ class Example:
             carry_z = p["table_top_z"] + p["grab_raise_hand_dz"] + p["carry_lift"] + clean_count * plate_h
             right.move(p["lift_time"], pos=(wash_pinch[0], p["wash_y"], carry_z))
             clean_pinch_x = p["clean_x"] + pinch_dx
-            right.move(p["carry_time"], pos=(clean_pinch_x, p["clean_y"], carry_z))
-            right.move(p["lower_time"], pos=(clean_pinch_x, p["clean_y"], clean_z_bottom + p["grab_raise_hand_dz"]))
+            # carry slowly to the clean spot so the plate does not swing/overshoot
+            right.move(2.0 * p["carry_time"], pos=(clean_pinch_x, p["clean_y"], carry_z))
+            # lower to a few cm above the pile and settle, then drop the plate
+            drop_pinch_z = clean_z_bottom + p["grab_raise_hand_dz"] + p["release_gap"]
+            right.move(p["carry_time"], pos=(clean_pinch_x, p["clean_y"], drop_pinch_z))
+            right.wait(p["place_dwell"])
             self._release_and_retract(right, (clean_pinch_x - 0.12, p["wash_y"], p["table_top_z"] + 0.18))
             clean_count += 1
             pile_count -= 1
