@@ -117,7 +117,7 @@ PARAMS = {
     # rigid-soft contact for the sponge grip: soft + heavily damped to avoid a
     # contact-force spike (a stiff contact spears/drags the edge tets and blows
     # the mesh up), grippy friction so the clamped pad doesn't slip.
-    "soft_contact_ke": 1.0e3,
+    "soft_contact_ke": 8.0e2,
     "soft_contact_kd": 15.0,
     "soft_contact_mu": 1.2,
     "soft_contact_margin": 0.014,
@@ -135,7 +135,10 @@ PARAMS = {
     "robot_sdf_padding": 0.012,
     "robot_sdf_max_resolution": 64,
     "finger_sdf_padding": 0.012,
-    "finger_contact_ke": 8.0e3,
+    # finger contact stiffness. The finger↔sponge (body↔particle) contact ke is
+    # the AVERAGE of this and soft_contact_ke, so a stiff finger keeps the sponge
+    # contact stiff and shoots the pad out — keep it low for a gentle grip.
+    "finger_contact_ke": 1.0e3,
     "finger_contact_kd": 2.0e1,
     # High mu keeps the rim pinch and the sponge pinch from creeping.
     "finger_contact_mu": 200.0,
@@ -206,10 +209,10 @@ PARAMS = {
     # durations [s]
     "settle_time": 0.5,
     "approach_time": 0.7,
-    "descend_time": 0.55,
-    "insert_time": 0.5,
-    "raise_time": 0.4,
-    "close_time": 0.7,
+    "descend_time": 0.9,
+    "insert_time": 0.8,
+    "raise_time": 0.6,
+    "close_time": 1.4,
     "dwell_time": 0.25,
     "lift_time": 0.45,
     "carry_time": 0.9,
