@@ -125,6 +125,7 @@ class Example(base.Example):
             wp.vec3(0.30, 0.55, 0.85),
         ]
         body_indices = []
+        ball_shapes = []
         self.ball_homes = []
         n = p["num_trash"]
         for i in range(n):
@@ -139,6 +140,11 @@ class Example(base.Example):
             # table while the fingers close around them.
             for robot_shape in self._robot_rigid_shapes:
                 builder.add_shape_collision_filter_pair(robot_shape, shape)
+            # A kinematically carried sphere sweeping past its neighbours would
+            # punt them off the table, so spheres ignore each other too.
+            for other in ball_shapes:
+                builder.add_shape_collision_filter_pair(other, shape)
+            ball_shapes.append(shape)
             self.ball_homes.append(np.array([px, py, pz], dtype=np.float32))
         return body_indices
 
@@ -191,7 +197,7 @@ class Example(base.Example):
             u = base._smoothstep((t_seg - pick_end) / p["haul_time"])
             # rise quickly, then travel: keeps the sphere clear of the rim and
             # the pinned drawstring handle it passes over
-            u_z = base._smoothstep(min(1.0, 2.0 * (t_seg - pick_end) / p["haul_time"]))
+            u_z = base._smoothstep(min(1.0, 3.0 * (t_seg - pick_end) / p["haul_time"]))
             right = grasp * (1.0 - u) + drop * u
             right[2] = grasp[2] * (1.0 - u_z) + drop[2] * u_z
             other = p["ball_hold_fraction"]
