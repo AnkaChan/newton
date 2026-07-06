@@ -123,7 +123,7 @@ PARAMS = {
     "can_n_around": 72,
     "can_n_rows": 28,
     # --- bag cloth (floppy plastic) ---
-    "bag_rest_scale": 1.5,
+    "bag_rest_scale": 1.1,  # mild excess for wrinkles; large scales drag the anchored drawstring while expanding
     "particle_radius": 0.004,
     "cloth_density": 0.08,
     "cloth_tri_ke": 1.0e5,
@@ -135,16 +135,24 @@ PARAMS = {
     # The bag rest is oversized 1.5x for the floppy billowed look, but the rope
     # rest stays nearly tight: the bag only expands ~2% into the can, and a
     # slack drawstring would dump long loops out of the tunnels when lifted.
-    "rope_rest_scale": 1.12,
-    "rope_density": 0.008,
-    "rope_tri_ke": 2.0e5,
-    "rope_tri_ka": 2.0e5,
+    "rope_rest_scale": 1.1,  # match the bag so the drawstring expands with its tunnels
+    "rope_density": 0.08,  # match the bag: a near-massless stiff ribbon stretches badly under fabric drag
+    "rope_tri_ke": 2.0e6,  # ribbon triangles are tiny: effective membrane stiffness needs the boost
+    "rope_tri_ka": 2.0e6,
     "rope_tri_kd": 1.0e2,
     "rope_edge_ke": 0.05,
     "rope_edge_kd": 0.01,
     # --- tunnel-closure springs ---
     "closure_ke": 2.0e4,
     "closure_kd": 1.0e-3,
+    # --- rope-to-tunnel tie springs ---
+    # Soft ties bind the drawstring to the bag fabric it threads through: the
+    # rope travels with its tunnels (it cannot be dragged out or stretched by
+    # fabric friction), and pulling the handles gathers the fabric directly.
+    "rope_tie_ke": 1.0e4,
+    "rope_tie_kd": 1.0e-1,
+    "rope_tie_stride": 4,  # tie every Nth rope vertex
+    "rope_tie_max_dist": 0.02,  # only rope running inside/near the tunnels
     # --- contacts ---
     "soft_contact_ke": 1.0e5,
     "soft_contact_kd": 1.0e1,
@@ -647,6 +655,21 @@ def _add_bag_and_rope(builder: newton.ModelBuilder, params: dict):
     left_centroid = rope_init_world[hv["left"]].mean(axis=0)
     right_centroid = rope_init_world[hv["right"]].mean(axis=0)
 
+    # rope-to-tunnel ties: every Nth non-handle rope vertex binds to its
+    # nearest bag vertex when the two run close together (the tunnel walls)
+    handle_local = {int(i) for i in hv["left"]} | {int(i) for i in hv["right"]}
+    num_tie_springs = 0
+    for i in range(0, len(rope_init_world), params["rope_tie_stride"]):
+        if i in handle_local:
+            continue
+        offsets = bag_init_world - rope_init_world[i]
+        j = int(np.argmin(np.einsum("ij,ij->i", offsets, offsets)))
+        dist = float(np.linalg.norm(offsets[j]))
+        if dist < params["rope_tie_max_dist"]:
+            builder.add_spring(rope_start + i, bag_start + j, params["rope_tie_ke"], params["rope_tie_kd"], 0.0)
+            builder.spring_rest_length[-1] = dist
+            num_tie_springs += 1
+
     # Bag hem patches around the side holes each handle exits through.  The
     # hands hold these together with the rope handles: a grabbed trash bag
     # carries its weight through the hole rims, not through the free
@@ -672,6 +695,7 @@ def _add_bag_and_rope(builder: newton.ModelBuilder, params: dict):
         "left_centroid": left_centroid,
         "right_centroid": right_centroid,
         "tunnel_spring_pairs": tunnel_spring_pairs,
+        "num_tie_springs": num_tie_springs,
         "bag_init_world": bag_init_world,
     }
 
@@ -715,9 +739,12 @@ def _add_trash(builder: newton.ModelBuilder, bag_info: dict, params: dict, seed:
 
 
 class Example:
+    DEFAULT_PARAMS = PARAMS
+    PHASE_NAMES = ("settle", "approach", "descend", "close", "cinch", "lift", "carry", "hold")
+
     def __init__(self, viewer, args):
         self.viewer = viewer
-        self.params = PARAMS
+        self.params = dict(self.DEFAULT_PARAMS)
         self.fps = self.params["fps"]
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = self.params["sim_substeps"]
@@ -727,6 +754,7 @@ class Example:
         self.phase = "settle"
         self.attached = False
         self._ik_debug_state = None
+        self._debug = bool(getattr(args, "debug", False))
 
         seed = getattr(args, "seed", self.params["seed"])
         builder = newton.ModelBuilder(gravity=self.params["gravity"])
@@ -734,7 +762,7 @@ class Example:
         self.robot_coord_count = builder.joint_coord_count
         _add_pedestal_and_can(builder, self.params)
         self.bag_info = _add_bag_and_rope(builder, self.params)
-        self.trash_bodies = _add_trash(builder, self.bag_info, self.params, seed)
+        self.trash_bodies = self._build_trash(builder, seed)
 
         ground_cfg = newton.ModelBuilder.ShapeConfig(
             ke=self.params["shape_ke"],
@@ -865,7 +893,7 @@ class Example:
 
         self._phase_ends = {}
         t = 0.0
-        for name in ("settle", "approach", "descend", "close", "cinch", "lift", "carry", "hold"):
+        for name in self.PHASE_NAMES:
             t += self.params[f"{name}_time"]
             self._phase_ends[name] = t
         self.total_time = t
@@ -1089,17 +1117,34 @@ class Example:
 
     # ------------------------------------------------------- trajectory ---
     def _update_trajectory(self):
-        t = self.sim_time
+        positions, left_thumb, right_thumb, left_index, right_index, other = self._hand_targets(self.sim_time)
+        self.target_hand_positions = np.asarray(positions, dtype=np.float32)
+        self._solve_ik(
+            self.target_hand_positions,
+            left_thumb_fraction=left_thumb,
+            right_thumb_fraction=right_thumb,
+            left_index_fraction=left_index,
+            right_index_fraction=right_index,
+            other_fraction=other,
+        )
+        self._drive_robot_kinematic()
+
+    def _hand_targets(self, t):
+        """Task-space targets and finger fractions [left, right] at time t."""
+        if t < self._phase_ends["settle"]:
+            self.phase = "settle"
+            return self.rest_positions, 0.0, 0.0, 0.0, 0.0, 0.0
+        return self._bag_grasp_targets(t)
+
+    def _bag_grasp_targets(self, t):
+        """The approach -> hold sequence that grabs and lifts the bag."""
         p = self.params
         ends = self._phase_ends
 
         thumb = 0.0
         index = 0.0
         other = 0.0
-        if t < ends["settle"]:
-            self.phase = "settle"
-            positions = self.rest_positions
-        elif t < ends["approach"]:
+        if t < ends["approach"]:
             self.phase = "approach"
             u = _smoothstep((t - ends["settle"]) / p["approach_time"])
             positions = self.rest_positions * (1.0 - u) + self.hover_positions * u
@@ -1148,16 +1193,10 @@ class Example:
             index = p["index_closed_fraction"]
             thumb = p["thumb_closed_fraction"]
 
-        self.target_hand_positions = np.asarray(positions, dtype=np.float32)
-        self._solve_ik(
-            self.target_hand_positions,
-            left_thumb_fraction=thumb,
-            right_thumb_fraction=thumb,
-            left_index_fraction=index,
-            right_index_fraction=index,
-            other_fraction=other,
-        )
-        self._drive_robot_kinematic()
+        return positions, thumb, thumb, index, index, other
+
+    def _build_trash(self, builder, seed):
+        return _add_trash(builder, self.bag_info, self.params, seed)
 
     def _drive_robot_kinematic(self):
         """FK the IK joint solution into the robot body transforms and twists.
@@ -1253,6 +1292,29 @@ class Example:
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
+    def _debug_rope(self):
+        """Print rope stretch statistics and how much rope hangs below the rim."""
+        if not hasattr(self, "_rope_edge_pairs"):
+            faces = np.asarray(self.bag_info["rope_faces"], dtype=np.int64).reshape(-1, 3)
+            edges = np.unique(
+                np.sort(np.stack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]).reshape(-1, 2)), axis=0
+            )
+            rest_verts, _ = _load_obj(ROPE_OBJ)
+            rest_verts = rest_verts * self.params["rope_rest_scale"]
+            self._rope_edge_pairs = edges
+            self._rope_edge_rest = np.linalg.norm(rest_verts[edges[:, 0]] - rest_verts[edges[:, 1]], axis=1)
+        pq = self.state_0.particle_q.numpy()
+        rope = pq[self.bag_info["rope_start"] : self.bag_info["rope_start"] + self.bag_info["rope_count"]]
+        lengths = np.linalg.norm(rope[self._rope_edge_pairs[:, 0]] - rope[self._rope_edge_pairs[:, 1]], axis=1)
+        strain = lengths / np.maximum(self._rope_edge_rest, 1e-9)
+        rim_z = self.params["pedestal_top_z"] + self.params["can_height"]
+        below = float(np.count_nonzero(rope[:, 2] < rim_z - 0.05)) / len(rope)
+        print(
+            f"[trash_bag_h1] rope strain mean={strain.mean():.3f} p99={np.percentile(strain, 99):.2f} "
+            f"max={strain.max():.2f}  below-rim frac={below:.3f}",
+            flush=True,
+        )
+
     def _debug_tracking(self):
         """Print IK convergence vs AVBD tracking errors at the pinch points."""
         if self._ik_debug_state is None:
@@ -1275,8 +1337,9 @@ class Example:
         self.simulate()
         self.sim_time += self.frame_dt
         self.frame += 1
-        if self.frame % 30 == 0:
+        if self._debug and self.frame % 30 == 0:
             self._debug_tracking()
+            self._debug_rope()
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -1337,21 +1400,24 @@ class Example:
         assert max(hand_errors) < 0.15, f"H1 hand tracking error is too large: {max(hand_errors):.3f} m"
         _ = rim_z
 
-    @staticmethod
-    def create_parser():
+    @classmethod
+    def create_parser(cls):
         parser = newton.examples.create_parser()
-        parser.add_argument("--seed", type=int, default=PARAMS["seed"])
+        parser.add_argument("--seed", type=int, default=cls.DEFAULT_PARAMS["seed"])
         parser.add_argument(
             "--record-video",
             type=str,
             default=None,
             help="Record an mp4 of the rendered frames to this path (gl viewer).",
         )
-        total_time = sum(
-            PARAMS[f"{name}_time"]
-            for name in ("settle", "approach", "descend", "close", "cinch", "lift", "carry", "hold")
+        parser.add_argument(
+            "--debug",
+            action="store_true",
+            default=False,
+            help="Print hand-tracking and rope-strain statistics every 30 frames.",
         )
-        parser.set_defaults(num_frames=int(total_time * PARAMS["fps"]))
+        total_time = sum(cls.DEFAULT_PARAMS[f"{name}_time"] for name in cls.PHASE_NAMES)
+        parser.set_defaults(num_frames=int(total_time * cls.DEFAULT_PARAMS["fps"]))
         return parser
 
 
