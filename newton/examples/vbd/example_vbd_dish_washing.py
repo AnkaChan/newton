@@ -88,34 +88,33 @@ PARAMS = {
     # washed plates are placed side by side (not stacked — dropping a thin plate
     # onto another spikes the AVBD contact); this is the y-pitch between them
     "clean_side_offset": 0.14,
-    # sponge: a flat soft FEM pad the same thickness as the plate rim, so the
-    # calibrated edge-pinch that lifts a plate also grips the sponge (a thick
-    # foam cube squirts out of the H1 pinch; a pad is caught at its edge like
-    # the soft grid in example_vbd_gripper_soft_grid). Its -x edge overhangs
-    # the front table edge so the index can slide underneath.
+    # sponge: a stiff soft FEM pad, physically pinched by the H1 fingers. Its -x
+    # edge overhangs the front table edge so the index can slide underneath.
     "sponge_size": (0.10, 0.075, 0.024),
     "sponge_cells": (8, 6, 2),
     "sponge_x": -0.185,
     "sponge_y": 0.27,
     "sponge_density": 250.0,
-    # A concentrated H1 fingertip spears a stiff FEM solid (a tet inverts into a
-    # spike). The gripper example grips a soft body only because it is very soft,
-    # uses a large particle radius, and heavily damps the contact. Follow that
-    # recipe: soft moduli + small tets so a fingertip indents locally instead of
-    # inverting the whole block.
-    "sponge_k_mu": 4.0e3,
-    "sponge_k_lambda": 2.0e4,
+    # Stiff, shear-dominant Neo-Hookean (k_mu >> k_lambda): high shear keeps the
+    # pad holding its shape in the pinch (it doesn't squirt out), low bulk keeps
+    # it compressible so the fingers can compress it a little. The stable
+    # Neo-Hookean material tolerates inverted (negative-volume) tets, so a
+    # fingertip pressing in does not detonate the solve.
+    "sponge_k_mu": 8.0e4,
+    "sponge_k_lambda": 1.5e4,
     "sponge_k_damp": 1.0e-3,
-    "sponge_particle_radius": 0.008,
+    # particle radius = per-particle finger contact standoff. Small enough that
+    # the fingers actually clamp the pad (a large standoff pushes it away
+    # mushily and it slides out); the stiff Neo-Hookean pad tolerates the modest
+    # penetration this allows.
+    "sponge_particle_radius": 0.006,
     "sponge_color": (0.95, 0.85, 0.25),
-    # rigid-soft contact: soft and heavily damped. Low friction so the sponge
-    # SLIDES over the plate during the rub instead of dragging it off the
-    # overhanging wash spot (the grasp is a kinematic pin, so it needs no
-    # contact friction of its own).
-    "soft_contact_ke": 5.0e2,
+    # rigid-soft contact for the sponge grip: firm, well damped, high friction
+    # so the pinched pad does not slip out of the fingers.
+    "soft_contact_ke": 4.0e3,
     "soft_contact_kd": 8.0,
-    "soft_contact_mu": 0.25,
-    "soft_contact_margin": 0.010,
+    "soft_contact_mu": 1.5,
+    "soft_contact_margin": 0.007,
     "enable_water_tight_rigid_soft_contact": True,
     "shape_ke": 1.0e3,
     "shape_kd": 1.0e-4,
@@ -158,12 +157,13 @@ PARAMS = {
     # thumb bottom lands ~ at the plate top for a light clamp on the rim
     "grab_thumb_fraction": 0.72,
     "other_finger_fraction": 0.8,
-    # sponge pinch: a gentle non-penetrating cradle (unlike the plate's small
-    # overdrive, which would spear a soft body). The index slides in ~6 mm below
-    # the pad, rises to just kiss the underside, and the thumb only rests on top.
-    "sponge_insert_hand_dz": -0.014,
-    "sponge_raise_hand_dz": -0.008,
-    "sponge_thumb_fraction": 0.52,
+    # sponge pinch: the curled index slides under the pad's -x edge and the
+    # thumb closes on top, clamping the edge (the pad's particle-radius standoff
+    # + the extra contact margin keep the fingers from spearing the tets). The
+    # thumb closes further than the plate to compress the thicker, stiff pad.
+    "sponge_insert_hand_dz": -0.012,
+    "sponge_raise_hand_dz": -0.004,
+    "sponge_thumb_fraction": 0.72,
     # pinch-point x offset from the held plate's center while carried
     "plate_center_to_pinch_dx": -0.050,
     "carry_lift": 0.055,
@@ -201,6 +201,8 @@ PARAMS = {
     "retract_time": 0.55,
     # settle time after lowering a plate onto the pile before opening the grip
     "place_dwell": 0.45,
+    # hold the sponge aloft after picking it up, to inspect the grip
+    "sponge_hold_time": 1.5,
     # AVBD joint drives; Newton IK only generates their targets
     "joint_drive_ke": 5.0e4,
     "joint_drive_kd": 5.0e2,
@@ -250,20 +252,6 @@ def set_finger_targets(
 ):
     i = wp.tid()
     joint_q[finger_indices[i]] = fractions[finger_groups[i]] * closed_values[i]
-
-
-@wp.kernel
-def drive_grip_particles(
-    grip_indices: wp.array[wp.int32],
-    grip_offsets: wp.array[wp.vec3],
-    hand_transform: wp.transform,
-    particle_q: wp.array[wp.vec3],
-    particle_qd: wp.array[wp.vec3],
-):
-    i = wp.tid()
-    p = grip_indices[i]
-    particle_q[p] = wp.transform_point(hand_transform, grip_offsets[i])
-    particle_qd[p] = wp.vec3(0.0)
 
 
 @wp.kernel
@@ -413,14 +401,14 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
     }
     body_indices = {name: _find_suffix(builder.body_label, suffix) for name, suffix in body_names.items()}
 
-    # The four thumb/index grasp chains keep shape-shape contact + a finer
-    # texture SDF for the rigid plate pinch. No robot collider gets particle
-    # collision: a curved H1 fingertip sweeping through a 3D FEM sponge spears
-    # and detonates it (a tet inverts into a spike), so the sponge is instead
-    # pinned to the hand as a kinematic grasp (see ``_setup_sponge_grip``) while
-    # the fingers curl around it visually. Every non-grasp collider is filtered
-    # against the table and plates (a humanoid's forearm resting on the tabletop
-    # otherwise explodes the AVBD contact solve).
+    # The four thumb/index grasp chains keep shape-shape contact (rigid plate
+    # pinch) AND particle contact (they physically grip the soft sponge) with a
+    # finer texture SDF. The finger-particle contact triggers at a deliberately
+    # large gap (``soft_contact_margin`` + ``sponge_particle_radius``) so a
+    # fingertip contacts and compresses the stiff Neo-Hookean sponge instead of
+    # spearing through it. Every non-grasp collider is filtered against the table
+    # and plates (a humanoid's forearm resting on the tabletop otherwise explodes
+    # the AVBD contact solve).
     shape_collision_flag = int(newton.ShapeFlags.COLLIDE_SHAPES)
     particle_collision_flag = int(newton.ShapeFlags.COLLIDE_PARTICLES)
     collision_mask = shape_collision_flag | particle_collision_flag
@@ -450,6 +438,7 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
             builder.shape_sdf_target_voxel_size[shape] = None
             robot_rigid_shapes.append(shape)
         if is_grasp_collider:
+            builder.shape_flags[shape] |= particle_collision_flag
             builder.shape_material_ke[shape] = params["finger_contact_ke"]
             builder.shape_material_kd[shape] = params["finger_contact_kd"]
             builder.shape_material_mu[shape] = params["finger_contact_mu"]
@@ -590,16 +579,8 @@ def _add_sponge(builder: newton.ModelBuilder, params: dict) -> dict:
         particle_radius=params["sponge_particle_radius"],
     )
     particle_end = len(builder.particle_q)
-    particles = np.arange(particle_start, particle_end, dtype=np.int32)
-    # Grip row: the vertices along the -x edge (the edge the hand pinches). These
-    # are pinned to the hand as kinematic BCs during the carry/rub; the rest of
-    # the pad stays dynamic and deforms against the plate.
-    pos = np.asarray(builder.particle_q[particle_start:particle_end], dtype=np.float64)
-    x_min = pos[:, 0].min()
-    grip = particles[pos[:, 0] <= x_min + 0.5 * size[0] / cells[0] + 1.0e-5]
     return {
-        "particles": particles,
-        "grip": np.asarray(grip, dtype=np.int32),
+        "particles": np.arange(particle_start, particle_end, dtype=np.int32),
         "home": np.asarray(
             [params["sponge_x"], params["sponge_y"], params["table_top_z"] + 0.5 * size[2]], dtype=np.float64
         ),
@@ -710,8 +691,6 @@ class Example:
         self.previous_joint_targets = wp.clone(self.model.joint_q[: self.robot_coord_count])
 
         self.plate_initial_positions = self.model.body_q.numpy()[self.plate_bodies, :3].copy()
-
-        self._setup_sponge_grip()
 
         self.viewer.set_model(self.model)
         self.viewer.log_mesh(
@@ -824,7 +803,7 @@ class Example:
 
             if k == 0:
                 # fetch the sponge while the right hand carries the first plate;
-                # the pad reuses the plate edge-pinch primitive
+                # the pad reuses the plate edge-pinch primitive (physical grip)
                 left.wait_until(p["settle_time"] + p["approach_time"] + p["descend_time"])
                 sponge_bottom = p["table_top_z"] + p["sponge_particle_radius"]
                 sponge_rim_x = p["sponge_x"] - 0.5 * sponge_size[0]
@@ -837,11 +816,11 @@ class Example:
                     raise_dz=p["sponge_raise_hand_dz"],
                     thumb=p["sponge_thumb_fraction"],
                 )
-                # pin the sponge grip row to the hand now that the fingers have
-                # closed around its edge (see _setup_sponge_grip)
-                self.sponge_grip_start = left.time
                 lift_z = sponge_bottom + p["sponge_raise_hand_dz"] + p["carry_lift"] + 0.03
-                left.move(p["lift_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], lift_z))
+                # lift slowly (2x) so inertia does not flick the pad off the fingers
+                left.move(2.0 * p["lift_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], lift_z))
+                # hold the sponge up briefly so the grip can be inspected
+                left.move(p["sponge_hold_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], lift_z))
 
             # rub: flat ellipses grazing the top of the airborne plate. The plate
             # centre rides ~ wash_hold_z + (plate_half_height - grab_raise_hand_dz)
@@ -902,8 +881,6 @@ class Example:
             p["lower_time"],
             pos=(sponge_home_pinch_x, p["sponge_y"], p["table_top_z"] + p["sponge_particle_radius"] - 0.002),
         )
-        # unpin the sponge once it is back on the table
-        self.sponge_grip_end = left.time
         self._release_and_retract(left, p["rest_left"])
         right.wait_until(left.time)
         right.move(p["retract_time"], pos=p["rest_right"])
@@ -1065,63 +1042,10 @@ class Example:
             outputs=[self.control.joint_target_q, self.control.joint_target_qd],
         )
 
-    # ── sponge grip (kinematic pin) ──────────────────────────────────────
-
-    def _setup_sponge_grip(self):
-        """Prepare to pin the sponge's -x edge row to the left hand. A curved H1
-        fingertip spears a 3D FEM solid, so rather than a physical finger grip
-        the grip row is made kinematic (mass 0) and driven to follow the hand
-        while the rest of the pad stays dynamic and scrubs the plate."""
-        grip = self.sponge_info["grip"]
-        self._grip_np = grip
-        self.grip_indices = wp.array(grip, dtype=wp.int32, device=self.model.device)
-        self.grip_offsets = wp.zeros(len(grip), dtype=wp.vec3, device=self.model.device)
-        self.grip_left_body = self.hand_bodies[0]
-        self._grip_saved_mass = self.model.particle_mass.numpy()[grip].copy()
-        self._grip_saved_inv_mass = self.model.particle_inv_mass.numpy()[grip].copy()
-        self.grip_state = "idle"
-
-    def _left_hand_transform(self) -> wp.transform:
-        return wp.transform(*self.state_0.body_q.numpy()[self.grip_left_body])
-
-    def _activate_sponge_grip(self):
-        hand_inv = wp.transform_inverse(self._left_hand_transform())
-        world = self.state_0.particle_q.numpy()[self._grip_np]
-        offsets = np.asarray([wp.transform_point(hand_inv, wp.vec3(*p)) for p in world], dtype=np.float32)
-        self.grip_offsets.assign(offsets)
-        mass = self.model.particle_mass.numpy()
-        inv_mass = self.model.particle_inv_mass.numpy()
-        mass[self._grip_np] = 0.0
-        inv_mass[self._grip_np] = 0.0
-        self.model.particle_mass.assign(mass)
-        self.model.particle_inv_mass.assign(inv_mass)
-        self.grip_state = "held"
-
-    def _deactivate_sponge_grip(self):
-        mass = self.model.particle_mass.numpy()
-        inv_mass = self.model.particle_inv_mass.numpy()
-        mass[self._grip_np] = self._grip_saved_mass
-        inv_mass[self._grip_np] = self._grip_saved_inv_mass
-        self.model.particle_mass.assign(mass)
-        self.model.particle_inv_mass.assign(inv_mass)
-        self.grip_state = "done"
-
     # ── simulation loop ──────────────────────────────────────────────────
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            if self.grip_state == "held":
-                wp.launch(
-                    drive_grip_particles,
-                    dim=len(self._grip_np),
-                    inputs=[
-                        self.grip_indices,
-                        self.grip_offsets,
-                        self._left_hand_transform(),
-                        self.state_0.particle_q,
-                        self.state_0.particle_qd,
-                    ],
-                )
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
@@ -1129,10 +1053,6 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        if self.grip_state == "idle" and self.sim_time >= self.sponge_grip_start:
-            self._activate_sponge_grip()
-        elif self.grip_state == "held" and self.sim_time >= self.sponge_grip_end:
-            self._deactivate_sponge_grip()
         self._update_trajectory()
         self.simulate()
         for start, end, plate in self._rub_windows:
