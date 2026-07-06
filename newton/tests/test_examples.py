@@ -514,6 +514,16 @@ add_example_test(
     test_options={"num-frames": 360},
     use_viewer=True,
 )
+# The dish-washing examples must run their full choreography for test_final to
+# hold (a partial run leaves plates un-placed), so they use their full frame
+# counts rather than the 360-frame default of the siblings above.
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_dish_washing",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 1000},
+    use_viewer=True,
+)
 
 
 class TestRobotExamples(unittest.TestCase):
