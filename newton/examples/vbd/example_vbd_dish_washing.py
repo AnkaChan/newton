@@ -40,7 +40,7 @@ PARAMS = {
     "sim_substeps": 16,
     "solver_iterations": 8,
     "gravity": -9.81,
-    "num_frames": 1150,
+    "num_frames": 1000,
     # how many plates are washed (script 2 raises this to the full pile)
     "wash_count": 1,
     "plate_count": 3,
@@ -156,6 +156,9 @@ PARAMS = {
     # pinch-point x offset from the held plate's center while carried
     "plate_center_to_pinch_dx": -0.050,
     "carry_lift": 0.055,
+    # height the plate is held above the table during the rub (kept airborne so
+    # the pinch stays loaded and secure — see the carry_to_wash comment)
+    "wash_hold_lift": 0.045,
     # after opening the thumb, drop the hand well below the rim before sliding
     # it out (finger mu is huge; sliding under load drags the plate off the edge)
     "release_drop": 0.028,
@@ -803,16 +806,16 @@ class Example:
             # grab the top plate off the pile
             self._grab_rim(right, grab_rim_x, pile_y, plate_bottom)
 
-            # carry to the washing spot and lower it onto the table, but KEEP the
-            # pinch closed and the hand in place — the right hand holds the dish
-            # for the whole rub (a plate set down at the overhanging wash spot is
-            # only marginally stable and the scrubbing tips it off the edge).
+            # carry to the washing spot and HOLD the plate in the air there for
+            # the whole rub — the right hand keeps gripping it (a plate set down
+            # at the overhanging wash spot tips off the edge under the scrub, and
+            # a plate rested on the table unloads the pinch so it can't be lifted
+            # again afterward). Holding it aloft keeps the grip loaded and secure.
             self._mark(right.time, "carry_to_wash")
             carry_z = plate_bottom + p["grab_raise_hand_dz"] + p["carry_lift"]
+            wash_hold_z = p["table_top_z"] + p["grab_raise_hand_dz"] + p["wash_hold_lift"]
             right.move(p["lift_time"], pos=(grab_rim_x + p["grab_insert_depth"], pile_y, carry_z))
-            right.move(p["carry_time"], pos=(wash_pinch[0], wash_pinch[1], carry_z))
-            hold_z = p["table_top_z"] + p["grab_raise_hand_dz"]
-            right.move(p["lower_time"], pos=(wash_pinch[0], wash_pinch[1], hold_z))
+            right.move(p["carry_time"], pos=(wash_pinch[0], wash_pinch[1], wash_hold_z))
             plate_ready_time = right.time
 
             if k == 0:
@@ -836,10 +839,12 @@ class Example:
                 lift_z = sponge_bottom + p["sponge_raise_hand_dz"] + p["carry_lift"] + 0.03
                 left.move(p["lift_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], lift_z))
 
-            # rub: flat ellipses grazing the plate top while the right hand holds
-            # the plate down against the table (the table takes the rub force).
+            # rub: flat ellipses grazing the top of the airborne plate. The plate
+            # centre rides ~ wash_hold_z + (plate_half_height - grab_raise_hand_dz)
+            # above the pinch; its top is one more half-height up.
             left.wait_until(plate_ready_time + 0.2)
-            plate_top_z = p["table_top_z"] + plate_h
+            plate_center_held = wash_hold_z + p["plate_half_height"] - p["grab_raise_hand_dz"]
+            plate_top_z = plate_center_held + p["plate_half_height"]
             plate_rim_x = p["wash_x"] - plate_r
             rub_pinch = np.asarray([plate_rim_x - p["rub_pinch_behind_rim"], p["wash_y"]])
             rub_z = plate_top_z + p["rub_pinch_above_plate"]
