@@ -156,9 +156,6 @@ PARAMS = {
     # pinch-point x offset from the held plate's center while carried
     "plate_center_to_pinch_dx": -0.050,
     "carry_lift": 0.055,
-    # set-down: pinch height that rests the carried plate on the support
-    # surface (the plate underside rides at P+0.004 on the index)
-    "setdown_pinch_dz": -0.002,
     # after opening the thumb, drop the hand well below the rim before sliding
     # it out (finger mu is huge; sliding under load drags the plate off the edge)
     "release_drop": 0.028,
@@ -806,15 +803,17 @@ class Example:
             # grab the top plate off the pile
             self._grab_rim(right, grab_rim_x, pile_y, plate_bottom)
 
-            # carry to the washing spot at the table edge and set it down
+            # carry to the washing spot and lower it onto the table, but KEEP the
+            # pinch closed and the hand in place — the right hand holds the dish
+            # for the whole rub (a plate set down at the overhanging wash spot is
+            # only marginally stable and the scrubbing tips it off the edge).
             self._mark(right.time, "carry_to_wash")
             carry_z = plate_bottom + p["grab_raise_hand_dz"] + p["carry_lift"]
             right.move(p["lift_time"], pos=(grab_rim_x + p["grab_insert_depth"], pile_y, carry_z))
             right.move(p["carry_time"], pos=(wash_pinch[0], wash_pinch[1], carry_z))
-            wash_pinch_z = p["table_top_z"] + p["setdown_pinch_dz"]
-            right.move(p["lower_time"], pos=(wash_pinch[0], wash_pinch[1], wash_pinch_z))
-            self._release_and_retract(right, (wash_pinch[0] - 0.13, pile_y - 0.02, p["table_top_z"] + 0.16))
-            plate_down_time = right.time - 2.0 * p["retract_time"] - 0.25
+            hold_z = p["table_top_z"] + p["grab_raise_hand_dz"]
+            right.move(p["lower_time"], pos=(wash_pinch[0], wash_pinch[1], hold_z))
+            plate_ready_time = right.time
 
             if k == 0:
                 # fetch the sponge while the right hand carries the first plate;
@@ -837,15 +836,12 @@ class Example:
                 lift_z = sponge_bottom + p["sponge_raise_hand_dz"] + p["carry_lift"] + 0.03
                 left.move(p["lift_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], lift_z))
 
-            # rub: flat ellipses over the plate's near half with light pressure.
-            # The pinch stays behind the plate rim so the index (which carries
-            # the sponge from below) never crosses above the plate.
-            left.wait_until(plate_down_time + 0.2)
+            # rub: flat ellipses grazing the plate top while the right hand holds
+            # the plate down against the table (the table takes the rub force).
+            left.wait_until(plate_ready_time + 0.2)
             plate_top_z = p["table_top_z"] + plate_h
             plate_rim_x = p["wash_x"] - plate_r
             rub_pinch = np.asarray([plate_rim_x - p["rub_pinch_behind_rim"], p["wash_y"]])
-            # the pinned grip edge rides above the plate top and the pad drapes
-            # down to graze it
             rub_z = plate_top_z + p["rub_pinch_above_plate"]
             self._mark(left.time, "rub_approach")
             left.move(p["carry_time"], pos=(rub_pinch[0], rub_pinch[1], rub_z + p["rub_hover_dz"]))
@@ -853,8 +849,7 @@ class Example:
             self._mark(left.time, "rub")
             rub_start = left.time
             steps_per_circle = 24
-            # centred ellipse (no net -x drift that would walk the plate off the
-            # overhanging edge); +x reaches over the plate, -x stays behind the rim
+            # centred ellipse: +x reaches over the plate, -x stays behind the rim
             for c in range(p["rub_circles"] * steps_per_circle):
                 angle = 2.0 * np.pi * (c + 1) / steps_per_circle
                 dx = p["rub_radius_x"] * np.cos(angle)
@@ -867,19 +862,19 @@ class Example:
             self._rub_windows.append((rub_start, left.time, k))
             self._mark(left.time, "rub_done")
             left.move(p["lower_time"], pos=(rub_pinch[0], rub_pinch[1], rub_z + p["rub_hover_dz"]))
-            # park the sponge high on the left while the right hand swaps plates
+            # park the sponge high on the left while the right hand stacks the plate
             left.move(p["carry_time"], pos=(-0.32, 0.10, p["table_top_z"] + 0.17))
 
-            # re-grab the washed plate at the wash spot and place it on the clean side
-            right.wait_until(left.time - p["carry_time"] + 0.1)
-            self._grab_rim(right, p["wash_x"] - plate_r, p["wash_y"], p["table_top_z"])
+            # the right hand still holds the plate: lift it straight up and carry
+            # it to the clean pile (no re-grasp needed)
+            right.wait_until(left.time - p["carry_time"] - p["lift_time"])
             self._mark(right.time, "carry_to_clean")
             clean_z_bottom = p["table_top_z"] + clean_count * plate_h
             carry_z = p["table_top_z"] + p["grab_raise_hand_dz"] + p["carry_lift"] + clean_count * plate_h
             right.move(p["lift_time"], pos=(wash_pinch[0], p["wash_y"], carry_z))
             clean_pinch_x = p["clean_x"] + pinch_dx
             right.move(p["carry_time"], pos=(clean_pinch_x, p["clean_y"], carry_z))
-            right.move(p["lower_time"], pos=(clean_pinch_x, p["clean_y"], clean_z_bottom + p["setdown_pinch_dz"]))
+            right.move(p["lower_time"], pos=(clean_pinch_x, p["clean_y"], clean_z_bottom + p["grab_raise_hand_dz"]))
             self._release_and_retract(right, (clean_pinch_x - 0.12, p["wash_y"], p["table_top_z"] + 0.18))
             clean_count += 1
             pile_count -= 1
