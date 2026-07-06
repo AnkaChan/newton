@@ -31,13 +31,15 @@ from newton.examples.vbd.example_vbd_dish_washing import Example as _DishWashing
 PARAMS = copy.deepcopy(_BASE_PARAMS)
 PARAMS.update(
     {
-        # wash every plate in the pile
+        # wash every dish
         "plate_count": 3,
         "wash_count": 3,
-        # staircase pile so every plate overhangs the edge when it becomes the
-        # top and is directly graspable (no fragile drag-to-edge step)
-        "pile_stagger": 0.012,
-        # a full run through the pile is much longer
+        # dirty dishes in a row along the front edge, each independently
+        # graspable; washed dishes stack into a pile on the clean side
+        "dirty_layout": "row",
+        "dirty_pile_y": -0.16,
+        "row_spacing": 0.135,
+        # a full run through all three dishes is much longer
         "num_frames": 2900,
     }
 )

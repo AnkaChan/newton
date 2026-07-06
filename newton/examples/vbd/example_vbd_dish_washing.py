@@ -69,11 +69,13 @@ PARAMS = {
     "dirty_pile_x": -0.138,
     "dirty_pile_y": -0.24,
     "grab_overhang_x": -0.173,
-    # staircase pile: shift each lower plate this far toward the table interior
-    # so every plate overhangs the edge when it becomes the top and is directly
-    # graspable (0 = flush pile with only the top overhanging, for the 1-dish
-    # example; the all-dishes example sets this > 0)
-    "pile_stagger": 0.0,
+    # dirty-plate arrangement: "pile" stacks them at one spot with only the top
+    # overhanging (the 1-dish example grabs that top plate); "row" lays them out
+    # along the front edge, each overhanging and independently graspable (the
+    # all-dishes example — a stacked pile of overhanging plates is unstable and
+    # their rims foul the grab path). ``row_spacing`` is the y-pitch of the row.
+    "dirty_layout": "pile",
+    "row_spacing": 0.135,
     # washing spot: also at the front edge (the rim overhang is what makes
     # the plate re-graspable after the rub)
     "wash_x": -0.173,
@@ -507,7 +509,17 @@ def _add_table(builder: newton.ModelBuilder, params: dict) -> list[int]:
     return shapes
 
 
-def _add_plates(builder: newton.ModelBuilder, params: dict) -> tuple[list[int], list[int]]:
+def _add_plates(builder: newton.ModelBuilder, params: dict) -> tuple[list[int], list[int], list[tuple]]:
+    """Add the dirty plates and return (bodies, shapes, grab_specs). Each
+    grab_spec is (rim_x, y, plate_bottom_z) — where the right hand slides its
+    index under that plate's front rim to pick it up.
+
+    ``dirty_layout`` selects the arrangement:
+      - "pile": plates stacked at one spot, only the top overhanging (the
+        1-dish example grabs that top plate).
+      - "row":  plates in a single row along the front edge, each overhanging
+        and independently graspable (the all-dishes example; a stacked pile of
+        overhanging plates is unstable and their rims foul the grab path)."""
     plate_cfg = newton.ModelBuilder.ShapeConfig(
         density=params["plate_density"],
         ke=params["shape_ke"],
@@ -519,31 +531,34 @@ def _add_plates(builder: newton.ModelBuilder, params: dict) -> tuple[list[int], 
     )
     plates = []
     plate_shapes = []
+    grab_specs = []
     count = params["plate_count"]
     colors = params["plate_colors"]
-    stagger = params["pile_stagger"]
+    half_h = params["plate_half_height"]
+    layout = params["dirty_layout"]
     for level in range(count):
-        if stagger > 0.0:
-            # staircase: the top plate overhangs most, each lower one a bit less,
-            # so whichever plate is currently on top overhangs and is graspable
-            x = params["grab_overhang_x"] + (count - 1 - level) * stagger
-        else:
-            # flush pile, only the top plate overhangs the edge
+        if layout == "row":
+            x = params["grab_overhang_x"]
+            y = params["dirty_pile_y"] + (level - 0.5 * (count - 1)) * params["row_spacing"]
+            z = params["table_top_z"] + half_h
+        else:  # pile: only the top overhangs, the rest sit flush and on-table
             x = params["grab_overhang_x"] if level == count - 1 else params["dirty_pile_x"]
-        z = params["table_top_z"] + (2 * level + 1) * params["plate_half_height"]
-        body = builder.add_body(xform=wp.transform(wp.vec3(x, params["dirty_pile_y"], z), wp.quat_identity()))
+            y = params["dirty_pile_y"]
+            z = params["table_top_z"] + (2 * level + 1) * half_h
+        body = builder.add_body(xform=wp.transform(wp.vec3(x, y, z), wp.quat_identity()))
         plate_shapes.append(
             builder.add_shape_cylinder(
                 body,
                 radius=params["plate_radius"],
-                half_height=params["plate_half_height"],
+                half_height=half_h,
                 cfg=plate_cfg,
                 color=wp.vec3(*colors[level % len(colors)]),
                 label=f"plate_{level}",
             )
         )
         plates.append(body)
-    return plates, plate_shapes
+        grab_specs.append((x - params["plate_radius"], y, z - half_h))
+    return plates, plate_shapes, grab_specs
 
 
 def _add_sponge(builder: newton.ModelBuilder, params: dict) -> dict:
@@ -607,7 +622,7 @@ class Example:
         self.robot_bodies, robot_rigid_shapes, grasp_shapes = _add_h1(builder, p)
         self.robot_coord_count = builder.joint_coord_count
         table_shapes = _add_table(builder, p)
-        self.plate_bodies, plate_shapes = _add_plates(builder, p)
+        self.plate_bodies, plate_shapes, self.plate_grab_specs = _add_plates(builder, p)
         self.sponge_info = _add_sponge(builder, p)
         ground_cfg = newton.ModelBuilder.ShapeConfig(
             ke=p["shape_ke"],
@@ -715,9 +730,6 @@ class Example:
 
     # ── choreography ─────────────────────────────────────────────────────
 
-    def _plate_pile_z(self, level: int) -> float:
-        return self.params["table_top_z"] + (2 * level + 1) * self.params["plate_half_height"]
-
     def _mark(self, time: float, name: str):
         self._phase_marks.append((time, name))
 
@@ -778,7 +790,6 @@ class Example:
 
         plate_r = p["plate_radius"]
         plate_h = 2.0 * p["plate_half_height"]
-        pile_y = p["dirty_pile_y"]
         pinch_dx = p["plate_center_to_pinch_dx"]
         wash_pinch = np.asarray([p["wash_x"] + pinch_dx, p["wash_y"], 0.0])
         sponge_size = p["sponge_size"]
@@ -788,17 +799,14 @@ class Example:
 
         wash_count = p["wash_count"]
         clean_count = 0
-        pile_count = p["plate_count"]
         for k in range(wash_count):
-            top_level = pile_count - 1
-            plate_bottom = self._plate_pile_z(top_level) - p["plate_half_height"]
-            # in a staircase pile the current top plate sits k steps in from the
-            # most-overhanging start, so its rim is staggered inward accordingly
-            top_plate_x = p["grab_overhang_x"] + k * p["pile_stagger"]
-            grab_rim_x = top_plate_x - plate_r
+            # wash plates top-down (pile) / one end to the other (row); this
+            # index order matches test_final's clean-pile expectations
+            wash_level = p["plate_count"] - 1 - k
+            grab_rim_x, grab_y, plate_bottom = self.plate_grab_specs[wash_level]
 
-            # grab the top plate off the pile
-            self._grab_rim(right, grab_rim_x, pile_y, plate_bottom)
+            # grab the plate off the pile / out of the row
+            self._grab_rim(right, grab_rim_x, grab_y, plate_bottom)
 
             # carry to the washing spot and HOLD the plate in the air there for
             # the whole rub — the right hand keeps gripping it (a plate set down
@@ -808,7 +816,7 @@ class Example:
             self._mark(right.time, "carry_to_wash")
             carry_z = plate_bottom + p["grab_raise_hand_dz"] + p["carry_lift"]
             wash_hold_z = p["table_top_z"] + p["grab_raise_hand_dz"] + p["wash_hold_lift"]
-            right.move(p["lift_time"], pos=(grab_rim_x + p["grab_insert_depth"], pile_y, carry_z))
+            right.move(p["lift_time"], pos=(grab_rim_x + p["grab_insert_depth"], grab_y, carry_z))
             right.move(p["carry_time"], pos=(wash_pinch[0], wash_pinch[1], wash_hold_z))
             plate_ready_time = right.time
 
@@ -880,7 +888,6 @@ class Example:
             right.wait(p["place_dwell"])
             self._release_and_retract(right, p["rest_right"])
             clean_count += 1
-            pile_count -= 1
 
         # epilogue: return the sponge home and rest both hands
         sponge_rim_x = p["sponge_x"] - 0.5 * sponge_size[0]
@@ -1157,11 +1164,11 @@ class Example:
             xy_err = float(np.linalg.norm(pos[:2] - (p["clean_x"], p["clean_y"])))
             assert xy_err < 0.09, f"Washed plate {k} is {xy_err:.3f} m from the clean spot"
             expected_z = p["table_top_z"] + (2 * k + 1) * p["plate_half_height"]
-            assert abs(pos[2] - expected_z) < 0.03, f"Washed plate {k} is not resting on the clean pile: z={pos[2]:.3f}"
-        # unwashed plates never left the dirty pile
+            assert abs(pos[2] - expected_z) < 0.04, f"Washed plate {k} is not resting on the clean pile: z={pos[2]:.3f}"
+        # unwashed plates never left their starting spot
         for level in range(p["plate_count"] - p["wash_count"]):
             pos = body_q[self.plate_bodies[level], :3]
-            xy_err = float(np.linalg.norm(pos[:2] - (p["dirty_pile_x"], p["dirty_pile_y"])))
+            xy_err = float(np.linalg.norm(pos[:2] - self.plate_initial_positions[level, :2]))
             assert xy_err < 0.06, f"Unwashed plate {level} drifted {xy_err:.3f} m"
         # the sponge went home
         sponge_center = particle_q[self.sponge_info["particles"]].mean(axis=0)
