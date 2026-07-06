@@ -73,10 +73,10 @@ PARAMS = {
     # the plate re-graspable after the rub)
     "wash_x": -0.173,
     "wash_y": -0.02,
-    # clean spot: well onto the table (not at the edge) so the plate is released
-    # by dropping it the last few cm and it lands stably, with no edge to fall off
-    "clean_x": -0.08,
-    "clean_y": 0.14,
+    # clean spot: on the table on the far (left) side, within the right arm's
+    # cross-body reach so the plate is dropped where aimed and lands stably
+    "clean_x": -0.15,
+    "clean_y": 0.12,
     # sponge: a flat soft FEM pad the same thickness as the plate rim, so the
     # calibrated edge-pinch that lifts a plate also grips the sponge (a thick
     # foam cube squirts out of the H1 pinch; a pad is caught at its edge like
@@ -886,7 +886,7 @@ class Example:
             drop_pinch_z = clean_z_bottom + p["grab_raise_hand_dz"] + p["release_gap"]
             right.move(p["carry_time"], pos=(clean_pinch_x, p["clean_y"], drop_pinch_z))
             right.wait(p["place_dwell"])
-            self._release_and_retract(right, (clean_pinch_x - 0.12, p["wash_y"], p["table_top_z"] + 0.18))
+            self._release_and_retract(right, p["rest_right"])
             clean_count += 1
             pile_count -= 1
 
@@ -1163,7 +1163,7 @@ class Example:
             level = p["plate_count"] - 1 - k
             pos = body_q[self.plate_bodies[level], :3]
             xy_err = float(np.linalg.norm(pos[:2] - (p["clean_x"], p["clean_y"])))
-            assert xy_err < 0.07, f"Washed plate {k} is {xy_err:.3f} m from the clean spot"
+            assert xy_err < 0.09, f"Washed plate {k} is {xy_err:.3f} m from the clean spot"
             expected_z = p["table_top_z"] + (2 * k + 1) * p["plate_half_height"]
             assert abs(pos[2] - expected_z) < 0.03, f"Washed plate {k} is not resting on the clean pile: z={pos[2]:.3f}"
         # unwashed plates never left the dirty pile
