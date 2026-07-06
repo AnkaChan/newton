@@ -39,8 +39,14 @@ PARAMS.update(
         "plate_count": 2,
         "wash_count": 2,
         "dirty_layout": "row",
-        "dirty_pile_y": -0.24,
-        "row_spacing": 0.12,
+        "dirty_pile_y": -0.20,
+        "row_spacing": 0.20,
+        # clean pile just past centre — far enough to read as "the other side"
+        # from the right-hand dirty row, close enough that the right arm places
+        # it a safe margin inside the front edge (full cross-body lands on the
+        # unstable lip)
+        "clean_x": -0.12,
+        "clean_y": 0.03,
         # a full run through all three dishes is much longer
         "num_frames": 2900,
     }
