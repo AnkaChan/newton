@@ -80,20 +80,27 @@ PARAMS = {
     # foam cube squirts out of the H1 pinch; a pad is caught at its edge like
     # the soft grid in example_vbd_gripper_soft_grid). Its -x edge overhangs
     # the front table edge so the index can slide underneath.
-    "sponge_size": (0.10, 0.075, 0.016),
-    "sponge_cells": (7, 5, 1),
+    "sponge_size": (0.10, 0.075, 0.022),
+    "sponge_cells": (6, 5, 2),
     "sponge_x": -0.185,
     "sponge_y": 0.27,
     "sponge_density": 250.0,
-    "sponge_k_mu": 2.0e4,
-    "sponge_k_lambda": 1.0e5,
-    "sponge_k_damp": 1.0e-4,
+    # a soft, well-damped pad conforms to the fingers instead of inverting a tet
+    # into a spike when a fingertip presses in
+    "sponge_k_mu": 8.0e3,
+    "sponge_k_lambda": 4.0e4,
+    "sponge_k_damp": 1.0e-3,
     "sponge_particle_radius": 0.004,
     "sponge_color": (0.95, 0.85, 0.25),
-    # rigid-soft contact
-    "soft_contact_ke": 1.0e3,
-    "soft_contact_kd": 1.0e-2,
-    "soft_contact_mu": 0.5,
+    # rigid-soft contact. A concentrated H1 fingertip driven into a soft pad the
+    # way the ~2 mm overdrive lifts a rigid plate PENETRATES the particles and
+    # detonates the FEM (a tet inverts into a spike). The sponge grasp instead
+    # cradles the pad (index just at the underside, thumb just resting on top),
+    # so keep the contact soft and well damped (the tablecloth's kd 1e-2 gave
+    # near-zero damping) and rely on friction, not compression, to hold it.
+    "soft_contact_ke": 5.0e2,
+    "soft_contact_kd": 1.0,
+    "soft_contact_mu": 1.0,
     "soft_contact_margin": 0.008,
     "enable_water_tight_rigid_soft_contact": True,
     "shape_ke": 1.0e3,
@@ -137,8 +144,12 @@ PARAMS = {
     # thumb bottom lands ~ at the plate top for a light clamp on the rim
     "grab_thumb_fraction": 0.72,
     "other_finger_fraction": 0.8,
-    # sponge pinch: the pad is the same 16 mm thickness as the plate rim, so it
-    # reuses the plate insert/raise/thumb offsets (see the k == 0 grab below).
+    # sponge pinch: a gentle non-penetrating cradle (unlike the plate's small
+    # overdrive, which would spear a soft body). The index slides in ~6 mm below
+    # the pad, rises to just kiss the underside, and the thumb only rests on top.
+    "sponge_insert_hand_dz": -0.014,
+    "sponge_raise_hand_dz": -0.008,
+    "sponge_thumb_fraction": 0.52,
     # pinch-point x offset from the held plate's center while carried
     "plate_center_to_pinch_dx": -0.050,
     "carry_lift": 0.055,
@@ -779,8 +790,16 @@ class Example:
                 left.wait_until(p["settle_time"] + p["approach_time"] + p["descend_time"])
                 sponge_bottom = p["table_top_z"] + p["sponge_particle_radius"]
                 sponge_rim_x = p["sponge_x"] - 0.5 * sponge_size[0]
-                self._grab_rim(left, sponge_rim_x, p["sponge_y"], sponge_bottom)
-                lift_z = sponge_bottom + p["grab_raise_hand_dz"] + p["carry_lift"] + 0.03
+                self._grab_rim(
+                    left,
+                    sponge_rim_x,
+                    p["sponge_y"],
+                    sponge_bottom,
+                    insert_dz=p["sponge_insert_hand_dz"],
+                    raise_dz=p["sponge_raise_hand_dz"],
+                    thumb=p["sponge_thumb_fraction"],
+                )
+                lift_z = sponge_bottom + p["sponge_raise_hand_dz"] + p["carry_lift"] + 0.03
                 left.move(p["lift_time"], pos=(sponge_rim_x + p["grab_insert_depth"], p["sponge_y"], lift_z))
 
             # rub: flat ellipses over the plate's near half with light pressure.
