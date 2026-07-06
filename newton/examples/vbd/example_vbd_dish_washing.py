@@ -74,8 +74,9 @@ PARAMS = {
     "wash_x": -0.173,
     "wash_y": -0.02,
     # clean spot: on the table on the far (left) side, within the right arm's
-    # cross-body reach so the plate is dropped where aimed and lands stably
-    "clean_x": -0.15,
+    # cross-body reach so the plate is dropped where aimed and lands stably a
+    # good margin inside the front edge
+    "clean_x": -0.11,
     "clean_y": 0.12,
     # sponge: a flat soft FEM pad the same thickness as the plate rim, so the
     # calibrated edge-pinch that lifts a plate also grips the sponge (a thick
@@ -749,12 +750,13 @@ class Example:
         """Open the whole hand at once so the object drops the last few cm and
         lands where it is — extracting the still-curled index from under a
         placed plate drags it off the edge, and a stuck plate spikes the solve.
-        Then lift the open hand up and away."""
+        Then lift the open hand STRAIGHT UP to clear the dropped object before
+        retreating (sweeping the open hand sideways knocks it off the edge)."""
         p = self.params
         self._mark(hand.time, "release")
         hand.move(p["release_time"], thumb=0.0, index=0.0, other=0.0)
         pos = hand.pos()
-        hand.move(p["retract_time"], pos=(pos[0] - 0.06, pos[1], pos[2] + 0.09))
+        hand.move(p["retract_time"], pos=(pos[0], pos[1], pos[2] + 0.13))
         hand.move(p["retract_time"], pos=retreat_pos)
 
     def _build_choreography(self):
