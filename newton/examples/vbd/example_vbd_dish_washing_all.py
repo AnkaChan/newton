@@ -35,17 +35,11 @@ PARAMS.update(
         "plate_count": 3,
         "wash_count": 3,
         # dirty dishes in a row on the right along the front edge, each
-        # independently graspable; washed dishes stack into a pile on the left.
-        # The clean pile stays near centre (clean_y small) because the fixed-base
-        # right arm cannot reach far cross-body onto the table without the plate
-        # landing on the unstable front-edge lip.
+        # independently graspable; washed dishes stack into a pile on the clean
+        # (left) side, reusing the 1-dish example's proven clean placement
         "dirty_layout": "row",
         "dirty_pile_y": -0.22,
         "row_spacing": 0.125,
-        "clean_x": -0.13,
-        "clean_y": 0.05,
-        # lighter plates settle more gently when dropped onto the clean pile
-        "plate_density": 500.0,
         # a full run through all three dishes is much longer
         "num_frames": 2900,
     }
