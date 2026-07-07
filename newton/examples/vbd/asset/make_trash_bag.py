@@ -62,8 +62,8 @@ DEFAULTS = {
     "rope_z_frac": 0.45,  # rope sits at z = H - rope_z_frac*h_hem (inside the channel)
     "rope_offset": 0.006,  # rope follows the bag contour, offset this far OUTWARD (no penetration)
     "handle_gap": 0.05,  # exposed handle gap at each side middle; tunnels cover the rest (incl. corners)
-    "handle_stickout": 0.05,  # exposed handles bulge this far radially OUT of the holes (extra rope length)
-    "handle_lift": 0.03,  # ...and rise this far, so the drawstring slack stands out above the rim
+    "handle_stickout": 0.09,  # exposed handles bulge this far radially OUT of the holes (extra rope length)
+    "handle_lift": 0.05,  # ...and rise this far, so the drawstring slack stands out above the rim
 }
 
 
