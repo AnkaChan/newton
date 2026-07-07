@@ -32,6 +32,39 @@ from .solvers import SOLVERS, make_solver
 _BASE_FPS = 60.0
 
 
+class _FrameRecorder:
+    """Capture GL viewer frames to an MP4 via imageio-ffmpeg (opt-in, ``--record``).
+
+    Frames come from :meth:`ViewerGL.get_frame` as an RGB ``(H, W, 3)`` uint8 array
+    (top-left origin, so no flip is needed). The writer is opened lazily on the first
+    frame (once the size is known) and finalized by :meth:`close`.
+    """
+
+    def __init__(self, path: str, fps: float):
+        self.path = path
+        self.fps = max(1, int(round(fps)))
+        self.count = 0
+        self._writer = None
+
+    def capture(self, viewer) -> None:
+        img = viewer.get_frame().numpy()
+        # libx264 needs even dimensions; crop the odd last row/column if any.
+        h, w = img.shape[:2]
+        img = img[: h - (h % 2), : w - (w % 2)]
+        if self._writer is None:
+            import imageio.v2 as imageio
+
+            self._writer = imageio.get_writer(self.path, fps=self.fps, macro_block_size=1)
+        self._writer.append_data(img)
+        self.count += 1
+
+    def close(self) -> None:
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
+            print(f"[record] wrote {self.count} frames -> {self.path}")
+
+
 class Experiment:
     def __init__(self, viewer, args):
         self.viewer = viewer
@@ -71,6 +104,15 @@ class Experiment:
             self.viewer.set_camera(pos=pos, pitch=pitch, yaw=yaw)
             if hasattr(self.viewer.camera, "look_at"):
                 self.viewer.camera.look_at(look_at)
+
+        # Optional MP4 recording of the GL viewer (opt-in via --record).
+        self._recorder = None
+        self._record_max = int(getattr(args, "num_frames", 0) or 0)
+        if getattr(args, "record", None):
+            if isinstance(self.viewer, newton.viewer.ViewerGL):
+                self._recorder = _FrameRecorder(args.record, fps=1.0 / self.frame_dt)
+            else:
+                print(f"[record] --record requires --viewer gl (got {type(self.viewer).__name__}); disabled")
 
         # The model was built at the zero (rest) config so the solver's
         # joint_rest_angle is zero (matching IsaacLab). Spawn the arm at the
@@ -270,6 +312,15 @@ class Experiment:
         newton.examples.log_coupled_view(self, self.contacts)
         self.controller.render_overlay(self.viewer)
         self.viewer.end_frame()
+        if self._recorder is not None:
+            self._recorder.capture(self.viewer)
+            if self._record_max and self._recorder.count >= self._record_max:
+                # GL's is_running() only tracks the window; signal the event loop to
+                # exit so run() finishes and main()'s finally finalizes the MP4.
+                try:
+                    self.viewer.renderer.app.event_loop.has_exit = True
+                except Exception:
+                    pass
 
     def test_final(self):
         body_q = self.state_0.body_q.numpy()
@@ -304,6 +355,15 @@ def build_parser(scene_cls, solver_cls, controller_cls):
         "tunnel between the gripper's mesh surface samples). Builds volume SDFs for the rigid meshes.",
     )
     parser.add_argument(
+        "--record",
+        type=str,
+        default=None,
+        metavar="OUT.mp4",
+        help="Record the GL viewer to an MP4 at this path (requires --viewer gl). With --num-frames "
+        "set, the run stops and finalizes the video after that many frames; otherwise it records until "
+        "you close the window.",
+    )
+    parser.add_argument(
         "--no-graph-capture", action="store_false", dest="graph_capture", default=True, help="Disable CUDA graph capture."
     )
     scene_cls.add_args(parser)
@@ -329,4 +389,9 @@ def main(num_frames=600):
     parser.set_defaults(num_frames=num_frames)
     viewer, args = newton.examples.init(parser)
     experiment = Experiment(viewer, args)
-    newton.examples.run(experiment, args)
+    try:
+        newton.examples.run(experiment, args)
+    finally:
+        recorder = getattr(experiment, "_recorder", None)
+        if recorder is not None:
+            recorder.close()
