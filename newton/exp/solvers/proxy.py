@@ -45,10 +45,17 @@ class ProxyCouplingStrategy(SolverStrategy):
         SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
     def configure_robot(self, builder, robot_bodies, robot_joints):
-        builder.joint_target_ke[:7] = [ARM_STIFFNESS] * 7
-        builder.joint_target_kd[:7] = [ARM_DAMPING] * 7
-        builder.joint_target_ke[7:9] = [FINGER_STIFFNESS, FINGER_STIFFNESS]
-        builder.joint_target_kd[7:9] = [FINGER_DAMPING, FINGER_DAMPING]
+        gains = {
+            "arm_stiffness": ARM_STIFFNESS,
+            "arm_damping": ARM_DAMPING,
+            "finger_stiffness": FINGER_STIFFNESS,
+            "finger_damping": FINGER_DAMPING,
+        }
+        gains.update(self.scene_robot_gains())  # scene overrides win
+        builder.joint_target_ke[:7] = [gains["arm_stiffness"]] * 7
+        builder.joint_target_kd[:7] = [gains["arm_damping"]] * 7
+        builder.joint_target_ke[7:9] = [gains["finger_stiffness"]] * 2
+        builder.joint_target_kd[7:9] = [gains["finger_damping"]] * 2
         builder.joint_effort_limit[:9] = [EFFORT_LIMIT] * 9
         builder.joint_armature[:7] = [1.0e-3] * 7
         builder.joint_armature[7:9] = [0.0, 0.0]
@@ -59,12 +66,21 @@ class ProxyCouplingStrategy(SolverStrategy):
         pass  # arm and statics live in different solver entries; no filter needed.
 
     def apply_materials(self, model):
-        model.shape_material_ke.fill_(4.0e4)
-        model.shape_material_kd.fill_(1.0e-5)
-        model.shape_material_mu.fill_(5.0)
-        model.soft_contact_ke = 1.0e4
-        model.soft_contact_kd = 1.0e-2
-        model.soft_contact_mu = 1.5
+        mats = {
+            "shape_material_ke": 4.0e4,
+            "shape_material_kd": 1.0e-5,
+            "shape_material_mu": 5.0,
+            "soft_contact_ke": 1.0e4,
+            "soft_contact_kd": 1.0e-2,
+            "soft_contact_mu": 1.5,
+        }
+        mats.update(self.scene_materials())  # scene overrides win
+        model.shape_material_ke.fill_(mats["shape_material_ke"])
+        model.shape_material_kd.fill_(mats["shape_material_kd"])
+        model.shape_material_mu.fill_(mats["shape_material_mu"])
+        model.soft_contact_ke = mats["soft_contact_ke"]
+        model.soft_contact_kd = mats["soft_contact_kd"]
+        model.soft_contact_mu = mats["soft_contact_mu"]
 
     def post_finalize(self, model, handles):
         self._handles = handles
@@ -75,6 +91,18 @@ class ProxyCouplingStrategy(SolverStrategy):
         Shared by the proxy and soft-constraint strategies, which differ only in
         the coupled-solver class they instantiate (see ``build_solver``).
         """
+        vbd_kwargs = dict(
+            iterations=int(args.vbd_iterations),
+            particle_enable_self_contact=True,
+            particle_self_contact_radius=2.0e-3,
+            particle_self_contact_margin=2.0e-3,
+            particle_topological_contact_filter_threshold=1,
+            particle_rest_shape_contact_exclusion_radius=0.0,
+            particle_vertex_contact_buffer_size=16,
+            particle_edge_contact_buffer_size=20,
+            particle_collision_detection_interval=-1,
+        )
+        vbd_kwargs.update(self.scene_solver_overrides())  # scene overrides win
         entries = [
             SolverCoupled.Entry(
                 name="mjc",
@@ -100,18 +128,7 @@ class ProxyCouplingStrategy(SolverStrategy):
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(
-                    model=v,
-                    iterations=int(args.vbd_iterations),
-                    particle_enable_self_contact=True,
-                    particle_self_contact_radius=2.0e-3,
-                    particle_self_contact_margin=2.0e-3,
-                    particle_topological_contact_filter_threshold=1,
-                    particle_rest_shape_contact_exclusion_radius=0.0,
-                    particle_vertex_contact_buffer_size=16,
-                    particle_edge_contact_buffer_size=20,
-                    particle_collision_detection_interval=-1,
-                ),
+                solver=lambda v: SolverVBD(model=v, **vbd_kwargs),
                 particles=list(range(model.particle_count)),
                 shapes=handles.static_shapes,
             ),

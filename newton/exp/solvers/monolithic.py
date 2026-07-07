@@ -17,14 +17,17 @@ from newton.solvers import SolverVBD
 from .base import SolverStrategy
 from . import register
 
-# IsaacLab FRANKA_PANDA_AVBD_CFG actuator gains: very stiff position drive with
-# light damping. NOTE: the damping must stay small -- with substep dt ~1/600 a
-# large kd (e.g. 1e4) makes the explicit damping term unstable (dt*kd >> 2) and
-# the arm oscillates. IsaacLab uses 0.01 (arm) / 0.1 (fingers).
+# IsaacLab FRANKA_PANDA_AVBD_CFG actuator gains (defaults; scenes may override
+# per (scene, solver) via Scene.robot_gains). Arm: stiff position drive
+# (ke=1e6) with light damping. NOTE: the damping must stay small -- with substep
+# dt ~1/600 a large kd (e.g. 1e4) makes the explicit damping term unstable
+# (dt*kd >> 2) and the arm oscillates. Arm damping is task-dependent in IsaacLab
+# (0.01 for cloth, 0.1 for the cube), so scenes override it. Fingers: ke=1e4,
+# kd=0.1 (IsaacLab panda_hand), same across the AVBD tasks.
 ARM_STIFFNESS = 1.0e6
 ARM_DAMPING = 0.01
-FINGER_STIFFNESS = 1.0e6
-FINGER_DAMPING = 0.1
+FINGER_STIFFNESS = 1.0e4
+FINGER_DAMPING = 0.01
 # Effort limits [N·m / N]: arm joints 1-4, joints 5-7, fingers.
 EFFORT_LIMIT = [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0, 200.0, 200.0]
 
@@ -40,10 +43,17 @@ class MonolithicAvbdStrategy(SolverStrategy):
         SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
     def configure_robot(self, builder, robot_bodies, robot_joints):
-        builder.joint_target_ke[:7] = [ARM_STIFFNESS] * 7
-        builder.joint_target_kd[:7] = [ARM_DAMPING] * 7
-        builder.joint_target_ke[7:9] = [FINGER_STIFFNESS, FINGER_STIFFNESS]
-        builder.joint_target_kd[7:9] = [FINGER_DAMPING, FINGER_DAMPING]
+        gains = {
+            "arm_stiffness": ARM_STIFFNESS,
+            "arm_damping": ARM_DAMPING,
+            "finger_stiffness": FINGER_STIFFNESS,
+            "finger_damping": FINGER_DAMPING,
+        }
+        gains.update(self.scene_robot_gains())  # scene overrides win
+        builder.joint_target_ke[:7] = [gains["arm_stiffness"]] * 7
+        builder.joint_target_kd[:7] = [gains["arm_damping"]] * 7
+        builder.joint_target_ke[7:9] = [gains["finger_stiffness"]] * 2
+        builder.joint_target_kd[7:9] = [gains["finger_damping"]] * 2
         builder.joint_effort_limit[:9] = EFFORT_LIMIT
         # Arm rotor inertia (IsaacLab FRANKA_PANDA armature=1e-3). Critical for
         # stability of the stiff 1e6/0.01 position drive -- without it the arm
@@ -58,12 +68,21 @@ class MonolithicAvbdStrategy(SolverStrategy):
                 builder.add_shape_collision_filter_pair(rs, ss)
 
     def apply_materials(self, model):
-        model.shape_material_ke.fill_(1.0e4)
-        model.shape_material_kd.fill_(1.0)
-        model.shape_material_mu.fill_(1.5)
-        model.soft_contact_ke = 1.0e4
-        model.soft_contact_kd = 1.0e-2
-        model.soft_contact_mu = 1.5
+        mats = {
+            "shape_material_ke": 1.0e4,
+            "shape_material_kd": 1.0,
+            "shape_material_mu": 1.5,
+            "soft_contact_ke": 1.0e4,
+            "soft_contact_kd": 1.0e-2,
+            "soft_contact_mu": 1.5,
+        }
+        mats.update(self.scene_materials())  # scene overrides win
+        model.shape_material_ke.fill_(mats["shape_material_ke"])
+        model.shape_material_kd.fill_(mats["shape_material_kd"])
+        model.shape_material_mu.fill_(mats["shape_material_mu"])
+        model.soft_contact_ke = mats["soft_contact_ke"]
+        model.soft_contact_kd = mats["soft_contact_kd"]
+        model.soft_contact_mu = mats["soft_contact_mu"]
 
     def post_finalize(self, model, handles):
         # VBD uses model.body_q as the articulation rest pose.
@@ -71,8 +90,10 @@ class MonolithicAvbdStrategy(SolverStrategy):
         self._robot_joints = handles.robot_joints
 
     def build_solver(self, model, handles, args):
-        self.solver = SolverVBD(
-            model=model,
+        # Strategy defaults are the shirt_pick values; scenes override the
+        # solver-specific pieces (e.g. self-contact radii/buffers for the
+        # IsaacLab AVBD tasks) via Scene.solver_overrides.
+        vbd_kwargs = dict(
             iterations=int(args.vbd_iterations),
             integrate_with_external_rigid_solver=False,
             particle_enable_self_contact=True,
@@ -94,6 +115,8 @@ class MonolithicAvbdStrategy(SolverStrategy):
             rigid_joint_angular_kd=0.0,
             rigid_contact_history=False,
         )
+        vbd_kwargs.update(self.scene_solver_overrides())  # scene overrides win
+        self.solver = SolverVBD(model=model, **vbd_kwargs)
         # NOTE: IsaacLab's NewtonVBDManager does NOT change joint constraint mode,
         # so joints stay in the default hard (augmented-Lagrangian) mode. Forcing
         # soft penalty-only constraints (set_joint_constraint_mode hard=False) is

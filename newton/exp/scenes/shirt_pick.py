@@ -179,3 +179,7 @@ class ShirtPickScene(Scene):
     @classmethod
     def add_args(cls, parser):
         parser.add_argument("--grasp_z", type=float, default=GRASP_Z, help="EE descent height before grasping [m].")
+
+    def robot_gains(self, solver_key):
+        # IsaacLab pick_avbd_cube FRANKA_PANDA_AVBD_CFG: arm damping 0.1.
+        return {"finger_stiffness": 1.0e6, "finger_damping": 1.0} if solver_key == "avbd" else {}

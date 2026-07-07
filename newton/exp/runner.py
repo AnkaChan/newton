@@ -41,6 +41,9 @@ class Experiment:
 
         self.scene = make_scene(args.scene, args)
         self.strategy = make_solver(args.solver, args)
+        # Let the strategy consult scene-provided physics overrides (materials /
+        # solver kwargs) during model assembly and solver construction.
+        self.strategy.scene = self.scene
         self.home_pos, self.home_quat = self.scene.home_pose()
 
         # Timing (IsaacLab: sim.dt = 1/60, num_substeps VBD sub-steps per sim

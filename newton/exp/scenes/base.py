@@ -81,6 +81,42 @@ class Scene:
         """Return ``(pos (3,), quat (4,) xyzw)`` of the hover/home EE pose."""
         raise NotImplementedError
 
+    # -- solver-dependent physics overrides -------------------------------
+    def model_materials(self, solver_key: str) -> dict:
+        """Model-level contact overrides for this scene under ``solver_key``.
+
+        Returns a mapping of Newton ``Model`` contact fields
+        (``soft_contact_ke``/``kd``/``mu``, ``shape_material_ke``/``kd``/``mu``)
+        that the solver strategy merges over its own method defaults; an empty
+        dict keeps the strategy defaults. Keyed by ``solver_key`` so a scene can
+        differ per (scene, solver), mirroring IsaacLab's per-task
+        ``NewtonModelCfg``.
+        """
+        del solver_key
+        return {}
+
+    def solver_overrides(self, solver_key: str) -> dict:
+        """Scene-specific solver constructor overrides for ``solver_key``.
+
+        Returns keyword overrides merged over the strategy's solver kwargs
+        (e.g. ``{"particle_enable_self_contact": False}`` for a solid body).
+        Empty keeps the strategy defaults.
+        """
+        del solver_key
+        return {}
+
+    def robot_gains(self, solver_key: str) -> dict:
+        """Scene-specific robot actuator gain overrides for ``solver_key``.
+
+        Returns any of ``arm_stiffness``, ``arm_damping``, ``finger_stiffness``,
+        ``finger_damping`` merged over the strategy's defaults in
+        ``configure_robot``; empty keeps the strategy defaults. Keyed by
+        ``solver_key`` because the gains are per-task in IsaacLab
+        (e.g. the AVBD arm damping is 0.01 for cloth but 0.1 for the cube).
+        """
+        del solver_key
+        return {}
+
     # -- presentation -----------------------------------------------------
     def camera(self):
         """Return ``(pos, pitch, yaw, look_at)`` or ``None`` to keep defaults."""

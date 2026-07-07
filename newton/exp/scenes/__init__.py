@@ -22,6 +22,8 @@ def make_scene(key: str, args) -> Scene:
 
 
 # Register built-in scenes.
+from . import grasp_avbd_cloth  # noqa: E402,F401
+from . import pick_avbd_cube  # noqa: E402,F401
 from . import shirt_pick  # noqa: E402,F401
 
 __all__ = ["SCENES", "Scene", "SceneHandles", "make_scene", "register"]

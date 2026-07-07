@@ -27,6 +27,22 @@ class SolverStrategy:
     def __init__(self, args):
         self.args = args
         self.solver = None
+        #: Active scene, set by the runner before model assembly so the
+        #: strategy can consult scene-provided physics overrides.
+        self.scene = None
+
+    # -- scene-provided overrides -----------------------------------------
+    def scene_materials(self) -> dict:
+        """Scene ``model_materials`` for this strategy's key (or ``{}``)."""
+        return self.scene.model_materials(self.key) if self.scene is not None else {}
+
+    def scene_solver_overrides(self) -> dict:
+        """Scene ``solver_overrides`` for this strategy's key (or ``{}``)."""
+        return self.scene.solver_overrides(self.key) if self.scene is not None else {}
+
+    def scene_robot_gains(self) -> dict:
+        """Scene ``robot_gains`` for this strategy's key (or ``{}``)."""
+        return self.scene.robot_gains(self.key) if self.scene is not None else {}
 
     # -- model assembly ---------------------------------------------------
     def register_attributes(self, builder):
