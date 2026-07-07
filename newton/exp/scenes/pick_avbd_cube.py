@@ -26,7 +26,7 @@ from . import register
 
 # Deformable cube (IsaacLab TetMeshCuboidCfg + DeformableBodyMaterialCfg).
 CUBE_SIZE = 0.05  # edge length [m]
-CUBE_POS = (0.35, 0.0, 0.10)  # centroid at spawn
+CUBE_POS = (0.35, 0.0, 0.05)  # centroid at spawn
 CUBE_DENSITY = 500.0
 CUBE_YOUNGS = 2.5e6
 CUBE_POISSON = 0.25
@@ -43,7 +43,7 @@ ROBOT_INIT_Q = [0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741, 0.04, 0.04]
 
 # Pre-grasp home EE pose above the cube (IsaacLab pick_avbd_cube env _ee_tf).
 # HOME_POS = (0.3022, 0.0000, 0.1257)
-HOME_POS = (0.3815, 0.0000, 0.2057)
+HOME_POS = (0.3800, 0.0000, 0.2057)
 # HOME_QUAT = (0.9654, 0.0214, -0.2598, -0.0058)  # (qx, qy, qz, qw)
 HOME_QUAT = (0.9916, 0.0220, -0.1277, -0.0029)
 # HOME_QUAT = (1.0, 0.0, 0.0, 0.0)
@@ -157,7 +157,7 @@ class PickAVBDCubeScene(Scene):
 
     def robot_gains(self, solver_key):
         # IsaacLab pick_avbd_cube FRANKA_PANDA_AVBD_CFG: arm damping 0.1.
-        return {"finger_stiffness": 1.0e3, "finger_damping": 1.0} if solver_key == "avbd" else {}
+        return {"finger_stiffness": 2.0e3, "finger_damping": 1.0} if solver_key == "avbd" else {}
 
     # -- task -------------------------------------------------------------
     def home_pose(self):

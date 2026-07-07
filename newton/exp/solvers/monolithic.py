@@ -38,6 +38,9 @@ class MonolithicAvbdStrategy(SolverStrategy):
     collapse_fixed_joints = True
     uses_mujoco = False
     decimation = 2  # IsaacLab Isaac-Pick-AVBD-Cloth-Direct-v0
+    # Ramp the AVBD joint penalties before the first rendered frame; a cold
+    # solver leaves the arm's joints slack and it collapses on frame 1.
+    warmup_steps = 8
 
     def register_attributes(self, builder):
         SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)

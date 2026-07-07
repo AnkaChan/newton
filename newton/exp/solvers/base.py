@@ -23,6 +23,10 @@ class SolverStrategy:
     uses_mujoco: bool = False
     #: Physics sub-steps per control update (IsaacLab ``decimation``).
     decimation: int = 1
+    #: One-time solver warm-up env-steps run at init before the first frame.
+    #: 0 disables. AVBD needs this because its joint penalties ramp across
+    #: frames from a slack cold start; see ``Experiment.__init__``.
+    warmup_steps: int = 0
 
     def __init__(self, args):
         self.args = args

@@ -89,13 +89,23 @@ class Experiment:
         self.init_joint_q = np.array(self.state_0.joint_q.numpy(), copy=True)
 
         self.controller = make_controller(args.control, args, self)
+        self.graph = None
         # Stage a sensible control target before graph capture so the capture
         # warm-up drives toward home (not toward the zero config).
-        self.ik.set_target(
-            wp.vec3(*[float(x) for x in self.home_pos]), wp.vec4(*[float(x) for x in self.home_quat])
-        )
-        self.ik.solve()
-        self.ik.write_control(self.control)
+        self._stage_home_target()
+        # One-time solver warm-up. SolverVBD's AVBD joint penalties ramp from
+        # k_start (<< ke) across frames and are never re-seeded, so a cold solver
+        # leaves the arm's joints nearly free and it collapses under gravity on
+        # the very first frame (dragging the cloth/cube with it). Step a few
+        # times to ramp the penalties, then restore the clean spawn state:
+        # reset() keeps the warmed penalties (its reset_internal is a no-op for
+        # the monolithic VBD solver).
+        warmup_steps = int(getattr(self.strategy, "warmup_steps", 0))
+        for _ in range(warmup_steps):
+            self.step()
+        if warmup_steps:
+            self.reset()
+            self._stage_home_target()
         self.capture()
 
     # ------------------------------------------------------------------
@@ -182,6 +192,15 @@ class Experiment:
         self.sim_time = 0.0
         if self.device.is_cuda:
             wp.synchronize_device()
+
+    def _stage_home_target(self):
+        """Solve IK to the home pose and write it as the control target."""
+        self.ik.set_target(
+            wp.vec3(*[float(x) for x in self.home_pos]),
+            wp.vec4(*[float(x) for x in self.home_quat]),
+        )
+        self.ik.solve()
+        self.ik.write_control(self.control)
 
     # ------------------------------------------------------------------
     # Simulation
