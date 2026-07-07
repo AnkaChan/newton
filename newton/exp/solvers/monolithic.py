@@ -118,6 +118,11 @@ class MonolithicAvbdStrategy(SolverStrategy):
             rigid_joint_angular_kd=0.0,
             rigid_contact_history=False,
         )
+        if getattr(args, "water_tight", False):
+            # Water-tight adds edge/face cloth-mesh contacts on top of the per-particle
+            # ones; raise the per-body soft-contact buffer so they are not dropped
+            # (the default 256 overflows to ~400 on the shirt-pick grasp).
+            vbd_kwargs["rigid_body_particle_contact_buffer_size"] = 2048
         vbd_kwargs.update(self.scene_solver_overrides())  # scene overrides win
         self.solver = SolverVBD(model=model, **vbd_kwargs)
         # NOTE: IsaacLab's NewtonVBDManager does NOT change joint constraint mode,

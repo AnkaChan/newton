@@ -69,11 +69,19 @@ class SolverStrategy:
         raise NotImplementedError
 
     # -- simulation hooks -------------------------------------------------
-    def make_collision_pipeline(self, model):
-        """Build the collision pipeline (IsaacLab uses broad_phase='explicit')."""
+    def make_collision_pipeline(self, model, water_tight=False):
+        """Build the collision pipeline (IsaacLab uses broad_phase='explicit').
+
+        When ``water_tight`` is True, enable water-tight rigid-soft contacts so a
+        thin cloth cannot tunnel between a rigid mesh's surface samples. Requires
+        the participating rigid meshes to have volume SDFs (see
+        :meth:`ModelBuilder.enable_rigid_mesh_sdfs`, called before ``finalize``).
+        """
         import newton
 
-        return newton.CollisionPipeline(model, broad_phase="explicit")
+        return newton.CollisionPipeline(
+            model, broad_phase="explicit", enable_water_tight_rigid_soft_contact=water_tight
+        )
 
     def pre_substeps(self, solver, state):
         """Hook before each control update's sub-steps (e.g. VBD rebuild_bvh)."""

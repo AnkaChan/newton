@@ -1037,6 +1037,9 @@ class ModelBuilder:
         self.shape_sdf_padding: list[float | None] = []
         """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
         When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
+        self._enable_rigid_mesh_sdfs: bool = False
+        """Set by :meth:`enable_rigid_mesh_sdfs`; when True, :meth:`finalize` builds volume SDFs for
+        participating rigid ``MESH``/``CONVEX_MESH`` shapes that lack one."""
 
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
@@ -9397,6 +9400,25 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
+    def enable_rigid_mesh_sdfs(self) -> None:
+        """Enable volume (texture) SDF construction for the builder's rigid mesh shapes.
+
+        Requests volume-SDF construction for rigid ``MESH`` / ``CONVEX_MESH`` shapes that collide
+        with particles and lack an SDF. The SDFs are built by :meth:`finalize <ModelBuilder.finalize>`
+        (they need the finalize device) in unscaled mesh space, so scale is applied at query time and
+        one SDF serves all scales of a shared :class:`~newton.Mesh`. They are general-purpose distance
+        fields — any SDF query can use them — but their primary consumer is the water-tight rigid-soft
+        edge/face contact passes.
+
+        Call before :meth:`finalize <ModelBuilder.finalize>` when constructing a
+        :class:`~newton.CollisionPipeline` with ``enable_water_tight_rigid_soft_contact=True``;
+        :meth:`finalize <ModelBuilder.finalize>` does not build these implicitly (mirroring
+        :meth:`color`). Texture SDFs are CUDA-only, so on CPU (or on any per-mesh build failure)
+        the SDF is not provisioned; constructing a water-tight :class:`~newton.CollisionPipeline`
+        for such a shape then raises rather than silently degrading to the per-particle path.
+        """
+        self._enable_rigid_mesh_sdfs = True
+
     def _validate_world_ordering(self):
         """Validate that world indices are monotonic, contiguous, and properly ordered.
 
@@ -10725,6 +10747,76 @@ class ModelBuilder:
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
 
+            # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when
+            # requested via ModelBuilder.enable_rigid_mesh_sdfs(). Built in unscaled mesh space
+            # (scale_baked=False) and cached per source mesh; eval_shape_sdf applies the shape scale
+            # at query time. Texture SDFs are CUDA-only, so on CPU (or on any build failure) the SDF
+            # is left unprovisioned; a water-tight CollisionPipeline then raises for that shape rather
+            # than silently degrading to the per-particle path.
+            if self._enable_rigid_mesh_sdfs:
+                wt_sdf_cache = {}
+                for i in range(len(self.shape_type)):
+                    if (
+                        shape_sdf_index[i] >= 0
+                        or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
+                        or not (self.shape_flags[i] & ShapeFlags.COLLIDE_PARTICLES)
+                        or self.shape_source[i] is None
+                    ):
+                        continue
+                    src = self.shape_source[i]
+                    sdf_padding_i = self.shape_sdf_padding[i]
+                    wt_margin = sdf_padding_i if sdf_padding_i is not None else self.shape_gap[i]
+                    # Mirror the rigid SDF cache key: shapes sharing one Mesh get distinct SDFs when any
+                    # baked generation parameter differs (margin/narrow-band/resolution/voxel/format).
+                    # scale stays out (scale_baked=False applies it at query time; the rigid path bakes it).
+                    src_key = (
+                        id(src),
+                        wt_margin,
+                        tuple(self.shape_sdf_narrow_band_range[i]),
+                        self.shape_sdf_target_voxel_size[i],
+                        self.shape_sdf_max_resolution[i],
+                        self.shape_sdf_texture_format[i],
+                    )
+                    if src_key in wt_sdf_cache:
+                        shape_sdf_index[i] = wt_sdf_cache[src_key]
+                        continue
+                    try:
+                        wt_wp_mesh = wp.Mesh(
+                            points=wp.array(
+                                np.asarray(src.vertices, dtype=np.float32).reshape(-1, 3), dtype=wp.vec3, device=device
+                            ),
+                            indices=wp.array(
+                                np.asarray(src.indices, dtype=np.int32).reshape(-1), dtype=wp.int32, device=device
+                            ),
+                            support_winding_number=True,
+                        )
+                        wt_tex_data, wt_c_tex, wt_s_tex = create_texture_sdf_from_mesh(
+                            wt_wp_mesh,
+                            margin=wt_margin,
+                            narrow_band_range=tuple(self.shape_sdf_narrow_band_range[i]),
+                            max_resolution=(self.shape_sdf_max_resolution[i] or 64),
+                            target_voxel_size=self.shape_sdf_target_voxel_size[i],
+                            quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
+                            scale_baked=False,
+                            device=device,
+                        )
+                    except Exception as e:
+                        warnings.warn(
+                            f"Water-tight SDF construction failed for mesh shape {i} ({e}); it falls "
+                            "back to the legacy per-particle soft-contact path.",
+                            stacklevel=2,
+                        )
+                        continue
+                    wt_idx = len(compact_texture_sdf_data)
+                    wt_sdf_cache[src_key] = wt_idx
+                    shape_sdf_index[i] = wt_idx
+                    compact_texture_sdf_data.append(wt_tex_data)
+                    compact_texture_sdf_coarse_textures.append(wt_c_tex)
+                    compact_texture_sdf_subgrid_textures.append(wt_s_tex)
+                    compact_texture_sdf_subgrid_start_slots.append(
+                        wt_tex_data.subgrid_start_slots if wt_c_tex is not None else None
+                    )
+
             m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
             m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
@@ -10878,9 +10970,7 @@ class ModelBuilder:
             )
             # Build the soft-mesh adjacency from the accumulated bending edges and triangles:
             # keep the builder's edge numbering (it stays aligned with the bending materials) and
-            # derive the edge/triangle maps against the final triangles. Vertex adjacency stays
-            # unset until the solver builds it via init_vertex_adjacency; kernels get a device copy
-            # from MeshAdjacency.to.
+            # derive the edge/triangle maps against the final triangles.
             edge_indices = (
                 np.array(self.edge_indices, dtype=np.int32).reshape(-1, 4)
                 if self.edge_indices
@@ -10892,6 +10982,11 @@ class ModelBuilder:
                 spring_indices=self.spring_indices,
                 tet_indices=self.tet_indices,
             )
+            # Build the vertex adjacency (cheap) and upload one device copy here, so every consumer
+            # (VBD solver, collision pipeline) shares a single MeshAdjacencyData rather than each
+            # running init_vertex_adjacency + .to() itself.
+            m.soft_mesh_adjacency.init_vertex_adjacency(self.particle_count)
+            m.soft_mesh_adjacency_device = m.soft_mesh_adjacency.to(device)
 
             # ---------------------
             # tetrahedra

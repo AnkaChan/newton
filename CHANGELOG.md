@@ -27,6 +27,7 @@
   - Add standalone multiphysics examples and regression coverage for MuJoCo/Kamino, VBD, XPBD, MPM, and ADMM contacts.
   - Add `--coupled-view` to coupled multiphysics examples and expose `SolverCoupled` entry view/state helpers for rendering individual sub-solver views.
 - Add `BODY_F`, `PARTICLE_F`, and `JOINT_F` to `StateFlags`.
+- Add opt-in water-tight rigid-soft contact generation via `enable_water_tight_rigid_soft_contact` on `Model.collide` and `CollisionPipeline`, with the required rigid-mesh volume SDFs built by `ModelBuilder.enable_rigid_mesh_sdfs()` before `finalize()`. When enabled, soft-triangle edges and faces that cross a rigid shape's signed-distance field are detected by local SDF optimization and written into new edge/face ranges of `Contacts.soft_contact_*` (`soft_contact_primitive`, `soft_contact_barycentric`), catching soft edge/face contacts the per-particle path misses. Default off reproduces the per-particle behavior.
 
 ### Changed
 
@@ -55,6 +56,7 @@
 - Deprecate the `indices` argument of `MeshAdjacency` in favor of `tri_indices`
 - Deprecate `MeshAdjacency.add_edge`; construct a `MeshAdjacency` with `edge_indices` (`[o0, o1, v0, v1]` rows) instead
 - `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
+- Deprecate `Contacts.soft_contact_particle` in favor of `Contacts.soft_contact_primitive`, which generalizes it to the soft feature id (a particle id in the particle range, a soft-triangle id in the edge/face ranges); the old name remains as a read-only alias
 
 ### Fixed
 
@@ -347,6 +349,7 @@
 - Deprecate `SensorRaycast` in favor of `SensorTiledCamera`; migrate to `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth rendering — see the `SensorRaycast` class docstring for a complete migration example
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
 - Deprecate the `MeshAdjacency.edges` dict accessor; use the `edge_indices` / `edge_tri_indices` arrays instead
+- Deprecate public `newton.utils.MeshAdjacency`; use `Model.soft_mesh_adjacency` (built by `ModelBuilder.finalize()`) for simulation adjacency data
 - Deprecate `newton-actuators` package dependency; all actuator functionality is now built into `newton.actuators`. The dependency is kept for backward compatibility and will be removed in a future release; migrate imports from `newton_actuators` to `newton.actuators`
 
 ### Fixed

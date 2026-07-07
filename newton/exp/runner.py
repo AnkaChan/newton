@@ -59,7 +59,7 @@ class Experiment:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.collision_pipeline = self.strategy.make_collision_pipeline(self.model)
+        self.collision_pipeline = self.strategy.make_collision_pipeline(self.model, water_tight=self.args.water_tight)
         self.contacts = self.collision_pipeline.contacts()
         self.control = self.model.control()
 
@@ -153,6 +153,11 @@ class Experiment:
         self.scene.add_deformables(builder)
 
         builder.color()
+        if self.args.water_tight:
+            # Opt in to volume SDFs for the rigid meshes (e.g. the gripper) that
+            # will collide with the cloth; finalize() then builds them. Analytic
+            # primitives use their closed-form SDF and are skipped.
+            builder.enable_rigid_mesh_sdfs()
         self.model = builder.finalize()
         self.device = self.model.device
         self.strategy.apply_materials(self.model)
@@ -290,6 +295,14 @@ def build_parser(scene_cls, solver_cls, controller_cls):
     parser.add_argument("--solver", type=str, default="proxy", choices=sorted(SOLVERS), help="Coupling strategy.")
     parser.add_argument("--control", type=str, default="state_machine", choices=sorted(CONTROLLERS), help="Controller.")
     parser.add_argument("--substeps", type=int, default=10, help="VBD sub-steps per physics step.")
+    parser.add_argument(
+        "--water-tight",
+        action="store_true",
+        dest="water_tight",
+        default=False,
+        help="Enable water-tight rigid-soft contacts (adds edge/face cloth-mesh contacts so cloth cannot "
+        "tunnel between the gripper's mesh surface samples). Builds volume SDFs for the rigid meshes.",
+    )
     parser.add_argument(
         "--no-graph-capture", action="store_false", dest="graph_capture", default=True, help="Disable CUDA graph capture."
     )

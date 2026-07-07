@@ -19,6 +19,7 @@ from ..geometry.flags import ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
+from ..geometry.soft_contacts_sdf import launch_soft_ef_contacts
 from ..geometry.support_function import (
     GenericShapeData,
     SupportMapDataProvider,
@@ -475,77 +476,118 @@ def _infer_broad_phase_mode_from_instance(broad_phase: BroadPhaseAllPairs | Broa
     )
 
 
-def _build_soft_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
-    """Build the soft-rigid (particle-shape) candidate pairs for ``model``.
+def _world_compatible_pairs(
+    feature_world: np.ndarray, shape_world: np.ndarray, world_count: int, device
+) -> wp.array[wp.vec2i]:
+    """Emit ``(feature, shape)`` index pairs whose worlds are compatible: same world, or either is
+    global (``-1``). ``feature_world[i]`` / ``shape_world[s]`` give each entity's world (-1 == global).
 
-    Emits every particle-shape pair whose worlds are compatible (same world, or
-    either is global ``-1``). :attr:`~newton.ParticleFlags.ACTIVE` and
-    :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES` are deliberately *not* applied
-    here: they are mutable at runtime and filtered per-thread in
-    :func:`~newton._src.geometry.kernels.create_soft_contacts`, so this candidate
-    set stays valid when those flags change after the pipeline is constructed.
-    Worlds are immutable after :meth:`~newton.ModelBuilder.finalize`, so world
-    filtering is safe to precompute. Reads model arrays on the host, so it is not
-    graph-capture-safe; construct the pipeline before any capture.
+    Worlds are immutable after :meth:`~newton.ModelBuilder.finalize`, so this filtering is safe to
+    precompute; mutable per-entity flags (ACTIVE / COLLIDE_PARTICLES) are deliberately left to the
+    per-thread kernel. The compatibility predicate splits into three disjoint groups, each a
+    vectorized cross product (disjoint => no de-duplication; no Python loop over features or shapes).
+    Reads host arrays, so it is not graph-capture-safe; call at pipeline construction.
     """
-    device = model.device
-    particle_count = int(getattr(model, "particle_count", 0) or 0)
-    shape_count = int(getattr(model, "shape_count", 0) or 0)
+    n_features = len(feature_world)
+    n_shapes = len(shape_world)
 
-    def _pairs(p_idx: np.ndarray, s_idx: np.ndarray) -> wp.array[wp.vec2i]:
-        stacked = np.column_stack((p_idx, s_idx)).astype(np.int32) if len(p_idx) else np.empty((0, 2), np.int32)
+    def _pairs(f_idx: np.ndarray, s_idx: np.ndarray) -> wp.array[wp.vec2i]:
+        stacked = np.column_stack((f_idx, s_idx)).astype(np.int32) if len(f_idx) else np.empty((0, 2), np.int32)
         return wp.array(stacked, dtype=wp.vec2i, device=device)
 
-    if particle_count == 0 or shape_count == 0:
+    if n_features == 0 or n_shapes == 0:
         return _pairs(np.empty(0), np.empty(0))
 
-    world_count = int(getattr(model, "world_count", 0) or 0)
-    # World-compatible superset over every particle and shape; ACTIVE / COLLIDE_PARTICLES are
-    # applied dynamically in create_soft_contacts so runtime flag changes are honored.
-    particles = np.arange(particle_count)
-    shapes = np.arange(shape_count)
-    particle_world = model.particle_world.numpy()  # world of each particle; -1 == global
-    shape_world = model.shape_world.numpy()  # world of each shape; -1 == global
-    p_local = (particle_world >= 0) & (particle_world < world_count)
+    features = np.arange(n_features)
+    shapes = np.arange(n_shapes)
+    f_local = (feature_world >= 0) & (feature_world < world_count)
     s_local = (shape_world >= 0) & (shape_world < world_count)
 
-    # A pair (p, s) is emitted iff their worlds are compatible:
-    #     particle_world == shape_world  or  particle_world == -1  or  shape_world == -1
-    #     (same world, or either is global).
-    # That predicate splits into three disjoint groups, each a vectorized cross product
-    # (disjoint => no de-duplication; neither particles nor shapes are looped in Python).
-    p_cols: list[np.ndarray] = []
+    f_cols: list[np.ndarray] = []
     s_cols: list[np.ndarray] = []
 
-    # 1. Global particles pair with every shape (any world).
-    global_particles = particles[particle_world < 0]
-    if len(global_particles):
-        p_cols.append(np.repeat(global_particles, len(shapes)))
-        s_cols.append(np.tile(shapes, len(global_particles)))
+    # 1. Global features pair with every shape (any world).
+    global_features = features[feature_world < 0]
+    if len(global_features):
+        f_cols.append(np.repeat(global_features, len(shapes)))
+        s_cols.append(np.tile(shapes, len(global_features)))
 
-    # 2. Local-world particles additionally pair with every global shape.
-    local_particles = particles[p_local]
+    # 2. Local-world features additionally pair with every global shape.
+    local_features = features[f_local]
     global_shapes = shapes[shape_world < 0]
-    if len(local_particles) and len(global_shapes):
-        p_cols.append(np.repeat(local_particles, len(global_shapes)))
-        s_cols.append(np.tile(global_shapes, len(local_particles)))
+    if len(local_features) and len(global_shapes):
+        f_cols.append(np.repeat(local_features, len(global_shapes)))
+        s_cols.append(np.tile(global_shapes, len(local_features)))
 
-    # 3. Local-world particles pair with the shapes that share their world. Group
-    #    the local shapes by world so each world's shapes are contiguous, then for
-    #    every particle slice out its world's block.
-    local_particle_world = particle_world[p_local]
+    # 3. Local-world features pair with the shapes that share their world. Group the local shapes by
+    #    world so each world's shapes are contiguous, then for every feature slice out its world's block.
+    local_feature_world = feature_world[f_local]
     shapes_per_world = np.bincount(shape_world[s_local], minlength=world_count)
-    reps = shapes_per_world[local_particle_world] if len(local_particle_world) else np.zeros(0, np.intp)
+    reps = shapes_per_world[local_feature_world] if len(local_feature_world) else np.zeros(0, np.intp)
     if reps.sum():
         shapes_by_world = shapes[s_local][np.argsort(shape_world[s_local], kind="stable")]
         world_start = np.cumsum(shapes_per_world) - shapes_per_world
         within = np.arange(reps.sum()) - np.repeat(np.cumsum(reps) - reps, reps)
-        p_cols.append(np.repeat(local_particles, reps))
-        s_cols.append(shapes_by_world[np.repeat(world_start[local_particle_world], reps) + within])
+        f_cols.append(np.repeat(local_features, reps))
+        s_cols.append(shapes_by_world[np.repeat(world_start[local_feature_world], reps) + within])
 
-    if not p_cols:
+    if not f_cols:
         return _pairs(np.empty(0), np.empty(0))
-    return _pairs(np.concatenate(p_cols), np.concatenate(s_cols))
+    return _pairs(np.concatenate(f_cols), np.concatenate(s_cols))
+
+
+def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+    """Build the soft-rigid (particle-shape) candidate pairs for ``model``.
+
+    Emits every particle-shape pair whose worlds are compatible (see :func:`_world_compatible_pairs`).
+    :attr:`~newton.ParticleFlags.ACTIVE` and :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES` are applied
+    per-thread in :func:`~newton._src.geometry.kernels.create_soft_contacts`, not here, so the
+    candidate set stays valid when those flags change after the pipeline is constructed.
+    """
+    particle_count = int(getattr(model, "particle_count", 0) or 0)
+    shape_count = int(getattr(model, "shape_count", 0) or 0)
+    if particle_count == 0 or shape_count == 0:
+        return wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
+    world_count = int(getattr(model, "world_count", 0) or 0)
+    return _world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device)
+
+
+def _build_soft_face_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+    """World-compatible ``(soft triangle, shape)`` candidate pairs for the water-tight FACE pass,
+    mirroring :func:`_build_soft_particle_rigid_contact_pairs`. A triangle's world is the world of
+    its first vertex (all three share it). Empty when there is no soft mesh, no triangles, or no shapes.
+    """
+    device = model.device
+    empty = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=device)
+    if getattr(model, "soft_mesh_adjacency", None) is None:
+        return empty
+    shape_count = int(getattr(model, "shape_count", 0) or 0)
+    n_tris = int(getattr(model, "tri_count", 0) or 0)
+    if shape_count == 0 or n_tris == 0:
+        return empty
+    world_count = int(getattr(model, "world_count", 0) or 0)
+    face_world = model.particle_world.numpy()[model.tri_indices.numpy()[:, 0]]
+    return _world_compatible_pairs(face_world, model.shape_world.numpy(), world_count, device)
+
+
+def _build_soft_edge_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+    """World-compatible ``(soft edge, shape)`` candidate pairs for the water-tight EDGE pass,
+    mirroring :func:`_build_soft_particle_rigid_contact_pairs`. An edge's world is that of one of its
+    endpoints. Empty when there is no soft mesh, no edges, or no shapes.
+    """
+    device = model.device
+    empty = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=device)
+    adj = getattr(model, "soft_mesh_adjacency", None)
+    if adj is None:
+        return empty
+    shape_count = int(getattr(model, "shape_count", 0) or 0)
+    n_edges = int(adj.edge_indices.shape[0])
+    if shape_count == 0 or n_edges == 0:
+        return empty
+    world_count = int(getattr(model, "world_count", 0) or 0)
+    # edge_indices rows are [o0, o1, v0, v1]; col 2 (v0) is an endpoint, so its world is the edge's.
+    edge_world = model.particle_world.numpy()[np.asarray(adj.edge_indices)[:, 2]]
+    return _world_compatible_pairs(edge_world, model.shape_world.numpy(), world_count, device)
 
 
 class CollisionPipeline:
@@ -580,6 +622,7 @@ class CollisionPipeline:
         include_static_kinematic_pairs: bool = True,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
+        enable_water_tight_rigid_soft_contact: bool = False,
         requires_grad: bool | None = None,
         broad_phase: Literal["nxn", "sap", "explicit"]
         | BroadPhaseAllPairs
@@ -937,12 +980,45 @@ class CollisionPipeline:
 
         # Built here (not in finalize) so models/tasks that never collide don't pay for it.
         # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
-        self.soft_rigid_contact_pairs = _build_soft_rigid_contact_pairs(model)
+        self.soft_rigid_contact_pairs = _build_soft_particle_rigid_contact_pairs(model)
         self._soft_rigid_contact_pair_count = len(self.soft_rigid_contact_pairs)
+        self.enable_water_tight_rigid_soft_contact = enable_water_tight_rigid_soft_contact
+        # Water-tight edge/face candidate pairs (world-compatible, like the particle pairs above);
+        # empty when the flag is off so the flag-off default stays bit-for-bit.
+        self._soft_ef_edge_tri_indices = None
+        if enable_water_tight_rigid_soft_contact:
+            self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model)
+            self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model)
+            # The edge pass's owner-triangle map comes from the model's shared device adjacency
+            # (built once at finalize) -- no separate upload here.
+            if model.soft_mesh_adjacency_device is not None:
+                self._soft_ef_edge_tri_indices = model.soft_mesh_adjacency_device.edge_tri_indices
+        else:
+            _empty_pairs = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
+            self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _empty_pairs, _empty_pairs
         if soft_contact_max is None:
             soft_contact_max = self.soft_rigid_contact_pair_count
+            # Flag-aware headroom: one record per world-compatible (soft edge/tri, shape) pair.
+            soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
+
+        # The water-tight edge/face passes need a provisioned SDF for every participating mesh/convex
+        # shape. Validate host-side at construction (never inside a captured collide()) and fail loudly
+        # so a missing enable_rigid_mesh_sdfs() call cannot silently degrade to the per-particle path.
+        if enable_water_tight_rigid_soft_contact and model.shape_count > 0 and model._shape_sdf_index is not None:
+            _stype = model.shape_type.numpy()
+            _sflags = model.shape_flags.numpy()
+            _sidx = model._shape_sdf_index.numpy()
+            _is_mesh = np.isin(_stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
+            _collide_particles = (_sflags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
+            if bool(np.any(_is_mesh & _collide_particles & (_sidx < 0))):
+                raise ValueError(
+                    "enable_water_tight_rigid_soft_contact=True but one or more participating mesh/convex "
+                    "shapes have no SDF for the water-tight edge/face passes. Call "
+                    "ModelBuilder.enable_rigid_mesh_sdfs() before ModelBuilder.finalize() to build them."
+                )
+
         self.requires_grad = requires_grad
         self.deterministic = deterministic
         per_contact_props = self.narrow_phase.hydroelastic_sdf is not None
@@ -1375,7 +1451,7 @@ class CollisionPipeline:
                 ],
                 outputs=[
                     contacts.soft_contact_count,
-                    contacts.soft_contact_particle,
+                    contacts.soft_contact_primitive,
                     contacts.soft_contact_shape,
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_body_vel,
@@ -1383,4 +1459,20 @@ class CollisionPipeline:
                     contacts.soft_contact_tids,
                 ],
                 device=self.device,
+            )
+
+        # Water-tight EDGE/FACE passes (opt-in, set at construction): add the soft edge/face contacts
+        # the per-particle path cannot detect. Run after the legacy launch on the same stream so the
+        # passes read the final particle (then edge) counts as their packing offsets. The flag is
+        # fixed at construction because soft_contact_max headroom for these records is sized there.
+        if self.enable_water_tight_rigid_soft_contact and state.particle_q and model.soft_mesh_adjacency is not None:
+            launch_soft_ef_contacts(
+                model=model,
+                state=state,
+                contacts=contacts,
+                margin=soft_contact_margin,
+                device=self.device,
+                edge_pairs=self.soft_edge_rigid_pairs,
+                face_pairs=self.soft_face_rigid_pairs,
+                edge_tri_indices=self._soft_ef_edge_tri_indices,
             )
