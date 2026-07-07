@@ -8,9 +8,10 @@ deformable cube (FEM tetrahedra, Young's modulus 2.5e5, Poisson 0.25, density
 500) resting in front of the arm, plus the Franka at its default ready pose and
 the pre-grasp home EE pose from the env's ``_ee_tf``.
 
-Scene export only -- the pick state machine is deferred; ``sequences`` provides
-a hold-at-home placeholder so the scene is runnable (pair with ``--solver avbd``,
-the monolithic VBD solver the IsaacLab task uses).
+Provides a scripted ``pick`` sequence (hover -> descend so the fingertips reach
+the settled cube's Z-center -> close the gripper -> lift -> hold), mirroring the
+shirt-pick example, plus a ``hold`` placeholder (pair with ``--solver avbd``, the
+monolithic VBD solver the IsaacLab task uses).
 """
 
 from __future__ import annotations
@@ -21,8 +22,8 @@ import warp as wp
 import newton
 
 from ..robots import HAND_BODY_SUFFIX, add_franka
-from .base import Scene
 from . import register
+from .base import Scene
 
 # Deformable cube (IsaacLab TetMeshCuboidCfg + DeformableBodyMaterialCfg).
 CUBE_SIZE = 0.05  # edge length [m]
@@ -32,6 +33,20 @@ CUBE_YOUNGS = 2.5e6
 CUBE_POISSON = 0.25
 CUBE_PARTICLE_RADIUS = 0.005
 CUBE_DIM = 4  # hex cells per axis (each split into 5 tets) -> 125 nodes / 320 tets, matching IsaacLab
+
+# fr3_hand -> fingertip (fr3_hand_tcp) offset from fr3_franka_hand.urdf: 0.1034 m
+# along the hand's local +Z. IK drives the fr3_hand wrist frame directly
+# (``ik_link_offset`` = 0), so to place the fingertips at a world point the
+# hand-frame target must be pulled back by this offset rotated into world frame.
+FINGERTIP_OFFSET = 0.1034  # [m]
+
+# The cube spawns with its centroid at CUBE_POS but floating a half-edge above the
+# ground; under gravity it drops ~0.021 m and settles resting on the plane, well
+# before the grasp. Aiming at the spawn centroid (0.05) therefore hits the settled
+# cube's TOP. Settled centroid Z, measured with the arm held at home under
+# ``--solver avbd``: ~0.029 m -- the grasp aims the fingertips here so the pads
+# straddle the SETTLED cube's Z-center.
+CUBE_SETTLED_Z = 0.0293  # [m]
 
 # Lame parameters from (E, nu): mu = E/(2(1+nu)), lambda = E*nu/((1+nu)(1-2nu)).
 CUBE_K_MU = CUBE_YOUNGS / (2.0 * (1.0 + CUBE_POISSON))
@@ -70,6 +85,15 @@ _AVBD_SOLVER_OVERRIDES = {
 }
 
 
+def _quat_rotate(q, v):
+    """Rotate vec3 ``v`` by quaternion ``q=(qx,qy,qz,qw)`` on the host (numpy)."""
+    qv = np.asarray(q[:3], dtype=np.float64)
+    w = float(q[3])
+    v = np.asarray(v, dtype=np.float64)
+    t = 2.0 * np.cross(qv, v)
+    return v + w * t + np.cross(qv, t)
+
+
 def _make_cube_tet_mesh(size: float, dim: int):
     """Regular tetrahedral cube mesh: ``(dim+1)^3`` grid nodes, 5 tets per hex
     cell. Vertices are in the local frame with the origin at a corner; returns
@@ -83,9 +107,7 @@ def _make_cube_tet_mesh(size: float, dim: int):
     def gi(x, y, z):
         return n * n * z + n * y + x
 
-    vertices = [
-        wp.vec3(x * cell, y * cell, z * cell) for z in range(n) for y in range(n) for x in range(n)
-    ]
+    vertices = [wp.vec3(x * cell, y * cell, z * cell) for z in range(n) for y in range(n) for x in range(n)]
     indices: list[int] = []
     for z in range(dim):
         for y in range(dim):
@@ -106,7 +128,7 @@ class PickAVBDCubeScene(Scene):
     ik_link_offset = wp.vec3(0.0, 0.0, 0.0)  # IsaacLab targets panda_hand directly
     ik_joint_limit_weight = 0.0  # IsaacLab disables the joint-limit objective
     ik_iters = 24
-    default_sequence = "hold"
+    default_sequence = "pick"
 
     def robot_init_q(self):
         return list(ROBOT_INIT_Q)
@@ -166,12 +188,31 @@ class PickAVBDCubeScene(Scene):
     def sequences(self, home_pos, home_quat):
         from ..controllers.base import Keyframe
         from ..controllers.sequences import KeyframeSequence
-        from ..robots import GRIP_OPEN
+        from ..robots import GRIP_CLOSE, GRIP_OPEN
 
         home = np.asarray(home_pos)
         q = np.asarray(home_quat)
-        # Scene-only export: hold the home pose. Pick state machine deferred.
-        return {"hold": KeyframeSequence([Keyframe(5.0, home, q, GRIP_OPEN)])}
+        # World point the fingertips aim for: the SETTLED cube's Z-center (see
+        # CUBE_SETTLED_Z) with the spawn XY.
+        tip_target = np.array([CUBE_POS[0], CUBE_POS[1], CUBE_SETTLED_Z], dtype=np.float64)
+        # IK targets the fr3_hand wrist frame, so pull the hand-frame target back by
+        # the tool offset rotated into world frame
+        # (fingertip = hand_origin + R(q)*(0,0,FINGERTIP_OFFSET)).
+        grasp = tip_target - _quat_rotate(q, (0.0, 0.0, FINGERTIP_OFFSET))
+        return {
+            # Scripted pick: hover -> descend to cube -> grasp -> lift -> hold.
+            "pick": KeyframeSequence(
+                [
+                    Keyframe(0.8, home, q, GRIP_OPEN),  # hover at home, gripper open
+                    Keyframe(1.2, grasp, q, GRIP_OPEN),  # descend to the cube center
+                    Keyframe(0.8, grasp, q, GRIP_CLOSE),  # close the gripper
+                    Keyframe(1.2, home, q, GRIP_CLOSE),  # lift back to home
+                    Keyframe(2.0, home, q, GRIP_CLOSE),  # hold
+                ]
+            ),
+            # Hold the home pose, gripper open (debug / settle).
+            "hold": KeyframeSequence([Keyframe(5.0, home, q, GRIP_OPEN)]),
+        }
 
     # -- presentation -----------------------------------------------------
     def camera(self):

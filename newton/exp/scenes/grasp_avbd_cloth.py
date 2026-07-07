@@ -8,9 +8,9 @@ Ports the world layout of IsaacLab ``Isaac-Grasp-AVBD-Cloth-Direct-v0``: a
 it hangs in front of the arm, plus the Franka at its default ready pose and the
 home/hover EE pose taken from the env's ``_ee_tf``.
 
-Scene export only -- the grasp state machine is deferred; ``sequences`` provides
-a hold-at-home placeholder so the scene is runnable (pair with ``--solver avbd``,
-the monolithic VBD solver the IsaacLab task uses).
+Provides a scripted ``quick_punch`` sequence (jab the IK target +0.3 m in Y over
+a short interval) plus a ``hold`` placeholder (pair with ``--solver avbd``, the
+monolithic VBD solver the IsaacLab task uses).
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ import warp as wp
 import newton
 
 from ..robots import HAND_BODY_SUFFIX, add_franka
-from .base import Scene
 from . import register
+from .base import Scene
 
 # Cloth material (IsaacLab SurfaceDeformableBodyMaterialCfg).
 CLOTH_DENSITY = 0.02  # areal density [kg/m^2]
@@ -84,7 +84,7 @@ class GraspAVBDClothScene(Scene):
     ik_link_offset = wp.vec3(0.0, 0.0, 0.0)  # IsaacLab targets panda_hand directly
     ik_joint_limit_weight = 0.0  # IsaacLab disables the joint-limit objective
     ik_iters = 24
-    default_sequence = "hold"
+    default_sequence = "quick_punch"
 
     def robot_init_q(self):
         return list(ROBOT_INIT_Q)
@@ -173,8 +173,21 @@ class GraspAVBDClothScene(Scene):
 
         home = np.asarray(home_pos)
         q = np.asarray(home_quat)
-        # Scene-only export: hold the home pose. Grasp state machine deferred.
-        return {"hold": KeyframeSequence([Keyframe(5.0, home, q, GRIP_OPEN)])}
+        # Quick punch: jab the IK target +0.3 m in Y over a short interval.
+        punch = home.copy()
+        punch[1] += 0.3
+        return {
+            # Settle at home, then jab +0.3 m in Y and hold.
+            "quick_punch": KeyframeSequence(
+                [
+                    Keyframe(0.5, home, q, GRIP_OPEN),  # settle at home
+                    Keyframe(0.2, punch, q, GRIP_OPEN),  # quick +0.3 m in Y
+                    Keyframe(2.0, punch, q, GRIP_OPEN),  # hold at the punched pose
+                ]
+            ),
+            # Hold the home pose, gripper open (debug / settle).
+            "hold": KeyframeSequence([Keyframe(5.0, home, q, GRIP_OPEN)]),
+        }
 
     # -- presentation -----------------------------------------------------
     def camera(self):
