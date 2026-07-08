@@ -179,7 +179,9 @@ class PickAVBDCubeScene(Scene):
 
     def robot_gains(self, solver_key):
         # IsaacLab pick_avbd_cube FRANKA_PANDA_AVBD_CFG: arm damping 0.1.
-        return {"finger_stiffness": 2.0e3, "finger_damping": 1.0} if solver_key == "avbd" else {}
+        gains = {"finger_stiffness": 1.0e5, "finger_damping": 1.0} if solver_key == "avbd" else {}  # at this gain, watertight collision drop the cube but old one doesn't
+        # gains = {"finger_stiffness": 1.0e4, "finger_damping": 1.0} if solver_key == "avbd" else {}
+        return gains
 
     # -- task -------------------------------------------------------------
     def home_pose(self):
@@ -207,7 +209,8 @@ class PickAVBDCubeScene(Scene):
                     Keyframe(1.2, grasp, q, GRIP_OPEN),  # descend to the cube center
                     Keyframe(0.8, grasp, q, GRIP_CLOSE),  # close the gripper
                     Keyframe(1.2, home, q, GRIP_CLOSE),  # lift back to home
-                    Keyframe(2.0, home, q, GRIP_CLOSE),  # hold
+                    # Keyframe(2.0, home, q, GRIP_CLOSE),  # hold
+                    Keyframe(2.0, home, q, GRIP_OPEN),  # open the gripper
                 ]
             ),
             # Hold the home pose, gripper open (debug / settle).
@@ -216,4 +219,17 @@ class PickAVBDCubeScene(Scene):
 
     # -- presentation -----------------------------------------------------
     def camera(self):
-        return (wp.vec3(1.2, -1.0, 0.8), -25.0, 130.0, wp.vec3(0.3, 0.0, 0.1))
+        """Initial GL camera as ``(pos, pitch, yaw, look_at)``.
+
+        ``pos`` [m] and ``look_at`` [m] are world-space points. ``pitch`` and
+        ``yaw`` are degrees in the Z-up spherical convention of
+        :meth:`newton.viewer.Camera.get_front`: yaw is the XY-plane azimuth from
+        +X toward +Y, pitch is elevation above the horizontal (negative looks
+        down); ``front = (cos(yaw)cos(pitch), sin(yaw)cos(pitch), sin(pitch))``.
+
+        The runner applies ``look_at`` after ``pitch``/``yaw`` (see
+        :class:`~newton.exp.runner.Experiment`), so when ``look_at`` is given it
+        recomputes the orientation from ``look_at - pos`` and the ``pitch``/``yaw``
+        values here act only as a fallback for ``look_at = None``.
+        """
+        return (wp.vec3(1.2, -1.0, 0.2), -5.0, 130.0, wp.vec3(0.3, 0.0, 0.2))
