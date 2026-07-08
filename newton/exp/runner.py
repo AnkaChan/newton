@@ -355,6 +355,15 @@ def build_parser(scene_cls, solver_cls, controller_cls):
         "tunnel between the gripper's mesh surface samples). Builds volume SDFs for the rigid meshes.",
     )
     parser.add_argument(
+        "--dat",
+        action="store_true",
+        dest="dat",
+        default=False,
+        help="Enable rigid Divide-and-Truncate (DAT) penetration-free truncation in the VBD solver "
+        "(rigid_enable_penetration_free): truncates rigid pose updates and cloth displacements against "
+        "per-contact division planes so the gripper cannot penetrate the cloth within a step.",
+    )
+    parser.add_argument(
         "--record",
         type=str,
         default=None,

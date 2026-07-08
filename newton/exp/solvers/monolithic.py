@@ -123,6 +123,13 @@ class MonolithicAvbdStrategy(SolverStrategy):
             # ones; raise the per-body soft-contact buffer so they are not dropped
             # (the default 256 overflows to ~400 on the shirt-pick grasp).
             vbd_kwargs["rigid_body_particle_contact_buffer_size"] = 2048
+        if getattr(args, "dat", False):
+            # Rigid DAT penetration-free truncation: cap rigid pose updates and cloth
+            # displacements against per-contact division planes so the gripper cannot
+            # penetrate the cloth within a step. The query margin must match the
+            # collision pipeline's contact margin (base.py uses the 0.01 default).
+            vbd_kwargs["rigid_enable_penetration_free"] = True
+            vbd_kwargs["rigid_penetration_free_query_margin"] = 0.01
         vbd_kwargs.update(self.scene_solver_overrides())  # scene overrides win
         self.solver = SolverVBD(model=model, **vbd_kwargs)
         # NOTE: IsaacLab's NewtonVBDManager does NOT change joint constraint mode,
