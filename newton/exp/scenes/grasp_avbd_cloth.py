@@ -191,4 +191,4 @@ class GraspAVBDClothScene(Scene):
 
     # -- presentation -----------------------------------------------------
     def camera(self):
-        return (wp.vec3(1.9, -1.3, 1.2), -22.0, 130.0, wp.vec3(0.7, 0.0, 0.45))
+        return (wp.vec3(1.9, 0.25, 1.2), -22.0, 130.0, wp.vec3(0.7, 0.0, 0.45))

@@ -157,6 +157,17 @@ class ShirtPickScene(Scene):
         grasp = home.copy()
         grasp[2] = self.grasp_z
         q = np.asarray(home_quat)
+
+        # World xy center of the placed cloth (mesh centroid through the spawn
+        # transform: scale -> CLOTH_ROT -> translate), used by the "press" sequence.
+        vc = np.mean([[float(v[0]), float(v[1]), float(v[2])] for v in self._vertices], axis=0) * CLOTH_SCALE
+        qx, qy, qz, qw = CLOTH_ROT
+        qv = np.array([qx, qy, qz])
+        vc = vc + 2.0 * qw * np.cross(qv, vc) + 2.0 * np.cross(qv, np.cross(qv, vc))
+        cloth_c = np.asarray(CLOTH_POS, dtype=np.float64) + vc
+        above = np.array([cloth_c[0], cloth_c[1], 0.40])   # hover centered above the cloth
+        press = np.array([cloth_c[0], cloth_c[1], 0.08])  # 1 cm below the ground plane
+
         return {
             # Scripted pick: hover -> descend -> grasp -> lift -> hold.
             "pick": KeyframeSequence(
@@ -166,6 +177,16 @@ class ShirtPickScene(Scene):
                     Keyframe(0.8, grasp, q, GRIP_CLOSE),  # close the gripper
                     Keyframe(1.2, home, q, GRIP_CLOSE),   # lift back to home
                     Keyframe(2.0, home, q, GRIP_CLOSE),   # hold
+                ]
+            ),
+            # Press: center above the cloth, close the gripper, then press the
+            # closed fingers straight down to 1 cm below the ground -- a cloth +
+            # ground penetration stress test.
+            "press": KeyframeSequence(
+                [
+                    Keyframe(0.5, home, q, GRIP_OPEN),    # start at home
+                    Keyframe(1.5, above, q, GRIP_CLOSE),   # move to center above the cloth
+                    Keyframe(2.5, press, q, GRIP_CLOSE),  # press down to -0.01 m
                 ]
             ),
             # Hold the home pose, gripper open (debug / settle).
