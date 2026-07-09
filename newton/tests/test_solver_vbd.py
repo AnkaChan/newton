@@ -2609,6 +2609,19 @@ def test_rigid_dat_trajectory_truncation(test, device):
     )
     test.assertEqual(t, 1.0)
 
+    # Pinched start (point on the plane): an approaching update is blocked outright
+    # (a squeezed contact must stall, not pass through)...
+    t = _probe_trajectory_truncation(
+        device, (0, 1, 0), (0, 0.5, 0), (0, 0, 0), (0, 0.1, 0), (0, 0, 1), 0.0, (0, 0.5, 0), 0.85
+    )
+    test.assertEqual(t, 0.0)
+
+    # ...while a separating update from the same pinched start stays free.
+    t = _probe_trajectory_truncation(
+        device, (0, 1, 0), (0, 0.5, 0), (0, 0, 0), (0, -0.1, 0), (0, 0, 1), 0.0, (0, 0.5, 0), 0.85
+    )
+    test.assertEqual(t, 1.0)
+
 
 def _build_sphere_drop_on_cloth(device):
     """A heavy rigid sphere shot at a pinned cloth grid: a stress scene where penalty

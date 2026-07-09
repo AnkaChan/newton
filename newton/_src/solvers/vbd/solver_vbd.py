@@ -40,6 +40,7 @@ from .particle_vbd_kernels import (
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
+    DAT_THREADS_PER_CONTACT,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
     _count_num_adjacent_joints,
@@ -493,6 +494,126 @@ class SolverVBD(SolverBase):
                 reach = np.linalg.norm(com_to_shape) + shape_radius[shape_index]
                 bounding_radius[body_index] = max(bounding_radius[body_index], reach)
         self.body_bounding_radius = wp.array(bounding_radius, dtype=float, device=self.device)
+
+        self._init_rigid_dat_body_vertices(model)
+
+    # Bodies whose shapes provide more DAT vertices than this are uniformly subsampled
+    # (weakens the per-vertex coverage; a warning is emitted).
+    _DAT_MAX_BODY_VERTICES = 4096
+
+    def _init_rigid_dat_body_vertices(self, model: Model):
+        """Build the per-body DAT vertex tables used by the trajectory truncation kernels.
+
+        The rigid truncation ratio is the minimum over ALL of a body's vertices against
+        each division plane (paper Alg. PlanarDAT), so every collision shape contributes
+        representative vertices in the body frame plus a per-vertex radius:
+        mesh/convex-mesh vertices and box corners with radius 0, sphere centers and
+        capsule segment endpoints with their radius (exact for their round geometry),
+        cylinder/cone rim polygons with the chord sagitta as a covering radius.
+        """
+        from ...geometry import GeoType  # noqa: PLC0415
+
+        shape_body = model.shape_body.numpy()
+        shape_type = model.shape_type.numpy()
+        shape_scale = model.shape_scale.numpy()
+        shape_transform = model.shape_transform.numpy()
+
+        per_body_vertices: list[list[np.ndarray]] = [[] for _ in range(model.body_count)]
+        per_body_radii: list[list[np.ndarray]] = [[] for _ in range(model.body_count)]
+
+        def shape_local_vertices(shape_index):
+            geo = shape_type[shape_index]
+            scale = shape_scale[shape_index]
+            if geo == GeoType.SPHERE:
+                return np.zeros((1, 3)), np.array([scale[0]])
+            if geo == GeoType.CAPSULE:
+                h = scale[1]
+                return np.array([[0.0, 0.0, -h], [0.0, 0.0, h]]), np.full(2, scale[0])
+            if geo == GeoType.BOX:
+                corners = np.array(
+                    [
+                        [sx * scale[0], sy * scale[1], sz * scale[2]]
+                        for sx in (-1, 1)
+                        for sy in (-1, 1)
+                        for sz in (-1, 1)
+                    ]
+                )
+                return corners, np.zeros(8)
+            if geo == GeoType.ELLIPSOID:
+                # Conservative bounding sphere (over-approximates; only tightens truncation).
+                return np.zeros((1, 3)), np.array([max(scale[0], scale[1], scale[2])])
+            if geo in (GeoType.CYLINDER, GeoType.CONE):
+                radius, h = scale[0], scale[1]
+                angles = np.linspace(0.0, 2.0 * np.pi, 8, endpoint=False)
+                rim = np.stack([radius * np.cos(angles), radius * np.sin(angles), np.full(8, -h)], axis=1)
+                sagitta = radius * (1.0 - np.cos(np.pi / 8.0))
+                if geo == GeoType.CYLINDER:
+                    pts = np.concatenate([rim, rim * np.array([1.0, 1.0, -1.0])])
+                else:
+                    pts = np.concatenate([rim, np.array([[0.0, 0.0, h]])])
+                return pts, np.full(len(pts), sagitta)
+            if geo in (GeoType.MESH, GeoType.CONVEX_MESH):
+                src = model.shape_source[shape_index]
+                verts = getattr(src, "vertices", None)
+                if verts is not None and len(verts) > 0:
+                    return np.asarray(verts, dtype=np.float64) * np.asarray(scale, dtype=np.float64), np.zeros(
+                        len(verts)
+                    )
+            # PLANE / HFIELD / unknown: no DAT vertices (anchor fallback in the kernels).
+            return np.zeros((0, 3)), np.zeros(0)
+
+        for shape_index in range(model.shape_count):
+            body_index = shape_body[shape_index]
+            if body_index < 0:
+                continue
+            pts, radii = shape_local_vertices(shape_index)
+            if len(pts) == 0:
+                continue
+            # Shape frame -> body frame.
+            tf = shape_transform[shape_index]
+            p_bs, q_bs = tf[:3], tf[3:]  # (x, y, z), (qx, qy, qz, qw)
+            qx, qy, qz, qw = q_bs
+            rot = np.array(
+                [
+                    [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+                    [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+                    [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+                ]
+            )
+            per_body_vertices[body_index].append(pts @ rot.T + p_bs[None, :])
+            per_body_radii[body_index].append(radii)
+
+        starts = np.zeros(model.body_count + 1, dtype=np.int32)
+        all_vertices = []
+        all_radii = []
+        for body_index in range(model.body_count):
+            if per_body_vertices[body_index]:
+                pts = np.concatenate(per_body_vertices[body_index])
+                radii = np.concatenate(per_body_radii[body_index])
+                if len(pts) > self._DAT_MAX_BODY_VERTICES:
+                    warnings.warn(
+                        f"rigid DAT: body {body_index} has {len(pts)} collision vertices; "
+                        f"subsampling to {self._DAT_MAX_BODY_VERTICES} for trajectory truncation.",
+                        stacklevel=2,
+                    )
+                    keep = np.linspace(0, len(pts) - 1, self._DAT_MAX_BODY_VERTICES).astype(np.int64)
+                    pts, radii = pts[keep], radii[keep]
+                all_vertices.append(pts)
+                all_radii.append(radii)
+                starts[body_index + 1] = starts[body_index] + len(pts)
+            else:
+                starts[body_index + 1] = starts[body_index]
+
+        if all_vertices:
+            vertices_np = np.concatenate(all_vertices).astype(np.float32)
+            radii_np = np.concatenate(all_radii).astype(np.float32)
+        else:
+            vertices_np = np.zeros((0, 3), dtype=np.float32)
+            radii_np = np.zeros(0, dtype=np.float32)
+
+        self.dat_body_vertex_start = wp.array(starts, dtype=wp.int32, device=self.device)
+        self.dat_body_vertices = wp.array(vertices_np, dtype=wp.vec3, device=self.device)
+        self.dat_body_vertex_radius = wp.array(radii_np, dtype=float, device=self.device)
 
     def _init_particle_system(
         self,
@@ -1542,7 +1663,7 @@ class SolverVBD(SolverBase):
             self.body_truncation_ts.fill_(1.0)
             wp.launch(
                 kernel=apply_rigid_soft_truncation,
-                dim=contacts.soft_contact_max,
+                dim=contacts.soft_contact_max * DAT_THREADS_PER_CONTACT,
                 inputs=[
                     contacts.soft_contact_count,
                     contacts.soft_contact_primitive,
@@ -1557,6 +1678,9 @@ class SolverVBD(SolverBase):
                     self.body_q_prev,
                     body_q,
                     self.model.body_com,
+                    self.dat_body_vertex_start,
+                    self.dat_body_vertices,
+                    self.dat_body_vertex_radius,
                     self.rigid_dat_parallel_epsilon,
                     self.rigid_conservative_bound_relaxation,
                 ],
@@ -1618,7 +1742,7 @@ class SolverVBD(SolverBase):
         if contacts.rigid_contact_max > 0:
             wp.launch(
                 kernel=apply_rigid_rigid_truncation,
-                dim=contacts.rigid_contact_max,
+                dim=contacts.rigid_contact_max * DAT_THREADS_PER_CONTACT,
                 inputs=[
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
@@ -1633,6 +1757,9 @@ class SolverVBD(SolverBase):
                     self.body_q_prev,
                     body_q,
                     self.model.body_com,
+                    self.dat_body_vertex_start,
+                    self.dat_body_vertices,
+                    self.dat_body_vertex_radius,
                     self.rigid_conservative_bound_relaxation,
                 ],
                 outputs=[
@@ -1646,7 +1773,7 @@ class SolverVBD(SolverBase):
             # harmless side effect (it is refilled before its next particle-phase use).
             wp.launch(
                 kernel=apply_rigid_soft_truncation,
-                dim=contacts.soft_contact_max,
+                dim=contacts.soft_contact_max * DAT_THREADS_PER_CONTACT,
                 inputs=[
                     contacts.soft_contact_count,
                     contacts.soft_contact_primitive,
@@ -1661,6 +1788,9 @@ class SolverVBD(SolverBase):
                     self.body_q_prev,
                     body_q,
                     self.model.body_com,
+                    self.dat_body_vertex_start,
+                    self.dat_body_vertices,
+                    self.dat_body_vertex_radius,
                     self.rigid_dat_parallel_epsilon,
                     self.rigid_conservative_bound_relaxation,
                 ],
