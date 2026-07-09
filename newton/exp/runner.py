@@ -196,6 +196,22 @@ class Experiment:
 
         builder.color()
         if self.args.water_tight:
+            # The gripper's URDF particle-collision geometry is a handful of small box
+            # pads; the finger/hand MESH shapes are visual-only (COLLIDE_PARTICLES off).
+            # Cloth then only sees the pads and can sink well inside the visible finger
+            # surface — no contact records means neither penalty forces nor DAT division
+            # planes can act there. Make the gripper bodies' mesh shapes
+            # particle-colliding so the cloth collides with the real surfaces (they stay
+            # out of rigid-rigid collision).
+            from .robots import gripper_body_ids_from_labels  # noqa: PLC0415
+
+            gripper_bodies = gripper_body_ids_from_labels(builder.body_label, robot_bodies)
+            for shape_index in range(len(builder.shape_type)):
+                if (
+                    builder.shape_body[shape_index] in gripper_bodies
+                    and builder.shape_type[shape_index] == newton.GeoType.MESH
+                ):
+                    builder.shape_flags[shape_index] |= int(newton.ShapeFlags.COLLIDE_PARTICLES)
             # Opt in to volume SDFs for the rigid meshes (e.g. the gripper) that
             # will collide with the cloth; finalize() then builds them. Analytic
             # primitives use their closed-form SDF and are skipped.
@@ -373,7 +389,11 @@ def build_parser(scene_cls, solver_cls, controller_cls):
         "you close the window.",
     )
     parser.add_argument(
-        "--no-graph-capture", action="store_false", dest="graph_capture", default=True, help="Disable CUDA graph capture."
+        "--no-graph-capture",
+        action="store_false",
+        dest="graph_capture",
+        default=True,
+        help="Disable CUDA graph capture.",
     )
     scene_cls.add_args(parser)
     solver_cls.add_args(parser)

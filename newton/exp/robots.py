@@ -108,7 +108,8 @@ def add_franka(builder, *, collapse_fixed_joints: bool = False, base_z: float = 
         # convex-hull collision meshes, then add_builder it. A plain add_usd
         # parses the physics schema generically and yields a different model.
         from pxr import Usd
-        from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx
+
+        from newton._src.usd.schemas import SchemaResolverNewton, SchemaResolverPhysx  # noqa: PLC0415
 
         stage = Usd.Stage.Open(_PANDA_USD)
         proto = newton.ModelBuilder(up_axis="Z")
@@ -145,7 +146,12 @@ def add_franka(builder, *, collapse_fixed_joints: bool = False, base_z: float = 
 
 def gripper_body_ids(model, robot_bodies: list[int]) -> list[int]:
     """Return the hand + finger body ids (exposed to VBD as proxies)."""
-    ids = [b for b in robot_bodies if "hand" in model.body_label[b] or "finger" in model.body_label[b]]
+    return gripper_body_ids_from_labels(model.body_label, robot_bodies)
+
+
+def gripper_body_ids_from_labels(body_labels: list[str], robot_bodies: list[int]) -> list[int]:
+    """Return the hand + finger body ids from a label list (usable at builder time)."""
+    ids = [b for b in robot_bodies if "hand" in body_labels[b] or "finger" in body_labels[b]]
     if not ids:
         raise RuntimeError("Could not locate Franka gripper bodies")
     return ids
