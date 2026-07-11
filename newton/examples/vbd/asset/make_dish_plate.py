@@ -76,17 +76,22 @@ _TOP_SURFACE = [
 
 # Wall thickness of the shell interior [m]. Two stacked plates rest exactly
 # this far apart (pitch == thickness for a pure vertical offset), so this is
-# the finger gap between stacked rims. The plate radius is fixed by the H1
-# hand span.
+# the finger gap between stacked rims. The plate radius is sized for the H1
+# hand span with margin for the pinch.
 WALL_THICKNESS = 0.011
-PLATE_RADIUS = 0.062
+PLATE_RADIUS = 0.075
 
 # The shell thins from WALL_THICKNESS at TAPER_START (r fraction, the rim's
 # inner edge) to EDGE_THICKNESS at the outer edge, so the annular rim and the
-# plate's visible side are a thin lip. The taper never governs the stacking
-# pitch (the well keeps the full offset), so the finger gap stays ==
-# WALL_THICKNESS.
-EDGE_THICKNESS = 0.004
+# plate's visible side are a thin lip. The lip is what the H1 pinches, so it
+# is kept thick enough for a robust fingertip clamp. The taper never governs
+# the stacking pitch (the well keeps the full offset), so the finger gap
+# stays == WALL_THICKNESS.
+# 10 mm: thick enough that sponge particles pressed onto the lip under scrub
+# pressure stay on the near side of its median surface (a thinner lip lets
+# the contact SDF flip sign and eject the particle through the shell,
+# detonating the soft solve)
+EDGE_THICKNESS = 0.010
 TAPER_START = 0.72
 
 
