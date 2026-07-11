@@ -41,6 +41,7 @@ PARAMS = {
     # example_vbd_gripper_soft_grid); the rigid plate work is fine at this rate too
     "sim_substeps": 20,
     "solver_iterations": 12,
+    "enable_cuda_graph": True,
     "gravity": -9.81,
     "num_frames": 1000,
     # how many plates are washed (script 2 raises this to the full pile)
@@ -716,6 +717,8 @@ class Example:
 
         self.plate_initial_positions = self.model.body_q.numpy()[self.plate_bodies, :3].copy()
 
+        self._capture_graph()
+
         self.viewer.set_model(self.model)
         self.viewer.log_mesh(
             "/model/triangles",
@@ -1092,7 +1095,17 @@ class Example:
 
     # ── simulation loop ──────────────────────────────────────────────────
 
+    def _capture_graph(self):
+        self.graph = None
+        if not self.params["enable_cuda_graph"] or not wp.get_device().is_cuda:
+            return
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
+
     def simulate(self):
+        # even substep count: the state_0/state_1 swap returns to the original
+        # buffers, so the captured graph replays against stable pointers
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
@@ -1102,7 +1115,10 @@ class Example:
 
     def step(self):
         self._update_trajectory()
-        self.simulate()
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         for start, end, plate in self._rub_windows:
             if start <= self.sim_time <= end:
                 sponge = self.state_0.particle_q.numpy()[self.sponge_info["particles"]]
