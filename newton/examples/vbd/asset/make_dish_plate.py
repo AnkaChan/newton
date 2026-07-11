@@ -54,9 +54,10 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Top surface of the plate: (r_fraction, z[m]) from the well centre out to the
-# rim edge — a deep well floor, a steep inner wall, a flat annular rim rolling
-# over to the outer edge. The bottom surface is this curve offset down by
-# WALL_THICKNESS, so this single curve defines the whole plate.
+# rim edge — a deep well floor, a steep inner wall, and a flat annular rim that
+# stays flat all the way to the outer edge. The bottom surface is this curve
+# offset down by the local shell thickness, so this single curve defines the
+# whole plate.
 _TOP_SURFACE = [
     (0.000, 0.0060),  # well centre (top pole)
     (0.250, 0.0064),
@@ -66,12 +67,11 @@ _TOP_SURFACE = [
     (0.610, 0.0140),
     (0.670, 0.0195),
     (0.720, 0.0235),  # top of inner wall (rim inner edge)
-    # flat annular rim
+    # flat annular rim out to the edge
     (0.790, 0.0250),
-    (0.880, 0.0254),
-    (0.945, 0.0250),  # rim outer
-    (0.985, 0.0230),  # rim rolls over
-    (1.000, 0.0195),  # outer top edge
+    (0.880, 0.0253),
+    (0.945, 0.0253),
+    (1.000, 0.0253),  # outer top edge
 ]
 
 # Wall thickness of the shell interior [m]. Two stacked plates rest exactly
