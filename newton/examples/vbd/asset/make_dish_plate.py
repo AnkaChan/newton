@@ -158,18 +158,18 @@ def make_dish_mesh(radius: float = PLATE_RADIUS, segments: int = 64):
         return ring0 + ring * segments + (s % segments)
 
     faces: list[int] = []
-    # top pole fan (outward/up winding)
+    # top pole fan (CCW from outside, normals outward/up)
     for s in range(segments):
-        faces += [0, idx(0, s + 1), idx(0, s)]
+        faces += [0, idx(0, s), idx(0, s + 1)]
     # quad bands between successive rings (two triangles each)
     for ri in range(n_rings - 1):
         for s in range(segments):
             a, b = idx(ri, s), idx(ri, s + 1)
             c, d = idx(ri + 1, s), idx(ri + 1, s + 1)
-            faces += [a, b, c, b, d, c]
+            faces += [a, c, b, b, c, d]
     # bottom pole fan
     for s in range(segments):
-        faces += [bot_pole, idx(n_rings - 1, s), idx(n_rings - 1, s + 1)]
+        faces += [bot_pole, idx(n_rings - 1, s + 1), idx(n_rings - 1, s)]
 
     return verts, np.asarray(faces, dtype=np.int32)
 
