@@ -10,24 +10,29 @@
 # about the vertical axis into a closed two-manifold (watertight) mesh, so it
 # works with the rigid mesh SDF contact path.
 #
-# SHAPE — uniform-thickness shell. The plate is defined by ONE curve, its top
-# surface (_TOP_SURFACE): a deep central well, a steep inner wall, and a flat
-# raised rim. The bottom surface is simply that same curve offset straight DOWN
-# by WALL_THICKNESS, joined to the top by a short vertical outer wall. So the
-# plate is a shell of constant thickness rather than a fat solid — it reads as a
-# real plate, not a puck.
+# SHAPE — uniform-thickness shell with a thin lip. The plate is defined by ONE
+# curve, its top surface (_TOP_SURFACE): a deep central well, a steep inner
+# wall, and a flat raised rim. The bottom surface is that same curve offset
+# straight DOWN by WALL_THICKNESS over the interior; from TAPER_START outward
+# the offset blends down to EDGE_THICKNESS, so the shell thins toward the outer
+# edge and the visible side of the plate is a thin lip rather than the full
+# wall — it reads as a real plate, not a puck.
 #
 # STACKING — why the offset shell matters. Two identical plates stack when the
 # upper one is shifted up until its bottom surface just meets the lower one's
-# top surface. Because the two surfaces are congruent (a pure vertical offset),
-# that clearance is the SAME at every radius and equals WALL_THICKNESS. So:
+# top surface. Over the un-tapered interior the two surfaces are congruent (a
+# pure vertical offset), so the plates rest there and the pitch equals
+# WALL_THICKNESS. So:
 #
 #     stacking rim-to-rim gap  ==  wall thickness
 #
 # The wall thickness is therefore the single knob for the finger gap between
 # stacked plates: make it ~a finger wide and the top plate can be pinched off
-# the stack directly, with no need to slide it out of alignment first. See
-# stacking_pitch(), which measures this from the profile.
+# the stack directly, with no need to slide it out of alignment first. The lip
+# taper helps here too: near the rim the shell is thinner than the pitch, so
+# stacked rims clear by (WALL_THICKNESS - local thickness) instead of touching —
+# an open wedge the index can enter. See stacking_pitch(), which measures the
+# pitch from the profile.
 #
 # Outputs (in this directory):
 #   dish_plate.obj    - the watertight plate mesh (radius 0.062 m, wall 0.011 m)
@@ -69,25 +74,45 @@ _TOP_SURFACE = [
     (1.000, 0.0195),  # outer top edge
 ]
 
-# Uniform wall thickness [m]. Two stacked plates rest exactly this far apart
-# (pitch == thickness for a pure vertical offset), so this is the finger gap
-# between stacked rims. The plate radius is fixed by the H1 hand span.
+# Wall thickness of the shell interior [m]. Two stacked plates rest exactly
+# this far apart (pitch == thickness for a pure vertical offset), so this is
+# the finger gap between stacked rims. The plate radius is fixed by the H1
+# hand span.
 WALL_THICKNESS = 0.011
 PLATE_RADIUS = 0.062
+
+# The shell thins from WALL_THICKNESS at TAPER_START (r fraction, the rim's
+# inner edge) to EDGE_THICKNESS at the outer edge, so the annular rim and the
+# plate's visible side are a thin lip. The taper never governs the stacking
+# pitch (the well keeps the full offset), so the finger gap stays ==
+# WALL_THICKNESS.
+EDGE_THICKNESS = 0.004
+TAPER_START = 0.72
+
+
+def _shell_thickness(r_frac: float, thickness: float = WALL_THICKNESS, edge: float = EDGE_THICKNESS) -> float:
+    """Local vertical shell thickness: full over the interior, smoothstep-blended
+    down to ``edge`` between TAPER_START and the outer edge (the thin lip)."""
+    if r_frac <= TAPER_START:
+        return thickness
+    u = (r_frac - TAPER_START) / (1.0 - TAPER_START)
+    u = u * u * (3.0 - 2.0 * u)
+    return thickness + (edge - thickness) * u
 
 
 def dish_profile(radius: float = PLATE_RADIUS, thickness: float = WALL_THICKNESS) -> np.ndarray:
     """(r, z) cross-section from the top-centre pole to the bottom-centre pole.
 
-    The plate is a uniform-thickness shell: the bottom surface is the top
-    surface offset straight down by ``thickness``, joined by a short vertical
-    outer wall. r runs 0 -> radius over the top, holds at the outer wall, then
+    The plate is an offset shell: the bottom surface is the top surface
+    dropped by the local shell thickness (``thickness`` over the interior,
+    tapering to EDGE_THICKNESS at the rim), joined by a short vertical outer
+    wall. r runs 0 -> radius over the top, holds at the outer wall, then
     radius -> 0 back under the bottom. The whole profile is shifted so the
     lowest point sits at z = 0 (the plate rests there)."""
     R = radius
     top = [(r * R, z) for r, z in _TOP_SURFACE]
-    # bottom: the top surface reversed (r: R -> 0) and dropped by ``thickness``
-    bottom = [(r * R, z - thickness) for r, z in reversed(_TOP_SURFACE)]
+    # bottom: the top surface reversed (r: R -> 0), dropped by the local thickness
+    bottom = [(r * R, z - _shell_thickness(r, thickness)) for r, z in reversed(_TOP_SURFACE)]
     pts = np.asarray(top + bottom, dtype=np.float64)
     pts[:, 1] -= pts[:, 1].min()  # rest the lowest point on z = 0
     return pts
@@ -208,7 +233,7 @@ def _render(profile: np.ndarray) -> None:
 
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11, 4.5))
     ax0.fill(full_r * 1000, full_z * 1000, facecolor="#e9e4d6", edgecolor="#555", lw=1.2)
-    ax0.set_title("plate cross-section (uniform-thickness shell)")
+    ax0.set_title("plate cross-section (offset shell, rim tapers to a thin lip)")
     ax0.set_xlabel("r [mm]")
     ax0.set_ylabel("z [mm]")
     ax0.set_aspect("equal")
@@ -246,11 +271,12 @@ if __name__ == "__main__":
     print(f"radius {PLATE_RADIUS} m, wall {WALL_THICKNESS} m, stacking pitch {pitch * 1000:.1f} mm")
 
     header = (
-        "Dinner plate (surface of revolution): uniform-thickness shell — a deep\n"
-        "well and raised rim, bottom offset straight down by the wall thickness.\n"
-        "Watertight two-manifold. Generated by make_dish_plate.py. radius\n"
-        f"{PLATE_RADIUS} m, wall {WALL_THICKNESS} m, 64 segments. Stacks with a\n"
-        "rim gap == the wall thickness."
+        "Dinner plate (surface of revolution): offset shell — a deep well and\n"
+        "raised rim, bottom offset straight down by the wall thickness, tapering\n"
+        "to a thin lip at the outer edge. Watertight two-manifold. Generated by\n"
+        f"make_dish_plate.py. radius {PLATE_RADIUS} m, wall {WALL_THICKNESS} m,\n"
+        f"lip {EDGE_THICKNESS} m, 64 segments. Stacks with a rim gap == the wall\n"
+        "thickness."
     )
     obj_path = os.path.join(HERE, "dish_plate.obj")
     write_obj(obj_path, verts, faces, header)
