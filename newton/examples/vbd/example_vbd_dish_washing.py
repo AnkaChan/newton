@@ -39,14 +39,10 @@ import newton.utils
 PARAMS = {
     # simulation
     "fps": 60,
-    # 20 substeps: the grips are tuned at this rate — VBD's penalty friction
-    # scales with per-substep displacement, so changing the substep count
-    # de-tunes every contact in the scene
-    "sim_substeps": 20,
-    # 16 iterations: the sponge particles clamped at the fingertips form a
-    # stiff cluster; unconverged VBD iterations inject the energy behind the
-    # intermittent fingertip blow-ups
-    "solver_iterations": 16,
+    # note: VBD's penalty friction scales with per-substep displacement, so
+    # substep changes shift every contact's effective grip
+    "sim_substeps": 6,
+    "solver_iterations": 10,
     "enable_cuda_graph": True,
     "gravity": -9.81,
     "num_frames": 1900,
@@ -58,8 +54,8 @@ PARAMS = {
     "sponge_only": False,
     # presentation
     "camera_position": (1.05, -1.55, 1.62),
-    "camera_pitch": -14.0,
-    "camera_yaw": -37.0,
+    "camera_pitch": -21.6,
+    "camera_yaw": 136.9,
     "camera_fov": 45.0,
     # table (front edge faces the robot at x = -table_half_width)
     "table_half_width": 0.20,
@@ -83,9 +79,11 @@ PARAMS = {
     # ride-and-sweep placement, which does not depend on where the creep
     # left the bowl.
     "plate_density": 1000.0,
-    # grippy on the table (mu combines with the 0.9 tabletop) so the wet sponge
-    # can scrub without dragging the plate off the overhanging wash spot
-    "plate_mu": 0.6,
+    # glossy glaze: pairs with soft_contact_mu for an effective sponge-bowl
+    # friction of ~0.2 (the wet sponge glides over the dish), while the
+    # bowl-table pairing (~0.5 with the grippy top) still anchors the bowl
+    # under the scrub, and slick bowl-bowl contact self-centres the nest
+    "plate_mu": 0.1,
     "plate_colors": ((0.93, 0.90, 0.82), (0.72, 0.82, 0.90), (0.78, 0.88, 0.78)),
     # dirty pile: a nested stack deeper on the table (set dressing — the curled
     # H1 index spans ~30 mm below the pinch point and cannot enter the 11 mm
@@ -103,24 +101,27 @@ PARAMS = {
     # ``row_spacing`` is the y-pitch of the row.
     "dirty_layout": "pile",
     "row_spacing": 0.135,
-    # washing spot: at the front edge NEXT TO the sponge's home, so the
-    # fragile airborne sponge hop is only ~12 cm. The bowl RESTS on the table
-    # here during the rub while the right hand keeps its rim pinch (a bowl
-    # held airborne hangs tilted in the rim pinch and works out of the
-    # fingers; the bowl reaches this spot by a long table slide, which is
-    # robust)
-    "wash_x": -0.173,
+    # washing spot: NEXT TO the sponge's home (short sponge hop), with a
+    # PARTIAL 20 mm rim overhang past the table edge — enough that the
+    # below-rim parts of the pinching fingertips hang in free air instead of
+    # clipping through the tabletop, while the bowl's support ring stays
+    # fully on the wood so a sponge press cannot lever it up (bowl weight
+    # restores at ~5x the torque a pad press on the short ledge can apply).
+    "wash_x": -0.145,
     "wash_y": 0.10,
     # sponge: a stiff soft FEM pad, physically pinched by the H1 fingers. Its -x
     # edge overhangs the front table edge so the index can slide underneath.
     "sponge_size": (0.10, 0.075, 0.024),
     "sponge_cells": (8, 6, 2),
-    "sponge_x": -0.185,
+    # far enough forward that the pad sits clearly on the table, while its -x
+    # edge still overhangs the table edge enough for the index to slide under
+    # it in free air during the pickup
+    "sponge_x": -0.168,
     "sponge_y": 0.27,
     # where the sponge is set aside after the wash: on the table just
     # northeast of the wash station, one short supported slide away from
     # where the rub ends (transporting the pad any further sheds it)
-    "sponge_park": (-0.15, 0.22),
+    "sponge_park": (-0.065, 0.22),
     "sponge_density": 250.0,
     # Shear-dominant Neo-Hookean (k_mu > k_lambda): shear keeps the pad holding
     # its shape in the pinch (it doesn't squirt out), lower bulk keeps it
@@ -130,25 +131,31 @@ PARAMS = {
     "sponge_k_mu": 1.5e4,
     "sponge_k_lambda": 4.0e3,
     "sponge_k_damp": 5.0e-3,
-    # particle radius = per-particle finger contact standoff. Matches the stable
-    # recipe of example_vbd_gripper_soft_grid (radius ~0.01, low contact ke, high
-    # damping, 20 substeps): a firm-but-soft contact that clamps without the
-    # force spike a small gap + stiff contact produces.
-    "sponge_particle_radius": 0.012,
+    # particle radius = per-particle finger contact standoff. Kept small so
+    # the fingers visually close onto the pad instead of hovering a standoff
+    # away (the rendered surface sits at the particle centres, so the visible
+    # finger-to-pad gap is roughly this radius plus part of the margin).
+    "sponge_particle_radius": 0.008,
     "sponge_color": (0.95, 0.85, 0.25),
     # rigid-soft contact for the sponge grip: soft + heavily damped to avoid a
     # contact-force spike (a stiff contact spears/drags the edge tets and blows
     # the mesh up), grippy friction so the clamped pad doesn't slip.
     "soft_contact_ke": 8.0e2,
     "soft_contact_kd": 15.0,
-    "soft_contact_mu": 1.2,
-    "soft_contact_margin": 0.014,
+    # particle-side friction, averaged per contact with the shape's mu:
+    # vs bowl (0.1) -> ~0.2 gliding scrub; vs table (0.9) -> 0.6 for the
+    # park drag; vs fingers (200) the average stays ~100, so the pinch grip
+    # is unaffected
+    "soft_contact_mu": 0.3,
+    "soft_contact_margin": 0.010,
     "enable_water_tight_rigid_soft_contact": False,
     "shape_ke": 1.0e3,
     "shape_kd": 1.0e-4,
     "rigid_contact_gap": 0.001,
-    # H1; the thumb/index chains carry finer texture-backed SDFs for the pinch
-    "robot_base_x": -0.75,
+    # H1; the thumb/index chains carry finer texture-backed SDFs for the pinch.
+    # Standing close to the table keeps the front-edge grab well inside the
+    # arm's reach — at near-full extension the whole-body IK gets twitchy.
+    "robot_base_x": -0.70,
     "robot_contact_ke": 1.0e3,
     "robot_contact_kd": 1.0e-2,
     "robot_contact_mu": 0.5,
@@ -161,6 +168,10 @@ PARAMS = {
     # the AVERAGE of this and soft_contact_ke, so a stiff finger keeps the sponge
     # contact stiff and shoots the pad out — keep it low for a gentle grip.
     "finger_contact_ke": 1.0e3,
+    # the right hand's fingers pinch the rigid rim: a stiffer contact there
+    # takes the visible wobble out of the held bowl (the left hand keeps the
+    # soft finger_contact_ke for the sponge)
+    "bowl_finger_contact_ke": 2.5e3,
     "finger_contact_kd": 2.0e1,
     # High mu keeps the rim pinch and the sponge pinch from creeping.
     "finger_contact_mu": 200.0,
@@ -198,6 +209,9 @@ PARAMS = {
     # yaw out of the pinch. Deeper pivots the bowl to a steep hanging tilt at
     # close; a thumb driven below the index apex squeezes the rigid rim out
     # of the fingers like a watermelon seed.
+    # 0.80 with the stiff bowl_finger_contact_ke: the press depth sets how
+    # far the close PIVOTS the bowl (deeper freezes it at a steep tilt), the
+    # contact stiffness sets the wobble — firmness comes from the stiffness
     "grab_thumb_fraction": 0.80,
     "other_finger_fraction": 0.8,
     # sponge pinch: the curled index slides under the pad's -x edge and the
@@ -213,14 +227,18 @@ PARAMS = {
     # drive (see sponge_hand_drive_ke) the thumb stalls into a gentle bounded
     # clamp on the pad edge instead of crushing or ejecting it, and the hook
     # carries the weight
-    "sponge_thumb_fraction": 0.66,
+    # deep enough to reach the pad's contact shell at the small particle
+    # radius (the shell sits ~radius+margin from the surface; a shallower
+    # thumb stalls at its commanded angle without ever touching the pad).
+    # The soft left-hand drive keeps the stall force gentle.
+    "sponge_thumb_fraction": 0.76,
     "sponge_index_fraction": 0.85,
     # during the rub the pad RESTS on the bowl and the fingers only push it
     # around the ellipses: the thumb opens to a loose cage so the pad edge
     # micro-slips in the fingers instead of the clamped tets being cyclically
     # wrung against the rim (which ratchets the pad apart and detonates the
     # bowl contact)
-    "sponge_rub_thumb_fraction": 0.58,
+    "sponge_rub_thumb_fraction": 0.66,
     # pinch-point x offset from the held plate's center while carried
     # (= grab_insert_depth - plate_radius)
     "plate_center_to_pinch_dx": -0.065,
@@ -238,6 +256,10 @@ PARAMS = {
     # pinch height while the bowl rests on the table at the wash spot: held a
     # few mm LOW so the thumb preloads the rim downward — the scrubbing sponge
     # otherwise levers the resting bowl up into a tilt it carries to the stack
+    # pinch height while the bowl rests on the table at the wash spot: the
+    # index apex sits ~3 mm below the rim underside — a zero-penetration cage
+    # (with the firm grip, residual apex penetration jacks the rim up), and
+    # contact engages the moment the bowl lifts
     "wash_hold_lift": 0.019,
     # carrying the washed bowl to the stack: the bowl hangs tilted in the rim
     # pinch — a variable 8-38 deg, so its low leading edge rides anywhere up
@@ -264,13 +286,17 @@ PARAMS = {
     "stack_sweep_over": 0.045,
     "stack_seat_depth": 0.004,
     # rub trajectory: the sponge is pinch-held at its -x edge, so the pinch
-    # stays behind the plate rim (the index must never cross above it) and
-    # the sponge body scrubs the near half of the plate in flat ellipses
-    # the pad's stiff mid-section scrubs the rim: pinched further back, the
-    # pad's unsupported far end droops several cm and its flapping tip lands
-    # deep on the rim, shoving the bowl and squeezing the index out of the
-    # maintained rim pinch; pinched closer, the well edge is the hazard
-    "rub_pinch_behind_rim": 0.050,
+    # stays behind the plate rim and the pad body scrubs the bowl's top in
+    # flat ellipses. The pinch must stay far enough behind the rim that the
+    # LEFT fingertips (index reach ~17 mm past the pinch, plus the ellipse
+    # swing) never touch the bowl — a rigid fingertip against the rim jacks
+    # the bowl up and over; the 10 cm pad still reaches across the rim and
+    # scrubs the top.
+    "rub_pinch_behind_rim": 0.040,
+    # scrub the bowl's NORTH sector: the right hand pinches the west rim at
+    # the wash y, and an ellipse centred there runs the pad over the thumb
+    # instead of the dish
+    "rub_side_offset": 0.045,
     "rub_radius_x": 0.006,
     "rub_radius_y": 0.018,
     "rub_circles": 3,
@@ -319,7 +345,10 @@ PARAMS = {
     # gentle bounded grip.
     "sponge_hand_drive_ke": 5.0e3,
     "sponge_hand_drive_kd": 5.0e1,
-    "joint_target_velocity_limit": 40.0,
+    # per-frame clamp on joint-target motion: smooths IK jumps without the
+    # long saturated sweeps a very tight clamp produces when the IK solution
+    # jumps between branches
+    "joint_target_velocity_limit": 20.0,
     "torso_ik_position_weight": 50.0,
     "torso_ik_rotation_weight": 50.0,
 }
@@ -546,6 +575,11 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
     shape_collision_flag = int(newton.ShapeFlags.COLLIDE_SHAPES)
     particle_collision_flag = int(newton.ShapeFlags.COLLIDE_PARTICLES)
     collision_mask = shape_collision_flag | particle_collision_flag
+    # thumb + index only: these two chains are the CALIBRATED pinch (see the
+    # grab_* comments). Adding the middle finger as a grasp collider was
+    # tried for a firmer tripod and backfired — its uncalibrated tip sits at
+    # a different height, jacks the resting bowl's rim up during the rub, and
+    # on the left hand it hooks the sponge so the release drags the pad away.
     grasp_finger_tokens = ("/L_thumb_", "/L_index_", "/R_thumb_", "/R_index_")
     finger_bodies = {
         body
@@ -573,7 +607,13 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
             robot_rigid_shapes.append(shape)
         if is_grasp_collider:
             builder.shape_flags[shape] |= particle_collision_flag
-            builder.shape_material_ke[shape] = params["finger_contact_ke"]
+            # the right fingers pinch the rigid rim and need a stiff contact
+            # for a firm, wobble-free hold; the left fingers grip the soft
+            # sponge and must stay gentle (a stiff finger ejects the pad)
+            if "/R_" in builder.shape_label[shape]:
+                builder.shape_material_ke[shape] = params["bowl_finger_contact_ke"]
+            else:
+                builder.shape_material_ke[shape] = params["finger_contact_ke"]
             builder.shape_material_kd[shape] = params["finger_contact_kd"]
             builder.shape_material_mu[shape] = params["finger_contact_mu"]
             builder.shape_margin[shape] = params["finger_contact_margin"]
@@ -1008,17 +1048,18 @@ class Example:
             left.wait_until(plate_ready_time + 0.2)
             plate_top_z = plate_bottom + p["plate_rim_thickness"]
             plate_rim_x = p["wash_x"] - plate_r
-            rub_pinch = np.asarray([plate_rim_x - p["rub_pinch_behind_rim"], p["wash_y"]])
+            # ellipse centre offset north of the wash y: the right hand pinches
+            # the rim AT the wash y, and a scrub centred there rubs the thumb
+            rub_pinch = np.asarray([plate_rim_x - p["rub_pinch_behind_rim"], p["wash_y"] + p["rub_side_offset"]])
             rub_z = plate_top_z + p["rub_pinch_above_plate"]
             self._mark(left.time, "rub_approach")
-            # come down BEHIND the rim, then slide in horizontally: lowering at
-            # the rub point sweeps the dangling pad's tip down across the rim's
-            # outer side and shoves the held bowl
-            back_x = rub_pinch[0] - 0.05
+            # hover directly ABOVE the rub point and lower straight down: the
+            # draped pad lands on the bowl's top from above, pressing inside
+            # the support ring. A horizontal slide-in at rim height pries the
+            # near rim on arrival and levers the bowl up into a tilt.
             # slow approach: the hooked pad swings on fast moves
-            left.move(2.0 * p["carry_time"], pos=(back_x, rub_pinch[1], rub_z + p["rub_hover_dz"]))
-            left.move(p["lower_time"], pos=(back_x, rub_pinch[1], rub_z))
-            left.move(p["lower_time"], pos=(rub_pinch[0], rub_pinch[1], rub_z))
+            left.move(2.0 * p["carry_time"], pos=(rub_pinch[0], rub_pinch[1], rub_z + p["rub_hover_dz"]))
+            left.move(2.0 * p["lower_time"], pos=(rub_pinch[0], rub_pinch[1], rub_z))
             # open the thumb to a cage for the scrub (see sponge_rub_thumb_fraction)
             left.move(0.3, thumb=p["sponge_rub_thumb_fraction"])
             self._mark(left.time, "rub")
@@ -1045,11 +1086,23 @@ class Example:
             # re-close the thumb to the carry clamp before moving off the bowl
             left.move(0.3, thumb=p["sponge_thumb_fraction"])
             self._mark(left.time, "sponge_home")
-            park_pinch = (rub_pinch[0] + 0.10, rub_pinch[1] + 0.12)
+            park_pinch = (rub_pinch[0] + 0.10, rub_pinch[1] + 0.08)
             left.move(2.0 * p["lower_time"], pos=(park_pinch[0], park_pinch[1], rub_z))
             sponge_clear_time = left.time
             left.move(p["lower_time"], pos=(park_pinch[0], park_pinch[1], sponge_drag_z))
-            self._release_and_retract(left, p["rest_left"])
+            # let go by backing the hooked index OUT of the pad edge while it
+            # uncurls: opening the deep hook in place rotates the fingertip
+            # through the pad and drags it off the table with the hand
+            self._mark(left.time, "release")
+            left.move(p["release_time"], thumb=0.0, other=0.0)
+            left.move(
+                p["retract_time"],
+                pos=(park_pinch[0] - 0.08, park_pinch[1], sponge_drag_z + 0.01),
+                index=0.3,
+            )
+            left.move(p["release_time"], index=0.0)
+            left.move(p["retract_time"], pos=(park_pinch[0] - 0.08, park_pinch[1], sponge_drag_z + 0.13))
+            left.move(p["retract_time"], pos=p["rest_left"])
 
             # the right hand still holds the plate: lift it straight up, carry it
             # over the 2-bowl stack, and lower it into the nest. It starts as
@@ -1122,6 +1175,9 @@ class Example:
                 ik.IKObjectiveRotation(
                     link_index=body,
                     link_offset_rotation=wp.quat_identity(),
+                    # deliberately weak: a strong rotation constraint makes
+                    # the redundant arm flip between IK branches frame to
+                    # frame, which reads as arm instability
                     target_rotations=wp.array([wp.vec4(*rotation)], dtype=wp.vec4),
                     weight=0.2,
                 )
@@ -1144,7 +1200,10 @@ class Example:
                 self.torso_rotation_objective,
                 joint_limits,
             ],
-            lambda_initial=0.1,
+            # heavier LM damping: the per-frame warm-started solve then makes
+            # small consistent steps instead of wandering through the arm's
+            # redundancy, which shows up as idle-arm jitter
+            lambda_initial=1.0,
             jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
 
