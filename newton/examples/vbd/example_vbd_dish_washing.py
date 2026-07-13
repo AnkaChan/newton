@@ -53,9 +53,9 @@ PARAMS = {
     # sponge grip from the plate work and the shared solver)
     "sponge_only": False,
     # presentation
-    "camera_position": (1.05, -1.55, 1.62),
-    "camera_pitch": -21.6,
-    "camera_yaw": 136.9,
+    "camera_position": (1.43, 0.42, 1.77),
+    "camera_pitch": -15.9,
+    "camera_yaw": -160.8,
     "camera_fov": 45.0,
     # table (front edge faces the robot at x = -table_half_width)
     "table_half_width": 0.20,
@@ -84,6 +84,8 @@ PARAMS = {
     # bowl-table pairing (~0.5 with the grippy top) still anchors the bowl
     # under the scrub, and slick bowl-bowl contact self-centres the nest
     "plate_mu": 0.1,
+    # bowl contact damping (see plate_cfg)
+    "plate_kd": 2.0,
     "plate_colors": ((0.93, 0.90, 0.82), (0.72, 0.82, 0.90), (0.78, 0.88, 0.78)),
     # dirty pile: a nested stack deeper on the table (set dressing — the curled
     # H1 index spans ~30 mm below the pinch point and cannot enter the 11 mm
@@ -92,7 +94,9 @@ PARAMS = {
     # with its rim overhanging, which is the situation the grab primitive is
     # calibrated for.
     "dirty_pile_x": -0.01,
-    "dirty_pile_y": -0.24,
+    # kept within comfortable reach of the right arm: further toward the
+    # robot's right (-y) the stack placement runs at the arm's reach limit
+    "dirty_pile_y": -0.17,
     "grab_overhang_x": -0.173,
     # dirty-plate arrangement: "pile" nests plate_count-1 plates at the pile
     # spot and rests the last plate at the overhang spot (the 1-dish example
@@ -272,10 +276,22 @@ PARAMS = {
     # aim the drop slightly past the stack centre to compensate the average
     # pinch creep accumulated during the carry
     "stack_aim_bias": 0.02,
-    # the bowl is released hanging this far ABOVE the stack's top rim and
-    # falls into the nest (the slick congruent shells funnel it in); seating
-    # it under hand power presses the bowl through the ones below
-    "stack_release_height": 0.015,
+    # release the bowl deliberately MISALIGNED this far on the near (west)
+    # side of the nest: it rests rim-on-rim, tips toward the opening, and
+    # slides into the nest under gravity on the slick shells. The offset
+    # also keeps the whole hand west of the stack, so the fingers never
+    # travel over (or dip into) the bowls below.
+    "stack_misalign": 0.038,
+    # the released bowl drifts toward the robot's LEFT (+y) as it slips off
+    # the loosening pinch, so aim the drop this far toward the robot's RIGHT
+    # (-y) of the nest centre to land it centred
+    "stack_drop_y_bias": -0.02,
+    # the descent pauses this far above nominal contact, then the fingers
+    # open WHILE the hand keeps lowering slowly through the contact zone: the
+    # bowl leaves the hand the moment it touches the stack — at descent
+    # speed, wherever the hang variance put the contact — so the hand can
+    # neither drop it from height nor press it into the bowls below
+    "stack_release_height": 0.010,
     # rub trajectory: the sponge is pinch-held at its -x edge, so the pinch
     # stays behind the plate rim and the pad body scrubs the bowl's top in
     # flat ellipses. The pinch must stay far enough behind the rim that the
@@ -682,7 +698,10 @@ def _add_plates(builder: newton.ModelBuilder, params: dict) -> tuple[list[int], 
     plate_cfg = newton.ModelBuilder.ShapeConfig(
         density=params["plate_density"],
         ke=params["shape_ke"],
-        kd=params["shape_kd"],
+        # real contact damping on the bowls: with the near-zero demo-wide kd
+        # a bowl landing on the stack rings instead of absorbing, and the
+        # impact spike scatters the nested bowls
+        kd=params["plate_kd"],
         mu=params["plate_mu"],
         gap=params["rigid_contact_gap"],
         has_particle_collision=True,
@@ -1092,21 +1111,35 @@ class Example:
             right.move(p["lift_time"], pos=(wash_pinch[0], p["wash_y"], carry_z))
             stack_pinch_x = p["dirty_pile_x"] + pinch_dx
             stack_y = p["dirty_pile_y"]
-            # carry slowly so the tilted-hanging bowl does not swing/overshoot,
-            # aiming slightly past the stack centre to compensate the pinch
-            # creep accumulated during the carry
-            drop_pinch_x = stack_pinch_x + p["stack_aim_bias"]
+            # carry slowly so the tilted-hanging bowl does not swing/overshoot.
+            # The target is deliberately on the NEAR side of the nest (see
+            # stack_misalign): the released bowl lands rim-on-rim and slides
+            # into the nest under gravity, and the hand stays clear of the
+            # bowls below.
+            drop_pinch_x = stack_pinch_x + p["stack_aim_bias"] - p["stack_misalign"]
             right.move(2.5 * p["carry_time"], pos=(drop_pinch_x, stack_y, carry_z))
-            # lower until the bowl hangs a little ABOVE the stack's top rim,
-            # then open the hand: the bowl drops in and the slick congruent
-            # shells funnel it into the nest. Seating it under hand power
-            # presses the bowl through the ones below.
             rim_top_local = plate_bottom - p["table_top_z"] + p["plate_rim_thickness"]
             stack_rim_z = p["table_top_z"] + (p["plate_count"] - 2 + k) * p["plate_stack_pitch"] + rim_top_local
             drop_pinch_z = stack_rim_z + p["stack_hang"] + p["stack_release_height"]
-            right.move(2.0 * p["lower_time"], pos=(drop_pinch_x, stack_y, drop_pinch_z))
+            drop_y = stack_y + p["stack_drop_y_bias"]
+            right.move(2.0 * p["lower_time"], pos=(drop_pinch_x, drop_y, drop_pinch_z))
+            # staged release. The carried bowl hangs with its far side UP (the
+            # close pivots it and the firm grip freezes that attitude), so an
+            # instant release lets the raised far side swing down into the
+            # stack. Instead: (1) loosen the thumb slowly — the bowl rotates
+            # far-side-DOWN under gravity in the slipping pinch and settles
+            # onto the nest with the hand still guiding it; (2) clear the
+            # thumb; (3) back the still-curled index out from UNDER the rim
+            # horizontally (uncurling it in place sweeps the fingertip up into
+            # the dish); (4) only then open the remaining fingers and retreat.
+            self._mark(right.time, "release")
+            right.move(2.0 * p["release_time"], thumb=0.72)
+            right.move(p["release_time"], thumb=0.0)
+            right.move(p["retract_time"], pos=(drop_pinch_x - 0.045, drop_y, drop_pinch_z))
+            right.move(p["release_time"], index=0.0, other=0.0)
             right.wait(p["place_dwell"])
-            self._release_and_retract(right, p["rest_right"])
+            right.move(p["retract_time"], pos=(drop_pinch_x - 0.045, drop_y, drop_pinch_z + 0.13))
+            right.move(p["retract_time"], pos=p["rest_right"])
 
         # epilogue: the left hand keeps holding the sponge; rest the right
         right.wait_until(left.time)
