@@ -102,12 +102,14 @@ PARAMS = {
     "dirty_layout": "pile",
     "row_spacing": 0.135,
     # washing spot: NEXT TO the sponge's home (short sponge hop), with a
-    # PARTIAL 20 mm rim overhang past the table edge — enough that the
-    # below-rim parts of the pinching fingertips hang in free air instead of
-    # clipping through the tabletop, while the bowl's support ring stays
-    # fully on the wood so a sponge press cannot lever it up (bowl weight
-    # restores at ~5x the torque a pad press on the short ledge can apply).
-    "wash_x": -0.145,
+    # PARTIAL 30 mm rim overhang past the table edge. In the thumb-up pinch
+    # the lower fingers stack well below the pinch point, so everything the
+    # hand owns below table level must hang west of the edge in free air —
+    # the pinch point lands at x = -0.22, its below-table finger material
+    # reaches at most ~17 mm further east, and the edge is at -0.20. The
+    # bowl's support ring still ends 5 mm inside the edge, so the (gentle,
+    # mu~0.2) scrub cannot lever it.
+    "wash_x": -0.155,
     "wash_y": 0.10,
     # sponge: a stiff soft FEM pad, physically pinched by the H1 fingers. Its -x
     # edge overhangs the front table edge so the index can slide underneath.
@@ -118,10 +120,6 @@ PARAMS = {
     # it in free air during the pickup
     "sponge_x": -0.168,
     "sponge_y": 0.27,
-    # where the sponge is set aside after the wash: on the table just
-    # northeast of the wash station, one short supported slide away from
-    # where the rub ends (transporting the pad any further sheds it)
-    "sponge_park": (-0.065, 0.22),
     "sponge_density": 250.0,
     # Shear-dominant Neo-Hookean (k_mu > k_lambda): shear keeps the pad holding
     # its shape in the pinch (it doesn't squirt out), lower bulk keeps it
@@ -257,10 +255,10 @@ PARAMS = {
     # few mm LOW so the thumb preloads the rim downward — the scrubbing sponge
     # otherwise levers the resting bowl up into a tilt it carries to the stack
     # pinch height while the bowl rests on the table at the wash spot: the
-    # index apex sits ~3 mm below the rim underside — a zero-penetration cage
+    # index apex sits ~1 mm below the rim underside — a zero-penetration cage
     # (with the firm grip, residual apex penetration jacks the rim up), and
     # contact engages the moment the bowl lifts
-    "wash_hold_lift": 0.019,
+    "wash_hold_lift": 0.021,
     # carrying the washed bowl to the stack: the bowl hangs tilted in the rim
     # pinch — a variable 8-38 deg, so its low leading edge rides anywhere up
     # to ~50 mm below the pinch — and must clear the stack's top rim (~41 mm
@@ -271,20 +269,13 @@ PARAMS = {
     # under P), and the extra drop left when the hand opens over the stack so
     # the opening fingers cannot drag the bowl off the nest
     "stack_hang": 0.034,
-    # nesting by feel: the carried bowl creeps a variable 2-4 cm in the pinch
-    # and hangs at a variable tilt, so neither an aimed drop nor a fixed-
-    # height sweep lands it. Instead the hand descends DIAGONALLY from west
-    # of the stack down to a seated endpoint over the nest: wherever the
-    # bowl's low leading edge first meets the stack along that path, it lands
-    # on the rim top and rides in, and the well drops into the nest when it
-    # crosses the opening — independent of the creep and tilt.
-    "stack_sweep_back": 0.055,
-    # sweep far enough past the stack centre that the bowl's well crosses the
-    # nest opening for the whole 2-4.5 cm range of pinch trailing; once the
-    # bowl drops in, the nest captures it and the rest of the sweep just
-    # slips the pinch
-    "stack_sweep_over": 0.045,
-    "stack_seat_depth": 0.004,
+    # aim the drop slightly past the stack centre to compensate the average
+    # pinch creep accumulated during the carry
+    "stack_aim_bias": 0.02,
+    # the bowl is released hanging this far ABOVE the stack's top rim and
+    # falls into the nest (the slick congruent shells funnel it in); seating
+    # it under hand power presses the bowl through the ones below
+    "stack_release_height": 0.015,
     # rub trajectory: the sponge is pinch-held at its -x edge, so the pinch
     # stays behind the plate rim and the pad body scrubs the bowl's top in
     # flat ellipses. The pinch must stay far enough behind the rim that the
@@ -783,6 +774,9 @@ class Example:
         self._phase_marks: list[tuple[float, str]] = []
         self._rub_windows: list[tuple[float, float, int]] = []
         self._rub_min_gap: dict[int, float] = {}
+        # where the left hand ends up holding the sponge (set by the
+        # choreography; None in the sponge_only debug mode)
+        self.sponge_hold_pinch = None
 
         builder = newton.ModelBuilder(gravity=p["gravity"])
         self.robot_bodies, robot_rigid_shapes, grasp_shapes = _add_h1(builder, p)
@@ -1077,32 +1071,17 @@ class Example:
                 )
             self._rub_windows.append((rub_start, left.time, k))
             self._mark(left.time, "rub_done")
-            # set the sponge down IMMEDIATELY beside the wash station: one
-            # short slide northeast off the bowl's flank onto the table (the
-            # pad is supported by the bowl, then the wood, the whole way),
-            # lower, and let go. Every centimetre a hooked pad travels
-            # unsupported is a chance to shed it.
-            sponge_drag_z = p["table_top_z"] + p["sponge_particle_radius"] - 0.002
-            # re-close the thumb to the carry clamp before moving off the bowl
+            # keep the sponge IN HAND: re-close the thumb to the carry clamp,
+            # lift the pad clear of the bowl, and hold it just behind the wash
+            # station for the rest of the demo (every put-down attempt risks
+            # shedding the pad, and the washer plausibly keeps the sponge)
             left.move(0.3, thumb=p["sponge_thumb_fraction"])
-            self._mark(left.time, "sponge_home")
-            park_pinch = (rub_pinch[0] + 0.10, rub_pinch[1] + 0.08)
-            left.move(2.0 * p["lower_time"], pos=(park_pinch[0], park_pinch[1], rub_z))
+            self._mark(left.time, "sponge_hold")
+            left.move(p["lower_time"], pos=(rub_pinch[0], rub_pinch[1], rub_z + 0.05))
             sponge_clear_time = left.time
-            left.move(p["lower_time"], pos=(park_pinch[0], park_pinch[1], sponge_drag_z))
-            # let go by backing the hooked index OUT of the pad edge while it
-            # uncurls: opening the deep hook in place rotates the fingertip
-            # through the pad and drags it off the table with the hand
-            self._mark(left.time, "release")
-            left.move(p["release_time"], thumb=0.0, other=0.0)
-            left.move(
-                p["retract_time"],
-                pos=(park_pinch[0] - 0.08, park_pinch[1], sponge_drag_z + 0.01),
-                index=0.3,
-            )
-            left.move(p["release_time"], index=0.0)
-            left.move(p["retract_time"], pos=(park_pinch[0] - 0.08, park_pinch[1], sponge_drag_z + 0.13))
-            left.move(p["retract_time"], pos=p["rest_left"])
+            hold_pos = (rub_pinch[0] - 0.08, rub_pinch[1], rub_z + 0.05)
+            left.move(p["lower_time"], pos=hold_pos)
+            self.sponge_hold_pinch = np.asarray(hold_pos, dtype=np.float64)
 
             # the right hand still holds the plate: lift it straight up, carry it
             # over the 2-bowl stack, and lower it into the nest. It starts as
@@ -1114,21 +1093,22 @@ class Example:
             stack_pinch_x = p["dirty_pile_x"] + pinch_dx
             stack_y = p["dirty_pile_y"]
             # carry slowly so the tilted-hanging bowl does not swing/overshoot,
-            # stopping short of the stack (see stack_sweep_back)
-            sweep_start_x = stack_pinch_x - p["stack_sweep_back"]
-            right.move(2.5 * p["carry_time"], pos=(sweep_start_x, stack_y, carry_z))
-            # diagonal ride-in (see the stack_sweep_back comment): descend from
-            # west of the stack to a seated endpoint over the nest, which for
-            # the k-th washed bowl sits (plate_count - 1 + k) pitches up
-            nest_z = p["table_top_z"] + (p["plate_count"] - 1 + k) * p["plate_stack_pitch"]
-            seat_pinch_z = nest_z + p["stack_hang"] - p["stack_seat_depth"]
-            sweep_end_x = stack_pinch_x + p["stack_sweep_over"]
-            right.move(4.0 * p["lower_time"], pos=(sweep_end_x, stack_y, seat_pinch_z))
+            # aiming slightly past the stack centre to compensate the pinch
+            # creep accumulated during the carry
+            drop_pinch_x = stack_pinch_x + p["stack_aim_bias"]
+            right.move(2.5 * p["carry_time"], pos=(drop_pinch_x, stack_y, carry_z))
+            # lower until the bowl hangs a little ABOVE the stack's top rim,
+            # then open the hand: the bowl drops in and the slick congruent
+            # shells funnel it into the nest. Seating it under hand power
+            # presses the bowl through the ones below.
+            rim_top_local = plate_bottom - p["table_top_z"] + p["plate_rim_thickness"]
+            stack_rim_z = p["table_top_z"] + (p["plate_count"] - 2 + k) * p["plate_stack_pitch"] + rim_top_local
+            drop_pinch_z = stack_rim_z + p["stack_hang"] + p["stack_release_height"]
+            right.move(2.0 * p["lower_time"], pos=(drop_pinch_x, stack_y, drop_pinch_z))
             right.wait(p["place_dwell"])
             self._release_and_retract(right, p["rest_right"])
 
-        # epilogue: the sponge was parked right after the rub; just rest both
-        # hands
+        # epilogue: the left hand keeps holding the sponge; rest the right
         right.wait_until(left.time)
         right.move(p["retract_time"], pos=p["rest_right"])
         self._mark(max(left.time, right.time), "done")
@@ -1365,15 +1345,13 @@ class Example:
             pos = body_q[self.plate_bodies[level], :3]
             xy_err = float(np.linalg.norm(pos[:2] - self.plate_initial_positions[level, :2]))
             assert xy_err < 0.06, f"Unwashed plate {level} drifted {xy_err:.3f} m"
-        # the sponge was set aside ON the table in the wash-station area. The
-        # hard requirements are that it never ended on the floor and stayed in
-        # the neighbourhood where the hand let it go — the exact resting spot
-        # varies with how the soft pad slides off the fingers.
+        # the sponge stays IN the left hand after the rub: it must not be on
+        # the floor and must hang near the final hold pinch
         sponge_center = particle_q[self.sponge_info["particles"]].mean(axis=0)
         assert sponge_center[2] > p["table_top_z"] - 0.02, f"Sponge fell off the table: z={sponge_center[2]:.3f}"
-        park = np.asarray(p["sponge_park"], dtype=np.float64)
-        home_err = float(np.linalg.norm(sponge_center[:2] - park))
-        assert home_err < 0.25, f"Sponge ended {home_err:.3f} m from the wash station"
+        if self.sponge_hold_pinch is not None:
+            hold_err = float(np.linalg.norm(sponge_center - self.sponge_hold_pinch))
+            assert hold_err < 0.15, f"Sponge is {hold_err:.3f} m from the holding hand"
         assert sponge_center[2] < p["table_top_z"] + 0.06, "Sponge is not resting on the table"
         # the sponge actually rubbed every washed plate
         for k in range(p["wash_count"]):
