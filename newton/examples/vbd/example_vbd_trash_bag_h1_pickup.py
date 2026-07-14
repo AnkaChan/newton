@@ -20,6 +20,12 @@
 # no long settle at startup — and drop one fresh sphere and one cube into
 # the open bag.
 #
+# Meanwhile a slim coke can stands on the table: the H1's right hand wraps
+# it (thumb-up handshake — the horizontal finger curl closes around the
+# vertical can body, the thumb opposes), lifts it over the bag mouth, and
+# lets it drop in. The grasp is pure contact and friction; Newton IK turns
+# the task-space hand keyframes into AVBD joint-drive targets.
+#
 # Commands:
 #   python -m newton.examples vbd_trash_bag_h1_pickup --bake   (once)
 #   python -m newton.examples vbd_trash_bag_h1_pickup
@@ -38,6 +44,7 @@ import warp as wp
 
 import newton
 import newton.examples
+import newton.ik as ik
 import newton.utils
 
 ASSET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asset")
@@ -116,13 +123,71 @@ PARAMS = {
     "drop_cube_half_extent": 0.030,
     "drop_height": 0.55,  # sphere spawn height above the bag bottom [m, assembly-local]
     "drop_stagger": 0.10,  # the cube spawns this much higher -> they land one after the other
+    # --- coke can: a slim cylinder standing on the table; the robot's right
+    # hand wraps it (fingers curl around the body, thumb closes opposite)
+    # and bins it into the open bag ---
+    "coke_radius": 0.029,
+    "coke_half_height": 0.079,  # slim 330 ml can, ~5.8 x 15.8 cm
+    "coke_density": 500.0,  # ~0.21 kg, a half-empty can
+    "coke_ke": 1.0e3,
+    "coke_kd": 1.0e0,
+    "coke_mu": 0.7,
+    "coke_x": -0.16,
+    "coke_y": -0.24,
+    "coke_color": (0.78, 0.12, 0.14),
+    # grasp: PALMAR power grab. The right hand approaches from the robot's
+    # right (-y) with the thumb rotated perpendicular to the palm, presses
+    # the CENTER of the palm onto the cylinder's right flank, and closes the
+    # fingers along the palm normal — they wrap the far side of the can and
+    # squeeze it back INTO the palm (unlike a fingertip wrap, the closing
+    # force points at the palm, so the can cannot be extruded).
+    # The palm-face centre sits about (-0.045, -0.058, -0.01) from the pinch
+    # point in world axes at this hand orientation (measured hand slices).
+    "grasp_pinch_dx": -0.015,
+    "grasp_pinch_dz": 0.03,
+    # approach standoff and final palm press. The palm face rides ~58 mm
+    # south of the pinch point, and it kisses the can's south flank when
+    # the pinch sits at coke_y + 0.029: press_y 0.030 = a ~1 mm press (the
+    # finger squeeze, not the palm shove, provides the grip force).
+    "grasp_standoff_y": 0.060,
+    "grasp_press_y": 0.030,
+    "grasp_close_index": 0.75,
+    "grasp_close_other": 0.75,
+    "grasp_close_thumb": 1.0,
+    "other_finger_fraction": 0.8,
+    # carry height: the can hangs its full length (~16 cm) below the lip
+    # pinch and must clear the bag collar (top ~1.44) on the way in
+    "carry_z": 1.63,
+    # release point inside the bag mouth, biased toward the robot so the
+    # carry stays inside the right arm's comfortable reach
+    "drop_x": -0.09,
+    "drop_y": -0.05,
+    # task-space rest poses (dish-washing scene)
+    "rest_left": (-0.48, 0.24, 1.24),
+    "rest_right": (-0.48, -0.24, 1.24),
+    # durations [s]
+    "settle_time": 0.5,
+    "approach_time": 0.5,
+    # the palm press and the finger close stay deliberately slow — the arm
+    # travels fast, but a sudden close reads as a snap and slaps the can
+    "descend_time": 0.7,
+    "close_time": 1.6,
+    "dwell_time": 0.3,
+    "lift_time": 0.5,
+    "carry_time": 1.2,
+    "release_time": 0.2,
+    "retract_time": 0.5,
+    # per-frame clamp on joint-target motion (smooths IK jumps)
+    "joint_target_velocity_limit": 20.0,
+    "torso_ik_position_weight": 50.0,
+    "torso_ik_rotation_weight": 50.0,
     # --- solver / time, identical to the standalone demo ---
     "fps": 60,
     "sim_substeps": 10,
     "solver_iterations": 12,
     "gravity": -9.8,
     "bake_seconds": 10.0,
-    "num_frames": 300,
+    "num_frames": 360,
     # --- table (reused unchanged from the dish-washing scene; the front
     # edge faces the robot at x = -table_half_width) ---
     "table_half_width": 0.20,
@@ -167,6 +232,144 @@ PARAMS = {
     "enable_cuda_graph": True,
     "seed": 42,
 }
+
+# Pinch-point offsets in the hand-link frames, calibrated for the H1 hand
+# meshes (shared with the dish-washing demo).
+HAND_OFFSETS = (
+    (0.146273, -0.068447, 0.028077),
+    (0.148808, 0.068652, 0.026675),
+)
+
+# Thumb-up "handshake" for both hands (identity yaw + small pitch): the
+# right palm faces the robot's left (+y) for the palmar can grasp, and the
+# left hand's horizontal finger curl catches the hanging drawstring strands
+# in later steps.
+_HAND_PITCH = 0.45
+HAND_ROTATIONS = (
+    (0.0, math.sin(0.5 * _HAND_PITCH), 0.0, math.cos(0.5 * _HAND_PITCH)),
+    (0.0, math.sin(0.5 * _HAND_PITCH), 0.0, math.cos(0.5 * _HAND_PITCH)),
+)
+
+# Side-specific "closed" thumb angles (yaw, pitch, intermediate, distal).
+# Left: the dish-washing tip-opposition calibration. Right: pure proximal
+# YAW with zero curl — driving the fraction rotates the STRAIGHT thumb
+# perpendicular to the palm, clear of the grasped can.
+THUMB_CLOSED_VALUES = (
+    (1.273907, 0.160957, 0.369535, 0.892908),
+    (1.192278, 0.0, 0.0, 0.0),
+)
+
+_FINGER_GROUP_LEFT_THUMB = wp.constant(0)
+_FINGER_GROUP_RIGHT_THUMB = wp.constant(1)
+_FINGER_GROUP_LEFT_INDEX = wp.constant(2)
+_FINGER_GROUP_RIGHT_INDEX = wp.constant(3)
+_FINGER_GROUP_LEFT_OTHER = wp.constant(4)
+_FINGER_GROUP_RIGHT_OTHER = wp.constant(5)
+
+
+@wp.kernel
+def set_finger_targets(
+    joint_q: wp.array[float],
+    finger_indices: wp.array[wp.int32],
+    closed_values: wp.array[float],
+    finger_groups: wp.array[wp.int32],
+    fractions: wp.array[float],
+):
+    i = wp.tid()
+    joint_q[finger_indices[i]] = fractions[finger_groups[i]] * closed_values[i]
+
+
+@wp.kernel
+def update_control_targets(
+    desired_q: wp.array[float],
+    previous_q: wp.array[float],
+    inv_dt: float,
+    velocity_limit: float,
+    target_q: wp.array[float],
+    target_qd: wp.array[float],
+):
+    i = wp.tid()
+    q_prev = previous_q[i]
+    max_delta = velocity_limit / inv_dt
+    delta = wp.clamp(desired_q[i] - q_prev, -max_delta, max_delta)
+    q = q_prev + delta
+    qd = delta * inv_dt
+    target_q[i] = q
+    target_qd[i] = qd
+    previous_q[i] = q
+
+
+def _normalized_quat(values):
+    q = np.asarray(values, dtype=np.float32)
+    q /= np.linalg.norm(q)
+    return wp.quat(*q)
+
+
+class _Track:
+    """A piecewise keyframe channel with smoothstep or linear easing per segment."""
+
+    def __init__(self, value):
+        self.times = [0.0]
+        self.values = [np.asarray(value, dtype=np.float64)]
+        self.eases = ["smooth"]
+
+    def add(self, time: float, value, ease: str = "smooth"):
+        if time < self.times[-1] - 1.0e-9:
+            raise ValueError(f"Keyframe time {time} precedes the last key at {self.times[-1]}")
+        self.times.append(float(time))
+        self.values.append(np.asarray(value, dtype=np.float64))
+        self.eases.append(ease)
+
+    def hold_until(self, time: float):
+        if time > self.times[-1] + 1.0e-9:
+            self.add(time, self.values[-1], "linear")
+
+    def sample(self, t: float) -> np.ndarray:
+        times = self.times
+        if t >= times[-1]:
+            return self.values[-1]
+        i = int(np.searchsorted(times, t, side="right"))
+        i = max(i, 1)
+        t0, t1 = times[i - 1], times[i]
+        u = (t - t0) / (t1 - t0) if t1 > t0 else 1.0
+        u = min(max(u, 0.0), 1.0)
+        if self.eases[i] == "smooth":
+            u = u * u * (3.0 - 2.0 * u)
+        return self.values[i - 1] * (1.0 - u) + self.values[i] * u
+
+
+class _HandCursor:
+    """Writes one hand's keyframes (pinch position + finger fractions) on its own clock."""
+
+    def __init__(self, tracks: dict[str, _Track], side: str):
+        self._tracks = tracks
+        self._side = side
+        self.time = 0.0
+
+    def move(
+        self,
+        duration: float,
+        pos=None,
+        thumb: float | None = None,
+        index: float | None = None,
+        other: float | None = None,
+        ease: str = "smooth",
+    ):
+        end = self.time + duration
+        channels = {"pos": pos, "thumb": thumb, "index": index, "other": other}
+        for name, value in channels.items():
+            if value is None:
+                continue
+            track = self._tracks[f"{self._side}_{name}"]
+            track.hold_until(self.time)
+            track.add(end, value, ease)
+        self.time = end
+
+    def wait(self, duration: float):
+        self.time += duration
+
+    def pos(self) -> np.ndarray:
+        return self._tracks[f"{self._side}_pos"].sample(self.time)
 
 
 def _load_obj(path):
@@ -665,6 +868,33 @@ def build_model(builder, params, seed, baked_state=None):
         drop_bodies.append(cube_body)
         drop_shapes.append(builder.add_shape_box(cube_body, hx=he, hy=he, hz=he, cfg=cfg))
 
+    # --- coke can: a slim cylinder standing on the table, within the right
+    # arm's reach. NOT collision-filtered against the robot — the grasp is
+    # the demo.
+    coke_cfg = newton.ModelBuilder.ShapeConfig(
+        density=params["coke_density"],
+        ke=params["coke_ke"],
+        kd=params["coke_kd"],
+        mu=params["coke_mu"],
+        gap=params["rigid_contact_gap"],
+        has_particle_collision=True,
+    )
+    coke_body = builder.add_body(
+        xform=wp.transform(
+            wp.vec3(params["coke_x"], params["coke_y"], params["table_top_z"] + params["coke_half_height"] + 0.001),
+            wp.quat_identity(),
+        ),
+        label="coke_can",
+    )
+    builder.add_shape_cylinder(
+        coke_body,
+        radius=params["coke_radius"],
+        half_height=params["coke_half_height"],
+        cfg=coke_cfg,
+        color=wp.vec3(*params["coke_color"]),
+        label="coke",
+    )
+
     # --- ground the robot stands on ---
     ground_cfg = newton.ModelBuilder.ShapeConfig(
         ke=params["shape_ke"],
@@ -674,10 +904,9 @@ def build_model(builder, params, seed, baked_state=None):
     )
     ground_shape = builder.add_ground_plane(cfg=ground_cfg)
 
-    # the robot only exists alongside the furniture for now: filter every
-    # robot collider against the table, can, apples, and ground so a limb
-    # brushing static geometry cannot disturb the AVBD solve (the cloth is
-    # untouched — particle contact stays on the hook fingers for later steps)
+    # filter every robot collider against the furniture and the loose trash
+    # so a limb brushing static geometry cannot disturb the AVBD solve. The
+    # COKE is deliberately NOT filtered: the hand physically grasps it.
     for robot_shape in robot_rigid_shapes:
         for other in (*table_shapes, can_shape, ground_shape, *apple_shapes, *drop_shapes):
             builder.add_shape_collision_filter_pair(robot_shape, other)
@@ -695,6 +924,7 @@ def build_model(builder, params, seed, baked_state=None):
         "left_idx": left_idx,
         "body_indices": body_indices,
         "drop_bodies": drop_bodies,
+        "coke_body": coke_body,
         "z_floor": z_floor + offset[2],
         "num_tunnel_springs": len(layout["tunnel_spring_pairs"]),
         "tunnel_spring_pairs": tunnel_spring_pairs,
@@ -704,13 +934,23 @@ def build_model(builder, params, seed, baked_state=None):
     }
 
 
-def setup_sim(builder, info, params):
+def finalize_model(builder, params):
     builder.enable_rigid_mesh_sdfs()
     model = builder.finalize()
     model.soft_contact_ke = params["soft_contact_ke"]
     model.soft_contact_kd = params["soft_contact_kd"]
     model.soft_contact_mu = params["soft_contact_mu"]
+    return model
 
+
+def setup_sim(model, info, params):
+    """Create the solver and collision pipeline.
+
+    Must be called AFTER the robot's joint_q has been posed (IK rest) and
+    eval_fk has updated model.body_q: the solver bakes its structural joint
+    data from the model pose at construction, and its stiff
+    rigid_joint_angular_ke would otherwise drag the arms back to the pose it
+    saw here no matter what the (much softer) drives command."""
     vertex_filter, edge_filter = _build_tunnel_seam_contact_filters(model, info["tunnel_spring_pairs"])
 
     solver = newton.solvers.SolverVBD(
@@ -736,7 +976,7 @@ def setup_sim(builder, info, params):
         soft_contact_margin=params["soft_contact_creation_margin"],
         enable_water_tight_rigid_soft_contact=params["enable_water_tight"],
     )
-    return model, solver, pipeline
+    return solver, pipeline
 
 
 class Example:
@@ -765,9 +1005,30 @@ class Example:
                 )
         builder = newton.ModelBuilder(gravity=p["gravity"])
         self.info = build_model(builder, p, seed=seed, baked_state=baked_state)
-        self.model, self.solver, self.pipeline = setup_sim(builder, self.info, p)
+        self.model = finalize_model(builder, p)
         self.device = self.model.device
         self.robot_coord_count = self.info["robot_coord_count"]
+
+        self.hand_bodies = [self.info["robot_bodies"]["left_hand"], self.info["robot_bodies"]["right_hand"]]
+        self.hand_offsets = [wp.vec3(*values) for values in HAND_OFFSETS]
+        self.hand_rotations = [_normalized_quat(values) for values in HAND_ROTATIONS]
+
+        self.phase = "settle"
+        self._phase_marks: list[tuple[float, str]] = []
+        self._build_choreography()
+        self._setup_ik()
+        # start the robot in the task-space rest pose (arms forward at the table)
+        self._solve_ik(
+            np.asarray([p["rest_left"], p["rest_right"]], dtype=np.float32),
+            np.zeros(6, dtype=np.float32),
+            iterations=48,
+        )
+        self.model.joint_q.assign(self.ik_joint_q_flat)
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.model)
+
+        # the solver must be created AFTER the pose assignment above (see
+        # the setup_sim docstring)
+        self.solver, self.pipeline = setup_sim(self.model, self.info, p)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -775,9 +1036,9 @@ class Example:
         self.contacts = self.pipeline.contacts()
         wp.copy(self.state_1.body_q, self.state_0.body_q)
         wp.copy(self.state_1.body_qd, self.state_0.body_qd)
-        # the H1 holds its initial pose: drive targets = initial joint state
         wp.copy(self.control.joint_target_q, self.model.joint_q, count=self.robot_coord_count)
         self.control.joint_target_qd.zero_()
+        self.previous_joint_targets = wp.clone(self.model.joint_q[: self.robot_coord_count])
         self.torso_initial_position = self.state_0.body_q.numpy()[self.info["robot_bodies"]["torso"], :3].copy()
 
         print(
@@ -795,6 +1056,227 @@ class Example:
         )
         if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
             self.viewer.camera.fov = p["camera_fov"]
+
+    # ── choreography ─────────────────────────────────────────────────────
+
+    def _mark(self, time: float, name: str):
+        self._phase_marks.append((time, name))
+
+    def _build_choreography(self):
+        """Right hand: wrap the coke can and bin it into the bag. The wrap is
+        the handshake-orientation catch — the half-curled fingers sweep past
+        the can body, then thumb and fingers close around it."""
+        p = self.params
+        tracks: dict[str, _Track] = {}
+        for side, rest in (("left", p["rest_left"]), ("right", p["rest_right"])):
+            tracks[f"{side}_pos"] = _Track(np.asarray(rest, dtype=np.float64))
+            tracks[f"{side}_thumb"] = _Track(0.0)
+            tracks[f"{side}_index"] = _Track(0.0)
+            tracks[f"{side}_other"] = _Track(0.0)
+        self.tracks = tracks
+        right = _HandCursor(tracks, "right")
+
+        pinch_z = p["table_top_z"] + p["coke_half_height"] + p["grasp_pinch_dz"]
+        grasp_x = p["coke_x"] + p["grasp_pinch_dx"]
+        standoff_y = p["coke_y"] - p["grasp_standoff_y"]
+        press_y = p["coke_y"] + p["grasp_press_y"]
+        carry_y = press_y
+
+        right.wait(p["settle_time"])
+        self._mark(right.time, "approach")
+        # approach from the robot's right (-y), palm leading, hand open with
+        # the thumb already rotated perpendicular to the palm
+        right.move(
+            p["approach_time"],
+            pos=(grasp_x, standoff_y, pinch_z),
+            thumb=p["grasp_close_thumb"],
+        )
+        self._mark(right.time, "press")
+        # press the palm centre onto the can's right flank
+        right.move(p["descend_time"], pos=(grasp_x, press_y, pinch_z))
+        self._mark(right.time, "close")
+        # close the fingers along the palm normal: they wrap the far side
+        # and squeeze the can back into the palm
+        right.move(
+            p["close_time"],
+            index=p["grasp_close_index"],
+            other=p["grasp_close_other"],
+        )
+        right.wait(p["dwell_time"])
+        # lift straight up, carry over the bag mouth, and let go
+        self._mark(right.time, "lift")
+        right.move(p["lift_time"], pos=(grasp_x, carry_y, p["carry_z"]))
+        self._mark(right.time, "carry")
+        right.move(p["carry_time"], pos=(p["drop_x"], p["drop_y"], p["carry_z"]))
+        right.wait(p["dwell_time"])
+        self._mark(right.time, "release")
+        right.move(p["release_time"], thumb=0.0, index=0.0, other=0.0)
+        right.wait(p["dwell_time"])
+        self._mark(right.time, "retract")
+        right.move(p["retract_time"], pos=p["rest_right"])
+        self._mark(right.time, "done")
+        self.total_time = right.time + 0.6
+
+    # ── IK (dish-washing rig) ────────────────────────────────────────────
+
+    def _setup_ik(self):
+        initial_state = self.model.state()
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, initial_state)
+        body_q = initial_state.body_q.numpy()
+
+        self.torso_body = self.info["robot_bodies"]["torso"]
+        torso_transform = wp.transform(*body_q[self.torso_body])
+        torso_position = wp.transform_get_translation(torso_transform)
+        torso_rotation = wp.transform_get_rotation(torso_transform)
+        self.torso_position_objective = ik.IKObjectivePosition(
+            link_index=self.torso_body,
+            link_offset=wp.vec3(0.0, 0.0, 0.0),
+            target_positions=wp.array([torso_position], dtype=wp.vec3),
+            weight=self.params["torso_ik_position_weight"],
+        )
+        self.torso_rotation_objective = ik.IKObjectiveRotation(
+            link_index=self.torso_body,
+            link_offset_rotation=wp.quat_identity(),
+            target_rotations=wp.array([wp.vec4(*torso_rotation)], dtype=wp.vec4),
+            weight=self.params["torso_ik_rotation_weight"],
+        )
+
+        self.position_objectives = []
+        self.rotation_objectives = []
+        for body, offset, rotation in zip(self.hand_bodies, self.hand_offsets, self.hand_rotations, strict=True):
+            initial_position = wp.transform_point(wp.transform(*body_q[body]), offset)
+            self.position_objectives.append(
+                ik.IKObjectivePosition(
+                    link_index=body,
+                    link_offset=offset,
+                    target_positions=wp.array([initial_position], dtype=wp.vec3),
+                    weight=5.0,
+                )
+            )
+            self.rotation_objectives.append(
+                ik.IKObjectiveRotation(
+                    link_index=body,
+                    link_offset_rotation=wp.quat_identity(),
+                    # deliberately weak: a strong rotation constraint makes
+                    # the redundant arm flip between IK branches frame to
+                    # frame, which reads as arm instability
+                    target_rotations=wp.array([wp.vec4(*rotation)], dtype=wp.vec4),
+                    weight=0.2,
+                )
+            )
+
+        joint_limits = ik.IKObjectiveJointLimit(
+            joint_limit_lower=self.model.joint_limit_lower,
+            joint_limit_upper=self.model.joint_limit_upper,
+            weight=1.0,
+        )
+        self.ik_joint_q = wp.clone(self.model.joint_q).reshape((1, self.model.joint_coord_count))
+        self.ik_joint_q_flat = self.ik_joint_q.reshape((-1,))
+        self.ik_solver = ik.IKSolver(
+            model=self.model,
+            n_problems=1,
+            objectives=[
+                *self.position_objectives,
+                *self.rotation_objectives,
+                self.torso_position_objective,
+                self.torso_rotation_objective,
+                joint_limits,
+            ],
+            # heavier LM damping: the per-frame warm-started solve makes
+            # small consistent steps instead of wandering through the arm's
+            # redundancy, which shows up as idle-arm jitter
+            lambda_initial=1.0,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
+        )
+
+        q_starts = self.model.joint_q_start.numpy()
+        finger_indices = []
+        closed_values = []
+        finger_groups = []
+        for side_index, side in enumerate(("L", "R")):
+            thumb_yaw, thumb_pitch, thumb_intermediate, thumb_distal = THUMB_CLOSED_VALUES[side_index]
+            finger_names_and_values = (
+                ("thumb_proximal_yaw_joint", thumb_yaw),
+                ("thumb_proximal_pitch_joint", thumb_pitch),
+                ("thumb_intermediate_joint", thumb_intermediate),
+                ("thumb_distal_joint", thumb_distal),
+                ("index_proximal_joint", 1.2),
+                ("index_intermediate_joint", 1.2),
+                ("middle_proximal_joint", 1.0),
+                ("middle_intermediate_joint", 1.0),
+                ("ring_proximal_joint", 1.0),
+                ("ring_intermediate_joint", 1.0),
+                ("pinky_proximal_joint", 1.0),
+                ("pinky_intermediate_joint", 1.0),
+            )
+            thumb_group = _FINGER_GROUP_LEFT_THUMB if side == "L" else _FINGER_GROUP_RIGHT_THUMB
+            index_group = _FINGER_GROUP_LEFT_INDEX if side == "L" else _FINGER_GROUP_RIGHT_INDEX
+            other_group = _FINGER_GROUP_LEFT_OTHER if side == "L" else _FINGER_GROUP_RIGHT_OTHER
+            for suffix, value in finger_names_and_values:
+                joint = _find_suffix(self.model.joint_label, f"{side}_{suffix}")
+                finger_indices.append(int(q_starts[joint]))
+                closed_values.append(value)
+                if suffix.startswith("thumb_"):
+                    finger_groups.append(thumb_group)
+                elif suffix.startswith("index_"):
+                    finger_groups.append(index_group)
+                else:
+                    finger_groups.append(other_group)
+        self.finger_indices = wp.array(finger_indices, dtype=wp.int32, device=self.model.device)
+        self.closed_finger_values = wp.array(closed_values, dtype=float, device=self.model.device)
+        self.finger_groups = wp.array(finger_groups, dtype=wp.int32, device=self.model.device)
+        self.finger_fractions = wp.zeros(6, dtype=float, device=self.model.device)
+
+    def _solve_ik(self, positions: np.ndarray, fractions: np.ndarray, iterations: int = 24):
+        for objective, position in zip(self.position_objectives, positions, strict=True):
+            objective.set_target_position(0, wp.vec3(*position))
+        self.ik_solver.step(self.ik_joint_q, self.ik_joint_q, iterations=iterations)
+        self.finger_fractions.assign(np.asarray(fractions, dtype=np.float32))
+        wp.launch(
+            set_finger_targets,
+            dim=self.finger_indices.shape[0],
+            inputs=[
+                self.ik_joint_q_flat,
+                self.finger_indices,
+                self.closed_finger_values,
+                self.finger_groups,
+                self.finger_fractions,
+            ],
+        )
+
+    def _update_trajectory(self):
+        t = self.sim_time
+        tr = self.tracks
+        positions = np.asarray([tr["left_pos"].sample(t), tr["right_pos"].sample(t)], dtype=np.float32)
+        # fraction order matches the _FINGER_GROUP_* constants
+        fractions = np.asarray(
+            [
+                tr["left_thumb"].sample(t),
+                tr["right_thumb"].sample(t),
+                tr["left_index"].sample(t),
+                tr["right_index"].sample(t),
+                tr["left_other"].sample(t),
+                tr["right_other"].sample(t),
+            ],
+            dtype=np.float32,
+        ).reshape(-1)
+        for time, name in self._phase_marks:
+            if t >= time:
+                self.phase = name
+        self._solve_ik(positions, fractions)
+        wp.launch(
+            update_control_targets,
+            dim=self.robot_coord_count,
+            inputs=[
+                self.ik_joint_q_flat,
+                self.previous_joint_targets,
+                1.0 / self.frame_dt,
+                self.params["joint_target_velocity_limit"],
+            ],
+            outputs=[self.control.joint_target_q, self.control.joint_target_qd],
+        )
+
+    # ── simulation loop ──────────────────────────────────────────────────
 
     def _capture_graph(self):
         self.graph = None
@@ -816,11 +1298,18 @@ class Example:
 
     def step(self):
         self.frame += 1
+        # during --bake the robot just holds its rest pose
+        if not self.bake:
+            self._update_trajectory()
         if self.graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
         self.sim_time += self.frame_dt
+
+    def gui(self, ui):
+        ui.text(f"Phase: {self.phase}")
+        ui.text(f"t = {self.sim_time:.2f} / {self.total_time:.2f} s")
 
     def save_baked_state(self):
         """Save the settled cloth positions and sphere poses as the demo's
@@ -861,6 +1350,12 @@ class Example:
         rim_z = p["table_top_z"] + 0.002 + p["can_height"]
         for body in self.info["drop_bodies"]:
             assert body_q[body, 2] < rim_z + 0.05, f"A dropped object did not land in the bag: z={body_q[body, 2]:.3f}"
+        # the coke ended up in the bag: inside the can mouth, below the rim
+        if not self.bake and self.info["drop_bodies"]:
+            coke = body_q[self.info["coke_body"], :3]
+            coke_xy_err = float(np.hypot(coke[0] - p["can_x"], coke[1] - p["can_y"]))
+            assert coke_xy_err < 0.12, f"The coke is {coke_xy_err:.3f} m from the can axis"
+            assert coke[2] < rim_z + 0.05, f"The coke did not drop into the bag: z={coke[2]:.3f}"
         # the robot held its pose
         torso = body_q[self.info["robot_bodies"]["torso"], :3]
         torso_err = float(np.linalg.norm(torso - self.torso_initial_position))
