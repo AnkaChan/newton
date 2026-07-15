@@ -17,14 +17,16 @@
 # (with 2 spheres inside) for 10 simulated seconds and saves the cloth and
 # sphere state to asset/trash_bag_pickup_init_state.npz. Normal runs load
 # that file as the INITIAL state (the cloth REST shapes are untouched) —
-# no long settle at startup — and drop one fresh sphere and one cube into
-# the open bag.
+# no long settle at startup.
 #
-# Meanwhile a slim coke can stands on the table: the H1's right hand wraps
-# it (thumb-up handshake — the horizontal finger curl closes around the
-# vertical can body, the thumb opposes), lifts it over the bag mouth, and
-# lets it drop in. The grasp is pure contact and friction; Newton IK turns
-# the task-space hand keyframes into AVBD joint-drive targets.
+# A slim coke can stands on the table: the H1's right hand approaches with
+# the thumb rotated perpendicular to the palm, presses the palm centre
+# onto the can's flank, closes the fingers along the palm normal (they
+# wrap the far side and squeeze the can into the palm), lifts it over the
+# bag mouth, and lets it drop in. The grasp is pure contact and friction;
+# Newton IK turns the task-space hand keyframes into AVBD joint-drive
+# targets. Once the coke is binned, a fresh sphere and cube drop into the
+# open bag after it.
 #
 # Commands:
 #   python -m newton.examples vbd_trash_bag_h1_pickup --bake   (once)
@@ -166,7 +168,8 @@ PARAMS = {
     "rest_left": (-0.48, 0.24, 1.24),
     "rest_right": (-0.48, -0.24, 1.24),
     # durations [s]
-    "settle_time": 0.5,
+    # tiny start buffer only — the baked initial state is already settled
+    "settle_time": 0.1,
     "approach_time": 0.5,
     # the palm press and the finger close stay deliberately slow — the arm
     # travels fast, but a sudden close reads as a snap and slaps the can
@@ -187,7 +190,7 @@ PARAMS = {
     "solver_iterations": 12,
     "gravity": -9.8,
     "bake_seconds": 10.0,
-    "num_frames": 360,
+    "num_frames": 480,
     # --- table (reused unchanged from the dish-washing scene; the front
     # edge faces the robot at x = -table_half_width) ---
     "table_half_width": 0.20,
@@ -844,7 +847,10 @@ def build_model(builder, params, seed, baked_state=None):
             body_indices.append(body)
             apple_shapes.append(builder.add_shape_sphere(body, radius=r, cfg=cfg))
 
-    # --- fresh trash dropped into the settled bag: one sphere + one cube ---
+    # --- fresh trash dropped into the settled bag: one sphere + one cube.
+    # They spawn at their drop poses but are made KINEMATIC after finalize
+    # (inverse mass/inertia zeroed, hovering untouched above the mouth) and
+    # are switched back to dynamic once the robot has binned the coke.
     drop_bodies = []
     drop_shapes = []
     if baked_state is not None:
@@ -1041,6 +1047,14 @@ class Example:
         self.previous_joint_targets = wp.clone(self.model.joint_q[: self.robot_coord_count])
         self.torso_initial_position = self.state_0.body_q.numpy()[self.info["robot_bodies"]["torso"], :3].copy()
 
+        # the delayed drop objects hover KINEMATIC at their drop poses until
+        # the coke is binned (writing model.body_inv_mass directly does
+        # nothing — the solver bakes effective inverse-mass arrays at
+        # construction and only refreshes them via notify_model_changed)
+        self._drops_released = not self.info["drop_bodies"]
+        if self.info["drop_bodies"]:
+            self._set_drop_body_flags(newton.BodyFlags.KINEMATIC)
+
         print(
             f"[trash_bag_h1_pickup] bag verts {self.info['bag_count']}  rope verts {self.info['rope_count']}  "
             f"tunnel springs {self.info['num_tunnel_springs']}  apples {len(self.info['body_indices'])}"
@@ -1112,10 +1126,14 @@ class Example:
         self._mark(right.time, "release")
         right.move(p["release_time"], thumb=0.0, index=0.0, other=0.0)
         right.wait(p["dwell_time"])
+        # the coke is in the bag: NOW the extra trash rains in while the
+        # arm retreats (see the drop hold/release machinery in step)
+        self.drop_release_time = right.time
         self._mark(right.time, "retract")
         right.move(p["retract_time"], pos=p["rest_right"])
         self._mark(right.time, "done")
-        self.total_time = right.time + 0.6
+        # extra tail so the released drops land and settle in the bag
+        self.total_time = right.time + 1.4
 
     # ── IK (dish-washing rig) ────────────────────────────────────────────
 
@@ -1305,7 +1323,20 @@ class Example:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
+        # delayed trash drop: one-time switch of the hovering bodies from
+        # kinematic back to dynamic once the coke is binned. The refresh
+        # updates the solver's effective inverse-mass arrays IN PLACE, so
+        # the captured graph picks it up on the next replay.
+        if not self._drops_released and self.sim_time >= self.drop_release_time:
+            self._set_drop_body_flags(newton.BodyFlags.DYNAMIC)
+            self._drops_released = True
         self.sim_time += self.frame_dt
+
+    def _set_drop_body_flags(self, flag: newton.BodyFlags):
+        body_flags = self.model.body_flags.numpy()
+        body_flags[self.info["drop_bodies"]] = int(flag)
+        self.model.body_flags.assign(body_flags)
+        self.solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
 
     def gui(self, ui):
         ui.text(f"Phase: {self.phase}")
