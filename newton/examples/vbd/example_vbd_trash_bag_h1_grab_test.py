@@ -122,14 +122,77 @@ PARAMS = {
     "hook_min_above_table": 0.07,
     # approach standoff outside the strand (along -y for the right handle)
     "hook_standoff_y": 0.10,
-    # fine placement of the pinch point relative to the strand (tune here
-    # if the hook rides too far east/west or short/deep of the rope)
+    # fine placement of the pinch point relative to the strand. hook_dx
+    # positive = the strand crosses the finger column nearer the PALM: a
+    # deep hook makes the axial escape (the strand sliding along the finger
+    # row and off its end — the dominant slip mode) travel the whole column
     "hook_dx": 0.0,
     "hook_dy": 0.0,
-    # after the slide-under, both hands rise straight up in ONE continuous
-    # move: the strand lands in the hook on the way and the pull first
-    # cinches the mouth, then hauls the bag out of the bucket
-    "hook_lift_height": 0.50,
+    # after the slide-under, both hands rise straight up, reeling the
+    # handle slack and cinching the mouth. The mouth's cinch capacity is a
+    # HARD wall (~0.3 m of reel per side): commanding a rise past it is an
+    # arm-vs-inextensible-rope fight that ends in a solver blowup — stay
+    # under it.
+    "hook_lift_height": 0.22,
+    # ...and the hook SEALS (full curl) as the lift starts: at 0.7 curl the
+    # loaded strand pops up over the fingertips once the cinch tension
+    # builds (measured: both strands slipped off mid-lift)
+    "hook_seal_curl": 1.0,
+    # ...then the bag comes OUT along a diagonal: with the loop taut the
+    # handles are a solid connection, and dragging toward the robot pivots
+    # the bag over the near rim — a full straight-up extraction would need
+    # the hands ~0.3 m beyond the arms' reach (the 1.5x-rest bag hangs
+    # ~0.6 m below its holes)
+    # mostly HORIZONTAL: the pull levers the bag over the near rim; pulling
+    # up against the rim instead loads the arms until one loses the
+    # tug-of-war and sags. The drag STOPS well in front of the chest —
+    # targets near the torso fold the arms into degenerate poses and the
+    # loaded arms thrash.
+    # ONE long diagonal swoop (up + back together) instead of separate
+    # drag/spill/hoist legs: the palm-up hook only holds when strand tension
+    # points down or horizontally, and every leg boundary risks a slip, so
+    # keep tension secure and minimize transitions. The diagonal pull also
+    # applies a tipping moment to the can through the jammed drawstring.
+    # up 0.25 is the material budget: commanding higher than the jammed
+    # rope can yield spikes tension, drags an arm into a degenerate folded
+    # pose, and explodes the solve (seen twice at up 0.35)
+    "hook_drag_back": 0.35,
+    "hook_drag_up": 0.25,
+    # NO hand convergence: any sideways pull component slides the strand
+    # along the finger row (the axial escape)
+    "hook_drag_in": 0.0,
+    "hook_drag_time": 10.0,
+    # hand-over-hand: alternate small steps (one hand holds while the
+    # other reels). A simultaneous two-hand swoop makes the jammed loop a
+    # tug-of-war and randomly pins one hand at the can front.
+    "hook_drag_steps": 3,
+    # phase 2 of the drag pulls the mouth DOWN and further back: the bag
+    # flows over the rim like a sock out of a boot (it cannot be lifted
+    # straight out — see hook_lift_height — but it can be poured out)
+    # spill reduced to a short dwell: hauling the strand DOWN below the
+    # rim-pulley flips tension upward, out of the palm-up hook's opening —
+    # a downward haul always ejects the strand
+    "hook_spill_back": 0.0,
+    "hook_spill_down": 0.0,
+    "hook_spill_time": 0.5,
+    # the rope jam CREEPS under sustained load (measured in the static
+    # hold), so a long slow hoist keeps reeling the loop where a fast pull
+    # locks it — raising the mouth until the bag hangs free of the table
+    "hook_hoist_up": 0.15,
+    "hook_hoist_time": 3.0,
+    # final horizontal sweep: hand travel through the rim-pulley converts
+    # directly into bag-over-rim flow (the cinch jam only creeps ~4 mm/s,
+    # far too slow to finish the extraction vertically)
+    "hook_sweep_back": 0.12,
+    "hook_sweep_time": 4.0,
+    # once the bag tips over the rim its full weight lands on the strands
+    # and drags the hands down; YIELD the targets down to meet them (a
+    # sustained large target error maxes the drives and explodes the
+    # solve), then RAISE the hanging bag slowly
+    "hook_yield_down": 0.45,
+    "hook_yield_time": 2.0,
+    "hook_raise_up": 0.35,
+    "hook_raise_time": 6.0,
     # task-space rest poses (dish-washing scene)
     "rest_left": (-0.48, 0.24, 1.24),
     "rest_right": (-0.48, -0.24, 1.24),
@@ -141,7 +204,7 @@ PARAMS = {
     "close_time": 1.6,  # the raise that catches the strand
     "dwell_time": 0.3,
     "lift_time": 0.5,
-    "carry_time": 1.8,  # the loaded lift — slow, a fast pull whips the bag
+    "carry_time": 2.4,  # the loaded lift — slow, a fast pull whips the bag
     # per-frame clamp on joint-target motion (smooths IK jumps)
     "joint_target_velocity_limit": 20.0,
     "torso_ik_position_weight": 50.0,
@@ -163,9 +226,11 @@ PARAMS = {
     "shape_ke": 1.0e3,
     "shape_kd": 1.0e-4,
     "rigid_contact_gap": 0.001,
-    # --- H1 (reused unchanged from the dish-washing scene); it stands at
-    # the table holding its initial pose through the AVBD joint drives ---
-    "robot_base_x": -0.70,
+    # --- H1 (dish-washing scene values). The robot stands CLOSER than the
+    # dish demo's -0.70: the handle slide-under points at the can's far
+    # sides are ~0.71 m from the shoulders at -0.70 — the arms' reach
+    # limit, where the IK saturates and the arms look stuck ---
+    "robot_base_x": -0.58,
     "robot_contact_ke": 1.0e3,
     "robot_contact_kd": 1.0e-2,
     "robot_contact_mu": 0.5,
@@ -182,9 +247,11 @@ PARAMS = {
     "finger_contact_margin": 0.002,
     "finger_sdf_padding": 0.012,
     "finger_sdf_max_resolution": 128,
-    # AVBD joint drives (dish-washing values)
-    "joint_drive_ke": 5.0e4,
-    "joint_drive_kd": 5.0e2,
+    # AVBD joint drives — 3x the dish-washing 5e4. NOT stronger: the rope
+    # tension in the creep-hoist equals what the arms can pull, and at 5e5
+    # the higher tension pops the strands out of the hooks instead
+    "joint_drive_ke": 1.5e5,
+    "joint_drive_kd": 1.5e3,
     "torso_drive_ke": 2.0e5,
     "torso_drive_kd": 2.0e3,
     "finger_drive_ke": 2.0e4,
@@ -1003,6 +1070,12 @@ class Example:
             + p["dwell_time"]
             + p["lift_time"]
             + p["carry_time"]
+            + p["hook_drag_time"]
+            + p["hook_spill_time"]
+            + p["hook_hoist_time"]
+            + p["hook_sweep_time"]
+            + p["hook_yield_time"]
+            + p["hook_raise_time"]
             + p["dwell_time"]
             + 0.8
         )
@@ -1066,9 +1139,61 @@ class Example:
             cur.wait(p["dwell_time"])
             if hand_side == "right":
                 self._mark(cur.time, "lift")
-            # one continuous straight-up lift: the strand lands in the hook
-            # on the way, the mouth cinches, and the bag leaves the bucket
-            cur.move(p["carry_time"], pos=(hook_x, hook_y, float(bight[2]) + p["hook_lift_height"]))
+            # seal the hook (full curl) as the lift starts...
+            cur.move(0.3, index=p["hook_seal_curl"], other=p["hook_seal_curl"])
+            # ...then a straight-up lift reels the handle slack and cinches
+            # the mouth...
+            lift_z = float(bight[2]) + p["hook_lift_height"]
+            cur.move(p["carry_time"], pos=(hook_x, hook_y, lift_z))
+            if hand_side == "right":
+                self._mark(cur.time, "drag_out")
+            # ...then haul hand-over-hand up the diagonal: alternating
+            # steps so the jammed drawstring never becomes a two-hand
+            # tug-of-war (the loser gets dragged down to the can front)
+            drag_x = hook_x - p["hook_drag_back"]
+            drag_y = hook_y * (1.0 - p["hook_drag_in"])
+            swoop_from = np.array((hook_x, hook_y, lift_z))
+            swoop_to = np.array((drag_x, drag_y, lift_z + p["hook_drag_up"]))
+            n_steps = int(p["hook_drag_steps"])
+            step_time = p["hook_drag_time"] / (2 * n_steps)
+            for k in range(2 * n_steps):
+                if (k % 2 == 0) == (hand_side == "left"):
+                    frac = (k // 2 + 1) / n_steps
+                    cur.move(step_time, pos=tuple(swoop_from + frac * (swoop_to - swoop_from)))
+                else:
+                    cur.wait(step_time)
+            if hand_side == "right":
+                self._mark(cur.time, "spill")
+            # ...phase 2: pull the mouth down-and-back so the bag FLOWS
+            # over the rim onto the table's near side...
+            spill_x = drag_x - p["hook_spill_back"]
+            spill_z = lift_z + p["hook_drag_up"] - p["hook_spill_down"]
+            cur.move(p["hook_spill_time"], pos=(spill_x, drag_y, spill_z))
+            if hand_side == "right":
+                self._mark(cur.time, "hoist")
+            # ...and a long SLOW hoist lets the jammed loop creep while the
+            # mouth rises until the bag hangs free
+            hoist_z = spill_z + p["hook_hoist_up"]
+            cur.move(p["hook_hoist_time"], pos=(spill_x, drag_y, hoist_z))
+            if hand_side == "right":
+                self._mark(cur.time, "sweep")
+            # ...finally sweep horizontally toward the robot: the rim acts
+            # as a pulley, so horizontal hand travel hauls the bag body up
+            # and over the rim directly (strand tension stays down/back —
+            # the secure directions for the palm-up hook)
+            sweep_x = spill_x - p["hook_sweep_back"]
+            cur.move(p["hook_sweep_time"], pos=(sweep_x, drag_y, hoist_z))
+            if hand_side == "right":
+                self._mark(cur.time, "yield")
+            # ...the bag tips over the rim and its weight drags the hands
+            # down: yield the targets to meet them so the drives never see
+            # a sustained large error...
+            yield_z = hoist_z - p["hook_yield_down"]
+            cur.move(p["hook_yield_time"], pos=(sweep_x + 0.10, drag_y, yield_z))
+            if hand_side == "right":
+                self._mark(cur.time, "raise")
+            # ...then raise the hanging bag slowly to the carry height
+            cur.move(p["hook_raise_time"], pos=(sweep_x + 0.10, drag_y, yield_z + p["hook_raise_up"]))
             if hand_side == "right":
                 self._mark(cur.time, "done")
 
