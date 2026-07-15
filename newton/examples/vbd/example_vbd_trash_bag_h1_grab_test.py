@@ -115,17 +115,21 @@ PARAMS = {
     # offsets below are relative to the measured strand. ---
     # index..little curled into a hook (tips pointing up with the palm up)
     "hook_curl": 0.7,
-    # the fingers slide in this far BELOW the handle's lowest point
+    # the fingers slide in this far BELOW the handle's lowest point...
     "hook_below_rope": 0.05,
+    # ...but never lower than this above the tabletop (the palm-up hand
+    # extends well below the pinch point and otherwise dips into the wood)
+    "hook_min_above_table": 0.07,
     # approach standoff outside the strand (along -y for the right handle)
     "hook_standoff_y": 0.10,
     # fine placement of the pinch point relative to the strand (tune here
     # if the hook rides too far east/west or short/deep of the rope)
     "hook_dx": 0.0,
     "hook_dy": 0.0,
-    # raise past the catch, then keep lifting to load the bag
-    "hook_raise_catch": 0.12,
-    "hook_lift": 0.25,
+    # after the slide-under, both hands rise straight up in ONE continuous
+    # move: the strand lands in the hook on the way and the pull first
+    # cinches the mouth, then hauls the bag out of the bucket
+    "hook_lift_height": 0.50,
     # task-space rest poses (dish-washing scene)
     "rest_left": (-0.48, 0.24, 1.24),
     "rest_right": (-0.48, -0.24, 1.24),
@@ -137,7 +141,7 @@ PARAMS = {
     "close_time": 1.6,  # the raise that catches the strand
     "dwell_time": 0.3,
     "lift_time": 0.5,
-    "carry_time": 1.2,  # the loaded lift
+    "carry_time": 1.8,  # the loaded lift — slow, a fast pull whips the bag
     # per-frame clamp on joint-target motion (smooths IK jumps)
     "joint_target_velocity_limit": 20.0,
     "torso_ik_position_weight": 50.0,
@@ -201,21 +205,19 @@ HAND_OFFSETS = (
     (0.148808, 0.068652, 0.026675),
 )
 
-# Left hand: thumb-up "handshake" (idle). Right hand: PALM UP — a +90 deg
-# roll about the forearm axis from the handshake — so the curled fingers
-# hook with their tips pointing up.
-_HAND_PITCH = 0.45
+# Both hands PALM UP — a 90 deg roll about the forearm axis from the
+# handshake (mirrored per side) — so the curled fingers hook with their
+# tips pointing up.
 HAND_ROTATIONS = (
-    (0.0, math.sin(0.5 * _HAND_PITCH), 0.0, math.cos(0.5 * _HAND_PITCH)),
+    (-math.sin(0.25 * math.pi), 0.0, 0.0, math.cos(0.25 * math.pi)),
     (math.sin(0.25 * math.pi), 0.0, 0.0, math.cos(0.25 * math.pi)),
 )
 
-# Side-specific "closed" thumb angles (yaw, pitch, intermediate, distal).
-# Left: the dish-washing tip-opposition calibration. Right: pure proximal
-# YAW with zero curl — driving the fraction rotates the STRAIGHT thumb
-# perpendicular to the palm, clear of the grasped can.
+# Side-specific "closed" thumb angles (yaw, pitch, intermediate, distal):
+# pure proximal YAW with zero curl — driving the fraction rotates the
+# STRAIGHT thumb perpendicular to the palm, clear of the hooked rope.
 THUMB_CLOSED_VALUES = (
-    (1.273907, 0.160957, 0.369535, 0.892908),
+    (1.273907, 0.0, 0.0, 0.0),
     (1.192278, 0.0, 0.0, 0.0),
 )
 
@@ -533,6 +535,10 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
         "torso": "torso_link",
         "left_hand": "left_hand_link",
         "right_hand": "right_hand_link",
+        "left_elbow": "left_elbow_link",
+        "right_elbow": "right_elbow_link",
+        "left_shoulder": "left_shoulder_pitch_link",
+        "right_shoulder": "right_shoulder_pitch_link",
     }
     body_indices = {name: _find_suffix(builder.body_label, suffix) for name, suffix in body_names.items()}
 
@@ -547,6 +553,7 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
         or builder.body_label[body].endswith(("left_hand_link", "right_hand_link"))
     }
     hook_shape_count = 0
+    hook_shapes = []
     robot_rigid_shapes = []
     for shape in range(robot_shape_start, robot_shape_end):
         original_flags = int(builder.shape_flags[shape])
@@ -573,12 +580,13 @@ def _add_h1(builder: newton.ModelBuilder, params: dict) -> tuple[dict[str, int],
             builder.shape_sdf_padding[shape] = params["finger_sdf_padding"]
             builder.shape_sdf_max_resolution[shape] = params["finger_sdf_max_resolution"]
             builder.shape_sdf_target_voxel_size[shape] = None
+            hook_shapes.append(shape)
             hook_shape_count += 1
 
     # 2 palm geoms + 4 two-link finger chains per hand = 10 colliders per side
     if hook_shape_count != 20:
         raise RuntimeError(f"Expected 20 H1 palm/index..pinky colliders, found {hook_shape_count}")
-    return body_indices, robot_rigid_shapes
+    return body_indices, robot_rigid_shapes, hook_shapes
 
 
 def _add_table(builder: newton.ModelBuilder, params: dict) -> list[int]:
@@ -668,7 +676,7 @@ def build_model(builder, params, seed, baked_state=None):
         )
 
     # --- robot + table first (rigid scene) ---
-    robot_bodies, robot_rigid_shapes = _add_h1(builder, params)
+    robot_bodies, robot_rigid_shapes, hook_shapes = _add_h1(builder, params)
     robot_coord_count = builder.joint_coord_count
     table_shapes = _add_table(builder, params)
 
@@ -813,12 +821,17 @@ def build_model(builder, params, seed, baked_state=None):
     )
     ground_shape = builder.add_ground_plane(cfg=ground_cfg)
 
-    # filter every robot collider against the furniture and the loose trash
-    # so a limb brushing static geometry cannot disturb the AVBD solve. The
-    # COKE is deliberately NOT filtered: the hand physically grasps it.
+    # filter the robot against the furniture and the loose trash so a limb
+    # brushing static geometry cannot disturb the AVBD solve — EXCEPT the
+    # palm/finger colliders vs the trash can: the hands work right against
+    # the bucket wall while hooking the handles and would otherwise
+    # penetrate it visually.
+    hook_set = set(hook_shapes)
     for robot_shape in robot_rigid_shapes:
-        for other in (*table_shapes, can_shape, ground_shape, *apple_shapes):
+        for other in (*table_shapes, ground_shape, *apple_shapes):
             builder.add_shape_collision_filter_pair(robot_shape, other)
+        if robot_shape not in hook_set:
+            builder.add_shape_collision_filter_pair(robot_shape, can_shape)
 
     builder.color(include_bending=True)
 
@@ -984,75 +997,83 @@ class Example:
         # durations are fixed; only the positions wait for the measurement
         self.total_time = (
             p["settle_time"]
-            + p["approach_time"]
+            + 1.6 * p["approach_time"]
             + p["descend_time"]
             + p["close_time"]
             + p["dwell_time"]
             + p["lift_time"]
             + p["carry_time"]
             + p["dwell_time"]
-            + 0.6
+            + 0.8
         )
 
     def _plan_grab(self):
-        """Plan the hook grab from the MEASURED position of the rope handle
-        hanging out of the bag's holes (never from fixed coordinates).
+        """Plan the hook grab from the MEASURED positions of the rope
+        handles hanging out of the bag's holes (never from fixed
+        coordinates).
 
-        Right hand, palm up, thumb perpendicular, index..little curled into
-        an upward hook: slide the fingers in below the strand, then raise.
+        BOTH hands, palms up, thumbs perpendicular, index..little curled
+        into upward hooks: each slides its fingers in below its side's
+        strand, then both raise together to hook and load the bag.
         """
         p = self.params
         particle_q = self.state_0.particle_q.numpy()
         can_xy = self.info["can_center"]
+        t0 = self.sim_time
+        self._mark(t0, "approach")
 
-        # the handle on the robot's right (-y of the can axis)
-        handle = None
+        planned_sides = set()
         for idx_key in ("left_idx", "right_idx"):
             verts = particle_q[self.info[idx_key]]
-            if float(verts[:, 1].mean()) < can_xy[1]:
-                handle = verts
-                break
-        if handle is None:
-            raise RuntimeError("No drawstring handle found on the robot's right side")
+            # centerline polyline (56 nodes x 3 width verts, node-major)
+            nodes = verts.reshape(-1, 3, 3).mean(axis=1).astype(np.float64)
+            bight = nodes[int(np.argmin(nodes[:, 2]))]
+            # which hand: the handle hangs on that side of the can
+            hand_side = "left" if float(nodes[:, 1].mean()) > can_xy[1] else "right"
+            side_sign = 1.0 if hand_side == "left" else -1.0
+            planned_sides.add(hand_side)
 
-        # centerline polyline (56 nodes x 3 width verts, node-major)
-        nodes = handle.reshape(-1, 3, 3).mean(axis=1).astype(np.float64)
-        bight = nodes[int(np.argmin(nodes[:, 2]))]
-        hook_x = float(bight[0]) + p["hook_dx"]
-        hook_y = float(bight[1]) + p["hook_dy"]
-        under_z = float(bight[2]) - p["hook_below_rope"]
-        print(
-            f"[trash_bag_h1_grab_test] rope bight measured at "
-            f"({bight[0]:+.3f}, {bight[1]:+.3f}, {bight[2]:.3f}); hooking under it"
-        )
+            hook_x = float(bight[0]) + p["hook_dx"]
+            hook_y = float(bight[1]) + side_sign * p["hook_dy"]
+            # slide-in height below the rope, clamped clear of the tabletop
+            under_z = max(
+                float(bight[2]) - p["hook_below_rope"],
+                p["table_top_z"] + p["hook_min_above_table"],
+            )
+            print(
+                f"[trash_bag_h1_grab_test] {hand_side} rope bight at "
+                f"({bight[0]:+.3f}, {bight[1]:+.3f}, {bight[2]:.3f}); hooking under it at z {under_z:.3f}"
+            )
 
-        right = _HandCursor(self.tracks, "right")
-        right.time = self.sim_time
-        self._mark(right.time, "approach")
-        # palm-up approach from outside the strand, fingers already hooked
-        # (tips up) and the thumb perpendicular to the palm
-        right.move(
-            p["approach_time"],
-            pos=(hook_x, hook_y - p["hook_standoff_y"], under_z),
-            index=p["hook_curl"],
-            other=p["hook_curl"],
-            thumb=1.0,
-        )
-        self._mark(right.time, "slide_under")
-        # slide the hooked fingers in BELOW the rope
-        right.move(p["descend_time"], pos=(hook_x, hook_y, under_z))
-        right.wait(p["dwell_time"])
-        self._mark(right.time, "raise")
-        # raise: the strand lands in the hook
-        right.move(p["close_time"], pos=(hook_x, hook_y, under_z + p["hook_below_rope"] + p["hook_raise_catch"]))
-        right.wait(p["dwell_time"])
-        self._mark(right.time, "lift")
-        # keep lifting to load the bag
-        right.move(
-            p["carry_time"],
-            pos=(hook_x, hook_y, under_z + p["hook_below_rope"] + p["hook_raise_catch"] + p["hook_lift"]),
-        )
-        self._mark(right.time, "done")
+            standoff_y = hook_y + side_sign * p["hook_standoff_y"]
+            cur = _HandCursor(self.tracks, hand_side)
+            cur.time = t0
+            # travel high (clear of the bucket), palm up, fingers already
+            # hooked (tips up) and the thumb perpendicular to the palm...
+            cur.move(
+                p["approach_time"],
+                pos=(hook_x, standoff_y, under_z + 0.12),
+                index=p["hook_curl"],
+                other=p["hook_curl"],
+                thumb=1.0,
+            )
+            # ...then drop to the slide-in height at the standoff
+            cur.move(0.6 * p["approach_time"], pos=(hook_x, standoff_y, under_z))
+            if hand_side == "right":
+                self._mark(cur.time, "slide_under")
+            # slide the hooked fingers in BELOW the rope
+            cur.move(p["descend_time"], pos=(hook_x, hook_y, under_z))
+            cur.wait(p["dwell_time"])
+            if hand_side == "right":
+                self._mark(cur.time, "lift")
+            # one continuous straight-up lift: the strand lands in the hook
+            # on the way, the mouth cinches, and the bag leaves the bucket
+            cur.move(p["carry_time"], pos=(hook_x, hook_y, float(bight[2]) + p["hook_lift_height"]))
+            if hand_side == "right":
+                self._mark(cur.time, "done")
+
+        if planned_sides != {"left", "right"}:
+            raise RuntimeError(f"Expected one handle per side, got hands {sorted(planned_sides)}")
         self._grab_planned = True
 
     # ── IK (dish-washing rig) ────────────────────────────────────────────
@@ -1103,10 +1124,29 @@ class Example:
                 )
             )
 
+        # weak elbow-shaping objectives: the palm-up orientation on a 4-DOF
+        # arm (no wrist) lets the LM solver swing the elbows through weird
+        # branches — a gentle pull toward a natural down-and-out elbow pose
+        # keeps the redundancy resolved consistently
+        self.elbow_objectives = []
+        for side, sign in (("left", 1.0), ("right", -1.0)):
+            shoulder_pos = np.asarray(body_q[self.info["robot_bodies"][f"{side}_shoulder"]][:3], dtype=np.float64)
+            elbow_target = shoulder_pos + np.asarray([0.08, sign * 0.10, -0.30])
+            self.elbow_objectives.append(
+                ik.IKObjectivePosition(
+                    link_index=self.info["robot_bodies"][f"{side}_elbow"],
+                    link_offset=wp.vec3(0.0, 0.0, 0.0),
+                    target_positions=wp.array([wp.vec3(*elbow_target)], dtype=wp.vec3),
+                    weight=0.3,
+                )
+            )
+
+        # weight 5.0: at 1.0 the solver happily hyper-extends the elbows a
+        # radian past their limits, which reads as very strange arm motion
         joint_limits = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.model.joint_limit_lower,
             joint_limit_upper=self.model.joint_limit_upper,
-            weight=1.0,
+            weight=5.0,
         )
         self.ik_joint_q = wp.clone(self.model.joint_q).reshape((1, self.model.joint_coord_count))
         self.ik_joint_q_flat = self.ik_joint_q.reshape((-1,))
@@ -1116,6 +1156,7 @@ class Example:
             objectives=[
                 *self.position_objectives,
                 *self.rotation_objectives,
+                *self.elbow_objectives,
                 self.torso_position_objective,
                 self.torso_rotation_objective,
                 joint_limits,
