@@ -2,35 +2,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example VBD Trash Bag H1 Pickup
+# Example VBD Trash Bag H1 Grab Test
 #
-# The standalone drawstring trash-bag demo (example_vbd_trash_bag.py)
-# moved onto the dish-washing scene's table, with the fixed-base Unitree
-# H1 standing in front of it. The bag, drawstring, trash can, and spheres
-# are IDENTICAL to the standalone demo — same assets, same rest scale,
-# same cloth materials, same contact and solver settings, same solve (10
-# substeps x 12 iterations, self-contact, water-tight rigid-soft SDF
-# contacts) — rotated so the drawstring handles hang at the robot's left
-# and right, and translated onto the tabletop.
+# GRAB EXPERIMENT: only the humanoid and the bagged trash can (with the
+# two baked-in spheres) — no coke, no extra drops. The scene is identical
+# to example_vbd_trash_bag_h1_pickup.py and starts from the same baked
+# initial state (asset/trash_bag_pickup_init_state.npz, bake it with the
+# pickup demo's --bake).
 #
-# The demo starts from a BAKED initial state: `--bake` settles the bag
-# (with 2 spheres inside) for 10 simulated seconds and saves the cloth and
-# sphere state to asset/trash_bag_pickup_init_state.npz. Normal runs load
-# that file as the INITIAL state (the cloth REST shapes are untouched) —
-# no long settle at startup.
+# The H1's right hand tries to grab the bag by its hanging drawstring
+# handle: palm facing UP, thumb rotated perpendicular to the palm,
+# index..little fingers curled into a hook with the tips pointing up. The
+# fingers slide in BELOW the hanging rope, then the hand raises so the
+# strand lands in the hook, and keeps raising to load the bag.
 #
-# A slim coke can stands on the table: the H1's right hand approaches with
-# the thumb rotated perpendicular to the palm, presses the palm centre
-# onto the can's flank, closes the fingers along the palm normal (they
-# wrap the far side and squeeze the can into the palm), lifts it over the
-# bag mouth, and lets it drop in. The grasp is pure contact and friction;
-# Newton IK turns the task-space hand keyframes into AVBD joint-drive
-# targets. Once the coke is binned, a fresh sphere and cube drop into the
-# open bag after it.
+# The hook targets are NOT fixed positions: they are computed at runtime
+# from the measured position of the rope strands sticking out of the
+# bag's holes.
 #
-# Commands:
-#   python -m newton.examples vbd_trash_bag_h1_pickup --bake   (once)
-#   python -m newton.examples vbd_trash_bag_h1_pickup
+# Command: python -m newton.examples vbd_trash_bag_h1_grab_test
 #
 ###########################################################################
 
@@ -120,50 +110,22 @@ PARAMS = {
     "rigid_body_contact_buffer_size": 1024,
     "rigid_contact_hard": True,
     "enable_water_tight": True,  # water-tight rigid-soft SDF contacts (no tunneling through the thin can)
-    # --- objects dropped into the bag when starting from the baked state ---
-    "drop_sphere_radius": 0.034,
-    "drop_cube_half_extent": 0.030,
-    "drop_height": 0.55,  # sphere spawn height above the bag bottom [m, assembly-local]
-    "drop_stagger": 0.10,  # the cube spawns this much higher -> they land one after the other
-    # --- coke can: a slim cylinder standing on the table; the robot's right
-    # hand wraps it (fingers curl around the body, thumb closes opposite)
-    # and bins it into the open bag ---
-    "coke_radius": 0.029,
-    "coke_half_height": 0.079,  # slim 330 ml can, ~5.8 x 15.8 cm
-    "coke_density": 500.0,  # ~0.21 kg, a half-empty can
-    "coke_ke": 1.0e3,
-    "coke_kd": 1.0e0,
-    "coke_mu": 0.7,
-    "coke_x": -0.16,
-    "coke_y": -0.24,
-    "coke_color": (0.78, 0.12, 0.14),
-    # grasp: PALMAR power grab. The right hand approaches from the robot's
-    # right (-y) with the thumb rotated perpendicular to the palm, presses
-    # the CENTER of the palm onto the cylinder's right flank, and closes the
-    # fingers along the palm normal — they wrap the far side of the can and
-    # squeeze it back INTO the palm (unlike a fingertip wrap, the closing
-    # force points at the palm, so the can cannot be extruded).
-    # The palm-face centre sits about (-0.045, -0.058, -0.01) from the pinch
-    # point in world axes at this hand orientation (measured hand slices).
-    "grasp_pinch_dx": -0.015,
-    "grasp_pinch_dz": 0.03,
-    # approach standoff and final palm press. The palm face rides ~58 mm
-    # south of the pinch point, and it kisses the can's south flank when
-    # the pinch sits at coke_y + 0.029: press_y 0.030 = a ~1 mm press (the
-    # finger squeeze, not the palm shove, provides the grip force).
-    "grasp_standoff_y": 0.060,
-    "grasp_press_y": 0.030,
-    "grasp_close_index": 0.75,
-    "grasp_close_other": 0.75,
-    "grasp_close_thumb": 1.0,
-    "other_finger_fraction": 0.8,
-    # carry height: the can hangs its full length (~16 cm) below the lip
-    # pinch and must clear the bag collar (top ~1.44) on the way in
-    "carry_z": 1.63,
-    # release point inside the bag mouth, biased toward the robot so the
-    # carry stays inside the right arm's comfortable reach
-    "drop_x": -0.09,
-    "drop_y": -0.05,
+    # --- the bag-handle hook grab. All positions are computed at runtime
+    # from the measured rope strands hanging out of the bag's holes; the
+    # offsets below are relative to the measured strand. ---
+    # index..little curled into a hook (tips pointing up with the palm up)
+    "hook_curl": 0.7,
+    # the fingers slide in this far BELOW the handle's lowest point
+    "hook_below_rope": 0.05,
+    # approach standoff outside the strand (along -y for the right handle)
+    "hook_standoff_y": 0.10,
+    # fine placement of the pinch point relative to the strand (tune here
+    # if the hook rides too far east/west or short/deep of the rope)
+    "hook_dx": 0.0,
+    "hook_dy": 0.0,
+    # raise past the catch, then keep lifting to load the bag
+    "hook_raise_catch": 0.12,
+    "hook_lift": 0.25,
     # task-space rest poses (dish-washing scene)
     "rest_left": (-0.48, 0.24, 1.24),
     "rest_right": (-0.48, -0.24, 1.24),
@@ -171,15 +133,11 @@ PARAMS = {
     # tiny start buffer only — the baked initial state is already settled
     "settle_time": 0.1,
     "approach_time": 0.5,
-    # the palm press and the finger close stay deliberately slow — the arm
-    # travels fast, but a sudden close reads as a snap and slaps the can
-    "descend_time": 0.7,
-    "close_time": 1.6,
+    "descend_time": 0.7,  # the slide-in under the rope
+    "close_time": 1.6,  # the raise that catches the strand
     "dwell_time": 0.3,
     "lift_time": 0.5,
-    "carry_time": 1.2,
-    "release_time": 0.2,
-    "retract_time": 0.5,
+    "carry_time": 1.2,  # the loaded lift
     # per-frame clamp on joint-target motion (smooths IK jumps)
     "joint_target_velocity_limit": 20.0,
     "torso_ik_position_weight": 50.0,
@@ -243,14 +201,13 @@ HAND_OFFSETS = (
     (0.148808, 0.068652, 0.026675),
 )
 
-# Thumb-up "handshake" for both hands (identity yaw + small pitch): the
-# right palm faces the robot's left (+y) for the palmar can grasp, and the
-# left hand's horizontal finger curl catches the hanging drawstring strands
-# in later steps.
+# Left hand: thumb-up "handshake" (idle). Right hand: PALM UP — a +90 deg
+# roll about the forearm axis from the handshake — so the curled fingers
+# hook with their tips pointing up.
 _HAND_PITCH = 0.45
 HAND_ROTATIONS = (
     (0.0, math.sin(0.5 * _HAND_PITCH), 0.0, math.cos(0.5 * _HAND_PITCH)),
-    (0.0, math.sin(0.5 * _HAND_PITCH), 0.0, math.cos(0.5 * _HAND_PITCH)),
+    (math.sin(0.25 * math.pi), 0.0, 0.0, math.cos(0.25 * math.pi)),
 )
 
 # Side-specific "closed" thumb angles (yaw, pitch, intermediate, distal).
@@ -847,60 +804,6 @@ def build_model(builder, params, seed, baked_state=None):
             body_indices.append(body)
             apple_shapes.append(builder.add_shape_sphere(body, radius=r, cfg=cfg))
 
-    # --- fresh trash dropped into the settled bag: one sphere + one cube.
-    # They spawn at their drop poses but are made KINEMATIC after finalize
-    # (inverse mass/inertia zeroed, hovering untouched above the mouth) and
-    # are switched back to dynamic once the robot has binned the coke.
-    drop_bodies = []
-    drop_shapes = []
-    if baked_state is not None:
-        drop_r = params["drop_sphere_radius"]
-        sphere_body = builder.add_body(
-            xform=wp.transform(to_world(0.02, 0.015, z_floor + params["drop_height"]), wp.quat_identity()),
-            label="drop_sphere",
-        )
-        drop_bodies.append(sphere_body)
-        drop_shapes.append(builder.add_shape_sphere(sphere_body, radius=drop_r, cfg=cfg))
-
-        he = params["drop_cube_half_extent"]
-        # slight tilt so the cube tumbles naturally instead of landing flat
-        cube_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 1.0, 0.0)), 0.3)
-        cube_body = builder.add_body(
-            xform=wp.transform(
-                to_world(-0.02, -0.015, z_floor + params["drop_height"] + params["drop_stagger"]), cube_rot
-            ),
-            label="drop_cube",
-        )
-        drop_bodies.append(cube_body)
-        drop_shapes.append(builder.add_shape_box(cube_body, hx=he, hy=he, hz=he, cfg=cfg))
-
-    # --- coke can: a slim cylinder standing on the table, within the right
-    # arm's reach. NOT collision-filtered against the robot — the grasp is
-    # the demo.
-    coke_cfg = newton.ModelBuilder.ShapeConfig(
-        density=params["coke_density"],
-        ke=params["coke_ke"],
-        kd=params["coke_kd"],
-        mu=params["coke_mu"],
-        gap=params["rigid_contact_gap"],
-        has_particle_collision=True,
-    )
-    coke_body = builder.add_body(
-        xform=wp.transform(
-            wp.vec3(params["coke_x"], params["coke_y"], params["table_top_z"] + params["coke_half_height"] + 0.001),
-            wp.quat_identity(),
-        ),
-        label="coke_can",
-    )
-    builder.add_shape_cylinder(
-        coke_body,
-        radius=params["coke_radius"],
-        half_height=params["coke_half_height"],
-        cfg=coke_cfg,
-        color=wp.vec3(*params["coke_color"]),
-        label="coke",
-    )
-
     # --- ground the robot stands on ---
     ground_cfg = newton.ModelBuilder.ShapeConfig(
         ke=params["shape_ke"],
@@ -914,7 +817,7 @@ def build_model(builder, params, seed, baked_state=None):
     # so a limb brushing static geometry cannot disturb the AVBD solve. The
     # COKE is deliberately NOT filtered: the hand physically grasps it.
     for robot_shape in robot_rigid_shapes:
-        for other in (*table_shapes, can_shape, ground_shape, *apple_shapes, *drop_shapes):
+        for other in (*table_shapes, can_shape, ground_shape, *apple_shapes):
             builder.add_shape_collision_filter_pair(robot_shape, other)
 
     builder.color(include_bending=True)
@@ -929,8 +832,6 @@ def build_model(builder, params, seed, baked_state=None):
         "right_idx": right_idx,
         "left_idx": left_idx,
         "body_indices": body_indices,
-        "drop_bodies": drop_bodies,
-        "coke_body": coke_body,
         "z_floor": z_floor + offset[2],
         "num_tunnel_springs": len(layout["tunnel_spring_pairs"]),
         "tunnel_spring_pairs": tunnel_spring_pairs,
@@ -1003,10 +904,10 @@ class Example:
         if not self.bake:
             if os.path.exists(STATE_NPZ):
                 baked_state = np.load(STATE_NPZ)
-                print(f"[trash_bag_h1_pickup] starting from baked state {STATE_NPZ}")
+                print(f"[trash_bag_h1_grab_test] starting from baked state {STATE_NPZ}")
             else:
                 print(
-                    f"[trash_bag_h1_pickup] no baked state at {STATE_NPZ} — starting from the raw "
+                    f"[trash_bag_h1_grab_test] no baked state at {STATE_NPZ} — starting from the raw "
                     "assets (run once with --bake to settle and save the initial state)"
                 )
         builder = newton.ModelBuilder(gravity=p["gravity"])
@@ -1021,6 +922,7 @@ class Example:
 
         self.phase = "settle"
         self._phase_marks: list[tuple[float, str]] = []
+        self._grab_planned = False
         self._build_choreography()
         self._setup_ik()
         # start the robot in the task-space rest pose (arms forward at the table)
@@ -1047,16 +949,8 @@ class Example:
         self.previous_joint_targets = wp.clone(self.model.joint_q[: self.robot_coord_count])
         self.torso_initial_position = self.state_0.body_q.numpy()[self.info["robot_bodies"]["torso"], :3].copy()
 
-        # the delayed drop objects hover KINEMATIC at their drop poses until
-        # the coke is binned (writing model.body_inv_mass directly does
-        # nothing — the solver bakes effective inverse-mass arrays at
-        # construction and only refreshes them via notify_model_changed)
-        self._drops_released = not self.info["drop_bodies"]
-        if self.info["drop_bodies"]:
-            self._set_drop_body_flags(newton.BodyFlags.KINEMATIC)
-
         print(
-            f"[trash_bag_h1_pickup] bag verts {self.info['bag_count']}  rope verts {self.info['rope_count']}  "
+            f"[trash_bag_h1_grab_test] bag verts {self.info['bag_count']}  rope verts {self.info['rope_count']}  "
             f"tunnel springs {self.info['num_tunnel_springs']}  apples {len(self.info['body_indices'])}"
         )
 
@@ -1077,9 +971,8 @@ class Example:
         self._phase_marks.append((time, name))
 
     def _build_choreography(self):
-        """Right hand: wrap the coke can and bin it into the bag. The wrap is
-        the handshake-orientation catch — the half-curled fingers sweep past
-        the can body, then thumb and fingers close around it."""
+        """Initialize the keyframe tracks (hands at rest). The hook grab is
+        planned at runtime in _plan_grab, from the measured rope position."""
         p = self.params
         tracks: dict[str, _Track] = {}
         for side, rest in (("left", p["rest_left"]), ("right", p["rest_right"])):
@@ -1088,52 +981,79 @@ class Example:
             tracks[f"{side}_index"] = _Track(0.0)
             tracks[f"{side}_other"] = _Track(0.0)
         self.tracks = tracks
-        right = _HandCursor(tracks, "right")
+        # durations are fixed; only the positions wait for the measurement
+        self.total_time = (
+            p["settle_time"]
+            + p["approach_time"]
+            + p["descend_time"]
+            + p["close_time"]
+            + p["dwell_time"]
+            + p["lift_time"]
+            + p["carry_time"]
+            + p["dwell_time"]
+            + 0.6
+        )
 
-        pinch_z = p["table_top_z"] + p["coke_half_height"] + p["grasp_pinch_dz"]
-        grasp_x = p["coke_x"] + p["grasp_pinch_dx"]
-        standoff_y = p["coke_y"] - p["grasp_standoff_y"]
-        press_y = p["coke_y"] + p["grasp_press_y"]
-        carry_y = press_y
+    def _plan_grab(self):
+        """Plan the hook grab from the MEASURED position of the rope handle
+        hanging out of the bag's holes (never from fixed coordinates).
 
-        right.wait(p["settle_time"])
+        Right hand, palm up, thumb perpendicular, index..little curled into
+        an upward hook: slide the fingers in below the strand, then raise.
+        """
+        p = self.params
+        particle_q = self.state_0.particle_q.numpy()
+        can_xy = self.info["can_center"]
+
+        # the handle on the robot's right (-y of the can axis)
+        handle = None
+        for idx_key in ("left_idx", "right_idx"):
+            verts = particle_q[self.info[idx_key]]
+            if float(verts[:, 1].mean()) < can_xy[1]:
+                handle = verts
+                break
+        if handle is None:
+            raise RuntimeError("No drawstring handle found on the robot's right side")
+
+        # centerline polyline (56 nodes x 3 width verts, node-major)
+        nodes = handle.reshape(-1, 3, 3).mean(axis=1).astype(np.float64)
+        bight = nodes[int(np.argmin(nodes[:, 2]))]
+        hook_x = float(bight[0]) + p["hook_dx"]
+        hook_y = float(bight[1]) + p["hook_dy"]
+        under_z = float(bight[2]) - p["hook_below_rope"]
+        print(
+            f"[trash_bag_h1_grab_test] rope bight measured at "
+            f"({bight[0]:+.3f}, {bight[1]:+.3f}, {bight[2]:.3f}); hooking under it"
+        )
+
+        right = _HandCursor(self.tracks, "right")
+        right.time = self.sim_time
         self._mark(right.time, "approach")
-        # approach from the robot's right (-y), palm leading, hand open with
-        # the thumb already rotated perpendicular to the palm
+        # palm-up approach from outside the strand, fingers already hooked
+        # (tips up) and the thumb perpendicular to the palm
         right.move(
             p["approach_time"],
-            pos=(grasp_x, standoff_y, pinch_z),
-            thumb=p["grasp_close_thumb"],
+            pos=(hook_x, hook_y - p["hook_standoff_y"], under_z),
+            index=p["hook_curl"],
+            other=p["hook_curl"],
+            thumb=1.0,
         )
-        self._mark(right.time, "press")
-        # press the palm centre onto the can's right flank
-        right.move(p["descend_time"], pos=(grasp_x, press_y, pinch_z))
-        self._mark(right.time, "close")
-        # close the fingers along the palm normal: they wrap the far side
-        # and squeeze the can back into the palm
-        right.move(
-            p["close_time"],
-            index=p["grasp_close_index"],
-            other=p["grasp_close_other"],
-        )
+        self._mark(right.time, "slide_under")
+        # slide the hooked fingers in BELOW the rope
+        right.move(p["descend_time"], pos=(hook_x, hook_y, under_z))
         right.wait(p["dwell_time"])
-        # lift straight up, carry over the bag mouth, and let go
+        self._mark(right.time, "raise")
+        # raise: the strand lands in the hook
+        right.move(p["close_time"], pos=(hook_x, hook_y, under_z + p["hook_below_rope"] + p["hook_raise_catch"]))
+        right.wait(p["dwell_time"])
         self._mark(right.time, "lift")
-        right.move(p["lift_time"], pos=(grasp_x, carry_y, p["carry_z"]))
-        self._mark(right.time, "carry")
-        right.move(p["carry_time"], pos=(p["drop_x"], p["drop_y"], p["carry_z"]))
-        right.wait(p["dwell_time"])
-        self._mark(right.time, "release")
-        right.move(p["release_time"], thumb=0.0, index=0.0, other=0.0)
-        right.wait(p["dwell_time"])
-        # the coke is in the bag: NOW the extra trash rains in while the
-        # arm retreats (see the drop hold/release machinery in step)
-        self.drop_release_time = right.time
-        self._mark(right.time, "retract")
-        right.move(p["retract_time"], pos=p["rest_right"])
+        # keep lifting to load the bag
+        right.move(
+            p["carry_time"],
+            pos=(hook_x, hook_y, under_z + p["hook_below_rope"] + p["hook_raise_catch"] + p["hook_lift"]),
+        )
         self._mark(right.time, "done")
-        # extra tail so the released drops land and settle in the bag
-        self.total_time = right.time + 1.4
+        self._grab_planned = True
 
     # ── IK (dish-washing rig) ────────────────────────────────────────────
 
@@ -1316,6 +1236,9 @@ class Example:
 
     def step(self):
         self.frame += 1
+        # plan the grab from the measured rope position at the settle end
+        if not self.bake and not self._grab_planned and self.sim_time >= self.params["settle_time"]:
+            self._plan_grab()
         # during --bake the robot just holds its rest pose
         if not self.bake:
             self._update_trajectory()
@@ -1323,20 +1246,7 @@ class Example:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
-        # delayed trash drop: one-time switch of the hovering bodies from
-        # kinematic back to dynamic once the coke is binned. The refresh
-        # updates the solver's effective inverse-mass arrays IN PLACE, so
-        # the captured graph picks it up on the next replay.
-        if not self._drops_released and self.sim_time >= self.drop_release_time:
-            self._set_drop_body_flags(newton.BodyFlags.DYNAMIC)
-            self._drops_released = True
         self.sim_time += self.frame_dt
-
-    def _set_drop_body_flags(self, flag: newton.BodyFlags):
-        body_flags = self.model.body_flags.numpy()
-        body_flags[self.info["drop_bodies"]] = int(flag)
-        self.model.body_flags.assign(body_flags)
-        self.solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
 
     def gui(self, ui):
         ui.text(f"Phase: {self.phase}")
@@ -1344,40 +1254,9 @@ class Example:
 
     def save_baked_state(self):
         """Save the settled cloth positions and sphere poses as the demo's
-        initial state (the cloth rest shapes are not touched).
-
-        The bag spins by a random angle inside the round can while the
-        falling handles whip during the settle, so the whole state is
-        counter-rotated about the can's axis before saving — the can is a
-        surface of revolution, so the rotated state is equally settled, and
-        the drawstring handles land exactly at the robot's left and right.
-        """
-        particle_q = self.state_0.particle_q.numpy().copy()
-        apple_body_q = self.state_0.body_q.numpy()[self.info["body_indices"]].copy()
-
-        # measured azimuth of the asset-left handle (belongs at -90 deg, the
-        # robot's right side)
-        left_handle = particle_q[self.info["left_idx"]]
-        can_center = self.info["can_center"]
-        centroid = left_handle.mean(axis=0)
-        azimuth = math.atan2(centroid[1] - can_center[1], centroid[0] - can_center[0])
-        correction = -0.5 * math.pi - azimuth
-        print(f"[trash_bag_h1_pickup] bake spun the bag {math.degrees(-correction):+.1f} deg; counter-rotating")
-
-        cos_c, sin_c = math.cos(correction), math.sin(correction)
-
-        def rotate_xy(points):
-            rel = points[:, :2] - can_center
-            points[:, 0] = cos_c * rel[:, 0] - sin_c * rel[:, 1] + can_center[0]
-            points[:, 1] = sin_c * rel[:, 0] + cos_c * rel[:, 1] + can_center[1]
-
-        rotate_xy(particle_q)
-        rotate_xy(apple_body_q)
-        rot_q = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), correction)
-        for row in apple_body_q:
-            new_rot = wp.mul(rot_q, wp.quat(*row[3:7]))
-            row[3:7] = [new_rot[0], new_rot[1], new_rot[2], new_rot[3]]
-
+        initial state (the cloth rest shapes are not touched)."""
+        particle_q = self.state_0.particle_q.numpy()
+        apple_body_q = self.state_0.body_q.numpy()[self.info["body_indices"]]
         np.savez(
             STATE_NPZ,
             particle_q=particle_q,
@@ -1386,7 +1265,7 @@ class Example:
             can_y=self.params["can_y"],
             table_top_z=self.params["table_top_z"],
         )
-        print(f"[trash_bag_h1_pickup] baked state saved to {STATE_NPZ}")
+        print(f"[trash_bag_h1_grab_test] baked state saved to {STATE_NPZ}")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -1402,22 +1281,11 @@ class Example:
         # the bag stays in the can on the table
         bag = particle_q[self.info["bag_start"] : self.info["bag_start"] + self.info["bag_count"]]
         assert bag[:, 2].min() > p["table_top_z"] - 0.05, "The bag fell off the table"
-        # apples and dropped objects stay roughly within the bag (no escape / explosion)
-        trash_bodies = [*self.info["body_indices"], *self.info["drop_bodies"]]
-        if trash_bodies:
-            trash_pos = body_q[trash_bodies][:, :3]
+        # the spheres stay roughly within the bag (no escape / explosion)
+        if self.info["body_indices"]:
+            trash_pos = body_q[self.info["body_indices"]][:, :3]
             assert np.all(np.abs(trash_pos[:, 0] - p["can_x"]) < 0.4), "A trash object escaped in x"
             assert np.all(np.abs(trash_pos[:, 1] - p["can_y"]) < 0.3), "A trash object escaped in y"
-        # the dropped objects actually landed inside the can (below the rim)
-        rim_z = p["table_top_z"] + 0.002 + p["can_height"]
-        for body in self.info["drop_bodies"]:
-            assert body_q[body, 2] < rim_z + 0.05, f"A dropped object did not land in the bag: z={body_q[body, 2]:.3f}"
-        # the coke ended up in the bag: inside the can mouth, below the rim
-        if not self.bake and self.info["drop_bodies"]:
-            coke = body_q[self.info["coke_body"], :3]
-            coke_xy_err = float(np.hypot(coke[0] - p["can_x"], coke[1] - p["can_y"]))
-            assert coke_xy_err < 0.12, f"The coke is {coke_xy_err:.3f} m from the can axis"
-            assert coke[2] < rim_z + 0.05, f"The coke did not drop into the bag: z={coke[2]:.3f}"
         # the robot held its pose
         torso = body_q[self.info["robot_bodies"]["torso"], :3]
         torso_err = float(np.linalg.norm(torso - self.torso_initial_position))
@@ -1443,11 +1311,11 @@ if __name__ == "__main__":
     example = Example(viewer, args)
     if args.bake:
         bake_frames = int(PARAMS["bake_seconds"] * example.fps)
-        print(f"[trash_bag_h1_pickup] baking: settling for {bake_frames} frames ...")
+        print(f"[trash_bag_h1_grab_test] baking: settling for {bake_frames} frames ...")
         for frame in range(bake_frames):
             example.step()
             if (frame + 1) % 120 == 0:
-                print(f"[trash_bag_h1_pickup]   bake frame {frame + 1}/{bake_frames}")
+                print(f"[trash_bag_h1_grab_test]   bake frame {frame + 1}/{bake_frames}")
         example.save_baked_state()
     else:
         newton.examples.run(example, args)
