@@ -140,6 +140,12 @@ PARAMS = {
     # its hole sends the pull straight down the rope: the mouth cinches,
     # then the jam creeps while the bag rises. Keep the end target under
     # the ~1.75 IK ceiling mapped in example_vbd_h1_reach_test.py.
+    # CINCH FIRST: pull the handles apart horizontally before lifting —
+    # the spread reels the drawstring through the tunnels and closes the
+    # mouth (how a human shuts a trash bag), so the lift carries a
+    # compact closed sack
+    "grab_cinch_out": 0.12,
+    "grab_cinch_time": 2.0,
     # stop AT the material wall (~mouth over the rim): commanding higher
     # grinds the maxed drives until the arms collapse sideways
     "grab_lift_height": 0.28,
@@ -150,23 +156,15 @@ PARAMS = {
     # hand-over-hand: alternate small steps (one hand holds while the
     # other reels) so the jammed loop never becomes a two-hand tug-of-war
     "grab_lift_steps": 3,
-    # extraction over the near rim (the bag cannot be lifted straight out:
-    # bag hang + rim height exceed the arms' reach): sweep back to lever
-    # the bag onto the rim, spill DOWN the outside to haul the sphere
-    # weight over — safe with a fist, which pins the rope in every pull
-    # direction (this leg always ejected the palm-up hooks) — then raise
-    # the hanging bag slowly.
-    "grab_sweep_back": 0.30,
-    "grab_sweep_time": 4.0,
-    "grab_spill_back": 0.05,
-    "grab_spill_down": 0.25,
-    "grab_spill_time": 3.0,
-    "grab_raise_up": 0.50,
-    # the raise is DIAGONAL (up + back): the mouth ends at the rim edge
-    # after the spill, and the extra horizontal travel while high levers
-    # the bag body over (keep the end x in front of the head)
-    "grab_raise_back": 0.08,
-    "grab_raise_time": 8.0,
+    # after the cinch the bag hangs as a compact CLOSED sack, so extract
+    # it the human way: raise it straight up as high as the arms safely
+    # go, then CARRY it horizontally toward the robot — the hanging bag
+    # slides out over the near rim (a closed mouth cannot sock-flow over
+    # the rim, so the old sweep/spill-while-low legs do nothing)
+    "grab_raise_up": 0.25,
+    "grab_raise_time": 5.0,
+    "grab_carry_back": 0.40,
+    "grab_carry_time": 4.0,
     "grab_hold_time": 3.0,
     # ONE-WAY COUPLING hack: once the fists are closed the robot is
     # switched KINEMATIC — its bodies follow the (velocity-clamped) IK
@@ -1098,10 +1096,10 @@ class Example:
             + p["descend_time"]
             + p["close_time"]
             + p["dwell_time"]
+            + p["grab_cinch_time"]
             + p["grab_lift_time"]
-            + p["grab_sweep_time"]
-            + p["grab_spill_time"]
             + p["grab_raise_time"]
+            + p["grab_carry_time"]
             + p["grab_hold_time"]
             + 0.8
         )
@@ -1167,15 +1165,22 @@ class Example:
             )
             cur.wait(p["dwell_time"])
             if hand_side == "right":
-                self._mark(cur.time, "lift")
+                self._mark(cur.time, "cinch")
                 # both fists are closed by now — from here the robot can go
                 # one-way (kinematic)
                 self._kinematic_switch_time = cur.time
+            # pull the handles APART horizontally first: the spread reels
+            # the drawstring through the tunnels and cinches the mouth
+            # shut before anything lifts
+            cinch_y = press_y + side_sign * p["grab_cinch_out"]
+            cur.move(p["grab_cinch_time"], pos=(grab_x, cinch_y, grab_z))
+            if hand_side == "right":
+                self._mark(cur.time, "lift")
             # lift hand-over-hand: alternating steps so the jammed
             # drawstring never becomes a two-hand tug-of-war. The hands
             # converge over the can mouth so the fist-to-hole strand stays
             # vertical (see grab_lift_converge_y)
-            lift_from = np.array((grab_x, press_y, grab_z))
+            lift_from = np.array((grab_x, cinch_y, grab_z))
             lift_to = np.array(
                 (float(can_xy[0]), side_sign * p["grab_lift_converge_y"], grab_z + p["grab_lift_height"])
             )
@@ -1188,29 +1193,18 @@ class Example:
                 else:
                     cur.wait(step_time)
             if hand_side == "right":
-                self._mark(cur.time, "sweep")
-            # sweep back: the taut handles lever the bag onto the near rim
-            lift_y = float(lift_to[1])
-            lift_z = float(lift_to[2])
-            sweep_x = float(can_xy[0]) - p["grab_sweep_back"]
-            cur.move(p["grab_sweep_time"], pos=(sweep_x, lift_y, lift_z))
-            if hand_side == "right":
-                self._mark(cur.time, "spill")
-            # spill DOWN the can's near side: the fist pins the rope, so a
-            # downward haul is safe — this drags the bag body (and sphere
-            # weight) over the rim-pulley
-            spill_x = sweep_x - p["grab_spill_back"]
-            spill_z = lift_z - p["grab_spill_down"]
-            cur.move(p["grab_spill_time"], pos=(spill_x, lift_y, spill_z))
-            if hand_side == "right":
                 self._mark(cur.time, "raise")
-            # raise the hanging bag slowly (the jam creeps under sustained
-            # load), diagonally up-and-back to finish levering the bag
-            # body over the rim
-            cur.move(
-                p["grab_raise_time"],
-                pos=(spill_x - p["grab_raise_back"], lift_y, spill_z + p["grab_raise_up"]),
-            )
+            # raise the closed sack straight up as high as the arms safely
+            # go...
+            lift_y = float(lift_to[1])
+            raise_z = float(lift_to[2]) + p["grab_raise_up"]
+            cur.move(p["grab_raise_time"], pos=(float(can_xy[0]), lift_y, raise_z))
+            if hand_side == "right":
+                self._mark(cur.time, "carry")
+            # ...then carry it horizontally toward the robot: the hanging
+            # bag slides out over the near rim
+            carry_x = float(can_xy[0]) - p["grab_carry_back"]
+            cur.move(p["grab_carry_time"], pos=(carry_x, lift_y, raise_z))
             if hand_side == "right":
                 self._mark(cur.time, "hold")
             cur.wait(p["grab_hold_time"])
