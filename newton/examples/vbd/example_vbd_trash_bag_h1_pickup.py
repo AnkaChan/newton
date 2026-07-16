@@ -123,7 +123,15 @@ PARAMS = {
     # --- objects dropped into the bag when starting from the baked state ---
     "drop_sphere_radius": 0.034,
     "drop_cube_half_extent": 0.030,
-    "drop_height": 0.55,  # sphere spawn height above the bag bottom [m, assembly-local]
+    # sphere spawn height above the bag bottom [m, assembly-local]: bag
+    # bottom sits at world z ~1.10, so 0.80 hovers the drops at ~1.90 —
+    # above the H1's head (~1.78)
+    "drop_height": 0.80,
+    # drops get their own contact damping (the apples use 5e1): falling
+    # from above the head they hit the bag much harder, and a heavily
+    # damped contact swallows the impact instead of trampolining
+    "drop_kd": 4.0e2,
+    "drop_density": 500.0,  # lighter than the apples -> less impact momentum
     "drop_stagger": 0.10,  # the cube spawns this much higher -> they land one after the other
     # --- coke can: a slim cylinder standing on the table; the robot's right
     # hand wraps it (fingers curl around the body, thumb closes opposite)
@@ -854,13 +862,21 @@ def build_model(builder, params, seed, baked_state=None):
     drop_bodies = []
     drop_shapes = []
     if baked_state is not None:
+        drop_cfg = newton.ModelBuilder.ShapeConfig()
+        drop_cfg.density = params["drop_density"]
+        drop_cfg.ke = params["apple_ke"]
+        drop_cfg.kd = params["drop_kd"]
+        drop_cfg.mu = params["apple_mu"]
+        drop_cfg.has_particle_collision = True
+        drop_cfg.margin = params["apple_margin"]
+
         drop_r = params["drop_sphere_radius"]
         sphere_body = builder.add_body(
             xform=wp.transform(to_world(0.02, 0.015, z_floor + params["drop_height"]), wp.quat_identity()),
             label="drop_sphere",
         )
         drop_bodies.append(sphere_body)
-        drop_shapes.append(builder.add_shape_sphere(sphere_body, radius=drop_r, cfg=cfg))
+        drop_shapes.append(builder.add_shape_sphere(sphere_body, radius=drop_r, cfg=drop_cfg))
 
         he = params["drop_cube_half_extent"]
         # slight tilt so the cube tumbles naturally instead of landing flat
@@ -872,7 +888,7 @@ def build_model(builder, params, seed, baked_state=None):
             label="drop_cube",
         )
         drop_bodies.append(cube_body)
-        drop_shapes.append(builder.add_shape_box(cube_body, hx=he, hy=he, hz=he, cfg=cfg))
+        drop_shapes.append(builder.add_shape_box(cube_body, hx=he, hy=he, hz=he, cfg=drop_cfg))
 
     # --- coke can: a slim cylinder standing on the table, within the right
     # arm's reach. NOT collision-filtered against the robot — the grasp is
@@ -999,6 +1015,10 @@ class Example:
 
         seed = getattr(args, "seed", p["seed"]) if args is not None else p["seed"]
         self.bake = bool(getattr(args, "bake", False)) if args is not None else False
+        # start recording only once the delayed drops are released (the
+        # recorded timeline is rebased to t=0 at the release)
+        self.record_after_drops = bool(getattr(args, "record_after_drops", False)) if args is not None else False
+        self._record_t0 = None
         baked_state = None
         if not self.bake:
             if os.path.exists(STATE_NPZ):
@@ -1389,7 +1409,14 @@ class Example:
         print(f"[trash_bag_h1_pickup] baked state saved to {STATE_NPZ}")
 
     def render(self):
-        self.viewer.begin_frame(self.sim_time)
+        if self.record_after_drops:
+            if not self._drops_released:
+                return
+            if self._record_t0 is None:
+                self._record_t0 = self.sim_time
+            self.viewer.begin_frame(self.sim_time - self._record_t0)
+        else:
+            self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
 
@@ -1427,6 +1454,12 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=PARAMS["seed"])
+        parser.add_argument(
+            "--record-after-drops",
+            action="store_true",
+            default=False,
+            help="Only log viewer frames after the delayed drops are released (USD starts at the release).",
+        )
         parser.add_argument(
             "--bake",
             action="store_true",
