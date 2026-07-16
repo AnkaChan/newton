@@ -2,25 +2,27 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example VBD Trash Bag H1 Grab Test
+# Example VBD Trash Bag H1 Side-Grab Test
 #
-# GRAB EXPERIMENT: only the humanoid and the bagged trash can (with the
-# two baked-in spheres) — no coke, no extra drops. The scene is identical
-# to example_vbd_trash_bag_h1_pickup.py and starts from the same baked
+# SIDE-GRAB EXPERIMENT: only the humanoid and the bagged trash can (with
+# the two baked-in spheres). The scene is identical to
+# example_vbd_trash_bag_h1_pickup.py and starts from the same baked
 # initial state (asset/trash_bag_pickup_init_state.npz, bake it with the
 # pickup demo's --bake).
 #
-# The H1's right hand tries to grab the bag by its hanging drawstring
-# handle: palm facing UP, thumb rotated perpendicular to the palm,
-# index..little fingers curled into a hook with the tips pointing up. The
-# fingers slide in BELOW the hanging rope, then the hand raises so the
-# strand lands in the hook, and keeps raising to load the bag.
+# Unlike the hook variant (example_vbd_trash_bag_h1_grab_test.py, which
+# slides palm-up hooks UNDER the rope), both hands here grab the hanging
+# drawstring handles FROM THE SIDE, following the pickup demo's palmar
+# coke grasp: handshake orientation, palm pressed to the strand from
+# outside, fingers and thumb close into a fist around the rope. The fist
+# pins the rope in every pull direction, then both hands lift the bag out
+# of the bucket.
 #
-# The hook targets are NOT fixed positions: they are computed at runtime
+# The grab targets are NOT fixed positions: they are computed at runtime
 # from the measured position of the rope strands sticking out of the
 # bag's holes.
 #
-# Command: python -m newton.examples vbd_trash_bag_h1_grab_test
+# Command: python -m newton.examples vbd_trash_bag_h1_side_grab_test
 #
 ###########################################################################
 
@@ -109,92 +111,81 @@ PARAMS = {
     "rigid_body_particle_contact_buffer_size": 16384,
     "rigid_body_contact_buffer_size": 1024,
     "rigid_contact_hard": True,
+    "rigid_contact_max": 4096,
     "enable_water_tight": True,  # water-tight rigid-soft SDF contacts (no tunneling through the thin can)
-    # --- the bag-handle hook grab. All positions are computed at runtime
-    # from the measured rope strands hanging out of the bag's holes; the
-    # offsets below are relative to the measured strand. ---
-    # index..little curled into a hook (tips pointing up with the palm up)
-    "hook_curl": 0.7,
-    # the fingers slide in this far BELOW the handle's lowest point...
-    "hook_below_rope": 0.05,
-    # ...but never lower than this above the tabletop (the palm-up hand
-    # extends well below the pinch point and otherwise dips into the wood)
-    "hook_min_above_table": 0.07,
-    # approach standoff outside the strand (along -y for the right handle)
-    "hook_standoff_y": 0.10,
-    # fine placement of the pinch point relative to the strand. hook_dx
-    # positive = the strand crosses the finger column nearer the PALM: a
-    # deep hook makes the axial escape (the strand sliding along the finger
-    # row and off its end — the dominant slip mode) travel the whole column
-    "hook_dx": 0.0,
-    # outward from the can wall so the fingers don't rub it while hooking
-    # (per hand: positive = away from the can on that hand's side)
-    "hook_dy_left": 0.06,
-    "hook_dy_right": 0.05,
-    # after the slide-under, both hands rise straight up, reeling the
-    # handle slack and cinching the mouth. The mouth's cinch capacity is a
-    # HARD wall (~0.3 m of reel per side): commanding a rise past it is an
-    # arm-vs-inextensible-rope fight that ends in a solver blowup — stay
-    # under it.
-    "hook_lift_height": 0.22,
-    # ...then the bag comes OUT along a diagonal: with the loop taut the
-    # handles are a solid connection, and dragging toward the robot pivots
-    # the bag over the near rim — a full straight-up extraction would need
-    # the hands ~0.3 m beyond the arms' reach (the 1.5x-rest bag hangs
-    # ~0.6 m below its holes)
-    # mostly HORIZONTAL: the pull levers the bag over the near rim; pulling
-    # up against the rim instead loads the arms until one loses the
-    # tug-of-war and sags. The drag STOPS well in front of the chest —
-    # targets near the torso fold the arms into degenerate poses and the
-    # loaded arms thrash.
-    # ONE long diagonal swoop (up + back together) instead of separate
-    # drag/spill/hoist legs: the palm-up hook only holds when strand tension
-    # points down or horizontally, and every leg boundary risks a slip, so
-    # keep tension secure and minimize transitions. The diagonal pull also
-    # applies a tipping moment to the can through the jammed drawstring.
-    # up 0.25 is the material budget: commanding higher than the jammed
-    # rope can yield spikes tension, drags an arm into a degenerate folded
-    # pose, and explodes the solve (seen twice at up 0.35)
-    "hook_drag_back": 0.35,
-    "hook_drag_up": 0.25,
-    # NO hand convergence: any sideways pull component slides the strand
-    # along the finger row (the axial escape)
-    "hook_drag_in": 0.0,
-    "hook_drag_time": 10.0,
+    # --- the bag-handle SIDE grab (the pickup demo's palmar coke grasp
+    # applied to the rope). All positions are computed at runtime from the
+    # measured rope strands hanging out of the bag's holes; the offsets
+    # below are relative to the measured strand. ---
+    # approach standoff outside the strand (along +y for the left handle)
+    "grab_standoff_y": 0.10,
+    # press the palm this far PAST the strand centre so the closing fist
+    # traps the rope against the palm (the strand bight hangs ~5 cm clear
+    # of the can wall, so a small press keeps the fingers off the can)
+    "grab_press_y": 0.02,
+    "grab_dx": 0.0,
+    # grab height above the handle's lowest point (the bight): higher on
+    # the strand shortens the rope from fist to mouth (raising the lift
+    # ceiling), but too high presses the fingers into the can wall
+    "grab_above_bight": 0.04,
+    # fist closure fractions — the rope is ~6 mm, so close fully (the
+    # 58 mm coke can used 0.75)
+    "grab_close_index": 1.0,
+    "grab_close_other": 1.0,
+    "grab_close_thumb": 1.0,
+    # both hands lift up AND CONVERGE over the can mouth: the fist pins
+    # the rope, so the strand from fist to bag-hole is a fixed-length
+    # tether — lifting straight up just swings the hand sideways on that
+    # tether (pendulum around the hole). Keeping the strand vertical above
+    # its hole sends the pull straight down the rope: the mouth cinches,
+    # then the jam creeps while the bag rises. Keep the end target under
+    # the ~1.75 IK ceiling mapped in example_vbd_h1_reach_test.py.
+    # stop AT the material wall (~mouth over the rim): commanding higher
+    # grinds the maxed drives until the arms collapse sideways
+    "grab_lift_height": 0.28,
+    "grab_lift_time": 6.0,
+    # y magnitude the hands converge to (just above the bag holes at the
+    # mouth rim, |y| ~0.11)
+    "grab_lift_converge_y": 0.10,
     # hand-over-hand: alternate small steps (one hand holds while the
-    # other reels). A simultaneous two-hand swoop makes the jammed loop a
-    # tug-of-war and randomly pins one hand at the can front.
-    "hook_drag_steps": 3,
-    # phase 2 of the drag pulls the mouth DOWN and further back: the bag
-    # flows over the rim like a sock out of a boot (it cannot be lifted
-    # straight out — see hook_lift_height — but it can be poured out)
-    # spill reduced to a short dwell: hauling the strand DOWN below the
-    # rim-pulley flips tension upward, out of the palm-up hook's opening —
-    # a downward haul always ejects the strand
-    "hook_spill_back": 0.0,
-    "hook_spill_down": 0.0,
-    "hook_spill_time": 0.5,
-    # the rope jam CREEPS under sustained load (measured in the static
-    # hold), so a long slow hoist keeps reeling the loop where a fast pull
-    # locks it — raising the mouth until the bag hangs free of the table
-    # keep raw commanded z under ~1.75: higher targets sit on the arm's IK
-    # branch boundary (mapped in example_vbd_h1_reach_test.py) where the
-    # solve explodes
-    "hook_hoist_up": 0.05,
-    "hook_hoist_time": 3.0,
-    # final horizontal sweep: hand travel through the rim-pulley converts
-    # directly into bag-over-rim flow (the cinch jam only creeps ~4 mm/s,
-    # far too slow to finish the extraction vertically)
-    "hook_sweep_back": 0.12,
-    "hook_sweep_time": 4.0,
-    # once the bag tips over the rim its full weight lands on the strands
-    # and drags the hands down; YIELD the targets down to meet them (a
-    # sustained large target error maxes the drives and explodes the
-    # solve), then RAISE the hanging bag slowly
-    "hook_yield_down": 0.45,
-    "hook_yield_time": 2.0,
-    "hook_raise_up": 0.85,
-    "hook_raise_time": 12.0,
+    # other reels) so the jammed loop never becomes a two-hand tug-of-war
+    "grab_lift_steps": 3,
+    # extraction over the near rim (the bag cannot be lifted straight out:
+    # bag hang + rim height exceed the arms' reach): sweep back to lever
+    # the bag onto the rim, spill DOWN the outside to haul the sphere
+    # weight over — safe with a fist, which pins the rope in every pull
+    # direction (this leg always ejected the palm-up hooks) — then raise
+    # the hanging bag slowly.
+    "grab_sweep_back": 0.30,
+    "grab_sweep_time": 4.0,
+    "grab_spill_back": 0.05,
+    "grab_spill_down": 0.25,
+    "grab_spill_time": 3.0,
+    "grab_raise_up": 0.50,
+    # the raise is DIAGONAL (up + back): the mouth ends at the rim edge
+    # after the spill, and the extra horizontal travel while high levers
+    # the bag body over (keep the end x in front of the head)
+    "grab_raise_back": 0.08,
+    "grab_raise_time": 8.0,
+    "grab_hold_time": 3.0,
+    # ONE-WAY COUPLING hack: once the fists are closed the robot is
+    # switched KINEMATIC — its bodies follow the (velocity-clamped) IK
+    # solution exactly via per-frame FK and the rope/bag can push back on
+    # nothing. No tug-of-war, no arm sag, no drive-vs-rope explosion; the
+    # trade is that rope tension no longer limits what the arms "can" do.
+    "one_way_coupling": True,
+    # ...and the rope is PINNED to the fists at the same moment: handle
+    # particles within this radius of each pinch get zero inverse mass and
+    # ride rigidly with the hand — the grip can never slip. The spheres in
+    # the bag stay fully simulated.
+    "pin_rope": True,
+    # the closed fist is ~8 cm across and the strand can sit ~4 cm from
+    # the pinch point after the press herds it. If nothing lands inside
+    # the radius (the press herds the strand differently run to run), the
+    # nearest strand chunk within the hard cap is pinned instead.
+    "pin_rope_radius": 0.05,
+    "pin_rope_radius_max": 0.09,
+    "pin_rope_fallback_count": 21,  # 7 centerline nodes x 3 width verts
     # task-space rest poses (dish-washing scene)
     "rest_left": (-0.48, 0.24, 1.24),
     "rest_right": (-0.48, -0.24, 1.24),
@@ -287,20 +278,24 @@ HAND_OFFSETS = (
     (0.148808, 0.068652, 0.026675),
 )
 
-# Both hands PALM UP — a 90 deg roll about the forearm axis from the
-# handshake (mirrored per side) — so the curled fingers hook with their
-# tips pointing up.
+# Thumb-up "handshake" for both hands (identity yaw + small pitch, the
+# pickup demo's palmar-grasp orientation): each palm faces the robot's
+# centreline, so a hand approaching its strand from OUTSIDE presses the
+# palm flat against the rope.
+_HAND_PITCH = 0.45
 HAND_ROTATIONS = (
-    (-math.sin(0.25 * math.pi), 0.0, 0.0, math.cos(0.25 * math.pi)),
-    (math.sin(0.25 * math.pi), 0.0, 0.0, math.cos(0.25 * math.pi)),
+    (0.0, math.sin(0.5 * _HAND_PITCH), 0.0, math.cos(0.5 * _HAND_PITCH)),
+    (0.0, math.sin(0.5 * _HAND_PITCH), 0.0, math.cos(0.5 * _HAND_PITCH)),
 )
 
 # Side-specific "closed" thumb angles (yaw, pitch, intermediate, distal):
-# pure proximal YAW with zero curl — driving the fraction rotates the
-# STRAIGHT thumb perpendicular to the palm, clear of the hooked rope.
+# full yaw + curl — driving the fraction sweeps the thumb across the palm
+# and curls it over the closing fingers, locking the rope in the fist.
+# Left: the dish-washing tip-opposition calibration; right mirrors it with
+# the right hand's yaw calibration.
 THUMB_CLOSED_VALUES = (
-    (1.273907, 0.0, 0.0, 0.0),
-    (1.192278, 0.0, 0.0, 0.0),
+    (1.273907, 0.160957, 0.369535, 0.892908),
+    (1.192278, 0.160957, 0.369535, 0.892908),
 )
 
 _FINGER_GROUP_LEFT_THUMB = wp.constant(0)
@@ -321,6 +316,18 @@ def set_finger_targets(
 ):
     i = wp.tid()
     joint_q[finger_indices[i]] = fractions[finger_groups[i]] * closed_values[i]
+
+
+@wp.kernel
+def drive_pinned_particles(
+    body_q: wp.array[wp.transform],
+    pin_body: wp.array[wp.int32],
+    pin_offset: wp.array[wp.vec3],
+    pin_index: wp.array[wp.int32],
+    particle_q: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    particle_q[pin_index[i]] = wp.transform_point(body_q[pin_body[i]], pin_offset[i])
 
 
 @wp.kernel
@@ -760,6 +767,7 @@ def build_model(builder, params, seed, baked_state=None):
     # --- robot + table first (rigid scene) ---
     robot_bodies, robot_rigid_shapes, hook_shapes = _add_h1(builder, params)
     robot_coord_count = builder.joint_coord_count
+    robot_body_count = builder.body_count
     table_shapes = _add_table(builder, params)
 
     # --- bag shell ---
@@ -932,6 +940,7 @@ def build_model(builder, params, seed, baked_state=None):
         "tunnel_spring_pairs": tunnel_spring_pairs,
         "robot_bodies": robot_bodies,
         "robot_coord_count": robot_coord_count,
+        "robot_body_count": robot_body_count,
         "can_center": np.asarray([params["can_x"], params["can_y"]], dtype=np.float64),
     }
 
@@ -977,6 +986,9 @@ def setup_sim(model, info, params):
         broad_phase="nxn",
         soft_contact_margin=params["soft_contact_creation_margin"],
         enable_water_tight_rigid_soft_contact=params["enable_water_tight"],
+        # the auto-estimate (~1190) overflows once the kinematic robot
+        # presses into the scene
+        rigid_contact_max=params["rigid_contact_max"],
     )
     return solver, pipeline
 
@@ -999,10 +1011,10 @@ class Example:
         if not self.bake:
             if os.path.exists(STATE_NPZ):
                 baked_state = np.load(STATE_NPZ)
-                print(f"[trash_bag_h1_grab_test] starting from baked state {STATE_NPZ}")
+                print(f"[trash_bag_h1_side_grab_test] starting from baked state {STATE_NPZ}")
             else:
                 print(
-                    f"[trash_bag_h1_grab_test] no baked state at {STATE_NPZ} — starting from the raw "
+                    f"[trash_bag_h1_side_grab_test] no baked state at {STATE_NPZ} — starting from the raw "
                     "assets (run once with --bake to settle and save the initial state)"
                 )
         builder = newton.ModelBuilder(gravity=p["gravity"])
@@ -1018,6 +1030,9 @@ class Example:
         self.phase = "settle"
         self._phase_marks: list[tuple[float, str]] = []
         self._grab_planned = False
+        self._robot_kinematic = False
+        self._kinematic_switch_time = float("inf")
+        self._pin_count = 0
         self._build_choreography()
         self._setup_ik()
         # start the robot in the task-space rest pose (arms forward at the table)
@@ -1045,7 +1060,7 @@ class Example:
         self.torso_initial_position = self.state_0.body_q.numpy()[self.info["robot_bodies"]["torso"], :3].copy()
 
         print(
-            f"[trash_bag_h1_grab_test] bag verts {self.info['bag_count']}  rope verts {self.info['rope_count']}  "
+            f"[trash_bag_h1_side_grab_test] bag verts {self.info['bag_count']}  rope verts {self.info['rope_count']}  "
             f"tunnel springs {self.info['num_tunnel_springs']}  apples {len(self.info['body_indices'])}"
         )
 
@@ -1079,30 +1094,27 @@ class Example:
         # durations are fixed; only the positions wait for the measurement
         self.total_time = (
             p["settle_time"]
-            + 1.6 * p["approach_time"]
+            + p["approach_time"]
             + p["descend_time"]
             + p["close_time"]
             + p["dwell_time"]
-            + p["lift_time"]
-            + p["carry_time"]
-            + p["hook_drag_time"]
-            + p["hook_spill_time"]
-            + p["hook_hoist_time"]
-            + p["hook_sweep_time"]
-            + p["hook_yield_time"]
-            + p["hook_raise_time"]
-            + p["dwell_time"]
+            + p["grab_lift_time"]
+            + p["grab_sweep_time"]
+            + p["grab_spill_time"]
+            + p["grab_raise_time"]
+            + p["grab_hold_time"]
             + 0.8
         )
 
     def _plan_grab(self):
-        """Plan the hook grab from the MEASURED positions of the rope
+        """Plan the side grab from the MEASURED positions of the rope
         handles hanging out of the bag's holes (never from fixed
         coordinates).
 
-        BOTH hands, palms up, thumbs perpendicular, index..little curled
-        into upward hooks: each slides its fingers in below its side's
-        strand, then both raise together to hook and load the bag.
+        BOTH hands in handshake orientation: each approaches its side's
+        strand from OUTSIDE, presses the palm onto the rope, closes the
+        fingers and thumb into a fist around it, then both lift the bag
+        hand-over-hand until it leaves the bucket.
         """
         p = self.params
         particle_q = self.state_0.particle_q.numpy()
@@ -1121,101 +1133,139 @@ class Example:
             side_sign = 1.0 if hand_side == "left" else -1.0
             planned_sides.add(hand_side)
 
-            hook_x = float(bight[0]) + p["hook_dx"]
-            hook_y = float(bight[1]) + side_sign * p[f"hook_dy_{hand_side}"]
-            # slide-in height below the rope, clamped clear of the tabletop
-            under_z = max(
-                float(bight[2]) - p["hook_below_rope"],
-                p["table_top_z"] + p["hook_min_above_table"],
-            )
+            grab_x = float(bight[0]) + p["grab_dx"]
+            grab_z = float(bight[2]) + p["grab_above_bight"]
+            # grab the strand where it actually hangs at that height: the
+            # node nearest the grab height on the hanging handle
+            near = nodes[np.argsort(np.abs(nodes[:, 2] - grab_z))[:4]]
+            strand_y = float(near[np.argmax(np.abs(near[:, 1]))][1])
             print(
-                f"[trash_bag_h1_grab_test] {hand_side} rope bight at "
-                f"({bight[0]:+.3f}, {bight[1]:+.3f}, {bight[2]:.3f}); hooking under it at z {under_z:.3f}"
+                f"[trash_bag_h1_side_grab_test] {hand_side} rope bight at "
+                f"({bight[0]:+.3f}, {bight[1]:+.3f}, {bight[2]:.3f}); grabbing at "
+                f"({grab_x:+.3f}, {strand_y:+.3f}, {grab_z:.3f})"
             )
 
-            standoff_y = hook_y + side_sign * p["hook_standoff_y"]
+            standoff_y = strand_y + side_sign * p["grab_standoff_y"]
+            press_y = strand_y - side_sign * p["grab_press_y"]
             cur = _HandCursor(self.tracks, hand_side)
             cur.time = t0
-            # travel high (clear of the bucket), palm up, fingers already
-            # hooked (tips up) and the thumb perpendicular to the palm...
-            cur.move(
-                p["approach_time"],
-                pos=(hook_x, standoff_y, under_z + 0.12),
-                index=p["hook_curl"],
-                other=p["hook_curl"],
-                thumb=1.0,
-            )
-            # ...then drop to the slide-in height at the standoff
-            cur.move(0.6 * p["approach_time"], pos=(hook_x, standoff_y, under_z))
+            # approach from outside at grab height, hand open (handshake)
+            cur.move(p["approach_time"], pos=(grab_x, standoff_y, grab_z))
             if hand_side == "right":
-                self._mark(cur.time, "slide_under")
-            # slide the hooked fingers in BELOW the rope
-            cur.move(p["descend_time"], pos=(hook_x, hook_y, under_z))
+                self._mark(cur.time, "press")
+            # press the palm onto the strand
+            cur.move(p["descend_time"], pos=(grab_x, press_y, grab_z))
+            if hand_side == "right":
+                self._mark(cur.time, "close")
+            # close fingers and thumb into a fist around the rope
+            cur.move(
+                p["close_time"],
+                pos=(grab_x, press_y, grab_z),
+                index=p["grab_close_index"],
+                other=p["grab_close_other"],
+                thumb=p["grab_close_thumb"],
+            )
             cur.wait(p["dwell_time"])
             if hand_side == "right":
                 self._mark(cur.time, "lift")
-            # fingers stay at the approach curl — no seal squeeze
-            cur.wait(0.3)
-            # ...then a straight-up lift reels the handle slack and cinches
-            # the mouth...
-            lift_z = float(bight[2]) + p["hook_lift_height"]
-            cur.move(p["carry_time"], pos=(hook_x, hook_y, lift_z))
-            if hand_side == "right":
-                self._mark(cur.time, "drag_out")
-            # ...then haul hand-over-hand up the diagonal: alternating
-            # steps so the jammed drawstring never becomes a two-hand
-            # tug-of-war (the loser gets dragged down to the can front)
-            drag_x = hook_x - p["hook_drag_back"]
-            drag_y = hook_y * (1.0 - p["hook_drag_in"])
-            swoop_from = np.array((hook_x, hook_y, lift_z))
-            swoop_to = np.array((drag_x, drag_y, lift_z + p["hook_drag_up"]))
-            n_steps = int(p["hook_drag_steps"])
-            step_time = p["hook_drag_time"] / (2 * n_steps)
+                # both fists are closed by now — from here the robot can go
+                # one-way (kinematic)
+                self._kinematic_switch_time = cur.time
+            # lift hand-over-hand: alternating steps so the jammed
+            # drawstring never becomes a two-hand tug-of-war. The hands
+            # converge over the can mouth so the fist-to-hole strand stays
+            # vertical (see grab_lift_converge_y)
+            lift_from = np.array((grab_x, press_y, grab_z))
+            lift_to = np.array(
+                (float(can_xy[0]), side_sign * p["grab_lift_converge_y"], grab_z + p["grab_lift_height"])
+            )
+            n_steps = int(p["grab_lift_steps"])
+            step_time = p["grab_lift_time"] / (2 * n_steps)
             for k in range(2 * n_steps):
                 if (k % 2 == 0) == (hand_side == "left"):
                     frac = (k // 2 + 1) / n_steps
-                    cur.move(step_time, pos=tuple(swoop_from + frac * (swoop_to - swoop_from)))
+                    cur.move(step_time, pos=tuple(lift_from + frac * (lift_to - lift_from)))
                 else:
                     cur.wait(step_time)
             if hand_side == "right":
-                self._mark(cur.time, "spill")
-            # ...phase 2: pull the mouth down-and-back so the bag FLOWS
-            # over the rim onto the table's near side...
-            spill_x = drag_x - p["hook_spill_back"]
-            spill_z = lift_z + p["hook_drag_up"] - p["hook_spill_down"]
-            cur.move(p["hook_spill_time"], pos=(spill_x, drag_y, spill_z))
-            if hand_side == "right":
-                self._mark(cur.time, "hoist")
-            # ...and a long SLOW hoist lets the jammed loop creep while the
-            # mouth rises until the bag hangs free
-            hoist_z = spill_z + p["hook_hoist_up"]
-            cur.move(p["hook_hoist_time"], pos=(spill_x, drag_y, hoist_z))
-            if hand_side == "right":
                 self._mark(cur.time, "sweep")
-            # ...finally sweep horizontally toward the robot: the rim acts
-            # as a pulley, so horizontal hand travel hauls the bag body up
-            # and over the rim directly (strand tension stays down/back —
-            # the secure directions for the palm-up hook)
-            sweep_x = spill_x - p["hook_sweep_back"]
-            cur.move(p["hook_sweep_time"], pos=(sweep_x, drag_y, hoist_z))
+            # sweep back: the taut handles lever the bag onto the near rim
+            lift_y = float(lift_to[1])
+            lift_z = float(lift_to[2])
+            sweep_x = float(can_xy[0]) - p["grab_sweep_back"]
+            cur.move(p["grab_sweep_time"], pos=(sweep_x, lift_y, lift_z))
             if hand_side == "right":
-                self._mark(cur.time, "yield")
-            # ...the bag tips over the rim and its weight drags the hands
-            # down: yield the targets to meet them so the drives never see
-            # a sustained large error...
-            yield_z = hoist_z - p["hook_yield_down"]
-            cur.move(p["hook_yield_time"], pos=(sweep_x + 0.10, drag_y, yield_z))
+                self._mark(cur.time, "spill")
+            # spill DOWN the can's near side: the fist pins the rope, so a
+            # downward haul is safe — this drags the bag body (and sphere
+            # weight) over the rim-pulley
+            spill_x = sweep_x - p["grab_spill_back"]
+            spill_z = lift_z - p["grab_spill_down"]
+            cur.move(p["grab_spill_time"], pos=(spill_x, lift_y, spill_z))
             if hand_side == "right":
                 self._mark(cur.time, "raise")
-            # ...then raise the hanging bag slowly, pulling slightly back so
-            # the last of the mouth fabric slides off the rim edge
-            cur.move(p["hook_raise_time"], pos=(sweep_x - 0.05, drag_y, yield_z + p["hook_raise_up"]))
+            # raise the hanging bag slowly (the jam creeps under sustained
+            # load), diagonally up-and-back to finish levering the bag
+            # body over the rim
+            cur.move(
+                p["grab_raise_time"],
+                pos=(spill_x - p["grab_raise_back"], lift_y, spill_z + p["grab_raise_up"]),
+            )
+            if hand_side == "right":
+                self._mark(cur.time, "hold")
+            cur.wait(p["grab_hold_time"])
             if hand_side == "right":
                 self._mark(cur.time, "done")
 
         if planned_sides != {"left", "right"}:
             raise RuntimeError(f"Expected one handle per side, got hands {sorted(planned_sides)}")
         self._grab_planned = True
+
+    def _pin_rope_to_fists(self):
+        """Zero the inverse mass of the handle particles currently inside
+        each fist and record their offsets in the hand frame — from here
+        they ride rigidly with the (kinematic) hands. The bag, the rest of
+        the rope, and the rigid spheres stay fully simulated."""
+        p = self.params
+        particle_q = self.state_0.particle_q.numpy()
+        body_q = self.state_0.body_q.numpy()
+        can_xy = self.info["can_center"]
+        pin_body, pin_index, pin_offset = [], [], []
+        for idx_key in ("left_idx", "right_idx"):
+            handle_idx = np.asarray(self.info[idx_key], dtype=np.int32)
+            hand_side = "left" if float(particle_q[handle_idx][:, 1].mean()) > can_xy[1] else "right"
+            hand_i = 0 if hand_side == "left" else 1
+            body = self.hand_bodies[hand_i]
+            tf = wp.transform(*body_q[body])
+            pinch = np.asarray(wp.transform_point(tf, self.hand_offsets[hand_i]))
+            dist = np.linalg.norm(particle_q[handle_idx] - pinch, axis=1)
+            selected = handle_idx[dist < p["pin_rope_radius"]]
+            if len(selected) == 0:
+                # the press herds the strand a few cm run to run — fall
+                # back to the nearest strand chunk within the hard cap
+                order = np.argsort(dist)[: p["pin_rope_fallback_count"]]
+                order = order[dist[order] < p["pin_rope_radius_max"]]
+                selected = handle_idx[order]
+                print(
+                    f"[trash_bag_h1_side_grab_test] {hand_side} fist: no strand within "
+                    f"{p['pin_rope_radius']:.3f}, falling back to the nearest chunk "
+                    f"(min dist {dist.min():.3f})"
+                )
+            inv_tf = wp.transform_inverse(tf)
+            for pi in selected:
+                pin_body.append(int(body))
+                pin_index.append(int(pi))
+                pin_offset.append(np.asarray(wp.transform_point(inv_tf, wp.vec3(*particle_q[pi]))))
+            print(f"[trash_bag_h1_side_grab_test] pinned {len(selected)} rope particles to the {hand_side} fist")
+            if len(selected) == 0:
+                raise RuntimeError(f"No rope particles near the {hand_side} fist to pin — grab missed?")
+        inv_mass = self.model.particle_inv_mass.numpy()
+        inv_mass[pin_index] = 0.0
+        self.model.particle_inv_mass.assign(inv_mass)
+        self._pin_body = wp.array(pin_body, dtype=wp.int32, device=self.device)
+        self._pin_index = wp.array(pin_index, dtype=wp.int32, device=self.device)
+        self._pin_offset = wp.array(np.asarray(pin_offset, dtype=np.float32), dtype=wp.vec3, device=self.device)
+        self._pin_count = len(pin_index)
 
     # ── IK (dish-washing rig) ────────────────────────────────────────────
 
@@ -1424,6 +1474,34 @@ class Example:
             ],
             outputs=[self.control.joint_target_q, self.control.joint_target_qd],
         )
+        if self._robot_kinematic:
+            # one-way coupling: the kinematic robot follows the smoothed
+            # joint targets exactly — pose its bodies directly via FK.
+            # CRITICAL: filter to KINEMATIC bodies only. add_body gives the
+            # apples free-joint articulations, so an unfiltered eval_fk
+            # teleports them back to their build poses every frame — an
+            # energy pump that NaNs them within a second.
+            wp.copy(self.model.joint_q, self.previous_joint_targets, count=self.robot_coord_count)
+            newton.eval_fk(
+                self.model,
+                self.model.joint_q,
+                self.model.joint_qd,
+                self.state_0,
+                body_flag_filter=int(newton.BodyFlags.KINEMATIC),
+            )
+            if self._pin_count:
+                # the pinned rope particles ride rigidly with the fists
+                wp.launch(
+                    drive_pinned_particles,
+                    dim=self._pin_count,
+                    inputs=[
+                        self.state_0.body_q,
+                        self._pin_body,
+                        self._pin_offset,
+                        self._pin_index,
+                        self.state_0.particle_q,
+                    ],
+                )
 
     # ── simulation loop ──────────────────────────────────────────────────
 
@@ -1450,6 +1528,24 @@ class Example:
         # plan the grab from the measured rope position at the settle end
         if not self.bake and not self._grab_planned and self.sim_time >= self.params["settle_time"]:
             self._plan_grab()
+        # one-time switch: once both fists are closed, the robot goes
+        # KINEMATIC (one-way coupled). The flag refresh updates the
+        # solver's effective inverse-mass arrays in place, so the captured
+        # graph picks it up on the next replay.
+        if (
+            self.params["one_way_coupling"]
+            and not self._robot_kinematic
+            and self._grab_planned
+            and self.sim_time >= self._kinematic_switch_time
+        ):
+            body_flags = self.model.body_flags.numpy()
+            body_flags[: self.info["robot_body_count"]] = int(newton.BodyFlags.KINEMATIC)
+            self.model.body_flags.assign(body_flags)
+            self.solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+            self._robot_kinematic = True
+            print(f"[trash_bag_h1_side_grab_test] t={self.sim_time:.2f}: robot switched to one-way (kinematic)")
+            if self.params["pin_rope"]:
+                self._pin_rope_to_fists()
         # during --bake the robot just holds its rest pose
         if not self.bake:
             self._update_trajectory()
@@ -1476,7 +1572,7 @@ class Example:
             can_y=self.params["can_y"],
             table_top_z=self.params["table_top_z"],
         )
-        print(f"[trash_bag_h1_grab_test] baked state saved to {STATE_NPZ}")
+        print(f"[trash_bag_h1_side_grab_test] baked state saved to {STATE_NPZ}")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -1522,11 +1618,11 @@ if __name__ == "__main__":
     example = Example(viewer, args)
     if args.bake:
         bake_frames = int(PARAMS["bake_seconds"] * example.fps)
-        print(f"[trash_bag_h1_grab_test] baking: settling for {bake_frames} frames ...")
+        print(f"[trash_bag_h1_side_grab_test] baking: settling for {bake_frames} frames ...")
         for frame in range(bake_frames):
             example.step()
             if (frame + 1) % 120 == 0:
-                print(f"[trash_bag_h1_grab_test]   bake frame {frame + 1}/{bake_frames}")
+                print(f"[trash_bag_h1_side_grab_test]   bake frame {frame + 1}/{bake_frames}")
         example.save_baked_state()
     else:
         newton.examples.run(example, args)
