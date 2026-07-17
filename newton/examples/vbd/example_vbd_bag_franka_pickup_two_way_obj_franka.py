@@ -57,14 +57,15 @@ PARAMS = {
     "particle_radius": 0.004,
     "fps": 60,
     "settle_frames": 420,
+    "preroll_frames": 100,
     "sim_substeps": 10,
     "solver_iterations": 10,
     "cloth_density": 0.08,
     "cloth_tri_ke": 1e5,
     "cloth_tri_ka": 2e4,
-    "cloth_tri_kd": 1e2,
+    "cloth_tri_kd": 2e2,
     "cloth_edge_ke": 200.0,
-    "cloth_edge_kd": 0.01,
+    "cloth_edge_kd": 0.05,
     "shape_density": 1000.0,
     "shape_ke": 5.0e5,
     "shape_kd": 5.0e1,
@@ -540,6 +541,14 @@ class Example:
             rigid_joint_linear_kd=self.params["rigid_joint_linear_kd"],
             rigid_joint_angular_kd=self.params["rigid_joint_angular_kd"],
         )
+
+        # Pre-roll: settle the bag with the robot holding its pregrasp pose,
+        # then zero the bag particle velocities before the recorded run.
+        for _ in range(self.params["preroll_frames"]):
+            self.simulate()
+        self.state_0.particle_qd.zero_()
+        self.state_1.particle_qd.zero_()
+        self._initial_bag_top_z = float(np.max(self.state_0.particle_q.numpy()[:, self.params["vertical_axis"]]))
 
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
