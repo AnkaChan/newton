@@ -80,6 +80,19 @@ def main():
         "--warm", choices=("inertial", "prev"), default="inertial", help="decoder warm start: inertial predictor or x_t"
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--noise-std",
+        type=float,
+        default=0.0,
+        help="MGN-style input noise: perturb (x_prev, x_t) at window start "
+        "so the model learns to contract off-manifold states",
+    )
+    parser.add_argument(
+        "--phys-weight",
+        type=float,
+        default=0.0,
+        help="with --loss pos: add this weight of the incremental potential as an off-manifold regulariser",
+    )
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -144,8 +157,20 @@ def main():
 
         x_prev = x_gpu[b[:, 0]]  # (B, V, 3)
         x_t = x_gpu[b[:, 1]]
-        S_prev = S_gpu[b[:, 0]]
-        S_now = S_gpu[b[:, 1]]
+        if args.noise_std > 0.0:
+            # Perturb the input state (targets stay clean) so training visits the
+            # off-manifold states rollout inevitably produces.
+            x_prev = x_prev + args.noise_std * torch.randn_like(x_prev)
+            x_t = x_t + args.noise_std * torch.randn_like(x_t)
+            x_prev = x_prev.clone()
+            x_t = x_t.clone()
+            x_prev[:, solver.pinned] = pinned_targets
+            x_t[:, solver.pinned] = pinned_targets
+            S_prev = compute_S_from_x(solver, x_prev)
+            S_now = compute_S_from_x(solver, x_t)
+        else:
+            S_prev = S_gpu[b[:, 0]]
+            S_now = S_gpu[b[:, 1]]
 
         opt.zero_grad()
         loss_total = torch.zeros((), dtype=torch.float64, device=device)
@@ -167,6 +192,21 @@ def main():
             if args.loss == "pos":
                 diff = x_next - x_gpu[i_t0 + k + 1]
                 loss_total = loss_total + (mass[None, :, None] * diff * diff).sum()
+                if args.phys_weight > 0.0:
+                    loss_total = loss_total + args.phys_weight * incremental_potential_batched(
+                        x_next=x_next,
+                        x_t=x_t,
+                        x_prev=x_prev,
+                        mass=mass,
+                        gravity=gravity64,
+                        f_ext=f_ext,
+                        tets=solver.tets,
+                        J=solver.J,
+                        mu=mu64,
+                        lam=lam64,
+                        volume=volume,
+                        dt=args.dt,
+                    )
             else:
                 loss_total = loss_total + incremental_potential_batched(
                     x_next=x_next,
