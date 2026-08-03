@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 """Teacher-forced single-step eval: feed GT (x_{t-1}, x_t) and predict x_{t+1}."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,8 +12,8 @@ import torch
 
 from . import torch_solver as ts
 from .model import StretchNet, build_face_adjacency, build_features
-from .torch_solver import compute_S_from_x
 from .rollout import vert_to_tet_pin_flag
+from .torch_solver import compute_S_from_x, inertial_predictor
 
 
 def main():
@@ -26,11 +27,18 @@ def main():
     dtype = torch.float32
 
     d = np.load(args.data)
-    rest_q = d["rest_q"]; tets_np = d["tet_indices"]; poses_np = d["tet_poses"]
-    pinned_np = d["pinned_indices"]; mu_np = d["mu_per_tet"]; lam_np = d["lam_per_tet"]
-    x_all = d["x"]; f_ext_all = d["f_ext"]
-    traj_start = d["traj_start"]; gravity_np = d["gravity"]
-    n_total = x_all.shape[0]; n_traj = traj_start.size
+    rest_q = d["rest_q"]
+    tets_np = d["tet_indices"]
+    poses_np = d["tet_poses"]
+    pinned_np = d["pinned_indices"]
+    mu_np = d["mu_per_tet"]
+    lam_np = d["lam_per_tet"]
+    x_all = d["x"]
+    f_ext_all = d["f_ext"]
+    traj_start = d["traj_start"]
+    gravity_np = d["gravity"]
+    n_total = x_all.shape[0]
+    n_traj = traj_start.size
 
     state = ts.build_solver(rest_q, tets_np, poses_np, pinned_np, device=device, dtype=torch.float64)
     face_adj = torch.as_tensor(build_face_adjacency(tets_np), dtype=torch.int64, device=device)
@@ -42,7 +50,12 @@ def main():
 
     net = StretchNet().to(device=device, dtype=dtype)
     ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
-    net.load_state_dict(ckpt["state_dict"]); net.eval()
+    net.load_state_dict(ckpt["state_dict"])
+    net.eval()
+    ckpt_args = ckpt.get("args", {})
+    residual = bool(ckpt_args.get("residual", False))
+    warm = ckpt_args.get("warm", "prev")
+    print(f"ckpt config: residual={residual} warm={warm}")
 
     errs = []
     with torch.no_grad():
@@ -56,10 +69,12 @@ def main():
                 f_ext = torch.as_tensor(f_ext_all[t], dtype=torch.float64, device=device)
                 S_t = compute_S_from_x(state, x_t).to(dtype)
                 S_prev = compute_S_from_x(state, x_prev).to(dtype)
-                feat = build_features(S_t, S_prev, gravity32, f_ext.to(dtype),
-                                       mu_t, lam_t, pin_flag, state.tets, face_adj)
-                S_star = net(feat).double()
-                x_next = ts.solve(state, S_star, pinned_targets, x_init=x_t, n_iters=args.solver_iters)
+                feat = build_features(
+                    S_t, S_prev, gravity32, f_ext.to(dtype), mu_t, lam_t, pin_flag, state.tets, face_adj
+                )
+                S_star = net(feat, S_base=S_t if residual else None).double()
+                x0 = inertial_predictor(state, x_t, x_prev, pinned_targets) if warm == "inertial" else x_t
+                x_next = ts.solve(state, S_star, pinned_targets, x_init=x0, n_iters=args.solver_iters)
                 e_per_v = (x_next - x_target).norm(dim=-1)
                 errs.append(e_per_v.cpu().numpy())
 

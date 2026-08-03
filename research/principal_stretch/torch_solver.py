@@ -22,6 +22,8 @@ import dataclasses
 import numpy as np
 import torch
 
+from .polar import polar_rotation
+
 
 def _build_J(Dm_inv: torch.Tensor) -> torch.Tensor:
     """Per-tet shape-function gradient. J[t, a, c] = dF[t, :, c] / dx[i_a, :].
@@ -46,49 +48,20 @@ def compute_F(x: torch.Tensor, tets: torch.Tensor, J: torch.Tensor) -> torch.Ten
 
 
 def polar_R(M: torch.Tensor) -> torch.Tensor:
-    """Polar rotation R from M with reflection correction.
+    """Polar rotation ``R`` from ``M``, with an exact backward pass.
 
-    Uses SVD on the forward pass, but detaches U and Vh from the autograd
-    graph and re-routes the gradient through the closed-form polar-projection
-    identity to avoid the ill-conditioned SVD gradient when singular values
-    coincide (which happens at convergence where F = R S, M = F S^T = R has
-    all singular values equal to 1).
-
-    Gradient identity: dR = sym((R^T dM)) ... but the cleanest stable form is
-    to recompute R as the projection of M onto SO(3) via one step of Newton
-    iteration starting from the (detached) SVD answer:
-        R_init = polar_svd(M).detach()
-        R = R_init + (M - R_init @ S_init) @ V S^{-1} V^T  ... (complicated)
-    Instead we use a simpler approach: do SVD in detached mode, then do
-    a single re-projection step that is differentiable through M only.
+    Delegates to :func:`polar.polar_rotation` (Newton forward, analytic
+    Sylvester backward).  The previous implementation here detached an SVD and
+    re-routed the gradient through ``M inv(sym(R0^T M))``; that surrogate is
+    exact only at ``S = I`` and reaches 27% relative Jacobian error at 50%
+    stretch.  It is preserved in ``diag_polar_grad.py``, which measures it.
     """
-    with torch.no_grad():
-        U, _s, Vh = torch.linalg.svd(M)
-        det = torch.linalg.det(U @ Vh)
-        D = torch.eye(3, dtype=M.dtype, device=M.device).expand(M.shape[0], -1, -1).clone()
-        D[:, 2, 2] = det
-        R0 = U @ D @ Vh  # detached rotation guess
-
-    # One Newton-iteration polish: R_{k+1} = 0.5 (R_k + R_k^{-T}).
-    # For the autograd path we use a different identity: at the polar
-    # decomposition M = R S with S = R^T M, dR satisfies
-    #     R^T dR + dR^T R = (R^T dM + dM^T R) S^{-1} - (...)  (Lewis–Sendov)
-    # The cheap differentiable surrogate is to project M onto the tangent
-    # plane of SO(3) at R0: R = R0 + (I - R0 R0^T) @ M (M^T M)^{-1/2}, but
-    # since R0 R0^T = I exactly, this collapses to a constant. We therefore
-    # rely on the fact that the forward value R is already a function of M
-    # via the (M S^{-1}) channel, where S = R0^T M is differentiable.
-    S = R0.transpose(-1, -2) @ M  # symmetric stretch (positive definite-ish)
-    # R = M @ S^{-1}; use Cholesky on S (regularised) for stable inverse.
-    eye = torch.eye(3, dtype=M.dtype, device=M.device).expand_as(S)
-    S_reg = 0.5 * (S + S.transpose(-1, -2)) + 1e-6 * eye
-    S_inv = torch.linalg.inv(S_reg)
-    R = M @ S_inv
-    return R
+    return polar_rotation(M)
 
 
-def assemble_rhs(R: torch.Tensor, S_target: torch.Tensor, J: torch.Tensor,
-                 w: torch.Tensor, tets: torch.Tensor, n_verts: int) -> torch.Tensor:
+def assemble_rhs(
+    R: torch.Tensor, S_target: torch.Tensor, J: torch.Tensor, w: torch.Tensor, tets: torch.Tensor, n_verts: int
+) -> torch.Tensor:
     """RHS[i_a, d] += w_e * (R S* @ J[t, a, :])[d]."""
     M = R @ S_target  # (T, 3, 3)
     # contrib[t, a, d] = w[t] * sum_c M[t, d, c] * J[t, a, c]
@@ -116,9 +89,15 @@ class SolverState:
     rest_q: torch.Tensor  # (V, 3)
 
 
-def build_solver(rest_q: np.ndarray, tet_indices: np.ndarray, tet_poses: np.ndarray,
-                 pinned_indices: np.ndarray, device: torch.device, dtype=torch.float64,
-                 tikhonov: float = 0.0) -> SolverState:
+def build_solver(
+    rest_q: np.ndarray,
+    tet_indices: np.ndarray,
+    tet_poses: np.ndarray,
+    pinned_indices: np.ndarray,
+    device: torch.device,
+    dtype=torch.float64,
+    tikhonov: float = 0.0,
+) -> SolverState:
     rest_q_t = torch.as_tensor(rest_q, dtype=dtype, device=device)
     tets = torch.as_tensor(tet_indices, dtype=torch.int64, device=device)
     Dm_inv = torch.as_tensor(tet_poses, dtype=dtype, device=device)
@@ -153,33 +132,76 @@ def build_solver(rest_q: np.ndarray, tet_indices: np.ndarray, tet_poses: np.ndar
     L_ff_chol = torch.linalg.cholesky(L_ff)
 
     return SolverState(
-        n_verts=n_verts, n_tets=n_tets, tets=tets, Dm_inv=Dm_inv, J=J, w=w,
-        pinned=pinned, free=free, L=L, L_ff_chol=L_ff_chol, L_fp=L_fp,
+        n_verts=n_verts,
+        n_tets=n_tets,
+        tets=tets,
+        Dm_inv=Dm_inv,
+        J=J,
+        w=w,
+        pinned=pinned,
+        free=free,
+        L=L,
+        L_ff_chol=L_ff_chol,
+        L_fp=L_fp,
         rest_q=rest_q_t,
     )
 
 
-def compute_S_from_x(state: "SolverState", x: torch.Tensor) -> torch.Tensor:
-    """Per-tet symmetric polar S = R^T F at current positions."""
-    F = compute_F(x, state.tets, state.J)
-    U, _s, Vh = torch.linalg.svd(F)
-    det = torch.linalg.det(U @ Vh)
-    D = torch.eye(3, dtype=F.dtype, device=F.device).expand(F.shape[0], -1, -1).clone()
-    D[:, 2, 2] = det
-    R = U @ D @ Vh
+def compute_S_from_x(state: SolverState, x: torch.Tensor) -> torch.Tensor:
+    """Per-tet symmetric polar ``S = R^T F`` at current positions.
+
+    Supports a leading batch dimension: ``x`` of shape ``(V, 3)`` returns
+    ``(T, 3, 3)``, ``(B, V, 3)`` returns ``(B, T, 3, 3)``.
+
+    Previously used ``torch.linalg.svd`` *with* gradient, whose backward is
+    ill-conditioned when singular values coincide — i.e. for every near-rest
+    tet, which is most of the mesh most of the time.  This is called inside the
+    K>1 rollout chain during training, so that mattered.
+    """
+    x_tet = x[..., state.tets, :]  # (..., T, 4, 3)
+    F = torch.einsum("tac,...tad->...tdc", state.J, x_tet)
+    R = polar_rotation(F)
     S = R.transpose(-1, -2) @ F
     return 0.5 * (S + S.transpose(-1, -2))
 
 
-def solve(state: SolverState, S_target: torch.Tensor, pinned_targets: torch.Tensor,
-          x_init: torch.Tensor | None = None, n_iters: int = 6) -> torch.Tensor:
+def inertial_predictor(
+    state: SolverState, x_t: torch.Tensor, x_prev: torch.Tensor, pinned_targets: torch.Tensor
+) -> torch.Tensor:
+    """Constant-velocity extrapolation ``2 x_t - x_{t-1}``, with pins restored.
+
+    This is the right warm start for the decoder in a temporal setting. Measured
+    on the 8x4x4 article with exact target stretches, it moves the decoder's
+    10-iteration error from 1.05e-2 m (warm start at ``x_t``) to 1.02e-3 m at
+    identical cost, because local-global converges at only ~0.98 per iteration
+    and therefore never travels far from wherever it starts.
+    """
+    x0 = 2.0 * x_t - x_prev
+    x0 = x0.clone()
+    x0[..., state.pinned, :] = pinned_targets
+    return x0
+
+
+def solve(
+    state: SolverState,
+    S_target: torch.Tensor,
+    pinned_targets: torch.Tensor,
+    x_init: torch.Tensor | None = None,
+    n_iters: int = 6,
+) -> torch.Tensor:
     """Differentiable local-global decode: (S_target, pins) -> x.
 
+    Batched: a leading batch dimension is optional and preserved.  Every sample
+    in the batch shares the mesh (and therefore the single Cholesky factor), so
+    the whole batch is one triangular solve.
+
     Args:
-        S_target: (T, 3, 3) symmetric target stretches.
-        pinned_targets: (P, 3) world positions of pinned vertices.
-        x_init: (V, 3) optional warm start.  Defaults to rest pose for free
-            vertices, pinned targets at pinned vertices.
+        S_target: ``(..., T, 3, 3)`` symmetric target stretches.
+        pinned_targets: ``(..., P, 3)`` world positions of pinned vertices.
+        x_init: ``(..., V, 3)`` optional warm start.  Defaults to the rest pose.
+            In a temporal setting pass :func:`inertial_predictor` — the
+            iteration converges at only ~0.98 per step, so the warm start
+            dominates the result at any practical ``n_iters``.
         n_iters: number of unrolled local-global iterations.
     """
     dtype = state.L_ff_chol.dtype
@@ -187,26 +209,30 @@ def solve(state: SolverState, S_target: torch.Tensor, pinned_targets: torch.Tens
     S_target = S_target.to(dtype=dtype, device=device)
     pinned_targets = pinned_targets.to(dtype=dtype, device=device)
 
+    batch = S_target.shape[:-3]
     if x_init is None:
-        x = state.rest_q.clone()
+        x = state.rest_q.expand(*batch, -1, -1).clone()
     else:
-        x = x_init.to(dtype=dtype, device=device).clone()
-    # Hard pin: pinned rows always equal targets.
-    x = x.clone()
-    x[state.pinned] = pinned_targets
+        x = x_init.to(dtype=dtype, device=device).expand(*batch, -1, -1).clone()
+    x[..., state.pinned, :] = pinned_targets
 
-    bc_rhs = state.L_fp @ pinned_targets  # (|free|, 3)
+    bc_rhs = torch.einsum("fp,...pd->...fd", state.L_fp, pinned_targets)
+    # index_add_ needs a flat leading dim; the mesh is shared so flatten/restore.
+    flat_v = (-1, state.n_verts, 3)
+    idx = state.tets.reshape(-1)
 
     for _ in range(n_iters):
-        F = compute_F(x, state.tets, state.J)
-        # Local: R = polar(F @ S*^T)
-        R = polar_R(F @ S_target.transpose(-1, -2))
-        rhs = assemble_rhs(R, S_target, state.J, state.w, state.tets, state.n_verts)
-        b_free = rhs[state.free] - bc_rhs
-        x_free = torch.cholesky_solve(b_free, state.L_ff_chol)
+        F = torch.einsum("tac,...tad->...tdc", state.J, x[..., state.tets, :])
+        # Local step: R = polar(F S*^T).
+        R = polar_rotation(F @ S_target.transpose(-1, -2))
+        contrib = torch.einsum("...tdc,tac->...tad", R @ S_target, state.J) * state.w[:, None, None]
+        rhs = torch.zeros(*batch, state.n_verts, 3, dtype=dtype, device=device)
+        rhs.reshape(flat_v).index_add_(1, idx, contrib.reshape(-1, state.n_tets * 4, 3))
+        # Global step: one solve against the pre-factored rest-mesh Laplacian.
+        x_free = torch.cholesky_solve(rhs[..., state.free, :] - bc_rhs, state.L_ff_chol)
         x_new = x.clone()
-        x_new[state.free] = x_free
-        x_new[state.pinned] = pinned_targets
+        x_new[..., state.free, :] = x_free
+        x_new[..., state.pinned, :] = pinned_targets
         x = x_new
 
     return x

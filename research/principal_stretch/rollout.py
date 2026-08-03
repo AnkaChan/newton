@@ -13,13 +13,12 @@ import numpy as np
 import torch
 
 from . import torch_solver as ts
-from .torch_solver import compute_S_from_x
 from .model import StretchNet, build_face_adjacency, build_features
+from .torch_solver import compute_S_from_x, inertial_predictor
 
 
 def vert_to_tet_pin_flag(pinned, tets):
-    import numpy as np
-    pin_set = set(int(v) for v in pinned)
+    pin_set = {int(v) for v in pinned}
     flag = np.zeros(tets.shape[0], dtype=np.float32)
     for t in range(tets.shape[0]):
         for k in range(4):
@@ -52,7 +51,6 @@ def main():
     x_all = data["x"]
     f_ext_all = data["f_ext"]
     traj_start = data["traj_start"]
-    fpt = int(data["frames_per_traj"])
     gravity_np = data["gravity"]
 
     n_traj = traj_start.size
@@ -73,6 +71,11 @@ def main():
     ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
     net.load_state_dict(ckpt["state_dict"])
     net.eval()
+    # Inference must match the training configuration.
+    ckpt_args = ckpt.get("args", {})
+    residual = bool(ckpt_args.get("residual", False))
+    warm = ckpt_args.get("warm", "prev")
+    print(f"ckpt config: residual={residual} warm={warm}")
 
     # Seed: GT first 2 frames
     x_prev = torch.as_tensor(x_all[s], dtype=torch.float64, device=device)
@@ -87,12 +90,21 @@ def main():
         for step in range(n_steps):
             i_t = s + 1 + step
             f_ext = torch.as_tensor(f_ext_all[i_t], dtype=torch.float64, device=device)
+            S_t_f = S_t.to(dtype=dtype)
             feat = build_features(
-                S_t.to(dtype=dtype), S_prev.to(dtype=dtype), gravity32, f_ext.to(dtype=dtype),
-                mu_t, lam_t, pin_flag, state.tets, face_adj,
+                S_t_f,
+                S_prev.to(dtype=dtype),
+                gravity32,
+                f_ext.to(dtype=dtype),
+                mu_t,
+                lam_t,
+                pin_flag,
+                state.tets,
+                face_adj,
             )
-            S_star = net(feat).double()
-            x_next = ts.solve(state, S_star, pinned_targets, x_init=x_t, n_iters=args.solver_iters)
+            S_star = net(feat, S_base=S_t_f if residual else None).double()
+            x0 = inertial_predictor(state, x_t, x_prev, pinned_targets) if warm == "inertial" else x_t
+            x_next = ts.solve(state, S_star, pinned_targets, x_init=x0, n_iters=args.solver_iters)
 
             x_pred.append(x_next.cpu().numpy())
             x_gt.append(x_all[s + 2 + step] if (s + 2 + step) < e else x_all[e - 1])

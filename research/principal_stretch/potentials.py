@@ -16,8 +16,46 @@ import torch
 from .torch_solver import compute_F
 
 
-def stvk_energy(F: torch.Tensor, mu: torch.Tensor, lam: torch.Tensor,
-                volume: torch.Tensor) -> torch.Tensor:
+def incremental_potential_batched(
+    x_next: torch.Tensor,  # (B, V, 3)
+    x_t: torch.Tensor,  # (B, V, 3)
+    x_prev: torch.Tensor,  # (B, V, 3)
+    mass: torch.Tensor,  # (V,)
+    gravity: torch.Tensor,  # (3,)
+    f_ext: torch.Tensor,  # (B, V, 3)
+    tets: torch.Tensor,  # (T, 4)
+    J: torch.Tensor,  # (T, 4, 3)
+    mu: torch.Tensor,  # (T,)
+    lam: torch.Tensor,  # (T,)
+    volume: torch.Tensor,  # (T,)
+    dt: float,
+) -> torch.Tensor:
+    """Per-sample incremental potential, summed across the batch (scalar).
+
+    The pin penalty of :func:`incremental_potential` is omitted: it weights by
+    ``mass[pin_idx]`` and pinned particles are pinned *by having zero mass*, so
+    the term is identically zero, and the decoder hard-pins anyway.
+    """
+    inv_dt2 = 1.0 / (dt * dt)
+    delta = x_next - 2.0 * x_t + x_prev  # (B, V, 3)
+    L_inertia = 0.5 * inv_dt2 * (mass[None, :, None] * delta * delta).sum(dim=(-2, -1))
+
+    x_tet = x_next[:, tets]  # (B, T, 4, 3)
+    F = torch.einsum("tac,btad->btdc", J, x_tet)  # (B, T, 3, 3)
+    Ft = F.transpose(-1, -2)
+    eye = torch.eye(3, dtype=F.dtype, device=F.device).expand_as(F)
+    E = 0.5 * (Ft @ F - eye)
+    tr_E = E.diagonal(dim1=-2, dim2=-1).sum(-1)  # (B, T)
+    frob_E2 = (E * E).sum(dim=(-2, -1))  # (B, T)
+    L_elastic = ((mu * frob_E2 + 0.5 * lam * tr_E * tr_E) * volume).sum(dim=-1)  # (B,)
+
+    L_gravity = -(mass[None, :, None] * x_next * gravity[None, None, :]).sum(dim=(-2, -1))
+    L_ext = -(f_ext * x_next).sum(dim=(-2, -1))
+
+    return (L_inertia + L_elastic + L_gravity + L_ext).sum()
+
+
+def stvk_energy(F: torch.Tensor, mu: torch.Tensor, lam: torch.Tensor, volume: torch.Tensor) -> torch.Tensor:
     """Per-tet St. Venant-Kirchhoff strain energy, summed.
 
     Args:
@@ -35,17 +73,17 @@ def stvk_energy(F: torch.Tensor, mu: torch.Tensor, lam: torch.Tensor,
 
 
 def incremental_potential(
-    x_next: torch.Tensor,         # (V, 3)
-    x_t: torch.Tensor,            # (V, 3)
-    x_prev: torch.Tensor,         # (V, 3)
-    mass: torch.Tensor,           # (V,)
-    gravity: torch.Tensor,        # (3,)
-    f_ext: torch.Tensor,          # (V, 3)
-    tets: torch.Tensor,           # (T, 4)
-    J: torch.Tensor,              # (T, 4, 3)
-    mu: torch.Tensor,             # (T,)
-    lam: torch.Tensor,            # (T,)
-    volume: torch.Tensor,         # (T,)
+    x_next: torch.Tensor,  # (V, 3)
+    x_t: torch.Tensor,  # (V, 3)
+    x_prev: torch.Tensor,  # (V, 3)
+    mass: torch.Tensor,  # (V,)
+    gravity: torch.Tensor,  # (3,)
+    f_ext: torch.Tensor,  # (V, 3)
+    tets: torch.Tensor,  # (T, 4)
+    J: torch.Tensor,  # (T, 4, 3)
+    mu: torch.Tensor,  # (T,)
+    lam: torch.Tensor,  # (T,)
+    volume: torch.Tensor,  # (T,)
     dt: float,
     pin_idx: torch.Tensor | None = None,
     pin_target: torch.Tensor | None = None,
