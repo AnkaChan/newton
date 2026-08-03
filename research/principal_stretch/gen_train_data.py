@@ -23,7 +23,6 @@ import time
 import numpy as np
 import warp as wp
 
-import newton
 from newton.solvers import SolverVBD
 
 from .recorder import StretchRecorder
@@ -42,6 +41,9 @@ def main():
     parser.add_argument("--substeps", type=int, default=10)
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--dim-x", type=int, default=8)
+    parser.add_argument("--dim-y", type=int, default=4)
+    parser.add_argument("--dim-z", type=int, default=4)
     parser.add_argument("--out", type=str, required=True)
     args = parser.parse_args()
 
@@ -56,7 +58,7 @@ def main():
     sim_dt = frame_dt / args.substeps
 
     # Topology is identical across trajectories; build once for shape info.
-    model, builder = build_model()
+    model, builder = build_model(dim_x=args.dim_x, dim_y=args.dim_y, dim_z=args.dim_z)
     pinned = find_pinned_indices(builder)
     rest_q = np.asarray(builder.particle_q, dtype=np.float32)
     tet_indices_np = model.tet_indices.numpy().reshape(-1, 4).astype(np.int32)
@@ -79,22 +81,23 @@ def main():
     S_log = np.zeros((n_total, n_tets, 3, 3), dtype=np.float32)
     traj_start = np.zeros(args.num_trajs, dtype=np.int32)
 
-    g_mag = 9.8
     t0 = time.time()
     write_idx = 0
     for traj in range(args.num_trajs):
         traj_start[traj] = write_idx
 
         # Rebuild the model so we can change gravity (set on model.gravity).
-        model_t, builder_t = build_model()
-        solver = SolverVBD(model=model_t, iterations=args.iterations,
-                           particle_enable_self_contact=False,
-                           particle_enable_tile_solve=False)
+        model_t, _builder_t = build_model(dim_x=args.dim_x, dim_y=args.dim_y, dim_z=args.dim_z)
+        solver = SolverVBD(
+            model=model_t,
+            iterations=args.iterations,
+            particle_enable_self_contact=False,
+            particle_enable_tile_solve=False,
+        )
 
         # Keep gravity at the default (Newton: -9.81 along Z). Variation comes
         # from body force + poke. Recording per-traj gravity to support varying
         # it can be added once basic training works.
-        gravity_vec = np.asarray(model_t.gravity.numpy()[0], dtype=np.float32)
 
         # Random body force (per-vertex constant), magnitude in [0, 30] N total /n_verts.
         body_f_mag = rng.uniform(0.0, 25.0)
@@ -123,8 +126,6 @@ def main():
                 if f < poke_end_frame:
                     f_ext_frame[poke_vert] += poke_force
 
-                f_ext_wp = wp.array(f_ext_frame, dtype=wp.vec3, device=model_t.device)
-
                 for _ in range(args.substeps):
                     state_0.clear_forces()
                     # Add external force.
@@ -147,9 +148,9 @@ def main():
 
         if traj % 10 == 0:
             elapsed = time.time() - t0
-            print(f"  traj {traj+1}/{args.num_trajs}  elapsed={elapsed:.1f}s  written={write_idx}")
+            print(f"  traj {traj + 1}/{args.num_trajs}  elapsed={elapsed:.1f}s  written={write_idx}")
 
-    print(f"total wrote {write_idx} frames across {args.num_trajs} trajectories in {time.time()-t0:.1f}s")
+    print(f"total wrote {write_idx} frames across {args.num_trajs} trajectories in {time.time() - t0:.1f}s")
 
     # Trim arrays
     x_log = x_log[:write_idx]
