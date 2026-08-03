@@ -75,7 +75,8 @@ def main():
     ckpt_args = ckpt.get("args", {})
     residual = bool(ckpt_args.get("residual", False))
     warm = ckpt_args.get("warm", "prev")
-    print(f"ckpt config: residual={residual} warm={warm}")
+    blocks = int(ckpt_args.get("blocks", 1))
+    print(f"ckpt config: residual={residual} warm={warm} blocks={blocks}")
 
     # Seed: GT first 2 frames
     x_prev = torch.as_tensor(x_all[s], dtype=torch.float64, device=device)
@@ -90,21 +91,28 @@ def main():
         for step in range(n_steps):
             i_t = s + 1 + step
             f_ext = torch.as_tensor(f_ext_all[i_t], dtype=torch.float64, device=device)
-            S_t_f = S_t.to(dtype=dtype)
-            feat = build_features(
-                S_t_f,
-                S_prev.to(dtype=dtype),
-                gravity32,
-                f_ext.to(dtype=dtype),
-                mu_t,
-                lam_t,
-                pin_flag,
-                state.tets,
-                face_adj,
-            )
-            S_star = net(feat, S_base=S_t_f if residual else None).double()
             x0 = inertial_predictor(state, x_t, x_prev, pinned_targets) if warm == "inertial" else x_t
-            x_next = ts.solve(state, S_star, pinned_targets, x_init=x0, n_iters=args.solver_iters)
+            iters_per_block = max(1, args.solver_iters // blocks)
+            x_next = x0
+            S_cur = S_t
+            S_prev_f = S_prev.to(dtype=dtype)
+            for _b in range(blocks):
+                S_cur_f = S_cur.to(dtype=dtype)
+                feat = build_features(
+                    S_cur_f,
+                    S_prev_f,
+                    gravity32,
+                    f_ext.to(dtype=dtype),
+                    mu_t,
+                    lam_t,
+                    pin_flag,
+                    state.tets,
+                    face_adj,
+                )
+                S_star = net(feat, S_base=S_cur_f if residual else None).double()
+                x_next = ts.solve(state, S_star, pinned_targets, x_init=x_next, n_iters=iters_per_block)
+                if _b + 1 < blocks:
+                    S_cur = compute_S_from_x(state, x_next)
 
             x_pred.append(x_next.cpu().numpy())
             x_gt.append(x_all[s + 2 + step] if (s + 2 + step) < e else x_all[e - 1])
