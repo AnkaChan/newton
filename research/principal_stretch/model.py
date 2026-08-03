@@ -27,7 +27,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-
 _SYM_IDX = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 
 
@@ -66,7 +65,7 @@ def build_face_adjacency(tets: np.ndarray) -> np.ndarray:
 
     adj = -np.ones((n_tets, 4), dtype=np.int64)
     next_slot = np.zeros(n_tets, dtype=np.int32)
-    for face, ts in face_map.items():
+    for _face, ts in face_map.items():
         if len(ts) != 2:
             continue
         a, b = ts
@@ -84,64 +83,83 @@ class StretchNet(nn.Module):
         super().__init__()
         self.max_delta = max_delta
         self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.SiLU(),
-            nn.Linear(hidden, hidden), nn.SiLU(),
+            nn.Linear(in_dim, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
             nn.Linear(hidden, 6),
         )
-        # Zero-init last layer so initial output is identity.
+        # Zero-init last layer so the initial prediction is the base state
+        # (identity in absolute mode, S_t in residual mode).
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
 
-    def forward(self, feat: torch.Tensor) -> torch.Tensor:
-        """feat: (T, in_dim) -> S* (T, 3, 3)."""
-        delta = self.max_delta * torch.tanh(self.net(feat))  # (T, 6)
-        S_star = vec_to_sym(delta)
-        eye = torch.eye(3, dtype=feat.dtype, device=feat.device).expand_as(S_star)
-        return eye + S_star
+    def forward(self, feat: torch.Tensor, S_base: torch.Tensor | None = None) -> torch.Tensor:
+        """feat: (..., T, in_dim) -> S* (..., T, 3, 3).
+
+        Args:
+            feat: per-tet feature vectors; leading batch dims preserved.
+            S_base: optional (..., T, 3, 3) base stretch for **residual**
+                prediction, ``S* = S_base + delta``.  With the zero-initialised
+                last layer this starts at "stretch unchanged" — the correct
+                prior for a dynamics step.  ``None`` keeps the original
+                absolute mode ``S* = I + delta``, which starts at "rest shape"
+                and forces the network to regress the entire static sag.
+        """
+        delta = self.max_delta * torch.tanh(self.net(feat))  # (..., T, 6)
+        D = vec_to_sym(delta)
+        if S_base is None:
+            eye = torch.eye(3, dtype=feat.dtype, device=feat.device).expand_as(D)
+            return eye + D
+        return S_base + D
 
 
 def build_features(
-    S_t: torch.Tensor,            # (T, 3, 3)
-    S_prev: torch.Tensor,         # (T, 3, 3)
-    gravity: torch.Tensor,        # (3,)
-    f_ext_vert: torch.Tensor,     # (V, 3)
-    mu: torch.Tensor,             # (T,)
-    lam: torch.Tensor,            # (T,)
-    pin_flag: torch.Tensor,       # (T,) 0/1
-    tets: torch.Tensor,           # (T, 4)
-    face_adj: torch.Tensor,       # (T, 4) int64, -1 padding
+    S_t: torch.Tensor,  # (..., T, 3, 3)  leading dims may be batch
+    S_prev: torch.Tensor,  # (..., T, 3, 3)
+    gravity: torch.Tensor,  # (3,) broadcast across batch
+    f_ext_vert: torch.Tensor,  # (..., V, 3)
+    mu: torch.Tensor,  # (T,)
+    lam: torch.Tensor,  # (T,)
+    pin_flag: torch.Tensor,  # (T,) 0/1
+    tets: torch.Tensor,  # (T, 4)
+    face_adj: torch.Tensor,  # (T, 4) int64, -1 padding
 ) -> torch.Tensor:
-    T = S_t.shape[0]
-    # Per-tet mean external force.
-    f_ext_tet = f_ext_vert[tets].mean(dim=1)  # (T, 3)
+    """Returns (..., T, 28). Leading batch dims are preserved."""
+    *batch, T, _, _ = S_t.shape
+    batch_shape = tuple(batch)
+    # Per-tet mean external force: (..., V, 3) -> (..., T, 3).
+    f_ext_tet = f_ext_vert[..., tets, :].mean(dim=-2)
 
     # Per-tet neighbor S aggregation.
     valid = face_adj >= 0  # (T, 4)
     idx = face_adj.clamp(min=0)
-    S_neigh_all = S_t[idx]  # (T, 4, 3, 3)
+    S_neigh_all = S_t[..., idx, :, :]  # (..., T, 4, 3, 3)
     S_neigh_all = S_neigh_all * valid[:, :, None, None].to(S_t.dtype)
     n_neigh = valid.sum(dim=1).to(S_t.dtype).clamp(min=1.0)  # (T,)
-    S_neigh_mean = S_neigh_all.sum(dim=1) / n_neigh[:, None, None]
+    S_neigh_mean = S_neigh_all.sum(dim=-3) / n_neigh[:, None, None]
 
     # Rough scale normalisation so all input groups are O(1).
-    G_SCALE = 10.0     # gravity magnitude ~9.8
-    F_SCALE = 30.0     # body forces sampled up to ~50 N
-    MAT_SCALE = 1e5    # Lame parameters
+    G_SCALE = 10.0  # gravity magnitude ~9.8
+    F_SCALE = 30.0  # body forces sampled up to ~50 N
+    MAT_SCALE = 1e5  # Lame parameters
     # Centre S around identity so deviation is the signal.
     eye3 = torch.eye(3, dtype=S_t.dtype, device=S_t.device)
     S_t_c = S_t - eye3
     S_prev_c = S_prev - eye3
     S_n_c = S_neigh_mean - eye3
 
+    # Broadcast per-tet (and gravity) constants across the batch dims.
+    bT = (*batch_shape, T)
     feats = [
-        sym_to_vec(S_t_c),                          # 6
-        sym_to_vec(S_prev_c),                       # 6
-        (gravity / G_SCALE).expand(T, -1),          # 3
-        f_ext_tet / F_SCALE,                        # 3
-        mu[:, None] / MAT_SCALE,                    # 1
-        lam[:, None] / MAT_SCALE,                   # 1
-        pin_flag[:, None],                          # 1
-        sym_to_vec(S_n_c),                          # 6
-        (n_neigh[:, None] / 4.0),                   # 1
+        sym_to_vec(S_t_c),  # 6
+        sym_to_vec(S_prev_c),  # 6
+        (gravity / G_SCALE).expand((*bT, 3)),  # 3
+        f_ext_tet / F_SCALE,  # 3
+        (mu / MAT_SCALE)[:, None].expand((*bT, 1)),  # 1
+        (lam / MAT_SCALE)[:, None].expand((*bT, 1)),  # 1
+        pin_flag[:, None].expand((*bT, 1)),  # 1
+        sym_to_vec(S_n_c),  # 6
+        (n_neigh / 4.0)[:, None].expand((*bT, 1)),  # 1
     ]
-    return torch.cat(feats, dim=-1)  # (T, 28)
+    return torch.cat(feats, dim=-1)  # (..., T, 28)
