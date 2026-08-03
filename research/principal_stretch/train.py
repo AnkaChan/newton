@@ -88,6 +88,12 @@ def main():
         "so the model learns to contract off-manifold states",
     )
     parser.add_argument(
+        "--blocks",
+        type=int,
+        default=1,
+        help="alternating network<->decoder blocks per step; decoder iterations are split evenly across blocks",
+    )
+    parser.add_argument(
         "--phys-weight",
         type=float,
         default=0.0,
@@ -177,17 +183,28 @@ def main():
         x_pred = None
         for k in range(k_roll):
             f_ext = f_ext_gpu[i_t0 + k]  # (B, V, 3)
-            S_now_f = S_now.to(dtype)
-            feat = build_features(
-                S_now_f, S_prev.to(dtype), gravity32, f_ext.to(dtype), mu32, lam32, pin_flag, solver.tets, face_adj
-            )
-            S_star = net(feat, S_base=S_now_f if args.residual else None)
 
             if args.warm == "inertial":
                 x0 = inertial_predictor(solver, x_t, x_prev, pin_b)
             else:
                 x0 = x_t
-            x_next = ts.solve(solver, S_star.double(), pin_b, x_init=x0, n_iters=args.solver_iters)
+            # Alternating network <-> decoder blocks (PoissonNet-style).  Each
+            # block's global solve propagates the previous block's local
+            # prediction across the whole mesh, so B blocks give the *network*
+            # B global hops of receptive field at matched total decoder cost.
+            S_prev_f = S_prev.to(dtype)
+            iters_per_block = max(1, args.solver_iters // args.blocks)
+            x_next = x0
+            S_cur = S_now
+            for _b in range(args.blocks):
+                S_cur_f = S_cur.to(dtype)
+                feat = build_features(
+                    S_cur_f, S_prev_f, gravity32, f_ext.to(dtype), mu32, lam32, pin_flag, solver.tets, face_adj
+                )
+                S_star = net(feat, S_base=S_cur_f if args.residual else None)
+                x_next = ts.solve(solver, S_star.double(), pin_b, x_init=x_next, n_iters=iters_per_block)
+                if _b + 1 < args.blocks:
+                    S_cur = compute_S_from_x(solver, x_next)
 
             if args.loss == "pos":
                 diff = x_next - x_gpu[i_t0 + k + 1]

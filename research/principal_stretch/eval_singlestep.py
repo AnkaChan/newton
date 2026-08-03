@@ -55,7 +55,8 @@ def main():
     ckpt_args = ckpt.get("args", {})
     residual = bool(ckpt_args.get("residual", False))
     warm = ckpt_args.get("warm", "prev")
-    print(f"ckpt config: residual={residual} warm={warm}")
+    blocks = int(ckpt_args.get("blocks", 1))
+    print(f"ckpt config: residual={residual} warm={warm} blocks={blocks}")
 
     errs = []
     with torch.no_grad():
@@ -67,14 +68,20 @@ def main():
                 x_t = torch.as_tensor(x_all[t], dtype=torch.float64, device=device)
                 x_target = torch.as_tensor(x_all[t + 1], dtype=torch.float64, device=device)
                 f_ext = torch.as_tensor(f_ext_all[t], dtype=torch.float64, device=device)
-                S_t = compute_S_from_x(state, x_t).to(dtype)
-                S_prev = compute_S_from_x(state, x_prev).to(dtype)
-                feat = build_features(
-                    S_t, S_prev, gravity32, f_ext.to(dtype), mu_t, lam_t, pin_flag, state.tets, face_adj
-                )
-                S_star = net(feat, S_base=S_t if residual else None).double()
+                S_prev_f = compute_S_from_x(state, x_prev).to(dtype)
                 x0 = inertial_predictor(state, x_t, x_prev, pinned_targets) if warm == "inertial" else x_t
-                x_next = ts.solve(state, S_star, pinned_targets, x_init=x0, n_iters=args.solver_iters)
+                iters_per_block = max(1, args.solver_iters // blocks)
+                x_next = x0
+                S_cur = compute_S_from_x(state, x_t)
+                for _b in range(blocks):
+                    S_cur_f = S_cur.to(dtype)
+                    feat = build_features(
+                        S_cur_f, S_prev_f, gravity32, f_ext.to(dtype), mu_t, lam_t, pin_flag, state.tets, face_adj
+                    )
+                    S_star = net(feat, S_base=S_cur_f if residual else None).double()
+                    x_next = ts.solve(state, S_star, pinned_targets, x_init=x_next, n_iters=iters_per_block)
+                    if _b + 1 < blocks:
+                        S_cur = compute_S_from_x(state, x_next)
                 e_per_v = (x_next - x_target).norm(dim=-1)
                 errs.append(e_per_v.cpu().numpy())
 
