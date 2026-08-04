@@ -224,19 +224,30 @@ Full reports live in
    decoder budget** (7.47 -> 5.97 mm; 0.0336 -> 0.0264 m). blocks=3 keeps
    improving single-step but regresses rollout. Real mechanism, ~1.2x-class
    lever (day report §4).
-6. **kNN conditional-variance test** (`diag_knn_floor.py`, 2026-08-04, this
-   doc's companion experiment): on the toy article the accuracy-trained
+6. **kNN conditional-variance test** (`diag_knn_floor.py`, 2026-08-04, raw
+   tables in the appendix below): on the toy article the accuracy-trained
    checkpoint decodes at 2.12 mm — **2x better than the kNN estimate of the
    feature-information floor (4.2 mm at k=5)**, and 3.4x better than
-   persistence (7.1 mm). Two consequences: (a) kNN is not a tight floor
-   estimator here, so it cannot *prove* the features are exhausted at toy
-   scale — the net already extracts more than kNN does; (b) S-space
-   Frobenius error is a **misleading metric**: the same checkpoint is
-   *worse* than persistence in S-norm (1.7e-2 vs 1.2e-2) while decoding
-   3.4x better, i.e. the decoder weighs S directions very unevenly and
-   training through the decoder exploits exactly that. Any future scheme
-   that supervises S directly with an L2 loss is set up to fail.
-   (4k numbers: see the appended result block at the bottom of this file.)
+   persistence (7.1 mm). On the **4k article** the picture changes: the only
+   existing checkpoint (the stability recipe) lands **exactly on the kNN
+   floor estimate** (8.17 vs 8.42 mm decoded; persistence 21.5 mm, oracle
+   1.53 mm). Consequences: (a) kNN is not a tight floor estimator — on the
+   toy the net extracts 2x more than kNN does, so kNN alone cannot *prove*
+   feature exhaustion; (b) whether the floor binds at 4k hinges on a missing
+   control — an accuracy-trained (pos-only) 4k checkpoint, running as of
+   this writing; if it too stalls at ~8 mm, the local-feature ceiling is
+   real at 24-cell diameter (notes/01 confirmed at scale); (c) S-space
+   Frobenius error is a **misleading metric**: the stability nets are
+   *worse* than persistence in S-norm while decoding 2.6-3.4x better, and
+   decoded kNN error *worsens* with k (8.4 -> 11.9 mm, k=1 -> 20) while
+   S-space error improves — the decoder weighs S directions very unevenly,
+   and training through the decoder exploits exactly that. Any future
+   scheme that supervises S directly with an L2 loss is set up to fail.
+7. **Same-tet kNN adds nothing** (toy): giving the predictor the tet's
+   identity (equivalent to arbitrary positional features: distance to the
+   pinned end, etc.) does not improve on the global pool. The unpredictable
+   part of the next stretch is not explained by *where* the tet is — it is
+   explained by far-field *state* the features do not carry.
 
 ## 9. Known limitations
 
@@ -298,3 +309,37 @@ uv run python -m research.principal_stretch.bench_pareto --data data/val.npz --c
 uv run python -m research.principal_stretch.diag_knn_floor \
   --data-train data/train.npz --data-val data/val.npz --ckpt checkpoints/combo.pt
 ```
+
+## Appendix: kNN conditional-variance raw results (2026-08-04)
+
+Decoded single-step position error, per-vertex mean (solver iters 10,
+inertial warm — the eval_singlestep protocol). "kNN" predicts each tet's
+next stretch as the mean of its k nearest cross-trajectory training samples
+in z-scored 28-dim feature space; it upper-bounds what any per-tet function
+of these features can achieve, but is not tight (see toy: net beats it 2x).
+
+| predictor | toy (225 v) | 4k (4225 v) |
+|---|---|---|
+| oracle S_gt (decoder floor) | 1.01 mm | 1.53 mm |
+| persistence S* = S_t | 7.14 mm | 21.5 mm |
+| net, accuracy recipe (pos-only) | **2.12 mm** | pending (pos_4k) |
+| net, stability recipe (combo) | 8.06 mm | **8.17 mm** |
+| kNN global k=1 | 4.34 mm | 8.42 mm |
+| kNN global k=5 | 4.17 mm | 9.71 mm |
+| kNN global k=20 | 4.75 mm | 11.9 mm |
+| kNN same-tet k=5 | 5.14 mm | (skipped) |
+
+S-space Frobenius error `||S_pred - S_gt||`, mean per tet — note the
+inversions vs the decoded table (net worse than persistence here, k=20
+best here but worst decoded):
+
+| predictor | toy | 4k |
+|---|---|---|
+| persistence | 1.19e-2 | 1.11e-2 |
+| net (accuracy / stability) | 1.73e-2 / 7.21e-2 | — / 1.77e-2 |
+| kNN global k=1 / 5 / 20 | 1.18 / 1.03 / 1.11e-2 | 1.06 / 0.82 / 0.82e-2 |
+
+Match quality: median 1-NN z-distance per dim 0.081 (toy) / 0.087 (4k) —
+comparable, so the toy-vs-4k comparison is fair. Pools: 2.3M samples (toy,
+full train set) / 4M subsampled of 62M (4k). Queries: full val (toy) /
+180 frames = 3.1M samples (4k).
