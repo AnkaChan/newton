@@ -233,10 +233,14 @@ Full reports live in
    floor estimate** (8.17 vs 8.42 mm decoded; persistence 21.5 mm, oracle
    1.53 mm). Consequences: (a) kNN is not a tight floor estimator — on the
    toy the net extracts 2x more than kNN does, so kNN alone cannot *prove*
-   feature exhaustion; (b) whether the floor binds at 4k hinges on a missing
-   control — an accuracy-trained (pos-only) 4k checkpoint, running as of
-   this writing; if it too stalls at ~8 mm, the local-feature ceiling is
-   real at 24-cell diameter (notes/01 confirmed at scale); (c) S-space
+   feature exhaustion; (b) the accuracy-trained 4k control (pos_4k,
+   recipe-matched to the toy's) resolves the question **gradedly**: it
+   reaches 5.73 mm — still 1.45x below the kNN estimate, so the features
+   are not exhausted at 4k either, but the margin over kNN shrank (2x ->
+   1.45x) and the gap over the decoder oracle grew (2.1x -> 3.7x) from toy
+   to 4k. The information ceiling is not a wall we have hit; it is a wall
+   that closes in with mesh diameter, exactly the trend notes/01 predicts;
+   (c) S-space
    Frobenius error is a **misleading metric**: the stability nets are
    *worse* than persistence in S-norm while decoding 2.6-3.4x better, and
    decoded kNN error *worsens* with k (8.4 -> 11.9 mm, k=1 -> 20) while
@@ -322,7 +326,7 @@ of these features can achieve, but is not tight (see toy: net beats it 2x).
 |---|---|---|
 | oracle S_gt (decoder floor) | 1.01 mm | 1.53 mm |
 | persistence S* = S_t | 7.14 mm | 21.5 mm |
-| net, accuracy recipe (pos-only) | **2.12 mm** | pending (pos_4k) |
+| net, accuracy recipe (pos-only) | **2.12 mm** | **5.73 mm** |
 | net, stability recipe (combo) | 8.06 mm | **8.17 mm** |
 | kNN global k=1 | 4.34 mm | 8.42 mm |
 | kNN global k=5 | 4.17 mm | 9.71 mm |
@@ -336,7 +340,7 @@ best here but worst decoded):
 | predictor | toy | 4k |
 |---|---|---|
 | persistence | 1.19e-2 | 1.11e-2 |
-| net (accuracy / stability) | 1.73e-2 / 7.21e-2 | — / 1.77e-2 |
+| net (accuracy / stability) | 1.73e-2 / 7.21e-2 | 1.22e-2 / 1.77e-2 |
 | kNN global k=1 / 5 / 20 | 1.18 / 1.03 / 1.11e-2 | 1.06 / 0.82 / 0.82e-2 |
 
 Match quality: median 1-NN z-distance per dim 0.081 (toy) / 0.087 (4k) —
