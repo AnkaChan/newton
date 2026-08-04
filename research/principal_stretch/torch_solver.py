@@ -229,7 +229,14 @@ def solve(
         rhs = torch.zeros(*batch, state.n_verts, 3, dtype=dtype, device=device)
         rhs.reshape(flat_v).index_add_(1, idx, contrib.reshape(-1, state.n_tets * 4, 3))
         # Global step: one solve against the pre-factored rest-mesh Laplacian.
-        x_free = torch.cholesky_solve(rhs[..., state.free, :] - bc_rhs, state.L_ff_chol)
+        # Fold the batch into the RHS columns instead of broadcasting: a batched
+        # B against an unbatched factor makes cholesky_solve materialise the
+        # (F, F) factor per batch element (22 GB at 180 frames x 4k verts).
+        b = rhs[..., state.free, :] - bc_rhs  # (*batch, F, 3)
+        bf = b.reshape(-1, *b.shape[-2:])  # (B, F, 3)
+        b_cols = bf.permute(1, 0, 2).reshape(bf.shape[1], -1)  # (F, B*3)
+        x_cols = torch.cholesky_solve(b_cols, state.L_ff_chol)
+        x_free = x_cols.reshape(-1, bf.shape[0], 3).permute(1, 0, 2).reshape(b.shape)
         x_new = x.clone()
         x_new[..., state.free, :] = x_free
         x_new[..., state.pinned, :] = pinned_targets
