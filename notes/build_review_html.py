@@ -46,7 +46,7 @@ def esc(s: str) -> str:
 
 
 def linkify_ref(m: re.Match) -> str:
-    name, a, b = m.group(1), m.group(2), m.group(3)
+    name, a = m.group(1), m.group(2)
     base = pathlib.Path(name).name
     path = BASENAME_TO_PATH.get(base)
     label = m.group(0)
@@ -79,8 +79,8 @@ CAPTION = re.compile(r"^\(`([\w./]+\.py):([\d,\s-]+)`(?:,?\s*(.*?))?\)$")
 
 def parse_ranges(spec: str) -> list[tuple[int, int]]:
     ranges = []
-    for part in spec.split(","):
-        part = part.strip()
+    for raw_part in spec.split(","):
+        part = raw_part.strip()
         if "-" in part:
             a, b = part.split("-")
             ranges.append((int(a), int(b)))
@@ -118,7 +118,7 @@ def render_code(code_lines: list[str], caption: re.Match | None, block_id: int) 
             f'<div class="codehead"><a class="ref" data-file="{file_path}" data-line="{first}" href="#">'
             f"{esc(caption.group(1))}:{esc(caption.group(2))}</a>"
             f'<span class="note">{esc(note)}</span>'
-            f'<button class="cpy" data-path="{ROOT}/{file_path}:{first}">copy path</button></div>'
+            f'<button class="copybtn" data-path="{ROOT}/{file_path}:{first}">copy path</button></div>'
         )
     return f'<figure class="code" id="code{block_id}">{head}<table class="pysrc" data-hl="1">{"".join(rows)}</table></figure>'
 
@@ -255,9 +255,9 @@ figure.code{margin:18px 0;background:var(--panel);border:1px solid #262b3b;borde
 .codehead{display:flex;align-items:center;gap:10px;padding:7px 12px;background:var(--panel2);
 border-bottom:1px solid #262b3b;font:12px ui-monospace,monospace}
 .codehead .note{color:var(--dim);font-style:italic}
-.cpy{margin-left:auto;background:#22304a;color:var(--acc);border:none;border-radius:6px;
+.copybtn{margin-left:auto;background:#22304a;color:var(--acc);border:none;border-radius:6px;
 padding:3px 10px;font:11px ui-monospace,monospace;cursor:pointer}
-.cpy:hover{background:#2c3e63}
+.copybtn:hover{background:#2c3e63}
 table.pysrc{border-collapse:collapse;width:100%;font:12.5px/1.55 ui-monospace,'Cascadia Code',Menlo,monospace}
 table.pysrc td{padding:0 12px;white-space:pre}
 td.ln{color:#4d5670;text-align:right;user-select:none;width:1%;border-right:1px solid #262b3b;background:#131722}
@@ -290,7 +290,7 @@ padding:8px 18px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .
 <nav id="side"><h1>PSS Implementation Review</h1>/*TOC*/</nav>
 <main id="main">/*BODY*/</main>
 <div id="viewer"><div id="vhead"><span id="vtitle"></span>
-<button class="cpy" id="vcopy">copy path</button><button id="vclose">close ✕</button></div>
+<button class="copybtn" id="vcopy">copy path</button><button id="vclose">close ✕</button></div>
 <div id="vbody"></div></div>
 <div id="toast"></div>
 <script>
@@ -360,8 +360,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')viewer.classList.rem
 document.addEventListener('click',e=>{
   const ref=e.target.closest('a.ref');
   if(ref){e.preventDefault();openFile(ref.dataset.file,parseInt(ref.dataset.line)||0);return;}
-  const cpy=e.target.closest('.cpy');
-  if(cpy){copy(cpy.dataset.path);return;}
+  const copybtn=e.target.closest('.copybtn');
+  if(copybtn){copy(copybtn.dataset.path);return;}
 });
 function copy(text){
   (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject())
