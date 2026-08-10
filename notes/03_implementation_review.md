@@ -18,6 +18,7 @@ step -> §5 data -> §6 review findings -> §7 test coverage.
 
 ```python
 def _build_J(Dm_inv: torch.Tensor) -> torch.Tensor:
+    ...
     T = Dm_inv.shape[0]
     J = torch.zeros(T, 4, 3, dtype=Dm_inv.dtype, device=Dm_inv.device)
     J[:, 1, :] = Dm_inv[:, 0, :]
@@ -26,7 +27,7 @@ def _build_J(Dm_inv: torch.Tensor) -> torch.Tensor:
     J[:, 0, :] = -(J[:, 1, :] + J[:, 2, :] + J[:, 3, :])
     return J
 ```
-(`torch_solver.py:28-41`)
+(`torch_solver.py:28, 35-41`, docstring elided)
 
 `J[t, a, c] = dF[t, :, c] / dx[tets[t, a], :]` — the per-tet shape-function
 gradient. Row 0 is minus the sum of the others because F depends only on
@@ -146,13 +147,14 @@ This is block coordinate descent on
 
 ```python
 def compute_S_from_x(state: SolverState, x: torch.Tensor) -> torch.Tensor:
+    ...
     x_tet = x[..., state.tets, :]  # (..., T, 4, 3)
     F = torch.einsum("tac,...tad->...tdc", state.J, x_tet)
     R = polar_rotation(F)
     S = R.transpose(-1, -2) @ F
     return 0.5 * (S + S.transpose(-1, -2))
 ```
-(`torch_solver.py:150-165`)
+(`torch_solver.py:150, 161-165`, docstring elided)
 
 The network's input representation. `S = sym(R^T F)` is rotation-free by
 construction; the explicit symmetrisation kills the ~1e-8 skew residue the
@@ -168,12 +170,13 @@ whenever singular values coincide, i.e. near rest, i.e. most of the mesh).
 def inertial_predictor(
     state: SolverState, x_t: torch.Tensor, x_prev: torch.Tensor, pinned_targets: torch.Tensor
 ) -> torch.Tensor:
+    ...
     x0 = 2.0 * x_t - x_prev
     x0 = x0.clone()
     x0[..., state.pinned, :] = pinned_targets
     return x0
 ```
-(`torch_solver.py:168-182`)
+(`torch_solver.py:168-170, 179-182`, docstring elided)
 
 Three lines, 10x on the decoder floor (1.05e-2 -> 1.02e-3 m at 10 iters,
 measured with oracle stretches). Because the local-global iteration
@@ -192,6 +195,7 @@ from `polar(F S*^T)` evaluated at the current iterate.
 
 ```python
 def polar_rotation_forward(M: torch.Tensor, iters: int = 6) -> torch.Tensor:
+    ...
     with torch.no_grad():
         R = M.clone()
         for _ in range(iters):
@@ -209,7 +213,7 @@ def polar_rotation_forward(M: torch.Tensor, iters: int = 6) -> torch.Tensor:
             R[bad] = _svd_polar(M[bad])
     return R
 ```
-(`polar.py:82-99`)
+(`polar.py:82, 84-99`, docstring elided)
 
 Higham's scaled Newton `R <- (gamma R + gamma^-1 R^-T)/2`: pure batched
 matmul/elementwise (the 3x3 inverse `_inv3` is the analytic adjugate), so
@@ -281,6 +285,7 @@ class StretchNet(nn.Module):
         nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, feat: torch.Tensor, S_base: torch.Tensor | None = None) -> torch.Tensor:
+        ...
         delta = self.max_delta * torch.tanh(self.net(feat))  # (..., T, 6)
         D = vec_to_sym(delta)
         if S_base is None:
@@ -288,7 +293,7 @@ class StretchNet(nn.Module):
             return eye + D
         return S_base + D
 ```
-(`model.py:79-114`)
+(`model.py:79-97, 109-114`, docstrings elided)
 
 - ~6k parameters, shared across tets. The receptive field question
   (notes/01) lives entirely in what `feat` contains — the architecture
@@ -318,7 +323,7 @@ Feature assembly (the non-local part is the last two entries):
     ]
     return torch.cat(feats, dim=-1)  # (..., T, 28)
 ```
-(`model.py:152-165`)
+(`model.py:154-165`)
 
 `S_n_c` is the mean over face-adjacent tets (<= 4, `build_face_adjacency`,
 `model.py:52-76`) — a single mean-pool, i.e. a 1-ring receptive field. All
@@ -356,7 +361,7 @@ cannot determine.
             S_prev = S_gpu[b[:, 0]]
             S_now = S_gpu[b[:, 1]]
 ```
-(`train.py:148-179`)
+(`train.py:148-151, 164-179`)
 
 The noise is applied to *positions*, then S is recomputed — so the
 perturbation is geometrically consistent (a noisy state, not a noisy
@@ -419,13 +424,15 @@ super-additive stability recipe (round 2); each alone is worth little.
                 diff = x_next - x_gpu[i_t0 + k + 1]
                 loss_total = loss_total + (mass[None, :, None] * diff * diff).sum()
                 if args.phys_weight > 0.0:
-                    loss_total = loss_total + args.phys_weight * incremental_potential_batched(...)
+                    loss_total = loss_total + args.phys_weight * incremental_potential_batched(
+            ...
             else:
-                loss_total = loss_total + incremental_potential_batched(...)
+                loss_total = loss_total + incremental_potential_batched(
+        ...
         (loss_total / (args.batch * k_roll)).backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), 5.0)
 ```
-(`train.py:209-250`, argument lists elided)
+(`train.py:209-213, 227-228, 249-250`, argument lists elided)
 
 Mass-weighted position error against the reference frame — supervising
 **decoded positions**, not S. The kNN experiment justified this after the
@@ -482,18 +489,20 @@ decoder hard-pins anyway (`potentials.py:33-38`).
         poke_end_frame = rng.integers(2, n_frames_per // 2 + 1)
         ...
             for f in range(n_frames_per):
+                # Compose f_ext for this frame.
                 f_ext_frame = f_ext_np.copy()
                 if f < poke_end_frame:
                     f_ext_frame[poke_vert] += poke_force
 
                 for _ in range(args.substeps):
                     state_0.clear_forces()
+                    # Add external force.
                     state_0.particle_f.assign(f_ext_frame)
                     model_t.collide(state_0, contacts)
                     solver.step(state_0, state_1, control, contacts, sim_dt)
                     state_0, state_1 = state_1, state_0
 ```
-(`gen_train_data.py:102-135`)
+(`gen_train_data.py:102-111, 123-135`)
 
 Reference = SolverVBD, 10 substeps x 10 iterations @ 60 fps, StVK, no
 self-contact. The forcing has exactly the structure notes/01 worries

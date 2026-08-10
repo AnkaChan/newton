@@ -21,6 +21,7 @@ import html
 import json
 import pathlib
 import re
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NOTES = ROOT / "notes"
@@ -39,6 +40,7 @@ EMBED_FILES = [
 ]
 
 FILE_REF = re.compile(r"\b([\w./]+\.py):(\d+)(?:-(\d+))?\b")
+BUILD_WARNINGS: list[str] = []
 BASENAME_TO_PATH = {pathlib.Path(p).name: p for p in EMBED_FILES}
 
 
@@ -91,7 +93,13 @@ def parse_ranges(spec: str) -> list[tuple[int, int]]:
 
 
 def render_code(code_lines: list[str], caption: re.Match | None, block_id: int) -> str:
-    """Code block with real line numbers; elision rows advance to the next range."""
+    """Code block with real line numbers; elision rows advance to the next range.
+
+    Every numbered row is verified against the actual source line; mismatches
+    and elisions with no following range are collected in BUILD_WARNINGS so a
+    caption/excerpt drift fails loudly at build time instead of rendering
+    wrong numbers.
+    """
     rows = []
     ranges: list[tuple[int, int]] = []
     note = ""
@@ -100,13 +108,30 @@ def render_code(code_lines: list[str], caption: re.Match | None, block_id: int) 
         name, spec, note = caption.group(1), caption.group(2), caption.group(3) or ""
         ranges = parse_ranges(spec)
         file_path = BASENAME_TO_PATH.get(pathlib.Path(name).name, name)
+    src_lines = None
+    if file_path and (ROOT / file_path).is_file():
+        src_lines = (ROOT / file_path).read_text().split("\n")
     ri, ln = 0, (ranges[0][0] if ranges else None)
     for raw in code_lines:
         if raw.strip() in ("...", "…") and ranges:
             rows.append('<tr class="elide"><td class="ln">⋮</td><td class="cd">⋮ elided</td></tr>')
             ri += 1
-            ln = ranges[ri][0] if ri < len(ranges) else None
+            if ri < len(ranges):
+                ln = ranges[ri][0]
+            else:
+                ln = None
+                BUILD_WARNINGS.append(f"{file_path}: elision after range {ranges[-1]} has no next range in the caption")
             continue
+        if ln is not None and ri < len(ranges) and ln > ranges[ri][1]:
+            BUILD_WARNINGS.append(
+                f"{file_path}:{ln}: excerpt runs past range end {ranges[ri]} — caption ranges are wrong"
+            )
+        if ln is not None and src_lines is not None:
+            actual = src_lines[ln - 1].rstrip() if 0 < ln <= len(src_lines) else "<past end of file>"
+            if actual != raw.rstrip():
+                BUILD_WARNINGS.append(
+                    f"{file_path}:{ln}: excerpt differs from source\n      excerpt: {raw.rstrip()!r}\n      source:  {actual!r}"
+                )
         n = str(ln) if ln is not None else "·"
         attr = f' data-l="{ln}"' if ln is not None else ""
         rows.append(f'<tr{attr}><td class="ln">{n}</td><td class="cd">{esc(raw)}</td></tr>')
@@ -225,6 +250,12 @@ def main() -> None:
     page = page.replace("/*COMMENTS*/", json.dumps(comments))
     OUT.write_text(page)
     print(f"wrote {OUT} ({OUT.stat().st_size / 1024:.0f} KB)")
+    if BUILD_WARNINGS:
+        print(f"\n{len(BUILD_WARNINGS)} LINE-NUMBER WARNING(S):")
+        for w in BUILD_WARNINGS:
+            print("  " + w)
+        return 1
+    return 0
 
 
 TEMPLATE = """<!DOCTYPE html>
@@ -610,4 +641,4 @@ anchors.forEach(a=>obs.observe(a));
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
