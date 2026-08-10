@@ -314,7 +314,7 @@ padding:8px 18px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .
 <div id="vbody"></div></div>
 <div id="ctool"><strong id="ccount">0</strong> draft comment(s) ·
 <button class="cbtn" id="cexport">copy as JSON</button>
-<div class="hint">click any line number to comment · reply inside a thread</div></div>
+<div class="hint"><span id="clive">offline · drafts stay in this browser</span><br>click any line number to comment · reply inside a thread</div></div>
 <div id="toast"></div>
 <script>
 const SOURCES = /*SOURCES*/;
@@ -494,16 +494,50 @@ document.addEventListener('click',e=>{
   if(sv){const row=sv.closest('tr');
     const txt=row.querySelector('textarea').value.trim();
     if(!txt){toast('empty comment');return;}
-    const p=drafts();
-    p.push({anchor:row.dataset.anchor,tid:row.dataset.tid||null,text:txt,
-      ts:new Date().toISOString().slice(0,16).replace('T',' ')});
-    setDrafts(p);closeBox();rerender();
-    toast('draft saved locally — copy as JSON and paste into the comments file');return;}
+    const entry={anchor:row.dataset.anchor,text:txt};
+    if(row.dataset.tid)entry.thread=row.dataset.tid;
+    if(live){postComment(entry).then(()=>{closeBox();return refreshLive();})
+      .then(()=>toast('saved to the comments file'))
+      .catch(()=>{setLive(false);saveDraft(entry);closeBox();});}
+    else{saveDraft(entry);closeBox();}
+    return;}
   if(e.target.closest('.ccancel')){closeBox();return;}
   if(e.target.closest('#cexport')){exportComments();return;}
 });
+function saveDraft(entry){
+  const p=drafts();
+  p.push({anchor:entry.anchor,tid:entry.thread||null,text:entry.text,
+    ts:new Date().toISOString().slice(0,16).replace('T',' ')});
+  setDrafts(p);rerender();
+  toast('draft saved locally — copy as JSON, or start serve_review.py for auto-save');}
+// live auto-save (optional single-process server: python notes/serve_review.py)
+const API=(location.protocol==='http:'||location.protocol==='https:'?'':'http://127.0.0.1:8321')+'/api';
+let live=false,lastComments='';
+function setLive(v){live=v;const el=document.getElementById('clive');
+  if(el){el.textContent=v?'live · auto-saving to the comments file':'offline · drafts stay in this browser';
+    el.style.color=v?'#7ee787':'';}}
+function applyComments(d){const str=JSON.stringify(d);
+  if(str===lastComments)return;lastComments=str;
+  COMMENTS.threads=d.threads||[];COMMENTS.inbox=d.inbox||[];rerender();}
+async function postComment(entry){
+  const r=await fetch(API+'/comment',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(entry)});
+  if(!r.ok)throw new Error('save failed');}
+async function refreshLive(){
+  const r=await fetch(API+'/comments',{cache:'no-store'});
+  if(!r.ok)throw new Error('bad status');
+  applyComments(await r.json());}
+async function flushDrafts(){
+  const p=drafts();if(!p.length)return;
+  for(const c of p){const e={anchor:c.anchor,text:c.text};if(c.tid)e.thread=c.tid;await postComment(e);}
+  setDrafts([]);toast('uploaded '+p.length+' local draft(s) to the comments file');}
+async function goLive(){
+  try{await refreshLive();setLive(true);await flushDrafts();await refreshLive();
+    while(live){await new Promise(rs=>setTimeout(rs,4000));
+      try{await refreshLive();}catch(e){setLive(false);}}}
+  catch(e){setLive(false);}}
 renderAllExcerpts();
 refreshTool();
+goLive();
 // ---- scroll-spy ----
 const tocLinks=[...document.querySelectorAll('#side a')];
 const anchors=tocLinks.map(a=>document.getElementById(a.getAttribute('href').slice(1))).filter(Boolean);
