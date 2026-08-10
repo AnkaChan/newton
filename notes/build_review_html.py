@@ -313,7 +313,7 @@ padding:8px 18px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .
 <button class="copybtn" id="vcopy">copy path</button><button id="vclose">close ✕</button></div>
 <div id="vbody"></div></div>
 <div id="ctool"><strong id="ccount">0</strong> draft comment(s) ·
-<button class="cbtn" id="cexport">copy for Claude</button>
+<button class="cbtn" id="cexport">copy as JSON</button>
 <div class="hint">click any line number to comment · reply inside a thread</div></div>
 <div id="toast"></div>
 <script>
@@ -389,12 +389,12 @@ document.addEventListener('click',e=>{
   const copybtn=e.target.closest('.copybtn');
   if(copybtn){copyText(copybtn.dataset.path);return;}
 });
-function copyText(text){
+function copyText(text,msg){
+  const done=()=>toast(msg||('copied: '+text));
   (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject())
-    .then(()=>toast('copied: '+text))
-    .catch(()=>{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);
-      ta.select();document.execCommand('copy');ta.remove();toast('copied: '+text);});
-}
+    .then(done)
+    .catch(()=>{try{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);
+      ta.select();document.execCommand('copy');ta.remove();done();}catch(e){toast('copy failed');}});}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),2200);}
 // scroll-spy
@@ -404,11 +404,12 @@ const DOCKEY='cwt:'+document.title;
 const MEMSTORE={};  // fallback when localStorage is unavailable (opaque origins)
 function lsGet(k){try{return localStorage.getItem(k)}catch(e){return MEMSTORE[k]||null}}
 function lsSet(k,v){try{localStorage.setItem(k,v)}catch(e){MEMSTORE[k]=v}}
-function pendings(){try{return JSON.parse(lsGet(DOCKEY)||'[]')}catch(e){return []}}
-function setPendings(p){lsSet(DOCKEY,JSON.stringify(p));refreshTool();}
+function drafts(){try{return JSON.parse(lsGet(DOCKEY)||'[]')}catch(e){return []}}
+function setDrafts(p){lsSet(DOCKEY,JSON.stringify(p));refreshTool();}
 (function prune(){const baked=new Set();
  (COMMENTS.threads||[]).forEach(t=>(t.messages||[]).forEach(m=>baked.add((m.text||'').trim())));
- setPendings(pendings().filter(p=>!baked.has(p.text.trim())));})();
+ (COMMENTS.inbox||[]).forEach(q=>baked.add((q.text||'').trim()));
+ setDrafts(drafts().filter(p=>!baked.has(p.text.trim())));})();
 function bubble(role,text,ts){
   const who=role==='anka'?'Anka':role==='claude'?'Claude':'draft — not sent yet';
   return `<div class="bubble ${role}"><div class="who">${who}${ts?' · '+ts:''}</div>${esc(text).replace(/\\n/g,'<br>')}</div>`;}
@@ -416,19 +417,27 @@ function splitAnchor(a){const ix=a.lastIndexOf(':');return [a.slice(0,ix),a.slic
 function findRow(scope,line){return scope.querySelector(`tr[data-l="${line}"]`)||scope.querySelector('#L-'+line);}
 function renderThreads(scope,file){
   scope.querySelectorAll('tr.crow').forEach(r=>r.remove());
+  (COMMENTS.inbox||[]).forEach(q=>{
+    const [f,l]=splitAnchor(q.anchor);
+    if(f!==file)return;
+    const tr=findRow(scope,l);
+    if(!tr)return;
+    const row=document.createElement('tr');row.className='crow';
+    row.innerHTML=`<td colspan="2">${bubble('anka',q.text,(q.ts||'')+' · awaiting Claude')}</td>`;
+    tr.after(row);});
   (COMMENTS.threads||[]).forEach(t=>{
     const [f,l]=splitAnchor(t.anchor);
     if(f!==file)return;
     const tr=findRow(scope,l);
     if(!tr)return;
     const msgs=(t.messages||[]).map(m=>bubble(m.role,m.text,m.ts||'')).join('');
-    const pend=pendings().map((p,i)=>p.tid===t.id?
+    const pend=drafts().map((p,i)=>p.tid===t.id?
       bubble('pending',p.text,'')+`<button class="cbtn cdel" data-i="${i}">delete draft</button>`:'').join('');
     const row=document.createElement('tr');row.className='crow';
     row.innerHTML=`<td colspan="2">${msgs}${pend}`+
       `<button class="cbtn reply" data-tid="${t.id}" data-anchor="${t.anchor}">reply</button></td>`;
     tr.after(row);});
-  pendings().forEach((p,i)=>{
+  drafts().forEach((p,i)=>{
     if(p.tid)return;
     const [f,l]=splitAnchor(p.anchor);
     if(f!==file)return;
@@ -455,14 +464,17 @@ function openBox(tr,anchor,tid){
     `<button class="cbtn csave">save draft</button><button class="cbtn ccancel">cancel</button></td>`;
   tr.after(row);row.querySelector('textarea').focus();}
 function closeBox(){document.querySelectorAll('tr.ceditrow').forEach(r=>r.remove());}
-function refreshTool(){const el=document.getElementById('ccount');if(el)el.textContent=pendings().length;}
+function refreshTool(){const el=document.getElementById('ccount');if(el)el.textContent=drafts().length;}
 function exportComments(){
-  const p=pendings();
+  const p=drafts();
   if(!p.length){toast('no draft comments');return;}
-  const lines=['[walkthrough comments] '+document.title];
-  p.forEach((c,i)=>{lines.push(`${i+1}. ${c.anchor}${c.tid?' (follow-up to thread '+c.tid+')':''}`);
-    lines.push('   '+c.text.replace(/\\n/g,'\\n   '));});
-  copyText(lines.join('\\n'));}
+  const entries=p.map(c=>{
+    const o={anchor:c.anchor};
+    if(c.tid)o.thread=c.tid;
+    o.text=c.text;o.ts=c.ts;
+    return JSON.stringify(o);});
+  copyText(entries.join(',\\n')+',',
+    'copied '+p.length+' JSON entr'+(p.length>1?'ies':'y')+' — paste into the "inbox" array of the comments file');}
 document.addEventListener('click',e=>{
   const ln=e.target.closest('td.ln');
   if(ln){const tr=ln.parentElement;
@@ -477,16 +489,16 @@ document.addEventListener('click',e=>{
   const rep=e.target.closest('.reply');
   if(rep){openBox(rep.closest('tr'),rep.dataset.anchor,rep.dataset.tid);return;}
   const del=e.target.closest('.cdel');
-  if(del){const p=pendings();p.splice(parseInt(del.dataset.i),1);setPendings(p);rerender();return;}
+  if(del){const p=drafts();p.splice(parseInt(del.dataset.i),1);setDrafts(p);rerender();return;}
   const sv=e.target.closest('.csave');
   if(sv){const row=sv.closest('tr');
     const txt=row.querySelector('textarea').value.trim();
     if(!txt){toast('empty comment');return;}
-    const p=pendings();
+    const p=drafts();
     p.push({anchor:row.dataset.anchor,tid:row.dataset.tid||null,text:txt,
       ts:new Date().toISOString().slice(0,16).replace('T',' ')});
-    setPendings(p);closeBox();rerender();
-    toast('draft saved locally — use the bottom-right button to copy for Claude');return;}
+    setDrafts(p);closeBox();rerender();
+    toast('draft saved locally — copy as JSON and paste into the comments file');return;}
   if(e.target.closest('.ccancel')){closeBox();return;}
   if(e.target.closest('#cexport')){exportComments();return;}
 });
