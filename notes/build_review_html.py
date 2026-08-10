@@ -26,6 +26,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 NOTES = ROOT / "notes"
 MD = NOTES / "03_implementation_review.md"
 OUT = NOTES / "03_implementation_review.html"
+COMMENTS_PATH = NOTES / "03_implementation_review.comments.json"
 
 EMBED_FILES = [
     "research/principal_stretch/torch_solver.py",
@@ -220,6 +221,8 @@ def main() -> None:
     page = page.replace("/*BODY*/", body)
     page = page.replace("/*SOURCES*/", json.dumps(sources))
     page = page.replace("/*ROOT*/", str(ROOT))
+    comments = json.loads(COMMENTS_PATH.read_text()) if COMMENTS_PATH.exists() else {"threads": []}
+    page = page.replace("/*COMMENTS*/", json.dumps(comments))
     OUT.write_text(page)
     print(f"wrote {OUT} ({OUT.stat().st_size / 1024:.0f} KB)")
 
@@ -274,6 +277,23 @@ font-size:12px;margin-right:9px}
 .finding p strong{color:var(--fg)}
 .kw{color:var(--kw)}.str{color:var(--str)}.com{color:var(--com)}.num{color:var(--num)}
 .fn{color:var(--fn)}.dec{color:var(--dec)}
+td.ln{cursor:pointer}
+td.ln:hover{color:var(--acc);background:#1a2233}
+tr.crow td{padding:8px 14px;background:#12151f;border-top:1px dashed #2a3044;border-bottom:1px dashed #2a3044;
+white-space:normal;font:13.5px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif}
+.bubble{max-width:680px;margin:6px 0;padding:8px 12px;border-radius:10px}
+.bubble .who{font-size:11px;color:var(--dim);margin-bottom:3px}
+.bubble.anka{background:#1e2a45;border:1px solid #2c3e63}
+.bubble.claude{background:#1c2517;border:1px solid #2f4322}
+.bubble.pending{background:#332b12;border:1px solid #6b5a1e}
+textarea.cbox{width:100%;max-width:680px;min-height:64px;background:#0f1320;color:var(--fg);
+border:1px solid #3a4360;border-radius:8px;padding:8px;font:13px/1.5 -apple-system,sans-serif}
+button.cbtn{background:#22304a;color:var(--acc);border:none;border-radius:6px;padding:4px 12px;
+margin:6px 6px 0 0;cursor:pointer;font-size:12px}
+button.cbtn:hover{background:#2c3e63}
+#ctool{position:fixed;bottom:18px;right:18px;background:var(--panel2);border:1px solid #3a4360;
+border-radius:10px;padding:9px 14px;font-size:13px;z-index:60;box-shadow:0 4px 20px #0007}
+#ctool .hint{color:var(--dim);font-size:11px;margin-top:3px}
 #viewer{position:fixed;top:0;right:-56%;width:56%;height:100%;background:var(--panel);z-index:50;
 transition:right .25s ease;border-left:1px solid #313850;display:flex;flex-direction:column;box-shadow:-12px 0 40px #0009}
 #viewer.open{right:0}
@@ -292,10 +312,14 @@ padding:8px 18px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .
 <div id="viewer"><div id="vhead"><span id="vtitle"></span>
 <button class="copybtn" id="vcopy">copy path</button><button id="vclose">close ✕</button></div>
 <div id="vbody"></div></div>
+<div id="ctool"><strong id="ccount">0</strong> draft comment(s) ·
+<button class="cbtn" id="cexport">copy for Claude</button>
+<div class="hint">click any line number to comment · reply inside a thread</div></div>
 <div id="toast"></div>
 <script>
 const SOURCES = /*SOURCES*/;
 const ROOT = "/*ROOT*/";
+const COMMENTS = /*COMMENTS*/;
 const KW = new Set(("def class return if elif else for while in not and or is None True False import from as with "+
 "try except finally raise pass break continue lambda yield global nonlocal assert del async await match case").split(" "));
 function tokenize(src){
@@ -346,12 +370,14 @@ function openFile(path,line){
     rendered[path]=`<table class="pysrc">${rows}</table>`;
   }
   vbody.innerHTML=rendered[path];
+  curFile=path;
+  renderThreads(vbody,path);
   vtitle.textContent=path+(line?':'+line:'');
   vcopy.dataset.path=ROOT+'/'+path+(line?':'+line:'');
   viewer.classList.add('open');
   if(line){
     const tr=vbody.querySelector('#L-'+line);
-    if(tr){tr.scrollIntoView({block:'center'});flash(tr);}
+    if(tr){if(tr.scrollIntoView)tr.scrollIntoView({block:'center'});flash(tr);}
   } else vbody.scrollTop=0;
 }
 function flash(tr){tr.classList.add('flash');setTimeout(()=>tr.classList.remove('flash'),1600);}
@@ -361,9 +387,9 @@ document.addEventListener('click',e=>{
   const ref=e.target.closest('a.ref');
   if(ref){e.preventDefault();openFile(ref.dataset.file,parseInt(ref.dataset.line)||0);return;}
   const copybtn=e.target.closest('.copybtn');
-  if(copybtn){copy(copybtn.dataset.path);return;}
+  if(copybtn){copyText(copybtn.dataset.path);return;}
 });
-function copy(text){
+function copyText(text){
   (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject())
     .then(()=>toast('copied: '+text))
     .catch(()=>{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);
@@ -372,6 +398,101 @@ function copy(text){
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),2200);}
 // scroll-spy
+// ---- offline comment threads ----
+let curFile=null;
+const DOCKEY='cwt:'+document.title;
+const MEMSTORE={};  // fallback when localStorage is unavailable (opaque origins)
+function lsGet(k){try{return localStorage.getItem(k)}catch(e){return MEMSTORE[k]||null}}
+function lsSet(k,v){try{localStorage.setItem(k,v)}catch(e){MEMSTORE[k]=v}}
+function pendings(){try{return JSON.parse(lsGet(DOCKEY)||'[]')}catch(e){return []}}
+function setPendings(p){lsSet(DOCKEY,JSON.stringify(p));refreshTool();}
+(function prune(){const baked=new Set();
+ (COMMENTS.threads||[]).forEach(t=>(t.messages||[]).forEach(m=>baked.add((m.text||'').trim())));
+ setPendings(pendings().filter(p=>!baked.has(p.text.trim())));})();
+function bubble(role,text,ts){
+  const who=role==='anka'?'Anka':role==='claude'?'Claude':'draft — not sent yet';
+  return `<div class="bubble ${role}"><div class="who">${who}${ts?' · '+ts:''}</div>${esc(text).replace(/\\n/g,'<br>')}</div>`;}
+function splitAnchor(a){const ix=a.lastIndexOf(':');return [a.slice(0,ix),a.slice(ix+1)];}
+function findRow(scope,line){return scope.querySelector(`tr[data-l="${line}"]`)||scope.querySelector('#L-'+line);}
+function renderThreads(scope,file){
+  scope.querySelectorAll('tr.crow').forEach(r=>r.remove());
+  (COMMENTS.threads||[]).forEach(t=>{
+    const [f,l]=splitAnchor(t.anchor);
+    if(f!==file)return;
+    const tr=findRow(scope,l);
+    if(!tr)return;
+    const msgs=(t.messages||[]).map(m=>bubble(m.role,m.text,m.ts||'')).join('');
+    const pend=pendings().map((p,i)=>p.tid===t.id?
+      bubble('pending',p.text,'')+`<button class="cbtn cdel" data-i="${i}">delete draft</button>`:'').join('');
+    const row=document.createElement('tr');row.className='crow';
+    row.innerHTML=`<td colspan="2">${msgs}${pend}`+
+      `<button class="cbtn reply" data-tid="${t.id}" data-anchor="${t.anchor}">reply</button></td>`;
+    tr.after(row);});
+  pendings().forEach((p,i)=>{
+    if(p.tid)return;
+    const [f,l]=splitAnchor(p.anchor);
+    if(f!==file)return;
+    const tr=findRow(scope,l);
+    if(!tr)return;
+    const row=document.createElement('tr');row.className='crow';
+    row.innerHTML=`<td colspan="2">${bubble('pending',p.text,'')}`+
+      `<button class="cbtn cdel" data-i="${i}">delete draft</button></td>`;
+    tr.after(row);});
+}
+function renderAllExcerpts(){document.querySelectorAll('figure.code').forEach(fig=>{
+  const a=fig.querySelector('.codehead a.ref');
+  if(a)renderThreads(fig,a.dataset.file);});}
+function rerender(){renderAllExcerpts();
+  if(viewer.classList.contains('open')&&curFile)renderThreads(vbody,curFile);}
+function openBox(tr,anchor,tid){
+  closeBox();
+  const row=document.createElement('tr');row.className='crow ceditrow';
+  row.dataset.anchor=anchor;
+  if(tid)row.dataset.tid=tid;
+  row.innerHTML=`<td colspan="2"><div class="who" style="font:11px ui-monospace,monospace;color:var(--dim)">`+
+    `${anchor}${tid?' · reply to thread '+tid:''}</div>`+
+    `<textarea class="cbox" placeholder="leave a comment / question for Claude…"></textarea><br>`+
+    `<button class="cbtn csave">save draft</button><button class="cbtn ccancel">cancel</button></td>`;
+  tr.after(row);row.querySelector('textarea').focus();}
+function closeBox(){document.querySelectorAll('tr.ceditrow').forEach(r=>r.remove());}
+function refreshTool(){const el=document.getElementById('ccount');if(el)el.textContent=pendings().length;}
+function exportComments(){
+  const p=pendings();
+  if(!p.length){toast('no draft comments');return;}
+  const lines=['[walkthrough comments] '+document.title];
+  p.forEach((c,i)=>{lines.push(`${i+1}. ${c.anchor}${c.tid?' (follow-up to thread '+c.tid+')':''}`);
+    lines.push('   '+c.text.replace(/\\n/g,'\\n   '));});
+  copyText(lines.join('\\n'));}
+document.addEventListener('click',e=>{
+  const ln=e.target.closest('td.ln');
+  if(ln){const tr=ln.parentElement;
+    if(!tr.classList.contains('crow')&&!tr.classList.contains('elide')){
+      let file=null,line=null;
+      const fig=tr.closest('figure.code');
+      if(fig){const a=fig.querySelector('.codehead a.ref');
+        if(a&&tr.dataset.l){file=a.dataset.file;line=tr.dataset.l;}}
+      else if(tr.closest('#vbody')){file=curFile;line=(tr.id||'').replace('L-','');}
+      if(file&&line)openBox(tr,file+':'+line);}
+    return;}
+  const rep=e.target.closest('.reply');
+  if(rep){openBox(rep.closest('tr'),rep.dataset.anchor,rep.dataset.tid);return;}
+  const del=e.target.closest('.cdel');
+  if(del){const p=pendings();p.splice(parseInt(del.dataset.i),1);setPendings(p);rerender();return;}
+  const sv=e.target.closest('.csave');
+  if(sv){const row=sv.closest('tr');
+    const txt=row.querySelector('textarea').value.trim();
+    if(!txt){toast('empty comment');return;}
+    const p=pendings();
+    p.push({anchor:row.dataset.anchor,tid:row.dataset.tid||null,text:txt,
+      ts:new Date().toISOString().slice(0,16).replace('T',' ')});
+    setPendings(p);closeBox();rerender();
+    toast('draft saved locally — use the bottom-right button to copy for Claude');return;}
+  if(e.target.closest('.ccancel')){closeBox();return;}
+  if(e.target.closest('#cexport')){exportComments();return;}
+});
+renderAllExcerpts();
+refreshTool();
+// ---- scroll-spy ----
 const tocLinks=[...document.querySelectorAll('#side a')];
 const anchors=tocLinks.map(a=>document.getElementById(a.getAttribute('href').slice(1))).filter(Boolean);
 const obs=new IntersectionObserver(es=>{
