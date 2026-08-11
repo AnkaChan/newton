@@ -19,7 +19,7 @@ import unittest
 import numpy as np
 import torch
 
-from research.principal_stretch.spd_log import so3_log_axial, sym_exp, sym_log
+from research.principal_stretch.spd_log import so3_log_axial, spd_floor, sym_exp, sym_log
 
 try:
     import scipy.linalg
@@ -192,6 +192,49 @@ class TestSpdLog(unittest.TestCase):
             ratio = (g32.double().abs().max() / g64.abs().max()).item()
             self.assertGreater(ratio, 0.5, f"gap={gap}: max-norm ratio {ratio:.3e}")
             self.assertLess(ratio, 2.0, f"gap={gap}: max-norm ratio {ratio:.3e}")
+
+
+class TestSpdFloor(unittest.TestCase):
+    def test_healthy_round_trip(self):
+        # Eigenvalues in [0.5, 2] are far above the 0.05 floor: identity map.
+        S = random_spd(64, torch.float64, seed=11)
+        self.assertLess((spd_floor(S) - S).abs().max().item(), 1e-6)
+
+    def test_negative_eigenvalue(self):
+        # Transiently inverted tets produce S with a negative eigenvalue (no
+        # real log).  The floor must return an SPD matrix with the offending
+        # eigenvalue clamped to lam_min, leave the healthy eigenvalues alone,
+        # and stay differentiable (finite gradients) through both spd_floor
+        # itself and the downstream sym_log.
+        lam = torch.tensor([-0.3, 0.8, 1.2], dtype=torch.float64).expand(8, 3)
+        Q = random_rotation(8, torch.float64, seed=12)
+        S = (Q @ torch.diag_embed(lam) @ Q.transpose(-1, -2)).requires_grad_(True)
+
+        out = spd_floor(S)
+        eigs = torch.linalg.eigvalsh(out.detach())
+        self.assertGreater(eigs.min().item(), 0.0)  # SPD
+        self.assertLess((eigs.min(dim=-1).values - 0.05).abs().max().item(), 1e-12)  # clamped to lam_min
+        self.assertLess((eigs.max(dim=-1).values - 1.2).abs().max().item(), 1e-12)  # healthy eigenvalues kept
+
+        (g,) = torch.autograd.grad(out.sum(), S, retain_graph=True)
+        self.assertTrue(torch.isfinite(g).all())
+        self.assertGreater(g.norm().item(), 0.0)
+        (g,) = torch.autograd.grad(sym_log(spd_floor(S)).sum(), S)
+        self.assertTrue(torch.isfinite(g).all())
+
+    def test_lam_min_argument(self):
+        S = torch.diag(torch.tensor([0.01, 0.5, 1.0], dtype=torch.float64))[None]
+        out = spd_floor(S, lam_min=0.2)
+        ref = torch.diag(torch.tensor([0.2, 0.5, 1.0], dtype=torch.float64))[None]
+        self.assertLess((out - ref).abs().max().item(), 1e-12)
+
+    def test_gradcheck_away_from_kink(self):
+        # Away from the clamp kink the map is smooth; gradcheck validates the
+        # Daleckii-Krein backward with the clamp derivative.
+        S = random_spd(3, torch.float64, seed=13, lam_lo=-0.8, lam_hi=-0.2).requires_grad_(True)
+        self.assertTrue(torch.autograd.gradcheck(spd_floor, (S,), eps=1e-6, atol=1e-6))
+        S = random_spd(3, torch.float64, seed=14, lam_lo=0.5, lam_hi=2.0).requires_grad_(True)
+        self.assertTrue(torch.autograd.gradcheck(spd_floor, (S,), eps=1e-6, atol=1e-6))
 
 
 if __name__ == "__main__":

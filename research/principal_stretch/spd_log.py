@@ -126,6 +126,41 @@ def sym_exp(H: torch.Tensor) -> torch.Tensor:
     return _SymmetricMatrixFunction.apply(H, torch.exp, torch.exp)
 
 
+def spd_floor(S: torch.Tensor, lam_min: float = 0.05) -> torch.Tensor:
+    """Clamp the eigenvalue spectrum of symmetric 3x3 matrices to ``>= lam_min``.
+
+    Ground-truth data contains transiently inverted tets whose right-stretch
+    ``S`` has a negative eigenvalue — no real matrix log exists there.  Every
+    ``sym_log`` input therefore goes through this floor first; it is the
+    identity map on healthy tets (eigenvalues ~O(1) >> ``lam_min``).
+
+    Implemented as the spectral function ``f(lam) = max(lam, lam_min)`` via
+    the same Daleckii-Krein machinery as :func:`sym_log` / :func:`sym_exp`
+    rather than plain autograd through ``eigh``, so the backward stays finite
+    at repeated eigenvalues (the near-isotropic rest state is most of the
+    mesh most of the time).  ``f`` is continuous and piecewise linear: the
+    divided differences are bounded by 1, and the close-eigenvalue branch
+    uses the clamp derivative ``f'(lam) = 1[lam > lam_min]`` (standard clamp
+    subgradient semantics at the kink).
+
+    Args:
+        S: Symmetric matrices, shape ``(..., 3, 3)``.
+        lam_min: Eigenvalue floor.
+
+    Returns:
+        SPD matrices of the same shape with eigenvalues clamped to
+        ``>= lam_min``; differentiable.
+    """
+
+    def f(lam: torch.Tensor) -> torch.Tensor:
+        return lam.clamp(min=lam_min)
+
+    def fprime(lam: torch.Tensor) -> torch.Tensor:
+        return (lam > lam_min).to(lam.dtype)
+
+    return _SymmetricMatrixFunction.apply(S, f, fprime)
+
+
 def so3_log_axial(R: torch.Tensor) -> torch.Tensor:
     """Axis-angle (axial) vector of a batch of rotation matrices.
 
