@@ -102,8 +102,12 @@ omega_eA = exp( -|c_e^0 - c_A^0|^2 / sigma_l^2 ) / (normalizer over C(e)),    si
 ```
 f(M) = U diag(f(lam)) U^T
 backward:  grad_M = U ( G .* (U^T grad_out U) ) U^T
-           G_ij = ( f(lam_i) - f(lam_j) ) / ( lam_i - lam_j )   if |lam_i - lam_j| > eps
-           G_ii = f'(lam_i);  for |lam_i - lam_j| <= eps use f'((lam_i+lam_j)/2)
+           G_ij = ( f(lam_i) - f(lam_j) ) / ( lam_i - lam_j )   if |lam_i - lam_j| > eps(dtype)
+           G_ii = f'(lam_i);  for |lam_i - lam_j| <= eps(dtype) use f'((lam_i+lam_j)/2)
+           eps(float64) = 1e-9;  eps(float32) = 1e-4   [amended after Task-1 review: with
+           eps = 1e-9 the fp32 exp numerator quantizes at ulp ~1.2e-7, zeroing or spiking
+           gradient components in the near-rest regime; f'(mid) error is O(gap^2/24),
+           safe at 1e-4]
 ```
 
 **F13 — SO(3) log (axis-angle), with small-angle guard:**
