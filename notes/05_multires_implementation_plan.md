@@ -287,7 +287,7 @@ class TestHierModel(unittest.TestCase):
     def test_batched(self):              # leading batch dim (B=3) matches per-sample loop to 1e-6
 ```
 
-- [ ] **Step 2:** run, fail. **Step 3:** implement (A3 pooled state, F6 edge features, F7 MP x2 per coarse level, F8 gathers, F9 heads, F11 composition via Task-1 ops). **Step 4:** tests pass. **Step 5:** lint, commit `"Add hierarchical stretch predictor (edge-MP, ancestor context, Hencky composition)"`.
+- [ ] **Step 2:** run, fail. **Step 3:** implement (A3 pooled state, F6 edge features, F7 MP x2 per coarse level, F8 gathers, F9 heads, F11 composition via Task-1 ops). **Amendment (audit-0b finding):** GT data contains transiently inverted tets (S with a negative eigenvalue, no real log — ~3-10% of frames contain at least one). Every `sym_log` input goes through an SPD floor first: `spd_floor(S, lam_min=0.05)` — eigh, clamp eigenvalues to >= lam_min, reconstruct; add to `spd_log.py` with a round-trip + gradient test. The floor is inactive on healthy tets (eigenvalues ~O(1)). **Step 4:** tests pass. **Step 5:** lint, commit `"Add hierarchical stretch predictor (edge-MP, ancestor context, Hencky composition)"`.
 
 ### Task 5: audit 0a — kNN feature arms
 
