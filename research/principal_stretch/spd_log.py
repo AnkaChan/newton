@@ -73,6 +73,28 @@ _EIG_EPS_F32 = 1e-4
 _SMALL_THETA = 1e-4  # rotation angle below which the axial factor is Taylor's 1/2
 _MAX_THETA = 3.0  # rotation angles beyond this are out of physical range
 
+# cusolverDnXsyevBatched rejects large batches with CUSOLVER_STATUS_INVALID_VALUE
+# (workspace-size overflow; ~31.6k 3x3 fp64 matrices on torch 2.10/cu128, L40).
+# Chunk CUDA eigh calls well below the observed limit; chunked cusolver measured
+# ~20x faster than the magma backend for 138k matrices.
+_EIGH_CHUNK = 16384
+
+
+def _batched_eigh(Ms: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``torch.linalg.eigh`` chunked over the flattened batch on CUDA."""
+    n = Ms.numel() // (Ms.shape[-1] * Ms.shape[-2])
+    if not Ms.is_cuda or n <= _EIGH_CHUNK:
+        return torch.linalg.eigh(Ms)
+    flat = Ms.reshape(-1, Ms.shape[-2], Ms.shape[-1])
+    lams, us = [], []
+    for i in range(0, n, _EIGH_CHUNK):
+        lam_i, u_i = torch.linalg.eigh(flat[i : i + _EIGH_CHUNK])
+        lams.append(lam_i)
+        us.append(u_i)
+    lam = torch.cat(lams).reshape(*Ms.shape[:-1])
+    u = torch.cat(us).reshape(Ms.shape)
+    return lam, u
+
 
 class _SymmetricMatrixFunction(torch.autograd.Function):
     """``f(M) = U diag(f(lam)) U^T`` with the Daleckii-Krein backward."""
@@ -80,7 +102,7 @@ class _SymmetricMatrixFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, M, f, fprime):
         Ms = 0.5 * (M + M.transpose(-1, -2))
-        lam, U = torch.linalg.eigh(Ms)
+        lam, U = _batched_eigh(Ms)
         flam = f(lam)
         ctx.save_for_backward(lam, U, flam)
         ctx.fprime = fprime

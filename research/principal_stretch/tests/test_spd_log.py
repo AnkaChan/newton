@@ -194,5 +194,24 @@ class TestSpdLog(unittest.TestCase):
             self.assertLess(ratio, 2.0, f"gap={gap}: max-norm ratio {ratio:.3e}")
 
 
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+class TestLargeBatchCuda(unittest.TestCase):
+    def test_large_batch_eigh(self):
+        # cusolverDnXsyevBatched rejects flattened batches beyond ~31.6k fp64
+        # 3x3 matrices (CUSOLVER_STATUS_INVALID_VALUE); sym_log must chunk.
+        # 40k matrices with a multi-dim leading batch exercises the chunked
+        # reshape path; values are checked against the (unchunked) CPU result.
+        S = random_spd(40000, torch.float64, seed=15).reshape(5, 8000, 3, 3)
+        H_cpu = sym_log(S)
+        H_gpu = sym_log(S.cuda())
+        self.assertEqual(H_gpu.shape, (5, 8000, 3, 3))
+        self.assertLess((H_gpu.cpu() - H_cpu).abs().max().item(), 1e-10)
+
+        # gradient flows through every chunk
+        S_g = S.cuda().requires_grad_(True)
+        (g,) = torch.autograd.grad(sym_log(S_g).sum(), S_g)
+        self.assertTrue(torch.isfinite(g).all())
+        self.assertGreater(g.abs().amax(dim=(-1, -2)).min().item(), 0.0)
+
 if __name__ == "__main__":
     unittest.main()
