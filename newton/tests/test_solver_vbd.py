@@ -32,6 +32,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     evaluate_rigid_contact_from_collision,
     init_body_body_contacts_avbd,
     init_body_particle_contacts,
+    rigid_trajectory_truncation_t,
     snapshot_body_body_contact_history,
     update_duals_body_body_contacts,
     update_duals_joint,
@@ -3718,6 +3719,351 @@ add_function_test(
     TestVBDFullSurfaceContact,
     "test_full_surface_rejected_for_vbd_proxy_particles",
     test_full_surface_rejected_for_vbd_proxy_particles,
+    devices=devices,
+)
+
+
+# =====================================================================================
+# Rigid-body DAT (Divide and Truncate) penetration-free truncation
+# =====================================================================================
+
+
+@wp.kernel
+def _rigid_trajectory_truncation_probe(
+    n: wp.vec3,
+    d: wp.vec3,
+    c0: wp.vec3,
+    dx: wp.vec3,
+    axis: wp.vec3,
+    angle: float,
+    offset0: wp.vec3,
+    gamma_r: float,
+    t_out: wp.array[float],
+):
+    t_out[0] = rigid_trajectory_truncation_t(n, d, c0, dx, axis, angle, offset0, gamma_r)
+
+
+def _probe_trajectory_truncation(device, n, d, c0, dx, axis, angle, offset0, gamma_r):
+    t_out = wp.zeros(1, dtype=float, device=device)
+    wp.launch(
+        _rigid_trajectory_truncation_probe,
+        dim=1,
+        inputs=[
+            wp.vec3(*n),
+            wp.vec3(*d),
+            wp.vec3(*c0),
+            wp.vec3(*dx),
+            wp.vec3(*axis),
+            angle,
+            wp.vec3(*offset0),
+            gamma_r,
+        ],
+        outputs=[t_out],
+        device=device,
+    )
+    return float(t_out.numpy()[0])
+
+
+def test_rigid_dat_trajectory_truncation(test, device):
+    """Sampling + bisection finds the latest safe time of a curved trajectory vs a plane."""
+    # Pure rotation: point at radius 1 rotating pi/2 about z crosses plane y=0.5 at t=1/3
+    # (sin(t*pi/2) = 0.5). gamma_r=1 leaves only the fixed 1e-3 safety backoff.
+    t = _probe_trajectory_truncation(
+        device, (0, 1, 0), (0, 0.5, 0), (0, 0, 0), (0, 0, 0), (0, 0, 1), math.pi / 2, (1, 0, 0), 1.0
+    )
+    test.assertAlmostEqual(t, 1.0 / 3.0 - 1e-3, delta=2e-3)
+
+    # Same rotation with the opposite handedness moves the point away: no truncation.
+    t = _probe_trajectory_truncation(
+        device, (0, 1, 0), (0, 0.5, 0), (0, 0, 0), (0, 0, 0), (0, 0, -1), math.pi / 2, (1, 0, 0), 1.0
+    )
+    test.assertEqual(t, 1.0)
+
+    # Pure translation degenerates to the straight-ray case: crossing at t=0.5.
+    t = _probe_trajectory_truncation(
+        device, (0, 1, 0), (0, 0.5, 0), (0, 0, 0), (0, 1, 0), (0, 0, 1), 0.0, (0, 0, 0), 0.85
+    )
+    test.assertAlmostEqual(t, 0.425, delta=2e-3)
+
+    # Screw motion that stays on the safe side of the plane.
+    t = _probe_trajectory_truncation(
+        device, (0, 1, 0), (0, 0.5, 0), (0, 0, 0), (0.3, -0.2, 0), (0, 0, 1), 0.3, (0.2, -0.3, 0), 0.85
+    )
+    test.assertEqual(t, 1.0)
+
+    # Pinched start (point on the plane): an approaching update is blocked outright
+    # (a squeezed contact must stall, not pass through)...
+    t = _probe_trajectory_truncation(
+        device, (0, 1, 0), (0, 0.5, 0), (0, 0, 0), (0, 0.1, 0), (0, 0, 1), 0.0, (0, 0.5, 0), 0.85
+    )
+    test.assertEqual(t, 0.0)
+
+    # ...while a separating update from the same pinched start stays free.
+    t = _probe_trajectory_truncation(
+        device, (0, 1, 0), (0, 0.5, 0), (0, 0, 0), (0, -0.1, 0), (0, 0, 1), 0.0, (0, 0.5, 0), 0.85
+    )
+    test.assertEqual(t, 1.0)
+
+
+def _build_sphere_drop_on_cloth(device):
+    """A heavy rigid sphere shot at a pinned cloth grid: a stress scene where penalty
+    forces alone cannot prevent penetration within a step."""
+    builder = newton.ModelBuilder()  # Z up, gravity -Z
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.5, -0.5, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=16,
+        dim_y=16,
+        cell_x=1.0 / 16.0,
+        cell_y=1.0 / 16.0,
+        mass=0.05,
+        fix_left=True,
+        fix_right=True,
+        fix_top=True,
+        fix_bottom=True,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=1.0e-1,
+        edge_ke=1.0e-2,
+        particle_radius=5.0e-3,
+    )
+    inertia_val = 0.4 * 20.0 * 0.25**2
+    inertia = wp.mat33(inertia_val, 0.0, 0.0, 0.0, inertia_val, 0.0, 0.0, 0.0, inertia_val)
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.4), wp.quat_identity()),
+        mass=20.0,
+        inertia=inertia,
+        lock_inertia=True,
+    )
+    builder.add_shape_sphere(body=body, radius=0.25)
+    builder.color()
+    model = builder.finalize(device=device)
+    model.soft_contact_ke = 1.0e4
+    model.soft_contact_kd = 1.0e-5
+    model.soft_contact_mu = 0.5
+    return model, body
+
+
+def _run_sphere_drop(device, enable_dat, drop_speed=8.0, frames=60):
+    model, body = _build_sphere_drop_on_cloth(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.1)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=4,
+        rigid_enable_penetration_free=enable_dat,
+        rigid_body_particle_contact_buffer_size=1024,
+        pipeline=pipeline,
+    )
+    state_in, state_out = model.state(), model.state()
+    qd = state_in.body_qd.numpy()
+    qd[body][:3] = [0.0, 0.0, -drop_speed]
+    state_in.body_qd.assign(qd)
+
+    worst_pen = 0.0
+    body_z = 0.0
+    for _frame in range(frames):
+        solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+        q = state_in.particle_q.numpy()
+        bq = state_in.body_q.numpy()[body]
+        if not (np.isfinite(q).all() and np.isfinite(bq).all()):
+            raise AssertionError("simulation produced non-finite state")
+        gap = np.linalg.norm(q - bq[None, :3], axis=1) - 0.25
+        worst_pen = max(worst_pen, -float(gap.min()))
+        body_z = float(bq[2])
+    return worst_pen, body_z
+
+
+def test_rigid_dat_sphere_drop_penetration_free(test, device):
+    """Rigid DAT keeps a fast heavy sphere penetration-free against a pinned cloth grid.
+
+    The control run (DAT off) penetrates and tunnels through under the same conditions,
+    verifying that the assertion is meaningful.
+    """
+    worst_pen, body_z = _run_sphere_drop(device, enable_dat=True)
+    test.assertLessEqual(worst_pen, 1.0e-4, "rigid DAT must keep cloth vertices outside the sphere")
+    test.assertGreater(body_z, -0.5, "sphere must be caught by the cloth, not tunnel through")
+
+    worst_pen_ctrl, body_z_ctrl = _run_sphere_drop(device, enable_dat=False)
+    test.assertTrue(
+        worst_pen_ctrl > 1.0e-3 or body_z_ctrl < -1.0,
+        "control without DAT should penetrate or tunnel; if it no longer does, strengthen this stress",
+    )
+
+
+def _build_rigid_rigid_impact(device):
+    """A fast sphere shot at a resting sphere above a ground plane.
+
+    ``rigid_gap`` makes the pipeline emit rigid-rigid contacts (and thus DAT division
+    planes) before first touch; the shape ``margin`` keeps a penalty-force shell outside
+    the geometric surface so the resting geometric gap stays positive.
+    """
+    radius = 0.2
+    builder = newton.ModelBuilder()  # Z up, gravity -Z
+    builder.rigid_gap = 0.05
+    builder.default_shape_cfg.margin = 0.01
+    builder.default_shape_cfg.ke = 1.0e6
+    builder.add_ground_plane()
+    inertia_val = 0.4 * 5.0 * radius * radius
+    inertia = wp.mat33(inertia_val, 0.0, 0.0, 0.0, inertia_val, 0.0, 0.0, 0.0, inertia_val)
+    bodies = []
+    for x in (0.0, -1.5):
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(x, 0.0, radius + 0.012), wp.quat_identity()),
+            mass=5.0,
+            inertia=inertia,
+            lock_inertia=True,
+        )
+        builder.add_shape_sphere(body=body, radius=radius)
+        bodies.append(body)
+    builder.color()
+    model = builder.finalize(device=device)
+    return model, bodies, radius
+
+
+def _run_rigid_rigid_impact(device, enable_dat, speed=8.0, frames=90):
+    model, bodies, radius = _build_rigid_rigid_impact(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=6,
+        rigid_enable_penetration_free=enable_dat,
+        pipeline=pipeline,
+    )
+    state_in, state_out = model.state(), model.state()
+    qd = state_in.body_qd.numpy()
+    qd[bodies[1]][:3] = [speed, 0.0, 0.0]
+    state_in.body_qd.assign(qd)
+
+    worst_sphere_sphere = 0.0
+    worst_sphere_ground = 0.0
+    for _frame in range(frames):
+        solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+        body_q = state_in.body_q.numpy()
+        if not np.isfinite(body_q).all():
+            raise AssertionError("simulation produced non-finite state")
+        c0, c1 = body_q[bodies[0]][:3], body_q[bodies[1]][:3]
+        worst_sphere_sphere = max(worst_sphere_sphere, -(float(np.linalg.norm(c1 - c0)) - 2.0 * radius))
+        worst_sphere_ground = max(worst_sphere_ground, -(min(float(c0[2]), float(c1[2])) - radius))
+    return worst_sphere_sphere, worst_sphere_ground
+
+
+def test_rigid_dat_rigid_rigid_impact(test, device):
+    """Rigid-rigid DAT keeps a fast sphere impact penetration-free (spheres + ground).
+
+    The control run (DAT off) penetrates under the same conditions, verifying that the
+    assertion is meaningful.
+    """
+    sphere_pen, ground_pen = _run_rigid_rigid_impact(device, enable_dat=True)
+    test.assertLessEqual(sphere_pen, 1.0e-4, "spheres must not interpenetrate")
+    test.assertLessEqual(ground_pen, 1.0e-4, "spheres must not sink into the ground")
+
+    sphere_pen_ctrl, ground_pen_ctrl = _run_rigid_rigid_impact(device, enable_dat=False)
+    test.assertTrue(
+        sphere_pen_ctrl > 1.0e-3 or ground_pen_ctrl > 1.0e-3,
+        "control without DAT should penetrate; if it no longer does, strengthen this stress",
+    )
+
+
+def test_rigid_dat_requires_owned_pipeline(test, device):
+    """Enabling rigid DAT without a solver-owned pipeline raises: the DAT reference poses
+    must be snapshotted at the exact detection instants the solver drives."""
+    model, _body = _build_sphere_drop_on_cloth(device)
+    with test.assertRaises(ValueError):
+        newton.solvers.SolverVBD(model, rigid_enable_penetration_free=True)
+
+
+def _run_free_flight_distance(test, device, frequency_type, frequency, speed=6.0, frames=10):
+    """Distance a free-flying sphere covers under the DAT motion budget for a schedule."""
+    _Frequency = newton.solvers.SolverBase.CollisionFrequencyType
+    radius = 0.2
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.rigid_gap = 0.05
+    builder.add_ground_plane()
+    inertia_val = 0.4 * 5.0 * radius * radius
+    inertia = wp.mat33(inertia_val, 0.0, 0.0, 0.0, inertia_val, 0.0, 0.0, 0.0, inertia_val)
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+        mass=5.0,
+        inertia=inertia,
+        lock_inertia=True,
+    )
+    builder.add_shape_sphere(body=body, radius=radius)
+    builder.color()
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        rigid_enable_penetration_free=True,
+        pipeline=pipeline,
+        collision_frequency=[frequency, 1],
+        collision_frequency_type=[frequency_type, _Frequency.AUTO],
+    )
+    state_in, state_out = model.state(), model.state()
+    qd = state_in.body_qd.numpy()
+    qd[body][:3] = [speed, 0.0, 0.0]
+    state_in.body_qd.assign(qd)
+    for _frame in range(frames):
+        solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+    test.assertTrue(np.isfinite(state_in.body_q.numpy()).all())
+    return float(state_in.body_q.numpy()[body][0])
+
+
+def test_rigid_dat_collision_frequency_budget(test, device):
+    """Raising the rigid detection frequency widens the DAT motion budget.
+
+    The per-body budget is 0.5 * gamma * detection slack PER DETECTION INTERVAL, so a
+    body faster than the per-step budget is throttled under PRE_POST_INIT but flies
+    (nearly) freely when the reference resets every iteration (ITERATIONS k=1) — the
+    configuration fix for the momentum-drain failure mode of infrequent detection.
+    """
+    _Frequency = newton.solvers.SolverBase.CollisionFrequencyType
+    # 6 m/s -> 10 cm per step. gap 0.05, gamma 0.85: 2.125 cm per detection interval.
+    # PRE_POST_INIT: 2 intervals/step -> <= ~4.25 cm/step. ITERATIONS k=1 with 10
+    # iterations: 11 intervals/step -> unthrottled.
+    x_slow = _run_free_flight_distance(test, device, _Frequency.PRE_POST_INIT, 1)
+    x_fast = _run_free_flight_distance(test, device, _Frequency.ITERATIONS, 1)
+    expected = 6.0 * 10.0 / 60.0  # unthrottled distance over 10 frames
+    test.assertGreater(x_fast, 0.9 * expected, "ITERATIONS k=1 must not throttle this speed")
+    test.assertLess(x_slow, 0.6 * expected, "PRE_POST_INIT should throttle this speed; retune if not")
+
+
+class TestVBDRigidDAT(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestVBDRigidDAT,
+    "test_rigid_dat_trajectory_truncation",
+    test_rigid_dat_trajectory_truncation,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_rigid_dat_sphere_drop_penetration_free",
+    test_rigid_dat_sphere_drop_penetration_free,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_rigid_dat_rigid_rigid_impact",
+    test_rigid_dat_rigid_rigid_impact,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_rigid_dat_requires_owned_pipeline",
+    test_rigid_dat_requires_owned_pipeline,
+    devices=devices,
+)
+add_function_test(
+    TestVBDRigidDAT,
+    "test_rigid_dat_collision_frequency_budget",
+    test_rigid_dat_collision_frequency_budget,
     devices=devices,
 )
 

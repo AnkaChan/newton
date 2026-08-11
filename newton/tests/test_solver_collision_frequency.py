@@ -88,9 +88,9 @@ def test_frequency_validation_and_ownership(test, device):
     with test.assertRaises(ValueError):
         _NonOwning(model, collision_frequency_type=[Frequency.PRE_INIT, Frequency.NONE])
 
-    # PRE_POST_INIT is meaningless for the rigid slot.
-    with test.assertRaises(ValueError):
-        _StubSolver(model, pipeline=pipeline, collision_frequency_type=[Frequency.PRE_POST_INIT, Frequency.NONE])
+    # PRE_POST_INIT is valid for the rigid slot (SolverVBD re-detects after
+    # initialization for rigid DAT); construction must accept it.
+    _StubSolver(model, pipeline=pipeline, collision_frequency_type=[Frequency.PRE_POST_INIT, Frequency.NONE])
 
     # List shape and range validation.
     with test.assertRaises(ValueError):
