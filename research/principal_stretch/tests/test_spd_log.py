@@ -156,6 +156,21 @@ class TestSpdLog(unittest.TestCase):
         with self.assertRaises(ValueError):
             so3_log_axial(rotation_from_axis_angle((1.0, 0.0, 0.0), 3.05))
 
+    def test_so3_log_saturate(self):
+        # saturate=True: out-of-range angles are clamped instead of raising --
+        # feature paths need finite bounded values on off-manifold states.
+        for angle in (3.05, math.pi - 1e-6, math.pi):
+            R = rotation_from_axis_angle((1.0, 0.0, 0.0), angle).requires_grad_(True)
+            w = so3_log_axial(R, saturate=True)
+            self.assertTrue(torch.isfinite(w).all(), f"angle={angle}")
+            self.assertLessEqual(w.norm().item(), 3.0 + 1e-12, f"angle={angle}")
+            (g,) = torch.autograd.grad(w.sum(), R)
+            self.assertTrue(torch.isfinite(g).all(), f"angle={angle}")
+
+        # In-range angles are unaffected by the flag.
+        R = rotation_from_axis_angle((1.0, -2.0, 0.5), 2.9)
+        self.assertLess((so3_log_axial(R, saturate=True) - so3_log_axial(R)).abs().max().item(), 1e-14)
+
     def test_float32(self):
         S = random_spd(64, torch.float32, seed=8)
         self.assertLess((sym_exp(sym_log(S)) - S).abs().max().item(), 1e-5)

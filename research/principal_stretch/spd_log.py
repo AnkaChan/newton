@@ -183,11 +183,17 @@ def spd_floor(S: torch.Tensor, lam_min: float = 0.05) -> torch.Tensor:
     return _SymmetricMatrixFunction.apply(S, f, fprime)
 
 
-def so3_log_axial(R: torch.Tensor) -> torch.Tensor:
+def so3_log_axial(R: torch.Tensor, *, saturate: bool = False) -> torch.Tensor:
     """Axis-angle (axial) vector of a batch of rotation matrices.
 
     Args:
         R: Rotation matrices, shape ``(..., 3, 3)``.
+        saturate: If True, clamp rotation angles beyond 3.0 rad to 3.0 instead
+            of raising.  For network input features, where transient
+            off-manifold states during rollout training can produce large
+            relative rotations and the feature only needs to stay finite and
+            bounded (angles near pi alias toward zero on this branch; that
+            is accepted for out-of-range states).
 
     Returns:
         Axial vectors ``theta * axis`` [rad], shape ``(..., 3)``.  Plain-autograd
@@ -195,11 +201,14 @@ def so3_log_axial(R: torch.Tensor) -> torch.Tensor:
 
     Raises:
         ValueError: If any rotation angle exceeds 3.0 rad -- adjacent-tet
-            relative rotations near pi are out of physical range.
+            relative rotations near pi are out of physical range.  Suppressed
+            by ``saturate``.
     """
     tr = R.diagonal(dim1=-2, dim2=-1).sum(-1)
     cos_theta = torch.clamp(0.5 * (tr - 1.0), -1.0, 1.0)
-    if bool((cos_theta < math.cos(_MAX_THETA)).any()):
+    if saturate:
+        cos_theta = cos_theta.clamp(min=math.cos(_MAX_THETA))
+    elif bool((cos_theta < math.cos(_MAX_THETA)).any()):
         raise ValueError(f"so3_log_axial: rotation angle exceeds {_MAX_THETA} rad (out of physical range)")
 
     # theta < _SMALL_THETA  <=>  cos_theta > cos(_SMALL_THETA).  On the small

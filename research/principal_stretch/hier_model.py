@@ -293,7 +293,9 @@ class HierStretchNet(nn.Module):
         R_rel = torch.einsum("nbji,nkbjl->nkbil", R, R[idx])  # R_a^T R_b
         eye = torch.eye(3, dtype=R.dtype, device=R.device).expand_as(R_rel)
         R_rel = torch.where(valid[:, :, None, None, None], R_rel, eye)
-        return torch.cat([rel, stretch, so3_log_axial(R_rel)], dim=-1).to(torch.float32)
+        # saturate: transient off-manifold rollout states can push adjacent
+        # cluster rotations past the 3 rad guard; features must stay finite.
+        return torch.cat([rel, stretch, so3_log_axial(R_rel, saturate=True)], dim=-1).to(torch.float32)
 
     def level_features(self, state: SolverState, x_t, x_prev, f_ext, feat28, S_t) -> list[torch.Tensor]:
         """The 31-dim coarse node features per level (public, for tests/diagnostics).
