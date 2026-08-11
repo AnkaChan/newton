@@ -5654,3 +5654,419 @@ def apply_body_truncation_ts(
             half_w = axis * (ta * 0.5)
             q_new = wp.normalize(wp.quat(half_w[0], half_w[1], half_w[2], 1.0) * q_rot)
         body_q[b] = wp.transform(c_new - wp.quat_rotate(q_new, com), q_new)
+
+
+# =====================================================================================
+# Persistent-plane rigid DAT (experimental variant).
+#
+# Instead of rebuilding division planes from the detection-time reference state at every
+# truncation pass, each contact's plane (n, p) is stored explicitly and refreshed AFTER
+# every truncation pass — i.e. always at a penetration-free committed state. Rigid rays
+# then anchor at the last committed pose (body_q_prev_commit), while the r/2 motion
+# budget keeps being measured from the detection-time reference so contact-set
+# completeness is preserved. See the rigid-DAT task notes for the guarantee analysis.
+# =====================================================================================
+
+
+@wp.kernel
+def refresh_rigid_soft_dat_planes(
+    # inputs
+    soft_contact_count: wp.array[wp.int32],
+    soft_contact_indices: wp.array[wp.vec3i],
+    soft_contact_shape: wp.array[wp.int32],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    shape_body: wp.array[wp.int32],
+    particle_q: wp.array[wp.vec3],
+    particle_displacements: wp.array[wp.vec3],
+    body_q_commit_ref: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    initialize: int,
+    # outputs (persisted)
+    dat_soft_plane_n: wp.array[wp.vec3],
+    dat_soft_plane_p: wp.array[wp.vec3],
+):
+    """Refresh one rigid-soft contact's persisted division plane at the CURRENT
+    (post-truncation, penetration-free) state.
+
+    The normal tracks the live anchor difference and falls back to the previous
+    persisted normal (or the stored contact normal on ``initialize``) when the pair is
+    pinched. The plane point uses the adaptive lambda placement fed by the most recent
+    applied motion of each side.
+    """
+    contact_index = wp.tid()
+    if contact_index >= soft_contact_count[0]:
+        return
+
+    indices = soft_contact_indices[contact_index]
+    if indices[0] < 0:
+        return
+    bary = soft_contact_barycentric[contact_index]
+
+    x_cur = bary[0] * particle_q[indices[0]]
+    dx_soft = bary[0] * particle_displacements[indices[0]]
+    for i in range(1, 3):
+        vi = indices[i]
+        if vi >= 0:
+            x_cur += bary[i] * particle_q[vi]
+            dx_soft += bary[i] * particle_displacements[vi]
+
+    shape_index = soft_contact_shape[contact_index]
+    body_index = shape_body[shape_index]
+    X_wb = wp.transform_identity()
+    if body_index >= 0:
+        X_wb = body_q[body_index]
+    bx_cur = wp.transform_point(X_wb, soft_contact_body_pos[contact_index])
+
+    # Live normal from the current anchor difference; keep the previous plane normal
+    # (contact normal on initialization) when the pair is pinched or the direction flips.
+    n_prev = dat_soft_plane_n[contact_index]
+    if initialize != 0:
+        n_prev = soft_contact_normal[contact_index]
+    n_hat = x_cur - bx_cur
+    gap = wp.length(n_hat)
+    if gap > 1.0e-8 and wp.dot(n_hat, n_prev) > 0.0:
+        n = n_hat / gap
+    else:
+        n = n_prev
+        gap = wp.max(wp.dot(n, x_cur - bx_cur), 0.0)
+
+    # Most recent applied motion of the rigid side (commit anchor -> current pose).
+    delta_rigid = float(0.0)
+    if body_index >= 0:
+        c0, dx_body, rot_axis, rot_angle = rigid_pose_delta(body_q_commit_ref[body_index], X_wb, body_com[body_index])
+        if wp.length_sq(dx_body) > 0.0 or rot_angle != 0.0:
+            bx_prev = wp.transform_point(body_q_commit_ref[body_index], soft_contact_body_pos[contact_index])
+            anchor_end = rigid_point_trajectory(1.0, c0, dx_body, rot_axis, rot_angle, bx_prev - c0)
+            delta_rigid = wp.max(wp.dot(n, anchor_end - bx_prev), 0.0)
+    delta_soft = wp.max(-wp.dot(n, dx_soft), 0.0)
+
+    if delta_soft + delta_rigid == 0.0:
+        lmbd = 0.5
+    else:
+        lmbd = wp.clamp(delta_rigid / (delta_rigid + delta_soft), 0.05, 0.95)
+
+    dat_soft_plane_n[contact_index] = n
+    dat_soft_plane_p[contact_index] = bx_cur + (lmbd * gap) * n
+
+
+@wp.kernel
+def refresh_rigid_rigid_dat_planes(
+    # inputs
+    rigid_contact_count: wp.array[wp.int32],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    shape_body: wp.array[wp.int32],
+    shape_margin: wp.array[float],
+    body_q_commit_ref: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    initialize: int,
+    # outputs (persisted)
+    dat_rigid_plane_n: wp.array[wp.vec3],
+    dat_rigid_plane_p: wp.array[wp.vec3],
+):
+    """Refresh one rigid-rigid contact's persisted division plane at the CURRENT
+    (post-truncation, penetration-free) state; see refresh_rigid_soft_dat_planes."""
+    contact_index = wp.tid()
+    if contact_index >= rigid_contact_count[0]:
+        return
+
+    s0 = rigid_contact_shape0[contact_index]
+    s1 = rigid_contact_shape1[contact_index]
+    if s0 < 0 or s1 < 0:
+        return
+    b0 = shape_body[s0]
+    b1 = shape_body[s1]
+    if b0 < 0 and b1 < 0:
+        return
+
+    X_w0 = wp.transform_identity()
+    if b0 >= 0:
+        X_w0 = body_q[b0]
+    X_w1 = wp.transform_identity()
+    if b1 >= 0:
+        X_w1 = body_q[b1]
+
+    p0 = wp.transform_point(X_w0, rigid_contact_point0[contact_index])
+    p1 = wp.transform_point(X_w1, rigid_contact_point1[contact_index])
+
+    margin0 = rigid_contact_margin0[contact_index]
+    margin1 = rigid_contact_margin1[contact_index]
+    if shape_margin.shape[0] > 0:
+        margin0 -= shape_margin[s0]
+        margin1 -= shape_margin[s1]
+    margin0 = wp.max(margin0, 0.0)
+    margin1 = wp.max(margin1, 0.0)
+
+    n_prev = dat_rigid_plane_n[contact_index]
+    if initialize != 0:
+        n_prev = rigid_contact_normal[contact_index]
+    n_hat = p1 - p0
+    if wp.length(n_hat) > 1.0e-8 and wp.dot(n_hat, n_prev) > 0.0:
+        n = wp.normalize(n_hat)
+    else:
+        n = n_prev
+    gap = wp.max(wp.dot(n, p1 - p0) - margin0 - margin1, 0.0)
+
+    # Most recent applied motion of each side along n (commit anchor -> current pose).
+    delta_0 = float(0.0)
+    if b0 >= 0:
+        c0_a, dx_a, axis_a, angle_a = rigid_pose_delta(body_q_commit_ref[b0], X_w0, body_com[b0])
+        if wp.length_sq(dx_a) > 0.0 or angle_a != 0.0:
+            p0_prev = wp.transform_point(body_q_commit_ref[b0], rigid_contact_point0[contact_index])
+            end_a = rigid_point_trajectory(1.0, c0_a, dx_a, axis_a, angle_a, p0_prev - c0_a)
+            delta_0 = wp.max(wp.dot(n, end_a - p0_prev), 0.0)
+    delta_1 = float(0.0)
+    if b1 >= 0:
+        c0_b, dx_b, axis_b, angle_b = rigid_pose_delta(body_q_commit_ref[b1], X_w1, body_com[b1])
+        if wp.length_sq(dx_b) > 0.0 or angle_b != 0.0:
+            p1_prev = wp.transform_point(body_q_commit_ref[b1], rigid_contact_point1[contact_index])
+            end_b = rigid_point_trajectory(1.0, c0_b, dx_b, axis_b, angle_b, p1_prev - c0_b)
+            delta_1 = wp.max(-wp.dot(n, end_b - p1_prev), 0.0)
+
+    if delta_0 + delta_1 == 0.0:
+        lmbd = 0.5
+    else:
+        lmbd = wp.clamp(delta_0 / (delta_0 + delta_1), 0.05, 0.95)
+
+    dat_rigid_plane_n[contact_index] = n
+    dat_rigid_plane_p[contact_index] = p0 + (margin0 + lmbd * gap) * n
+
+
+@wp.kernel
+def apply_rigid_soft_truncation_persistent(
+    # inputs
+    soft_contact_count: wp.array[wp.int32],
+    soft_contact_indices: wp.array[wp.vec3i],
+    soft_contact_shape: wp.array[wp.int32],
+    dat_soft_plane_n: wp.array[wp.vec3],
+    dat_soft_plane_p: wp.array[wp.vec3],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    shape_body: wp.array[wp.int32],
+    pos_prev_collision_detection: wp.array[wp.vec3],
+    particle_displacements: wp.array[wp.vec3],
+    body_q_commit_ref: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    dat_body_vertex_start: wp.array[wp.int32],
+    dat_body_vertices: wp.array[wp.vec3],
+    dat_body_vertex_radius: wp.array[float],
+    parallel_eps: float,
+    gamma: float,
+    # outputs
+    truncation_ts: wp.array[float],
+    body_truncation_ts: wp.array[float],
+):
+    """Joint rigid-soft truncation against the PERSISTED division plane of each contact.
+
+    Identical enforcement to apply_rigid_soft_truncation, but the plane is read from the
+    persisted (n, p) buffers (refreshed post-truncation at penetration-free states)
+    instead of being rebuilt from the detection-time reference, and the rigid rays anchor
+    at the last committed pose. Soft rays keep their detection-time anchoring, so the
+    wrong-side guards silently skip vertices whose detection position lies behind a
+    refreshed plane — part of what the persistent-plane experiment measures.
+    """
+    tid = wp.tid()
+    contact_index = tid // DAT_THREADS_PER_CONTACT
+    lane = tid % DAT_THREADS_PER_CONTACT
+
+    if contact_index >= soft_contact_count[0]:
+        return
+
+    indices = soft_contact_indices[contact_index]
+    if indices[0] < 0:
+        return
+    bary = soft_contact_barycentric[contact_index]
+
+    n = dat_soft_plane_n[contact_index]
+    d = dat_soft_plane_p[contact_index]
+
+    shape_index = soft_contact_shape[contact_index]
+    body_index = shape_body[shape_index]
+
+    # Soft side (lane 0): straight-ray truncation per involved vertex.
+    if lane == 0:
+        for i in range(3):
+            vi = indices[i]
+            if vi >= 0 and (i == 0 or bary[i] > 0.0):
+                x_v = pos_prev_collision_detection[vi]
+                s_v = wp.dot(n, x_v - d)
+                if s_v > DAT_PINCH_BAND:
+                    t_v = planar_truncation_t(x_v, particle_displacements[vi], n, d, parallel_eps, gamma)
+                    if t_v < 1.0:
+                        wp.atomic_min(truncation_ts, vi, t_v)
+                elif s_v > -DAT_PINCH_BAND and wp.dot(n, particle_displacements[vi]) < 0.0:
+                    wp.atomic_min(truncation_ts, vi, 0.0)
+
+    # Rigid side: curved-trajectory truncation over the body's DAT vertices, anchored at
+    # the last committed pose (where the persisted plane was refreshed).
+    if body_index >= 0:
+        X_wb_ref = body_q_commit_ref[body_index]
+        c0, dx_body, rot_axis, rot_angle = rigid_pose_delta(X_wb_ref, body_q[body_index], body_com[body_index])
+        if wp.length_sq(dx_body) > 0.0 or rot_angle != 0.0:
+            vertex_start = dat_body_vertex_start[body_index]
+            vertex_end = dat_body_vertex_start[body_index + 1]
+            if vertex_end > vertex_start:
+                t_b = rigid_body_vertices_truncation_min(
+                    n,
+                    d,
+                    c0,
+                    dx_body,
+                    rot_axis,
+                    rot_angle,
+                    X_wb_ref,
+                    dat_body_vertices,
+                    dat_body_vertex_radius,
+                    vertex_start,
+                    vertex_end,
+                    lane,
+                    gamma,
+                )
+                if t_b < 1.0:
+                    wp.atomic_min(body_truncation_ts, body_index, t_b)
+
+
+@wp.kernel
+def apply_rigid_rigid_truncation_persistent(
+    # inputs
+    rigid_contact_count: wp.array[wp.int32],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+    dat_rigid_plane_n: wp.array[wp.vec3],
+    dat_rigid_plane_p: wp.array[wp.vec3],
+    shape_body: wp.array[wp.int32],
+    body_q_commit_ref: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    dat_body_vertex_start: wp.array[wp.int32],
+    dat_body_vertices: wp.array[wp.vec3],
+    dat_body_vertex_radius: wp.array[float],
+    gamma: float,
+    # outputs
+    body_truncation_ts: wp.array[float],
+):
+    """Rigid-rigid truncation against the PERSISTED division plane of each contact;
+    see apply_rigid_soft_truncation_persistent."""
+    tid = wp.tid()
+    contact_index = tid // DAT_THREADS_PER_CONTACT
+    lane = tid % DAT_THREADS_PER_CONTACT
+
+    if contact_index >= rigid_contact_count[0]:
+        return
+
+    s0 = rigid_contact_shape0[contact_index]
+    s1 = rigid_contact_shape1[contact_index]
+    if s0 < 0 or s1 < 0:
+        return
+    b0 = shape_body[s0]
+    b1 = shape_body[s1]
+    if b0 < 0 and b1 < 0:
+        return
+
+    n = dat_rigid_plane_n[contact_index]
+    d = dat_rigid_plane_p[contact_index]
+
+    if b0 >= 0:
+        X_w0_ref = body_q_commit_ref[b0]
+        c0_a, dx_a, axis_a, angle_a = rigid_pose_delta(X_w0_ref, body_q[b0], body_com[b0])
+        if wp.length_sq(dx_a) > 0.0 or angle_a != 0.0:
+            vertex_start = dat_body_vertex_start[b0]
+            vertex_end = dat_body_vertex_start[b0 + 1]
+            if vertex_end > vertex_start:
+                t_a = rigid_body_vertices_truncation_min(
+                    n,
+                    d,
+                    c0_a,
+                    dx_a,
+                    axis_a,
+                    angle_a,
+                    X_w0_ref,
+                    dat_body_vertices,
+                    dat_body_vertex_radius,
+                    vertex_start,
+                    vertex_end,
+                    lane,
+                    gamma,
+                )
+                if t_a < 1.0:
+                    wp.atomic_min(body_truncation_ts, b0, t_a)
+
+    if b1 >= 0:
+        X_w1_ref = body_q_commit_ref[b1]
+        c0_b, dx_b, axis_b, angle_b = rigid_pose_delta(X_w1_ref, body_q[b1], body_com[b1])
+        if wp.length_sq(dx_b) > 0.0 or angle_b != 0.0:
+            vertex_start = dat_body_vertex_start[b1]
+            vertex_end = dat_body_vertex_start[b1 + 1]
+            if vertex_end > vertex_start:
+                t_b = rigid_body_vertices_truncation_min(
+                    -n,
+                    d,
+                    c0_b,
+                    dx_b,
+                    axis_b,
+                    angle_b,
+                    X_w1_ref,
+                    dat_body_vertices,
+                    dat_body_vertex_radius,
+                    vertex_start,
+                    vertex_end,
+                    lane,
+                    gamma,
+                )
+                if t_b < 1.0:
+                    wp.atomic_min(body_truncation_ts, b1, t_b)
+
+
+@wp.kernel
+def apply_body_truncation_ts_commit(
+    # inputs
+    body_q_commit_ref: wp.array[wp.transform],
+    body_q_detection_ref: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_truncation_ts: wp.array[float],
+    body_bounding_radius: wp.array[float],
+    body_dat_max_displacement: wp.array[float],
+    # input/output
+    body_q: wp.array[wp.transform],
+):
+    """Persistent-plane variant of apply_body_truncation_ts: the truncation scalar
+    rescales the pose update accumulated since the last COMMIT, while the conservative
+    isotropic budget still measures total point motion since the last DETECTION
+    (m_total(t) <= m_committed + t * m_new by the triangle inequality on point paths)."""
+    b = wp.tid()
+
+    q_cur = body_q[b]
+    q_commit = body_q_commit_ref[b]
+    com = body_com[b]
+    c0, dx, axis, angle = rigid_pose_delta(q_commit, q_cur, com)
+
+    t = body_truncation_ts[b]
+
+    radius = body_bounding_radius[b]
+    _cd, dx_det, _axis_det, angle_det = rigid_pose_delta(body_q_detection_ref[b], q_commit, com)
+    motion_committed = wp.length(dx_det) + wp.abs(angle_det) * radius
+    motion_new = wp.length(dx) + wp.abs(angle) * radius
+    budget = body_dat_max_displacement[b] - motion_committed
+    if budget < 0.0:
+        budget = 0.0
+    if motion_new > budget:
+        t = wp.min(t, budget / wp.max(motion_new, 1.0e-12))
+
+    if t < 1.0:
+        c_new = c0 + t * dx
+        q_rot = wp.transform_get_rotation(q_commit)
+        ta = t * angle
+        if wp.abs(ta) > _SMALL_ANGLE_EPS:
+            q_new = wp.normalize(wp.quat_from_axis_angle(axis, ta) * q_rot)
+        else:
+            half_w = axis * (ta * 0.5)
+            q_new = wp.normalize(wp.quat(half_w[0], half_w[1], half_w[2], 1.0) * q_rot)
+        body_q[b] = wp.transform(c_new - wp.quat_rotate(q_new, com), q_new)

@@ -61,8 +61,11 @@ from .rigid_vbd_kernels import (
     accumulate_body_body_contacts_per_body,
     accumulate_body_particle_contacts_per_body,
     apply_body_truncation_ts,
+    apply_body_truncation_ts_commit,
     apply_rigid_rigid_truncation,
+    apply_rigid_rigid_truncation_persistent,
     apply_rigid_soft_truncation,
+    apply_rigid_soft_truncation_persistent,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     check_contact_overflow,
@@ -73,6 +76,8 @@ from .rigid_vbd_kernels import (
     init_body_body_contacts_avbd,
     init_body_particle_contacts,
     init_cable_rest_bend_twist,
+    refresh_rigid_rigid_dat_planes,
+    refresh_rigid_soft_dat_planes,
     reset_rigid_state,
     snapshot_body_body_contact_history,
     solve_rigid_body,
@@ -281,6 +286,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Rigid body - penetration-free DAT truncation
         rigid_enable_penetration_free: bool = False,  # Truncate rigid pose updates against per-contact division planes
         rigid_conservative_bound_relaxation: float = 0.85,  # Relaxation factor for rigid DAT truncation
+        rigid_dat_persistent_planes: bool = False,  # EXPERIMENTAL: persist (n, p) and refresh planes post-truncation
         deterministic: wp.DeterministicMode | None = None,
         pipeline=None,  # CollisionPipeline | None: solver-owned collision pipeline
         collision_frequency: list[int] | None = None,
@@ -424,6 +430,15 @@ class SolverVBD(SolverBase, CouplingInterface):
                 for fast bodies. Kinematic bodies move outside the solver and are not truncated.
             rigid_conservative_bound_relaxation: Relaxation factor in (0, 1) applied to rigid DAT
                 truncation scalars and the conservative motion budget. Only used when
+                ``rigid_enable_penetration_free`` is ``True``.
+            rigid_dat_persistent_planes: EXPERIMENTAL. Persist each contact's division plane
+                (n, p) explicitly and refresh it after every truncation pass — i.e. always at a
+                penetration-free committed state — instead of rebuilding planes from the
+                detection-time reference. Rigid rays then anchor at the last committed pose; the
+                per-body motion budget keeps being measured from the detection-time reference.
+                Planes track the live geometry between detections (better normals under sliding
+                and rotation) at the cost of a weaker formal guarantee for the soft side, whose
+                rays keep detection-time anchoring. Only used when
                 ``rigid_enable_penetration_free`` is ``True``.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
@@ -669,6 +684,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             model,
             rigid_enable_penetration_free,
             rigid_conservative_bound_relaxation,
+            rigid_dat_persistent_planes,
         )
 
         # Controls whether the next step() refreshes contact state derived from
@@ -2253,12 +2269,14 @@ class SolverVBD(SolverBase, CouplingInterface):
         model: Model,
         rigid_enable_penetration_free: bool,
         rigid_conservative_bound_relaxation: float,
+        rigid_dat_persistent_planes: bool = False,
     ):
         """Initialize rigid DAT truncation state: per-body truncation scalars, reference
         poses, DAT vertex tables, and per-body motion budgets derived from the owned
         pipeline's detection distances."""
         self.rigid_enable_penetration_free = rigid_enable_penetration_free
         self.rigid_conservative_bound_relaxation = rigid_conservative_bound_relaxation
+        self.rigid_dat_persistent_planes = rigid_dat_persistent_planes
         # Threshold below which a displacement is treated as parallel to a division plane.
         self.rigid_dat_parallel_epsilon = 1e-5
 
@@ -2341,6 +2359,16 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._rigid_dat_particle_max_displacement = wp.inf
 
         self._init_rigid_dat_body_vertices(model)
+
+        if rigid_dat_persistent_planes:
+            owned = self._pipeline_contacts
+            self.dat_soft_plane_n = wp.zeros(max(owned.soft_contact_max, 1), dtype=wp.vec3, device=self.device)
+            self.dat_soft_plane_p = wp.zeros(max(owned.soft_contact_max, 1), dtype=wp.vec3, device=self.device)
+            self.dat_rigid_plane_n = wp.zeros(max(owned.rigid_contact_max, 1), dtype=wp.vec3, device=self.device)
+            self.dat_rigid_plane_p = wp.zeros(max(owned.rigid_contact_max, 1), dtype=wp.vec3, device=self.device)
+            # Rigid ray anchor: the last committed (post-truncation) pose, where the
+            # persisted planes were refreshed.
+            self.body_q_prev_commit = wp.clone(model.body_q, device=self.device)
 
     def _init_rigid_dat_body_vertices(self, model: Model):
         """Build the per-body DAT vertex tables used by the trajectory truncation kernels.
@@ -2459,12 +2487,87 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     def _snapshot_rigid_dat_reference(self, state: State):
         """Snapshot the rigid DAT reference poses at a collision detection instant
-        (mirror of resetting ``pos_prev_collision_detection`` for particles)."""
+        (mirror of resetting ``pos_prev_collision_detection`` for particles).
+
+        The particle-side DAT anchor is reset at the same instant: rigid-soft division
+        planes combine the rigid reference with the particle anchor, so the two must
+        come from the same (penetration-free) state — a mixed-epoch pair misplaces the
+        plane by the in-flight particle displacement. With self-contact enabled the
+        full particle detection runs so its pair set stays in the same epoch too."""
         if not self.rigid_enable_penetration_free:
             return
         self.body_q_prev_collision_detection.assign(state.body_q)
+        if self.model.particle_count > 0 and state.particle_q is not None:
+            if self.particle_enable_self_contact:
+                self._collision_detection_penetration_free(state)
+            else:
+                self.pos_prev_collision_detection.assign(state.particle_q)
+                self.particle_displacements.zero_()
+        if self.rigid_dat_persistent_planes:
+            # (Re)initialize the persisted planes and the commit anchor from the fresh
+            # contact records at the detection state.
+            self.body_q_prev_commit.assign(state.body_q)
+            self._rigid_dat_refresh_planes(self._pipeline_contacts, state.particle_q, state.body_q, initialize=True)
 
-    def _rigid_penetration_free_truncation(self, contacts: Contacts | None, body_q):
+    def _rigid_dat_refresh_planes(self, contacts: Contacts, particle_q, body_q, initialize: bool = False):
+        """Refresh the persisted division planes at the CURRENT (post-truncation,
+        penetration-free) state, then advance the commit anchor to it."""
+        if contacts is None or body_q is None:
+            return
+        if self.model.particle_count > 0 and contacts.soft_contact_max > 0 and particle_q is not None:
+            wp.launch(
+                kernel=refresh_rigid_soft_dat_planes,
+                dim=contacts.soft_contact_max,
+                inputs=[
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_normal,
+                    contacts.soft_contact_barycentric,
+                    self.model.shape_body,
+                    particle_q,
+                    self.particle_displacements,
+                    self.body_q_prev_commit,
+                    body_q,
+                    self.model.body_com,
+                    int(initialize),
+                ],
+                outputs=[
+                    self.dat_soft_plane_n,
+                    self.dat_soft_plane_p,
+                ],
+                device=self.device,
+            )
+        if contacts.rigid_contact_max > 0:
+            wp.launch(
+                kernel=refresh_rigid_rigid_dat_planes,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    self.model.shape_body,
+                    self.model.shape_margin,
+                    self.body_q_prev_commit,
+                    body_q,
+                    self.model.body_com,
+                    int(initialize),
+                ],
+                outputs=[
+                    self.dat_rigid_plane_n,
+                    self.dat_rigid_plane_p,
+                ],
+                device=self.device,
+            )
+        self.body_q_prev_commit.assign(body_q)
+
+    def _rigid_penetration_free_truncation(self, contacts: Contacts | None, body_q, particle_q=None):
         """Truncate accumulated rigid pose updates against rigid-rigid and rigid-soft
         division planes (rigid-phase DAT pass).
 
@@ -2479,7 +2582,31 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         self.body_truncation_ts.fill_(1.0)
 
-        if contacts.rigid_contact_max > 0:
+        if contacts.rigid_contact_max > 0 and self.rigid_dat_persistent_planes:
+            wp.launch(
+                kernel=apply_rigid_rigid_truncation_persistent,
+                dim=contacts.rigid_contact_max * DAT_THREADS_PER_CONTACT,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    self.dat_rigid_plane_n,
+                    self.dat_rigid_plane_p,
+                    self.model.shape_body,
+                    self.body_q_prev_commit,
+                    body_q,
+                    self.model.body_com,
+                    self.dat_body_vertex_start,
+                    self.dat_body_vertices,
+                    self.dat_body_vertex_radius,
+                    self.rigid_conservative_bound_relaxation,
+                ],
+                outputs=[
+                    self.body_truncation_ts,
+                ],
+                device=self.device,
+            )
+        elif contacts.rigid_contact_max > 0:
             wp.launch(
                 kernel=apply_rigid_rigid_truncation,
                 dim=contacts.rigid_contact_max * DAT_THREADS_PER_CONTACT,
@@ -2511,50 +2638,41 @@ class SolverVBD(SolverBase, CouplingInterface):
         if self.model.particle_count > 0 and contacts.soft_contact_max > 0:
             # Also respect the rigid-soft planes; the write to truncation_ts is a
             # harmless side effect (it is refilled before its next particle-phase use).
-            wp.launch(
-                kernel=apply_rigid_soft_truncation,
-                dim=contacts.soft_contact_max * DAT_THREADS_PER_CONTACT,
-                inputs=[
-                    contacts.soft_contact_count,
-                    contacts.soft_contact_indices,
-                    contacts.soft_contact_shape,
-                    contacts.soft_contact_body_pos,
-                    contacts.soft_contact_normal,
-                    contacts.soft_contact_barycentric,
-                    self.model.shape_body,
-                    self.pos_prev_collision_detection,
-                    self.particle_displacements,
-                    self.body_q_prev_collision_detection,
-                    body_q,
-                    self.model.body_com,
-                    self.dat_body_vertex_start,
-                    self.dat_body_vertices,
-                    self.dat_body_vertex_radius,
-                    self.rigid_dat_parallel_epsilon,
-                    self.rigid_conservative_bound_relaxation,
-                ],
-                outputs=[
-                    self.truncation_ts,
-                    self.body_truncation_ts,
-                ],
-                device=self.device,
-            )
+            if self.rigid_dat_persistent_planes:
+                wp.launch(
+                    kernel=apply_rigid_soft_truncation_persistent,
+                    dim=contacts.soft_contact_max * DAT_THREADS_PER_CONTACT,
+                    inputs=[
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_indices,
+                        contacts.soft_contact_shape,
+                        self.dat_soft_plane_n,
+                        self.dat_soft_plane_p,
+                        contacts.soft_contact_barycentric,
+                        self.model.shape_body,
+                        self.pos_prev_collision_detection,
+                        self.particle_displacements,
+                        self.body_q_prev_commit,
+                        body_q,
+                        self.model.body_com,
+                        self.dat_body_vertex_start,
+                        self.dat_body_vertices,
+                        self.dat_body_vertex_radius,
+                        self.rigid_dat_parallel_epsilon,
+                        self.rigid_conservative_bound_relaxation,
+                    ],
+                    outputs=[
+                        self.truncation_ts,
+                        self.body_truncation_ts,
+                    ],
+                    device=self.device,
+                )
+            else:
+                self._launch_rigid_soft_truncation(contacts, body_q)
 
-        wp.launch(
-            kernel=apply_body_truncation_ts,
-            dim=self.model.body_count,
-            inputs=[
-                self.body_q_prev_collision_detection,
-                self.model.body_com,
-                self.body_truncation_ts,
-                self.body_bounding_radius,
-                self.body_dat_max_displacement,
-            ],
-            outputs=[
-                body_q,
-            ],
-            device=self.device,
-        )
+        self._apply_body_truncation(body_q)
+        if self.rigid_dat_persistent_planes:
+            self._rigid_dat_refresh_planes(contacts, particle_q, body_q)
 
     def _penetration_free_truncation(self, particle_q_out=None, contacts: Contacts | None = None, body_q=None):
         """
@@ -2601,34 +2719,37 @@ class SolverVBD(SolverBase, CouplingInterface):
             # Joint rigid-soft pass: both sides of every contact are constrained against
             # the same division plane within this launch.
             self.body_truncation_ts.fill_(1.0)
-            wp.launch(
-                kernel=apply_rigid_soft_truncation,
-                dim=contacts.soft_contact_max * DAT_THREADS_PER_CONTACT,
-                inputs=[
-                    contacts.soft_contact_count,
-                    contacts.soft_contact_indices,
-                    contacts.soft_contact_shape,
-                    contacts.soft_contact_body_pos,
-                    contacts.soft_contact_normal,
-                    contacts.soft_contact_barycentric,
-                    self.model.shape_body,
-                    self.pos_prev_collision_detection,
-                    self.particle_displacements,
-                    self.body_q_prev_collision_detection,
-                    body_q,
-                    self.model.body_com,
-                    self.dat_body_vertex_start,
-                    self.dat_body_vertices,
-                    self.dat_body_vertex_radius,
-                    self.rigid_dat_parallel_epsilon,
-                    self.rigid_conservative_bound_relaxation,
-                ],
-                outputs=[
-                    self.truncation_ts,
-                    self.body_truncation_ts,
-                ],
-                device=self.device,
-            )
+            if self.rigid_dat_persistent_planes:
+                wp.launch(
+                    kernel=apply_rigid_soft_truncation_persistent,
+                    dim=contacts.soft_contact_max * DAT_THREADS_PER_CONTACT,
+                    inputs=[
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_indices,
+                        contacts.soft_contact_shape,
+                        self.dat_soft_plane_n,
+                        self.dat_soft_plane_p,
+                        contacts.soft_contact_barycentric,
+                        self.model.shape_body,
+                        self.pos_prev_collision_detection,
+                        self.particle_displacements,
+                        self.body_q_prev_commit,
+                        body_q,
+                        self.model.body_com,
+                        self.dat_body_vertex_start,
+                        self.dat_body_vertices,
+                        self.dat_body_vertex_radius,
+                        self.rigid_dat_parallel_epsilon,
+                        self.rigid_conservative_bound_relaxation,
+                    ],
+                    outputs=[
+                        self.truncation_ts,
+                        self.body_truncation_ts,
+                    ],
+                    device=self.device,
+                )
+            else:
+                self._launch_rigid_soft_truncation(contacts, body_q)
 
         wp.launch(
             kernel=apply_truncation_ts,
@@ -2647,6 +2768,62 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
 
         if rigid_dat_active:
+            self._apply_body_truncation(body_q)
+            if self.rigid_dat_persistent_planes:
+                self._rigid_dat_refresh_planes(contacts, particle_q_out, body_q)
+
+    def _launch_rigid_soft_truncation(self, contacts, body_q):
+        """Detection-referenced joint rigid-soft truncation launch (default scheme)."""
+        wp.launch(
+            kernel=apply_rigid_soft_truncation,
+            dim=contacts.soft_contact_max * DAT_THREADS_PER_CONTACT,
+            inputs=[
+                contacts.soft_contact_count,
+                contacts.soft_contact_indices,
+                contacts.soft_contact_shape,
+                contacts.soft_contact_body_pos,
+                contacts.soft_contact_normal,
+                contacts.soft_contact_barycentric,
+                self.model.shape_body,
+                self.pos_prev_collision_detection,
+                self.particle_displacements,
+                self.body_q_prev_collision_detection,
+                body_q,
+                self.model.body_com,
+                self.dat_body_vertex_start,
+                self.dat_body_vertices,
+                self.dat_body_vertex_radius,
+                self.rigid_dat_parallel_epsilon,
+                self.rigid_conservative_bound_relaxation,
+            ],
+            outputs=[
+                self.truncation_ts,
+                self.body_truncation_ts,
+            ],
+            device=self.device,
+        )
+
+    def _apply_body_truncation(self, body_q):
+        """Rescale each body's accumulated pose update by its truncation scalar and the
+        conservative motion budget (dual-referenced in the persistent-plane variant)."""
+        if self.rigid_dat_persistent_planes:
+            wp.launch(
+                kernel=apply_body_truncation_ts_commit,
+                dim=self.model.body_count,
+                inputs=[
+                    self.body_q_prev_commit,
+                    self.body_q_prev_collision_detection,
+                    self.model.body_com,
+                    self.body_truncation_ts,
+                    self.body_bounding_radius,
+                    self.body_dat_max_displacement,
+                ],
+                outputs=[
+                    body_q,
+                ],
+                device=self.device,
+            )
+        else:
             wp.launch(
                 kernel=apply_body_truncation_ts,
                 dim=self.model.body_count,
@@ -2996,7 +3173,9 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             # Truncate the forward step against the division planes before any
             # solve iterations run on the predicted poses.
-            self._rigid_penetration_free_truncation(contacts, state_in.body_q)
+            self._rigid_penetration_free_truncation(
+                contacts, state_in.body_q, state_in.particle_q if model.particle_count > 0 else None
+            )
 
             if model.joint_count > 0:
                 # Warm-started lambda decays by alpha * gamma, while penalty k uses gamma only.
@@ -3545,7 +3724,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
 
         # Truncate the accumulated pose updates before the dual updates read them.
-        self._rigid_penetration_free_truncation(contacts, state_in.body_q)
+        self._rigid_penetration_free_truncation(
+            contacts, state_in.body_q, state_in.particle_q if self.model.particle_count > 0 else None
+        )
 
         if contacts is not None:
             contact_launch_dim = contacts.rigid_contact_max
@@ -3886,7 +4067,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         view = State()
         view.body_q = state_in.body_q
         view.body_qd = state_in.body_qd
-        view.particle_q = state_out.particle_q if state_out.particle_q is not None else state_in.particle_q
+        # state_in.particle_q always holds the current committed particle iterate: the
+        # truncation pass writes it and each particle iteration ends by copying it to
+        # state_out. At iteration 0 (rigid PRE_POST_INIT) only state_in is current --
+        # state_out.particle_q is still the previous step's buffer.
+        view.particle_q = state_in.particle_q
         view.particle_qd = state_in.particle_qd
         return view
 
