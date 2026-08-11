@@ -414,7 +414,7 @@ class TestHierModel(unittest.TestCase):
 
 **Files:** Modify `research/principal_stretch/train.py` (flag `--hier`, construct `Hierarchy` from the dataset topology, instantiate `HierStretchNet`, save hierarchy config in the checkpoint), `eval_singlestep.py` and `rollout.py` (rebuild `HierStretchNet` when `ckpt["args"]["hier"]`).
 
-- [ ] **Step 1:** overfit gate — 20 toy frames, 500 steps, `--hier`: final windowed loss < 1% of its initial value (gradients flow through exp/log and all levels end to end).
+- [ ] **Step 1:** overfit gate — 20 toy frames, 500 steps, `--hier`: final windowed loss < 1% of its initial value (gradients flow through exp/log and all levels end to end). **Protocol (pinned after Task-6 execution):** `--solver-iters 100` (at the default 10 the oracle-S floor is already 3.4% of initial — the bar is unreachable for any predictor) and a two-stage lr (400 steps @ 3e-3, then 100 @ 2e-4 via `--init-ckpt`); the load-bearing evidence is the free-dH control (no net, direct dH optimization -> 3e-7), which isolates gradient health from optimizer noise.
 - [ ] **Step 2:** toy parity gate — full toy training, accuracy recipe (`--loss pos --residual --warm inertial --max-rollout 4 --steps 4000`): `eval_singlestep` <= 2.5 mm (flat achieves 2.1; toy has little headroom — correctness gate, not signal gate). Log per-level `|dH_l|` means every 50 steps (the dead-level detector from the failure playbook).
 - [ ] **Step 3:** lint, commit `"Wire hierarchical predictor into trainer and eval harnesses"`.
 
