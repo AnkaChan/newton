@@ -5114,3 +5114,543 @@ def update_cable_dahl_state(
     joint_sigma_prev[j] = sigma_final_out
     joint_kappa_prev[j] = kappa_final
     joint_dkappa_prev[j] = d_kappa_out
+
+
+# =====================================================================================
+# Rigid-body Divide-and-Truncate (DAT) penetration-free truncation.
+#
+# Rigid bodies follow curved vertex trajectories under interpolated pose updates, so
+# per-contact division planes are enforced by sampling + bisection along the trajectory
+# (paper Alg. 1, stage 1) instead of the straight-ray intersection used for particles.
+# The interval-arithmetic arc verification (stage 2) is intentionally omitted.
+#
+# The kernels consume only the abstract ``Contacts`` record fields (shape ids, points,
+# normals, margins, soft feature indices + barycentrics) plus reference/candidate poses,
+# so they are insensitive to which detection backend produced the contacts.
+# =====================================================================================
+
+# Uniform samples along the trajectory used to bracket the first plane crossing.
+DAT_TRAJECTORY_SAMPLES = wp.constant(8)
+# Bisection refinements of the bracketed crossing time.
+DAT_BISECTION_ITERATIONS = wp.constant(16)
+# Cooperative lanes per contact for the per-vertex rigid trajectory sweep.
+DAT_THREADS_PER_CONTACT = 8
+# Reference points within this band of a division plane count as pinched: approach is
+# blocked outright instead of bisected, separation stays free.
+DAT_PINCH_BAND = wp.constant(1.0e-6)
+
+
+@wp.func
+def planar_truncation_t(
+    v: wp.vec3, delta_v: wp.vec3, n: wp.vec3, d: wp.vec3, eps: float, gamma_r: float, gamma_min: float = 1e-3
+):
+    denom = wp.dot(n, delta_v)
+
+    # Parallel (or nearly parallel) -> no intersection
+    if wp.abs(denom) < eps:
+        return 1.0
+
+    # Solve: dot(n, v + t*delta_v - d) = 0
+    t = wp.dot(n, d - v) / denom
+
+    if t < 0:
+        return 1.0
+
+    t = wp.clamp(wp.min(t * gamma_r, t - gamma_min), 0.0, 1.0)
+    return t
+
+
+@wp.func
+def rigid_pose_delta(q_ref: wp.transform, q_cur: wp.transform, com: wp.vec3):
+    """Decompose the update from ``q_ref`` to ``q_cur`` into a COM translation and a
+    world-frame rotation vector (shortest arc) about the COM.
+
+    Returns (c0, dx, axis, angle): reference world COM, COM translation, and the
+    axis-angle of the relative rotation.
+    """
+    c0 = wp.transform_point(q_ref, com)
+    c1 = wp.transform_point(q_cur, com)
+    q_rel = wp.transform_get_rotation(q_cur) * wp.quat_inverse(wp.transform_get_rotation(q_ref))
+    q_rel = wp.normalize(q_rel)
+    if q_rel[3] < 0.0:
+        q_rel = wp.quat(-q_rel[0], -q_rel[1], -q_rel[2], -q_rel[3])
+    axis, angle = wp.quat_to_axis_angle(q_rel)
+    return c0, c1 - c0, axis, angle
+
+
+@wp.func
+def rigid_point_trajectory(
+    t: float, c0: wp.vec3, dx: wp.vec3, axis: wp.vec3, angle: float, offset0: wp.vec3
+) -> wp.vec3:
+    """Position at interpolation parameter ``t`` of a body-fixed point whose COM offset at
+    the reference pose is ``offset0``, under linearly interpolated translation + rotation."""
+    ta = t * angle
+    if wp.abs(ta) > _SMALL_ANGLE_EPS:
+        rotated = wp.quat_rotate(wp.quat_from_axis_angle(axis, ta), offset0)
+    else:
+        rotated = offset0 + wp.cross(axis * ta, offset0)
+    return c0 + t * dx + rotated
+
+
+@wp.func
+def rigid_trajectory_truncation_t(
+    n: wp.vec3,
+    d: wp.vec3,
+    c0: wp.vec3,
+    dx: wp.vec3,
+    axis: wp.vec3,
+    angle: float,
+    offset0: wp.vec3,
+    gamma_r: float,
+    gamma_min: float = 1e-3,
+):
+    """Latest safe interpolation parameter before the trajectory crosses the plane (n, d).
+
+    The point must start on the negative side of the plane. Uniform sampling brackets the
+    first sign change; bisection refines it. Endpoint checks between samples can miss an
+    arc that crosses and returns within one sub-interval; the sampling density bounds that
+    risk (see module note on the omitted interval-arithmetic stage).
+    """
+    s0 = wp.dot(n, rigid_point_trajectory(0.0, c0, dx, axis, angle, offset0) - d)
+    if s0 >= -DAT_PINCH_BAND:
+        # Pinched (at or numerically over the plane): a squeezed contact must stall
+        # rather than pass through -- block any approaching update, keep separation free.
+        s_end = wp.dot(n, rigid_point_trajectory(1.0, c0, dx, axis, angle, offset0) - d)
+        if s_end > s0:
+            return 0.0
+        return 1.0
+
+    t_lo = float(0.0)
+    t_hi = float(1.0)
+    crossed = bool(False)
+    for k in range(DAT_TRAJECTORY_SAMPLES):
+        t_k = float(k + 1) / float(DAT_TRAJECTORY_SAMPLES)
+        s_k = wp.dot(n, rigid_point_trajectory(t_k, c0, dx, axis, angle, offset0) - d)
+        if s_k >= 0.0:
+            t_lo = float(k) / float(DAT_TRAJECTORY_SAMPLES)
+            t_hi = t_k
+            crossed = True
+            break
+
+    if not crossed:
+        return 1.0
+
+    for _j in range(DAT_BISECTION_ITERATIONS):
+        t_mid = 0.5 * (t_lo + t_hi)
+        s_mid = wp.dot(n, rigid_point_trajectory(t_mid, c0, dx, axis, angle, offset0) - d)
+        if s_mid < 0.0:
+            t_lo = t_mid
+        else:
+            t_hi = t_mid
+
+    return wp.clamp(wp.min(t_lo * gamma_r, t_lo - gamma_min), 0.0, 1.0)
+
+
+@wp.func
+def rigid_body_vertices_truncation_min(
+    n: wp.vec3,
+    d: wp.vec3,
+    c0: wp.vec3,
+    dx: wp.vec3,
+    axis: wp.vec3,
+    angle: float,
+    X_wb_ref: wp.transform,
+    dat_body_vertices: wp.array[wp.vec3],
+    dat_body_vertex_radius: wp.array[float],
+    vertex_start: int,
+    vertex_end: int,
+    lane: int,
+    gamma_r: float,
+):
+    """Minimum trajectory-truncation parameter over a body's DAT vertices vs plane (n, d).
+
+    The body must stay on the negative side of the plane. Each vertex carries a radius
+    (sphere/capsule skeleton points; zero for mesh vertices and box corners), tightening
+    its plane by that amount. Vertices that cannot reach the plane within the update's
+    motion bound (|dx| + |angle|*|offset|) are culled before the bisection. ``lane``
+    strides the vertex range so DAT_THREADS_PER_CONTACT threads cooperate per contact.
+    """
+    t_min = float(1.0)
+    dx_len = wp.length(dx)
+    i = vertex_start + lane
+    while i < vertex_end:
+        v_ref = wp.transform_point(X_wb_ref, dat_body_vertices[i])
+        r_v = dat_body_vertex_radius[i]
+        offset = v_ref - c0
+        s_ref = wp.dot(n, v_ref - d) + r_v
+        motion_bound = dx_len + wp.abs(angle) * wp.length(offset)
+        if s_ref + motion_bound >= 0.0:
+            t_v = rigid_trajectory_truncation_t(n, d - r_v * n, c0, dx, axis, angle, offset, gamma_r)
+            t_min = wp.min(t_min, t_v)
+        i += DAT_THREADS_PER_CONTACT
+    return t_min
+
+
+@wp.kernel
+def apply_rigid_soft_truncation(
+    # inputs
+    soft_contact_count: wp.array[wp.int32],
+    soft_contact_indices: wp.array[wp.vec3i],
+    soft_contact_shape: wp.array[wp.int32],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    shape_body: wp.array[wp.int32],
+    pos_prev_collision_detection: wp.array[wp.vec3],
+    particle_displacements: wp.array[wp.vec3],
+    body_q_ref: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    dat_body_vertex_start: wp.array[wp.int32],
+    dat_body_vertices: wp.array[wp.vec3],
+    dat_body_vertex_radius: wp.array[float],
+    parallel_eps: float,
+    gamma: float,
+    # outputs
+    truncation_ts: wp.array[float],
+    body_truncation_ts: wp.array[float],
+):
+    """Joint DAT truncation for one rigid-soft contact: build the division plane from the
+    reference configuration and atomically min-reduce the truncation scalars of the soft
+    vertices (straight rays) and of the rigid body (curved trajectories of ALL of its DAT
+    vertices -- paper: t_b = min over the body's vertices and planes -- with per-vertex
+    motion-bound culling before the bisection).
+
+    Contacts self-describe their soft feature through ``soft_contact_indices`` (-1 padded
+    particle ids) + barycentrics, uniformly for particle/edge/face records and independent
+    of the detection backend that produced them.
+
+    Both sides of each contact are constrained against the same plane within a single
+    launch, which is what preserves the separating property of the plane. Launched with
+    DAT_THREADS_PER_CONTACT cooperating lanes per contact; lane 0 handles the soft side,
+    all lanes stride the body's vertex table.
+
+    A pinched contact (reference gap ~ 0, e.g. cloth squeezed between a driven gripper and
+    the ground) keeps its plane at the contact anchor: approach is blocked (stall),
+    separation stays free. Skipping such contacts instead would let the rigid side walk
+    through.
+    """
+    tid = wp.tid()
+    contact_index = tid // DAT_THREADS_PER_CONTACT
+    lane = tid % DAT_THREADS_PER_CONTACT
+
+    if contact_index >= soft_contact_count[0]:
+        return
+
+    indices = soft_contact_indices[contact_index]
+    if indices[0] < 0:
+        return
+    bary = soft_contact_barycentric[contact_index]
+
+    # Reference contact point on the soft feature and its accumulated displacement.
+    x_ref = bary[0] * pos_prev_collision_detection[indices[0]]
+    dx_soft = bary[0] * particle_displacements[indices[0]]
+    for i in range(1, 3):
+        vi = indices[i]
+        if vi >= 0:
+            x_ref += bary[i] * pos_prev_collision_detection[vi]
+            dx_soft += bary[i] * particle_displacements[vi]
+
+    shape_index = soft_contact_shape[contact_index]
+    body_index = shape_body[shape_index]
+
+    # Contact anchor on the rigid surface at the reference pose (world frame for statics).
+    X_wb_ref = wp.transform_identity()
+    if body_index >= 0:
+        X_wb_ref = body_q_ref[body_index]
+    bx0 = wp.transform_point(X_wb_ref, soft_contact_body_pos[contact_index])
+
+    # The stored contact normal stays valid under pinching, where the anchor difference
+    # degenerates; the signed gap comes from projecting onto it.
+    n = soft_contact_normal[contact_index]
+    gap = wp.max(wp.dot(n, x_ref - bx0), 0.0)
+
+    # Rigid-body update accumulated since the reference pose.
+    c0 = wp.vec3(0.0)
+    dx_body = wp.vec3(0.0)
+    rot_axis = wp.vec3(0.0)
+    rot_angle = float(0.0)
+    body_is_moving = bool(False)
+    if body_index >= 0:
+        c0, dx_body, rot_axis, rot_angle = rigid_pose_delta(X_wb_ref, body_q[body_index], body_com[body_index])
+        body_is_moving = wp.length_sq(dx_body) > 0.0 or rot_angle != 0.0
+
+    # Adaptive plane placement: room proportional to each side's approach speed along n
+    # (n points from the rigid surface toward the soft side).
+    delta_soft = wp.max(-wp.dot(n, dx_soft), 0.0)
+    delta_rigid = float(0.0)
+    if body_is_moving:
+        anchor_end = rigid_point_trajectory(1.0, c0, dx_body, rot_axis, rot_angle, bx0 - c0)
+        delta_rigid = wp.max(wp.dot(n, anchor_end - bx0), 0.0)
+
+    if delta_soft + delta_rigid == 0.0:
+        lmbd = 0.5
+    else:
+        lmbd = wp.clamp(delta_rigid / (delta_rigid + delta_soft), 0.05, 0.95)
+    d = bx0 + (lmbd * gap) * n
+
+    # Soft side (lane 0): straight-ray truncation per involved vertex. Vertices within the
+    # pinch band that keep approaching are frozen; vertices clearly on the rigid side of
+    # the plane are not part of the local contact geometry (e.g. a triangle draped past
+    # the shape) and are skipped.
+    if lane == 0:
+        for i in range(3):
+            vi = indices[i]
+            if vi >= 0 and (i == 0 or bary[i] > 0.0):
+                x_v = pos_prev_collision_detection[vi]
+                s_v = wp.dot(n, x_v - d)
+                if s_v > DAT_PINCH_BAND:
+                    t_v = planar_truncation_t(x_v, particle_displacements[vi], n, d, parallel_eps, gamma)
+                    if t_v < 1.0:
+                        wp.atomic_min(truncation_ts, vi, t_v)
+                elif s_v > -DAT_PINCH_BAND and wp.dot(n, particle_displacements[vi]) < 0.0:
+                    wp.atomic_min(truncation_ts, vi, 0.0)
+
+    # Rigid side: curved-trajectory truncation over the body's DAT vertices (all lanes).
+    if body_is_moving:
+        vertex_start = dat_body_vertex_start[body_index]
+        vertex_end = dat_body_vertex_start[body_index + 1]
+        if vertex_end > vertex_start:
+            t_b = rigid_body_vertices_truncation_min(
+                n,
+                d,
+                c0,
+                dx_body,
+                rot_axis,
+                rot_angle,
+                X_wb_ref,
+                dat_body_vertices,
+                dat_body_vertex_radius,
+                vertex_start,
+                vertex_end,
+                lane,
+                gamma,
+            )
+        elif lane == 0:
+            # No DAT vertices provisioned for this body: fall back to the contact anchor.
+            t_b = rigid_trajectory_truncation_t(n, d, c0, dx_body, rot_axis, rot_angle, bx0 - c0, gamma)
+        else:
+            t_b = 1.0
+        if t_b < 1.0:
+            wp.atomic_min(body_truncation_ts, body_index, t_b)
+
+
+@wp.kernel
+def apply_rigid_rigid_truncation(
+    # inputs
+    rigid_contact_count: wp.array[wp.int32],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    shape_body: wp.array[wp.int32],
+    shape_margin: wp.array[float],
+    body_q_ref: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    dat_body_vertex_start: wp.array[wp.int32],
+    dat_body_vertices: wp.array[wp.vec3],
+    dat_body_vertex_radius: wp.array[float],
+    gamma: float,
+    # outputs
+    body_truncation_ts: wp.array[float],
+):
+    """DAT truncation for one rigid-rigid contact reported by the collision pipeline.
+
+    The contact's skeleton points and normal (recorded at the reference poses) define a
+    division plane between the two geometric surfaces (skeleton point + effective radius
+    along the normal). The per-shape contact margin is deliberately excluded: penalty
+    forces act inside the margin shell, while the plane guards the true surface --
+    matching the soft path, where forces act at radius + margin but truncation is purely
+    geometric.
+
+    Both bodies are min-reduced against the same plane in this launch: every DAT vertex of
+    each body must stay on its side along its curved trajectory (per-vertex motion-bound
+    culling before the bisection; per-vertex radii cover sphere/capsule skeleton points).
+    Launched with DAT_THREADS_PER_CONTACT cooperating lanes per contact. A pinched contact
+    (reference gap ~ 0) keeps its plane: approach stalls, separation stays free.
+    """
+    tid = wp.tid()
+    contact_index = tid // DAT_THREADS_PER_CONTACT
+    lane = tid % DAT_THREADS_PER_CONTACT
+
+    if contact_index >= rigid_contact_count[0]:
+        return
+
+    s0 = rigid_contact_shape0[contact_index]
+    s1 = rigid_contact_shape1[contact_index]
+    if s0 < 0 or s1 < 0:
+        return
+    b0 = shape_body[s0]
+    b1 = shape_body[s1]
+    if b0 < 0 and b1 < 0:
+        return
+
+    X_w0_ref = wp.transform_identity()
+    if b0 >= 0:
+        X_w0_ref = body_q_ref[b0]
+    X_w1_ref = wp.transform_identity()
+    if b1 >= 0:
+        X_w1_ref = body_q_ref[b1]
+
+    p0 = wp.transform_point(X_w0_ref, rigid_contact_point0[contact_index])
+    p1 = wp.transform_point(X_w1_ref, rigid_contact_point1[contact_index])
+    n = rigid_contact_normal[contact_index]  # unit, points from shape 0 toward shape 1
+
+    # Geometric surface distance from each skeleton point (effective radius): the stored
+    # contact margins are radius_eff + shape_margin.
+    margin0 = rigid_contact_margin0[contact_index]
+    margin1 = rigid_contact_margin1[contact_index]
+    if shape_margin.shape[0] > 0:
+        margin0 -= shape_margin[s0]
+        margin1 -= shape_margin[s1]
+    margin0 = wp.max(margin0, 0.0)
+    margin1 = wp.max(margin1, 0.0)
+
+    # Signed geometric gap; clamped so a pinched pair keeps a plane at the touch point
+    # (approach stalls) instead of being skipped and walked through.
+    gap = wp.max(wp.dot(n, p1 - p0) - margin0 - margin1, 0.0)
+
+    # Accumulated pose updates since the reference poses.
+    c0_a = wp.vec3(0.0)
+    dx_a = wp.vec3(0.0)
+    axis_a = wp.vec3(0.0)
+    angle_a = float(0.0)
+    moving_a = bool(False)
+    if b0 >= 0:
+        c0_a, dx_a, axis_a, angle_a = rigid_pose_delta(X_w0_ref, body_q[b0], body_com[b0])
+        moving_a = wp.length_sq(dx_a) > 0.0 or angle_a != 0.0
+
+    c0_b = wp.vec3(0.0)
+    dx_b = wp.vec3(0.0)
+    axis_b = wp.vec3(0.0)
+    angle_b = float(0.0)
+    moving_b = bool(False)
+    if b1 >= 0:
+        c0_b, dx_b, axis_b, angle_b = rigid_pose_delta(X_w1_ref, body_q[b1], body_com[b1])
+        moving_b = wp.length_sq(dx_b) > 0.0 or angle_b != 0.0
+
+    if not moving_a and not moving_b:
+        return
+
+    # Adaptive plane placement between the effective surfaces, proportional to each
+    # side's approach speed along the normal.
+    delta_0 = float(0.0)
+    if moving_a:
+        end_a = rigid_point_trajectory(1.0, c0_a, dx_a, axis_a, angle_a, p0 - c0_a)
+        delta_0 = wp.max(wp.dot(n, end_a - p0), 0.0)
+    delta_1 = float(0.0)
+    if moving_b:
+        end_b = rigid_point_trajectory(1.0, c0_b, dx_b, axis_b, angle_b, p1 - c0_b)
+        delta_1 = wp.max(-wp.dot(n, end_b - p1), 0.0)
+
+    if delta_0 + delta_1 == 0.0:
+        lmbd = 0.5
+    else:
+        lmbd = wp.clamp(delta_0 / (delta_0 + delta_1), 0.05, 0.95)
+
+    # Division plane point between the two geometric surfaces along n.
+    d = p0 + (margin0 + lmbd * gap) * n
+
+    # Side 0 stays on the -n side; per-vertex radii tighten each vertex's own plane, so
+    # the anchor-margin shift is only needed for the anchor fallback.
+    if moving_a and b0 >= 0:
+        vertex_start = dat_body_vertex_start[b0]
+        vertex_end = dat_body_vertex_start[b0 + 1]
+        if vertex_end > vertex_start:
+            t_a = rigid_body_vertices_truncation_min(
+                n,
+                d,
+                c0_a,
+                dx_a,
+                axis_a,
+                angle_a,
+                X_w0_ref,
+                dat_body_vertices,
+                dat_body_vertex_radius,
+                vertex_start,
+                vertex_end,
+                lane,
+                gamma,
+            )
+        elif lane == 0:
+            t_a = rigid_trajectory_truncation_t(n, d - margin0 * n, c0_a, dx_a, axis_a, angle_a, p0 - c0_a, gamma)
+        else:
+            t_a = 1.0
+        if t_a < 1.0:
+            wp.atomic_min(body_truncation_ts, b0, t_a)
+
+    # Side 1 stays on the +n side (flipped normal).
+    if moving_b and b1 >= 0:
+        vertex_start = dat_body_vertex_start[b1]
+        vertex_end = dat_body_vertex_start[b1 + 1]
+        if vertex_end > vertex_start:
+            t_b = rigid_body_vertices_truncation_min(
+                -n,
+                d,
+                c0_b,
+                dx_b,
+                axis_b,
+                angle_b,
+                X_w1_ref,
+                dat_body_vertices,
+                dat_body_vertex_radius,
+                vertex_start,
+                vertex_end,
+                lane,
+                gamma,
+            )
+        elif lane == 0:
+            t_b = rigid_trajectory_truncation_t(-n, d + margin1 * n, c0_b, dx_b, axis_b, angle_b, p1 - c0_b, gamma)
+        else:
+            t_b = 1.0
+        if t_b < 1.0:
+            wp.atomic_min(body_truncation_ts, b1, t_b)
+
+
+@wp.kernel
+def apply_body_truncation_ts(
+    # inputs
+    body_q_ref: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_truncation_ts: wp.array[float],
+    body_bounding_radius: wp.array[float],
+    body_dat_max_displacement: wp.array[float],
+    # input/output
+    body_q: wp.array[wp.transform],
+):
+    """Scale each body's accumulated pose update (reference -> candidate) by its truncation
+    scalar, interpolating translation and rotation about the COM.
+
+    Also applies the conservative isotropic bound: no point of the body may move farther
+    than its per-body budget (0.5 * gamma * detection slack, derived from the owned
+    pipeline's per-shape gaps) since the last collision detection, using
+    |dx| + |angle| * bounding_radius as an upper bound of the largest point motion.
+    """
+    b = wp.tid()
+
+    q_cur = body_q[b]
+    q_ref = body_q_ref[b]
+    com = body_com[b]
+    c0, dx, axis, angle = rigid_pose_delta(q_ref, q_cur, com)
+
+    t = body_truncation_ts[b]
+
+    motion_bound = wp.length(dx) + wp.abs(angle) * body_bounding_radius[b]
+    max_point_displacement = body_dat_max_displacement[b]
+    if motion_bound > max_point_displacement:
+        t = wp.min(t, max_point_displacement / motion_bound)
+
+    if t < 1.0:
+        c_new = c0 + t * dx
+        q_rot = wp.transform_get_rotation(q_ref)
+        ta = t * angle
+        if wp.abs(ta) > _SMALL_ANGLE_EPS:
+            q_new = wp.normalize(wp.quat_from_axis_angle(axis, ta) * q_rot)
+        else:
+            half_w = axis * (ta * 0.5)
+            q_new = wp.normalize(wp.quat(half_w[0], half_w[1], half_w[2], 1.0) * q_rot)
+        body_q[b] = wp.transform(c_new - wp.quat_rotate(q_new, com), q_new)

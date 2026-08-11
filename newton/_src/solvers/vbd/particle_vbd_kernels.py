@@ -20,6 +20,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_soft_ef_contact,
     _reset_world_selected,
     evaluate_body_particle_contact,
+    planar_truncation_t,
 )
 
 from ...geometry import ParticleFlags
@@ -2139,26 +2140,6 @@ def planar_truncation(
         return delta_v
     else:
         return t * delta_v
-
-
-@wp.func
-def planar_truncation_t(
-    v: wp.vec3, delta_v: wp.vec3, n: wp.vec3, d: wp.vec3, eps: float, gamma_r: float, gamma_min: float = 1e-3
-):
-    denom = wp.dot(n, delta_v)
-
-    # Parallel (or nearly parallel) → no intersection
-    if wp.abs(denom) < eps:
-        return 1.0
-
-    # Solve: dot(n, v + t*delta_v - d) = 0
-    t = wp.dot(n, d - v) / denom
-
-    if t < 0:
-        return 1.0
-
-    t = wp.clamp(wp.min(t * gamma_r, t - gamma_min), 0.0, 1.0)
-    return t
 
 
 @wp.kernel
