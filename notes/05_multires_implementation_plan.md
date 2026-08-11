@@ -50,25 +50,79 @@
 | composition oracle audit (0b) | reconstruct GT stretch fields through the hierarchy with each composition rule, score decoded positions (D7.11) |
 | signal bar | PoC success threshold: 4k single-step <= 4.5 mm (>= 20% below flat) (D7.12) |
 
-# Part II — Formulas
+# Part II — Method & Formulas
 
-All tensors are material-frame; `v_e` = rest volume, `c_e` = current centroid, `c_e^0` = rest centroid of node e; `A, B` denote clusters.
+The method wraps a multi-scale predictor around the *unchanged* ARAP
+decoder. One sentence of design intent: the flat per-tet network fails
+because a tet cannot see the far field (D5.2), so we give every tet a
+pre-digested view of the whole body — built along the material, summarized
+per scale, injected as input, and returned as per-scale stretch corrections
+that compose into a single SPD field the decoder already knows how to
+consume. Each subsection below is one design element, with the exact
+formulas the implementation is bound to. Every element answers a specific
+measured failure, cited inline.
+
+All tensors are material-frame; `v_e` = rest volume, `c_e` = current
+centroid, `c_e^0` = rest centroid of node e; `A, B` denote clusters.
+
+## II.1 Structure: a hierarchy built along the material (F1, F2)
+
+Two parts of an object that touch in space but not through material must
+never share a coarse node — otherwise the network learns spatial shortcuts
+that break exactly on articles like the U-bar (notes/01, D7.2). So the
+hierarchy is grown on the tet **face-adjacency graph**, and the strength of
+a connection is how much material actually joins the two cells:
 
 **F1 — coarsening edge strength (level 0):** `w_ab = area(shared face of tets a, b)`; higher levels: F2 output.
 
+Clusters aggregate ~8 strongly-connected nodes (algorithm A1); the coarse
+level's own connectivity is inherited, not re-derived — cluster A talks to
+cluster B exactly as much as their members touch:
+
 **F2 — quotient edge weight:** `W_AB = sum of w_ab over all edges (a, b) with a in A, b in B`.
+
+Applying this recursively gives 17280 -> ~2160 -> ~270 -> ~34 nodes on the
+4k article: by the third level, two message-passing rounds see the entire
+body.
+
+## II.2 State at every scale: pooling and cluster kinematics (F3, F4, F5)
+
+A coarse node must summarize its members' state without destroying the
+signals the far field needs. Two physically different kinds of quantity
+pool differently. Intensive quantities (stretch, material, pin fraction)
+are concentration-like — a cluster's state is its members' volume-weighted
+mean; for stretch this mean is taken in log space (the log-Euclidean mean,
+the geometrically sound average of SPD tensors — II.5):
 
 **F3 — intensive pooling (log-Euclidean for stretch):**
 ```
 H_A = ( sum_{e in A} v_e * H_e ) / ( sum_{e in A} v_e )        same rule for mu, lam, pin fraction
 ```
 
+Forces are extensive — totals, not concentrations. A 50 N poke on one
+vertex, mean-pooled over 512 tets, dilutes to numerical noise at exactly
+the level meant to see it (D7.4). The sum channel preserves it at every
+scale:
+
 **F4 — extensive pooling:** `fsum_A = sum_{e in A} f_e` (kept alongside the mean channel); `v_A = sum v_e`; feature uses `log(v_A / mean_cluster_volume)`.
+
+Coarse levels also need geometry — where the cluster is and how it is
+oriented — for the edge features of II.3:
 
 **F5 — cluster kinematics (per frame):**
 ```
 c_A = ( sum v_e c_e ) / ( sum v_e )        F_A = ( sum v_e F_e ) / ( sum v_e )        R_A = polar(F_A)
 ```
+
+## II.3 Communication: edge geometry and message passing (F6, F7)
+
+Per-node S is rotation-free by design — which means it is blind to
+*relative rotation between neighbors*: two adjacent tets in a bending beam
+can each be unstretched while strongly rotated against each other, so pure
+bending is invisible to every per-node feature (D7.5). Edges carry exactly
+that missing information. To keep the whole pipeline SE(3)-invariant, every
+edge vector is expressed in the *receiving* node's polar frame — rotate the
+world and R_a co-rotates, leaving the features unchanged:
 
 **F6 — edge features (receiver a, sender b; l0_ab = |c_b^0 - c_a^0|):**
 ```
@@ -77,18 +131,56 @@ e_ab = [ R_a^T (c_b - c_a) / l0_ab ,          3   offset in receiver's frame
          axial( LogSO3( R_a^T R_b ) ) ]        3   relative rotation (bending)
 ```
 
+Messages are aggregated with the material-connection weights from F2, so a
+neighbor's influence scales with how much face area joins it:
+
 **F7 — message passing (one round; normalized weights `wn_ab = W_ab / sum_b W_ab`):**
 ```
 m_ab = MLP_edge([ h_a , h_b , e_ab ])
 h_a' = MLP_node([ h_a , sum_b wn_ab * m_ab ])
 ```
 
+Two rounds per coarse level suffice because reach comes from the hierarchy
+(II.1), not from MP depth — that is the whole point of multi-res.
+
+## II.4 Prediction: ancestor context and per-level heads (F8, F9)
+
+Weights are shared across a level's nodes (D7.6), so each level's map
+`features -> output` must be well-posed: identical inputs must never
+require different outputs. Pooling alone sends information *up*; without a
+downward path the fine level would still face the one-to-many problem that
+broke the flat net. The fix (D7.10, Anka) is to hand every node the far
+field as *input* — the post-MP hidden states of its ancestor chain, one
+small vector per scale, fetched by pure gathers:
+
 **F8 — ancestor context of node e at level l:** `z_e = concat( h'_{parent(e)}, h'_{grandparent(e)}, ... )` — post-MP hidden states, gathered (no extra graph work).
+
+Each level then predicts a *correction at its own scale*. Zero-initialized
+last layers make the untrained model predict "stretch unchanged" — the
+correct prior for one dynamics step (D2.5) — and the tanh bound keeps any
+single level from emitting extreme residuals:
 
 **F9 — per-level head (zero-init last layer):**
 ```
 dH_l = delta_l * tanh( MLP_head_l([ h'_l , z_l ]) )      delta_0 = 0.6, delta_{l>=1} = 0.3
 ```
+
+## II.5 Composition: one SPD stretch field from many scales (F10, F11)
+
+Stretches do not add (Anka, D7.11): composition of finite stretches is
+multiplicative, and naive addition can leave the SPD cone. Residuals
+therefore live in **log space** (Hencky strain), where composition is
+addition, the small-strain limit is exact, commuting strains compose
+exactly, and `exp` guarantees a legal SPD output no matter how the level
+outputs stack. Rotations never enter: right-stretch tensors share the one
+material basis, and all rotation handling stays in the decoder. The
+composition audit (Task 3) measured the remaining non-commuting error at
+< 0.5% of decoded error at our strains — negligible.
+
+Coarse corrections reach the tets through a partition-of-unity blend over
+{own cluster + *adjacent* clusters} — smooth instead of blocky (the
+multires-vbd lesson), and incapable of bleeding across a topological gap
+because adjacency is material adjacency:
 
 **F10 — PoU prolongation (static, rest-space, precomputed):** for tet e with parent A0 and candidates `C(e) = {A0} union neighbors(A0)`:
 ```
@@ -97,6 +189,16 @@ omega_eA = exp( -|c_e^0 - c_A^0|^2 / sigma_l^2 ) / (normalizer over C(e)),    si
 ```
 
 **F11 — composition:** `S*_e = exp( H_t,e + dH_0,e + sum_{l>=1} (P_l dH_l)(e) )`.
+
+The decoder consumes this fine S\* field exactly as it consumed the flat
+net's — the entire method is upstream of an unchanged solver (§3.6).
+
+## II.6 Numerics: exact derivatives for the new maps (F12, F13)
+
+The composition sits inside the training loss's gradient path, so its
+derivatives must be exact — approximate gradients through the
+representation are what sank the original method (D1.4). The log/exp of
+symmetric matrices gets the closed-form Daleckii–Krein backward:
 
 **F12 — SPD log/exp with exact backward (Daleckii–Krein):** for symmetric `M = U diag(lam) U^T` and `f in {log, exp}`:
 ```
@@ -110,12 +212,22 @@ backward:  grad_M = U ( G .* (U^T grad_out U) ) U^T
            safe at 1e-4]
 ```
 
+The relative-rotation edge feature needs a guarded SO(3) log — exact where
+physical, loud where not:
+
 **F13 — SO(3) log (axis-angle), with small-angle guard:**
 ```
 theta = arccos( clamp( (tr(R) - 1)/2 , -1, 1 ) )
 axial(LogSO3(R)) = theta / (2 sin theta) * [R32-R23, R13-R31, R21-R12]
 theta < 1e-4:  factor -> 1/2 (Taylor);  theta near pi is out of range for adjacent tets — assert, don't handle
 ```
+
+## II.7 Evaluation: everything is scored through the decoder (F14)
+
+S-space norms anti-correlate with decoded quality (D5.3) — the decoder's
+pullback metric on stretch space is extremely anisotropic — so every
+quality number in this plan, including both audits, is a decoded position
+error:
 
 **F14 — audit scores (both audits, per D5.3):** per-vertex mean of `| decode(S*_candidate) - x_gt |`, decoded with the standard protocol (10 iterations, inertial warm start), against the recorded frames.
 
