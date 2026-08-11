@@ -86,9 +86,10 @@ class TestSpdLog(unittest.TestCase):
         self.assertTrue(torch.isfinite(g).all())
         self.assertLess((g - torch.ones_like(g) / s).abs().max().item(), 1e-12)
 
-        # Near-isotropic, eigenvalue spread 1e-9 (straddles the divided-
-        # difference threshold): log(S) = S - I to first order, and the
-        # gradient must stay finite where eigh autograd would blow up.
+        # Near-isotropic, eigenvalue gaps 0.5e-9 / 1e-9 -- at and below the
+        # fp64 close-branch threshold, so all pairs take the f'(mid) branch:
+        # log(S) = S - I to first order, and the gradient must stay finite
+        # where eigh autograd would blow up.
         lam = torch.tensor([1.0, 1.0 + 0.5e-9, 1.0 + 1e-9], dtype=torch.float64).expand(8, 3)
         Q = random_rotation(8, torch.float64, seed=3)
         S = (Q @ torch.diag_embed(lam) @ Q.transpose(-1, -2)).requires_grad_(True)
@@ -163,6 +164,34 @@ class TestSpdLog(unittest.TestCase):
         R32 = rotation_from_axis_angle((1.0, 2.0, 0.3), 1.1, dtype=torch.float32)
         R64 = rotation_from_axis_angle((1.0, 2.0, 0.3), 1.1, dtype=torch.float64)
         self.assertLess((so3_log_axial(R32) - so3_log_axial(R64).float()).abs().max().item(), 1e-5)
+
+    def test_float32_backward_near_rest(self):
+        # sym_exp backward at H ~= 0 with eigenvalue gaps 1e-8..1e-6: the
+        # eigenvalues are densely representable, but exp(lam) ~= 1 is stored
+        # at ulp 1.19e-7 in fp32, so a divided difference taken there returns
+        # G = 0 (gap 1e-8: both exponentials round to exactly 1.0f) or spikes
+        # to |G| ~ 1e2.  The dtype-dependent close branch (eps = 1e-4 in
+        # fp32) must keep the gradient at the fp64 reference.
+        for gap in (1e-8, 1e-7, 1e-6):
+            lam = torch.tensor([0.0, gap, 2.0 * gap], dtype=torch.float64).expand(8, 3)
+            Q = random_rotation(8, torch.float64, seed=9)
+            H64 = Q @ torch.diag_embed(lam) @ Q.transpose(-1, -2)
+
+            g = torch.Generator().manual_seed(10)
+            grad_out = torch.randn(8, 3, 3, dtype=torch.float64, generator=g)
+
+            h64 = H64.clone().requires_grad_(True)
+            (g64,) = torch.autograd.grad(sym_exp(h64), h64, grad_outputs=grad_out)
+            h32 = H64.float().clone().requires_grad_(True)
+            (g32,) = torch.autograd.grad(sym_exp(h32), h32, grad_outputs=grad_out.float())
+
+            self.assertTrue(torch.isfinite(g32).all(), f"gap={gap}")
+            rel = ((g32.double() - g64).norm() / g64.norm()).item()
+            self.assertLess(rel, 1e-3, f"gap={gap}: relative grad error {rel:.3e}")
+            # no silently zeroed components, no spikes
+            ratio = (g32.double().abs().max() / g64.abs().max()).item()
+            self.assertGreater(ratio, 0.5, f"gap={gap}: max-norm ratio {ratio:.3e}")
+            self.assertLess(ratio, 2.0, f"gap={gap}: max-norm ratio {ratio:.3e}")
 
 
 if __name__ == "__main__":

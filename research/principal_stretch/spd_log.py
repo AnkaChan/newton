@@ -31,11 +31,19 @@ The differential of ``f(M)`` in the eigenbasis is elementwise multiplication
 by the divided-difference (Loewner) matrix ``G``:
 
     grad_M = U ( G .* (U^T grad_out U) ) U^T,   then symmetrized,
-    G_ij   = (f(lam_i) - f(lam_j)) / (lam_i - lam_j)   if |lam_i - lam_j| > 1e-9,
-    G_ij   = f'((lam_i + lam_j) / 2)                   otherwise.
+    G_ij   = (f(lam_i) - f(lam_j)) / (lam_i - lam_j)   if |lam_i - lam_j| > eps,
+    G_ij   = f'((lam_i + lam_j) / 2)                   otherwise,
 
-``G`` is bounded by ``max f'(lam)`` on the eigenvalue range, so gradients are
-as well conditioned as ``f`` itself regardless of eigenvalue multiplicity.
+with ``eps = 1e-9`` in fp64 and ``1e-4`` in fp32.  The wider fp32 branch is
+strictly safer: ``f'(mid)`` is off by ``O(gap^2 / 24)`` (~4e-10 at gap 1e-4,
+invisible in fp32), while the quantized numerator fails catastrophically once
+``f(lam)`` differences approach the dtype's ulp — ``exp(lam) ~= 1`` is stored
+at ulp 1.19e-7 in fp32, so a 1e-8 gap rounds both exponentials to exactly
+1.0f (``G = 0``, gradient component silently zeroed) and gaps just above a
+fp64-sized threshold quantize the numerator to ``+-1 ulp`` (``|G|`` spikes up
+to ~1e2).  ``G`` is bounded by ``max f'(lam)`` on the eigenvalue range, so
+gradients are as well conditioned as ``f`` itself regardless of eigenvalue
+multiplicity.
 
 SO(3) log
 ---------
@@ -56,7 +64,12 @@ import math
 
 import torch
 
-_EIG_EPS = 1e-9  # eigen-gap below which the divided difference switches to f'
+# Eigen-gap below which the divided difference switches to f'(mid), per dtype.
+# The switch costs O(gap^2 / 24) accuracy; the divided difference costs
+# ulp(f(lam)) / gap, which in fp32 zeroes or spikes G for gaps below ~1e-6
+# (see the module docstring).  Dtypes below fp64 get the wide branch.
+_EIG_EPS_F64 = 1e-9
+_EIG_EPS_F32 = 1e-4
 _SMALL_THETA = 1e-4  # rotation angle below which the axial factor is Taylor's 1/2
 _MAX_THETA = 3.0  # rotation angles beyond this are out of physical range
 
@@ -79,7 +92,8 @@ class _SymmetricMatrixFunction(torch.autograd.Function):
         d = lam[..., :, None] - lam[..., None, :]
         num = flam[..., :, None] - flam[..., None, :]
         mid = 0.5 * (lam[..., :, None] + lam[..., None, :])
-        close = d.abs() <= _EIG_EPS
+        eps = _EIG_EPS_F64 if lam.dtype == torch.float64 else _EIG_EPS_F32
+        close = d.abs() <= eps
         G = torch.where(close, ctx.fprime(mid), num / torch.where(close, torch.ones_like(d), d))
         Ut = U.transpose(-1, -2)
         g = U @ (G * (Ut @ grad_out @ U)) @ Ut
