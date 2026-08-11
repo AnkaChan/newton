@@ -9,6 +9,7 @@
 - Import MJCF mesh assets authored with inline vertex, face, normal, and texture-coordinate data.
 - Break the viewer's shape count down into visual and collision shapes. The two are listed under `Shapes` in the stats overlay and need not sum to the total, since a shape can be both.
 - Add selection of the shapes included in model shape BVHs through `Model.bvh_build_shapes(shape_flags=...)` and `ModelBuilder.default_bvh_cfg.shape_flags`, e.g. `ShapeFlags.VISIBLE | ShapeFlags.COLLIDE_SHAPES` to also include collision shapes.
+- Add opt-in rigid-body penetration-free truncation to `SolverVBD` via `rigid_enable_penetration_free`: rigid pose updates and cloth displacements are truncated against per-contact division planes (Divide-and-Truncate), symmetric to the particle self-contact truncation. Requires a solver-owned collision pipeline; motion budgets derive from the pipeline's detection gaps, and the rigid collision slot now accepts `PRE_POST_INIT` (its `AUTO` default when the feature is on). See the `vbd_dat_rigid_soft` and `vbd_dat_rigid_rigid` examples.
 - Add a `damping` parameter to `ModelBuilder.add_joint_ball()` that applies passive angular damping to all three ball-joint DOFs; when omitted, `ModelBuilder.default_joint_cfg.damping` applies.
 - Add per-world `xforms` argument to `ModelBuilder.replicate()` for batching explicitly positioned worlds.
 - Add cubic and triplanar `SensorTiledCamera` texture projection modes for shapes without authored UVs.
