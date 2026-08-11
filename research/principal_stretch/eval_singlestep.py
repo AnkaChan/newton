@@ -11,6 +11,8 @@ import numpy as np
 import torch
 
 from . import torch_solver as ts
+from .hier_model import HierStretchNet
+from .hierarchy import build_hierarchy
 from .model import StretchNet, build_face_adjacency, build_features
 from .rollout import vert_to_tet_pin_flag
 from .torch_solver import compute_S_from_x, inertial_predictor
@@ -48,15 +50,29 @@ def main():
     pinned_targets = torch.as_tensor(rest_q[pinned_np], dtype=torch.float64, device=device)
     gravity32 = torch.as_tensor(gravity_np, dtype=dtype, device=device)
 
-    net = StretchNet().to(device=device, dtype=dtype)
     ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
-    net.load_state_dict(ckpt["state_dict"])
-    net.eval()
     ckpt_args = ckpt.get("args", {})
     residual = bool(ckpt_args.get("residual", False))
     warm = ckpt_args.get("warm", "prev")
     blocks = int(ckpt_args.get("blocks", 1))
-    print(f"ckpt config: residual={residual} warm={warm} blocks={blocks}")
+    hier = bool(ckpt_args.get("hier", False))
+    if hier:
+        # Same article -> deterministic same hierarchy as at training time; the
+        # constructor args live in the checkpoint's hier_config, not the state_dict.
+        cfg = ckpt["hier_config"]
+        hierarchy = build_hierarchy(tets_np, rest_q, n_levels=cfg["n_levels"], target=cfg["target"])
+        net = HierStretchNet(
+            hierarchy,
+            hidden=cfg["hidden"],
+            mp_rounds=cfg["mp_rounds"],
+            delta_fine=cfg["delta_fine"],
+            delta_coarse=cfg["delta_coarse"],
+        ).to(device)
+    else:
+        net = StretchNet().to(device=device, dtype=dtype)
+    net.load_state_dict(ckpt["state_dict"])
+    net.eval()
+    print(f"ckpt config: residual={residual} warm={warm} blocks={blocks}" + (" hier=True" if hier else ""))
 
     errs = []
     with torch.no_grad():
@@ -78,7 +94,10 @@ def main():
                     feat = build_features(
                         S_cur_f, S_prev_f, gravity32, f_ext.to(dtype), mu_t, lam_t, pin_flag, state.tets, face_adj
                     )
-                    S_star = net(feat, S_base=S_cur_f if residual else None).double()
+                    if hier:
+                        S_star = net(state, x_t, x_prev, f_ext, feat, S_cur).double()
+                    else:
+                        S_star = net(feat, S_base=S_cur_f if residual else None).double()
                     x_next = ts.solve(state, S_star, pinned_targets, x_init=x_next, n_iters=iters_per_block)
                     if _b + 1 < blocks:
                         S_cur = compute_S_from_x(state, x_next)

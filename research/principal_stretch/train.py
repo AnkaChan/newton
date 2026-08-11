@@ -31,6 +31,8 @@ import numpy as np
 import torch
 
 from . import torch_solver as ts
+from .hier_model import HierStretchNet
+from .hierarchy import build_hierarchy
 from .model import StretchNet, build_face_adjacency, build_features
 from .potentials import incremental_potential_batched
 from .torch_solver import compute_S_from_x, inertial_predictor
@@ -99,7 +101,16 @@ def main():
         default=0.0,
         help="with --loss pos: add this weight of the incremental potential as an off-manifold regulariser",
     )
+    parser.add_argument(
+        "--hier",
+        action="store_true",
+        help="use the hierarchical predictor (HierStretchNet) instead of the flat StretchNet",
+    )
     args = parser.parse_args()
+    if args.hier and args.blocks != 1:
+        parser.error("--hier supports only --blocks 1 (alternating blocks are outside the hierarchical PoC scope)")
+    if args.hier and args.loss != "pos":
+        parser.error("--hier supports only --loss pos (the phys loss is outside the hierarchical PoC scope)")
 
     device = torch.device(args.device)
     dtype = torch.float32  # network dtype; decoder runs fp64
@@ -131,11 +142,54 @@ def main():
     f_ext_gpu = torch.as_tensor(data["f_ext"], dtype=torch.float64, device=device)
     S_gpu = torch.as_tensor(data["S"], dtype=torch.float64, device=device)
 
-    net = StretchNet().to(device=device, dtype=dtype)
+    hier_config = None
+    if args.hier:
+        # The deltas / layer sizes are constructor args, not part of the
+        # state_dict, so they are recorded in the checkpoint (``hier_config``)
+        # for eval to rebuild the exact same module.
+        hier_config = {
+            "n_levels": 3,
+            "target": 8,
+            "hidden": 64,
+            "mp_rounds": 2,
+            "delta_fine": 0.6,
+            "delta_coarse": 0.3,
+        }
+        hierarchy = build_hierarchy(tets_np, rest_q, n_levels=hier_config["n_levels"], target=hier_config["target"])
+        print(f"hierarchy cluster counts: {[lev.adj.shape[0] for lev in hierarchy.levels]}")
+        net = HierStretchNet(
+            hierarchy,
+            hidden=hier_config["hidden"],
+            mp_rounds=hier_config["mp_rounds"],
+            delta_fine=hier_config["delta_fine"],
+            delta_coarse=hier_config["delta_coarse"],
+        ).to(device)
+    else:
+        net = StretchNet().to(device=device, dtype=dtype)
     if args.init_ckpt:
         ckpt = torch.load(args.init_ckpt, map_location=device, weights_only=False)
         net.load_state_dict(ckpt["state_dict"])
         print(f"loaded init weights from {args.init_ckpt}")
+
+    last_dh: list[torch.Tensor] = []
+    if args.hier:
+        # Dead-level detector: log per-level mean |dH_l|.  hier_model.py is
+        # outside this task's modification scope, so instead of the forward
+        # storing a ``last_dh_norms`` attribute, forward hooks on the (last-layer
+        # zero-init) heads recompute delta_l * tanh(head_out) under no_grad.
+        deltas = [hier_config["delta_fine"]] + [hier_config["delta_coarse"]] * hier_config["n_levels"]
+        last_dh = [torch.zeros((), device=device) for _ in deltas]
+
+        def _dh_hook(level: int, delta: float):
+            def hook(_module, _inputs, output):
+                with torch.no_grad():
+                    last_dh[level] = (delta * torch.tanh(output)).abs().mean()
+
+            return hook
+
+        for level, head in enumerate(net.heads):
+            head.register_forward_hook(_dh_hook(level, deltas[level]))
+
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
 
     rng = np.random.default_rng(args.seed)
@@ -201,7 +255,13 @@ def main():
                 feat = build_features(
                     S_cur_f, S_prev_f, gravity32, f_ext.to(dtype), mu32, lam32, pin_flag, solver.tets, face_adj
                 )
-                S_star = net(feat, S_base=S_cur_f if args.residual else None)
+                if args.hier:
+                    # The hier net consumes the raw kinematic state and composes
+                    # its residual in log space internally (--residual is a
+                    # flat-head concept and is ignored here).
+                    S_star = net(solver, x_t, x_prev, f_ext, feat, S_cur)
+                else:
+                    S_star = net(feat, S_base=S_cur_f if args.residual else None)
                 x_next = ts.solve(solver, S_star.double(), pin_b, x_init=x_next, n_iters=iters_per_block)
                 if _b + 1 < args.blocks:
                     S_cur = compute_S_from_x(solver, x_next)
@@ -255,13 +315,24 @@ def main():
                 pos_err = (x_pred - x_gpu[i_t0 + k_roll]).norm(dim=-1).mean().item()
             mean_loss = loss_total.item() / (args.batch * k_roll)
             elapsed = time.time() - t0
-            print(f"step {step:5d}  K={k_roll}  L={mean_loss:+.4e}  pos_err={pos_err:.4e}  {elapsed:.1f}s", flush=True)
-            log.append({"step": step, "K": k_roll, "loss": mean_loss, "pos_err": pos_err})
+            entry = {"step": step, "K": k_roll, "loss": mean_loss, "pos_err": pos_err}
+            dh_str = ""
+            if args.hier:
+                entry["dh"] = [v.item() for v in last_dh]
+                dh_str = "  dH=[" + ",".join(f"{v:.1e}" for v in entry["dh"]) + "]"
+            print(
+                f"step {step:5d}  K={k_roll}  L={mean_loss:+.4e}  pos_err={pos_err:.4e}  {elapsed:.1f}s{dh_str}",
+                flush=True,
+            )
+            log.append(entry)
 
     print(f"training done in {time.time() - t0:.1f}s")
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": net.state_dict(), "log": log, "args": vars(args)}, out)
+    payload = {"state_dict": net.state_dict(), "log": log, "args": vars(args)}
+    if args.hier:
+        payload["hier_config"] = hier_config
+    torch.save(payload, out)
     print(f"wrote {out}")
 
 
