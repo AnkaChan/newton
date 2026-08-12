@@ -23,7 +23,7 @@ from .play_side_by_side import build_two_grids
 
 
 def _load_font(size: int):
-    from PIL import ImageFont
+    from PIL import ImageFont  # noqa: PLC0415 -- optional capture dependency
 
     for path in (
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -39,7 +39,7 @@ def _label_frame(frame: np.ndarray, width: int, gt_x_norm: float, rec_x_norm: fl
 
     gt_x_norm / rec_x_norm are the projected X centres of each grid in [0, 1].
     """
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw  # noqa: PLC0415 -- optional capture dependency
 
     img = Image.fromarray(frame)
     draw = ImageDraw.Draw(img)

@@ -12,15 +12,17 @@ import numpy as np
 import torch
 import warp as wp
 
-from .recover_local_global import LocalGlobalRecover
 from . import torch_solver as ts
+from .recover_local_global import LocalGlobalRecover
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", default=os.environ.get(
-        "AI_LOGS", "/home/horde/Code/AI-Docs/AI-Logs"
-    ) + "/Newton/tasks/PrincipalStrecchSolver/data/forward_run.npz")
+    parser.add_argument(
+        "--data",
+        default=os.environ.get("AI_LOGS", "/home/horde/Code/AI-Docs/AI-Logs")
+        + "/Newton/tasks/PrincipalStrecchSolver/data/forward_run.npz",
+    )
     parser.add_argument("--frame", type=int, default=60)
     parser.add_argument("--iters", type=int, default=80)
     args = parser.parse_args()
@@ -36,8 +38,7 @@ def main():
 
     # Warp reference
     rec = LocalGlobalRecover(rest_q, tets, poses, pinned, device="cuda:0")
-    res = rec.solve(S_target=S_gt, pinned_targets=x_gt[pinned], x_init=None,
-                    max_iters=args.iters, tol=0.0)
+    res = rec.solve(S_target=S_gt, pinned_targets=x_gt[pinned], x_init=None, max_iters=args.iters, tol=0.0)
     x_warp = res.x
 
     # Torch port

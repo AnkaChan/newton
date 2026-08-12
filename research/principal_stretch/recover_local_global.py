@@ -77,7 +77,7 @@ class LocalGlobalRecover:
     # ---- one-time setup ----------------------------------------------------
 
     def _assemble_L(self):
-        import scipy.sparse as sp
+        import scipy.sparse as sp  # noqa: PLC0415 -- optional research dependency
 
         K = self.w.astype(np.float64)[:, None, None] * np.einsum("eac,ebc->eab", self.J, self.J)
         rows = np.repeat(self.tet_indices, 4, axis=1)  # (T, 16)
@@ -88,7 +88,7 @@ class LocalGlobalRecover:
         )
 
     def _partition_BC(self):
-        import scipy.sparse as sp
+        import scipy.sparse as sp  # noqa: PLC0415 -- optional research dependency
 
         mask = np.ones(self.n_verts, dtype=bool)
         mask[self.pinned] = False
@@ -100,7 +100,7 @@ class LocalGlobalRecover:
         self.L_fp = self.L[self.free][:, self.pinned].tocsc()
 
     def _factorize(self):
-        import scipy.sparse.linalg as spla
+        import scipy.sparse.linalg as spla  # noqa: PLC0415 -- optional research dependency
 
         if self.free.size == 0:
             self._solve = None
