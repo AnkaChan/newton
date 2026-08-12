@@ -133,6 +133,14 @@ def main():
         # legacy flat predictor's absolute/residual switch.
         args.residual = True
 
+    # The seed is part of the experiment contract: it controls initialization,
+    # input noise, dropout, and window sampling.  ``manual_seed`` covers both
+    # CPU and CUDA generators; the explicit CUDA call also covers later-created
+    # devices in multi-GPU experiment runners.
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
     device = torch.device(args.device)
     dtype = torch.float32  # network dtype; decoder runs fp64
 
@@ -162,7 +170,6 @@ def main():
 
     x_gpu = torch.as_tensor(x_all, dtype=torch.float64, device=device)
     f_ext_gpu = torch.as_tensor(data["f_ext"], dtype=torch.float64, device=device)
-    S_gpu = torch.as_tensor(data["S"], dtype=torch.float64, device=device)
 
     graph_config = GraphTransformerConfig(
         hidden_dim=args.gt_hidden,
@@ -183,16 +190,28 @@ def main():
         graph_config=graph_config,
     )
     print(f"predictor={predictor.kind} config={predictor.checkpoint_config()}")
+    parameter_count = sum(parameter.numel() for parameter in predictor.parameters())
+    print(f"trainable parameters: {parameter_count:,}")
     if predictor.kind == "graph-transformer":
         level_sizes = [
             predictor.model._level_buffer("adjacency", level).shape[0] for level in range(predictor.model.n_levels + 1)
         ]
         print(f"topology hierarchy: {' -> '.join(str(size) for size in level_sizes)} nodes")
+    # The graph transformer reconstructs Hencky strain from positions.  Avoid
+    # materializing the unused full-trajectory stretch tensor on the GPU
+    # (about 4.6 GiB for the 4k training set).
+    S_gpu = (
+        None
+        if predictor.kind == "graph-transformer"
+        else torch.as_tensor(data["S"], dtype=torch.float64, device=device)
+    )
     if args.init_ckpt:
         ckpt = torch.load(args.init_ckpt, map_location=device, weights_only=False)
         predictor.model.load_state_dict(ckpt["state_dict"])
         print(f"loaded init weights from {args.init_ckpt}")
     opt = torch.optim.AdamW(predictor.parameters(), lr=args.lr, weight_decay=1e-5)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
 
     rng = np.random.default_rng(args.seed)
     pin_b = pinned_targets[None].expand(args.batch, -1, -1)
@@ -231,8 +250,12 @@ def main():
             S_prev = compute_S_from_x(solver, x_prev)
             S_now = compute_S_from_x(solver, x_t)
         else:
-            S_prev = S_gpu[b[:, 0]]
-            S_now = S_gpu[b[:, 1]]
+            if S_gpu is None:
+                S_prev = compute_S_from_x(solver, x_prev)
+                S_now = compute_S_from_x(solver, x_t)
+            else:
+                S_prev = S_gpu[b[:, 0]]
+                S_now = S_gpu[b[:, 1]]
 
         opt.zero_grad()
         loss_total = torch.zeros((), dtype=torch.float64, device=device)
@@ -320,7 +343,22 @@ def main():
             print(f"step {step:5d}  K={k_roll}  L={mean_loss:+.4e}  pos_err={pos_err:.4e}  {elapsed:.1f}s", flush=True)
             log.append({"step": step, "K": k_roll, "loss": mean_loss, "pos_err": pos_err})
 
-    print(f"training done in {time.time() - t0:.1f}s")
+    train_seconds = time.time() - t0
+    runtime = {"train_seconds": train_seconds, "parameter_count": parameter_count}
+    if device.type == "cuda":
+        runtime.update(
+            {
+                "peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(device),
+                "peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(device),
+                "device_name": torch.cuda.get_device_name(device),
+            }
+        )
+        print(
+            "peak CUDA memory: "
+            f"{runtime['peak_cuda_allocated_bytes'] / 2**30:.2f} GiB allocated, "
+            f"{runtime['peak_cuda_reserved_bytes'] / 2**30:.2f} GiB reserved"
+        )
+    print(f"training done in {train_seconds:.1f}s")
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -329,6 +367,8 @@ def main():
             "predictor_config": predictor.checkpoint_config(),
             "log": log,
             "args": vars(args),
+            "runtime": runtime,
+            "torch_version": str(torch.__version__),
         },
         out,
     )
