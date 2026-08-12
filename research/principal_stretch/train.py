@@ -31,8 +31,9 @@ import numpy as np
 import torch
 
 from . import torch_solver as ts
-from .model import StretchNet, build_face_adjacency, build_features
+from .graph_transformer import GraphTransformerConfig
 from .potentials import incremental_potential_batched
+from .predictor import PREDICTOR_KINDS, build_stretch_predictor
 from .torch_solver import compute_S_from_x, inertial_predictor
 
 
@@ -75,6 +76,7 @@ def main():
     parser.add_argument("--curriculum-frac", type=float, default=0.5)
     parser.add_argument("--init-ckpt", type=str, default=None)
     parser.add_argument("--loss", choices=("pos", "phys"), default="pos")
+    parser.add_argument("--predictor", choices=PREDICTOR_KINDS, default="mlp")
     parser.add_argument("--residual", action="store_true", help="predict S* = S_t + delta instead of S* = I + delta")
     parser.add_argument(
         "--warm", choices=("inertial", "prev"), default="inertial", help="decoder warm start: inertial predictor or x_t"
@@ -99,7 +101,20 @@ def main():
         default=0.0,
         help="with --loss pos: add this weight of the incremental potential as an off-manifold regulariser",
     )
+    parser.add_argument("--gt-hidden", type=int, default=64, help="graph-transformer hidden width")
+    parser.add_argument("--gt-heads", type=int, default=4, help="graph-transformer attention heads")
+    parser.add_argument("--gt-levels", type=int, default=5, help="maximum topology-coarsening levels")
+    parser.add_argument("--gt-cluster-size", type=int, default=8, help="target children per coarse node")
+    parser.add_argument("--gt-dropout", type=float, default=0.0)
+    parser.add_argument("--gt-max-delta", type=float, default=0.35, help="maximum Hencky update Frobenius norm")
     args = parser.parse_args()
+
+    if args.predictor == "graph-transformer":
+        if args.blocks != 1:
+            raise ValueError("the multiresolution graph transformer already has global context; use --blocks 1")
+        # Its output is always exp(log(U_t) + delta_H), independent of the
+        # legacy flat predictor's absolute/residual switch.
+        args.residual = True
 
     device = torch.device(args.device)
     dtype = torch.float32  # network dtype; decoder runs fp64
@@ -113,7 +128,6 @@ def main():
     solver = ts.build_solver(
         rest_q, tets_np, data["tet_poses"], data["pinned_indices"], device=device, dtype=torch.float64
     )
-    face_adj = torch.as_tensor(build_face_adjacency(tets_np), dtype=torch.int64, device=device)
     pin_flag = torch.as_tensor(vert_to_tet_pin_flag(data["pinned_indices"], tets_np), dtype=dtype, device=device)
     mass = torch.as_tensor(data["particle_mass"], dtype=torch.float64, device=device)
     mu32 = torch.as_tensor(data["mu_per_tet"], dtype=dtype, device=device)
@@ -121,7 +135,6 @@ def main():
     mu64, lam64 = mu32.double(), lam32.double()
     volume = solver.w.double()
     gravity64 = torch.as_tensor(data["gravity"], dtype=torch.float64, device=device)
-    gravity32 = gravity64.to(dtype)
     pinned_targets = torch.as_tensor(rest_q[data["pinned_indices"]], dtype=torch.float64, device=device)
 
     windows = build_windows(data["traj_start"], n_total, args.max_rollout)
@@ -131,12 +144,30 @@ def main():
     f_ext_gpu = torch.as_tensor(data["f_ext"], dtype=torch.float64, device=device)
     S_gpu = torch.as_tensor(data["S"], dtype=torch.float64, device=device)
 
-    net = StretchNet().to(device=device, dtype=dtype)
+    graph_config = GraphTransformerConfig(
+        hidden_dim=args.gt_hidden,
+        num_heads=args.gt_heads,
+        n_levels=args.gt_levels,
+        cluster_size=args.gt_cluster_size,
+        dropout=args.gt_dropout,
+        max_hencky_update=args.gt_max_delta,
+        dt=args.dt,
+    )
+    predictor = build_stretch_predictor(
+        args.predictor,
+        rest_q,
+        tets_np,
+        device,
+        dtype,
+        residual=args.residual,
+        graph_config=graph_config,
+    )
+    print(f"predictor={predictor.kind} config={predictor.checkpoint_config()}")
     if args.init_ckpt:
         ckpt = torch.load(args.init_ckpt, map_location=device, weights_only=False)
-        net.load_state_dict(ckpt["state_dict"])
+        predictor.model.load_state_dict(ckpt["state_dict"])
         print(f"loaded init weights from {args.init_ckpt}")
-    opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
+    opt = torch.optim.AdamW(predictor.parameters(), lr=args.lr, weight_decay=1e-5)
 
     rng = np.random.default_rng(args.seed)
     pin_b = pinned_targets[None].expand(args.batch, -1, -1)
@@ -192,16 +223,22 @@ def main():
             # block's global solve propagates the previous block's local
             # prediction across the whole mesh, so B blocks give the *network*
             # B global hops of receptive field at matched total decoder cost.
-            S_prev_f = S_prev.to(dtype)
             iters_per_block = max(1, args.solver_iters // args.blocks)
             x_next = x0
             S_cur = S_now
             for _b in range(args.blocks):
-                S_cur_f = S_cur.to(dtype)
-                feat = build_features(
-                    S_cur_f, S_prev_f, gravity32, f_ext.to(dtype), mu32, lam32, pin_flag, solver.tets, face_adj
+                S_star = predictor(
+                    solver,
+                    x_t,
+                    x_prev,
+                    f_ext,
+                    gravity64,
+                    mu32,
+                    lam32,
+                    pin_flag,
+                    S_cur,
+                    S_prev,
                 )
-                S_star = net(feat, S_base=S_cur_f if args.residual else None)
                 x_next = ts.solve(solver, S_star.double(), pin_b, x_init=x_next, n_iters=iters_per_block)
                 if _b + 1 < args.blocks:
                     S_cur = compute_S_from_x(solver, x_next)
@@ -247,7 +284,7 @@ def main():
             x_pred = x_next
 
         (loss_total / (args.batch * k_roll)).backward()
-        torch.nn.utils.clip_grad_norm_(net.parameters(), 5.0)
+        torch.nn.utils.clip_grad_norm_(predictor.parameters(), 5.0)
         opt.step()
 
         if step % args.log_every == 0:
@@ -261,7 +298,15 @@ def main():
     print(f"training done in {time.time() - t0:.1f}s")
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": net.state_dict(), "log": log, "args": vars(args)}, out)
+    torch.save(
+        {
+            "state_dict": predictor.model.state_dict(),
+            "predictor_config": predictor.checkpoint_config(),
+            "log": log,
+            "args": vars(args),
+        },
+        out,
+    )
     print(f"wrote {out}")
 
 

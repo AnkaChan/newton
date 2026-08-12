@@ -34,7 +34,7 @@ import warp as wp
 from newton.solvers import SolverVBD
 
 from . import torch_solver as ts
-from .model import StretchNet, build_face_adjacency, build_features
+from .predictor import build_stretch_predictor, checkpoint_predictor_config
 from .rollout import vert_to_tet_pin_flag
 from .run_forward import build_model
 from .torch_solver import compute_S_from_x, inertial_predictor
@@ -105,20 +105,28 @@ def net_curve(data, trajs, ckpt_path, iters_list, frame_dt, device="cuda:0"):
     rest_q = data["rest_q"]
     tets_np = data["tet_indices"]
     state = ts.build_solver(rest_q, tets_np, data["tet_poses"], data["pinned_indices"], device=dev, dtype=torch.float64)
-    face_adj = torch.as_tensor(build_face_adjacency(tets_np), dtype=torch.int64, device=dev)
     mu_t = torch.as_tensor(data["mu_per_tet"], dtype=dtype, device=dev)
     lam_t = torch.as_tensor(data["lam_per_tet"], dtype=dtype, device=dev)
     pin_flag = torch.as_tensor(vert_to_tet_pin_flag(data["pinned_indices"], tets_np), dtype=dtype, device=dev)
     pinned_targets = torch.as_tensor(rest_q[data["pinned_indices"]], dtype=torch.float64, device=dev)
-    gravity32 = torch.as_tensor(data["gravity"], dtype=dtype, device=dev)
+    gravity = torch.as_tensor(data["gravity"], dtype=torch.float64, device=dev)
 
-    net = StretchNet().to(device=dev, dtype=dtype)
     ckpt = torch.load(ckpt_path, map_location=dev, weights_only=False)
-    net.load_state_dict(ckpt["state_dict"])
-    net.eval()
+    predictor_config = checkpoint_predictor_config(ckpt)
+    predictor = build_stretch_predictor(
+        predictor_config["kind"],
+        rest_q,
+        tets_np,
+        dev,
+        dtype,
+        residual=bool(predictor_config.get("residual", False)),
+        graph_config=predictor_config.get("graph_transformer"),
+    )
+    predictor.model.load_state_dict(ckpt["state_dict"])
+    predictor.eval()
     ckpt_args = ckpt.get("args", {})
-    residual = bool(ckpt_args.get("residual", False))
     warm = ckpt_args.get("warm", "prev")
+    blocks = int(ckpt_args.get("blocks", 1))
 
     results = []
     for n_iters in iters_list:
@@ -133,16 +141,34 @@ def net_curve(data, trajs, ckpt_path, iters_list, frame_dt, device="cuda:0"):
                 S_t = compute_S_from_x(state, x_t)
                 frame_errs, frame_ms = [], []
                 for step in range(e - s - 2):
-                    f_ext = torch.as_tensor(data["f_ext"][s + 1 + step], dtype=dtype, device=dev)
+                    f_ext = torch.as_tensor(data["f_ext"][s + 1 + step], dtype=torch.float64, device=dev)
                     torch.cuda.synchronize()
                     t0 = time.perf_counter()
-                    S_t_f = S_t.to(dtype)
-                    feat = build_features(
-                        S_t_f, S_prev.to(dtype), gravity32, f_ext, mu_t, lam_t, pin_flag, state.tets, face_adj
-                    )
-                    S_star = net(feat, S_base=S_t_f if residual else None).double()
                     x0 = inertial_predictor(state, x_t, x_prev, pinned_targets) if warm == "inertial" else x_t
-                    x_next = ts.solve(state, S_star, pinned_targets, x_init=x0, n_iters=n_iters)
+                    x_next = x0
+                    S_cur = S_t
+                    for block in range(blocks):
+                        S_star = predictor(
+                            state,
+                            x_t,
+                            x_prev,
+                            f_ext,
+                            gravity,
+                            mu_t,
+                            lam_t,
+                            pin_flag,
+                            S_cur,
+                            S_prev,
+                        )
+                        x_next = ts.solve(
+                            state,
+                            S_star.double(),
+                            pinned_targets,
+                            x_init=x_next,
+                            n_iters=max(1, n_iters // blocks),
+                        )
+                        if block + 1 < blocks:
+                            S_cur = compute_S_from_x(state, x_next)
                     S_new = compute_S_from_x(state, x_next)
                     torch.cuda.synchronize()
                     frame_ms.append((time.perf_counter() - t0) * 1e3)
@@ -156,7 +182,8 @@ def net_curve(data, trajs, ckpt_path, iters_list, frame_dt, device="cuda:0"):
         results.append(
             {
                 "method": "net",
-                "config": f"it{n_iters}",
+                "predictor": predictor.kind,
+                "config": f"{predictor.kind}-it{n_iters}",
                 "decoder_iters": n_iters,
                 "ms_per_frame": float(np.mean(ms)),
                 "err_mean": float(np.mean(errs_mean)),
