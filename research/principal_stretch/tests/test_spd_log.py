@@ -19,7 +19,7 @@ import unittest
 import numpy as np
 import torch
 
-from research.principal_stretch.spd_log import so3_log_axial, sym_exp, sym_log
+from research.principal_stretch.spd_log import so3_log_axial, spd_floor, sym_exp, sym_log
 
 try:
     import scipy.linalg
@@ -194,6 +194,24 @@ class TestSpdLog(unittest.TestCase):
             self.assertLess(ratio, 2.0, f"gap={gap}: max-norm ratio {ratio:.3e}")
 
 
+class TestSpdFloor(unittest.TestCase):
+    def test_negative_eigenvalue(self):
+        lam = torch.tensor([-0.3, 0.8, 1.2], dtype=torch.float64).expand(8, 3)
+        Q = random_rotation(8, torch.float64, seed=12)
+        S = (Q @ torch.diag_embed(lam) @ Q.transpose(-1, -2)).requires_grad_(True)
+
+        out = spd_floor(S)
+        eigs = torch.linalg.eigvalsh(out.detach())
+        self.assertLess((eigs[:, 0] - 0.05).abs().max().item(), 1e-12)
+        self.assertLess((eigs[:, 2] - 1.2).abs().max().item(), 1e-12)
+        (g,) = torch.autograd.grad(sym_log(out).sum(), S)
+        self.assertTrue(torch.isfinite(g).all())
+
+    def test_identity_away_from_floor(self):
+        S = random_spd(32, torch.float64, seed=13)
+        self.assertLess((spd_floor(S) - S).abs().max().item(), 1e-12)
+
+
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
 class TestLargeBatchCuda(unittest.TestCase):
     def test_large_batch_eigh(self):
@@ -212,6 +230,7 @@ class TestLargeBatchCuda(unittest.TestCase):
         (g,) = torch.autograd.grad(sym_log(S_g).sum(), S_g)
         self.assertTrue(torch.isfinite(g).all())
         self.assertGreater(g.abs().amax(dim=(-1, -2)).min().item(), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

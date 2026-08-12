@@ -148,6 +148,31 @@ def sym_exp(H: torch.Tensor) -> torch.Tensor:
     return _SymmetricMatrixFunction.apply(H, torch.exp, torch.exp)
 
 
+def spd_floor(S: torch.Tensor, lam_min: float = 0.05) -> torch.Tensor:
+    """Clamp symmetric-matrix eigenvalues to a positive floor.
+
+    This is the spectral function ``f(lam) = max(lam, lam_min)`` evaluated
+    through the same Daleckii-Krein path as :func:`sym_log`.  Its derivative
+    therefore stays finite at repeated eigenvalues, unlike direct autograd
+    through an eigendecomposition.
+
+    Args:
+        S: Symmetric matrices, shape ``(..., 3, 3)``.
+        lam_min: Minimum output eigenvalue.
+
+    Returns:
+        Symmetric positive-definite matrices with the same shape as ``S``.
+    """
+
+    def clamp(lam: torch.Tensor) -> torch.Tensor:
+        return lam.clamp(min=lam_min)
+
+    def clamp_prime(lam: torch.Tensor) -> torch.Tensor:
+        return (lam > lam_min).to(lam.dtype)
+
+    return _SymmetricMatrixFunction.apply(S, clamp, clamp_prime)
+
+
 def so3_log_axial(R: torch.Tensor) -> torch.Tensor:
     """Axis-angle (axial) vector of a batch of rotation matrices.
 

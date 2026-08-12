@@ -285,6 +285,11 @@ def build_hierarchy(tets: np.ndarray, rest_q: np.ndarray, n_levels: int = 3, tar
         assign = _aggregate(adj, w_adj, target)
         q_adj, q_w = _quotient_graph(assign, adj, w_adj)
         n_clusters = q_adj.shape[0]
+        # One root per connected component is the natural stopping point.
+        # Once aggregation cannot reduce the graph, more levels would only
+        # repeat an identity assignment and add no receptive field.
+        if n_clusters == adj.shape[0]:
+            break
         q_vol = np.bincount(assign, weights=vol, minlength=n_clusters)
         q_c0 = (
             np.stack(

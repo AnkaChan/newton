@@ -17,6 +17,7 @@ and without a leading batch dimension.
 from __future__ import annotations
 
 import itertools
+import os
 import unittest
 from pathlib import Path
 
@@ -30,13 +31,16 @@ from research.principal_stretch.hierarchy import (
     prolong,
 )
 
-_DATA_DIR = Path(__file__).resolve().parents[3] / "data"
+_DATA_DIR = Path(os.environ.get("PSS_DATA_DIR", Path(__file__).resolve().parents[3] / "data"))
 _TARGET = 8
 
 
 def _load_mesh(name: str) -> tuple[np.ndarray, np.ndarray]:
     """Load only tet_indices and rest_q (np.load is lazy — cheap)."""
-    with np.load(_DATA_DIR / name) as data:
+    path = _DATA_DIR / name
+    if not path.exists():
+        raise unittest.SkipTest(f"optional principal-stretch dataset is unavailable: {path}")
+    with np.load(path) as data:
         return np.asarray(data["tet_indices"]), np.asarray(data["rest_q"])
 
 
