@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
 
 import numpy as np
@@ -21,6 +22,7 @@ def main():
     p.add_argument("--ckpt", required=True)
     p.add_argument("--data", required=True)
     p.add_argument("--solver-iters", type=int, default=10)
+    p.add_argument("--out", help="optional NPZ with per-sample and per-trajectory errors")
     args = p.parse_args()
 
     device = torch.device("cuda:0")
@@ -66,6 +68,8 @@ def main():
     print(f"ckpt config: predictor={predictor.kind} warm={warm} blocks={blocks} solver_iters={args.solver_iters}")
 
     errs = []
+    sample_trajectory = []
+    sample_frame = []
     with torch.no_grad():
         for traj in range(n_traj):
             s = int(traj_start[traj])
@@ -98,12 +102,29 @@ def main():
                         S_cur = compute_S_from_x(state, x_next)
                 e_per_v = (x_next - x_target).norm(dim=-1)
                 errs.append(e_per_v.cpu().numpy())
+                sample_trajectory.append(traj)
+                sample_frame.append(t - s)
 
-    E = np.concatenate(errs)
+    error = np.stack(errs)
+    E = error.reshape(-1)
     print(f"Teacher-forced single-step eval on {n_traj} trajs, {len(errs)} samples")
     print(f"  per-vertex mean = {E.mean():.4e} m")
     print(f"  per-vertex 95%  = {np.quantile(E, 0.95):.4e} m")
     print(f"  per-vertex max  = {E.max():.4e} m")
+    if args.out:
+        trajectory_index = np.asarray(sample_trajectory, dtype=np.int64)
+        trajectory_mean = np.asarray([error[trajectory_index == traj].mean() for traj in range(n_traj)])
+        out = pathlib.Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            out,
+            error=error,
+            trajectory_index=trajectory_index,
+            frame_index=np.asarray(sample_frame, dtype=np.int64),
+            trajectory_mean=trajectory_mean,
+            solver_iters=args.solver_iters,
+        )
+        print(f"wrote {out}")
 
 
 if __name__ == "__main__":
