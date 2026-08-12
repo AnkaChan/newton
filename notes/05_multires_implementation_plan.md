@@ -220,6 +220,12 @@ physical, loud where not:
 theta = arccos( clamp( (tr(R) - 1)/2 , -1, 1 ) )
 axial(LogSO3(R)) = theta / (2 sin theta) * [R32-R23, R13-R31, R21-R12]
 theta < 1e-4:  factor -> 1/2 (Taylor);  theta near pi is out of range for adjacent tets — assert, don't handle
+[amended after Task 7: so3_log_axial gains keyword-only saturate=False; the ONE sanctioned
+ saturate=True call site is hier_model's edge features, where untrained-net K=4 transients
+ exceed 3 rad (theta clamps to 3.0, output bounded in [0,3], gradient bounded; fail-loud
+ default everywhere else). Stage-1 work item: per-level saturation-rate telemetry — persistent
+ nonzero rates at coarse levels at convergence mean real near-pi cluster rotations and require
+ a pi-safe featurization (e.g. 6D rotation) instead of the clamp]
 ```
 
 ## II.7 Evaluation: everything is scored through the decoder (F14)
