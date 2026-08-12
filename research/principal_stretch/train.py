@@ -134,6 +134,13 @@ def main():
     parser.add_argument("--gt-cluster-size", type=int, default=8, help="target children per coarse node")
     parser.add_argument("--gt-dropout", type=float, default=0.0)
     parser.add_argument("--gt-max-delta", type=float, default=0.35, help="maximum Hencky update Frobenius norm")
+    parser.add_argument(
+        "--gt-architecture-version",
+        type=int,
+        choices=(1, 2),
+        default=2,
+        help="graph feature/checkpoint schema; v2 uses covariant differentiable frames",
+    )
     args = parser.parse_args()
 
     if args.predictor == "graph-transformer":
@@ -189,6 +196,7 @@ def main():
         dropout=args.gt_dropout,
         max_hencky_update=args.gt_max_delta,
         dt=args.dt,
+        architecture_version=args.gt_architecture_version,
     )
     predictor = build_stretch_predictor(
         args.predictor,
