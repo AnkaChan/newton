@@ -80,19 +80,18 @@ def _mlp(in_dim: int, hidden_dim: int, out_dim: int) -> nn.Sequential:
     )
 
 
-def _batch_pool_sum(values: torch.Tensor, assign: torch.Tensor) -> torch.Tensor:
+def _batch_pool_sum(values: torch.Tensor, assign: torch.Tensor, n_parent: int) -> torch.Tensor:
     """Sum ``(B, N, ...)`` child values into their parent nodes."""
-    n_parent = int(assign.max().item()) + 1
     shape = list(values.shape)
     shape[1] = n_parent
     return values.new_zeros(shape).index_add(1, assign, values)
 
 
-def _batch_pool_mean(values: torch.Tensor, assign: torch.Tensor, volume: torch.Tensor) -> torch.Tensor:
+def _batch_pool_mean(values: torch.Tensor, assign: torch.Tensor, volume: torch.Tensor, n_parent: int) -> torch.Tensor:
     """Rest-volume-weighted mean of ``(B, N, ...)`` child values."""
     weight_shape = (1, volume.shape[0], *([1] * (values.dim() - 2)))
-    numerator = _batch_pool_sum(values * volume.reshape(weight_shape), assign)
-    denominator = volume.new_zeros(int(assign.max().item()) + 1).index_add(0, assign, volume)
+    numerator = _batch_pool_sum(values * volume.reshape(weight_shape), assign, n_parent)
+    denominator = volume.new_zeros(n_parent).index_add(0, assign, volume)
     denom_shape = (1, denominator.shape[0], *([1] * (values.dim() - 2)))
     return numerator / denominator.reshape(denom_shape)
 
@@ -549,12 +548,13 @@ class PrincipalStretchGraphTransformer(nn.Module):
             next_level = level + 1
             assign = self._level_buffer("assign", next_level)
             child_volume = self._level_buffer("child_volume", next_level).to(H)
+            n_parent = self._level_buffer("volume", next_level).shape[0]
             pooled: dict[str, torch.Tensor] = {}
             for name, value in fields.items():
                 if name == "force":
-                    pooled[name] = _batch_pool_sum(value, assign)
+                    pooled[name] = _batch_pool_sum(value, assign, n_parent)
                 elif name != "rotation":
-                    pooled[name] = _batch_pool_mean(value, assign, child_volume)
+                    pooled[name] = _batch_pool_mean(value, assign, child_volume, n_parent)
             # A deterministic child frame transforms as Q R under active world
             # rotation and cannot suffer the cancellation of polar(mean(F)).
             representative = self._level_buffer("representative", next_level)
@@ -605,7 +605,7 @@ class PrincipalStretchGraphTransformer(nn.Module):
         for level in range(1, self.n_levels + 1):
             assign = self._level_buffer("assign", level)
             child_volume = self._level_buffer("child_volume", level).to(hidden)
-            restricted = _batch_pool_mean(hidden, assign, child_volume)
+            restricted = _batch_pool_mean(hidden, assign, child_volume, node_features[level].shape[1])
             encoded = self.encoders[level](node_features[level])
             hidden = self.down_fusion[level - 1](torch.cat([restricted, encoded], dim=-1))
             hidden = self.down_attention[level](

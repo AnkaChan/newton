@@ -160,9 +160,9 @@ class _PolarRotation(torch.autograd.Function):
         # are non-smooth, and their exact derivative is undefined or
         # unbounded.  Stop only that local polar path rather than feeding an
         # invalid/singular Sylvester solve into the decoder gradient.
-        b = torch.zeros_like(a)
-        if bool(good.any()):
-            b[good] = (_inv3(K[good]) @ a[good].unsqueeze(-1)).squeeze(-1)
+        safe_K = torch.where(good[..., None, None], K, eye)
+        candidate = (_inv3(safe_K) @ a.unsqueeze(-1)).squeeze(-1)
+        b = torch.where(good[..., None], candidate, torch.zeros_like(candidate))
         return 2.0 * R @ _cross_matrix(b), None
 
 
