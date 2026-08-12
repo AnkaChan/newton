@@ -70,6 +70,14 @@ def _inv3(A: torch.Tensor) -> torch.Tensor:
     return adj / det[..., None, None]
 
 
+def _det3(A: torch.Tensor) -> torch.Tensor:
+    """Analytic determinant of a batch of 3x3 matrices."""
+    a, b, c = A[..., 0, 0], A[..., 0, 1], A[..., 0, 2]
+    d, e, f = A[..., 1, 0], A[..., 1, 1], A[..., 1, 2]
+    g, h, i = A[..., 2, 0], A[..., 2, 1], A[..., 2, 2]
+    return a * (e * i - f * h) + b * (f * g - d * i) + c * (d * h - e * g)
+
+
 def _svd_polar(M: torch.Tensor) -> torch.Tensor:
     """Reflection-corrected polar rotation via SVD (reference / fallback)."""
     U, _s, Vh = torch.linalg.svd(M)
@@ -134,14 +142,19 @@ class _PolarRotation(torch.autograd.Function):
         eye = torch.eye(3, dtype=S.dtype, device=S.device).expand_as(S)
         tr_S = S.diagonal(dim1=-2, dim2=-1).sum(-1)
         K = tr_S[..., None, None] * eye - S
-        eigenvalues = torch.linalg.eigvalsh(K)
         scale_floor = torch.finfo(S.dtype).tiny ** 0.5
         relative_floor = 1.0e-10 if S.dtype == torch.float64 else 1.0e-5
+        scale = K.abs().amax(dim=(-2, -1)).clamp(min=scale_floor)
+        shifted = K - relative_floor * scale[..., None, None] * eye
+        minor_1 = shifted[..., 0, 0]
+        minor_2 = shifted[..., 0, 0] * shifted[..., 1, 1] - shifted[..., 0, 1] * shifted[..., 1, 0]
         good = (
             torch.isfinite(S).all(dim=(-2, -1))
-            & torch.isfinite(eigenvalues).all(dim=-1)
-            & (torch.linalg.det(S) > 0.0)
-            & (eigenvalues[..., 0] > relative_floor * eigenvalues[..., -1].abs().clamp(min=scale_floor))
+            & torch.isfinite(K).all(dim=(-2, -1))
+            & (_det3(S) > 0.0)
+            & (minor_1 > 0.0)
+            & (minor_2 > 0.0)
+            & (_det3(shifted) > 0.0)
         )
         # The reflection-corrected and rank-deficient proper-polar branches
         # are non-smooth, and their exact derivative is undefined or
@@ -149,7 +162,7 @@ class _PolarRotation(torch.autograd.Function):
         # invalid/singular Sylvester solve into the decoder gradient.
         b = torch.zeros_like(a)
         if bool(good.any()):
-            b[good] = torch.linalg.solve(K[good], a[good].unsqueeze(-1)).squeeze(-1)
+            b[good] = (_inv3(K[good]) @ a[good].unsqueeze(-1)).squeeze(-1)
         return 2.0 * R @ _cross_matrix(b), None
 
 

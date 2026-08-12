@@ -137,6 +137,15 @@ class TestPolarRotation(unittest.TestCase):
         good_only = good.clone().requires_grad_(True)
         self.assertTrue(torch.autograd.gradcheck(polar_rotation, (good_only,), eps=1e-6, atol=1e-6))
 
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+    def test_large_cuda_backward_avoids_batched_solver_limit(self):
+        # A 4k decoder step produces B*T=69,120 local polar solves.  cuSOLVER's
+        # 3x3 batched eigensolver rejects this batch size, so the conditioning
+        # guard and Sylvester inverse must remain analytic elementwise code.
+        M = torch.eye(3, dtype=torch.float64, device="cuda").expand(70000, 3, 3).clone().requires_grad_(True)
+        (gradient,) = torch.autograd.grad(polar_rotation(M).sum(), M)
+        self.assertTrue(torch.isfinite(gradient).all())
+
 
 if __name__ == "__main__":
     unittest.main()
