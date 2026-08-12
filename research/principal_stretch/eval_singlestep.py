@@ -63,7 +63,7 @@ def main():
     ckpt_args = ckpt.get("args", {})
     warm = ckpt_args.get("warm", "prev")
     blocks = int(ckpt_args.get("blocks", 1))
-    print(f"ckpt config: predictor={predictor.kind} warm={warm} blocks={blocks}")
+    print(f"ckpt config: predictor={predictor.kind} warm={warm} blocks={blocks} solver_iters={args.solver_iters}")
 
     errs = []
     with torch.no_grad():

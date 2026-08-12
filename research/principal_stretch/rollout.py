@@ -83,7 +83,7 @@ def main():
     ckpt_args = ckpt.get("args", {})
     warm = ckpt_args.get("warm", "prev")
     blocks = int(ckpt_args.get("blocks", 1))
-    print(f"ckpt config: predictor={predictor.kind} warm={warm} blocks={blocks}")
+    print(f"ckpt config: predictor={predictor.kind} warm={warm} blocks={blocks} solver_iters={args.solver_iters}")
 
     # Seed: GT first 2 frames
     x_prev = torch.as_tensor(x_all[s], dtype=torch.float64, device=device)
@@ -133,7 +133,8 @@ def main():
     print(f"rollout {x_pred.shape[0]} frames, traj {args.traj}")
     for f in range(0, x_pred.shape[0], max(1, x_pred.shape[0] // 6)):
         print(f"  frame {f:3d}  mean_err={err[f].mean():.4e}  max_err={err[f].max():.4e}")
-    print(f"  overall mean={err.mean():.4e}  max={err.max():.4e}")
+    generated_err = err[2:]
+    print(f"  generated mean={generated_err.mean():.4e}  max={generated_err.max():.4e}")
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
