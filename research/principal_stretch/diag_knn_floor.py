@@ -158,9 +158,10 @@ def load_split(
     S_target = S_all[t_idx + 1]
 
     feat_device = torch.device("cpu") if arm == "ancestor" else device
-    # cusolver's batched eigh (inside level_features' sym_log/spd_floor)
-    # rejects more than ~31.6k 3x3 fp64 matrices per call (task-3 finding),
-    # so its frame batches are sub-chunked; one full frame is always legal.
+    # sym_log/spd_floor (inside level_features) now chunk their eigh calls
+    # internally around cusolver's ~31.6k-matrix batch limit (task-3 finding),
+    # so this frame sub-chunking is no longer needed for correctness; it is
+    # kept to bound the peak memory of level_features' other intermediates.
     fchunk = max(1, 16384 // state.tets.shape[0])
     feat_parts = []
     for i in range(0, t_idx.shape[0], chunk):

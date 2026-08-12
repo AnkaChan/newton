@@ -171,25 +171,6 @@ def main():
         net.load_state_dict(ckpt["state_dict"])
         print(f"loaded init weights from {args.init_ckpt}")
 
-    last_dh: list[torch.Tensor] = []
-    if args.hier:
-        # Dead-level detector: log per-level mean |dH_l|.  hier_model.py is
-        # outside this task's modification scope, so instead of the forward
-        # storing a ``last_dh_norms`` attribute, forward hooks on the (last-layer
-        # zero-init) heads recompute delta_l * tanh(head_out) under no_grad.
-        deltas = [hier_config["delta_fine"]] + [hier_config["delta_coarse"]] * hier_config["n_levels"]
-        last_dh = [torch.zeros((), device=device) for _ in deltas]
-
-        def _dh_hook(level: int, delta: float):
-            def hook(_module, _inputs, output):
-                with torch.no_grad():
-                    last_dh[level] = (delta * torch.tanh(output)).abs().mean()
-
-            return hook
-
-        for level, head in enumerate(net.heads):
-            head.register_forward_hook(_dh_hook(level, deltas[level]))
-
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-5)
 
     rng = np.random.default_rng(args.seed)
@@ -318,8 +299,15 @@ def main():
             entry = {"step": step, "K": k_roll, "loss": mean_loss, "pos_err": pos_err}
             dh_str = ""
             if args.hier:
-                entry["dh"] = [v.item() for v in last_dh]
+                # Telemetry stashed by HierStretchNet.forward (dead-level
+                # detector; last rollout step wins).
+                entry["dh"] = list(net.last_dh_norms)
                 dh_str = "  dH=[" + ",".join(f"{v:.1e}" for v in entry["dh"]) + "]"
+                if any(r > 0.0 for r in net.last_saturation_rates):
+                    # Edge-feature saturation (so3_log_axial clamp) per coarse
+                    # level; printed only when active to keep logs clean.
+                    entry["sat"] = list(net.last_saturation_rates)
+                    dh_str += "  sat=[" + ",".join(f"{v:.1e}" for v in entry["sat"]) + "]"
             print(
                 f"step {step:5d}  K={k_roll}  L={mean_loss:+.4e}  pos_err={pos_err:.4e}  {elapsed:.1f}s{dh_str}",
                 flush=True,

@@ -252,6 +252,34 @@ class TestSpdFloor(unittest.TestCase):
         self.assertTrue(torch.autograd.gradcheck(spd_floor, (S,), eps=1e-6, atol=1e-6))
 
 
+class TestEighCpuFallback(unittest.TestCase):
+    def test_convergence_failure_falls_back_to_cpu(self):
+        # cusolver occasionally fails to *converge* (LinAlgError) on fields
+        # with massively repeated eigenvalues; _batched_eigh must recompute
+        # the failing chunk on CPU LAPACK.  Simulated by patching
+        # torch.linalg.eigh to raise once and delegate afterwards.
+        S = random_spd(32, torch.float64, seed=16)
+        ref = sym_log(S)  # pure-CPU reference, computed with the real eigh
+
+        real_eigh = torch.linalg.eigh
+        calls = {"n": 0}
+
+        def flaky_eigh(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise torch.linalg.LinAlgError("simulated cusolver convergence failure")
+            return real_eigh(*args, **kwargs)
+
+        torch.linalg.eigh = flaky_eigh
+        try:
+            out = sym_log(S)
+        finally:
+            torch.linalg.eigh = real_eigh
+
+        self.assertGreaterEqual(calls["n"], 2)  # first call raised, fallback ran
+        self.assertLess((out - ref).abs().max().item(), 1e-14)
+
+
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
 class TestLargeBatchCuda(unittest.TestCase):
     def test_large_batch_eigh(self):

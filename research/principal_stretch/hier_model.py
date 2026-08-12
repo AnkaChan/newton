@@ -89,14 +89,16 @@ Layout and precision (documented decisions)
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import torch
 import torch.nn as nn
 
 from .hierarchy import Hierarchy, pool_mean, pool_sum, prolong
-from .model import sym_to_vec, vec_to_sym
+from .model import F_SCALE, sym_to_vec, vec_to_sym
 from .polar import polar_rotation
-from .spd_log import so3_log_axial, spd_floor, sym_exp, sym_log
+from .spd_log import _MAX_THETA, so3_log_axial, spd_floor, sym_exp, sym_log
 from .torch_solver import SolverState, compute_S_from_x
 
 COARSE_FEAT_DIM = 31
@@ -109,8 +111,6 @@ F_EXT_SUM_SLICE = slice(18, 21)
 # Column layout of feat28 (see model.build_features).
 _FEAT28_GRAVITY = slice(12, 15)
 _FEAT28_SCALARS = slice(18, 21)  # mu/1e5, lam/1e5, pin_flag
-
-_F_SCALE = 30.0  # same body-force normalisation as build_features
 
 
 def _mlp(in_dim: int, hidden: int, out_dim: int) -> nn.Sequential:
@@ -190,6 +190,16 @@ class HierStretchNet(nn.Module):
             nn.init.zeros_(head[-1].weight)
             nn.init.zeros_(head[-1].bias)
 
+        # Telemetry (plain python lists, not buffers; excluded from the
+        # state_dict).  Refreshed on every forward under no_grad — during a
+        # K-step rollout the last step's values win.
+        self.last_dh_norms: list[float] = []
+        """Mean |dH_l| per head level ``[0 .. L]`` (dead-level detector)."""
+        self.last_saturation_rates: list[float] = [0.0] * self.n_levels
+        """Per coarse level ``[1 .. L]``: fraction of valid quotient edges whose
+        relative rotation was clamped by the ``so3_log_axial`` saturate branch
+        (``cos_theta < cos(3.0)``)."""
+
     def _buf(self, name: str, level: int) -> torch.Tensor:
         return getattr(self, f"{name}_{level}")
 
@@ -252,8 +262,8 @@ class HierStretchNet(nn.Module):
                     H_bar32,
                     fields["H_prev"].to(torch.float32),
                     gravity[None].expand(n_nodes, n_batch, 3),
-                    (fields["f_mean"] / _F_SCALE).to(torch.float32),
-                    (fields["f_sum"] / _F_SCALE).to(torch.float32),
+                    (fields["f_mean"] / F_SCALE).to(torch.float32),
+                    (fields["f_sum"] / F_SCALE).to(torch.float32),
                     fields["scalars"],
                     neighbor_h,
                     self._buf("log_vol", level)[:, None, None].expand(n_nodes, n_batch, 1),
@@ -295,6 +305,13 @@ class HierStretchNet(nn.Module):
         R_rel = torch.where(valid[:, :, None, None, None], R_rel, eye)
         # saturate: transient off-manifold rollout states can push adjacent
         # cluster rotations past the 3 rad guard; features must stay finite.
+        # Telemetry: fraction of valid edges the saturate branch clamps
+        # (padded slots hold the identity, so they can never count).
+        with torch.no_grad():
+            tr = R_rel.diagonal(dim1=-2, dim2=-1).sum(-1)  # (N, K, B)
+            clamped = 0.5 * (tr - 1.0) < math.cos(_MAX_THETA)
+            n_valid = valid.sum() * clamped.shape[-1]
+            self.last_saturation_rates[level - 1] = float(clamped.sum()) / max(int(n_valid), 1)
         return torch.cat([rel, stretch, so3_log_axial(R_rel, saturate=True)], dim=-1).to(torch.float32)
 
     def level_features(self, state: SolverState, x_t, x_prev, f_ext, feat28, S_t) -> list[torch.Tensor]:
@@ -348,6 +365,9 @@ class HierStretchNet(nn.Module):
         context = [h_levels[m][self._buf("ancestor_0", m)] for m in range(1, self.n_levels + 1)]
         head_in = torch.cat([prep["feat28_nf"], *context], dim=-1)
         dh_levels[0] = self._deltas[0] * torch.tanh(self.heads[0](head_in))  # (T, B, 6)
+
+        with torch.no_grad():  # telemetry: dead-level detector (see __init__)
+            self.last_dh_norms = [float(dh.abs().mean()) for dh in dh_levels]
 
         # F11: prolong every coarse residual down to the tets, compose in log space.
         acc = dh_levels[0]

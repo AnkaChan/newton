@@ -57,6 +57,9 @@ def main():
     blocks = int(ckpt_args.get("blocks", 1))
     hier = bool(ckpt_args.get("hier", False))
     if hier:
+        # The hier net recomputes its pooled state from (x_t, x_prev) once per
+        # step; the block loop below only refreshes S_cur / feat between blocks.
+        assert blocks == 1, "hier checkpoints with blocks>1 are not supported by this harness"
         # Same article -> deterministic same hierarchy as at training time; the
         # constructor args live in the checkpoint's hier_config, not the state_dict.
         cfg = ckpt["hier_config"]

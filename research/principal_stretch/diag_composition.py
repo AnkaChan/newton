@@ -62,27 +62,6 @@ from .spd_log import sym_exp, sym_log
 from .torch_solver import compute_S_from_x, inertial_predictor
 
 
-def matfn_chunked(fn, x: torch.Tensor, chunk: int = 16384) -> torch.Tensor:
-    """Apply sym_log/sym_exp over (..., 3, 3) in flat chunks.
-
-    cusolver's batched ``eigh`` rejects large batches (measured limit ~31.6k
-    3x3 fp64 matrices on torch 2.10/cu128: CUSOLVER_STATUS_INVALID_VALUE from
-    the workspace-size query), so one flat call over all (frame, tet) samples
-    is not an option.  It also occasionally fails to *converge* on fields with
-    massively repeated eigenvalues (a prolonged single-cluster coarsest level
-    is near-constant); those chunks fall back to CPU LAPACK, which is exact.
-    """
-    flat = x.reshape(-1, 3, 3)
-    outs = []
-    for i in range(0, flat.shape[0], chunk):
-        piece = flat[i : i + chunk]
-        try:
-            outs.append(fn(piece))
-        except torch.linalg.LinAlgError:
-            outs.append(fn(piece.cpu()).to(piece.device))
-    return torch.cat(outs).reshape(x.shape)
-
-
 def hierarchy_to_torch(hier, device) -> list[dict[str, torch.Tensor]]:
     """Per-level torch tensors: assign, CHILD-level volumes, PoU rows (fp64)."""
     levels = []
@@ -191,9 +170,12 @@ def main():
             S_gt, x_prev, x_t, x_gt = S_gt[spd_frame], x_prev[spd_frame], x_t[spd_frame], x_gt[spd_frame]
             n_frames = S_gt.shape[0]
 
+        # sym_log / sym_exp chunk their eigh calls internally (cusolver's
+        # batched-size limit) and fall back to CPU LAPACK on convergence
+        # failures, so one flat call over all (frame, tet) samples is fine.
         eye = torch.eye(3, dtype=torch.float64, device=device)
         fields = {
-            "log": matfn_chunked(sym_log, S_gt).transpose(0, 1),  # H_gt, (T, B, 3, 3)
+            "log": sym_log(S_gt).transpose(0, 1),  # H_gt, (T, B, 3, 3)
             "linear": (S_gt - eye).transpose(0, 1),
         }
         names = depth_names(args.levels)
@@ -202,7 +184,7 @@ def main():
             acc = torch.zeros_like(field)
             for name, comp in zip(names, telescope(field, levels), strict=True):
                 acc = acc + comp
-                s_hat = matfn_chunked(sym_exp, acc) if rule == "log" else eye + acc
+                s_hat = sym_exp(acc) if rule == "log" else eye + acc
                 recon[rule, name] = s_hat.transpose(0, 1).contiguous()
 
         # F14 decode for every row, plus the oracle.

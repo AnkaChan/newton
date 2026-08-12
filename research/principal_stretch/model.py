@@ -29,6 +29,12 @@ import torch.nn as nn
 
 _SYM_IDX = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 
+# Rough scale normalisation so all input groups are O(1).  Shared with the
+# hierarchical model's coarse features (single source of truth).
+G_SCALE = 10.0  # gravity magnitude ~9.8
+F_SCALE = 30.0  # body forces sampled up to ~50 N
+MAT_SCALE = 1e5  # Lame parameters
+
 
 def sym_to_vec(S: torch.Tensor) -> torch.Tensor:
     """Flatten symmetric (..., 3, 3) -> (..., 6) using upper-triangle order."""
@@ -139,10 +145,6 @@ def build_features(
     n_neigh = valid.sum(dim=1).to(S_t.dtype).clamp(min=1.0)  # (T,)
     S_neigh_mean = S_neigh_all.sum(dim=-3) / n_neigh[:, None, None]
 
-    # Rough scale normalisation so all input groups are O(1).
-    G_SCALE = 10.0  # gravity magnitude ~9.8
-    F_SCALE = 30.0  # body forces sampled up to ~50 N
-    MAT_SCALE = 1e5  # Lame parameters
     # Centre S around identity so deviation is the signal.
     eye3 = torch.eye(3, dtype=S_t.dtype, device=S_t.device)
     S_t_c = S_t - eye3

@@ -80,15 +80,30 @@ _MAX_THETA = 3.0  # rotation angles beyond this are out of physical range
 _EIGH_CHUNK = 16384
 
 
+def _eigh_cpu_fallback(Ms: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``torch.linalg.eigh``, recomputed on CPU if the device solver fails.
+
+    cusolver occasionally fails to *converge* (``LinAlgError``) on fields with
+    massively repeated eigenvalues — e.g. a near-constant prolonged
+    single-cluster coarsest level — where CPU LAPACK is exact.
+    """
+    try:
+        return torch.linalg.eigh(Ms)
+    except torch.linalg.LinAlgError:
+        lam, u = torch.linalg.eigh(Ms.cpu())
+        return lam.to(Ms.device), u.to(Ms.device)
+
+
 def _batched_eigh(Ms: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """``torch.linalg.eigh`` chunked over the flattened batch on CUDA."""
+    """``torch.linalg.eigh`` chunked over the flattened batch on CUDA, with a
+    per-chunk CPU fallback on solver convergence failure."""
     n = Ms.numel() // (Ms.shape[-1] * Ms.shape[-2])
     if not Ms.is_cuda or n <= _EIGH_CHUNK:
-        return torch.linalg.eigh(Ms)
+        return _eigh_cpu_fallback(Ms)
     flat = Ms.reshape(-1, Ms.shape[-2], Ms.shape[-1])
     lams, us = [], []
     for i in range(0, n, _EIGH_CHUNK):
-        lam_i, u_i = torch.linalg.eigh(flat[i : i + _EIGH_CHUNK])
+        lam_i, u_i = _eigh_cpu_fallback(flat[i : i + _EIGH_CHUNK])
         lams.append(lam_i)
         us.append(u_i)
     lam = torch.cat(lams).reshape(*Ms.shape[:-1])
