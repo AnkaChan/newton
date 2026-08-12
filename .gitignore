@@ -73,3 +73,9 @@ docs/_static/viser/
 
 # Notebook checkpoints
 **/*.ipynb_checkpoints/
+
+# PSS research branch: local artifacts (never commit)
+/data/
+/checkpoints/
+/artifacts_fix/
+/papers/

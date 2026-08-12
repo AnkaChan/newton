@@ -184,7 +184,7 @@ because adjacency is material adjacency:
 
 **F10 — PoU prolongation (static, rest-space, precomputed):** for tet e with parent A0 and candidates `C(e) = {A0} union neighbors(A0)`:
 ```
-omega_eA = exp( -|c_e^0 - c_A^0|^2 / sigma_l^2 ) / (normalizer over C(e)),    sigma_l = mean cluster diameter at level l
+omega_eA = exp( -|c_e^0 - c_A^0|^2 / sigma_l^2 ) / (normalizer over C(e)),    sigma_l = mean over the level's quotient edges of |c0_A - c0_B| (adjacent-cluster centroid spacing; 1.0 if the level has no edges)
 (P_l dH_l)(e) = sum_{A in C(e)} omega_eA * dH_l[A]        for l >= 2, prolong level-by-level down to tets
 ```
 
@@ -413,7 +413,7 @@ class TestHierModel(unittest.TestCase):
 
 - [ ] **Step 1:** implement arms per A7 (edge features per F6 averaged over incident edges; ancestor arm = concat pooled level-1..3 *feature* vectors along the ancestor chain, oracle-computed from GT state via Task-2 pooling).
 - [ ] **Step 2:** run all three arms on toy and 4k (same pool/query protocol as before, `--no-same-tet` on 4k).
-- [ ] **Step 3:** record: floors must order base > edge > ancestor at 4k, with the ancestor arm moving decisively toward the 1.53 mm oracle. Gate per D7.10: if the ancestor arm does not drop the floor, the feature set cannot carry the far field — fix features before Task 6.
+- [ ] **Step 3:** record: floors must order base > edge > ancestor at 4k, with the ancestor arm moving decisively toward the 1.53 mm oracle. Gate per D7.10: if the ancestor arm does not drop the floor, the feature set cannot carry the far field — fix features before Task 6. [Executed 2026-08-11: gate FAILED with inverted ordering; adjudicated as instrument invalidation — kNN-on-concatenation degrades with dimension; see D7.13 in notes/00_decision_log.md. The pipeline proceeded on the audit-0b telescope evidence.]
 - [ ] **Step 4:** lint, commit `"Add feature-arm variants to the kNN floor audit"`.
 
 ### Task 6: trainer + eval integration
