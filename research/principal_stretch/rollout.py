@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from . import torch_solver as ts
-from .predictor import build_stretch_predictor, checkpoint_predictor_config
+from .predictor import build_stretch_predictor, checkpoint_predictor_config, load_stretch_predictor_state
 from .torch_solver import compute_S_from_x, inertial_predictor
 
 
@@ -77,7 +77,7 @@ def main():
         residual=bool(predictor_config.get("residual", False)),
         graph_config=predictor_config.get("graph_transformer"),
     )
-    predictor.model.load_state_dict(ckpt["state_dict"])
+    load_stretch_predictor_state(predictor, ckpt)
     predictor.eval()
     # Inference must match the training configuration.
     ckpt_args = ckpt.get("args", {})

@@ -18,6 +18,25 @@ from .torch_solver import SolverState
 
 PREDICTOR_KINDS = ("mlp", "graph-transformer")
 
+_STATIC_GRAPH_KEYS = ("tets", "corner_force_weight")
+_STATIC_GRAPH_PREFIXES = (
+    "adjacency_",
+    "edge_weight_",
+    "volume_",
+    "rest_length_",
+    "rest_direction_",
+    "log_edge_weight_",
+    "assign_",
+    "child_volume_",
+    "pou_index_",
+    "pou_weight_",
+    "representative_",
+)
+
+
+def _is_static_graph_key(name: str) -> bool:
+    return name in _STATIC_GRAPH_KEYS or name.startswith(_STATIC_GRAPH_PREFIXES)
+
 
 class StretchPredictor(nn.Module):
     """Adapter that gives the flat baseline and graph transformer one API."""
@@ -110,9 +129,24 @@ def build_stretch_predictor(
 def checkpoint_predictor_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
     """Read new metadata, falling back to pre-adapter flat checkpoints."""
     if "predictor_config" in checkpoint:
-        return dict(checkpoint["predictor_config"])
+        config = dict(checkpoint["predictor_config"])
+        if config.get("kind") == "graph-transformer":
+            graph_config = dict(config.get("graph_transformer", {}))
+            if "architecture_version" not in graph_config:
+                state_dict = checkpoint.get("state_dict", {})
+                graph_config["architecture_version"] = 0 if any(_is_static_graph_key(k) for k in state_dict) else 1
+            config["graph_transformer"] = graph_config
+        return config
     args = checkpoint.get("args", {})
     return {
         "kind": args.get("predictor", "mlp"),
         "residual": bool(args.get("residual", False)),
     }
+
+
+def load_stretch_predictor_state(predictor: StretchPredictor, checkpoint: dict[str, Any]) -> None:
+    """Strictly load learned state while rebuilding mesh-static graph buffers."""
+    state_dict = dict(checkpoint["state_dict"])
+    if predictor.kind == "graph-transformer":
+        state_dict = {name: value for name, value in state_dict.items() if not _is_static_graph_key(name)}
+    predictor.model.load_state_dict(state_dict, strict=True)

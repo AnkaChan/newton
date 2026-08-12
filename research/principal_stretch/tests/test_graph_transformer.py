@@ -16,8 +16,15 @@ from research.principal_stretch.graph_transformer import (
     GraphTransformerConfig,
     PrincipalStretchGraphTransformer,
     RelationAttentionBlock,
+    covariant_observation_frame,
 )
 from research.principal_stretch.hierarchy import build_hierarchy
+from research.principal_stretch.predictor import (
+    build_stretch_predictor,
+    checkpoint_predictor_config,
+    load_stretch_predictor_state,
+)
+from research.principal_stretch.spd_log import spd_floor, sym_log
 
 
 def _chain_mesh(n_tets: int, offset=(0.0, 0.0, 0.0)) -> tuple[np.ndarray, np.ndarray]:
@@ -220,6 +227,17 @@ class TestPrincipalStretchGraphTransformer(unittest.TestCase):
                 x_current = (torch.as_tensor(self.rest, dtype=torch.float64) @ transform.T).requires_grad_(True)
                 target = model(state, x_current, *inputs[1:])
                 self.assertTrue(torch.isfinite(target).all())
+                Q = _rotation()
+                translation = torch.tensor([0.2, -0.3, 0.1], dtype=torch.float64)
+                transformed_target = model(
+                    state,
+                    x_current.detach() @ Q.T + translation,
+                    inputs[1] @ Q.T + translation,
+                    inputs[2] @ Q.T,
+                    inputs[3] @ Q.T,
+                    *inputs[4:],
+                )
+                self.assertLess((transformed_target - target.detach()).abs().max().item(), 4.0e-6)
                 target.square().mean().backward()
                 self.assertIsNotNone(x_current.grad)
                 self.assertTrue(torch.isfinite(x_current.grad).all())
@@ -249,6 +267,22 @@ class TestPrincipalStretchGraphTransformer(unittest.TestCase):
 
         rebuilt, _state, _hierarchy = _model_and_state(self.rest, self.tets)
         rebuilt.load_state_dict(state_dict)
+
+    def test_v2_state_is_independent_of_actual_hierarchy_depth(self):
+        short_rest, short_tets = _chain_mesh(2)
+        long_rest, long_tets = _chain_mesh(40)
+        short, _state, short_hierarchy = _model_and_state(short_rest, short_tets)
+        long, _state, long_hierarchy = _model_and_state(long_rest, long_tets)
+        self.assertNotEqual(len(short_hierarchy.levels), len(long_hierarchy.levels))
+
+        short_state = short.state_dict()
+        long_state = long.state_dict()
+        self.assertEqual(short_state.keys(), long_state.keys())
+        self.assertEqual(
+            {name: value.shape for name, value in short_state.items()},
+            {name: value.shape for name, value in long_state.items()},
+        )
+        short.load_state_dict(long_state)
 
     def test_conservative_load_and_multires_far_field(self):
         model, state, hierarchy = _model_and_state(self.rest, self.tets)
@@ -281,6 +315,85 @@ class TestPrincipalStretchGraphTransformer(unittest.TestCase):
         target_zero = model(state, x_current, x_previous, zero, gravity, mu, lam, pin)
         target_force = model(state, x_current, x_previous, force, gravity, mu, lam, pin)
         self.assertLess((target_force[:8] - target_zero[:8]).abs().max().item(), 1.0e-7)
+
+
+class TestCovariantObservationFrame(unittest.TestCase):
+    def test_rotation_covariance_and_gradients_on_bad_states(self):
+        Q = _rotation()
+        matrices = torch.stack(
+            [
+                torch.eye(3, dtype=torch.float64),
+                torch.diag(torch.tensor([1.5, 0.8, 0.3], dtype=torch.float64)),
+                torch.diag(torch.tensor([-1.0, 1.0, 1.0], dtype=torch.float64)),
+                torch.diag(torch.tensor([1.0, 1.0, 0.0], dtype=torch.float64)),
+            ]
+        ).requires_grad_(True)
+        C = matrices.transpose(-1, -2) @ matrices
+        # Use the same floored Hencky construction as the model.
+        H = 0.5 * sym_log(spd_floor(C, lam_min=0.05**2))
+        frame = covariant_observation_frame(matrices, H)
+        transformed = Q @ matrices.detach()
+        transformed_C = transformed.transpose(-1, -2) @ transformed
+        transformed_H = 0.5 * sym_log(spd_floor(transformed_C, lam_min=0.05**2))
+        transformed_frame = covariant_observation_frame(transformed, transformed_H)
+        self.assertLess((transformed_frame - Q @ frame.detach()).abs().max().item(), 2.0e-12)
+
+        frame.square().sum().backward()
+        self.assertTrue(torch.isfinite(matrices.grad).all())
+        self.assertGreater(matrices.grad.abs().max().item(), 0.0)
+
+
+class TestGraphCheckpointCompatibility(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.rest, cls.tets = _chain_mesh(12)
+
+    def _predictor(self, version: int):
+        return build_stretch_predictor(
+            "graph-transformer",
+            self.rest,
+            self.tets,
+            torch.device("cpu"),
+            torch.float32,
+            residual=True,
+            graph_config=GraphTransformerConfig(
+                hidden_dim=32,
+                num_heads=4,
+                n_levels=8,
+                cluster_size=2,
+                architecture_version=version,
+            ),
+        )
+
+    def test_unversioned_current_checkpoint_is_v1(self):
+        source = self._predictor(1)
+        config = source.checkpoint_config()
+        del config["graph_transformer"]["architecture_version"]
+        checkpoint = {"predictor_config": config, "state_dict": source.model.state_dict()}
+        normalized = checkpoint_predictor_config(checkpoint)
+        self.assertEqual(normalized["graph_transformer"]["architecture_version"], 1)
+
+        rebuilt = self._predictor(1)
+        load_stretch_predictor_state(rebuilt, checkpoint)
+        for name, value in source.model.state_dict().items():
+            self.assertTrue(torch.equal(value, rebuilt.model.state_dict()[name]), name)
+
+    def test_static_topology_keys_select_v0_and_are_stripped(self):
+        source = self._predictor(0)
+        config = source.checkpoint_config()
+        del config["graph_transformer"]["architecture_version"]
+        state_dict = dict(source.model.state_dict())
+        state_dict["tets"] = source.model.tets.clone()
+        state_dict["adjacency_0"] = source.model.adjacency_0.clone()
+        checkpoint = {"predictor_config": config, "state_dict": state_dict}
+        normalized = checkpoint_predictor_config(checkpoint)
+        self.assertEqual(normalized["graph_transformer"]["architecture_version"], 0)
+
+        rebuilt = self._predictor(0)
+        load_stretch_predictor_state(rebuilt, checkpoint)
+        checkpoint["state_dict"]["unexpected_learned_key"] = torch.zeros(1)
+        with self.assertRaises(RuntimeError):
+            load_stretch_predictor_state(rebuilt, checkpoint)
 
 
 if __name__ == "__main__":

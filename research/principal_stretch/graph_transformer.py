@@ -15,9 +15,9 @@ carried in the material frame and the output is
 
 This is positive definite by construction and invariant to an active world
 rigid transform.  World vectors (gravity, load, velocity, and current edge
-offsets) are pulled into each node's polar frame before entering ordinary
-MLPs.  Under ``x' = Q x + t`` and ``f' = Q f``, the polar frame becomes
-``R' = Q R``, so every learned feature and the material-frame target stretch
+offsets) are pulled into a covariant deformation frame before entering
+ordinary MLPs.  Under ``x' = Q x + t`` and ``f' = Q f``, the frame becomes
+``A' = Q A``, so every learned feature and the material-frame target stretch
 remain unchanged.  The downstream local-global decoder then makes the full
 position solver SE(3)-equivariant.
 
@@ -39,7 +39,7 @@ import torch.nn as nn
 
 from .hierarchy import Hierarchy
 from .model import sym_to_vec, vec_to_sym
-from .polar import polar_rotation_forward
+from .polar import polar_rotation, polar_rotation_forward
 from .spd_log import spd_floor, sym_exp, sym_log
 from .torch_solver import SolverState
 
@@ -58,6 +58,7 @@ class GraphTransformerConfig:
     dropout: float = 0.0
     max_hencky_update: float = 0.35
     dt: float = 1.0 / 60.0
+    architecture_version: int = 2
 
     def __post_init__(self):
         if self.hidden_dim % self.num_heads != 0:
@@ -70,6 +71,8 @@ class GraphTransformerConfig:
             raise ValueError("max_hencky_update must be positive")
         if self.dt <= 0.0:
             raise ValueError("dt must be positive")
+        if self.architecture_version not in (0, 1, 2):
+            raise ValueError("architecture_version must be 0, 1, or 2")
 
 
 def _mlp(in_dim: int, hidden_dim: int, out_dim: int) -> nn.Sequential:
@@ -124,6 +127,18 @@ def _observation_rotation(F: torch.Tensor) -> torch.Tensor:
     """
     shape = F.shape
     return polar_rotation_forward(F.detach().reshape(-1, 3, 3)).reshape(shape)
+
+
+def covariant_observation_frame(F: torch.Tensor, H: torch.Tensor) -> torch.Tensor:
+    """Return ``A = F exp(-H)`` for invariant feature contractions.
+
+    For a healthy positive-determinant deformation this equals the proper
+    polar rotation.  Unlike selecting a polar factor, it remains covariant and
+    differentiable for inverted and rank-deficient deformation gradients:
+    ``A(QF) = Q A(F)`` for every active proper rotation ``Q``.  ``H`` is the
+    floored Hencky tensor already used by the network.
+    """
+    return F @ sym_exp(-H)
 
 
 class RelationAttentionBlock(nn.Module):
@@ -285,6 +300,7 @@ class PrincipalStretchGraphTransformer(nn.Module):
         super().__init__()
         self.config = config or GraphTransformerConfig()
         self.n_levels = len(hierarchy.levels)
+        module_levels = self.config.n_levels if self.config.architecture_version >= 2 else self.n_levels
         hidden_dim = self.config.hidden_dim
         num_heads = self.config.num_heads
 
@@ -337,23 +353,23 @@ class PrincipalStretchGraphTransformer(nn.Module):
         self.encoders = nn.ModuleList(
             [
                 nn.Sequential(nn.Linear(NODE_FEATURE_DIM, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim))
-                for _ in range(self.n_levels + 1)
+                for _ in range(module_levels + 1)
             ]
         )
         self.down_attention = nn.ModuleList(
             [
                 RelationAttentionBlock(hidden_dim, num_heads, EDGE_FEATURE_DIM, self.config.dropout)
-                for _ in range(self.n_levels + 1)
+                for _ in range(module_levels + 1)
             ]
         )
-        self.down_fusion = nn.ModuleList([_mlp(2 * hidden_dim, hidden_dim, hidden_dim) for _ in range(self.n_levels)])
+        self.down_fusion = nn.ModuleList([_mlp(2 * hidden_dim, hidden_dim, hidden_dim) for _ in range(module_levels)])
         self.up_cross_attention = nn.ModuleList(
-            [ParentCrossAttention(hidden_dim, num_heads, self.config.dropout) for _ in range(self.n_levels)]
+            [ParentCrossAttention(hidden_dim, num_heads, self.config.dropout) for _ in range(module_levels)]
         )
         self.up_attention = nn.ModuleList(
             [
                 RelationAttentionBlock(hidden_dim, num_heads, EDGE_FEATURE_DIM, self.config.dropout)
-                for _ in range(self.n_levels)
+                for _ in range(module_levels)
             ]
         )
         self.output_head = _mlp(hidden_dim, hidden_dim, 6)
@@ -418,6 +434,11 @@ class PrincipalStretchGraphTransformer(nn.Module):
         force_material = self._project(rotation, fields["force"])
         velocity_material = self._project(rotation, fields["velocity"])
         determinant = torch.linalg.det(fields["F"])
+        if self.config.architecture_version >= 2:
+            rms_deformation = fields["F"].square().mean(dim=(-2, -1)).sqrt()
+            orientation = determinant / (math.sqrt(3.0) * rms_deformation).pow(3).clamp(min=1.0e-12)
+        else:
+            orientation = torch.sign(determinant)
         volume = self._level_buffer("volume", level).to(H)
         log_relative_volume = torch.log(volume / volume.mean()).expand(H.shape[0], -1)
 
@@ -433,7 +454,7 @@ class PrincipalStretchGraphTransformer(nn.Module):
                 torch.log(fields["lam"].clamp(min=1.0) / 1.0e5),
                 fields["pin"],
                 log_relative_volume[..., None],
-                torch.sign(determinant)[..., None],
+                orientation[..., None],
                 torch.log(determinant.abs().clamp(min=1.0e-6)).clamp(min=-8.0, max=8.0)[..., None],
                 _spectral_invariants(H),
             ],
@@ -522,7 +543,12 @@ class PrincipalStretchGraphTransformer(nn.Module):
         centroid = x_tet.mean(dim=2)
         previous_centroid = x_previous_tet.mean(dim=2)
         force_tet = self.conservative_tet_load(force)
-        rotation = _observation_rotation(F)
+        if self.config.architecture_version >= 2:
+            rotation = covariant_observation_frame(F, H)
+        elif self.config.architecture_version == 1:
+            rotation = _observation_rotation(F)
+        else:
+            rotation = polar_rotation(F)
 
         fields: dict[str, torch.Tensor] = {
             "H": H,
@@ -555,10 +581,13 @@ class PrincipalStretchGraphTransformer(nn.Module):
                     pooled[name] = _batch_pool_sum(value, assign, n_parent)
                 elif name != "rotation":
                     pooled[name] = _batch_pool_mean(value, assign, child_volume, n_parent)
-            # A deterministic child frame transforms as Q R under active world
-            # rotation and cannot suffer the cancellation of polar(mean(F)).
-            representative = self._level_buffer("representative", next_level)
-            pooled["rotation"] = fields["rotation"][:, representative]
+            if self.config.architecture_version == 0:
+                pooled["rotation"] = polar_rotation(pooled["F"])
+            else:
+                # A deterministic child frame transforms as Q A under active
+                # world rotation and cannot suffer polar(mean(F)) cancellation.
+                representative = self._level_buffer("representative", next_level)
+                pooled["rotation"] = fields["rotation"][:, representative]
             fields = pooled
 
         return batched, base_H, node_features, edge_features

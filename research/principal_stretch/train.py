@@ -33,7 +33,12 @@ import torch
 from . import torch_solver as ts
 from .graph_transformer import GraphTransformerConfig
 from .potentials import incremental_potential_batched
-from .predictor import PREDICTOR_KINDS, build_stretch_predictor, checkpoint_predictor_config
+from .predictor import (
+    PREDICTOR_KINDS,
+    build_stretch_predictor,
+    checkpoint_predictor_config,
+    load_stretch_predictor_state,
+)
 from .torch_solver import compute_S_from_x, inertial_predictor
 
 
@@ -220,7 +225,7 @@ def main():
                 f"saved={saved_config}, current={current_config}. "
                 "Pass --allow-init-config-mismatch for an intentional compatible fine-tune."
             )
-        predictor.model.load_state_dict(ckpt["state_dict"])
+        load_stretch_predictor_state(predictor, ckpt)
         print(f"loaded init weights from {args.init_ckpt}")
     opt = torch.optim.AdamW(predictor.parameters(), lr=args.lr, weight_decay=1e-5)
     if device.type == "cuda":

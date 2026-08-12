@@ -34,7 +34,7 @@ import warp as wp
 from newton.solvers import SolverVBD
 
 from . import torch_solver as ts
-from .predictor import build_stretch_predictor, checkpoint_predictor_config
+from .predictor import build_stretch_predictor, checkpoint_predictor_config, load_stretch_predictor_state
 from .rollout import vert_to_tet_pin_flag
 from .run_forward import build_model
 from .torch_solver import compute_S_from_x, inertial_predictor
@@ -122,7 +122,7 @@ def net_curve(data, trajs, ckpt_path, iters_list, frame_dt, device="cuda:0"):
         residual=bool(predictor_config.get("residual", False)),
         graph_config=predictor_config.get("graph_transformer"),
     )
-    predictor.model.load_state_dict(ckpt["state_dict"])
+    load_stretch_predictor_state(predictor, ckpt)
     predictor.eval()
     ckpt_args = ckpt.get("args", {})
     warm = ckpt_args.get("warm", "prev")
