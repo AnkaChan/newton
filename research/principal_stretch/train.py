@@ -33,7 +33,7 @@ import torch
 from . import torch_solver as ts
 from .graph_transformer import GraphTransformerConfig
 from .potentials import incremental_potential_batched
-from .predictor import PREDICTOR_KINDS, build_stretch_predictor
+from .predictor import PREDICTOR_KINDS, build_stretch_predictor, checkpoint_predictor_config
 from .torch_solver import compute_S_from_x, inertial_predictor
 
 
@@ -92,6 +92,11 @@ def main():
     )
     parser.add_argument("--curriculum-frac", type=float, default=0.5)
     parser.add_argument("--init-ckpt", type=str, default=None)
+    parser.add_argument(
+        "--allow-init-config-mismatch",
+        action="store_true",
+        help="load only compatible-shaped weights even when predictor semantics differ",
+    )
     parser.add_argument("--loss", choices=("pos", "phys"), default="pos")
     parser.add_argument("--predictor", choices=PREDICTOR_KINDS, default="mlp")
     parser.add_argument("--residual", action="store_true", help="predict S* = S_t + delta instead of S* = I + delta")
@@ -207,6 +212,14 @@ def main():
     )
     if args.init_ckpt:
         ckpt = torch.load(args.init_ckpt, map_location=device, weights_only=False)
+        saved_config = checkpoint_predictor_config(ckpt)
+        current_config = predictor.checkpoint_config()
+        if saved_config != current_config and not args.allow_init_config_mismatch:
+            raise ValueError(
+                "initial checkpoint predictor config differs from this run; "
+                f"saved={saved_config}, current={current_config}. "
+                "Pass --allow-init-config-mismatch for an intentional compatible fine-tune."
+            )
         predictor.model.load_state_dict(ckpt["state_dict"])
         print(f"loaded init weights from {args.init_ckpt}")
     opt = torch.optim.AdamW(predictor.parameters(), lr=args.lr, weight_decay=1e-5)
