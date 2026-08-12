@@ -39,7 +39,7 @@ import torch.nn as nn
 
 from .hierarchy import Hierarchy
 from .model import sym_to_vec, vec_to_sym
-from .polar import polar_rotation
+from .polar import polar_rotation_forward
 from .spd_log import spd_floor, sym_exp, sym_log
 from .torch_solver import SolverState
 
@@ -113,6 +113,18 @@ def _radially_bound_symmetric(raw: torch.Tensor, maximum: float) -> torch.Tensor
     norm = torch.sqrt((matrix * matrix).sum(dim=(-2, -1), keepdim=True) + 1.0e-16)
     scale = maximum / torch.sqrt(maximum * maximum + norm * norm)
     return matrix * scale
+
+
+def _observation_rotation(F: torch.Tensor) -> torch.Tensor:
+    """Proper polar frames used only to express rotation-invariant features.
+
+    The reflection-corrected/singular branch of the polar decomposition has no
+    valid derivative in :mod:`polar`.  Frames are coordinates for network
+    observations rather than optimized state, so detach them explicitly while
+    leaving Hencky strain, centroids, loads, and the decoder differentiable.
+    """
+    shape = F.shape
+    return polar_rotation_forward(F.detach().reshape(-1, 3, 3)).reshape(shape)
 
 
 class RelationAttentionBlock(nn.Module):
@@ -278,7 +290,7 @@ class PrincipalStretchGraphTransformer(nn.Module):
         num_heads = self.config.num_heads
 
         tets = np.asarray(tets, dtype=np.int64)
-        self.register_buffer("tets", torch.as_tensor(tets, dtype=torch.int64))
+        self.register_buffer("tets", torch.as_tensor(tets, dtype=torch.int64), persistent=False)
 
         # Distribute each vertex load among incident tets in proportion to
         # rest volume.  Summing the resulting tet loads exactly recovers the
@@ -286,7 +298,9 @@ class PrincipalStretchGraphTransformer(nn.Module):
         incident_volume = np.zeros(n_verts, dtype=np.float64)
         np.add.at(incident_volume, tets.reshape(-1), np.repeat(hierarchy.tet_vol, 4))
         corner_weight = hierarchy.tet_vol[:, None] / incident_volume[tets]
-        self.register_buffer("corner_force_weight", torch.as_tensor(corner_weight, dtype=torch.float32))
+        self.register_buffer(
+            "corner_force_weight", torch.as_tensor(corner_weight, dtype=torch.float32), persistent=False
+        )
 
         self._register_level(0, hierarchy.tet_adj, hierarchy.tet_w_adj, hierarchy.tet_vol, hierarchy.tet_c0)
         child_volume = hierarchy.tet_vol
@@ -298,10 +312,27 @@ class PrincipalStretchGraphTransformer(nn.Module):
                 hierarchy_level.vol,
                 hierarchy_level.c0,
             )
-            self.register_buffer(f"assign_{level}", torch.as_tensor(hierarchy_level.assign, dtype=torch.int64))
-            self.register_buffer(f"child_volume_{level}", torch.as_tensor(child_volume, dtype=torch.float32))
-            self.register_buffer(f"pou_index_{level}", torch.as_tensor(hierarchy_level.pou_idx, dtype=torch.int64))
-            self.register_buffer(f"pou_weight_{level}", torch.as_tensor(hierarchy_level.pou_w, dtype=torch.float32))
+            self.register_buffer(
+                f"assign_{level}", torch.as_tensor(hierarchy_level.assign, dtype=torch.int64), persistent=False
+            )
+            self.register_buffer(
+                f"child_volume_{level}", torch.as_tensor(child_volume, dtype=torch.float32), persistent=False
+            )
+            self.register_buffer(
+                f"pou_index_{level}", torch.as_tensor(hierarchy_level.pou_idx, dtype=torch.int64), persistent=False
+            )
+            self.register_buffer(
+                f"pou_weight_{level}", torch.as_tensor(hierarchy_level.pou_w, dtype=torch.float32), persistent=False
+            )
+            representative = np.full(hierarchy_level.vol.shape[0], -1, dtype=np.int64)
+            for child, parent in enumerate(hierarchy_level.assign):
+                if representative[parent] < 0:
+                    representative[parent] = child
+            if bool((representative < 0).any()):
+                raise RuntimeError("hierarchy contains an empty cluster")
+            self.register_buffer(
+                f"representative_{level}", torch.as_tensor(representative, dtype=torch.int64), persistent=False
+            )
             child_volume = hierarchy_level.vol
 
         self.encoders = nn.ModuleList(
@@ -349,12 +380,20 @@ class PrincipalStretchGraphTransformer(nn.Module):
         scale = float(positive.mean()) if positive.size else 1.0
         log_weight = np.where(valid, np.log(np.maximum(edge_weight / scale, 1.0e-12)), 0.0)
 
-        self.register_buffer(f"adjacency_{level}", torch.as_tensor(adjacency, dtype=torch.int64))
-        self.register_buffer(f"edge_weight_{level}", torch.as_tensor(edge_weight, dtype=torch.float32))
-        self.register_buffer(f"volume_{level}", torch.as_tensor(volume, dtype=torch.float32))
-        self.register_buffer(f"rest_length_{level}", torch.as_tensor(rest_length, dtype=torch.float32))
-        self.register_buffer(f"rest_direction_{level}", torch.as_tensor(rest_direction, dtype=torch.float32))
-        self.register_buffer(f"log_edge_weight_{level}", torch.as_tensor(log_weight, dtype=torch.float32))
+        self.register_buffer(f"adjacency_{level}", torch.as_tensor(adjacency, dtype=torch.int64), persistent=False)
+        self.register_buffer(
+            f"edge_weight_{level}", torch.as_tensor(edge_weight, dtype=torch.float32), persistent=False
+        )
+        self.register_buffer(f"volume_{level}", torch.as_tensor(volume, dtype=torch.float32), persistent=False)
+        self.register_buffer(
+            f"rest_length_{level}", torch.as_tensor(rest_length, dtype=torch.float32), persistent=False
+        )
+        self.register_buffer(
+            f"rest_direction_{level}", torch.as_tensor(rest_direction, dtype=torch.float32), persistent=False
+        )
+        self.register_buffer(
+            f"log_edge_weight_{level}", torch.as_tensor(log_weight, dtype=torch.float32), persistent=False
+        )
 
     def _level_buffer(self, name: str, level: int) -> torch.Tensor:
         return getattr(self, f"{name}_{level}")
@@ -484,7 +523,7 @@ class PrincipalStretchGraphTransformer(nn.Module):
         centroid = x_tet.mean(dim=2)
         previous_centroid = x_previous_tet.mean(dim=2)
         force_tet = self.conservative_tet_load(force)
-        rotation = polar_rotation(F)
+        rotation = _observation_rotation(F)
 
         fields: dict[str, torch.Tensor] = {
             "H": H,
@@ -516,7 +555,10 @@ class PrincipalStretchGraphTransformer(nn.Module):
                     pooled[name] = _batch_pool_sum(value, assign)
                 elif name != "rotation":
                     pooled[name] = _batch_pool_mean(value, assign, child_volume)
-            pooled["rotation"] = polar_rotation(pooled["F"])
+            # A deterministic child frame transforms as Q R under active world
+            # rotation and cannot suffer the cancellation of polar(mean(F)).
+            representative = self._level_buffer("representative", next_level)
+            pooled["rotation"] = fields["rotation"][:, representative]
             fields = pooled
 
         return batched, base_H, node_features, edge_features

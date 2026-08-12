@@ -120,6 +120,23 @@ class TestPolarRotation(unittest.TestCase):
         R = polar_rotation(M)
         self.assertLess((R - _svd_polar(M)).abs().max().item(), 1e-5)
 
+    def test_bad_branches_have_finite_stopped_gradient(self):
+        good = random_rotation(1, torch.float64, seed=15) @ random_spd(1, torch.float64, seed=16, dev=0.2)
+        inverted = torch.diag(torch.tensor([-1.0, 1.0, 1.0], dtype=torch.float64))[None]
+        rank_one = torch.diag(torch.tensor([0.0, 0.0, 1.0], dtype=torch.float64))[None]
+        near_rank_one = torch.diag(torch.tensor([1.0e-14, 1.0e-14, 1.0], dtype=torch.float64))[None]
+        M = torch.cat([good, inverted, rank_one, near_rank_one]).requires_grad_(True)
+        generator = torch.Generator().manual_seed(17)
+        grad_out = torch.randn(4, 3, 3, dtype=torch.float64, generator=generator)
+        (gradient,) = torch.autograd.grad(polar_rotation(M), M, grad_outputs=grad_out)
+
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertGreater(gradient[0].norm().item(), 0.0)
+        self.assertEqual(gradient[1:].abs().max().item(), 0.0)
+
+        good_only = good.clone().requires_grad_(True)
+        self.assertTrue(torch.autograd.gradcheck(polar_rotation, (good_only,), eps=1e-6, atol=1e-6))
+
 
 if __name__ == "__main__":
     unittest.main()

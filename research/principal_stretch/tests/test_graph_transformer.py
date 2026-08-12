@@ -204,6 +204,52 @@ class TestPrincipalStretchGraphTransformer(unittest.TestCase):
         self.assertIsNotNone(query_grad)
         self.assertGreater(query_grad.abs().max().item(), 0.0)
 
+    def test_inverted_and_singular_states_have_finite_gradients(self):
+        model, state, _hierarchy = _model_and_state(self.rest, self.tets)
+        _randomize_output(model)
+        model.train()
+        inputs = list(_inputs(self.rest, self.tets))
+
+        transforms = (
+            torch.diag(torch.tensor([-1.0, 1.0, 1.0], dtype=torch.float64)),
+            torch.diag(torch.tensor([1.0, 1.0, 0.0], dtype=torch.float64)),
+        )
+        for transform in transforms:
+            with self.subTest(transform=transform.diagonal().tolist()):
+                model.zero_grad(set_to_none=True)
+                x_current = (torch.as_tensor(self.rest, dtype=torch.float64) @ transform.T).requires_grad_(True)
+                target = model(state, x_current, *inputs[1:])
+                self.assertTrue(torch.isfinite(target).all())
+                target.square().mean().backward()
+                self.assertIsNotNone(x_current.grad)
+                self.assertTrue(torch.isfinite(x_current.grad).all())
+                for parameter in model.parameters():
+                    if parameter.grad is not None:
+                        self.assertTrue(torch.isfinite(parameter.grad).all())
+
+    def test_checkpoint_contains_only_learned_state(self):
+        model, _state, _hierarchy = _model_and_state(self.rest, self.tets)
+        state_dict = model.state_dict()
+        topology_names = (
+            "tets",
+            "corner_force_weight",
+            "adjacency_",
+            "edge_weight_",
+            "volume_",
+            "rest_length_",
+            "rest_direction_",
+            "log_edge_weight_",
+            "assign_",
+            "child_volume_",
+            "pou_index_",
+            "pou_weight_",
+            "representative_",
+        )
+        self.assertFalse(any(name.startswith(topology_names) for name in state_dict))
+
+        rebuilt, _state, _hierarchy = _model_and_state(self.rest, self.tets)
+        rebuilt.load_state_dict(state_dict)
+
     def test_conservative_load_and_multires_far_field(self):
         model, state, hierarchy = _model_and_state(self.rest, self.tets)
         self.assertEqual(hierarchy.levels[-1].vol.shape[0], 1)

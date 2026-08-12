@@ -164,13 +164,36 @@ def spd_floor(S: torch.Tensor, lam_min: float = 0.05) -> torch.Tensor:
         Symmetric positive-definite matrices with the same shape as ``S``.
     """
 
-    def clamp(lam: torch.Tensor) -> torch.Tensor:
-        return lam.clamp(min=lam_min)
+    return _SpdFloor.apply(S, lam_min)
 
-    def clamp_prime(lam: torch.Tensor) -> torch.Tensor:
-        return (lam > lam_min).to(lam.dtype)
 
-    return _SymmetricMatrixFunction.apply(S, clamp, clamp_prime)
+class _SpdFloor(torch.autograd.Function):
+    """Spectral clamp with its exact piecewise-linear divided difference."""
+
+    @staticmethod
+    def forward(ctx, S, lam_min):
+        symmetric = 0.5 * (S + S.transpose(-1, -2))
+        lam, U = _batched_eigh(symmetric)
+        clamped = lam.clamp(min=lam_min)
+        ctx.save_for_backward(lam, U, clamped)
+        ctx.lam_min = lam_min
+        return U @ torch.diag_embed(clamped) @ U.transpose(-1, -2)
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        lam, U, clamped = ctx.saved_tensors
+        gap = lam[..., :, None] - lam[..., None, :]
+        numerator = clamped[..., :, None] - clamped[..., None, :]
+        repeated = gap == 0.0
+        derivative = (lam > ctx.lam_min).to(lam.dtype)
+        G = torch.where(
+            repeated,
+            derivative[..., :, None],
+            numerator / torch.where(repeated, torch.ones_like(gap), gap),
+        )
+        Ut = U.transpose(-1, -2)
+        gradient = U @ (G * (Ut @ grad_out @ U)) @ Ut
+        return 0.5 * (gradient + gradient.transpose(-1, -2)), None
 
 
 def so3_log_axial(R: torch.Tensor) -> torch.Tensor:

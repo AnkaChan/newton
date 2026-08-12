@@ -211,6 +211,21 @@ class TestSpdFloor(unittest.TestCase):
         S = random_spd(32, torch.float64, seed=13)
         self.assertLess((spd_floor(S) - S).abs().max().item(), 1e-12)
 
+    def test_exact_gradient_straddles_floor(self):
+        floor = 0.05
+        S = torch.diag(torch.tensor([0.049, 0.051, 0.2], dtype=torch.float64)).requires_grad_(True)
+        grad_out = torch.zeros_like(S)
+        grad_out[0, 1] = 1.0
+        grad_out[1, 0] = 1.0
+        (gradient,) = torch.autograd.grad(spd_floor(S, floor), S, grad_outputs=grad_out)
+
+        # The off-diagonal Daleckii-Krein coefficient crosses the clamp kink:
+        # (clamp(.051)-clamp(.049)) / (.051-.049) = 0.5.  Substituting the
+        # derivative at the midpoint incorrectly gives either zero or one.
+        self.assertAlmostEqual(gradient[0, 1].item(), 0.5, places=12)
+        self.assertAlmostEqual(gradient[1, 0].item(), 0.5, places=12)
+        self.assertTrue(torch.autograd.gradcheck(lambda value: spd_floor(value, floor), (S,), eps=1e-6, atol=1e-6))
+
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
 class TestLargeBatchCuda(unittest.TestCase):

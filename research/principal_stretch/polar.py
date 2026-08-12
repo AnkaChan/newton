@@ -134,7 +134,22 @@ class _PolarRotation(torch.autograd.Function):
         eye = torch.eye(3, dtype=S.dtype, device=S.device).expand_as(S)
         tr_S = S.diagonal(dim1=-2, dim2=-1).sum(-1)
         K = tr_S[..., None, None] * eye - S
-        b = torch.linalg.solve(K, a.unsqueeze(-1)).squeeze(-1)
+        eigenvalues = torch.linalg.eigvalsh(K)
+        scale_floor = torch.finfo(S.dtype).tiny ** 0.5
+        relative_floor = 1.0e-10 if S.dtype == torch.float64 else 1.0e-5
+        good = (
+            torch.isfinite(S).all(dim=(-2, -1))
+            & torch.isfinite(eigenvalues).all(dim=-1)
+            & (torch.linalg.det(S) > 0.0)
+            & (eigenvalues[..., 0] > relative_floor * eigenvalues[..., -1].abs().clamp(min=scale_floor))
+        )
+        # The reflection-corrected and rank-deficient proper-polar branches
+        # are non-smooth, and their exact derivative is undefined or
+        # unbounded.  Stop only that local polar path rather than feeding an
+        # invalid/singular Sylvester solve into the decoder gradient.
+        b = torch.zeros_like(a)
+        if bool(good.any()):
+            b[good] = torch.linalg.solve(K[good], a[good].unsqueeze(-1)).squeeze(-1)
         return 2.0 * R @ _cross_matrix(b), None
 
 
