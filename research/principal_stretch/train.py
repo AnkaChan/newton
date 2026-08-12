@@ -61,6 +61,17 @@ def build_windows(traj_start: np.ndarray, n_total: int, k_max: int) -> np.ndarra
     return np.array(windows, dtype=np.int64)
 
 
+def select_training_windows(windows: np.ndarray, limit: int) -> np.ndarray:
+    """Select a deterministic, dataset-spanning subset for overfit studies."""
+    if limit <= 0 or limit >= len(windows):
+        return windows
+    # Cover the complete trajectory corpus rather than taking the first few
+    # temporally adjacent windows.  Integer arithmetic keeps the choice stable
+    # across NumPy versions and produces unique indices while limit < N.
+    index = np.arange(limit, dtype=np.int64) * len(windows) // limit
+    return windows[index]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train", type=str, required=True)
@@ -73,6 +84,12 @@ def main():
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--max-rollout", type=int, default=4)
+    parser.add_argument(
+        "--limit-windows",
+        type=int,
+        default=0,
+        help="train on a deterministic dataset-spanning subset (0 uses every window)",
+    )
     parser.add_argument("--curriculum-frac", type=float, default=0.5)
     parser.add_argument("--init-ckpt", type=str, default=None)
     parser.add_argument("--loss", choices=("pos", "phys"), default="pos")
@@ -138,6 +155,9 @@ def main():
     pinned_targets = torch.as_tensor(rest_q[data["pinned_indices"]], dtype=torch.float64, device=device)
 
     windows = build_windows(data["traj_start"], n_total, args.max_rollout)
+    windows = select_training_windows(windows, args.limit_windows)
+    if args.batch > len(windows):
+        raise ValueError(f"batch size {args.batch} exceeds the {len(windows)} selected training windows")
     print(f"{len(windows)} training windows, K_max={args.max_rollout}, batch={args.batch}")
 
     x_gpu = torch.as_tensor(x_all, dtype=torch.float64, device=device)
@@ -163,6 +183,11 @@ def main():
         graph_config=graph_config,
     )
     print(f"predictor={predictor.kind} config={predictor.checkpoint_config()}")
+    if predictor.kind == "graph-transformer":
+        level_sizes = [
+            predictor.model._level_buffer("adjacency", level).shape[0] for level in range(predictor.model.n_levels + 1)
+        ]
+        print(f"topology hierarchy: {' -> '.join(str(size) for size in level_sizes)} nodes")
     if args.init_ckpt:
         ckpt = torch.load(args.init_ckpt, map_location=device, weights_only=False)
         predictor.model.load_state_dict(ckpt["state_dict"])
