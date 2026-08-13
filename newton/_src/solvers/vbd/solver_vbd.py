@@ -93,6 +93,7 @@ from .vbd_coupling_kernels import (
 )
 
 __all__ = ["SolverVBD"]
+print("[solver_vbd] variant: abl-4-no-tet-only")
 
 _SOFT_CONTACT_BLOCK_DIM = 256
 _SOFT_CONTACT_BLOCKS_PER_SM = 2
@@ -607,7 +608,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda
         # Model element materials are static solver inputs. Rebuild the solver after changing
         # triangle or edge stiffness so this graph-stable specialization is recomputed.
-        self._use_tet_only_tile_solve = self.use_particle_tile_solve and _is_tet_only_elasticity_model(model)
+        self._use_tet_only_tile_solve = False  # ABLATION abl-4-no-tet-only (revert C9)
         if particle_enable_self_contact:
             if particle_self_contact_margin < particle_self_contact_radius:
                 raise ValueError(
