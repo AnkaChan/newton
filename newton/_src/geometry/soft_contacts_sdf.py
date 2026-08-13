@@ -356,6 +356,9 @@ def _soft_feature_aabb_misses_shape(
     radius: float,
 ) -> bool:
     """Return whether an expanded soft-feature AABB is disjoint from the rigid-shape AABB."""
+    # ABLATION abl-5-no-aabb-reject (revert C3): never reject
+    if True:
+        return False
     if shape_aabb_lower.shape[0] == 0 or shape_type[shape_index] == GeoType.PLANE:
         return False
 

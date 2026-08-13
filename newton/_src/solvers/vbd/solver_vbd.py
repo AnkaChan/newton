@@ -93,6 +93,7 @@ from .vbd_coupling_kernels import (
 )
 
 __all__ = ["SolverVBD"]
+print("[solver_vbd] variant: abl-5-no-aabb-reject")
 
 _SOFT_CONTACT_BLOCK_DIM = 256
 _SOFT_CONTACT_BLOCKS_PER_SM = 2
