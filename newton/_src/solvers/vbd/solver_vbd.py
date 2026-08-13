@@ -457,9 +457,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         super().__init__(model)
 
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
-        self._use_particle_contact_gather = (
-            self.device.is_cuda and effective_deterministic == wp.DeterministicMode.NOT_GUARANTEED
-        )
+        self._use_particle_contact_gather = False  # ABLATION abl-1-no-gather
+        print("[solver_vbd] variant: abl-1-no-gather")
         particle_deterministic_max_records = 0
         coupling_deterministic_max_records = 0
         if particle_enable_self_contact and effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
