@@ -226,21 +226,21 @@ def optimize_edge_sdf_gamma(
     hi = float(1.0)
     c = hi - (hi - lo) * inv_phi
     d = lo + (hi - lo) * inv_phi
-    fc = eval_shape_sdf_lower(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
-    fd = eval_shape_sdf_lower(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+    fc, _fc_a, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)  # ABLATION abl-6
+    fd, _fd_a, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
     for _i in range(n_iter):
         if fc < fd:
             hi = d
             d = c
             fd = fc
             c = hi - (hi - lo) * inv_phi
-            fc = eval_shape_sdf_lower(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
+            fc, _fc_a2, _gc2 = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
         else:
             lo = c
             c = d
             fc = fd
             d = lo + (hi - lo) * inv_phi
-            fd = eval_shape_sdf_lower(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+            fd, _fd_a2, _gd2 = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
     return 0.5 * (lo + hi)
 
 
@@ -291,7 +291,7 @@ def optimize_face_sdf(
 
     for _i in range(n_iter):
         x = bary[0] * a + bary[1] * b + bary[2] * c
-        grad = eval_shape_sdf_grad(geo, scale, x, shape_sdf_index, texture_sdf_table)
+        _phi_l, _phi_x, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)  # ABLATION abl-6
         # Frank-Wolfe vertex: argmin_k grad . corner_k (Macklin eq. 4).
         da = wp.dot(grad, a)
         db = wp.dot(grad, b)
@@ -302,7 +302,9 @@ def optimize_face_sdf(
         elif dc <= da and dc <= db:
             s = wp.vec3(0.0, 0.0, 1.0)
         target = s[0] * a + s[1] * b + s[2] * c
-        gamma = optimize_edge_sdf_gamma(geo, scale, x, target, shape_sdf_index, texture_sdf_table, ls_iter)
+        gamma, _lx, _lphi, _lgrad = optimize_edge_sdf(
+            geo, scale, x, target, shape_sdf_index, texture_sdf_table, ls_iter
+        )  # ABLATION abl-6
         bary = (1.0 - gamma) * bary + gamma * s
 
     x = bary[0] * a + bary[1] * b + bary[2] * c
@@ -540,7 +542,7 @@ def create_soft_face_contacts(
     threshold = margin + s_margin + radius
 
     centroid_s = (a_s + b_s + c_s) / 3.0
-    phi_c = eval_shape_sdf_lower(geo, scale, centroid_s, sdf_idx, texture_sdf_table)
+    phi_c, _phi_c_a, _grad_c = eval_shape_sdf(geo, scale, centroid_s, sdf_idx, texture_sdf_table)  # ABLATION abl-6
     # Conservative cull: the SDF is ~1-Lipschitz, so the triangle's minimum is >= phi_c minus the
     # farthest centroid-to-point distance, which is always a vertex. circumradius can be smaller than
     # that for non-equilateral triangles (e.g. 3-4-5: R=2.5 vs 2.85) and would drop valid contacts.
@@ -670,7 +672,7 @@ def create_soft_edge_contacts(
     threshold = margin + s_margin + radius
 
     mid_s = 0.5 * (p_s + q_s)
-    phi_m = eval_shape_sdf_lower(geo, scale, mid_s, sdf_idx, texture_sdf_table)
+    phi_m, _phi_m_a, _grad_m = eval_shape_sdf(geo, scale, mid_s, sdf_idx, texture_sdf_table)  # ABLATION abl-6
     if phi_m > threshold + 0.5 * wp.length(q_s - p_s):
         return
 
