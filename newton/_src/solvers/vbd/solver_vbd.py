@@ -93,6 +93,7 @@ from .vbd_coupling_kernels import (
 )
 
 __all__ = ["SolverVBD"]
+print("[solver_vbd] variant: abl-3-no-two-particle")
 
 _SOFT_CONTACT_BLOCK_DIM = 256
 _SOFT_CONTACT_BLOCKS_PER_SM = 2
@@ -2793,7 +2794,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 )
             if self.use_particle_tile_solve:
                 particle_count_in_color = self.model.particle_color_groups[color].size
-                if self.model.tet_count == 0:
+                if False:  # ABLATION abl-3-no-two-particle (revert C8)
                     elasticity_dim = (particle_count_in_color + 1) // 2 * (2 * TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE)
                     wp.launch(
                         kernel=solve_elasticity_tile_two_particles,
