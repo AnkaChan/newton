@@ -1,0 +1,82 @@
+{
+  "task": "Isaac-Lift-Cloth-Franka",
+  "seed": 42,
+  "num_envs": 1,
+  "presets": [
+    "presets=newton_mjwarp_vbd_proxy",
+    "env.sim.physics.num_substeps=1"
+  ],
+  "physics": {
+    "dt": 0.008333333333333333,
+    "decimation": 4,
+    "num_substeps": 1,
+    "physics_steps_per_environment_step": 4
+  },
+  "global_model": {
+    "world_count": 1,
+    "body_count": 13,
+    "shape_count": 87,
+    "particle_count": 81,
+    "tri_count": 128,
+    "edge_count": 208,
+    "tet_count": 0,
+    "spring_count": 0
+  },
+  "soft_model_view": {
+    "world_count": 1,
+    "body_count": 5,
+    "shape_count": 87,
+    "particle_count": 81,
+    "tri_count": 128,
+    "edge_count": 208,
+    "tet_count": 0,
+    "spring_count": 0
+  },
+  "shape_type_histogram": {
+    "1": 1,
+    "3": 3,
+    "4": 1,
+    "7": 11,
+    "10": 71
+  },
+  "vbd": {
+    "iterations": 10,
+    "tile_solve": true,
+    "particle_color_count": 3,
+    "particle_color_sizes": [
+      25,
+      40,
+      16
+    ]
+  },
+  "soft_collision_candidates": {
+    "particle_shape_pairs": 7047,
+    "edge_shape_pairs": 3328,
+    "face_shape_pairs": 2048,
+    "contact_capacity": 12423
+  },
+  "soft_contacts_after_environment_steps": {
+    "samples": [
+      {
+        "active": 526,
+        "stored": 526,
+        "particle": 79,
+        "edge": 263,
+        "face": 184
+      }
+    ],
+    "active_summary": {
+      "min": 526,
+      "median": 526.0,
+      "mean": 526.0,
+      "max": 526
+    },
+    "capacity_utilization_at_median": 0.04234081944779844
+  },
+  "capacity_scan_model": {
+    "capacity_scans_per_physics_step": 41,
+    "capacity_threads_per_physics_step": 509343,
+    "capacity_threads_per_environment_step": 2037372,
+    "formula": "soft_contact_max * (1 init + iterations dual + iterations * colors accumulation)"
+  }
+}

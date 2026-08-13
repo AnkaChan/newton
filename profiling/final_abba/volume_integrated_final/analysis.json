@@ -1,0 +1,2013 @@
+{
+  "schema_version": "vbd-abba-analysis-v1",
+  "manifest": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\manifest.json",
+  "suite_id": "vbd_abba_volume_20260813T001301Z",
+  "task": "Isaac-Lift-Soft-Franka",
+  "config": {
+    "workload": "volume",
+    "task": "Isaac-Lift-Soft-Franka",
+    "num_envs": 1024,
+    "num_steps": 500,
+    "warmup_steps": 100,
+    "seed": 42,
+    "device": "cuda:0",
+    "abba_blocks": 4,
+    "runs_per_variant": 8,
+    "fresh_process_count": 16,
+    "cooldown_seconds": 5.0,
+    "max_start_gpu_util_pct": 20.0,
+    "busy_gpu_policy": "error",
+    "uv": "C:\\Users\\ankac\\AppData\\Local\\anaconda3\\Scripts\\uv.exe",
+    "benchmark_script": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\scripts\\benchmarks\\runtime.py",
+    "frozen_volume_wrapper": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\run_with_frozen_tetrahedralization.py",
+    "frozen_volume_cache": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz",
+    "hydra_overrides": [
+      "presets=newton_mjwarp_vbd_proxy",
+      "env.sim.physics.num_substeps=1"
+    ],
+    "expected_reported_presets": [
+      "newton_mjwarp_vbd_proxy",
+      "env.sim.physics.num_substeps=1"
+    ],
+    "benchmark_formatter": "schema",
+    "timing_mode": "host_return",
+    "vbd_iterations": 10,
+    "contact_capacity": 256,
+    "num_substeps": 1,
+    "volume_topology": "frozen-replay"
+  },
+  "provenance": {
+    "host": {
+      "hostname": "NV-24060060",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+      "orchestrator_python": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\.venv\\Scripts\\python.exe",
+      "orchestrator_python_version": "3.12.11 (main, Aug 18 2025, 19:17:54) [MSC v.1944 64 bit (AMD64)]",
+      "uv_version": "uv 0.9.30 (ea4560831 2026-02-04)",
+      "initial_nvidia_smi": {
+        "available": true,
+        "executable": "C:\\Windows\\system32\\nvidia-smi.EXE",
+        "gpus": [
+          {
+            "index": "0",
+            "uuid": "GPU-9fe5458a-493d-e178-1324-365b8fd5db5a",
+            "name": "NVIDIA GeForce RTX 4090",
+            "driver_version": "591.86",
+            "pstate": "P8",
+            "temperature.gpu": "40",
+            "utilization.gpu": "0",
+            "memory.used": "2917",
+            "memory.total": "24564",
+            "clocks.current.sm": "210",
+            "clocks.current.memory": "405",
+            "power.draw": "5.03",
+            "power.limit": "450.00"
+          }
+        ],
+        "compute_processes": [
+          {
+            "pid": "41696",
+            "process_name": "[Insufficient Permissions]",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "47116",
+            "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\CrossDeviceResume.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "1434296",
+            "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "41156",
+            "process_name": "C:\\Windows\\explorer.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "4280",
+            "process_name": "C:\\Windows\\SystemApps\\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\\StartMenuExperienceHost.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "66548",
+            "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\SearchHost.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "53800",
+            "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "70664",
+            "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "64000",
+            "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2381764",
+            "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\TextInputHost.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "12880",
+            "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.YourPhone_1.26071.164.0_x64__8wekyb3d8bbwe\\PhoneExperienceHost.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "36468",
+            "process_name": "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "40032",
+            "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "56096",
+            "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2373312",
+            "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "603696",
+            "process_name": "C:\\Program Files\\MuseHub\\current\\MuseHub.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2788",
+            "process_name": "C:\\Program Files\\Insta360 Studio\\insta360-quick-look.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "71988",
+            "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2118728",
+            "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "59200",
+            "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "9456",
+            "process_name": "C:\\Windows\\SystemApps\\ShellExperienceHost_cw5n1h2txyewy\\ShellExperienceHost.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2381648",
+            "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "83152",
+            "process_name": "C:\\Users\\ankac\\AppData\\Local\\Programs\\cursor\\Cursor.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "24980",
+            "process_name": "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\steamwebhelper.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "27480",
+            "process_name": "C:\\Users\\ankac\\AppData\\Roaming\\Spotify\\Spotify.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "36684",
+            "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2381160",
+            "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "52756",
+            "process_name": "C:\\Program Files\\LogiOptionsPlus\\logioptionsplus_agent.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "56952",
+            "process_name": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2164484",
+            "process_name": "C:\\Program Files\\Listary\\Listary.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "10652",
+            "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.Copilot_1.25121.84.0_x64__8wekyb3d8bbwe\\Copilot.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2379024",
+            "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\AMDRSSrcExt.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2384264",
+            "process_name": "C:\\Program Files (x86)\\Dropbox\\Client\\Dropbox.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2382676",
+            "process_name": "C:\\Windows\\System32\\ShellHost.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2386332",
+            "process_name": "C:\\Program Files\\Adobe\\Adobe Creative Cloud\\ACC\\Creative Cloud UI Helper.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2388036",
+            "process_name": "C:\\Program Files\\Common Files\\Adobe\\Adobe OS Extension\\AdobeNotificationClient.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "43148",
+            "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\RadeonSoftware.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2385456",
+            "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "94244",
+            "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2401836",
+            "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2418188",
+            "process_name": "[Insufficient Permissions]",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "12844",
+            "process_name": "C:\\Windows\\SystemApps\\Microsoft.LockApp_cw5n1h2txyewy\\LockApp.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2449064",
+            "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.MicrosoftOfficeHub_19.2608.39011.0_x64__8wekyb3d8bbwe\\M365Copilot.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2382564",
+            "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+            "used_gpu_memory": "[N/A]"
+          },
+          {
+            "pid": "2491372",
+            "process_name": "C:\\Program Files\\WindowsApps\\AcrobatNotificationClient_1.0.4.0_x86__e1rzdqpraam7r\\AcrobatNotificationClient.exe",
+            "used_gpu_memory": "[N/A]"
+          }
+        ],
+        "gpu_query_returncode": 0,
+        "gpu_query_stderr": [],
+        "compute_query_returncode": 0,
+        "compute_query_stderr": []
+      }
+    },
+    "isaaclab_source": {
+      "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile",
+      "git_head": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+      "relevant_source_hash": "79539cda6975a0d152c30ae3dc1edb25fd2efec5e6eff1b52a104a0aeeb2a8c0",
+      "source_file_count": 178,
+      "source_byte_count": 2031125
+    },
+    "task_config_evidence": {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\source\\isaaclab_tasks\\isaaclab_tasks\\core\\lift\\config\\franka_soft\\franka_soft_env_cfg.py",
+      "size": 23039,
+      "sha256": "c4daa6baf7171998d5a349f0ce2aa1aeb4528760a9ab6a0828327cee4d409aff",
+      "extracted_vbd_iterations": 10,
+      "extracted_contact_capacity": 256,
+      "extracted_default_num_substeps": 2,
+      "resolved_num_substeps_override": 1
+    },
+    "frozen_volume_evidence": {
+      "cache": {
+        "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz",
+        "size": 3182,
+        "sha256": "2d4c4c768d3362017eb958af01a41fd2b2f67d844e3627d6ccf405dba1f59159"
+      },
+      "manifest": {
+        "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz.manifest.json",
+        "size": 3405,
+        "sha256": "8c35189acb68f745d5386fdf367a4196e0325a466ea04986987fe404fd9867d5"
+      },
+      "input_hash": "e8065a0c936da43570c33ba13361e8bb7286d37c2e8bba42b30d4ccd2452dcfd",
+      "output_hash": "38a118f6536c31a920ff2efda5e9ef27d7319431223658bdecc6c43f25d18b28",
+      "output_vertices": {
+        "dtype": "<f8",
+        "shape": [
+          44,
+          3
+        ],
+        "sha256": "b390d06ad0391126113bb54c50a1b50847c334c5f17cbe54c83753843559b5a1"
+      },
+      "output_tetrahedra": {
+        "dtype": "<i4",
+        "shape": [
+          75,
+          4
+        ],
+        "sha256": "fefe72ead803f8cc65da817f50bdd5cf40ca4d5903c5989520e6d537f43c88a6"
+      },
+      "parameters": {
+        "edge_length_fac": {
+          "type": "float",
+          "value": 0.1,
+          "hex": "0x1.999999999999ap-4"
+        },
+        "edge_length_abs": {
+          "type": "none",
+          "value": null
+        },
+        "optimize": {
+          "type": "bool",
+          "value": true
+        },
+        "simplify": {
+          "type": "bool",
+          "value": false
+        },
+        "epsilon": {
+          "type": "float",
+          "value": 0.01,
+          "hex": "0x1.47ae147ae147bp-7"
+        },
+        "stop_energy": {
+          "type": "float",
+          "value": 10.0,
+          "hex": "0x1.4000000000000p+3"
+        },
+        "coarsen": {
+          "type": "bool",
+          "value": true
+        },
+        "num_threads": {
+          "type": "int",
+          "value": 0
+        },
+        "num_opt_iter": {
+          "type": "int",
+          "value": 80
+        },
+        "loglevel": {
+          "type": "int",
+          "value": 3
+        },
+        "quiet": {
+          "type": "bool",
+          "value": true
+        },
+        "vtk_ordering": {
+          "type": "bool",
+          "value": false
+        },
+        "disable_filtering": {
+          "type": "bool",
+          "value": false
+        }
+      }
+    },
+    "additional_immutable_evidence": []
+  },
+  "primary_metric": "environment_step_fps",
+  "higher_is_better": true,
+  "all_completed_processes_included": true,
+  "baseline": {
+    "n": 8,
+    "median": 24610.636471793965,
+    "mean": 24592.984302144763,
+    "sample_std": 262.7769201726813,
+    "coefficient_of_variation": 0.010685035900655799,
+    "minimum": 24092.75994917463,
+    "maximum": 24923.61763077629,
+    "median_absolute_deviation": 178.1138105764403,
+    "source": {
+      "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "source_file_count": 716,
+      "source_byte_count": 20954398,
+      "git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+      "git_dirty_tracked": false,
+      "git_status_tracked": [],
+      "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "outlier_ordinals_modified_z_gt_3_5": [],
+    "linear_drift_percent_per_suite_ordinal": 0.10609969556876342
+  },
+  "candidate": {
+    "n": 8,
+    "median": 32949.1688088041,
+    "mean": 33073.75638109703,
+    "sample_std": 331.43391844793103,
+    "coefficient_of_variation": 0.010021054597758322,
+    "minimum": 32768.910398976266,
+    "maximum": 33841.37051892748,
+    "median_absolute_deviation": 95.82853412365148,
+    "source": {
+      "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-profile",
+      "source_hash": "0ad9f8dd3e457eeb23df760d5b457b4af8c3469c372232d319fdf037b3a14f4c",
+      "source_file_count": 716,
+      "source_byte_count": 21030526,
+      "git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+      "git_dirty_tracked": true,
+      "git_status_tracked": [
+        " M CHANGELOG.md",
+        " M newton/_src/geometry/sdf_texture.py",
+        " M newton/_src/geometry/soft_contacts_sdf.py",
+        " M newton/_src/sim/collide.py",
+        " M newton/_src/solvers/vbd/particle_vbd_kernels.py",
+        " M newton/_src/solvers/vbd/rigid_vbd_kernels.py",
+        " M newton/_src/solvers/vbd/solver_vbd.py",
+        " M newton/tests/test_collision_pipeline.py",
+        " M newton/tests/test_solver_vbd.py"
+      ],
+      "git_diff_sha256": "345e0a80c00b2f40d9024b4a5d4980757cf2141f0814ce18bcac11ee2c26abbc"
+    },
+    "outlier_ordinals_modified_z_gt_3_5": [
+      14
+    ],
+    "linear_drift_percent_per_suite_ordinal": 0.06666914821273069
+  },
+  "paired_speedup": {
+    "pairing": "nearest chronological neighbors within each ABBA block",
+    "pair_count": 8,
+    "median_pair_ratio": 1.339155641016597,
+    "median_pair_improvement_percent": 33.9155641016597,
+    "ratio_of_variant_medians": 1.3388182319692077,
+    "ratio_of_variant_medians_improvement_percent": 33.88182319692077,
+    "bootstrap": {
+      "method": "percentile paired process bootstrap",
+      "resampling_unit": "nearest-neighbor baseline/candidate process pair",
+      "samples": 100000,
+      "seed": 20260812,
+      "confidence": 0.95,
+      "median_pair_ratio_ci": [
+        1.332469070388701,
+        1.3653807102297684
+      ],
+      "ratio_of_medians_ci": [
+        1.3351987095760678,
+        1.351309754288859
+      ],
+      "observed_pair_ratios": [
+        1.3660061031256179,
+        1.3521951273670483,
+        1.3298175762976623,
+        1.3414861876274016,
+        1.3351987095760678,
+        1.3368250944057924,
+        1.3653807102297684,
+        1.332469070388701
+      ]
+    }
+  },
+  "pairs": [
+    {
+      "pair_id": "block_01_pair_1",
+      "baseline_ordinal": 1,
+      "candidate_ordinal": 2,
+      "baseline_fps": 24092.75994917463,
+      "candidate_fps": 32910.857131713,
+      "speedup_ratio": 1.3660061031256179,
+      "improvement_percent": 36.600610312561784
+    },
+    {
+      "pair_id": "block_01_pair_2",
+      "baseline_ordinal": 4,
+      "candidate_ordinal": 3,
+      "baseline_fps": 24384.402193281723,
+      "candidate_fps": 32972.46982951391,
+      "speedup_ratio": 1.3521951273670483,
+      "improvement_percent": 35.21951273670483
+    },
+    {
+      "pair_id": "block_02_pair_1",
+      "baseline_ordinal": 5,
+      "candidate_ordinal": 6,
+      "baseline_fps": 24923.61763077629,
+      "candidate_fps": 33143.86479032861,
+      "speedup_ratio": 1.3298175762976623,
+      "improvement_percent": 32.98175762976623
+    },
+    {
+      "pair_id": "block_02_pair_2",
+      "baseline_ordinal": 8,
+      "candidate_ordinal": 7,
+      "baseline_fps": 24544.32113559671,
+      "candidate_fps": 32925.867788094285,
+      "speedup_ratio": 1.3414861876274016,
+      "improvement_percent": 34.148618762740156
+    },
+    {
+      "pair_id": "block_03_pair_1",
+      "baseline_ordinal": 9,
+      "candidate_ordinal": 10,
+      "baseline_fps": 24792.200563518003,
+      "candidate_fps": 33102.5141999603,
+      "speedup_ratio": 1.3351987095760678,
+      "improvement_percent": 33.51987095760678
+    },
+    {
+      "pair_id": "block_03_pair_2",
+      "baseline_ordinal": 12,
+      "candidate_ordinal": 11,
+      "baseline_fps": 24628.64927434427,
+      "candidate_fps": 32924.19639126243,
+      "speedup_ratio": 1.3368250944057924,
+      "improvement_percent": 33.682509440579246
+    },
+    {
+      "pair_id": "block_04_pair_1",
+      "baseline_ordinal": 13,
+      "candidate_ordinal": 14,
+      "baseline_fps": 24785.300001222808,
+      "candidate_fps": 33841.37051892748,
+      "speedup_ratio": 1.3653807102297684,
+      "improvement_percent": 36.53807102297684
+    },
+    {
+      "pair_id": "block_04_pair_2",
+      "baseline_ordinal": 16,
+      "candidate_ordinal": 15,
+      "baseline_fps": 24592.62366924366,
+      "candidate_fps": 32768.910398976266,
+      "speedup_ratio": 1.332469070388701,
+      "improvement_percent": 33.2469070388701
+    }
+  ],
+  "runs": [
+    {
+      "ordinal": 1,
+      "block": 1,
+      "position": 1,
+      "pair_id": "block_01_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\001_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\001_baseline\\run_metadata.json",
+      "started_utc": "2026-08-13T00:13:11.077311+00:00",
+      "finished_utc": "2026-08-13T00:17:53.137958+00:00",
+      "elapsed_s": 281.57640610000817,
+      "returncode": 0,
+      "log_path": "runs\\001_baseline\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\001_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-13-22-166543_8b5862ef.json",
+      "environment_step_fps": 24092.75994917463,
+      "iteration_time_ms": 42.5059954,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 3360.0066119826342,
+      "total_wall_time_s": 21.2529977,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 2,
+      "block": 1,
+      "position": 2,
+      "pair_id": "block_01_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\002_candidate",
+      "source_hash": "0ad9f8dd3e457eeb23df760d5b457b4af8c3469c372232d319fdf037b3a14f4c",
+      "metadata_path": "runs\\002_candidate\\run_metadata.json",
+      "started_utc": "2026-08-13T00:18:45.829348+00:00",
+      "finished_utc": "2026-08-13T00:19:57.082000+00:00",
+      "elapsed_s": 70.92264679999789,
+      "returncode": 0,
+      "log_path": "runs\\002_candidate\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\002_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-18-50-516935_bbc701ca.json",
+      "environment_step_fps": 32910.857131713,
+      "iteration_time_ms": 31.1178208,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 6550.438226557295,
+      "total_wall_time_s": 15.5589104,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 3,
+      "block": 1,
+      "position": 3,
+      "pair_id": "block_01_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\003_candidate",
+      "source_hash": "0ad9f8dd3e457eeb23df760d5b457b4af8c3469c372232d319fdf037b3a14f4c",
+      "metadata_path": "runs\\003_candidate\\run_metadata.json",
+      "started_utc": "2026-08-13T00:20:10.332650+00:00",
+      "finished_utc": "2026-08-13T00:21:19.841000+00:00",
+      "elapsed_s": 69.16349519998766,
+      "returncode": 0,
+      "log_path": "runs\\003_candidate\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\003_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-20-14-446543_c9705355.json",
+      "environment_step_fps": 32972.46982951391,
+      "iteration_time_ms": 31.0598328,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 6492.768325483582,
+      "total_wall_time_s": 15.5299164,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 4,
+      "block": 1,
+      "position": 4,
+      "pair_id": "block_01_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\004_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\004_baseline\\run_metadata.json",
+      "started_utc": "2026-08-13T00:21:33.262126+00:00",
+      "finished_utc": "2026-08-13T00:22:48.707409+00:00",
+      "elapsed_s": 75.00056680000853,
+      "returncode": 0,
+      "log_path": "runs\\004_baseline\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\004_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-21-37-365286_69a03a83.json",
+      "environment_step_fps": 24384.402193281723,
+      "iteration_time_ms": 41.9974994,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 3039.9935064069114,
+      "total_wall_time_s": 20.9987497,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 5,
+      "block": 2,
+      "position": 1,
+      "pair_id": "block_02_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\005_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\005_baseline\\run_metadata.json",
+      "started_utc": "2026-08-13T00:23:03.589112+00:00",
+      "finished_utc": "2026-08-13T00:24:32.158521+00:00",
+      "elapsed_s": 88.21539189998293,
+      "returncode": 0,
+      "log_path": "runs\\005_baseline\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\005_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-23-17-298195_96788dc4.json",
+      "environment_step_fps": 24923.61763077629,
+      "iteration_time_ms": 41.0886846,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 3047.784919517191,
+      "total_wall_time_s": 20.5443423,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 6,
+      "block": 2,
+      "position": 2,
+      "pair_id": "block_02_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\006_candidate",
+      "source_hash": "0ad9f8dd3e457eeb23df760d5b457b4af8c3469c372232d319fdf037b3a14f4c",
+      "metadata_path": "runs\\006_candidate\\run_metadata.json",
+      "started_utc": "2026-08-13T00:24:45.060762+00:00",
+      "finished_utc": "2026-08-13T00:25:56.195869+00:00",
+      "elapsed_s": 70.78367929998785,
+      "returncode": 0,
+      "log_path": "runs\\006_candidate\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\006_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-24-50-393504_9d60a4f1.json",
+      "environment_step_fps": 33143.86479032861,
+      "iteration_time_ms": 30.8989726,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 5933.099511838464,
+      "total_wall_time_s": 15.4494863,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 7,
+      "block": 2,
+      "position": 3,
+      "pair_id": "block_02_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\007_candidate",
+      "source_hash": "0ad9f8dd3e457eeb23df760d5b457b4af8c3469c372232d319fdf037b3a14f4c",
+      "metadata_path": "runs\\007_candidate\\run_metadata.json",
+      "started_utc": "2026-08-13T00:26:09.798681+00:00",
+      "finished_utc": "2026-08-13T00:27:20.768057+00:00",
+      "elapsed_s": 70.12228949996643,
+      "returncode": 0,
+      "log_path": "runs\\007_candidate\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\007_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-26-14-572736_df3cd061.json",
+      "environment_step_fps": 32925.867788094285,
+      "iteration_time_ms": 31.1034492,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 6577.070537618153,
+      "total_wall_time_s": 15.5517246,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 8,
+      "block": 2,
+      "position": 4,
+      "pair_id": "block_02_pair_2",
+      "variant": "baseline",
+      "attempt": 3,
+      "status": "completed",
+      "run_dir": "runs\\008_baseline_attempt_03",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\008_baseline_attempt_03\\run_metadata.json",
+      "started_utc": "2026-08-13T00:31:07.760837+00:00",
+      "finished_utc": "2026-08-13T00:32:25.136226+00:00",
+      "elapsed_s": 77.0003013999667,
+      "returncode": 0,
+      "log_path": "runs\\008_baseline_attempt_03\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\008_baseline_attempt_03\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-31-15-789010_c470dea9.json",
+      "environment_step_fps": 24544.32113559671,
+      "iteration_time_ms": 41.7241624,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 3146.926721616471,
+      "total_wall_time_s": 20.8620812,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 9,
+      "block": 3,
+      "position": 1,
+      "pair_id": "block_03_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\009_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\009_baseline\\run_metadata.json",
+      "started_utc": "2026-08-13T00:32:38.524034+00:00",
+      "finished_utc": "2026-08-13T00:33:50.370284+00:00",
+      "elapsed_s": 75.70794890000252,
+      "returncode": 0,
+      "log_path": "runs\\009_baseline\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\009_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-32-42-836594_3b0e22f5.json",
+      "environment_step_fps": 24792.200563518003,
+      "iteration_time_ms": 41.306729600000004,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 3050.0784971577045,
+      "total_wall_time_s": 20.6533648,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 10,
+      "block": 3,
+      "position": 2,
+      "pair_id": "block_03_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\010_candidate",
+      "source_hash": "0ad9f8dd3e457eeb23df760d5b457b4af8c3469c372232d319fdf037b3a14f4c",
+      "metadata_path": "runs\\010_candidate\\run_metadata.json",
+      "started_utc": "2026-08-13T00:34:04.487640+00:00",
+      "finished_utc": "2026-08-13T00:35:13.051407+00:00",
+      "elapsed_s": 68.2293710000231,
+      "returncode": 0,
+      "log_path": "runs\\010_candidate\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\010_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-34-10-023097_0f12ff7f.json",
+      "environment_step_fps": 33102.5141999603,
+      "iteration_time_ms": 30.9376544,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 7029.989684883746,
+      "total_wall_time_s": 15.4688272,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 11,
+      "block": 3,
+      "position": 3,
+      "pair_id": "block_03_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\011_candidate",
+      "source_hash": "0ad9f8dd3e457eeb23df760d5b457b4af8c3469c372232d319fdf037b3a14f4c",
+      "metadata_path": "runs\\011_candidate\\run_metadata.json",
+      "started_utc": "2026-08-13T00:35:26.344369+00:00",
+      "finished_utc": "2026-08-13T00:36:35.600882+00:00",
+      "elapsed_s": 68.89915729995118,
+      "returncode": 0,
+      "log_path": "runs\\011_candidate\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\011_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-35-31-080439_f1bada4c.json",
+      "environment_step_fps": 32924.19639126243,
+      "iteration_time_ms": 31.1049104,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 6186.052099963585,
+      "total_wall_time_s": 15.5524552,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 12,
+      "block": 3,
+      "position": 4,
+      "pair_id": "block_03_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\012_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\012_baseline\\run_metadata.json",
+      "started_utc": "2026-08-13T00:36:48.516905+00:00",
+      "finished_utc": "2026-08-13T00:38:05.577631+00:00",
+      "elapsed_s": 76.62682329997187,
+      "returncode": 0,
+      "log_path": "runs\\012_baseline\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\012_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-36-53-496397_dc9b6012.json",
+      "environment_step_fps": 24628.64927434427,
+      "iteration_time_ms": 41.580799199999994,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 3297.542819335402,
+      "total_wall_time_s": 20.7903996,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 13,
+      "block": 4,
+      "position": 1,
+      "pair_id": "block_04_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\013_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\013_baseline\\run_metadata.json",
+      "started_utc": "2026-08-13T00:38:18.559085+00:00",
+      "finished_utc": "2026-08-13T00:39:34.517114+00:00",
+      "elapsed_s": 75.60465319996001,
+      "returncode": 0,
+      "log_path": "runs\\013_baseline\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\013_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-38-23-185515_22138185.json",
+      "environment_step_fps": 24785.300001222808,
+      "iteration_time_ms": 41.3180066,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 3164.289256691427,
+      "total_wall_time_s": 20.6590033,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 14,
+      "block": 4,
+      "position": 2,
+      "pair_id": "block_04_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\014_candidate",
+      "source_hash": "0ad9f8dd3e457eeb23df760d5b457b4af8c3469c372232d319fdf037b3a14f4c",
+      "metadata_path": "runs\\014_candidate\\run_metadata.json",
+      "started_utc": "2026-08-13T00:39:47.259633+00:00",
+      "finished_utc": "2026-08-13T00:40:54.720496+00:00",
+      "elapsed_s": 67.0978137999773,
+      "returncode": 0,
+      "log_path": "runs\\014_candidate\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\014_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-39-51-360286_fa945a4d.json",
+      "environment_step_fps": 33841.37051892748,
+      "iteration_time_ms": 30.261814599999997,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 6908.17945280229,
+      "total_wall_time_s": 15.1309073,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 15,
+      "block": 4,
+      "position": 3,
+      "pair_id": "block_04_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\015_candidate",
+      "source_hash": "0ad9f8dd3e457eeb23df760d5b457b4af8c3469c372232d319fdf037b3a14f4c",
+      "metadata_path": "runs\\015_candidate\\run_metadata.json",
+      "started_utc": "2026-08-13T00:41:07.629305+00:00",
+      "finished_utc": "2026-08-13T00:42:16.897124+00:00",
+      "elapsed_s": 68.90794449998066,
+      "returncode": 0,
+      "log_path": "runs\\015_candidate\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\015_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-41-12-185879_acefc69f.json",
+      "environment_step_fps": 32768.910398976266,
+      "iteration_time_ms": 31.252445599999998,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 6172.97456134668,
+      "total_wall_time_s": 15.6262228,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    },
+    {
+      "ordinal": 16,
+      "block": 4,
+      "position": 4,
+      "pair_id": "block_04_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\016_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\016_baseline\\run_metadata.json",
+      "started_utc": "2026-08-13T00:42:30.103012+00:00",
+      "finished_utc": "2026-08-13T00:43:47.163681+00:00",
+      "elapsed_s": 76.69685690000188,
+      "returncode": 0,
+      "log_path": "runs\\016_baseline\\process.log",
+      "result_path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\016_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_17-42-34-720094_710af32d.json",
+      "environment_step_fps": 24592.62366924366,
+      "iteration_time_ms": 41.641736200000004,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      },
+      "format": "schema",
+      "task": "Isaac-Lift-Soft-Franka",
+      "seed": 42,
+      "num_envs": 1024,
+      "num_steps": 500,
+      "warmup_steps": 100,
+      "measurement_mode": "host_return",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "reported_physics_backend": "physx",
+      "environment_step_fps_std": 3114.241876090679,
+      "total_wall_time_s": 20.8208681,
+      "hardware": {
+        "hostname": "NV-24060060",
+        "gpu_devices": [
+          {
+            "name": "NVIDIA GeForce RTX 4090",
+            "mem_gb": 23.99,
+            "compute_cap": "8.9"
+          }
+        ],
+        "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+        "cpu_count": 32,
+        "ram_gb": 127.21
+      },
+      "versions": {
+        "isaaclab": "16.0.1",
+        "isaacsim": null,
+        "kit": null,
+        "newton": "1.5.0rc2",
+        "warp": "1.16.0",
+        "mjwarp": "3.11.0",
+        "torch": "2.11.0+cu128",
+        "rsl_rl": "5.4.1",
+        "rl_games": null,
+        "skrl": null,
+        "sb3": null,
+        "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+        "git_branch": "codex/vbd-profile",
+        "git_dirty": true,
+        "numpy": "2.5.1",
+        "isaaclab_newton": "4.0.0",
+        "isaaclab_physx": "5.0.0",
+        "isaaclab_ov": "2.0.0",
+        "isaaclab_tasks": "16.0.0",
+        "isaaclab_rl": "0.14.1",
+        "ovrtx": null,
+        "ovphysx": null,
+        "mujoco": "3.11.0",
+        "cuda_bindings": null,
+        "usd_core": "25.11",
+        "isaaclab_release": null
+      }
+    }
+  ]
+}

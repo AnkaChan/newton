@@ -1,0 +1,329 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+19.3,143338647,2880,49770.4,34883.0,34691,5247448,148343.8,accumulate_particle_body_contact_force_and_hessian_f80552f3_cuda_kernel_forward
+14.3,106241931,48,2213373.6,1551816.0,1544583,30640149,4192905.4,create_soft_face_contacts_3a62d486_cuda_kernel_forward
+12.2,90750445,2880,31510.6,21187.0,18754,3468504,125447.5,solve_elasticity_tile_f5ceeea2_cuda_kernel_forward
+10.3,76232468,3814,19987.5,6785.0,1089,2208080,62618.6,"void cuBQL::sahBuilder_impl::selectSplits<float, (int)3>(cuBQL::gpuBuilder_impl::BuildState *, cuBQL::sahBuilder_impl::SAHBins<cuBQL::box_t<T1, T2>> *, int, int, cuBQL::gpuBuilder_impl::NodeState *, cuBQL::sahBuilder_impl::TempNode<cuBQL::box_t<T1, T2>> *, cuBQL::BuildConfig)"
+9.0,66469433,3814,17427.7,20834.0,3585,1368340,40075.1,"void cuBQL::sahBuilder_impl::binPrims<float, (int)3>(cuBQL::sahBuilder_impl::SAHBins<cuBQL::box_t<T1, T2>> *, int, int, cuBQL::sahBuilder_impl::TempNode<cuBQL::box_t<T1, T2>> *, cuBQL::gpuBuilder_impl::PrimState *, const cuBQL::box_t<T1, T2> *, unsigned int)"
+5.3,39593570,3814,10381.1,14850.0,1664,1348626,31285.9,"void cuBQL::sahBuilder_impl::clearBins<float, (int)3>(cuBQL::sahBuilder_impl::SAHBins<cuBQL::box_t<T1, T2>> *, int)"
+2.2,16274566,48,339053.5,151584.0,146768,9114842,1293631.0,create_soft_contacts_b26277c8_cuda_kernel_forward
+2.1,15320540,8,1915067.5,3312.5,1504,15282231,5401154.1,"void memtile_kernel_by_value<(unsigned long long)256>(void *, FillValue<T1>, unsigned long long, unsigned long long)"
+1.9,13760947,48,286686.4,222344.0,221432,2915995,389477.0,create_soft_edge_contacts_dee9bec4_cuda_kernel_forward
+1.6,12006420,480,25013.4,15906.0,15746,3027015,138653.7,update_duals_body_particle_contacts_612d811c_cuda_kernel_forward
+1.6,11939627,960,12437.1,7873.0,6496,1986807,78879.7,accumulate_body_body_contacts_per_body_6d3065a2_cuda_kernel_forward
+1.5,11299870,3224,3504.9,864.0,736,4470756,96144.6,"void memtile_value_kernel<int>(T1 *, T1, unsigned long long)"
+1.5,10778550,960,11227.7,7937.0,6560,1944434,63388.9,accumulate_body_particle_contacts_per_body_43d37021_cuda_kernel_forward
+1.1,8407411,960,8757.7,7137.0,6208,113260,11357.0,solve_rigid_body_28cc7a07_cuda_kernel_forward
+1.0,7543054,182,41445.4,28627.0,22402,2134535,165531.0,_tile_cholesky_solve_block__locals__kernel_413936bd_cuda_kernel_forward
+1.0,7235043,675,10718.6,14337.0,1152,26051,7782.2,"void cuBQL::sahBuilder_impl::updatePrims<float, (int)3>(cuBQL::gpuBuilder_impl::NodeState *, cuBQL::sahBuilder_impl::TempNode<cuBQL::box_t<T1, T2>> *, cuBQL::gpuBuilder_impl::PrimState *, const cuBQL::box_t<T1, T2> *, int)"
+0.8,6245714,2928,2133.1,1760.0,1696,82089,3000.1,apply_truncation_ts_94baa11a_cuda_kernel_forward
+0.8,6050674,98,61741.6,49957.5,2368,2023835,221468.4,eval_articulation_fk_6c60ba16_cuda_kernel_forward
+0.7,5233333,132,39646.5,38324.0,21442,61287,10067.2,_compute_body_jac_row_6eb5882a_cuda_kernel_forward
+0.5,3856162,844,4568.9,2529.0,2400,47717,6686.8,"void at::native::index_elementwise_kernel<(int)128, (int)4, void at::native::gpu_index_kernel<void at::native::index_kernel_impl<at::native::OpaqueType<(int)4>>(at::TensorIteratorBase &, c10::ArrayRef<long long>, c10::ArrayRef<long long>)::[lambda(char *, const char *, long long) (instance 1)]>(at::TensorIteratorBase &, c10::ArrayRef<long long>, c10::ArrayRef<long long>, const T1 &, bool)::[lambda(int) (instance 1)]>(long long, T3)"
+0.5,3793209,136,27891.2,36356.0,5824,61350,19147.0,"void cuBQL::cuda::refit_run<float, (int)3>(cuBQL::BinaryBVH<T1, T2>, unsigned int *, const cuBQL::box_t<T1, T2> *)"
+0.4,3221056,68,47368.5,69975.5,8193,95083,34998.9,"void cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::DeviceRadixSortSingleTileKernel<cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::radix::policy_hub<unsigned long long, cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::NullType, unsigned int>::Policy1000, (bool)0, unsigned long long, cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::NullType, unsigned int, cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::identity_decomposer_t>(const T3 *, T3 *, const T4 *, T4 *, T5, int, int, T6)"
+0.4,2826316,572,4941.1,2624.0,1216,53894,7588.8,_crb_accumulate_073a11b8_cuda_kernel_forward
+0.4,2791396,607,4598.7,6497.0,1120,9281,3079.3,"void cuBQL::sahBuilder_impl::closeOpenNodes<float, (int)3>(cuBQL::gpuBuilder_impl::BuildState *, cuBQL::gpuBuilder_impl::NodeState *, cuBQL::sahBuilder_impl::TempNode<cuBQL::box_t<T1, T2>> *, int)"
+0.4,2777450,52,53412.5,25762.5,24770,299776,77895.1,_kinematics_branch_95f8028e_cuda_kernel_forward
+0.3,2515344,528,4763.9,2016.0,1088,1259561,54782.8,_cfrc_backward_72237d38_cuda_kernel_forward
+0.3,2340731,908,2577.9,1184.0,1152,22915,4183.2,"void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 4)]::operator ()() const::[lambda(long long) (instance 1)], std::array<char *, (unsigned long long)2>, (int)4, TrivialOffsetCalculator<(int)1, unsigned int>, TrivialOffsetCalculator<(int)1, unsigned int>, at::native::memory::LoadWithCast<(int)1>, at::native::memory::StoreWithCast<(int)1>>(int, T1, T2, T4, T5, T6, T7)"
+0.3,2334558,52,44895.3,4000.0,3713,1948563,269443.9,_transmission_1c4157e8_cuda_kernel_forward
+0.3,2130731,132,16141.9,16513.0,14146,19842,1880.3,_compute_body_A_diag_entry_d84c280f_cuda_kernel_forward
+0.2,1829891,572,3199.1,1664.0,1184,19810,4439.5,_subtree_com_acc_350f0560_cuda_kernel_forward
+0.2,1589654,997,1594.4,1120.0,1056,15906,1970.2,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::CUDAFunctor_add<float>, std::array<char *, (unsigned long long)3>>(int, T2, T3)"
+0.2,1555755,92,16910.4,17810.0,6305,214135,21453.4,_linesearch_iterative_kernel__locals__kernel_a5beb2cb_cuda_kernel_forward
+0.2,1453407,48,30279.3,25154.5,25058,258396,33632.1,_harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel_d68af8d2_cuda_kernel_forward
+0.2,1249163,582,2146.3,1473.0,1440,24867,2850.0,_copy_reset_view_rows_kernel_ebbfec29_cuda_kernel_forward
+0.1,1078489,48,22468.5,14018.0,13314,418669,58403.8,compute_shape_aabbs_3132aed6_cuda_kernel_forward
+0.1,1045849,140,7470.4,1312.0,1184,842523,71093.5,set_conditional_if_handle_kernel
+0.1,1045792,480,2178.7,1696.0,1632,27971,2835.7,update_duals_body_body_contacts_7c780c76_cuda_kernel_forward
+0.1,1042352,48,21715.7,18162.0,17474,186229,24253.5,create_narrow_phase_primitive_kernel__locals__narrow_phase_primitive_kernel_81a38a1a_cuda_kernel_forward
+0.1,1040176,48,21670.3,18082.0,17985,178963,23191.0,build_body_particle_contact_lists_8cacaa6b_cuda_kernel_forward
+0.1,1032111,48,21502.3,17906.0,17506,183604,23899.9,init_body_particle_contacts_3792bb31_cuda_kernel_forward
+0.1,984843,388,2538.3,1600.0,1472,49349,4093.8,_copy_reset_view_rows_kernel_a125248c_cuda_kernel_forward
+0.1,920619,48,19179.6,13169.5,12225,155345,28621.1,_comvel_branch_0f933c58_cuda_kernel_forward
+0.1,871326,32,27228.9,27427.0,23682,32676,3499.3,_copy_actuator_moment_4af7079d_cuda_kernel_forward
+0.1,815522,418,1951.0,1185.0,1056,14594,2552.9,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::BinaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float>>, std::array<char *, (unsigned long long)3>>(int, T2, T3)"
+0.1,804211,388,2072.7,1472.0,1408,18690,2627.5,_zero_reset_view_rows_kernel_0eae9346_cuda_kernel_forward
+0.1,796976,140,5692.7,4897.0,4288,44741,5621.5,_update_constraint_efc__locals__kernel_9c16a648_cuda_kernel_forward
+0.1,775691,140,5540.6,4544.0,3264,76936,8334.1,_update_gradient_JTDAJ_dense_tiled__locals__kernel_a05bba6c_cuda_kernel_forward
+0.1,738776,291,2538.7,1568.0,1536,38725,4146.4,_copy_reset_view_rows_kernel_619bffca_cuda_kernel_forward
+0.1,694215,63,11019.3,3712.0,2304,32931,11827.6,"void at::native::index_elementwise_kernel<(int)128, (int)4, void at::native::gpu_index_kernel<void at::native::index_put_kernel_impl<at::native::OpaqueType<(int)4>>(at::TensorIterator &, c10::ArrayRef<long long>, c10::ArrayRef<long long>)::[lambda(char *, const char *, long long) (instance 1)]>(at::TensorIteratorBase &, c10::ArrayRef<long long>, c10::ArrayRef<long long>, const T1 &, bool)::[lambda(int) (instance 1)]>(long long, T3)"
+0.1,690253,71,9721.9,6593.0,5793,34083,7418.7,compute_solid_mesh_inertia_7f9d593c_cuda_kernel_forward
+0.1,665832,136,4895.8,6688.0,1120,9793,3331.3,"void cuBQL::cuda::refit_init<float, (int)3>(const cuBQL::BinaryBVH<T1, T2>::Node *, unsigned int *, int)"
+0.1,664412,140,4745.8,4064.0,3680,44485,4765.5,_update_gradient_cholesky__locals__kernel_d6d4c322_cuda_kernel_forward
+0.1,634787,68,9335.1,13201.5,1696,18850,6580.0,"void cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::DeviceScanKernel<cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::scan::policy_hub<float, float, float, unsigned int, cuda::std::__4::plus<void>>::Policy1000, <unnamed>::cub_strided_iterator<const float>, <unnamed>::cub_strided_iterator<float>, cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::ScanTileState<float, (bool)1>, cuda::std::__4::plus<void>, cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::NullType, unsigned int, float, (bool)0>(T2, T3, T4, int, T5, T6, T7)"
+0.1,627801,68,9232.4,12385.0,2080,19490,6133.1,"void cuBQL::sahBuilder_impl::initPrims<float, (int)3>(cuBQL::sahBuilder_impl::TempNode<cuBQL::box_t<T1, T2>> *, cuBQL::gpuBuilder_impl::PrimState *, const cuBQL::box_t<T1, T2> *, unsigned int)"
+0.1,624707,48,13014.7,8929.0,8640,106380,19584.9,_cacc_branch_ffe1d6c4_cuda_kernel_forward
+0.1,578618,48,12054.5,7025.0,5249,247675,34735.0,forward_step_80a3fe76_cuda_kernel_forward
+0.1,532736,140,3805.3,3472.5,2976,30180,3196.5,_update_gradient_JTCJ_dense_f52c2ac2_cuda_kernel_forward
+0.1,526590,287,1834.8,1408.0,1344,18402,2116.6,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<float>>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.1,484565,98,4944.5,3313.0,1920,92426,10964.4,enforce_kinematic_targets_111b85c6_cuda_kernel_forward
+0.1,483116,96,5032.5,4256.0,3744,39748,5323.2,_tile_cholesky_factorize_solve_block__locals__kernel_86a93633_cuda_kernel_forward
+0.1,481303,194,2480.9,1632.0,1440,30691,3882.0,_scatter_reset_owned_rows_kernel_fe63c89c_cuda_kernel_forward
+0.1,477049,147,3245.2,2144.0,2016,22595,4350.3,update_actuator_state_model_1a46b940_cuda_kernel_forward
+0.1,473501,194,2440.7,1632.0,1472,24739,3502.6,_copy_reset_view_rows_kernel_63c01e63_cuda_kernel_forward
+0.1,460908,48,9602.3,6529.0,6496,79304,14501.0,_equality_joint__locals__kernel_98acb280_cuda_kernel_forward
+0.1,429043,92,4663.5,2256.5,2016,206422,21339.5,_solve_done_c8485047_cuda_kernel_forward
+0.1,425582,68,6258.6,8849.0,1248,12610,4380.4,"void cuBQL::sahBuilder_impl::writeNodes<float, (int)3>(cuBQL::BinaryBVH<T1, T2>::Node *, cuBQL::sahBuilder_impl::TempNode<cuBQL::box_t<T1, T2>> *, int)"
+0.1,414156,140,2958.3,2624.0,2240,26563,2740.3,mul_m_kernel__locals___mul_m_ff3bc617_cuda_kernel_forward
+0.1,410960,194,2118.4,1504.0,1472,13858,2555.0,_zero_reset_view_rows_kernel_18ddefaa_cuda_kernel_forward
+0.1,403339,147,2743.8,1856.0,1664,18850,3643.0,update_targets_acac1b6f_cuda_kernel_forward
+0.1,402033,96,4187.8,3440.5,3105,46821,4876.2,_update_vbd_body_input_state_kernel_f9f4a963_cuda_kernel_forward
+0.1,381958,32,11936.2,12097.0,10369,14241,1526.9,_compute_actuator_acc0_a0c3fa27_cuda_kernel_forward
+0.0,369100,68,5427.9,7457.0,1216,13602,3675.2,"wp::compute_mesh_edge_lengths(int, const wp::vec_t<(unsigned int)3, float> *, const int *, float *)"
+0.0,360390,68,5299.9,7073.0,1152,10625,3640.0,"wp::cubql_copy_nodes_to_native(const wp::CubqlNode *, int, wp::BVHPackedNodeHalf *, wp::BVHPackedNodeHalf *, int *)"
+0.0,359144,48,7482.2,4736.0,4000,97611,14507.4,_actuator_force_311863ad_cuda_kernel_forward
+0.0,355140,52,6829.6,3393.0,3296,39908,9650.2,_M_13671fca_cuda_kernel_forward
+0.0,347554,52,6683.7,3137.0,2816,50309,10393.4,_cinert_1261260c_cuda_kernel_forward
+0.0,342373,18,19020.7,19106.0,16610,21763,2396.9,_set_unit_vector_f74e5cf9_cuda_kernel_forward
+0.0,335396,68,4932.3,6752.5,1152,9345,3263.7,"wp::compute_triangle_bounds(int, const wp::vec_t<(unsigned int)3, float> *, const int *, wp::vec_t<(unsigned int)3, float> *, wp::vec_t<(unsigned int)3, float> *)"
+0.0,332492,140,2374.9,2016.0,1824,19938,2373.7,_update_constraint_init_qfrc_constraint_dense__locals__kernel_4d31aa3f_cuda_kernel_forward
+0.0,326851,248,1317.9,993.0,960,8737,1463.6,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::AUnaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float>>, std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,323234,13,24864.2,15361.0,8481,57159,17235.5,"array_copy_1d_kernel(void *, const void *, unsigned long long, unsigned long long, const int *, const int *, unsigned long long, unsigned long long)"
+0.0,317312,68,4666.4,6336.5,1088,10273,3217.3,"void cuBQL::sahBuilder_impl::writePrimsAndLeafOffsets<float, (int)3>(cuBQL::sahBuilder_impl::TempNode<cuBQL::box_t<T1, T2>> *, unsigned int *, cuBQL::gpuBuilder_impl::PrimState *, int)"
+0.0,316294,48,6589.5,1921.0,1856,206390,29569.4,subtract_proxy_body_forces_kernel_f7cb7450_cuda_kernel_forward
+0.0,315266,68,4636.3,5936.5,992,10081,3152.4,"wp::cubql_make_boxes(const wp::vec_t<(unsigned int)3, float> *, const wp::vec_t<(unsigned int)3, float> *, cuBQL::box_t<float, (int)3> *, int)"
+0.0,304001,48,6333.4,4321.0,3424,101163,13979.8,compute_rigid_contact_forces_f0cb57a3_cuda_kernel_forward
+0.0,293152,142,2064.5,1376.0,1312,17858,2766.4,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,290814,52,5592.6,2848.0,2529,31779,7828.0,_geom_local_to_global_e28b714c_cuda_kernel_forward
+0.0,281127,97,2898.2,2048.0,1856,21538,3847.8,reset_rigid_state_0312466f_cuda_kernel_forward
+0.0,280766,68,4128.9,5761.0,992,7713,2702.6,"wp::compute_average_mesh_edge_length(int, float *, wp::Mesh *)"
+0.0,279552,140,1996.8,1632.0,1504,20130,2154.9,_update_gradient_grad__locals__kernel_230cc1c2_cuda_kernel_forward
+0.0,279550,48,5824.0,4673.0,4225,59462,7909.1,forward_step_rigid_bodies_f7d13c03_cuda_kernel_forward
+0.0,278309,148,1880.5,1216.0,1152,11489,2446.9,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::<unnamed>::clamp_kernel_impl(at::TensorIteratorBase &)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float, float, float) (instance 1)], std::array<char *, (unsigned long long)4>>(int, T2, T3)"
+0.0,276796,96,2883.3,2017.0,1920,23939,4020.7,_copy_mapped_body_state_44500f51_cuda_kernel_forward
+0.0,272094,52,5232.6,2656.0,2240,31587,7476.4,_site_local_to_global_084f92a4_cuda_kernel_forward
+0.0,269148,68,3958.1,5552.5,928,7425,2620.4,"void cuBQL::sahBuilder_impl::initState<float, (int)3>(cuBQL::gpuBuilder_impl::BuildState *, cuBQL::gpuBuilder_impl::NodeState *, cuBQL::sahBuilder_impl::TempNode<cuBQL::box_t<T1, T2>> *)"
+0.0,266203,150,1774.7,1153.0,1088,12770,2298.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::neg_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 2)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,262843,52,5054.7,2496.0,2272,36580,7562.0,_compute_body_inertial_frames_d3bdd81a_cuda_kernel_forward
+0.0,255735,97,2636.4,1792.0,1632,31459,4069.3,_reset_proxy_values_masked_kernel_43f5823e_cuda_kernel_forward
+0.0,253434,68,3727.0,5248.0,864,7009,2465.0,"void cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::DeviceScanInitKernel<cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::ScanTileState<float, (bool)1>>(T1, int)"
+0.0,247317,48,5152.4,3808.0,3681,48837,6924.7,_limit_slide_hinge__locals__kernel_f6df994e_cuda_kernel_forward
+0.0,239292,52,4601.8,2368.0,2273,25955,6355.2,_cdof_3e73eb78_cuda_kernel_forward
+0.0,236409,48,4925.2,4080.5,3745,44549,5843.5,update_body_velocity_3518c106_cuda_kernel_forward
+0.0,227733,97,2347.8,1696.0,1440,22114,3271.7,_scatter_reset_owned_rows_kernel_66882d6f_cuda_kernel_forward
+0.0,227293,96,2367.6,1920.5,1696,23235,3032.7,_scatter_scalar_state_mapped_0c5e1c3c_cuda_kernel_forward
+0.0,225273,28,8045.5,11697.0,1216,15489,5667.1,"void at::native::<unnamed>::distribution_elementwise_grid_stride_kernel<float, (int)4, void at::native::templates::cuda::uniform_and_transform<float, float, at::CUDAGeneratorImpl *, void at::native::templates::cuda::uniform_kernel<at::CUDAGeneratorImpl *>(at::TensorIteratorBase &, double, double, T1)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 2)]::operator ()() const::[lambda(float) (instance 1)]>(at::TensorIteratorBase &, T3, T4)::[lambda(curandStatePhilox4_32_10 *) (instance 2)], void at::native::<unnamed>::distribution_nullary_kernel<float, float, float4, at::CUDAGeneratorImpl *, void at::native::templates::cuda::uniform_and_transform<float, float, at::CUDAGeneratorImpl *, void at::native::templates::cuda::uniform_kernel<at::CUDAGeneratorImpl *>(at::TensorIteratorBase &, double, double, T1)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 2)]::operator ()() const::[lambda(float) (instance 1)]>(at::TensorIteratorBase &, T3, T4)::[lambda(curandStatePhilox4_32_10 *) (instance 2)], void at::native::templates::cuda::uniform_kernel<at::CUDAGeneratorImpl *>(at::TensorIteratorBase &, double, double, T1)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 2)]::operator ()() const::[lambda(float) (instance 1)]>(at::TensorIteratorBase &, T4, const T5 &, T6)::[lambda(int, float) (instance 1)]>(long long, at::PhiloxCudaState, T3, T4)"
+0.0,219512,50,4390.2,2912.0,2752,44901,7356.9,get_body_com_acc_from_body_com_vel_ordered_5ec3c72d_cuda_kernel_forward
+0.0,215678,52,4147.7,2272.0,2080,20898,5301.6,_compute_body_matrices_27760750_cuda_kernel_forward
+0.0,214556,99,2167.2,897.0,832,13538,2683.2,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<float>, std::array<char *, (unsigned long long)1>>(int, T2, T3)"
+0.0,211318,48,4402.5,3104.0,2400,65479,9004.5,_scatter_body_state_mapped_697f097c_cuda_kernel_forward
+0.0,210261,48,4380.4,2912.0,2784,45765,7334.2,apply_mjc_qfrc_kernel_173e90ee_cuda_kernel_forward
+0.0,208340,140,1488.1,1392.5,1120,11489,1179.2,_update_gradient_zero_grad_dot__locals__kernel_c1c72bbd_cuda_kernel_forward
+0.0,199094,25,7963.8,8065.0,6817,8673,479.9,repeat_array_kernel_d1be1218_cuda_kernel_forward
+0.0,199027,102,1951.2,1472.0,1280,15010,2377.0,write_2d_data_to_buffer_with_indices_47cc0614_cuda_kernel_forward
+0.0,194934,96,2030.6,1440.0,1344,18114,2881.1,_add_mapped_body_forces_kernel_c1b1562d_cuda_kernel_forward
+0.0,190613,97,1965.1,1344.0,1280,18402,2715.4,reset_world_buffers_kernel_3098eca0_cuda_kernel_forward
+0.0,189810,49,3873.7,2432.0,2336,28355,5638.9,convert_warp_coords_to_mj_kernel_87f98e23_cuda_kernel_forward
+0.0,186357,3,62119.0,62151.0,61767,62439,337.1,"void at::native::sbtopk::gatherTopK<float, unsigned int, (int)2, (bool)0>(at::cuda::detail::TensorInfo<const T1, T2>, T2, T2, bool, T2, T2, at::cuda::detail::TensorInfo<T1, T2>, T2, at::cuda::detail::TensorInfo<long long, T2>, T2, T1 *)"
+0.0,185464,48,3863.8,3008.5,2945,31651,4366.1,_solve_init_jaref_kernel__locals__kernel_efafafa8_cuda_kernel_forward
+0.0,184402,96,1920.9,1376.0,1248,14977,2651.1,_copy_mapped_float_03c0f0b2_cuda_kernel_forward
+0.0,183572,48,3824.4,2048.0,1952,57991,9005.5,_copy_mapped_particle_state_fc98a109_cuda_kernel_forward
+0.0,182808,96,1904.3,1345.0,1312,21026,2721.0,_copy_mapped_spatial_vector_910e04e9_cuda_kernel_forward
+0.0,182449,48,3801.0,2800.5,2720,26563,4733.4,_efc_contact_update__locals__kernel_1b4b8d05_cuda_kernel_forward
+0.0,181429,100,1814.3,1360.5,1280,12738,2155.3,"void at::native::cross_kernel<float, OffsetCalculator<(int)3, unsigned int, (bool)0>, int>(int, T1 *, const T1 *, const T1 *, T2, T3, T3, T3)"
+0.0,179508,6,29918.0,30019.5,29347,30083,282.3,"void at::native::index_elementwise_kernel<(int)128, (int)4, void at::native::gpu_index_kernel<void at::native::index_put_kernel_impl<at::native::OpaqueType<(int)1>>(at::TensorIterator &, c10::ArrayRef<long long>, c10::ArrayRef<long long>)::[lambda(char *, const char *, long long) (instance 1)]>(at::TensorIteratorBase &, c10::ArrayRef<long long>, c10::ArrayRef<long long>, const T1 &, bool)::[lambda(int) (instance 1)]>(long long, T3)"
+0.0,178799,48,3725.0,2720.0,2304,47557,6466.8,_scatter_particle_state_mapped_a50d8d96_cuda_kernel_forward
+0.0,178264,48,3713.8,2560.0,2305,34724,5650.9,apply_mjc_body_f_kernel_959969cf_cuda_kernel_forward
+0.0,177328,48,3694.3,2976.0,2689,37348,4963.5,compute_shape_transforms_kernel_9f59b1a6_cuda_kernel_forward
+0.0,175345,48,3653.0,3073.0,2944,29955,3878.3,create_narrow_phase_kernel_gjk_mpr__locals__narrow_phase_kernel_gjk_mpr_7ce28e88_cuda_kernel_forward
+0.0,169715,52,3263.8,1633.0,1600,27267,4895.9,_subtree_div_0ef57c26_cuda_kernel_forward
+0.0,168307,18,9350.4,9441.0,8257,10529,1065.5,_extract_dof_A_diag_917a07a1_cuda_kernel_forward
+0.0,168175,48,3503.6,2624.0,2560,42853,5801.3,step_body_body_contact_C0_lambda_7beaf256_cuda_kernel_forward
+0.0,167632,48,3492.3,2496.0,2464,26019,4654.1,_qderiv_actuator_passive_vel_cc1a6654_cuda_kernel_forward
+0.0,166870,48,3476.5,2848.0,2784,27011,3535.2,_apply_ft_1667a928_cuda_kernel_forward
+0.0,159154,52,3060.7,1600.0,1377,22530,4590.7,_subtree_com_init_002b02fd_cuda_kernel_forward
+0.0,156653,48,3263.6,2272.0,2208,26051,4663.8,apply_mjc_control_kernel_af10f051_cuda_kernel_forward
+0.0,150096,48,3127.0,2800.5,1920,25123,3267.7,compute_relative_transforms_kernel_663e1ac2_cuda_kernel_forward
+0.0,148532,48,3094.4,2464.0,2400,23907,3293.2,_qderiv_actuator_passive_6cbfee2a_cuda_kernel_forward
+0.0,148237,48,3088.3,1696.0,1600,66119,9292.9,update_velocity_207f84fc_cuda_kernel_forward
+0.0,146161,7,20880.1,21571.0,18530,22243,1420.6,"void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<float, at::native::MeanOps<float, float, float, float>, unsigned int, float, (int)4, (int)4>>(T3)"
+0.0,146131,48,3044.4,2336.0,2304,32868,4399.2,build_body_body_contact_lists_447b4026_cuda_kernel_forward
+0.0,145233,102,1423.9,992.0,961,9473,1809.3,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::BUnaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float>>, std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,141139,48,2940.4,2080.0,2048,22562,4105.0,_cacc_world_6ec26fdb_cuda_kernel_forward
+0.0,138768,3,46256.0,45989.0,45669,47110,756.7,"void at::native::bitonicSortKVInPlace<(int)2, (int)-1, (int)16, (int)16, float, long long, at::native::GTOp<float, (bool)1>, unsigned int>(at::cuda::detail::TensorInfo<T5, T8>, T8, T8, T8, at::cuda::detail::TensorInfo<T6, T8>, T8, T7)"
+0.0,137133,48,2856.9,2336.0,2304,22882,2997.0,convert_mj_coords_to_warp_kernel_55623290_cuda_kernel_forward
+0.0,135248,14,9660.6,5185.0,5120,37924,11327.1,"void at::native::_scatter_gather_elementwise_kernel<(int)128, (int)8, void at::native::_cuda_scatter_gather_internal_kernel<(bool)0, at::native::OpaqueType<(int)4>, long long>::operator ()<at::native::TensorAssign>(at::TensorIterator &, long long, long long, long long, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,134825,48,2808.9,1952.5,1920,22979,3971.0,_spring_damper_dof_passive_7b46d40c_cuda_kernel_forward
+0.0,133162,48,2774.2,2016.0,1953,20258,3581.6,_cfrc_3922b605_cuda_kernel_forward
+0.0,129646,11,11786.0,11873.0,9697,12673,759.9,_accumulate_subtreemass_a3369753_cuda_kernel_forward
+0.0,128276,48,2672.4,1920.0,1888,20258,3547.7,_efc_contact_jac_dense__locals__kernel_506f0133_cuda_kernel_forward
+0.0,128142,4,32035.5,30739.0,24963,41701,7043.6,_tile_cholesky_factorize_block__locals__kernel_7b151490_cuda_kernel_forward
+0.0,127850,48,2663.5,2113.0,2048,18722,2638.4,_qderiv_actuator_passive_actuation_sparse_9edf10e9_cuda_kernel_forward
+0.0,126570,48,2636.9,2048.0,1888,29187,3914.6,init_body_body_contact_materials_95ac6a13_cuda_kernel_forward
+0.0,125867,50,2517.3,1776.5,1696,21186,3632.1,get_joint_acc_from_joint_vel_2ab71688_cuda_kernel_forward
+0.0,125384,48,2612.2,1984.0,1952,17090,2981.3,_actuator_velocity_00a052f5_cuda_kernel_forward
+0.0,123538,48,2573.7,2112.0,2049,18274,2448.7,_qderiv_tendon_damping_ec990995_cuda_kernel_forward
+0.0,123469,4,30867.3,30387.5,30179,32515,1103.0,"void at::native::index_elementwise_kernel<(int)128, (int)4, void at::native::gpu_index_kernel<void at::native::index_put_kernel_impl<at::native::OpaqueType<(int)8>>(at::TensorIterator &, c10::ArrayRef<long long>, c10::ArrayRef<long long>)::[lambda(char *, const char *, long long) (instance 1)]>(at::TensorIteratorBase &, c10::ArrayRef<long long>, c10::ArrayRef<long long>, const T1 &, bool)::[lambda(int) (instance 1)]>(long long, T3)"
+0.0,121780,48,2537.1,1761.0,1760,20387,3568.1,_friction_dof__locals__kernel_b5c3d339_cuda_kernel_forward
+0.0,121552,48,2532.3,1889.0,1856,18145,2924.8,_qfrc_actuator_gravcomp_limits_a91eb6a0_cuda_kernel_forward
+0.0,121517,12,10126.4,10017.5,9889,10689,259.7,compute_mean_vec3f_over_vertices_a5cf60bc_cuda_kernel_forward
+0.0,118630,48,2471.5,1984.5,1888,23779,3141.9,_nxn_broadphase_precomputed_pairs_8be4a3a3_cuda_kernel_forward
+0.0,118159,48,2461.6,1824.5,1792,18146,2917.5,_next_time_builder__locals___next_time_9e67d474_cuda_kernel_forward
+0.0,117448,48,2446.8,1760.0,1728,18306,3288.7,_gravity_force_7c63ac28_cuda_kernel_forward
+0.0,117264,96,1221.5,1024.0,992,10241,1239.2,check_contact_overflow_f905198b_cuda_kernel_forward
+0.0,115536,48,2407.0,1808.5,1760,15682,2781.0,_qfrc_passive_ccf6028a_cuda_kernel_forward
+0.0,113196,106,1067.9,1056.0,992,1216,56.5,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::BinaryFunctor<bool, bool, bool, at::native::BitwiseOrFunctor<bool>>, std::array<char *, (unsigned long long)3>>(int, T2, T3)"
+0.0,111691,48,2326.9,1696.0,1632,17250,3032.5,apply_mjc_free_joint_f_to_body_f_kernel_376acabe_cuda_kernel_forward
+0.0,108781,49,2220.0,1569.0,1536,17889,3035.3,update_timestamp_kernel_71be0a73_cuda_kernel_forward
+0.0,108170,38,2846.6,2337.0,1856,23170,3400.8,"void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<bool, at::native::func_wrapper_t<bool, at::native::or_kernel_cuda(at::TensorIterator &)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 12)]::operator ()() const::[lambda(bool, bool) (instance 1)]>, unsigned int, bool, (int)4, (int)4>>(T3)"
+0.0,106184,49,2167.0,2208.0,1856,2465,173.8,"void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<float, at::native::NormTwoOps<float, float, float, (bool)1>, unsigned int, float, (int)4, (int)4>>(T3)"
+0.0,105481,64,1648.1,1088.0,992,8545,2003.9,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::CUDAFunctorOnSelf_add<float>, std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,104331,48,2173.6,1601.0,1568,18850,2735.9,sync_proxy_states_kernel_e384b778_cuda_kernel_forward
+0.0,104265,48,2172.2,1536.0,1504,19266,3035.2,_qfrc_actuator_6de5c51c_cuda_kernel_forward
+0.0,103339,28,3690.7,2352.0,1760,27074,5316.1,"void at::native::<unnamed>::CatArrayBatchedCopy_alignedK_contig<at::native::<unnamed>::OpaqueType<(unsigned int)4>, unsigned int, (int)2, (int)128, (int)1, (int)16>(T1 *, at::native::<unnamed>::CatArrInputTensorMetadata<T1, T2, T4, T5>, at::native::<unnamed>::TensorSizeStride<T2, (unsigned int)4>, int, T2)"
+0.0,102089,48,2126.9,1344.0,1312,28643,4165.7,_copy_mapped_vec3_56c22622_cuda_kernel_forward
+0.0,100527,35,2872.2,993.0,960,8961,3247.3,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<bool>, std::array<char *, (unsigned long long)1>>(int, T2, T3)"
+0.0,100044,28,3573.0,2192.0,1888,23426,5444.9,"void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, (unsigned long long)2>, (int)4, TrivialOffsetCalculator<(int)1, unsigned int>, TrivialOffsetCalculator<(int)1, unsigned int>, at::native::memory::LoadWithCast<(int)1>, at::native::memory::StoreWithCast<(int)1>>(int, T1, T2, T4, T5, T6, T7)"
+0.0,99628,4,24907.0,25523.0,22467,26115,1687.7,"void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 4)]::operator ()() const::[lambda(long long) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,99499,12,8291.6,8241.0,7841,8961,329.8,repeat_array_kernel_a2286757_cuda_kernel_forward
+0.0,99016,48,2062.8,1600.0,1568,15618,2291.6,_next_activation_4a03322b_cuda_kernel_forward
+0.0,95274,26,3664.4,2240.0,2144,21571,4947.9,"void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<float, at::native::func_wrapper_t<float, at::native::sum_functor<float, float, float>::operator ()(at::TensorIterator &)::[lambda(float, float) (instance 1)]>, unsigned int, float, (int)4, (int)4>>(T3)"
+0.0,92807,48,1933.5,1408.0,1376,14114,2543.5,_efc_contact_init__locals__kernel_97d2cf71_cuda_kernel_forward
+0.0,89838,42,2139.0,1632.5,1216,20514,2909.0,"void at_cuda_detail::cub::DeviceSelectSweepKernel<at_cuda_detail::cub::detail::device_select_policy_hub<long long, bool, int, (bool)0, (bool)0>::Policy900, at_cuda_detail::cub::CountingInputIterator<long long, long long>, at_cuda_detail::cub::TransformInputIterator<bool, at::native::<unnamed>::NonZeroOp<bool>, const bool *, long long>, long long *, int *, at_cuda_detail::cub::ScanTileState<int, (bool)1>, at_cuda_detail::cub::NullType, at_cuda_detail::cub::NullType, int, (bool)0, (bool)0>(T2, T3, T4, T5, T6, T7, T8, T9, int, at_cuda_detail::cub::detail::vsmem_t)"
+0.0,88652,48,1846.9,1536.0,1472,14049,1821.7,_qfrc_bias_4085b6de_cuda_kernel_forward
+0.0,87268,48,1818.1,1536.0,1504,14370,1850.8,verify_narrow_phase_buffers_c234c2df_cuda_kernel_forward
+0.0,83077,48,1730.8,1664.0,1632,1952,105.5,"void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 11)]::operator ()() const::[lambda(bool) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,83017,11,7547.0,7744.0,6785,8513,621.9,repeat_array_kernel_62aa76ac_cuda_kernel_forward
+0.0,81804,42,1947.7,1568.0,1216,17218,2418.0,"void at_cuda_detail::cub::DeviceReduceSingleTileKernel<at_cuda_detail::cub::DeviceReducePolicy<int, unsigned long long, cuda::std::__4::plus<void>>::Policy600, at_cuda_detail::cub::TransformInputIterator<bool, at::native::<unnamed>::NonZeroOp<bool>, const bool *, long long>, int *, unsigned long long, cuda::std::__4::plus<void>, int, int, cuda::std::__4::__identity>(T2, T3, T4, T5, T6, T8)"
+0.0,81738,48,1702.9,1377.0,1376,12642,1674.2,_next_position_1c101e8d_cuda_kernel_forward
+0.0,80809,76,1063.3,1056.0,1024,1120,21.9,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::AbsFunctor<float>, std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,80612,48,1679.4,1312.0,1248,12482,1774.7,_solve_init_dof__locals__kernel_70bb5915_cuda_kernel_forward
+0.0,79433,2,39716.5,39716.5,14882,64551,35121.3,_resolve_dampratio_9820ff1f_cuda_kernel_forward
+0.0,77481,15,5165.4,1792.0,1633,40772,10282.5,gather_particles_vec3f_908e2c35_cuda_kernel_forward
+0.0,76265,48,1588.9,1344.0,1312,12546,1615.7,_harvest_vbd_proxy_wrenches_kernel_59dd3421_cuda_kernel_forward
+0.0,76075,48,1584.9,1216.0,1184,11393,1785.8,_next_velocity_d66c2f53_cuda_kernel_forward
+0.0,75497,6,12582.8,12273.5,11969,14402,911.1,_scatter_reset_masks_from_ids_2405962b_cuda_kernel_forward
+0.0,75207,48,1566.8,1280.0,1248,11969,1572.0,_qfrc_smooth__locals__kernel_33de72f1_cuda_kernel_forward
+0.0,73612,48,1533.6,1216.0,1184,11009,1589.1,_preprocess_tactile_contacts_0f2dba1d_cuda_kernel_forward
+0.0,67363,48,1403.4,1152.0,1152,10689,1370.9,fused_mul_add_add
+0.0,66436,29,2290.9,1472.0,1408,13794,3051.7,_write_2d_user_to_backend_with_indices_69eedb69_cuda_kernel_forward
+0.0,66343,2,33171.5,33171.5,31107,35236,2919.6,update_dof_properties_kernel_c60786a2_cuda_kernel_forward
+0.0,65735,48,1369.5,1024.0,992,8961,1597.7,_zero_constraint_counts_82d999b9_cuda_kernel_forward
+0.0,64837,60,1080.6,1056.5,1024,1184,36.0,"void at::native::vectorized_elementwise_kernel<(int)4, void at::native::compare_scalar_kernel<float>(at::TensorIteratorBase &, at::native::<unnamed>::OpType, T1)::[lambda(float) (instance 1)], std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,60359,1,60359.0,60359.0,60359,60359,0.0,update_geom_properties_kernel_170f7df2_cuda_kernel_forward
+0.0,58343,1,58343.0,58343.0,58343,58343,0.0,update_body_inertia_kernel_f58a19e3_cuda_kernel_forward
+0.0,58151,3,19383.7,19266.0,19010,19875,444.3,repeat_array_kernel_110bb2ab_cuda_kernel_forward
+0.0,58150,48,1211.5,912.5,896,7904,1407.4,_comvel_root_15820f35_cuda_kernel_forward
+0.0,56487,1,56487.0,56487.0,56487,56487,0.0,"wp::build_hierarchy(int, int *, const int *, const unsigned long long *, int *, const int *, volatile int *, volatile int *, volatile int *, volatile wp::BVHPackedNodeHalf *, volatile wp::BVHPackedNodeHalf *)"
+0.0,56262,1,56262.0,56262.0,56262,56262,0.0,"void at::native::vectorized_gather_kernel<(int)16, long long>(char *, char *, T2 *, int, long long, long long, long long, long long, bool)"
+0.0,55206,4,13801.5,13730.0,13633,14113,212.6,scatter_particles_vec3f_index_757c1548_cuda_kernel_forward
+0.0,54982,2,27491.0,27491.0,24963,30019,3575.1,update_jnt_properties_kernel_0897daf7_cuda_kernel_forward
+0.0,54086,48,1126.8,928.0,896,7777,1059.9,_solve_init_efc_a1db7ec5_cuda_kernel_forward
+0.0,53639,8,6704.9,6928.5,5505,7553,800.4,"void cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::DeviceRadixSortOnesweepKernel<cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::radix::policy_hub<unsigned long long, SortPayload<(int)4>, unsigned int>::Policy1000, (bool)0, unsigned long long, SortPayload<(int)4>, unsigned int, int, int, cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::identity_decomposer_t>(T7 *, T7 *, T5 *, const T5 *, T3 *, const T3 *, T4 *, const T4 *, T6, int, int, T8)"
+0.0,53352,25,2134.1,1857.0,1824,2849,353.1,"void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<bool, at::native::func_wrapper_t<bool, at::native::and_kernel_cuda(at::TensorIterator &)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 12)]::operator ()() const::[lambda(bool, bool) (instance 1)]>, unsigned int, bool, (int)4, (int)4>>(T3)"
+0.0,52134,2,26067.0,26067.0,23395,28739,3778.8,sync_qpos0_kernel_4ee6d78c_cuda_kernel_forward
+0.0,51084,48,1064.3,832.0,800,6657,1100.8,_primitive_narrowphase__locals__primitive_narrowphase_68923485_cuda_kernel_forward
+0.0,49318,2,24659.0,24659.0,19202,30116,7717.4,_update_effective_inv_mass_inertia_79ac0336_cuda_kernel_forward
+0.0,49027,24,2042.8,2080.0,1920,2208,85.8,"void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl_nocast<at::native::<unnamed>::CompareFunctor<float>>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,47945,42,1141.5,1136.5,1088,1185,35.8,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::BinaryFunctor<float, float, bool, at::native::<unnamed>::CompareEqFunctor<float>>, std::array<char *, (unsigned long long)3>>(int, T2, T3)"
+0.0,47814,45,1062.5,1088.0,992,1120,38.3,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::BinaryFunctor<bool, bool, bool, at::native::BitwiseAndFunctor<bool>>, std::array<char *, (unsigned long long)3>>(int, T2, T3)"
+0.0,46502,2,23251.0,23251.0,21347,25155,2692.7,update_jnt_solref_from_invweight0_kernel_937c531f_cuda_kernel_forward
+0.0,46469,1,46469.0,46469.0,46469,46469,0.0,compute_shape_local_bounds_5bec0069_cuda_kernel_forward
+0.0,45862,2,22931.0,22931.0,13666,32196,13102.7,_set_length_range_a26be645_cuda_kernel_forward
+0.0,45541,1,45541.0,45541.0,45541,45541,0.0,eval_mujoco_coupling_effective_mass_block_kernel_463f086f_cuda_kernel_forward
+0.0,44069,4,11017.3,11025.5,10113,11905,731.8,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 4)]::operator ()() const::[lambda(long long) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,44069,25,1762.8,1088.0,1056,9473,2292.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::<unnamed>::launch_clamp_scalar(at::TensorIteratorBase &, c10::Scalar, c10::Scalar, at::native::detail::ClampLimits)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,43588,3,14529.3,14721.0,11617,17250,2821.4,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::cos_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 2)]::operator ()() const::[lambda() (instance 2)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,43108,26,1658.0,1056.0,992,8897,2126.7,"void at::native::vectorized_elementwise_kernel<(int)4, void at::native::<unnamed>::pow_tensor_scalar_kernel_impl<float, float>(at::TensorIteratorBase &, T2)::[lambda(float) (instance 1)], std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,42726,24,1780.3,1761.0,1728,1920,59.6,"void at::native::elementwise_kernel<(int)128, (int)4, void at::native::gpu_kernel_impl_nocast<void at::native::compare_scalar_kernel<float>(at::TensorIteratorBase &, at::native::<unnamed>::OpType, T1)::[lambda(float) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,42725,2,21362.5,21362.5,20354,22371,1426.2,_coupling_eval_particle_gravity_acceleration_kernel_2fe145da_cuda_kernel_forward
+0.0,42406,42,1009.7,864.0,832,6977,943.7,"void at_cuda_detail::cub::DeviceCompactInitKernel<at_cuda_detail::cub::ScanTileState<int, (bool)1>, int *>(T1, int, T2)"
+0.0,42243,36,1173.4,1184.0,1120,1408,53.6,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::<unnamed>::CompareFunctor<float>, std::array<char *, (unsigned long long)3>>(int, T2, T3)"
+0.0,40485,2,20242.5,20242.5,18626,21859,2286.1,update_axis_properties_kernel_652726ff_cuda_kernel_forward
+0.0,40291,36,1119.2,1120.0,1056,1216,43.6,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::tanh_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 2)]::operator ()() const::[lambda() (instance 2)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,40260,2,20130.0,20130.0,17250,23010,4072.9,_compute_meaninertia_af08211b_cuda_kernel_forward
+0.0,39845,1,39845.0,39845.0,39845,39845,0.0,update_joint_transforms_kernel_573b834d_cuda_kernel_forward
+0.0,39076,4,9769.0,12049.0,1633,13345,5498.8,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float>>>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,38947,2,19473.5,19473.5,13665,25282,8214.5,_compute_eq_data0_d31148f7_cuda_kernel_forward
+0.0,37444,2,18722.0,18722.0,18146,19298,814.6,reset_wrench_composer_index_4b6bf2f5_cuda_kernel_forward
+0.0,37412,2,18706.0,18706.0,3328,34084,21747.8,"void at::native::index_elementwise_kernel<(int)128, (int)4, void at::native::gpu_index_kernel<void at::native::index_kernel_impl<at::native::OpaqueType<(int)1>>(at::TensorIteratorBase &, c10::ArrayRef<long long>, c10::ArrayRef<long long>)::[lambda(char *, const char *, long long) (instance 1)]>(at::TensorIteratorBase &, c10::ArrayRef<long long>, c10::ArrayRef<long long>, const T1 &, bool)::[lambda(int) (instance 1)]>(long long, T3)"
+0.0,37347,3,12449.0,11425.0,11361,14561,1829.3,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::sin_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 2)]::operator ()() const::[lambda() (instance 2)]::operator ()() const::[lambda(float) (instance 1)], std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,36676,4,9169.0,9105.0,8993,9473,219.4,repeat_array_kernel_663a0482_cuda_kernel_forward
+0.0,35395,5,7079.0,6977.0,6945,7296,158.5,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<int>, std::array<char *, (unsigned long long)1>>(int, T2, T3)"
+0.0,35331,1,35331.0,35331.0,35331,35331,0.0,update_solver_options_kernel_1d0ead13_cuda_kernel_forward
+0.0,35171,3,11723.7,11873.0,10817,12481,842.0,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::AUnaryFunctor<float, float, float, at::native::binary_internal::MulFunctor<float>>>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,33284,2,16642.0,16642.0,16066,17218,814.6,compute_bvh_group_roots_a4d4455c_cuda_kernel_forward
+0.0,31939,1,31939.0,31939.0,31939,31939,0.0,_set_body_inertial_properties_kernel_81b04ed7_cuda_kernel_forward
+0.0,31779,2,15889.5,15889.5,15202,16577,972.3,write_joint_vel_user_to_backend_with_indices_4fbc79b2_cuda_kernel_forward
+0.0,31684,2,15842.0,15842.0,13602,18082,3167.8,_compute_dof_M0_eaae0df3_cuda_kernel_forward
+0.0,31523,2,15761.5,15761.5,13441,18082,3281.7,_coupling_eval_body_gravity_acceleration_kernel_4a44716e_cuda_kernel_forward
+0.0,31011,2,15505.5,15505.5,8865,22146,9391.1,_mark_visible_shape_contact_pairs_kernel_db196401_cuda_kernel_forward
+0.0,30755,1,30755.0,30755.0,30755,30755,0.0,"void at::native::reduce_kernel<(int)128, (int)4, at::native::ReduceOp<float, at::native::MeanOps<float, float, float, float>, unsigned int, float, (int)4, (int)4>>(T3)"
+0.0,30596,1,30596.0,30596.0,30596,30596,0.0,"void at::native::index_elementwise_kernel<(int)128, (int)4, void at::native::gpu_index_kernel<void at::native::index_kernel_impl<at::native::OpaqueType<(int)8>>(at::TensorIteratorBase &, c10::ArrayRef<long long>, c10::ArrayRef<long long>)::[lambda(char *, const char *, long long) (instance 1)]>(at::TensorIteratorBase &, c10::ArrayRef<long long>, c10::ArrayRef<long long>, const T1 &, bool)::[lambda(int) (instance 1)]>(long long, T3)"
+0.0,30339,4,7584.8,7456.5,7041,8385,568.3,repeat_array_kernel_e7399df6_cuda_kernel_forward
+0.0,30147,2,15073.5,15073.5,12545,17602,3575.8,_finalize_body_invweight0_64175ec4_cuda_kernel_forward
+0.0,30083,2,15041.5,15041.5,9601,20482,7694.0,"void cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::DeviceScanKernel<cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::scan::policy_hub<int, int, int, unsigned int, cuda::std::__4::plus<void>>::Policy1000, <unnamed>::cub_strided_iterator<const int>, <unnamed>::cub_strided_iterator<int>, cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::ScanTileState<int, (bool)1>, cuda::std::__4::plus<void>, cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::InputValue<int, int *>, unsigned int, int, (bool)0>(T2, T3, T4, int, T5, T6, T7)"
+0.0,28673,13,2205.6,1504.0,1504,10241,2414.8,"void at::native::vectorized_elementwise_kernel<(int)2, at::native::CUDAFunctorOnSelf_add<long long>, std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,27586,13,2122.0,1312.0,1248,11905,2939.7,fused_clamp_div
+0.0,27524,2,13762.0,13762.0,12226,15298,2172.2,_finalize_dof_invweight0_966ce0d5_cuda_kernel_forward
+0.0,26628,12,2219.0,2208.0,2145,2369,53.5,"void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 3)]::operator ()() const::[lambda() (instance 3)]::operator ()() const::[lambda(int) (instance 1)], std::array<char *, (unsigned long long)2>, (int)4, TrivialOffsetCalculator<(int)1, unsigned int>, TrivialOffsetCalculator<(int)1, unsigned int>, at::native::memory::LoadWithCast<(int)1>, at::native::memory::StoreWithCast<(int)1>>(int, T1, T2, T4, T5, T6, T7)"
+0.0,26435,24,1101.5,1104.5,1056,1152,24.8,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::AUnaryFunctor<float, float, bool, at::native::<unnamed>::CompareEqFunctor<float>>, std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,24356,24,1014.8,1008.5,960,1089,36.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::CUDAFunctorOnOther_add<float>, std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,24291,2,12145.5,12145.5,11937,12354,294.9,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::<unnamed>::clamp_kernel_impl(at::TensorIteratorBase &)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float, float, float) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,24098,1,24098.0,24098.0,24098,24098,0.0,sync_site_xposes_kernel_bed18226_cuda_kernel_forward
+0.0,22915,21,1091.2,1088.0,1056,1121,20.0,"void at::native::vectorized_elementwise_kernel<(int)4, at::native::BinaryFunctor<bool, bool, bool, at::native::binary_internal::MulFunctor<bool>>, std::array<char *, (unsigned long long)3>>(int, T2, T3)"
+0.0,22818,1,22818.0,22818.0,22818,22818,0.0,update_body_mass_ipos_kernel_e3c0d226_cuda_kernel_forward
+0.0,22434,1,22434.0,22434.0,22434,22434,0.0,update_site_properties_kernel_3f0e8b9f_cuda_kernel_forward
+0.0,22146,2,11073.0,11073.0,9601,12545,2081.7,update_model_properties_kernel_aed64d5b_cuda_kernel_forward
+0.0,21700,12,1808.3,1792.5,1729,1952,55.3,compose_target_world_kernel_94db47ab_cuda_kernel_forward
+0.0,21635,13,1664.2,1057.0,1056,8737,2125.2,fused_neg_cat
+0.0,20930,1,20930.0,20930.0,20930,20930,0.0,"void at::native::<unnamed>::CatArrayBatchedCopy<at::native::<unnamed>::OpaqueType<(unsigned int)4>, unsigned int, (int)2, (int)64, (int)64>(T1 *, at::native::<unnamed>::CatArrInputTensorMetadata<T1, T2, T4, T5>, at::native::<unnamed>::TensorSizeStride<T2, (unsigned int)4>, int, T2)"
+0.0,19714,12,1642.8,1632.0,1600,1729,41.9,copy_from_newton_kernel_f6f37562_cuda_kernel_forward
+0.0,19298,1,19298.0,19298.0,19298,19298,0.0,repeat_array_kernel_bc1bc19f_cuda_kernel_forward
+0.0,18754,2,9377.0,9377.0,8001,10753,1946.0,_copy_qpos0_to_qpos_32739b15_cuda_kernel_forward
+0.0,18722,1,18722.0,18722.0,18722,18722,0.0,update_mocap_transforms_kernel_2b59d8c7_cuda_kernel_forward
+0.0,18627,1,18627.0,18627.0,18627,18627,0.0,_zero_body_inverse_dynamics_kernel_3d4a3f89_cuda_kernel_forward
+0.0,17186,1,17186.0,17186.0,17186,17186,0.0,update_mimic_eq_data_and_active_kernel_827106ee_cuda_kernel_forward
+0.0,16962,12,1413.5,1408.0,1376,1504,38.1,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctorOnSelf_add<float>>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,16898,1,16898.0,16898.0,16898,16898,0.0,update_body_properties_kernel_0a57e982_cuda_kernel_forward
+0.0,16162,1,16162.0,16162.0,16162,16162,0.0,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<float, float, float, at::native::binary_internal::DivFunctor<float>>>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,15744,12,1312.0,1312.0,1280,1408,40.9,update_outdated_envs_kernel_937ac92b_cuda_kernel_forward
+0.0,14402,2,7201.0,7201.0,4481,9921,3846.7,_compact_visible_shape_contact_pairs_kernel_14d52788_cuda_kernel_forward
+0.0,13920,12,1160.0,1152.0,1120,1248,43.4,"void at::native::vectorized_elementwise_kernel<(int)4, void at::native::compare_scalar_kernel<long long>(at::TensorIteratorBase &, at::native::<unnamed>::OpType, T1)::[lambda(long long) (instance 1)], std::array<char *, (unsigned long long)2>>(int, T2, T3)"
+0.0,13825,7,1975.0,1056.0,896,7776,2559.4,"void memtile_value_kernel<long long>(T1 *, T1, unsigned long long)"
+0.0,12961,6,2160.2,960.5,928,7680,2712.2,"void at::native::vectorized_elementwise_kernel<(int)2, at::native::FillFunctor<long long>, std::array<char *, (unsigned long long)1>>(int, T2, T3)"
+0.0,12738,1,12738.0,12738.0,12738,12738,0.0,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::neg_kernel_cuda(at::TensorIteratorBase &)::[lambda() (instance 2)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(float) (instance 1)]>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,11393,11,1035.7,1024.0,1024,1088,25.8,fused_add_mul_sub_mul_mul_add
+0.0,11169,2,5584.5,5584.5,1248,9921,6132.7,"void at::native::elementwise_kernel<(int)128, (int)2, void at::native::gpu_kernel_impl_nocast<at::native::FillFunctor<float>>(at::TensorIteratorBase &, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,11041,2,5520.5,5520.5,1472,9569,5725.4,_clear_shape_collision_flags_kernel_43c60105_cuda_kernel_forward
+0.0,10689,1,10689.0,10689.0,10689,10689,0.0,update_shape_mappings_kernel_8592a150_cuda_kernel_forward
+0.0,10625,1,10625.0,10625.0,10625,10625,0.0,reset_envs_kernel_b0e3ad58_cuda_kernel_forward
+0.0,10081,1,10081.0,10081.0,10081,10081,0.0,repeat_array_kernel_e4615b4a_cuda_kernel_forward
+0.0,9505,1,9505.0,9505.0,9505,9505,0.0,_remap_reference_kernel_4387e606_cuda_kernel_forward
+0.0,9377,1,9377.0,9377.0,9377,9377,0.0,sync_worldbody_geom_xposes_kernel_b800af83_cuda_kernel_forward
+0.0,8736,2,4368.0,4368.0,2912,5824,2059.1,"void cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::DeviceScanInitKernel<cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::ScanTileState<int, (bool)1>>(T1, int)"
+0.0,8161,1,8161.0,8161.0,8161,8161,0.0,_init_subtreemass_a34720d1_cuda_kernel_forward
+0.0,8032,1,8032.0,8032.0,8032,8032,0.0,_mark_body_flag_kernel_1194d90b_cuda_kernel_forward
+0.0,7841,1,7841.0,7841.0,7841,7841,0.0,_replace_joint_type_kernel_4b8b8e57_cuda_kernel_forward
+0.0,7425,1,7425.0,7425.0,7425,7425,0.0,validate_and_correct_inertia_kernel_7044ee8d_cuda_kernel_forward
+0.0,7136,1,7136.0,7136.0,7136,7136,0.0,"void <unnamed>::elementwise_kernel_with_index<int, at::native::arange_cuda_out(const c10::Scalar &, const c10::Scalar &, const c10::Scalar &, at::Tensor &)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 3)]::operator ()() const::[lambda(long long) (instance 1)]>(T1, T2, function_traits<T2>::result_type *)"
+0.0,7073,1,7073.0,7073.0,7073,7073,0.0,_disable_joints_kernel_eb426f0b_cuda_kernel_forward
+0.0,6048,2,3024.0,3024.0,2976,3072,67.9,"void at::native::_scatter_gather_elementwise_kernel<(int)128, (int)8, void at::native::_cuda_scatter_fill_internal_kernel<at::native::OpaqueType<(int)8>, long long>::operator ()<at::native::TensorAssign>(at::TensorIterator &, at::native::OpaqueType<(int)8>, long long, long long, long long, const T1 &)::[lambda(int) (instance 1)]>(int, T3)"
+0.0,5761,1,5761.0,5761.0,5761,5761,0.0,compute_shape_world_transforms_47e17149_cuda_kernel_forward
+0.0,5345,1,5345.0,5345.0,5345,5345,0.0,compute_shape_bvh_bounds_14f038b0_cuda_kernel_forward
+0.0,4800,1,4800.0,4800.0,4800,4800,0.0,"array_copy_2d_kernel(void *, const void *, wp::vec_t<(unsigned int)2, unsigned long long>, wp::vec_t<(unsigned int)2, unsigned long long>, wp::vec_t<(unsigned int)2, const int *>, wp::vec_t<(unsigned int)2, const int *>, wp::vec_t<(unsigned int)2, unsigned long long>, unsigned long long)"
+0.0,4256,1,4256.0,4256.0,4256,4256,0.0,"void cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::DeviceRadixSortHistogramKernel<cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::radix::policy_hub<unsigned long long, SortPayload<(int)4>, unsigned int>::Policy1000, (bool)0, unsigned long long, unsigned int, cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::identity_decomposer_t>(T4 *, const T3 *, T4, int, int, T5)"
+0.0,4161,1,4161.0,4161.0,4161,4161,0.0,compute_particle_bvh_bounds_af1b7974_cuda_kernel_forward
+0.0,3712,1,3712.0,3712.0,3712,3712,0.0,"wp::compute_total_bounds(const wp::vec_t<(unsigned int)3, float> *, const wp::vec_t<(unsigned int)3, float> *, wp::vec_t<(unsigned int)3, float> *, wp::vec_t<(unsigned int)3, float> *, int)"
+0.0,3584,4,896.0,896.0,896,896,0.0,"void <unnamed>::elementwise_kernel_with_index<int, at::native::arange_cuda_out(const c10::Scalar &, const c10::Scalar &, const c10::Scalar &, at::Tensor &)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 7)]::operator ()() const::[lambda(long long) (instance 1)]>(T1, T2, function_traits<T2>::result_type *)"
+0.0,3360,1,3360.0,3360.0,3360,3360,0.0,"wp::mark_packed_leaf_nodes(int, const int *, const int *, const int *, const unsigned long long *, wp::BVHPackedNodeHalf *, wp::BVHPackedNodeHalf *, int)"
+0.0,3201,1,3201.0,3201.0,3201,3201,0.0,compute_enabled_shapes_70ba08e9_cuda_kernel_forward
+0.0,2816,1,2816.0,2816.0,2816,2816,0.0,"wp::build_leaves(const wp::vec_t<(unsigned int)3, float> *, const wp::vec_t<(unsigned int)3, float> *, int, const int *, int *, int *, wp::BVHPackedNodeHalf *, wp::BVHPackedNodeHalf *)"
+0.0,2656,2,1328.0,1328.0,1312,1344,22.6,update_default_joint_values_94439699_cuda_kernel_forward
+0.0,2593,1,2593.0,2593.0,2593,2593,0.0,"void at::native::reduce_kernel<(int)512, (int)1, at::native::ReduceOp<long long, at::native::ArgMaxOps<long long>, unsigned int, long long, (int)4, (int)4>>(T3)"
+0.0,2464,1,2464.0,2464.0,2464,2464,0.0,"void at::native::<unnamed>::write_indices<long long>(long long *, at::native::<unnamed>::TensorDims<T1>, int, T1, long long *, long long)"
+0.0,2336,1,2336.0,2336.0,2336,2336,0.0,compute_nodal_state_w_c8daa653_cuda_kernel_forward
+0.0,2272,1,2272.0,2272.0,2272,2272,0.0,get_body_com_pose_from_body_link_pose_5940b76d_cuda_kernel_forward
+0.0,2016,2,1008.0,1008.0,992,1024,22.6,"void <unnamed>::elementwise_kernel_with_index<int, at::native::arange_cuda_out(const c10::Scalar &, const c10::Scalar &, const c10::Scalar &, at::Tensor &)::[lambda() (instance 1)]::operator ()() const::[lambda() (instance 4)]::operator ()() const::[lambda(long long) (instance 1)]>(T1, T2, function_traits<T2>::result_type *)"
+0.0,1792,2,896.0,896.0,896,896,0.0,"wp::memset_kernel(int *, int, unsigned long long)"
+0.0,1568,1,1568.0,1568.0,1568,1568,0.0,"wp::compute_morton_codes(const wp::vec_t<(unsigned int)3, float> *, const wp::vec_t<(unsigned int)3, float> *, int, const wp::vec_t<(unsigned int)3, float> *, const wp::vec_t<(unsigned int)3, float> *, int *, unsigned long long *, const int *)"
+0.0,1504,1,1504.0,1504.0,1504,1504,0.0,concat_joint_pos_limits_lower_and_upper_47a833bf_cuda_kernel_forward
+0.0,1504,1,1504.0,1504.0,1504,1504,0.0,set_model_articulation_mask_per_world_kernel_7b6292eb_cuda_kernel_forward
+0.0,1344,1,1344.0,1344.0,1344,1344,0.0,_zero_particle_mass_kernel_f35baa97_cuda_kernel_forward
+0.0,1312,1,1312.0,1312.0,1312,1312,0.0,_clear_particle_flag_kernel_cf97181a_cuda_kernel_forward
+0.0,1216,1,1216.0,1216.0,1216,1216,0.0,update_soft_joint_pos_limits_ca01ff7f_cuda_kernel_forward
+0.0,1185,1,1185.0,1185.0,1185,1185,0.0,"void cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::DeviceRadixSortExclusiveSumKernel<cub::CUB_200802_SM_520_600_610_700_750_800_860_890_900_1000_1200_1210::detail::radix::policy_hub<unsigned long long, SortPayload<(int)4>, unsigned int>::Policy1000, unsigned int>(T2 *)"
+0.0,1184,1,1184.0,1184.0,1184,1184,0.0,set_kinematic_flags_to_one_fd455eb1_cuda_kernel_forward
+0.0,1152,1,1152.0,1152.0,1152,1152,0.0,"wp::compute_key_deltas(const unsigned long long *, int *, int)"
+0.0,1088,1,1088.0,1088.0,1088,1088,0.0,"wp::compute_total_inv_edges(const wp::vec_t<(unsigned int)3, float> *, const wp::vec_t<(unsigned int)3, float> *, wp::vec_t<(unsigned int)3, float> *)"

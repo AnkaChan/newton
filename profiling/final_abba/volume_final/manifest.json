@@ -1,0 +1,1041 @@
+{
+  "schema_version": "vbd-abba-suite-v1",
+  "suite_id": "vbd_abba_volume_20260812T212538Z",
+  "created_utc": "2026-08-12T21:25:38.482033+00:00",
+  "updated_utc": "2026-08-12T21:50:44.660733+00:00",
+  "status": "completed",
+  "output_root": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_final",
+  "config": {
+    "workload": "volume",
+    "task": "Isaac-Lift-Soft-Franka",
+    "num_envs": 1024,
+    "num_steps": 500,
+    "warmup_steps": 100,
+    "seed": 42,
+    "device": "cuda:0",
+    "abba_blocks": 4,
+    "runs_per_variant": 8,
+    "fresh_process_count": 16,
+    "cooldown_seconds": 5.0,
+    "max_start_gpu_util_pct": 20.0,
+    "busy_gpu_policy": "error",
+    "uv": "C:\\Users\\ankac\\AppData\\Local\\anaconda3\\Scripts\\uv.exe",
+    "benchmark_script": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\scripts\\benchmarks\\runtime.py",
+    "frozen_volume_wrapper": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\run_with_frozen_tetrahedralization.py",
+    "frozen_volume_cache": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz",
+    "hydra_overrides": [
+      "presets=newton_mjwarp_vbd_proxy",
+      "env.sim.physics.num_substeps=1"
+    ],
+    "expected_reported_presets": [
+      "newton_mjwarp_vbd_proxy",
+      "env.sim.physics.num_substeps=1"
+    ],
+    "benchmark_formatter": "schema",
+    "timing_mode": "host_return",
+    "vbd_iterations": 10,
+    "contact_capacity": 256,
+    "num_substeps": 1,
+    "volume_topology": "frozen-replay"
+  },
+  "sources": {
+    "baseline": {
+      "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "source_file_count": 716,
+      "source_byte_count": 20954398,
+      "git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+      "git_dirty_tracked": false,
+      "git_status_tracked": [],
+      "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "candidate": {
+      "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-profile",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "source_file_count": 716,
+      "source_byte_count": 21015539,
+      "git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+      "git_dirty_tracked": true,
+      "git_status_tracked": [
+        " M CHANGELOG.md",
+        " M newton/_src/geometry/sdf_texture.py",
+        " M newton/_src/geometry/soft_contacts_sdf.py",
+        " M newton/_src/sim/collide.py",
+        " M newton/_src/solvers/vbd/particle_vbd_kernels.py",
+        " M newton/_src/solvers/vbd/rigid_vbd_kernels.py",
+        " M newton/_src/solvers/vbd/solver_vbd.py",
+        " M newton/tests/test_collision_pipeline.py",
+        " M newton/tests/test_solver_vbd.py"
+      ],
+      "git_diff_sha256": "26ae1b944121ceaf2339de7caeb32ea731c89559ae74d7b897e76b2326eff745"
+    }
+  },
+  "isaaclab_source": {
+    "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile",
+    "git_head": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+    "relevant_source_hash": "79539cda6975a0d152c30ae3dc1edb25fd2efec5e6eff1b52a104a0aeeb2a8c0",
+    "source_file_count": 178,
+    "source_byte_count": 2031125
+  },
+  "task_config_evidence": {
+    "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\source\\isaaclab_tasks\\isaaclab_tasks\\core\\lift\\config\\franka_soft\\franka_soft_env_cfg.py",
+    "size": 23039,
+    "sha256": "c4daa6baf7171998d5a349f0ce2aa1aeb4528760a9ab6a0828327cee4d409aff",
+    "extracted_vbd_iterations": 10,
+    "extracted_contact_capacity": 256,
+    "extracted_default_num_substeps": 2,
+    "resolved_num_substeps_override": 1
+  },
+  "frozen_volume_evidence": {
+    "cache": {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz",
+      "size": 3182,
+      "sha256": "2d4c4c768d3362017eb958af01a41fd2b2f67d844e3627d6ccf405dba1f59159"
+    },
+    "manifest": {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz.manifest.json",
+      "size": 3405,
+      "sha256": "8c35189acb68f745d5386fdf367a4196e0325a466ea04986987fe404fd9867d5"
+    },
+    "input_hash": "e8065a0c936da43570c33ba13361e8bb7286d37c2e8bba42b30d4ccd2452dcfd",
+    "output_hash": "38a118f6536c31a920ff2efda5e9ef27d7319431223658bdecc6c43f25d18b28",
+    "output_vertices": {
+      "dtype": "<f8",
+      "shape": [
+        44,
+        3
+      ],
+      "sha256": "b390d06ad0391126113bb54c50a1b50847c334c5f17cbe54c83753843559b5a1"
+    },
+    "output_tetrahedra": {
+      "dtype": "<i4",
+      "shape": [
+        75,
+        4
+      ],
+      "sha256": "fefe72ead803f8cc65da817f50bdd5cf40ca4d5903c5989520e6d537f43c88a6"
+    },
+    "parameters": {
+      "edge_length_fac": {
+        "type": "float",
+        "value": 0.1,
+        "hex": "0x1.999999999999ap-4"
+      },
+      "edge_length_abs": {
+        "type": "none",
+        "value": null
+      },
+      "optimize": {
+        "type": "bool",
+        "value": true
+      },
+      "simplify": {
+        "type": "bool",
+        "value": false
+      },
+      "epsilon": {
+        "type": "float",
+        "value": 0.01,
+        "hex": "0x1.47ae147ae147bp-7"
+      },
+      "stop_energy": {
+        "type": "float",
+        "value": 10.0,
+        "hex": "0x1.4000000000000p+3"
+      },
+      "coarsen": {
+        "type": "bool",
+        "value": true
+      },
+      "num_threads": {
+        "type": "int",
+        "value": 0
+      },
+      "num_opt_iter": {
+        "type": "int",
+        "value": 80
+      },
+      "loglevel": {
+        "type": "int",
+        "value": 3
+      },
+      "quiet": {
+        "type": "bool",
+        "value": true
+      },
+      "vtk_ordering": {
+        "type": "bool",
+        "value": false
+      },
+      "disable_filtering": {
+        "type": "bool",
+        "value": false
+      }
+    }
+  },
+  "additional_immutable_evidence": [],
+  "immutable_files": [
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\source\\isaaclab_tasks\\isaaclab_tasks\\core\\lift\\config\\franka_soft\\franka_soft_env_cfg.py",
+      "size": 23039,
+      "sha256": "c4daa6baf7171998d5a349f0ce2aa1aeb4528760a9ab6a0828327cee4d409aff",
+      "extracted_vbd_iterations": 10,
+      "extracted_contact_capacity": 256,
+      "extracted_default_num_substeps": 2,
+      "resolved_num_substeps_override": 1
+    },
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\scripts\\benchmarks\\runtime.py",
+      "size": 438,
+      "sha256": "785e4f1dc94cdf75048725d6e44bccc78d4445ac291d19f39cf27cd271f355e3"
+    },
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\run_vbd_abba.py",
+      "size": 37370,
+      "sha256": "488051d4cae0a5071b97578fa8bc3a71916af912156c86e1ccd4e0f6793feaec"
+    },
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\analyze_vbd_abba.py",
+      "size": 25862,
+      "sha256": "4e27a6b102acf923f464d65829df345bb920ef51cfbcf4af193bd1f56632fafd"
+    },
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz",
+      "size": 3182,
+      "sha256": "2d4c4c768d3362017eb958af01a41fd2b2f67d844e3627d6ccf405dba1f59159"
+    },
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz.manifest.json",
+      "size": 3405,
+      "sha256": "8c35189acb68f745d5386fdf367a4196e0325a466ea04986987fe404fd9867d5"
+    },
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\run_with_frozen_tetrahedralization.py",
+      "size": 11369,
+      "sha256": "311fc32a2031ae8f5dba0576ac64e63ccaa05051aa201b064dbc9697b28bc035"
+    }
+  ],
+  "host": {
+    "hostname": "NV-24060060",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "orchestrator_python": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\.venv\\Scripts\\python.exe",
+    "orchestrator_python_version": "3.12.11 (main, Aug 18 2025, 19:17:54) [MSC v.1944 64 bit (AMD64)]",
+    "uv_version": "uv 0.9.30 (ea4560831 2026-02-04)",
+    "initial_nvidia_smi": {
+      "available": true,
+      "executable": "C:\\Windows\\system32\\nvidia-smi.EXE",
+      "gpus": [
+        {
+          "index": "0",
+          "uuid": "GPU-9fe5458a-493d-e178-1324-365b8fd5db5a",
+          "name": "NVIDIA GeForce RTX 4090",
+          "driver_version": "591.86",
+          "pstate": "P8",
+          "temperature.gpu": "34",
+          "utilization.gpu": "0",
+          "memory.used": "2906",
+          "memory.total": "24564",
+          "clocks.current.sm": "210",
+          "clocks.current.memory": "405",
+          "power.draw": "5.61",
+          "power.limit": "450.00"
+        }
+      ],
+      "compute_processes": [
+        {
+          "pid": "41696",
+          "process_name": "[Insufficient Permissions]",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "47116",
+          "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\CrossDeviceResume.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "1434296",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "41156",
+          "process_name": "C:\\Windows\\explorer.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "4280",
+          "process_name": "C:\\Windows\\SystemApps\\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\\StartMenuExperienceHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "66548",
+          "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\SearchHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "53800",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "70664",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "64000",
+          "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2381764",
+          "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\TextInputHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "12880",
+          "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.YourPhone_1.26071.164.0_x64__8wekyb3d8bbwe\\PhoneExperienceHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "36468",
+          "process_name": "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "40032",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "56096",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2373312",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "603696",
+          "process_name": "C:\\Program Files\\MuseHub\\current\\MuseHub.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2788",
+          "process_name": "C:\\Program Files\\Insta360 Studio\\insta360-quick-look.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "71988",
+          "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2118728",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "59200",
+          "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "9456",
+          "process_name": "C:\\Windows\\SystemApps\\ShellExperienceHost_cw5n1h2txyewy\\ShellExperienceHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2381648",
+          "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "83152",
+          "process_name": "C:\\Users\\ankac\\AppData\\Local\\Programs\\cursor\\Cursor.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "24980",
+          "process_name": "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\steamwebhelper.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "27480",
+          "process_name": "C:\\Users\\ankac\\AppData\\Roaming\\Spotify\\Spotify.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "36684",
+          "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2381160",
+          "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "52756",
+          "process_name": "C:\\Program Files\\LogiOptionsPlus\\logioptionsplus_agent.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "56952",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2164484",
+          "process_name": "C:\\Program Files\\Listary\\Listary.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "10652",
+          "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.Copilot_1.25121.84.0_x64__8wekyb3d8bbwe\\Copilot.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2379024",
+          "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\AMDRSSrcExt.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2384264",
+          "process_name": "C:\\Program Files (x86)\\Dropbox\\Client\\Dropbox.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2382676",
+          "process_name": "C:\\Windows\\System32\\ShellHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2386332",
+          "process_name": "C:\\Program Files\\Adobe\\Adobe Creative Cloud\\ACC\\Creative Cloud UI Helper.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2388036",
+          "process_name": "C:\\Program Files\\Common Files\\Adobe\\Adobe OS Extension\\AdobeNotificationClient.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "43148",
+          "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\RadeonSoftware.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2385456",
+          "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "94244",
+          "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2401836",
+          "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2418188",
+          "process_name": "[Insufficient Permissions]",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "12844",
+          "process_name": "C:\\Windows\\SystemApps\\Microsoft.LockApp_cw5n1h2txyewy\\LockApp.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2449064",
+          "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.MicrosoftOfficeHub_19.2608.39011.0_x64__8wekyb3d8bbwe\\M365Copilot.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2382564",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2491372",
+          "process_name": "C:\\Program Files\\WindowsApps\\AcrobatNotificationClient_1.0.4.0_x86__e1rzdqpraam7r\\AcrobatNotificationClient.exe",
+          "used_gpu_memory": "[N/A]"
+        }
+      ],
+      "gpu_query_returncode": 0,
+      "gpu_query_stderr": [],
+      "compute_query_returncode": 0,
+      "compute_query_stderr": []
+    }
+  },
+  "runs": [
+    {
+      "ordinal": 1,
+      "block": 1,
+      "position": 1,
+      "pair_id": "block_01_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\001_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\001_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:25:46.435971+00:00",
+      "finished_utc": "2026-08-12T21:27:05.313777+00:00",
+      "elapsed_s": 78.4254537000088,
+      "returncode": 0,
+      "log_path": "runs\\001_baseline\\process.log",
+      "result_path": "runs\\001_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-25-52-889859_7d688530.json",
+      "environment_step_fps": 24289.852710033574,
+      "iteration_time_ms": 42.160805,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 2,
+      "block": 1,
+      "position": 2,
+      "pair_id": "block_01_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\002_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\002_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:27:19.695840+00:00",
+      "finished_utc": "2026-08-12T21:28:31.266426+00:00",
+      "elapsed_s": 71.22367779997876,
+      "returncode": 0,
+      "log_path": "runs\\002_candidate\\process.log",
+      "result_path": "runs\\002_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-27-24-646472_eb5447ef.json",
+      "environment_step_fps": 29951.55055901293,
+      "iteration_time_ms": 34.1915914,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 3,
+      "block": 1,
+      "position": 3,
+      "pair_id": "block_01_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\003_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\003_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:28:44.052933+00:00",
+      "finished_utc": "2026-08-12T21:29:56.325604+00:00",
+      "elapsed_s": 71.92395209998358,
+      "returncode": 0,
+      "log_path": "runs\\003_candidate\\process.log",
+      "result_path": "runs\\003_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-28-49-398106_03bb5969.json",
+      "environment_step_fps": 29985.170459134803,
+      "iteration_time_ms": 34.1536342,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 4,
+      "block": 1,
+      "position": 4,
+      "pair_id": "block_01_pair_2",
+      "variant": "baseline",
+      "attempt": 2,
+      "status": "completed",
+      "run_dir": "runs\\004_baseline_attempt_02",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\004_baseline_attempt_02\\run_metadata.json",
+      "started_utc": "2026-08-12T21:31:45.327270+00:00",
+      "finished_utc": "2026-08-12T21:33:04.748453+00:00",
+      "elapsed_s": 79.03130909998436,
+      "returncode": 0,
+      "log_path": "runs\\004_baseline_attempt_02\\process.log",
+      "result_path": "runs\\004_baseline_attempt_02\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-31-51-161180_b0175dd0.json",
+      "environment_step_fps": 24645.8213753565,
+      "iteration_time_ms": 41.551460999999996,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 5,
+      "block": 2,
+      "position": 1,
+      "pair_id": "block_02_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\005_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\005_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:33:19.581283+00:00",
+      "finished_utc": "2026-08-12T21:34:37.560671+00:00",
+      "elapsed_s": 77.65213100000983,
+      "returncode": 0,
+      "log_path": "runs\\005_baseline\\process.log",
+      "result_path": "runs\\005_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-33-24-978557_4c790947.json",
+      "environment_step_fps": 24368.45136540193,
+      "iteration_time_ms": 42.0243686,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 6,
+      "block": 2,
+      "position": 2,
+      "pair_id": "block_02_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\006_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\006_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:34:50.182948+00:00",
+      "finished_utc": "2026-08-12T21:36:02.277914+00:00",
+      "elapsed_s": 71.73403880000114,
+      "returncode": 0,
+      "log_path": "runs\\006_candidate\\process.log",
+      "result_path": "runs\\006_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-34-54-374070_e8e07acc.json",
+      "environment_step_fps": 29908.74380781665,
+      "iteration_time_ms": 34.2407074,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 7,
+      "block": 2,
+      "position": 3,
+      "pair_id": "block_02_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\007_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\007_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:36:15.408352+00:00",
+      "finished_utc": "2026-08-12T21:37:28.655992+00:00",
+      "elapsed_s": 72.88107329997001,
+      "returncode": 0,
+      "log_path": "runs\\007_candidate\\process.log",
+      "result_path": "runs\\007_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-36-19-481100_9dd06137.json",
+      "environment_step_fps": 28776.670788962227,
+      "iteration_time_ms": 35.5884066,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 8,
+      "block": 2,
+      "position": 4,
+      "pair_id": "block_02_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\008_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\008_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:37:41.228743+00:00",
+      "finished_utc": "2026-08-12T21:38:58.767812+00:00",
+      "elapsed_s": 77.1999177999678,
+      "returncode": 0,
+      "log_path": "runs\\008_baseline\\process.log",
+      "result_path": "runs\\008_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-37-45-301134_05f0c7cc.json",
+      "environment_step_fps": 25128.706708164696,
+      "iteration_time_ms": 40.753339399999994,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 9,
+      "block": 3,
+      "position": 1,
+      "pair_id": "block_03_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\009_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\009_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:39:11.387422+00:00",
+      "finished_utc": "2026-08-12T21:40:22.862111+00:00",
+      "elapsed_s": 71.08272629999556,
+      "returncode": 0,
+      "log_path": "runs\\009_baseline\\process.log",
+      "result_path": "runs\\009_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-39-15-674271_0fe05bac.json",
+      "environment_step_fps": 25129.101125132438,
+      "iteration_time_ms": 40.7526646,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 10,
+      "block": 3,
+      "position": 2,
+      "pair_id": "block_03_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\010_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\010_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:40:36.423726+00:00",
+      "finished_utc": "2026-08-12T21:41:46.370157+00:00",
+      "elapsed_s": 69.63594320003176,
+      "returncode": 0,
+      "log_path": "runs\\010_candidate\\process.log",
+      "result_path": "runs\\010_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-40-41-360529_5f2154c1.json",
+      "environment_step_fps": 31538.598387358776,
+      "iteration_time_ms": 32.4709806,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 11,
+      "block": 3,
+      "position": 3,
+      "pair_id": "block_03_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\011_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\011_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:41:59.519974+00:00",
+      "finished_utc": "2026-08-12T21:43:08.096637+00:00",
+      "elapsed_s": 68.25151409994578,
+      "returncode": 0,
+      "log_path": "runs\\011_candidate\\process.log",
+      "result_path": "runs\\011_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-42-04-362960_3da90a5a.json",
+      "environment_step_fps": 31074.886452395247,
+      "iteration_time_ms": 32.956173,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 12,
+      "block": 3,
+      "position": 4,
+      "pair_id": "block_03_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\012_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\012_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:43:23.941244+00:00",
+      "finished_utc": "2026-08-12T21:44:40.182250+00:00",
+      "elapsed_s": 75.89109739998821,
+      "returncode": 0,
+      "log_path": "runs\\012_baseline\\process.log",
+      "result_path": "runs\\012_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-43-30-206359_53e31ac6.json",
+      "environment_step_fps": 24989.965211137533,
+      "iteration_time_ms": 40.9793136,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 13,
+      "block": 4,
+      "position": 1,
+      "pair_id": "block_04_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\013_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\013_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:44:53.026376+00:00",
+      "finished_utc": "2026-08-12T21:46:08.397039+00:00",
+      "elapsed_s": 75.01845440000761,
+      "returncode": 0,
+      "log_path": "runs\\013_baseline\\process.log",
+      "result_path": "runs\\013_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-44-57-787523_459a429a.json",
+      "environment_step_fps": 24506.27736670917,
+      "iteration_time_ms": 41.7878854,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 14,
+      "block": 4,
+      "position": 2,
+      "pair_id": "block_04_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\014_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\014_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:46:21.212261+00:00",
+      "finished_utc": "2026-08-12T21:47:32.307103+00:00",
+      "elapsed_s": 70.74575729999924,
+      "returncode": 0,
+      "log_path": "runs\\014_candidate\\process.log",
+      "result_path": "runs\\014_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-46-25-744439_7e446f9a.json",
+      "environment_step_fps": 29293.729050799928,
+      "iteration_time_ms": 34.9614092,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 15,
+      "block": 4,
+      "position": 3,
+      "pair_id": "block_04_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\015_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\015_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:47:44.921328+00:00",
+      "finished_utc": "2026-08-12T21:48:59.588302+00:00",
+      "elapsed_s": 74.19710719998693,
+      "returncode": 0,
+      "log_path": "runs\\015_candidate\\process.log",
+      "result_path": "runs\\015_candidate\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-47-49-679559_e4751fbd.json",
+      "environment_step_fps": 27183.43018722258,
+      "iteration_time_ms": 37.6764968,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 16,
+      "block": 4,
+      "position": 4,
+      "pair_id": "block_04_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\016_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\016_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:49:14.630504+00:00",
+      "finished_utc": "2026-08-12T21:50:42.164116+00:00",
+      "elapsed_s": 87.18708040000638,
+      "returncode": 0,
+      "log_path": "runs\\016_baseline\\process.log",
+      "result_path": "runs\\016_baseline\\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_14-49-26-573261_624991e1.json",
+      "environment_step_fps": 23248.24644652369,
+      "iteration_time_ms": 44.0508506,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Soft-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    }
+  ],
+  "completed_utc": "2026-08-12T21:50:44.660733+00:00"
+}

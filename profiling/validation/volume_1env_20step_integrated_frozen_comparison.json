@@ -1,0 +1,380 @@
+{
+  "baseline": {
+    "task": "Isaac-Lift-Soft-Franka",
+    "seed": 42,
+    "num_steps": 20,
+    "newton_file": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-baseline\\newton\\__init__.py",
+    "newton_version": "1.5.0rc2",
+    "newton_git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+    "newton_source_hash": "eec346c1a68cee06adb2bab9940fed82b61a7664df47c48cbfaebf5c96e1cddd",
+    "topology_hash": "5c9478730b4460fc6db2582824293091645bd28e2d03fe414cc4abc2d2a97bd1",
+    "particle_count": 44,
+    "tri_count": 82,
+    "edge_count": 123,
+    "tet_count": 75,
+    "body_count": 11,
+    "shape_count": 85,
+    "soft_contact_max": 6610,
+    "contact_field_names": [
+      "barycentric_x",
+      "barycentric_y",
+      "barycentric_z",
+      "normal_x",
+      "normal_y",
+      "normal_z",
+      "body_pos_x",
+      "body_pos_y",
+      "body_pos_z",
+      "body_vel_x",
+      "body_vel_y",
+      "body_vel_z",
+      "penalty_k"
+    ],
+    "dt": 0.008333333333333333,
+    "decimation": 4,
+    "num_substeps": 1,
+    "vbd_iterations": 10,
+    "vbd_tile_solve": true,
+    "overrides": [
+      "presets=newton_mjwarp_vbd_proxy",
+      "env.sim.physics.num_substeps=1"
+    ],
+    "output": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_1env_20step_baseline_frozen\\trajectory_Isaac-Lift-Soft-Franka.npz"
+  },
+  "candidate": {
+    "task": "Isaac-Lift-Soft-Franka",
+    "seed": 42,
+    "num_steps": 20,
+    "newton_file": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-profile\\newton\\__init__.py",
+    "newton_version": "1.5.0rc2",
+    "newton_git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+    "newton_source_hash": "a0c7b30a0386a3a1205a34b023571665b58405aed23266580057d1f6b54c4b85",
+    "topology_hash": "5c9478730b4460fc6db2582824293091645bd28e2d03fe414cc4abc2d2a97bd1",
+    "particle_count": 44,
+    "tri_count": 82,
+    "edge_count": 123,
+    "tet_count": 75,
+    "body_count": 11,
+    "shape_count": 85,
+    "soft_contact_max": 6610,
+    "contact_field_names": [
+      "barycentric_x",
+      "barycentric_y",
+      "barycentric_z",
+      "normal_x",
+      "normal_y",
+      "normal_z",
+      "body_pos_x",
+      "body_pos_y",
+      "body_pos_z",
+      "body_vel_x",
+      "body_vel_y",
+      "body_vel_z",
+      "penalty_k"
+    ],
+    "dt": 0.008333333333333333,
+    "decimation": 4,
+    "num_substeps": 1,
+    "vbd_iterations": 10,
+    "vbd_tile_solve": true,
+    "overrides": [
+      "presets=newton_mjwarp_vbd_proxy",
+      "env.sim.physics.num_substeps=1"
+    ],
+    "output": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_1env_20step_candidate_integrated_frozen\\trajectory_Isaac-Lift-Soft-Franka.npz"
+  },
+  "manifest": {
+    "task": {
+      "pass": true,
+      "baseline": "Isaac-Lift-Soft-Franka",
+      "candidate": "Isaac-Lift-Soft-Franka"
+    },
+    "seed": {
+      "pass": true,
+      "baseline": 42,
+      "candidate": 42
+    },
+    "num_steps": {
+      "pass": true,
+      "baseline": 20,
+      "candidate": 20
+    },
+    "topology_hash": {
+      "pass": true,
+      "baseline": "5c9478730b4460fc6db2582824293091645bd28e2d03fe414cc4abc2d2a97bd1",
+      "candidate": "5c9478730b4460fc6db2582824293091645bd28e2d03fe414cc4abc2d2a97bd1"
+    },
+    "particle_count": {
+      "pass": true,
+      "baseline": 44,
+      "candidate": 44
+    },
+    "tri_count": {
+      "pass": true,
+      "baseline": 82,
+      "candidate": 82
+    },
+    "edge_count": {
+      "pass": true,
+      "baseline": 123,
+      "candidate": 123
+    },
+    "tet_count": {
+      "pass": true,
+      "baseline": 75,
+      "candidate": 75
+    },
+    "body_count": {
+      "pass": true,
+      "baseline": 11,
+      "candidate": 11
+    },
+    "shape_count": {
+      "pass": true,
+      "baseline": 85,
+      "candidate": 85
+    },
+    "soft_contact_max": {
+      "pass": true,
+      "baseline": 6610,
+      "candidate": 6610
+    },
+    "contact_field_names": {
+      "pass": true,
+      "baseline": [
+        "barycentric_x",
+        "barycentric_y",
+        "barycentric_z",
+        "normal_x",
+        "normal_y",
+        "normal_z",
+        "body_pos_x",
+        "body_pos_y",
+        "body_pos_z",
+        "body_vel_x",
+        "body_vel_y",
+        "body_vel_z",
+        "penalty_k"
+      ],
+      "candidate": [
+        "barycentric_x",
+        "barycentric_y",
+        "barycentric_z",
+        "normal_x",
+        "normal_y",
+        "normal_z",
+        "body_pos_x",
+        "body_pos_y",
+        "body_pos_z",
+        "body_vel_x",
+        "body_vel_y",
+        "body_vel_z",
+        "penalty_k"
+      ]
+    },
+    "dt": {
+      "pass": true,
+      "baseline": 0.008333333333333333,
+      "candidate": 0.008333333333333333
+    },
+    "decimation": {
+      "pass": true,
+      "baseline": 4,
+      "candidate": 4
+    },
+    "num_substeps": {
+      "pass": true,
+      "baseline": 1,
+      "candidate": 1
+    },
+    "vbd_iterations": {
+      "pass": true,
+      "baseline": 10,
+      "candidate": 10
+    },
+    "vbd_tile_solve": {
+      "pass": true,
+      "baseline": true,
+      "candidate": true
+    },
+    "overrides": {
+      "pass": true,
+      "baseline": [
+        "presets=newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ],
+      "candidate": [
+        "presets=newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ]
+    }
+  },
+  "exact": {
+    "action_tape": {
+      "pass": true,
+      "baseline_shape": [
+        20,
+        1,
+        8
+      ],
+      "candidate_shape": [
+        20,
+        1,
+        8
+      ]
+    },
+    "terminated": {
+      "pass": true,
+      "baseline_shape": [
+        20,
+        1
+      ],
+      "candidate_shape": [
+        20,
+        1
+      ]
+    },
+    "truncated": {
+      "pass": true,
+      "baseline_shape": [
+        20,
+        1
+      ],
+      "candidate_shape": [
+        20,
+        1
+      ]
+    },
+    "contact_offsets": {
+      "pass": true,
+      "baseline_shape": [
+        22
+      ],
+      "candidate_shape": [
+        22
+      ]
+    },
+    "contact_counts_raw": {
+      "pass": true,
+      "baseline_shape": [
+        21
+      ],
+      "candidate_shape": [
+        21
+      ]
+    },
+    "contact_key_duplicate_counts": {
+      "pass": true,
+      "baseline_shape": [
+        21
+      ],
+      "candidate_shape": [
+        21
+      ]
+    },
+    "contact_keys": {
+      "pass": true,
+      "baseline_shape": [
+        0,
+        4
+      ],
+      "candidate_shape": [
+        0,
+        4
+      ]
+    }
+  },
+  "numeric": {
+    "particle_q": {
+      "pass": true,
+      "shape_equal": true,
+      "finite": true,
+      "rtol": 1e-05,
+      "atol": 1e-06,
+      "max_abs": 0.0,
+      "rms": 0.0,
+      "p99_abs": 0.0
+    },
+    "particle_qd": {
+      "pass": true,
+      "shape_equal": true,
+      "finite": true,
+      "rtol": 1e-05,
+      "atol": 1e-05,
+      "max_abs": 0.0,
+      "rms": 0.0,
+      "p99_abs": 0.0
+    },
+    "body_q": {
+      "pass": true,
+      "shape_equal": true,
+      "finite": true,
+      "rtol": 1e-05,
+      "atol": 1e-06,
+      "max_abs": 0.0,
+      "rms": 0.0,
+      "p99_abs": 0.0
+    },
+    "body_qd": {
+      "pass": true,
+      "shape_equal": true,
+      "finite": true,
+      "rtol": 1e-05,
+      "atol": 1e-05,
+      "max_abs": 0.0,
+      "rms": 0.0,
+      "p99_abs": 0.0
+    },
+    "joint_q": {
+      "pass": true,
+      "shape_equal": true,
+      "finite": true,
+      "rtol": 1e-05,
+      "atol": 1e-06,
+      "max_abs": 0.0,
+      "rms": 0.0,
+      "p99_abs": 0.0
+    },
+    "joint_qd": {
+      "pass": true,
+      "shape_equal": true,
+      "finite": true,
+      "rtol": 1e-05,
+      "atol": 1e-05,
+      "max_abs": 0.0,
+      "rms": 0.0,
+      "p99_abs": 0.0
+    },
+    "observations": {
+      "pass": true,
+      "shape_equal": true,
+      "finite": true,
+      "rtol": 1e-05,
+      "atol": 1e-06,
+      "max_abs": 0.0,
+      "rms": 0.0,
+      "p99_abs": 0.0
+    },
+    "rewards": {
+      "pass": true,
+      "shape_equal": true,
+      "finite": true,
+      "rtol": 1e-05,
+      "atol": 1e-06,
+      "max_abs": 0.0,
+      "rms": 0.0,
+      "p99_abs": 0.0
+    },
+    "contact_fields": {
+      "pass": true,
+      "shape_equal": true,
+      "finite": true,
+      "rtol": 1e-05,
+      "atol": 1e-06,
+      "max_abs": 0.0,
+      "rms": 0.0,
+      "p99_abs": 0.0
+    }
+  },
+  "pass": true
+}

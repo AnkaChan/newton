@@ -1,0 +1,127 @@
+{
+  "task": "Isaac-Lift-Soft-Franka",
+  "seed": 42,
+  "num_envs": 1024,
+  "presets": [
+    "presets=newton_mjwarp_vbd_proxy",
+    "env.sim.physics.num_substeps=1"
+  ],
+  "physics": {
+    "dt": 0.008333333333333333,
+    "decimation": 4,
+    "num_substeps": 1,
+    "physics_steps_per_environment_step": 4
+  },
+  "global_model": {
+    "world_count": 1024,
+    "body_count": 11264,
+    "shape_count": 84994,
+    "particle_count": 46080,
+    "tri_count": 83968,
+    "edge_count": 125952,
+    "tet_count": 82944,
+    "spring_count": 0
+  },
+  "soft_model_view": {
+    "world_count": 1024,
+    "body_count": 3072,
+    "shape_count": 84994,
+    "particle_count": 46080,
+    "tri_count": 83968,
+    "edge_count": 125952,
+    "tet_count": 82944,
+    "spring_count": 0
+  },
+  "vbd": {
+    "iterations": 10,
+    "tile_solve": true,
+    "particle_color_count": 6,
+    "particle_color_sizes": [
+      7919,
+      7920,
+      7920,
+      7920,
+      7201,
+      7200
+    ]
+  },
+  "soft_collision_candidates": {
+    "particle_shape_pairs": 3916800,
+    "edge_shape_pairs": 1763328,
+    "face_shape_pairs": 1175552,
+    "contact_capacity": 6855680
+  },
+  "soft_contacts_after_environment_steps": {
+    "samples": [
+      {
+        "active": 0,
+        "stored": 0,
+        "particle": 0,
+        "edge": 0,
+        "face": 0
+      },
+      {
+        "active": 0,
+        "stored": 0,
+        "particle": 0,
+        "edge": 0,
+        "face": 0
+      },
+      {
+        "active": 0,
+        "stored": 0,
+        "particle": 0,
+        "edge": 0,
+        "face": 0
+      },
+      {
+        "active": 0,
+        "stored": 0,
+        "particle": 0,
+        "edge": 0,
+        "face": 0
+      },
+      {
+        "active": 0,
+        "stored": 0,
+        "particle": 0,
+        "edge": 0,
+        "face": 0
+      },
+      {
+        "active": 0,
+        "stored": 0,
+        "particle": 0,
+        "edge": 0,
+        "face": 0
+      },
+      {
+        "active": 0,
+        "stored": 0,
+        "particle": 0,
+        "edge": 0,
+        "face": 0
+      },
+      {
+        "active": 0,
+        "stored": 0,
+        "particle": 0,
+        "edge": 0,
+        "face": 0
+      }
+    ],
+    "active_summary": {
+      "min": 0,
+      "median": 0.0,
+      "mean": 0.0,
+      "max": 0
+    },
+    "capacity_utilization_at_median": 0.0
+  },
+  "capacity_scan_model": {
+    "capacity_scans_per_physics_step": 71,
+    "capacity_threads_per_physics_step": 486753280,
+    "capacity_threads_per_environment_step": 1947013120,
+    "formula": "soft_contact_max * (1 init + iterations dual + iterations * colors accumulation)"
+  }
+}

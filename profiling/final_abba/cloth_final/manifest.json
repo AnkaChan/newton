@@ -1,0 +1,940 @@
+{
+  "schema_version": "vbd-abba-suite-v1",
+  "suite_id": "vbd_abba_cloth_20260812T204300Z",
+  "created_utc": "2026-08-12T20:43:00.322354+00:00",
+  "updated_utc": "2026-08-12T21:24:56.113667+00:00",
+  "status": "completed",
+  "output_root": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\cloth_final",
+  "config": {
+    "workload": "cloth",
+    "task": "Isaac-Lift-Cloth-Franka",
+    "num_envs": 1024,
+    "num_steps": 500,
+    "warmup_steps": 100,
+    "seed": 42,
+    "device": "cuda:0",
+    "abba_blocks": 4,
+    "runs_per_variant": 8,
+    "fresh_process_count": 16,
+    "cooldown_seconds": 5.0,
+    "max_start_gpu_util_pct": 20.0,
+    "busy_gpu_policy": "error",
+    "uv": "C:\\Users\\ankac\\AppData\\Local\\anaconda3\\Scripts\\uv.exe",
+    "benchmark_script": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\scripts\\benchmarks\\runtime.py",
+    "frozen_volume_wrapper": null,
+    "frozen_volume_cache": null,
+    "hydra_overrides": [
+      "presets=newton_mjwarp_vbd_proxy",
+      "env.sim.physics.num_substeps=1"
+    ],
+    "expected_reported_presets": [
+      "newton_mjwarp_vbd_proxy",
+      "env.sim.physics.num_substeps=1"
+    ],
+    "benchmark_formatter": "schema",
+    "timing_mode": "host_return",
+    "vbd_iterations": 10,
+    "contact_capacity": 1024,
+    "num_substeps": 1,
+    "volume_topology": "not-applicable"
+  },
+  "sources": {
+    "baseline": {
+      "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "source_file_count": 716,
+      "source_byte_count": 20954398,
+      "git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+      "git_dirty_tracked": false,
+      "git_status_tracked": [],
+      "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "candidate": {
+      "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-profile",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "source_file_count": 716,
+      "source_byte_count": 21015539,
+      "git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+      "git_dirty_tracked": true,
+      "git_status_tracked": [
+        " M CHANGELOG.md",
+        " M newton/_src/geometry/sdf_texture.py",
+        " M newton/_src/geometry/soft_contacts_sdf.py",
+        " M newton/_src/sim/collide.py",
+        " M newton/_src/solvers/vbd/particle_vbd_kernels.py",
+        " M newton/_src/solvers/vbd/rigid_vbd_kernels.py",
+        " M newton/_src/solvers/vbd/solver_vbd.py",
+        " M newton/tests/test_collision_pipeline.py",
+        " M newton/tests/test_solver_vbd.py"
+      ],
+      "git_diff_sha256": "26ae1b944121ceaf2339de7caeb32ea731c89559ae74d7b897e76b2326eff745"
+    }
+  },
+  "isaaclab_source": {
+    "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile",
+    "git_head": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+    "relevant_source_hash": "79539cda6975a0d152c30ae3dc1edb25fd2efec5e6eff1b52a104a0aeeb2a8c0",
+    "source_file_count": 178,
+    "source_byte_count": 2031125
+  },
+  "task_config_evidence": {
+    "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\source\\isaaclab_tasks\\isaaclab_tasks\\core\\lift\\config\\franka_soft\\franka_cloth_env_cfg.py",
+    "size": 10327,
+    "sha256": "4f2ccd402948fa7e5d6224ec0046a01e72dc01f6b301d9ca013103eabae9a872",
+    "extracted_vbd_iterations": 10,
+    "extracted_contact_capacity": 1024,
+    "extracted_default_num_substeps": 2,
+    "resolved_num_substeps_override": 1
+  },
+  "frozen_volume_evidence": null,
+  "additional_immutable_evidence": [],
+  "immutable_files": [
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\source\\isaaclab_tasks\\isaaclab_tasks\\core\\lift\\config\\franka_soft\\franka_cloth_env_cfg.py",
+      "size": 10327,
+      "sha256": "4f2ccd402948fa7e5d6224ec0046a01e72dc01f6b301d9ca013103eabae9a872",
+      "extracted_vbd_iterations": 10,
+      "extracted_contact_capacity": 1024,
+      "extracted_default_num_substeps": 2,
+      "resolved_num_substeps_override": 1
+    },
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\scripts\\benchmarks\\runtime.py",
+      "size": 438,
+      "sha256": "785e4f1dc94cdf75048725d6e44bccc78d4445ac291d19f39cf27cd271f355e3"
+    },
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\run_vbd_abba.py",
+      "size": 37370,
+      "sha256": "488051d4cae0a5071b97578fa8bc3a71916af912156c86e1ccd4e0f6793feaec"
+    },
+    {
+      "path": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\analyze_vbd_abba.py",
+      "size": 25862,
+      "sha256": "4e27a6b102acf923f464d65829df345bb920ef51cfbcf4af193bd1f56632fafd"
+    }
+  ],
+  "host": {
+    "hostname": "NV-24060060",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "orchestrator_python": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\.venv\\Scripts\\python.exe",
+    "orchestrator_python_version": "3.12.11 (main, Aug 18 2025, 19:17:54) [MSC v.1944 64 bit (AMD64)]",
+    "uv_version": "uv 0.9.30 (ea4560831 2026-02-04)",
+    "initial_nvidia_smi": {
+      "available": true,
+      "executable": "C:\\Windows\\system32\\nvidia-smi.EXE",
+      "gpus": [
+        {
+          "index": "0",
+          "uuid": "GPU-9fe5458a-493d-e178-1324-365b8fd5db5a",
+          "name": "NVIDIA GeForce RTX 4090",
+          "driver_version": "591.86",
+          "pstate": "P8",
+          "temperature.gpu": "39",
+          "utilization.gpu": "0",
+          "memory.used": "2907",
+          "memory.total": "24564",
+          "clocks.current.sm": "210",
+          "clocks.current.memory": "405",
+          "power.draw": "4.99",
+          "power.limit": "450.00"
+        }
+      ],
+      "compute_processes": [
+        {
+          "pid": "41696",
+          "process_name": "[Insufficient Permissions]",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "47116",
+          "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\CrossDeviceResume.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "1434296",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "41156",
+          "process_name": "C:\\Windows\\explorer.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "4280",
+          "process_name": "C:\\Windows\\SystemApps\\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\\StartMenuExperienceHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "66548",
+          "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\SearchHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "53800",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "70664",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "64000",
+          "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2381764",
+          "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\TextInputHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "12880",
+          "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.YourPhone_1.26071.164.0_x64__8wekyb3d8bbwe\\PhoneExperienceHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "36468",
+          "process_name": "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "40032",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "56096",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2373312",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "603696",
+          "process_name": "C:\\Program Files\\MuseHub\\current\\MuseHub.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2788",
+          "process_name": "C:\\Program Files\\Insta360 Studio\\insta360-quick-look.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "71988",
+          "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2118728",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "59200",
+          "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "9456",
+          "process_name": "C:\\Windows\\SystemApps\\ShellExperienceHost_cw5n1h2txyewy\\ShellExperienceHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2381648",
+          "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "83152",
+          "process_name": "C:\\Users\\ankac\\AppData\\Local\\Programs\\cursor\\Cursor.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "24980",
+          "process_name": "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\steamwebhelper.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "27480",
+          "process_name": "C:\\Users\\ankac\\AppData\\Roaming\\Spotify\\Spotify.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "36684",
+          "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2381160",
+          "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "52756",
+          "process_name": "C:\\Program Files\\LogiOptionsPlus\\logioptionsplus_agent.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "56952",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2164484",
+          "process_name": "C:\\Program Files\\Listary\\Listary.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "10652",
+          "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.Copilot_1.25121.84.0_x64__8wekyb3d8bbwe\\Copilot.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2379024",
+          "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\AMDRSSrcExt.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2384264",
+          "process_name": "C:\\Program Files (x86)\\Dropbox\\Client\\Dropbox.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2382676",
+          "process_name": "C:\\Windows\\System32\\ShellHost.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2386332",
+          "process_name": "C:\\Program Files\\Adobe\\Adobe Creative Cloud\\ACC\\Creative Cloud UI Helper.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2388036",
+          "process_name": "C:\\Program Files\\Common Files\\Adobe\\Adobe OS Extension\\AdobeNotificationClient.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "43148",
+          "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\RadeonSoftware.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2385456",
+          "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "94244",
+          "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2401836",
+          "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2418188",
+          "process_name": "[Insufficient Permissions]",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "12844",
+          "process_name": "C:\\Windows\\SystemApps\\Microsoft.LockApp_cw5n1h2txyewy\\LockApp.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2449064",
+          "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.MicrosoftOfficeHub_19.2608.39011.0_x64__8wekyb3d8bbwe\\M365Copilot.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2382564",
+          "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+          "used_gpu_memory": "[N/A]"
+        },
+        {
+          "pid": "2491372",
+          "process_name": "C:\\Program Files\\WindowsApps\\AcrobatNotificationClient_1.0.4.0_x86__e1rzdqpraam7r\\AcrobatNotificationClient.exe",
+          "used_gpu_memory": "[N/A]"
+        }
+      ],
+      "gpu_query_returncode": 0,
+      "gpu_query_stderr": [],
+      "compute_query_returncode": 0,
+      "compute_query_stderr": []
+    }
+  },
+  "runs": [
+    {
+      "ordinal": 1,
+      "block": 1,
+      "position": 1,
+      "pair_id": "block_01_pair_1",
+      "variant": "baseline",
+      "attempt": 2,
+      "status": "completed",
+      "run_dir": "runs\\001_baseline_attempt_02",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\001_baseline_attempt_02\\run_metadata.json",
+      "started_utc": "2026-08-12T20:44:44.873868+00:00",
+      "finished_utc": "2026-08-12T20:46:38.969961+00:00",
+      "elapsed_s": 113.74190720001934,
+      "returncode": 0,
+      "log_path": "runs\\001_baseline_attempt_02\\process.log",
+      "result_path": "runs\\001_baseline_attempt_02\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_13-44-49-683821_854e225e.json",
+      "environment_step_fps": 15797.272272038088,
+      "iteration_time_ms": 64.824675,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 2,
+      "block": 1,
+      "position": 2,
+      "pair_id": "block_01_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\002_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\002_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T20:46:52.614035+00:00",
+      "finished_utc": "2026-08-12T20:48:05.780930+00:00",
+      "elapsed_s": 72.717140200024,
+      "returncode": 0,
+      "log_path": "runs\\002_candidate\\process.log",
+      "result_path": "runs\\002_candidate\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_13-46-57-026258_17cb0d35.json",
+      "environment_step_fps": 25238.993550963918,
+      "iteration_time_ms": 40.5750372,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 3,
+      "block": 1,
+      "position": 3,
+      "pair_id": "block_01_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\003_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\003_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T20:48:19.205611+00:00",
+      "finished_utc": "2026-08-12T20:49:33.303564+00:00",
+      "elapsed_s": 73.75555750000058,
+      "returncode": 0,
+      "log_path": "runs\\003_candidate\\process.log",
+      "result_path": "runs\\003_candidate\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_13-48-24-905085_fb8d2b0e.json",
+      "environment_step_fps": 24799.8109130667,
+      "iteration_time_ms": 41.293952600000004,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 4,
+      "block": 1,
+      "position": 4,
+      "pair_id": "block_01_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\004_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\004_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T20:49:59.361855+00:00",
+      "finished_utc": "2026-08-12T20:51:37.840316+00:00",
+      "elapsed_s": 98.02459990000352,
+      "returncode": 0,
+      "log_path": "runs\\004_baseline\\process.log",
+      "result_path": "runs\\004_baseline\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_13-50-09-347720_f08f6710.json",
+      "environment_step_fps": 15815.61747868155,
+      "iteration_time_ms": 64.7494274,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 5,
+      "block": 2,
+      "position": 1,
+      "pair_id": "block_02_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\005_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\005_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T20:51:50.611478+00:00",
+      "finished_utc": "2026-08-12T20:53:20.415690+00:00",
+      "elapsed_s": 89.44526940002106,
+      "returncode": 0,
+      "log_path": "runs\\005_baseline\\process.log",
+      "result_path": "runs\\005_baseline\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_13-51-56-066614_b4e53832.json",
+      "environment_step_fps": 15829.415589044678,
+      "iteration_time_ms": 64.6931782,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 6,
+      "block": 2,
+      "position": 2,
+      "pair_id": "block_02_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\006_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\006_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T20:53:33.434344+00:00",
+      "finished_utc": "2026-08-12T20:54:47.315765+00:00",
+      "elapsed_s": 73.52841730002547,
+      "returncode": 0,
+      "log_path": "runs\\006_candidate\\process.log",
+      "result_path": "runs\\006_candidate\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_13-53-37-438527_a55f2be1.json",
+      "environment_step_fps": 25207.155307044075,
+      "iteration_time_ms": 40.6266822,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 7,
+      "block": 2,
+      "position": 3,
+      "pair_id": "block_02_pair_2",
+      "variant": "candidate",
+      "attempt": 3,
+      "status": "completed",
+      "run_dir": "runs\\007_candidate_attempt_03",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\007_candidate_attempt_03\\run_metadata.json",
+      "started_utc": "2026-08-12T21:08:42.573856+00:00",
+      "finished_utc": "2026-08-12T21:09:58.801269+00:00",
+      "elapsed_s": 75.84001589997206,
+      "returncode": 0,
+      "log_path": "runs\\007_candidate_attempt_03\\process.log",
+      "result_path": "runs\\007_candidate_attempt_03\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-08-49-990483_9e3a555f.json",
+      "environment_step_fps": 25578.206728412224,
+      "iteration_time_ms": 40.0372434,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 8,
+      "block": 2,
+      "position": 4,
+      "pair_id": "block_02_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\008_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\008_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:10:11.326645+00:00",
+      "finished_utc": "2026-08-12T21:11:38.539782+00:00",
+      "elapsed_s": 86.85645269998349,
+      "returncode": 0,
+      "log_path": "runs\\008_baseline\\process.log",
+      "result_path": "runs\\008_baseline\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-10-15-744838_9bc4555e.json",
+      "environment_step_fps": 15968.258047149844,
+      "iteration_time_ms": 64.1306316,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 9,
+      "block": 3,
+      "position": 1,
+      "pair_id": "block_03_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\009_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\009_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:11:51.002389+00:00",
+      "finished_utc": "2026-08-12T21:13:19.256007+00:00",
+      "elapsed_s": 87.82965909998165,
+      "returncode": 0,
+      "log_path": "runs\\009_baseline\\process.log",
+      "result_path": "runs\\009_baseline\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-11-54-997831_0997f266.json",
+      "environment_step_fps": 15885.119412103646,
+      "iteration_time_ms": 64.4663628,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 10,
+      "block": 3,
+      "position": 2,
+      "pair_id": "block_03_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\010_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\010_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:13:37.325837+00:00",
+      "finished_utc": "2026-08-12T21:15:05.526146+00:00",
+      "elapsed_s": 86.27388359996257,
+      "returncode": 0,
+      "log_path": "runs\\010_candidate\\process.log",
+      "result_path": "runs\\010_candidate\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-13-45-840561_f2d22adb.json",
+      "environment_step_fps": 24356.54665726758,
+      "iteration_time_ms": 42.0452432,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 11,
+      "block": 3,
+      "position": 3,
+      "pair_id": "block_03_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\011_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\011_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:15:44.625678+00:00",
+      "finished_utc": "2026-08-12T21:16:54.720516+00:00",
+      "elapsed_s": 69.73735340003623,
+      "returncode": 0,
+      "log_path": "runs\\011_candidate\\process.log",
+      "result_path": "runs\\011_candidate\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-15-48-352025_e0c448c8.json",
+      "environment_step_fps": 25454.25453844884,
+      "iteration_time_ms": 40.2321198,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 12,
+      "block": 3,
+      "position": 4,
+      "pair_id": "block_03_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\012_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\012_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:17:07.369373+00:00",
+      "finished_utc": "2026-08-12T21:18:33.129247+00:00",
+      "elapsed_s": 85.4392380999634,
+      "returncode": 0,
+      "log_path": "runs\\012_baseline\\process.log",
+      "result_path": "runs\\012_baseline\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-17-11-612338_a42bfb3f.json",
+      "environment_step_fps": 15811.997963081129,
+      "iteration_time_ms": 64.7644198,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 13,
+      "block": 4,
+      "position": 1,
+      "pair_id": "block_04_pair_1",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\013_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\013_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:18:45.938293+00:00",
+      "finished_utc": "2026-08-12T21:20:15.735107+00:00",
+      "elapsed_s": 89.44585540000116,
+      "returncode": 0,
+      "log_path": "runs\\013_baseline\\process.log",
+      "result_path": "runs\\013_baseline\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-18-50-663916_adc89e9a.json",
+      "environment_step_fps": 15848.163696178073,
+      "iteration_time_ms": 64.61647280000001,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 14,
+      "block": 4,
+      "position": 2,
+      "pair_id": "block_04_pair_1",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\014_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\014_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:20:29.116150+00:00",
+      "finished_utc": "2026-08-12T21:21:44.441136+00:00",
+      "elapsed_s": 74.97007320000557,
+      "returncode": 0,
+      "log_path": "runs\\014_candidate\\process.log",
+      "result_path": "runs\\014_candidate\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-20-33-586798_eb122f5e.json",
+      "environment_step_fps": 25312.22931487587,
+      "iteration_time_ms": 40.4577394,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 15,
+      "block": 4,
+      "position": 3,
+      "pair_id": "block_04_pair_2",
+      "variant": "candidate",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\015_candidate",
+      "source_hash": "c8c3d597c23c84fd2616fe3ee0190a4c516e51dedb149284dcc4b068a016497f",
+      "metadata_path": "runs\\015_candidate\\run_metadata.json",
+      "started_utc": "2026-08-12T21:21:57.354374+00:00",
+      "finished_utc": "2026-08-12T21:23:14.274300+00:00",
+      "elapsed_s": 76.57116250001127,
+      "returncode": 0,
+      "log_path": "runs\\015_candidate\\process.log",
+      "result_path": "runs\\015_candidate\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-22-02-590272_1a17ae0c.json",
+      "environment_step_fps": 24945.418498616138,
+      "iteration_time_ms": 41.0524914,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    },
+    {
+      "ordinal": 16,
+      "block": 4,
+      "position": 4,
+      "pair_id": "block_04_pair_2",
+      "variant": "baseline",
+      "attempt": 1,
+      "status": "completed",
+      "run_dir": "runs\\016_baseline",
+      "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+      "metadata_path": "runs\\016_baseline\\run_metadata.json",
+      "started_utc": "2026-08-12T21:23:27.271865+00:00",
+      "finished_utc": "2026-08-12T21:24:53.683549+00:00",
+      "elapsed_s": 85.99812970001949,
+      "returncode": 0,
+      "log_path": "runs\\016_baseline\\process.log",
+      "result_path": "runs\\016_baseline\\benchmark_runtime_Isaac-Lift-Cloth-Franka_2026-08-12_14-23-31-509156_0fb58498.json",
+      "environment_step_fps": 16009.316721924553,
+      "iteration_time_ms": 63.9658528,
+      "reported_config": {
+        "format": "schema",
+        "task": "Isaac-Lift-Cloth-Franka",
+        "seed": 42,
+        "num_envs": 1024,
+        "num_steps": 500,
+        "warmup_steps": 100,
+        "measurement_mode": "host_return",
+        "presets": [
+          "newton_mjwarp_vbd_proxy",
+          "env.sim.physics.num_substeps=1"
+        ],
+        "reported_physics_backend": "physx",
+        "status": "completed"
+      }
+    }
+  ],
+  "completed_utc": "2026-08-12T21:24:56.113667+00:00"
+}

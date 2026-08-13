@@ -1,0 +1,42 @@
+{
+  "task": "Isaac-Lift-Cloth-Franka",
+  "seed": 42,
+  "num_steps": 20,
+  "newton_file": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-profile\\newton\\__init__.py",
+  "newton_version": "1.5.0rc2",
+  "newton_git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+  "newton_source_hash": "4ccfae51c1885f43bd61925b6d84b197572f3e15eaab4af851c46f3268db64bc",
+  "topology_hash": "c0f1b94fea9c1d5fa35165056d0c5dbfce554b99c8b3c47ba7c3aaafc30bce21",
+  "particle_count": 81,
+  "tri_count": 128,
+  "edge_count": 208,
+  "tet_count": 0,
+  "body_count": 13,
+  "shape_count": 87,
+  "soft_contact_max": 12423,
+  "contact_field_names": [
+    "barycentric_x",
+    "barycentric_y",
+    "barycentric_z",
+    "normal_x",
+    "normal_y",
+    "normal_z",
+    "body_pos_x",
+    "body_pos_y",
+    "body_pos_z",
+    "body_vel_x",
+    "body_vel_y",
+    "body_vel_z",
+    "penalty_k"
+  ],
+  "dt": 0.008333333333333333,
+  "decimation": 4,
+  "num_substeps": 1,
+  "vbd_iterations": 10,
+  "vbd_tile_solve": true,
+  "overrides": [
+    "presets=newton_mjwarp_vbd_proxy",
+    "env.sim.physics.num_substeps=1"
+  ],
+  "output": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\cloth_1env_20step_candidate\\trajectory_Isaac-Lift-Cloth-Franka.npz"
+}

@@ -1,0 +1,209 @@
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxCreateDescriptor] handle=0x7d06bed550
+[2026-08-12 11:36:20][libmathdx][2464092][Info][cusolverdxCreateDescriptor] libmathdx 0.3.1 (Release @ 8412a54a363b8729cd9f8de3d7fa6788c8e7b4b7 @ 2026-01-13T01:28:00Z @ CUDA 12.0.76, cuBLASDx 0.5.1, cuFFTDx 1.6.1, cuSolverDx 0.3.0, MathDx 25.12.1)
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=0 op=CUSOLVERDX_OPERATOR_SIZE count=3 array=9,9,1
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=0 op=CUSOLVERDX_OPERATOR_BLOCK_DIM count=3 array=32,1,1
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=0 op=CUSOLVERDX_OPERATOR_TYPE value=0
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=0 op=CUSOLVERDX_OPERATOR_API value=0
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=0 op=CUSOLVERDX_OPERATOR_FUNCTION value=2
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=0 op=CUSOLVERDX_OPERATOR_EXECUTION value=1
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=0 op=CUSOLVERDX_OPERATOR_PRECISION value=5
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=0 op=CUSOLVERDX_OPERATOR_ARRANGEMENT count=2 array=1,1
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=0 op=CUSOLVERDX_OPERATOR_FILL_MODE value=0
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=0 op=CUSOLVERDX_OPERATOR_SM value=890
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxSetOptionStr] handle=0 opt=0 value=potrf_9_9_1_89_32_1_1_5_x_x_0
+[2026-08-12 11:36:20][libmathdx][2464092][Api][cusolverdxGetLTOIRSize] handle=0 lto_size=0x7d06bed558
+[2026-08-12 11:36:20][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] Decompression done in 238.119 ms.
+[2026-08-12 11:36:20][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC 12.9 compiling for SM 8.9
+[2026-08-12 11:36:20][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC options --relocatable-device-code=true,--device-as-default-execution-space,--std=c++17,-DNDEBUG=1,-dlto,--gpu-architecture=compute_89,--diag-suppress=177,1215
+[2026-08-12 11:36:21][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC compilation finished in 833.6940000000001 ms.
+[2026-08-12 11:36:21][libmathdx][2464092][Api][cusolverdxGetLTOIR] handle=0 size=1034928 lto=0x1dd51a50840
+[2026-08-12 11:36:21][libmathdx][2464092][Api][cusolverdxGetUniversalFATBINSize] handle=0 fatbin_size=0x7d06bed560
+[2026-08-12 11:36:21][libmathdx][2464092][Api][cusolverdxGetUniversalFATBIN] handle=0 fatbin_size=506960 fatbin=0x1dd512000a0
+[2026-08-12 11:36:21][libmathdx][2464092][Api][cusolverdxDestroyDescriptor] handle=0
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxCreateDescriptor] handle=0x7d06bed550
+[2026-08-12 11:36:22][libmathdx][2464092][Info][cusolverdxCreateDescriptor] libmathdx 0.3.1 (Release @ 8412a54a363b8729cd9f8de3d7fa6788c8e7b4b7 @ 2026-01-13T01:28:00Z @ CUDA 12.0.76, cuBLASDx 0.5.1, cuFFTDx 1.6.1, cuSolverDx 0.3.0, MathDx 25.12.1)
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=1 op=CUSOLVERDX_OPERATOR_SIZE count=3 array=9,9,1
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=1 op=CUSOLVERDX_OPERATOR_BLOCK_DIM count=3 array=64,1,1
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=1 op=CUSOLVERDX_OPERATOR_TYPE value=0
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=1 op=CUSOLVERDX_OPERATOR_API value=0
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=1 op=CUSOLVERDX_OPERATOR_FUNCTION value=3
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=1 op=CUSOLVERDX_OPERATOR_EXECUTION value=1
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=1 op=CUSOLVERDX_OPERATOR_PRECISION value=5
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=1 op=CUSOLVERDX_OPERATOR_ARRANGEMENT count=2 array=1,1
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=1 op=CUSOLVERDX_OPERATOR_FILL_MODE value=0
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=1 op=CUSOLVERDX_OPERATOR_SM value=890
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxSetOptionStr] handle=1 opt=0 value=potrs_9_9_1_89_64_1_1_5_x_x_0
+[2026-08-12 11:36:22][libmathdx][2464092][Api][cusolverdxGetLTOIRSize] handle=1 lto_size=0x7d06bed558
+[2026-08-12 11:36:22][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC 12.9 compiling for SM 8.9
+[2026-08-12 11:36:22][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC options --relocatable-device-code=true,--device-as-default-execution-space,--std=c++17,-DNDEBUG=1,-dlto,--gpu-architecture=compute_89,--diag-suppress=177,1215
+[2026-08-12 11:36:23][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC compilation finished in 856.392 ms.
+[2026-08-12 11:36:23][libmathdx][2464092][Api][cusolverdxGetLTOIR] handle=1 size=1041152 lto=0x1dd4a680020
+[2026-08-12 11:36:23][libmathdx][2464092][Api][cusolverdxGetUniversalFATBINSize] handle=1 fatbin_size=0x7d06bed560
+[2026-08-12 11:36:23][libmathdx][2464092][Api][cusolverdxGetUniversalFATBIN] handle=1 fatbin_size=506960 fatbin=0x1dd512000a0
+[2026-08-12 11:36:23][libmathdx][2464092][Api][cusolverdxDestroyDescriptor] handle=1
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxCreateDescriptor] handle=0x7d06bee110
+[2026-08-12 11:36:37][libmathdx][2464092][Info][cusolverdxCreateDescriptor] libmathdx 0.3.1 (Release @ 8412a54a363b8729cd9f8de3d7fa6788c8e7b4b7 @ 2026-01-13T01:28:00Z @ CUDA 12.0.76, cuBLASDx 0.5.1, cuFFTDx 1.6.1, cuSolverDx 0.3.0, MathDx 25.12.1)
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=2 op=CUSOLVERDX_OPERATOR_SIZE count=3 array=9,9,1
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=2 op=CUSOLVERDX_OPERATOR_BLOCK_DIM count=3 array=32,1,1
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=2 op=CUSOLVERDX_OPERATOR_TYPE value=0
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=2 op=CUSOLVERDX_OPERATOR_API value=0
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=2 op=CUSOLVERDX_OPERATOR_FUNCTION value=3
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=2 op=CUSOLVERDX_OPERATOR_EXECUTION value=1
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=2 op=CUSOLVERDX_OPERATOR_PRECISION value=5
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=2 op=CUSOLVERDX_OPERATOR_ARRANGEMENT count=2 array=1,1
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=2 op=CUSOLVERDX_OPERATOR_FILL_MODE value=0
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=2 op=CUSOLVERDX_OPERATOR_SM value=890
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxSetOptionStr] handle=2 opt=0 value=potrs_9_9_1_89_32_1_1_5_x_x_0
+[2026-08-12 11:36:37][libmathdx][2464092][Api][cusolverdxGetLTOIRSize] handle=2 lto_size=0x7d06bee118
+[2026-08-12 11:36:37][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC 12.9 compiling for SM 8.9
+[2026-08-12 11:36:37][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC options --relocatable-device-code=true,--device-as-default-execution-space,--std=c++17,-DNDEBUG=1,-dlto,--gpu-architecture=compute_89,--diag-suppress=177,1215
+[2026-08-12 11:36:38][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC compilation finished in 833.344 ms.
+[2026-08-12 11:36:38][libmathdx][2464092][Api][cusolverdxGetLTOIR] handle=2 size=1041056 lto=0x1dd89290020
+[2026-08-12 11:36:38][libmathdx][2464092][Api][cusolverdxGetUniversalFATBINSize] handle=2 fatbin_size=0x7d06bee120
+[2026-08-12 11:36:38][libmathdx][2464092][Api][cusolverdxGetUniversalFATBIN] handle=2 fatbin_size=506960 fatbin=0x1dd4f99b020
+[2026-08-12 11:36:38][libmathdx][2464092][Api][cusolverdxDestroyDescriptor] handle=2
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxCreateDescriptor] handle=0x7d06bee110
+[2026-08-12 11:36:42][libmathdx][2464092][Info][cusolverdxCreateDescriptor] libmathdx 0.3.1 (Release @ 8412a54a363b8729cd9f8de3d7fa6788c8e7b4b7 @ 2026-01-13T01:28:00Z @ CUDA 12.0.76, cuBLASDx 0.5.1, cuFFTDx 1.6.1, cuSolverDx 0.3.0, MathDx 25.12.1)
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=3 op=CUSOLVERDX_OPERATOR_SIZE count=3 array=9,9,1
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=3 op=CUSOLVERDX_OPERATOR_BLOCK_DIM count=3 array=64,1,1
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=3 op=CUSOLVERDX_OPERATOR_TYPE value=0
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=3 op=CUSOLVERDX_OPERATOR_API value=0
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=3 op=CUSOLVERDX_OPERATOR_FUNCTION value=2
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=3 op=CUSOLVERDX_OPERATOR_EXECUTION value=1
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=3 op=CUSOLVERDX_OPERATOR_PRECISION value=5
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64s] handle=3 op=CUSOLVERDX_OPERATOR_ARRANGEMENT count=2 array=1,1
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=3 op=CUSOLVERDX_OPERATOR_FILL_MODE value=0
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOperatorInt64] handle=3 op=CUSOLVERDX_OPERATOR_SM value=890
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxSetOptionStr] handle=3 opt=0 value=potrf_9_9_1_89_64_1_1_5_x_x_0
+[2026-08-12 11:36:42][libmathdx][2464092][Api][cusolverdxGetLTOIRSize] handle=3 lto_size=0x7d06bee118
+[2026-08-12 11:36:42][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC 12.9 compiling for SM 8.9
+[2026-08-12 11:36:42][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC options --relocatable-device-code=true,--device-as-default-execution-space,--std=c++17,-DNDEBUG=1,-dlto,--gpu-architecture=compute_89,--diag-suppress=177,1215
+[2026-08-12 11:36:43][libmathdx][2464092][Info][cusolverdxGetLTOIRSize] NVRTC compilation finished in 845.849 ms.
+[2026-08-12 11:36:43][libmathdx][2464092][Api][cusolverdxGetLTOIR] handle=3 size=1034824 lto=0x1dd48e2f020
+[2026-08-12 11:36:43][libmathdx][2464092][Api][cusolverdxGetUniversalFATBINSize] handle=3 fatbin_size=0x7d06bee120
+[2026-08-12 11:36:43][libmathdx][2464092][Api][cusolverdxGetUniversalFATBIN] handle=3 fatbin_size=506960 fatbin=0x1dd512000a0
+[2026-08-12 11:36:43][libmathdx][2464092][Api][cusolverdxDestroyDescriptor] handle=3
+[INFO]: Parsing configuration from: isaaclab_tasks.core.lift.config.franka_soft.franka_soft_env_cfg:FrankaSoftEnvCfg
+[INFO]: Base environment:
+	Environment device    : cuda:0
+	Environment seed      : 42
+	Physics step-size     : 0.008333333333333333
+	Rendering step-size   : 0.03333333333333333
+	Environment step-size : 0.03333333333333333
+[INFO]: Time taken for scene creation Last: 34.988175 s, Mean: 34.988175 s, Std: 0.000000 s, N: 1
+[INFO]: Scene manager:  <class InteractiveScene>
+	Number of environments: 1024
+	Environment spacing   : 2.0
+	Source prim name      : /World/envs/env_0
+	Global prim paths     : []
+	Replicate physics     : True
+Finalize builder took: Last: 3.132339 s, Mean: 3.132339 s, Std: 0.000000 s, N: 1
+Initialize solver took: Last: 23.396292 s, Mean: 23.396292 s, Std: 0.000000 s, N: 1
+CUDA graph took: Last: 51.079580 s, Mean: 51.079580 s, Std: 0.000000 s, N: 1
+[INFO]: Time taken for simulation start Last: 89.649333 s, Mean: 89.649333 s, Std: 0.000000 s, N: 1
+[INFO] Command Manager:  <CommandManager> contains 1 active terms.
++--------------------------------------------------------+
+|                  Active Command Terms                  |
++-------+-----------------+------------------------------+
+| Index | Name            |             Type             |
++-------+-----------------+------------------------------+
+|   0   | deformable_pose | DeformableUniformPoseCommand |
++-------+-----------------+------------------------------+
+
+[INFO] Event Manager:  <EventManager> contains 1 active terms.
++-------------------------------------+
+| Active Event Terms in Mode: 'reset' |
++-------+-----------------------------+
+| Index | Name                        |
++-------+-----------------------------+
+|   0   | reset_robot_arm_joints      |
+|   1   | reset_robot_gripper_joints  |
+|   2   | reset_deformable            |
+|   3   | variable_gravity            |
++-------+-----------------------------+
+
+[INFO] Recorder Manager:  <RecorderManager> contains 0 active terms.
++-----------------------+
+| Active Recorder Terms |
++------------+----------+
+|   Index    | Name     |
++------------+----------+
++------------+----------+
+
+[INFO] Action Manager:  <ActionManager> contains 2 active terms.
++------------------------------------+
+|   Active Action Terms (shape: 8)   |
++-------+----------------+-----------+
+| Index | Name           | Dimension |
++-------+----------------+-----------+
+|   0   | arm_action     |         7 |
+|   1   | gripper_action |         1 |
++-------+----------------+-----------+
+
+[INFO] Observation Manager: <ObservationManager> contains 1 groups.
++------------------------------------------------------------+
+| Active Observation Terms in Group: 'policy' (shape: (93,)) |
++---------+---------------------------------------+----------+
+|  Index  | Name                                  |  Shape   |
++---------+---------------------------------------+----------+
+|    0    | joint_pos                             |   (9,)   |
+|    1    | joint_vel                             |   (9,)   |
+|    2    | deformable_sampled_points             |  (60,)   |
+|    3    | target_position                       |   (7,)   |
+|    4    | actions                               |   (8,)   |
++---------+---------------------------------------+----------+
+
+[INFO] Termination Manager:  <TerminationManager> contains 4 active terms.
++---------------------------------------------+
+|           Active Termination Terms          |
++-------+--------------------------+----------+
+| Index | Name                     | Time Out |
++-------+--------------------------+----------+
+|   0   | time_out                 |   True   |
+|   1   | deformable_out_of_bounds |  False   |
+|   2   | ee_below_table           |  False   |
+|   3   | joint_vel_out_of_limit   |  False   |
++-------+--------------------------+----------+
+
+[INFO] Reward Manager:  <RewardManager> contains 5 active terms.
++-------------------------------------------+
+|            Active Reward Terms            |
++-------+--------------------------+--------+
+| Index | Name                     | Weight |
++-------+--------------------------+--------+
+|   0   | reaching_deformable      |    5.0 |
+|   1   | lifting_deformable       |    5.0 |
+|   2   | deformable_goal_tracking |    2.0 |
+|   3   | success_bonus            |   20.0 |
+|   4   | action_rate              | -0.001 |
++-------+--------------------------+--------+
+
+[INFO] Curriculum Manager:  <CurriculumManager> contains 2 active terms.
++-------------------------+
+| Active Curriculum Terms |
++--------+----------------+
+| Index  | Name           |
++--------+----------------+
+|   0    | action_rate    |
+|   1    | gravity        |
++--------+----------------+
+
+[INFO]: Completed setting up the environment...
+Results written to: D:\Code\Graphics\newton-working-copies\codex-isaaclab-vbd-profile\profiling\optimization\active_prefix\volume_rep02\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_11-35-11-212712_8211b99a.json
+
+================================================================
+ Runtime summary: Isaac-Lift-Soft-Franka (1024 envs, physx)
+================================================================
+ total_fps                 27,760 steps/s  std 5,091  peak 35,485
+ collection_fps            27,760 steps/s  std 5,091  peak 35,485
+ iteration_time            0.037 s  std 0.019  peak 0.251
+ iterations                200
+ steps_per_iteration       1,024
+ total_wall_time           7.38 s
+----------------------------------------------------------------
+ startup (launch/env/step) 0.00 / 126.94 / 0.37 s
+ gpu_util                  50.9 %  std 34.8
+ gpu_mem                   4.40 GB  peak 4.40
+----------------------------------------------------------------
+ report: D:\Code\Graphics\newton-working-copies\codex-isaaclab-vbd-profile\profiling\optimization\active_prefix\volume_rep02\benchmark_runtime_Isaac-Lift-Soft-Franka_2026-08-12_11-35-11-212712_8211b99a.json
+================================================================

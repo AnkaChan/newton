@@ -1,0 +1,582 @@
+{
+  "suite_id": "vbd_abba_volume_20260813T001301Z",
+  "ordinal": 16,
+  "block": 4,
+  "position": 4,
+  "pair_id": "block_04_pair_2",
+  "variant": "baseline",
+  "attempt": 1,
+  "source": {
+    "root": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-baseline",
+    "source_hash": "a53d91119d220e621ca58e0929083eb0370af3f6ee3dd9fedfd98b2c0bbc240c",
+    "source_file_count": 716,
+    "source_byte_count": 20954398,
+    "git_head": "284af96bb563bf68536f070f508ea3561336ee73",
+    "git_dirty_tracked": false,
+    "git_status_tracked": [],
+    "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "preflight": {
+    "newton_file": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-baseline\\newton\\__init__.py",
+    "newton_version": "1.5.0rc2",
+    "python_executable": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\.venv\\Scripts\\python.exe",
+    "python_version": "3.12.11 (main, Aug 18 2025, 19:17:54) [MSC v.1944 64 bit (AMD64)]",
+    "preflight_stdout": [
+      "VBD_PREFLIGHT_JSON={\"newton_file\": \"D:\\\\Code\\\\Graphics\\\\newton-working-copies\\\\codex-vbd-baseline\\\\newton\\\\__init__.py\", \"newton_version\": \"1.5.0rc2\", \"python_executable\": \"D:\\\\Code\\\\Graphics\\\\newton-working-copies\\\\codex-isaaclab-vbd-profile\\\\.venv\\\\Scripts\\\\python.exe\", \"python_version\": \"3.12.11 (main, Aug 18 2025, 19:17:54) [MSC v.1944 64 bit (AMD64)]\"}"
+    ],
+    "preflight_stderr": []
+  },
+  "gpu_before": {
+    "available": true,
+    "executable": "C:\\Windows\\system32\\nvidia-smi.EXE",
+    "gpus": [
+      {
+        "index": "0",
+        "uuid": "GPU-9fe5458a-493d-e178-1324-365b8fd5db5a",
+        "name": "NVIDIA GeForce RTX 4090",
+        "driver_version": "591.86",
+        "pstate": "P8",
+        "temperature.gpu": "37",
+        "utilization.gpu": "0",
+        "memory.used": "2915",
+        "memory.total": "24564",
+        "clocks.current.sm": "210",
+        "clocks.current.memory": "405",
+        "power.draw": "4.89",
+        "power.limit": "450.00"
+      }
+    ],
+    "compute_processes": [
+      {
+        "pid": "41696",
+        "process_name": "[Insufficient Permissions]",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "47116",
+        "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\CrossDeviceResume.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "1434296",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "41156",
+        "process_name": "C:\\Windows\\explorer.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "4280",
+        "process_name": "C:\\Windows\\SystemApps\\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\\StartMenuExperienceHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "66548",
+        "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\SearchHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "53800",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "70664",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "64000",
+        "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2381764",
+        "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\TextInputHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "12880",
+        "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.YourPhone_1.26071.164.0_x64__8wekyb3d8bbwe\\PhoneExperienceHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "36468",
+        "process_name": "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "40032",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "56096",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2373312",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "603696",
+        "process_name": "C:\\Program Files\\MuseHub\\current\\MuseHub.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2788",
+        "process_name": "C:\\Program Files\\Insta360 Studio\\insta360-quick-look.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "71988",
+        "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2118728",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "59200",
+        "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "9456",
+        "process_name": "C:\\Windows\\SystemApps\\ShellExperienceHost_cw5n1h2txyewy\\ShellExperienceHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2381648",
+        "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "83152",
+        "process_name": "C:\\Users\\ankac\\AppData\\Local\\Programs\\cursor\\Cursor.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "24980",
+        "process_name": "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\steamwebhelper.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "27480",
+        "process_name": "C:\\Users\\ankac\\AppData\\Roaming\\Spotify\\Spotify.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "36684",
+        "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2381160",
+        "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "52756",
+        "process_name": "C:\\Program Files\\LogiOptionsPlus\\logioptionsplus_agent.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "56952",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2164484",
+        "process_name": "C:\\Program Files\\Listary\\Listary.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "10652",
+        "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.Copilot_1.25121.84.0_x64__8wekyb3d8bbwe\\Copilot.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2379024",
+        "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\AMDRSSrcExt.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2384264",
+        "process_name": "C:\\Program Files (x86)\\Dropbox\\Client\\Dropbox.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2382676",
+        "process_name": "C:\\Windows\\System32\\ShellHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2386332",
+        "process_name": "C:\\Program Files\\Adobe\\Adobe Creative Cloud\\ACC\\Creative Cloud UI Helper.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2388036",
+        "process_name": "C:\\Program Files\\Common Files\\Adobe\\Adobe OS Extension\\AdobeNotificationClient.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "43148",
+        "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\RadeonSoftware.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2385456",
+        "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "94244",
+        "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2401836",
+        "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2418188",
+        "process_name": "[Insufficient Permissions]",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "12844",
+        "process_name": "C:\\Windows\\SystemApps\\Microsoft.LockApp_cw5n1h2txyewy\\LockApp.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2449064",
+        "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.MicrosoftOfficeHub_19.2608.39011.0_x64__8wekyb3d8bbwe\\M365Copilot.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2382564",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2491372",
+        "process_name": "C:\\Program Files\\WindowsApps\\AcrobatNotificationClient_1.0.4.0_x86__e1rzdqpraam7r\\AcrobatNotificationClient.exe",
+        "used_gpu_memory": "[N/A]"
+      }
+    ],
+    "gpu_query_returncode": 0,
+    "gpu_query_stderr": [],
+    "compute_query_returncode": 0,
+    "compute_query_stderr": []
+  },
+  "busy_gpu_reasons": [],
+  "argv": [
+    "C:\\Users\\ankac\\AppData\\Local\\anaconda3\\Scripts\\uv.exe",
+    "run",
+    "--no-sync",
+    "python",
+    "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\run_with_frozen_tetrahedralization.py",
+    "--pytetwild-mode",
+    "replay",
+    "--pytetwild-cache",
+    "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz",
+    "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\scripts\\benchmarks\\runtime.py",
+    "--",
+    "--task",
+    "Isaac-Lift-Soft-Franka",
+    "--num_envs",
+    "1024",
+    "--num_steps",
+    "500",
+    "--warmup_steps",
+    "100",
+    "--seed",
+    "42",
+    "--device",
+    "cuda:0",
+    "--visualizer",
+    "none",
+    "--benchmark_formatter",
+    "schema",
+    "--output_path",
+    "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\016_baseline",
+    "presets=newton_mjwarp_vbd_proxy",
+    "env.sim.physics.num_substeps=1"
+  ],
+  "command": "C:\\Users\\ankac\\AppData\\Local\\anaconda3\\Scripts\\uv.exe run --no-sync python D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\run_with_frozen_tetrahedralization.py --pytetwild-mode replay --pytetwild-cache D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\scripts\\benchmarks\\runtime.py -- --task Isaac-Lift-Soft-Franka --num_envs 1024 --num_steps 500 --warmup_steps 100 --seed 42 --device cuda:0 --visualizer none --benchmark_formatter schema --output_path D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\final_abba\\volume_integrated_final\\runs\\016_baseline presets=newton_mjwarp_vbd_proxy env.sim.physics.num_substeps=1",
+  "cwd": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile",
+  "environment": {
+    "PYTHONPATH": "D:\\Code\\Graphics\\newton-working-copies\\codex-vbd-baseline",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONHASHSEED": "0",
+    "UV_NO_SYNC": "1",
+    "CUDA_VISIBLE_DEVICES": null
+  },
+  "started_utc": "2026-08-13T00:42:30.103012+00:00",
+  "status": "completed",
+  "launcher_pid": 2592384,
+  "finished_utc": "2026-08-13T00:43:47.163681+00:00",
+  "elapsed_s": 76.69685690000188,
+  "returncode": 0,
+  "gpu_after": {
+    "available": true,
+    "executable": "C:\\Windows\\system32\\nvidia-smi.EXE",
+    "gpus": [
+      {
+        "index": "0",
+        "uuid": "GPU-9fe5458a-493d-e178-1324-365b8fd5db5a",
+        "name": "NVIDIA GeForce RTX 4090",
+        "driver_version": "591.86",
+        "pstate": "P8",
+        "temperature.gpu": "40",
+        "utilization.gpu": "1",
+        "memory.used": "2915",
+        "memory.total": "24564",
+        "clocks.current.sm": "210",
+        "clocks.current.memory": "405",
+        "power.draw": "6.04",
+        "power.limit": "450.00"
+      }
+    ],
+    "compute_processes": [
+      {
+        "pid": "41696",
+        "process_name": "[Insufficient Permissions]",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "47116",
+        "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\CrossDeviceResume.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "1434296",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "41156",
+        "process_name": "C:\\Windows\\explorer.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "4280",
+        "process_name": "C:\\Windows\\SystemApps\\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\\StartMenuExperienceHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "66548",
+        "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\SearchHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "53800",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "70664",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "64000",
+        "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2381764",
+        "process_name": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\TextInputHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "12880",
+        "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.YourPhone_1.26071.164.0_x64__8wekyb3d8bbwe\\PhoneExperienceHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "36468",
+        "process_name": "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "40032",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "56096",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2373312",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "603696",
+        "process_name": "C:\\Program Files\\MuseHub\\current\\MuseHub.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2788",
+        "process_name": "C:\\Program Files\\Insta360 Studio\\insta360-quick-look.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "71988",
+        "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2118728",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "59200",
+        "process_name": "C:\\Program Files\\WindowsApps\\MSTeams_26198.304.4946.9672_x64__8wekyb3d8bbwe\\ms-teams.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "9456",
+        "process_name": "C:\\Windows\\SystemApps\\ShellExperienceHost_cw5n1h2txyewy\\ShellExperienceHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2381648",
+        "process_name": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "83152",
+        "process_name": "C:\\Users\\ankac\\AppData\\Local\\Programs\\cursor\\Cursor.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "24980",
+        "process_name": "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\steamwebhelper.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "27480",
+        "process_name": "C:\\Users\\ankac\\AppData\\Roaming\\Spotify\\Spotify.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "36684",
+        "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2381160",
+        "process_name": "C:\\Users\\ankac\\AppData\\Local\\slack\\app-4.51.185\\slack.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "52756",
+        "process_name": "C:\\Program Files\\LogiOptionsPlus\\logioptionsplus_agent.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "56952",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2164484",
+        "process_name": "C:\\Program Files\\Listary\\Listary.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "10652",
+        "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.Copilot_1.25121.84.0_x64__8wekyb3d8bbwe\\Copilot.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2379024",
+        "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\AMDRSSrcExt.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2384264",
+        "process_name": "C:\\Program Files (x86)\\Dropbox\\Client\\Dropbox.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2382676",
+        "process_name": "C:\\Windows\\System32\\ShellHost.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2386332",
+        "process_name": "C:\\Program Files\\Adobe\\Adobe Creative Cloud\\ACC\\Creative Cloud UI Helper.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2388036",
+        "process_name": "C:\\Program Files\\Common Files\\Adobe\\Adobe OS Extension\\AdobeNotificationClient.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "43148",
+        "process_name": "C:\\Program Files\\WindowsApps\\AdvancedMicroDevicesInc-2.AMDRadeonSoftware_10.24.10035.0_x64__0a9344xs7nr4m\\radeonsoftware\\RadeonSoftware.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2385456",
+        "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "94244",
+        "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2401836",
+        "process_name": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.803.10989.0_x64__2p2nqsd0c76g0\\app\\ChatGPT.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2418188",
+        "process_name": "[Insufficient Permissions]",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "12844",
+        "process_name": "C:\\Windows\\SystemApps\\Microsoft.LockApp_cw5n1h2txyewy\\LockApp.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2449064",
+        "process_name": "C:\\Program Files\\WindowsApps\\Microsoft.MicrosoftOfficeHub_19.2608.39011.0_x64__8wekyb3d8bbwe\\M365Copilot.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2382564",
+        "process_name": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.78\\msedgewebview2.exe",
+        "used_gpu_memory": "[N/A]"
+      },
+      {
+        "pid": "2491372",
+        "process_name": "C:\\Program Files\\WindowsApps\\AcrobatNotificationClient_1.0.4.0_x86__e1rzdqpraam7r\\AcrobatNotificationClient.exe",
+        "used_gpu_memory": "[N/A]"
+      }
+    ],
+    "gpu_query_returncode": 0,
+    "gpu_query_stderr": [],
+    "compute_query_returncode": 0,
+    "compute_query_stderr": []
+  }
+}

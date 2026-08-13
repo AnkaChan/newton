@@ -1,0 +1,17 @@
+task,nvtx_occurrence,category,total_time_ns,total_time_ms,percent_of_summed_kernel_duration
+volume,5,soft_contact_generation,7688321,7.688321,27.00672337
+volume,5,particle_contact_force_hessian_accumulation,9099804,9.099804,31.96483203
+volume,5,elasticity,5016094,5.016094,17.62000612
+volume,5,dual_updates_and_truncation,1131896,1.131896,3.97600492
+volume,5,rigid_vbd_module_excluding_duals,2011773,2.011773,7.06674408
+volume,5,explicit_proxy_coupled_exchange,248793,0.248793,0.87393382
+volume,5,remainder,3271493,3.271493,11.49175567
+volume,5,total,28468174,28.468174,100.00000000
+cloth,5,soft_contact_generation,16628597,16.628597,30.91565411
+cloth,5,particle_contact_force_hessian_accumulation,15536071,15.536071,28.88444510
+cloth,5,elasticity,13665141,13.665141,25.40603831
+cloth,5,dual_updates_and_truncation,1836833,1.836833,3.41501413
+cloth,5,rigid_vbd_module_excluding_duals,2245457,2.245457,4.17472213
+cloth,5,explicit_proxy_coupled_exchange,523572,0.523572,0.97341771
+cloth,5,remainder,3351310,3.351310,6.23070851
+cloth,5,total,53786981,53.786981,100.00000000

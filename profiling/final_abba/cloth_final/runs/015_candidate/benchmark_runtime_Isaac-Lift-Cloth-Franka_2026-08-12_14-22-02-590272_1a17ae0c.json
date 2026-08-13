@@ -1,0 +1,152 @@
+{
+  "run": {
+    "run_id": "runtime_physx_Isaac-Lift-Cloth-Franka_20260812T212308_seed42",
+    "framework": null,
+    "config": {
+      "physics_backend": "physx",
+      "rendering_backend": "none",
+      "presets": [
+        "newton_mjwarp_vbd_proxy",
+        "env.sim.physics.num_substeps=1"
+      ]
+    },
+    "task": "Isaac-Lift-Cloth-Franka",
+    "seed": 42,
+    "start_time_utc": "2026-08-12T21:22:02.589272+00:00",
+    "end_time_utc": "2026-08-12T21:23:08.883108+00:00",
+    "duration_s": 66.293836,
+    "status": "completed",
+    "num_envs": 1024,
+    "max_iterations": null
+  },
+  "versions": {
+    "isaaclab": "16.0.1",
+    "isaacsim": null,
+    "kit": null,
+    "newton": "1.5.0rc2",
+    "warp": "1.16.0",
+    "mjwarp": "3.11.0",
+    "torch": "2.11.0+cu128",
+    "rsl_rl": "5.4.1",
+    "rl_games": null,
+    "skrl": null,
+    "sb3": null,
+    "git_commit": "529a94b38cef419eec10488d5cb2e6aade3e4ec4",
+    "git_branch": "codex/vbd-profile",
+    "git_dirty": true,
+    "numpy": "2.5.1",
+    "isaaclab_newton": "4.0.0",
+    "isaaclab_physx": "5.0.0",
+    "isaaclab_ov": "2.0.0",
+    "isaaclab_tasks": "16.0.0",
+    "isaaclab_rl": "0.14.1",
+    "ovrtx": null,
+    "ovphysx": null,
+    "mujoco": "3.11.0",
+    "cuda_bindings": null,
+    "usd_core": "25.11",
+    "isaaclab_release": null
+  },
+  "hardware": {
+    "hostname": "NV-24060060",
+    "gpu_devices": [
+      {
+        "name": "NVIDIA GeForce RTX 4090",
+        "mem_gb": 23.99,
+        "compute_cap": "8.9"
+      }
+    ],
+    "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "cpu_count": 32,
+    "ram_gb": 127.21
+  },
+  "runtime": {
+    "startup_time_s": {
+      "app_launch": 0.0004351,
+      "env_creation": 39.7167451,
+      "first_step": 0.3002046,
+      "python_imports": 3.2224874,
+      "task_config": 1.1348277
+    },
+    "iterations_completed": 500,
+    "total_wall_time_s": 20.5262457,
+    "steps_per_iteration": 1024,
+    "iteration_time_s": {
+      "mean": 0.0410524914,
+      "std": 0.014106847192873119,
+      "peak": 0.2552063
+    },
+    "collection_fps": {
+      "mean": 24943.67491664586,
+      "std": 3168.1294656756145,
+      "peak": 28754.271722251706
+    },
+    "total_fps": {
+      "mean": 24943.67491664586,
+      "std": 3168.1294656756145,
+      "peak": 28754.271722251706
+    },
+    "iterations_per_s": {
+      "mean": 24.359057535786974,
+      "std": 3.0938764313238423,
+      "peak": 28.08034347876143
+    },
+    "environment_step_timing": {
+      "environment_step_time_s": {
+        "mean": 0.041049622,
+        "std": 0.01410675606269353,
+        "peak": 0.2552024
+      },
+      "environment_step_fps": {
+        "mean": 24945.418498616138,
+        "std": 3168.4260134144542,
+        "peak": 28755.967424880648
+      },
+      "simulation_step_time_s": null,
+      "outside_simulation_step_time_s": null,
+      "outside_simulation_step_fraction": null,
+      "environment_step_calls": 500,
+      "simulation_step_calls": null,
+      "measurement_mode": "host_return",
+      "warmup_steps": 100
+    }
+  },
+  "resources": {
+    "gpu_util_pct": {
+      "mean": 75.22,
+      "std": 3.52,
+      "peak": null
+    },
+    "gpu_mem_gb": {
+      "mean": 5.31,
+      "std": 0.0,
+      "peak": 5.31
+    },
+    "cpu_util_pct": {
+      "mean": 94.86666666666666,
+      "std": 23.728910140808996,
+      "peak": null
+    },
+    "ram_gb": {
+      "mean": 3.98,
+      "std": 0.0,
+      "peak": 3.98
+    },
+    "devices": {
+      "0": {
+        "util_pct": {
+          "mean": 75.22,
+          "std": 3.52,
+          "peak": null
+        },
+        "mem_gb": {
+          "mean": 5.31,
+          "std": 0.0,
+          "peak": 5.31
+        }
+      }
+    }
+  },
+  "extra": null,
+  "schema_version": "1.4"
+}

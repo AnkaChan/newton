@@ -1,0 +1,121 @@
+{
+  "format_version": 1,
+  "created_utc": "2026-08-12T19:30:09.764808+00:00",
+  "mode": "record",
+  "pytetwild_version": "0.3.0",
+  "tetrahedralize_signature": "(vertices: NDArray[numpy.float32] | NDArray[numpy.float64], faces: NDArray[numpy.int32], edge_length_fac: float = 0.05, edge_length_abs: float | None = None, optimize: bool = True, simplify: bool = True, epsilon: float = 0.001, stop_energy: float = 10.0, coarsen: bool = False, num_threads: int = 0, num_opt_iter: int = 80, loglevel: int = 3, quiet: bool = True, vtk_ordering: bool = False, disable_filtering: bool = False) -> tuple[NDArray[numpy.float64], NDArray[numpy.int32]]",
+  "parameters": {
+    "edge_length_fac": {
+      "type": "float",
+      "value": 0.1,
+      "hex": "0x1.999999999999ap-4"
+    },
+    "edge_length_abs": {
+      "type": "none",
+      "value": null
+    },
+    "optimize": {
+      "type": "bool",
+      "value": true
+    },
+    "simplify": {
+      "type": "bool",
+      "value": false
+    },
+    "epsilon": {
+      "type": "float",
+      "value": 0.01,
+      "hex": "0x1.47ae147ae147bp-7"
+    },
+    "stop_energy": {
+      "type": "float",
+      "value": 10.0,
+      "hex": "0x1.4000000000000p+3"
+    },
+    "coarsen": {
+      "type": "bool",
+      "value": true
+    },
+    "num_threads": {
+      "type": "int",
+      "value": 0
+    },
+    "num_opt_iter": {
+      "type": "int",
+      "value": 80
+    },
+    "loglevel": {
+      "type": "int",
+      "value": 3
+    },
+    "quiet": {
+      "type": "bool",
+      "value": true
+    },
+    "vtk_ordering": {
+      "type": "bool",
+      "value": false
+    },
+    "disable_filtering": {
+      "type": "bool",
+      "value": false
+    }
+  },
+  "input_hash": "e8065a0c936da43570c33ba13361e8bb7286d37c2e8bba42b30d4ccd2452dcfd",
+  "output_hash": "38a118f6536c31a920ff2efda5e9ef27d7319431223658bdecc6c43f25d18b28",
+  "input_vertices": {
+    "dtype": "<f4",
+    "shape": [
+      88,
+      3
+    ],
+    "sha256": "4e641c8b7d6594fdaa77eddaec5ac0c03bad75f2438a8aa58e289b2c4db3ad91"
+  },
+  "input_faces": {
+    "dtype": "<i4",
+    "shape": [
+      132,
+      3
+    ],
+    "sha256": "6ea773b79f85c574d65ada8dd6266b3c51ade1454cea849bf353e939aa9307fb"
+  },
+  "output_vertices": {
+    "dtype": "<f8",
+    "shape": [
+      44,
+      3
+    ],
+    "sha256": "b390d06ad0391126113bb54c50a1b50847c334c5f17cbe54c83753843559b5a1"
+  },
+  "output_tetrahedra": {
+    "dtype": "<i4",
+    "shape": [
+      75,
+      4
+    ],
+    "sha256": "fefe72ead803f8cc65da817f50bdd5cf40ca4d5903c5989520e6d537f43c88a6"
+  },
+  "cache_npz": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\validation\\volume_tet_cache.npz",
+  "cache_npz_sha256": "2d4c4c768d3362017eb958af01a41fd2b2f67d844e3627d6ccf405dba1f59159",
+  "invocation": {
+    "target": "D:\\Code\\Graphics\\newton-working-copies\\codex-isaaclab-vbd-profile\\profiling\\capture_vbd_trajectory.py",
+    "target_args": [
+      "--task",
+      "Isaac-Lift-Soft-Franka",
+      "--num_envs",
+      "1",
+      "--num_steps",
+      "1",
+      "--warmup_steps",
+      "0",
+      "--seed",
+      "42",
+      "--visualizer",
+      "none",
+      "--output_path",
+      "profiling\\validation\\volume_1env_1step_record",
+      "presets=newton_mjwarp_vbd_proxy",
+      "env.sim.physics.num_substeps=1"
+    ]
+  }
+}

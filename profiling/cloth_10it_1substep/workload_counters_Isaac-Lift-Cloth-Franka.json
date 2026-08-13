@@ -1,0 +1,124 @@
+{
+  "task": "Isaac-Lift-Cloth-Franka",
+  "seed": 42,
+  "num_envs": 1024,
+  "presets": [
+    "presets=newton_mjwarp_vbd_proxy",
+    "env.sim.physics.num_substeps=1"
+  ],
+  "physics": {
+    "dt": 0.008333333333333333,
+    "decimation": 4,
+    "num_substeps": 1,
+    "physics_steps_per_environment_step": 4
+  },
+  "global_model": {
+    "world_count": 1024,
+    "body_count": 13312,
+    "shape_count": 87042,
+    "particle_count": 82944,
+    "tri_count": 131072,
+    "edge_count": 212992,
+    "tet_count": 0,
+    "spring_count": 0
+  },
+  "soft_model_view": {
+    "world_count": 1024,
+    "body_count": 5120,
+    "shape_count": 87042,
+    "particle_count": 82944,
+    "tri_count": 131072,
+    "edge_count": 212992,
+    "tet_count": 0,
+    "spring_count": 0
+  },
+  "vbd": {
+    "iterations": 10,
+    "tile_solve": true,
+    "particle_color_count": 3,
+    "particle_color_sizes": [
+      25600,
+      40960,
+      16384
+    ]
+  },
+  "soft_collision_candidates": {
+    "particle_shape_pairs": 7216128,
+    "edge_shape_pairs": 3407872,
+    "face_shape_pairs": 2097152,
+    "contact_capacity": 12721152
+  },
+  "soft_contacts_after_environment_steps": {
+    "samples": [
+      {
+        "active": 395910,
+        "stored": 395910,
+        "particle": 59920,
+        "edge": 197957,
+        "face": 138033
+      },
+      {
+        "active": 395917,
+        "stored": 395917,
+        "particle": 59919,
+        "edge": 197960,
+        "face": 138038
+      },
+      {
+        "active": 395976,
+        "stored": 395976,
+        "particle": 59925,
+        "edge": 197989,
+        "face": 138062
+      },
+      {
+        "active": 396006,
+        "stored": 396006,
+        "particle": 59928,
+        "edge": 198004,
+        "face": 138074
+      },
+      {
+        "active": 396054,
+        "stored": 396054,
+        "particle": 59936,
+        "edge": 198028,
+        "face": 138090
+      },
+      {
+        "active": 396089,
+        "stored": 396089,
+        "particle": 59940,
+        "edge": 198046,
+        "face": 138103
+      },
+      {
+        "active": 396093,
+        "stored": 396093,
+        "particle": 59942,
+        "edge": 198048,
+        "face": 138103
+      },
+      {
+        "active": 396109,
+        "stored": 396109,
+        "particle": 59945,
+        "edge": 198056,
+        "face": 138108
+      }
+    ],
+    "active_summary": {
+      "min": 395910,
+      "median": 396030.0,
+      "mean": 396019.25,
+      "max": 396109
+    },
+    "capacity_utilization_at_median": 0.031131614495290994
+  },
+  "capacity_scan_model": {
+    "capacity_scans_per_physics_step": 41,
+    "capacity_threads_per_physics_step": 521567232,
+    "capacity_threads_per_environment_step": 2086268928,
+    "formula": "soft_contact_max * (1 init + iterations dual + iterations * colors accumulation)"
+  }
+}
