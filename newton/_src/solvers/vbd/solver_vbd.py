@@ -93,10 +93,11 @@ from .vbd_coupling_kernels import (
 )
 
 __all__ = ["SolverVBD"]
+print("[solver_vbd] variant: abl-8-gather-block-256")
 
 _SOFT_CONTACT_BLOCK_DIM = 256
 _SOFT_CONTACT_BLOCKS_PER_SM = 2
-_PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
+_PARTICLE_CONTACT_GATHER_BLOCK_DIM = 256  # ABLATION abl-8-gather-block-256 (revert C10)
 
 
 def _is_tet_only_elasticity_model(model: Model) -> bool:
