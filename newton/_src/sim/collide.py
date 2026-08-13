@@ -512,7 +512,7 @@ def _world_compatible_pairs(
         if shape_ok is not None and len(s_idx):
             keep = shape_ok[s_idx.astype(np.intp)]
             f_idx, s_idx = f_idx[keep], s_idx[keep]
-        if group_by_shape and len(s_idx):
+        if False and group_by_shape and len(s_idx):  # ABLATION abl-7-no-shape-group (revert C4)
             order = np.argsort(s_idx, kind="stable")
             f_idx, s_idx = f_idx[order], s_idx[order]
         stacked = np.column_stack((f_idx, s_idx)).astype(np.int32) if len(f_idx) else np.empty((0, 2), np.int32)
