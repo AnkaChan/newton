@@ -93,6 +93,7 @@ from .vbd_coupling_kernels import (
 )
 
 __all__ = ["SolverVBD"]
+print("[solver_vbd] variant: abl-2-dual-capacity")
 
 _SOFT_CONTACT_BLOCK_DIM = 256
 _SOFT_CONTACT_BLOCKS_PER_SM = 2
@@ -1212,13 +1213,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if soft_contact_max <= 0 or self.model.particle_count <= 0:
             return 0
 
-        parallelism = self.model.particle_count
-        if self.device.is_cuda:
-            parallelism = max(
-                parallelism,
-                self.device.sm_count * _SOFT_CONTACT_BLOCKS_PER_SM * _SOFT_CONTACT_BLOCK_DIM,
-            )
-        return min(soft_contact_max, parallelism)
+        return soft_contact_max  # ABLATION abl-2-dual-capacity (revert C7 active-prefix)
 
     def _init_rigid_contact_warmstart(self, rigid_contact_max: int) -> None:
         """Allocate rigid contact warm-start buffers."""
