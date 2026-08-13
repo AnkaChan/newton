@@ -840,8 +840,8 @@ the final volume suite. That mode automatically replays and verifies the frozen
 tetrahedralization cache and its evidence manifest.
 
 The exact Nsight Systems reports, SQLite exports, filtered CSVs, benchmark JSON,
-and workload-counter JSON files are stored in the sibling `profiling` task
-directories. `nsys_volume_discovery.nsys-rep` and
+and workload-counter JSON files are stored in this `profiling` directory.
+`nsys_volume_discovery.nsys-rep` and
 `nsys_cloth_discovery.nsys-rep` are the original diagnostic traces. The final
 candidate and frozen-volume comparison reports are linked directly from the
 final breakdown above.
@@ -854,14 +854,13 @@ The official Newton checkout was not modified. It remains at
 this work. Untracked files already present in that official checkout were left
 alone.
 
-The optimized Newton checkout is intentionally dirty on branch
-`codex/vbd-profile`: its tracked diff contains the retained implementation,
-tests, and changelog entry. Its untracked `.warp-cache` is generated compiler
-output. The clean comparison checkout remains detached at
+The optimized Newton checkout is committed on branch `codex/vbd-profile`. Its
+untracked `.warp-cache` is generated compiler output. The clean comparison
+checkout remains detached at
 `284af96bb563bf68536f070f508ea3561336ee73`.
 
 The isolated IsaacLab checkout's four apparent tracked modifications are only
 LF/CRLF worktree normalization; their canonical hashes equal their HEAD blobs.
-The profiling harnesses and artifacts are untracked by design. Both task
-configs are restored to ten VBD iterations, and every reported comparison
+The profiling harnesses and artifacts are archived under `profiling/`. Both
+task configs are restored to ten VBD iterations, and every reported comparison
 overrides Newton to one substep explicitly.

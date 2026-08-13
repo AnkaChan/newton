@@ -245,7 +245,7 @@ or candidate checkout. Final statistical acceptance should use fresh-process
 ABBA ordering, matched frozen volume topology, and process-level rather than
 per-step confidence intervals.
 
-Raw Nsight reports, SQLite exports, trajectory arrays, and process logs were
-kept outside this Git branch because they are large machine-generated
-artifacts. The measurements and hashes were audited against the unchanged
-source snapshot before this report was prepared.
+Raw Nsight reports, SQLite exports, trajectory arrays, process logs, and the
+reproduction harnesses are archived under `profiling/`. The measurements and
+hashes were audited against the unchanged source snapshot before this report
+was prepared.
