@@ -20,6 +20,9 @@ from ...geometry.kernels import (
 from ...sim import Model
 from ...utils.mesh import MeshAdjacency
 
+_VERSION = "self_contact_count_bounds_v1"
+print(f"[tri_mesh_collision] version: {_VERSION}")
+
 
 @wp.struct
 class TriMeshCollisionInfo:
@@ -646,8 +649,6 @@ class TriMeshCollisionDetector:
     def vertex_triangle_collision_detection(
         self, max_query_radius, min_query_radius=0.0, min_distance_filtering_ref_pos=None
     ):
-        self.vertex_colliding_triangles.fill_(-1)
-
         if self.record_triangle_contacting_vertices:
             wp.launch(
                 kernel=init_triangle_collision_data_kernel,
@@ -701,7 +702,6 @@ class TriMeshCollisionDetector:
     def edge_edge_collision_detection(
         self, max_query_radius, min_query_radius=0.0, min_distance_filtering_ref_pos=None
     ):
-        self.edge_colliding_edges.fill_(-1)
         wp.launch(
             kernel=edge_colliding_edges_detection_kernel,
             inputs=[

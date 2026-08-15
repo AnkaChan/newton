@@ -14,7 +14,14 @@ from .particle_vbd_kernels import (
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
 from .rigid_vbd_kernels import _eval_body_particle_contact, _eval_soft_ef_contact
-from .tri_mesh_collision import TriMeshCollisionInfo
+from .tri_mesh_collision import (
+    TriMeshCollisionInfo,
+    get_edge_colliding_edges_count,
+    get_vertex_colliding_triangles_count,
+)
+
+_VERSION = "self_contact_count_bounds_v1"
+print(f"[vbd_coupling_kernels] version: {_VERSION}")
 
 wp.set_module_options({"enable_backward": False})
 
@@ -376,7 +383,8 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
         e1_idx = primitive_id
         collision_buffer_counter = t_id_current_primitive
         collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
-        while collision_buffer_counter < collision_info.edge_colliding_edges_buffer_sizes[primitive_id]:
+        collision_buffer_count = get_edge_colliding_edges_count(collision_info, primitive_id)
+        while collision_buffer_counter < collision_buffer_count:
             e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
 
             if e1_idx != -1 and e2_idx != -1:
@@ -427,7 +435,8 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
         particle_idx = primitive_id
         collision_buffer_counter = t_id_current_primitive
         collision_buffer_offset = collision_info.vertex_colliding_triangles_offsets[primitive_id]
-        while collision_buffer_counter < collision_info.vertex_colliding_triangles_buffer_sizes[primitive_id]:
+        collision_buffer_count = get_vertex_colliding_triangles_count(collision_info, primitive_id)
+        while collision_buffer_counter < collision_buffer_count:
             tri_idx = collision_info.vertex_colliding_triangles[
                 (collision_buffer_offset + collision_buffer_counter) * 2 + 1
             ]

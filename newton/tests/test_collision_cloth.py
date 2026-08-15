@@ -26,6 +26,9 @@ from newton.tests.unittest_utils import (
     get_test_devices,
 )
 
+_VERSION = "self_contact_count_bounds_test_v1"
+print(f"[test_collision_cloth] version: {_VERSION}")
+
 
 @wp.kernel
 def eval_triangles_contact(
@@ -195,33 +198,31 @@ def validate_vertex_collisions(
     v_index = wp.tid()
     v = pos[v_index]
 
-    num_cols = vertex_colliding_triangles_count[v_index]
+    num_cols = wp.min(
+        vertex_colliding_triangles_count[v_index], vertex_colliding_triangles_buffer_size[v_index]
+    )
     offset = vertex_colliding_triangles_offsets[v_index]
     min_dis = vertex_colliding_triangles_min_dist[v_index]
-    for col in range(vertex_colliding_triangles_buffer_size[v_index]):
+    for col in range(num_cols):
         vertex_index = vertex_colliding_triangles[2 * (offset + col)]
         tri_index = vertex_colliding_triangles[2 * (offset + col) + 1]
-        if col < num_cols:
-            t1 = tri_indices[tri_index, 0]
-            t2 = tri_indices[tri_index, 1]
-            t3 = tri_indices[tri_index, 2]
-            # wp.expect_eq(vertex_on_triangle(v_index, t1, t2, t3), False)
+        t1 = tri_indices[tri_index, 0]
+        t2 = tri_indices[tri_index, 1]
+        t3 = tri_indices[tri_index, 2]
+        # wp.expect_eq(vertex_on_triangle(v_index, t1, t2, t3), False)
 
-            u1 = pos[t1]
-            u2 = pos[t2]
-            u3 = pos[t3]
+        u1 = pos[t1]
+        u2 = pos[t2]
+        u3 = pos[t3]
 
-            closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
-            dis = wp.length(closest_p - v)
-            wp.expect_eq(dis < query_radius, True)
-            wp.expect_eq(dis >= min_dis, True)
-            wp.expect_eq(v_index == vertex_colliding_triangles[2 * (offset + col)], True)
+        closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
+        dis = wp.length(closest_p - v)
+        wp.expect_eq(dis < query_radius, True)
+        wp.expect_eq(dis >= min_dis, True)
+        wp.expect_eq(v_index == vertex_index, True)
 
-            # wp.printf("vertex %d, offset %d, num cols %d, colliding with triangle: %d, dis: %f\n",
-            #           v_index, offset, num_cols, tri_index, dis)
-        else:
-            wp.expect_eq(vertex_index == -1, True)
-            wp.expect_eq(tri_index == -1, True)
+        # wp.printf("vertex %d, offset %d, num cols %d, colliding with triangle: %d, dis: %f\n",
+        #           v_index, offset, num_cols, tri_index, dis)
 
 
 @wp.kernel
@@ -342,35 +343,30 @@ def validate_edge_collisions(
     e0_v0_pos = pos[e0_v0]
     e0_v1_pos = pos[e0_v1]
 
-    num_cols = edge_colliding_edges_count[e0_index]
+    num_cols = wp.min(edge_colliding_edges_count[e0_index], edge_colliding_edges_buffer_sizes[e0_index])
     offset = edge_colliding_edges_offsets[e0_index]
     min_dist = edge_colliding_edges_min_dist[e0_index]
-    for col in range(edge_colliding_edges_buffer_sizes[e0_index]):
+    for col in range(num_cols):
         e1_index = edge_colliding_edges[2 * (offset + col) + 1]
+        e1_v0 = edge_indices[e1_index, 2]
+        e1_v1 = edge_indices[e1_index, 3]
 
-        if col < num_cols:
-            e1_v0 = edge_indices[e1_index, 2]
-            e1_v1 = edge_indices[e1_index, 3]
+        if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
+            wp.expect_eq(False, True)
 
-            if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
-                wp.expect_eq(False, True)
+        e1_v0_pos = pos[e1_v0]
+        e1_v1_pos = pos[e1_v1]
 
-            e1_v0_pos = pos[e1_v0]
-            e1_v1_pos = pos[e1_v1]
+        st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
+        s = st[0]
+        t = st[1]
+        c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
+        c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
 
-            st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
-            s = st[0]
-            t = st[1]
-            c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
-            c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
+        dist = wp.length(c2 - c1)
 
-            dist = wp.length(c2 - c1)
-
-            wp.expect_eq(dist >= min_dist * 0.999, True)
-            wp.expect_eq(e0_index == edge_colliding_edges[2 * (offset + col)], True)
-        else:
-            wp.expect_eq(e1_index == -1, True)
-            wp.expect_eq(edge_colliding_edges[2 * (offset + col)] == -1, True)
+        wp.expect_eq(dist >= min_dist * 0.999, True)
+        wp.expect_eq(e0_index == edge_colliding_edges[2 * (offset + col)], True)
 
 
 def init_model(vs, fs, device, record_triangle_contacting_vertices=True, color=False):
@@ -1171,39 +1167,37 @@ def validate_vertex_collisions_distance_filter(
     v_index = wp.tid()
     v = pos[v_index]
 
-    num_cols = vertex_colliding_triangles_count[v_index]
+    num_cols = wp.min(
+        vertex_colliding_triangles_count[v_index], vertex_colliding_triangles_buffer_size[v_index]
+    )
     offset = vertex_colliding_triangles_offsets[v_index]
-    for col in range(vertex_colliding_triangles_buffer_size[v_index]):
+    for col in range(num_cols):
         vertex_index = vertex_colliding_triangles[2 * (offset + col)]
         tri_index = vertex_colliding_triangles[2 * (offset + col) + 1]
-        if col < num_cols:
-            t1 = tri_indices[tri_index, 0]
-            t2 = tri_indices[tri_index, 1]
-            t3 = tri_indices[tri_index, 2]
-            # wp.expect_eq(vertex_on_triangle(v_index, t1, t2, t3), False)
+        t1 = tri_indices[tri_index, 0]
+        t2 = tri_indices[tri_index, 1]
+        t3 = tri_indices[tri_index, 2]
+        # wp.expect_eq(vertex_on_triangle(v_index, t1, t2, t3), False)
 
-            u1 = pos[t1]
-            u2 = pos[t2]
-            u3 = pos[t3]
+        u1 = pos[t1]
+        u2 = pos[t2]
+        u3 = pos[t3]
 
-            closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
-            dis = wp.length(closest_p - v)
-            wp.expect_eq(dis < max_query_radius, True)
+        closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
+        dis = wp.length(closest_p - v)
+        wp.expect_eq(dis < max_query_radius, True)
 
-            u1_ref = ref_pos[t1]
-            u2_ref = ref_pos[t2]
-            u3_ref = ref_pos[t3]
-            v_ref = ref_pos[v_index]
-            closest_p_ref, _, __ = triangle_closest_point(u1_ref, u2_ref, u3_ref, v_ref)
-            wp.expect_eq(wp.length(closest_p_ref - v_ref) >= min_query_radius, True)
+        u1_ref = ref_pos[t1]
+        u2_ref = ref_pos[t2]
+        u3_ref = ref_pos[t3]
+        v_ref = ref_pos[v_index]
+        closest_p_ref, _, __ = triangle_closest_point(u1_ref, u2_ref, u3_ref, v_ref)
+        wp.expect_eq(wp.length(closest_p_ref - v_ref) >= min_query_radius, True)
 
-            wp.expect_eq(v_index == vertex_colliding_triangles[2 * (offset + col)], True)
+        wp.expect_eq(v_index == vertex_index, True)
 
-            # wp.printf("vertex %d, offset %d, num cols %d, colliding with triangle: %d, dis: %f\n",
-            #           v_index, offset, num_cols, tri_index, dis)
-        else:
-            wp.expect_eq(vertex_index == -1, True)
-            wp.expect_eq(tri_index == -1, True)
+        # wp.printf("vertex %d, offset %d, num cols %d, colliding with triangle: %d, dis: %f\n",
+        #           v_index, offset, num_cols, tri_index, dis)
 
 
 @wp.kernel
@@ -1229,47 +1223,42 @@ def validate_edge_collisions_distance_filter(
     e0_v0_pos = pos[e0_v0]
     e0_v1_pos = pos[e0_v1]
 
-    num_cols = edge_colliding_edges_count[e0_index]
+    num_cols = wp.min(edge_colliding_edges_count[e0_index], edge_colliding_edges_buffer_sizes[e0_index])
     offset = edge_colliding_edges_offsets[e0_index]
-    for col in range(edge_colliding_edges_buffer_sizes[e0_index]):
+    for col in range(num_cols):
         e1_index = edge_colliding_edges[2 * (offset + col) + 1]
+        e1_v0 = edge_indices[e1_index, 2]
+        e1_v1 = edge_indices[e1_index, 3]
 
-        if col < num_cols:
-            e1_v0 = edge_indices[e1_index, 2]
-            e1_v1 = edge_indices[e1_index, 3]
+        if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
+            wp.expect_eq(False, True)
 
-            if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
-                wp.expect_eq(False, True)
+        e1_v0_pos = pos[e1_v0]
+        e1_v1_pos = pos[e1_v1]
 
-            e1_v0_pos = pos[e1_v0]
-            e1_v1_pos = pos[e1_v1]
+        st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
+        s = st[0]
+        t = st[1]
+        c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
+        c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
 
-            st = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
-            s = st[0]
-            t = st[1]
-            c1 = e0_v0_pos + (e0_v1_pos - e0_v0_pos) * s
-            c2 = e1_v0_pos + (e1_v1_pos - e1_v0_pos) * t
+        dist = wp.length(c2 - c1)
+        wp.expect_eq(dist <= max_query_radius, True)
 
-            dist = wp.length(c2 - c1)
-            wp.expect_eq(dist <= max_query_radius, True)
+        e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref = (
+            ref_pos[e0_v0],
+            ref_pos[e0_v1],
+            ref_pos[e1_v0],
+            ref_pos[e1_v1],
+        )
+        std_ref = wp.closest_point_edge_edge(
+            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
+        )
 
-            e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref = (
-                ref_pos[e0_v0],
-                ref_pos[e0_v1],
-                ref_pos[e1_v0],
-                ref_pos[e1_v1],
-            )
-            std_ref = wp.closest_point_edge_edge(
-                e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
-            )
+        dist_ref = std_ref[2]
 
-            dist_ref = std_ref[2]
-
-            wp.expect_eq(dist_ref >= min_query_radius * 0.999, True)
-            wp.expect_eq(e0_index == edge_colliding_edges[2 * (offset + col)], True)
-        else:
-            wp.expect_eq(e1_index == -1, True)
-            wp.expect_eq(edge_colliding_edges[2 * (offset + col)] == -1, True)
+        wp.expect_eq(dist_ref >= min_query_radius * 0.999, True)
+        wp.expect_eq(e0_index == edge_colliding_edges[2 * (offset + col)], True)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
