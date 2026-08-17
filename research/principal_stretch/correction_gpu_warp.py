@@ -33,8 +33,11 @@ import warp as wp
 
 from .correction_gpu import MatrixFreeStableNHOperator
 
-KERNEL_VERSION = "mg-vbd-warp-operator-v1"
-CONTRACT_ID = "mg-vbd-warp-fixed-pcg-research-v1"
+KERNEL_VERSION = "mg-vbd-warp-operator-v2-tiled-pcg"
+CONTRACT_ID = "mg-vbd-warp-fixed-pcg-research-v2"
+_PCG_REDUCTION_BLOCK_SIZE = 256
+_PCG_REDUCTION_STAGES = 2
+_PCG_REDUCTION_FAILURE_SENTINEL = 0x7FFFFFFF
 
 
 def _current_operator_arrays_sha256(
@@ -174,6 +177,78 @@ def _double_dot(left: wp.mat33d, right: wp.mat33d) -> wp.float64:
 @wp.func
 def _finite_vec3(value: wp.vec3d) -> bool:
     return wp.isfinite(value[0]) and wp.isfinite(value[1]) and wp.isfinite(value[2])
+
+
+@wp.func
+def _nonfinite_vec3_reduction_flag(index: wp.int32, value: wp.vec3d, count: wp.int32) -> wp.int32:
+    if index < count and not _finite_vec3(value):
+        return wp.int32(1)
+    return wp.int32(0)
+
+
+@wp.func
+def _initial_preconditioner_failure_key(
+    index: wp.int32,
+    block_valid: wp.int32,
+    preconditioner_valid: wp.int32,
+    count: wp.int32,
+) -> wp.int32:
+    if index >= count:
+        return wp.int32(_PCG_REDUCTION_FAILURE_SENTINEL)
+    if block_valid == 0:
+        return wp.int32(2) * index
+    if preconditioner_valid == 0:
+        return wp.int32(2) * index + wp.int32(1)
+    return wp.int32(_PCG_REDUCTION_FAILURE_SENTINEL)
+
+
+@wp.func
+def _pcg_step_failure(
+    index: wp.int32,
+    direction: wp.vec3d,
+    operator_direction: wp.vec3d,
+    direction_valid: wp.int32,
+    count: wp.int32,
+) -> wp.int32:
+    if index >= count:
+        return wp.int32(_PCG_REDUCTION_FAILURE_SENTINEL)
+    if not _finite_vec3(direction) or not _finite_vec3(operator_direction):
+        return wp.int32(_STATUS_NONFINITE_OPERATOR)
+    if direction_valid == 0:
+        return wp.int32(_STATUS_NONFINITE_UPDATE)
+    return wp.int32(_PCG_REDUCTION_FAILURE_SENTINEL)
+
+
+@wp.func
+def _pcg_update_failure_flag(
+    index: wp.int32,
+    solution: wp.vec3d,
+    residual: wp.vec3d,
+    update_valid: wp.int32,
+    count: wp.int32,
+) -> wp.int32:
+    if index < count and (update_valid == 0 or not _finite_vec3(solution) or not _finite_vec3(residual)):
+        return wp.int32(1)
+    return wp.int32(0)
+
+
+@wp.func
+def _pcg_preconditioner_failure_flag(
+    index: wp.int32,
+    preconditioned: wp.vec3d,
+    preconditioner_valid: wp.int32,
+    count: wp.int32,
+) -> wp.int32:
+    if index < count and (preconditioner_valid == 0 or not _finite_vec3(preconditioned)):
+        return wp.int32(1)
+    return wp.int32(0)
+
+
+@wp.func
+def _masked_reduction_failure_key(index: wp.int32, failure: wp.int32, count: wp.int32) -> wp.int32:
+    if index < count:
+        return failure
+    return wp.int32(_PCG_REDUCTION_FAILURE_SENTINEL)
 
 
 @wp.func
@@ -497,12 +572,60 @@ def _validate_device_preconditioner(
 
 
 @wp.kernel(enable_backward=False)
-def _initialize_pcg_state(
+def _reduce_initial_pcg_state_stage_one(
     rhs: wp.array[wp.vec3d],
     residual: wp.array[wp.vec3d],
     preconditioned: wp.array[wp.vec3d],
     block_valid: wp.array[int],
     preconditioner_valid: wp.array[int],
+    partial_rhs_squared: wp.array[wp.float64],
+    partial_rho: wp.array[wp.float64],
+    partial_nonfinite_rhs: wp.array[int],
+    partial_preconditioner_failure_key: wp.array[int],
+):
+    tile, lane = wp.tid()
+    offset = tile * _PCG_REDUCTION_BLOCK_SIZE
+    indices = wp.tile_map(wp.add, wp.tile_arange(_PCG_REDUCTION_BLOCK_SIZE, dtype=wp.int32), wp.int32(offset))
+    rhs_values = wp.tile_load(rhs, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    residual_values = wp.tile_load(residual, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    preconditioned_values = wp.tile_load(preconditioned, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    block_valid_values = wp.tile_load(block_valid, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    preconditioner_valid_values = wp.tile_load(
+        preconditioner_valid,
+        shape=_PCG_REDUCTION_BLOCK_SIZE,
+        offset=offset,
+    )
+    nonfinite_rhs = wp.tile_map(
+        _nonfinite_vec3_reduction_flag,
+        indices,
+        rhs_values,
+        wp.int32(rhs.shape[0]),
+    )
+    failure_keys = wp.tile_map(
+        _initial_preconditioner_failure_key,
+        indices,
+        block_valid_values,
+        preconditioner_valid_values,
+        wp.int32(rhs.shape[0]),
+    )
+    rhs_sum = wp.tile_sum(wp.tile_map(wp.dot, rhs_values, rhs_values))
+    rho_sum = wp.tile_sum(wp.tile_map(wp.dot, residual_values, preconditioned_values))
+    nonfinite_sum = wp.tile_sum(nonfinite_rhs)
+    failure_minimum = wp.tile_min(failure_keys)
+    if lane == 0:
+        partial_rhs_squared[tile] = rhs_sum[0]
+        partial_rho[tile] = rho_sum[0]
+        partial_nonfinite_rhs[tile] = nonfinite_sum[0]
+        partial_preconditioner_failure_key[tile] = failure_minimum[0]
+
+
+@wp.kernel(enable_backward=False)
+def _finalize_initial_pcg_state_stage_two(
+    partial_rhs_squared: wp.array[wp.float64],
+    partial_rho: wp.array[wp.float64],
+    partial_nonfinite_rhs: wp.array[int],
+    partial_preconditioner_failure_key: wp.array[int],
+    partial_count: int,
     state_status: wp.array[int],
     completed_iterations: wp.array[int],
     rho: wp.array[wp.float64],
@@ -510,22 +633,44 @@ def _initialize_pcg_state(
     recursive_residual_squared: wp.array[wp.float64],
     true_residual_squared: wp.array[wp.float64],
 ):
-    if wp.tid() != 0:
-        return
-    status = int(_STATUS_ACTIVE)
+    _tile, lane = wp.tid()
     rhs_norm_squared = wp.float64(0.0)
     rho_value = wp.float64(0.0)
-    count = rhs.shape[0]
-    for index in range(count):
-        raw_rhs = rhs[index]
-        if not _finite_vec3(raw_rhs):
-            status = _STATUS_NONFINITE_RHS
-        if block_valid[index] == 0 and status == _STATUS_ACTIVE:
+    nonfinite_rhs = wp.int32(0)
+    failure_key = wp.int32(_PCG_REDUCTION_FAILURE_SENTINEL)
+    chunk_count = (partial_count + _PCG_REDUCTION_BLOCK_SIZE - 1) // _PCG_REDUCTION_BLOCK_SIZE
+    for chunk in range(chunk_count):
+        offset = chunk * _PCG_REDUCTION_BLOCK_SIZE
+        indices = wp.tile_map(wp.add, wp.tile_arange(_PCG_REDUCTION_BLOCK_SIZE, dtype=wp.int32), wp.int32(offset))
+        rhs_norm_squared += wp.tile_sum(
+            wp.tile_load(partial_rhs_squared, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+        )[0]
+        rho_value += wp.tile_sum(wp.tile_load(partial_rho, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset))[0]
+        nonfinite_rhs += wp.tile_sum(
+            wp.tile_load(partial_nonfinite_rhs, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+        )[0]
+        failures = wp.tile_map(
+            _masked_reduction_failure_key,
+            indices,
+            wp.tile_load(
+                partial_preconditioner_failure_key,
+                shape=_PCG_REDUCTION_BLOCK_SIZE,
+                offset=offset,
+            ),
+            wp.int32(partial_count),
+        )
+        failure_key = wp.min(failure_key, wp.tile_min(failures)[0])
+    if lane != 0:
+        return
+
+    status = int(_STATUS_ACTIVE)
+    if nonfinite_rhs != 0:
+        status = _STATUS_NONFINITE_RHS
+    elif failure_key != _PCG_REDUCTION_FAILURE_SENTINEL:
+        if failure_key % 2 == 0:
             status = _STATUS_INVALID_PRECONDITIONER
-        if preconditioner_valid[index] == 0 and status == _STATUS_ACTIVE:
+        else:
             status = _STATUS_NONFINITE_PRECONDITIONER
-        rhs_norm_squared += wp.dot(raw_rhs, raw_rhs)
-        rho_value += wp.dot(residual[index], preconditioned[index])
     if status == _STATUS_ACTIVE and (not wp.isfinite(rhs_norm_squared) or not wp.isfinite(rho_value)):
         status = _STATUS_NONFINITE_RHS
     if status == _STATUS_ACTIVE and rhs_norm_squared == wp.float64(0.0):
@@ -541,10 +686,44 @@ def _initialize_pcg_state(
 
 
 @wp.kernel(enable_backward=False)
-def _compute_pcg_step(
+def _reduce_pcg_step_stage_one(
     direction: wp.array[wp.vec3d],
     operator_direction: wp.array[wp.vec3d],
     direction_valid: wp.array[int],
+    state_status: wp.array[int],
+    partial_curvature: wp.array[wp.float64],
+    partial_failure: wp.array[int],
+):
+    tile, lane = wp.tid()
+    offset = tile * _PCG_REDUCTION_BLOCK_SIZE
+    indices = wp.tile_map(wp.add, wp.tile_arange(_PCG_REDUCTION_BLOCK_SIZE, dtype=wp.int32), wp.int32(offset))
+    direction_values = wp.tile_load(direction, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    operator_values = wp.tile_load(operator_direction, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    direction_valid_values = wp.tile_load(direction_valid, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    failures = wp.tile_map(
+        _pcg_step_failure,
+        indices,
+        direction_values,
+        operator_values,
+        direction_valid_values,
+        wp.int32(direction.shape[0]),
+    )
+    curvature_sum = wp.tile_sum(wp.tile_map(wp.dot, direction_values, operator_values))
+    failure_minimum = wp.tile_min(failures)
+    if lane == 0:
+        if state_status[0] == _STATUS_ACTIVE:
+            partial_curvature[tile] = curvature_sum[0]
+            partial_failure[tile] = failure_minimum[0]
+        else:
+            partial_curvature[tile] = wp.float64(0.0)
+            partial_failure[tile] = _PCG_REDUCTION_FAILURE_SENTINEL
+
+
+@wp.kernel(enable_backward=False)
+def _finalize_pcg_step_stage_two(
+    partial_curvature: wp.array[wp.float64],
+    partial_failure: wp.array[int],
+    partial_count: int,
     state_status: wp.array[int],
     rho: wp.array[wp.float64],
     iteration: int,
@@ -552,23 +731,31 @@ def _compute_pcg_step(
     trace_step_size: wp.array[wp.float64],
     trace_status: wp.array[int],
 ):
-    if wp.tid() != 0:
+    _tile, lane = wp.tid()
+    curvature = wp.float64(0.0)
+    failure = wp.int32(_PCG_REDUCTION_FAILURE_SENTINEL)
+    chunk_count = (partial_count + _PCG_REDUCTION_BLOCK_SIZE - 1) // _PCG_REDUCTION_BLOCK_SIZE
+    for chunk in range(chunk_count):
+        offset = chunk * _PCG_REDUCTION_BLOCK_SIZE
+        indices = wp.tile_map(wp.add, wp.tile_arange(_PCG_REDUCTION_BLOCK_SIZE, dtype=wp.int32), wp.int32(offset))
+        curvature += wp.tile_sum(wp.tile_load(partial_curvature, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset))[0]
+        failures = wp.tile_map(
+            _masked_reduction_failure_key,
+            indices,
+            wp.tile_load(partial_failure, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset),
+            wp.int32(partial_count),
+        )
+        failure = wp.min(failure, wp.tile_min(failures)[0])
+    if lane != 0:
         return
+
     status = state_status[0]
     if status != _STATUS_ACTIVE:
         trace_status[iteration] = status
         return
-    curvature = wp.float64(0.0)
-    count = direction.shape[0]
-    for index in range(count):
-        if direction_valid[index] == 0:
-            status = _STATUS_NONFINITE_UPDATE
-        left = direction[index]
-        right = operator_direction[index]
-        if not _finite_vec3(left) or not _finite_vec3(right):
-            status = _STATUS_NONFINITE_OPERATOR
-        curvature += wp.dot(left, right)
     trace_curvature[iteration] = curvature
+    if failure != _PCG_REDUCTION_FAILURE_SENTINEL:
+        status = failure
     if status == _STATUS_ACTIVE and not wp.isfinite(curvature):
         status = _STATUS_NONFINITE_OPERATOR
     if status == _STATUS_ACTIVE and curvature <= wp.float64(0.0):
@@ -630,12 +817,69 @@ def _apply_block_preconditioner(
 
 
 @wp.kernel(enable_backward=False)
-def _compute_pcg_conjugacy(
+def _reduce_pcg_conjugacy_stage_one(
     solution: wp.array[wp.vec3d],
     residual: wp.array[wp.vec3d],
     preconditioned: wp.array[wp.vec3d],
     update_valid: wp.array[int],
     preconditioner_valid: wp.array[int],
+    state_status: wp.array[int],
+    partial_residual_squared: wp.array[wp.float64],
+    partial_rho: wp.array[wp.float64],
+    partial_update_failure: wp.array[int],
+    partial_preconditioner_failure: wp.array[int],
+):
+    tile, lane = wp.tid()
+    offset = tile * _PCG_REDUCTION_BLOCK_SIZE
+    indices = wp.tile_map(wp.add, wp.tile_arange(_PCG_REDUCTION_BLOCK_SIZE, dtype=wp.int32), wp.int32(offset))
+    solution_values = wp.tile_load(solution, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    residual_values = wp.tile_load(residual, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    preconditioned_values = wp.tile_load(preconditioned, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    update_valid_values = wp.tile_load(update_valid, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    preconditioner_valid_values = wp.tile_load(
+        preconditioner_valid,
+        shape=_PCG_REDUCTION_BLOCK_SIZE,
+        offset=offset,
+    )
+    update_failures = wp.tile_map(
+        _pcg_update_failure_flag,
+        indices,
+        solution_values,
+        residual_values,
+        update_valid_values,
+        wp.int32(residual.shape[0]),
+    )
+    preconditioner_failures = wp.tile_map(
+        _pcg_preconditioner_failure_flag,
+        indices,
+        preconditioned_values,
+        preconditioner_valid_values,
+        wp.int32(residual.shape[0]),
+    )
+    residual_sum = wp.tile_sum(wp.tile_map(wp.dot, residual_values, residual_values))
+    rho_sum = wp.tile_sum(wp.tile_map(wp.dot, residual_values, preconditioned_values))
+    update_failure_sum = wp.tile_sum(update_failures)
+    preconditioner_failure_sum = wp.tile_sum(preconditioner_failures)
+    if lane == 0:
+        if state_status[0] == _STATUS_ACTIVE:
+            partial_residual_squared[tile] = residual_sum[0]
+            partial_rho[tile] = rho_sum[0]
+            partial_update_failure[tile] = update_failure_sum[0]
+            partial_preconditioner_failure[tile] = preconditioner_failure_sum[0]
+        else:
+            partial_residual_squared[tile] = wp.float64(0.0)
+            partial_rho[tile] = wp.float64(0.0)
+            partial_update_failure[tile] = 0
+            partial_preconditioner_failure[tile] = 0
+
+
+@wp.kernel(enable_backward=False)
+def _finalize_pcg_conjugacy_stage_two(
+    partial_residual_squared: wp.array[wp.float64],
+    partial_rho: wp.array[wp.float64],
+    partial_update_failure: wp.array[int],
+    partial_preconditioner_failure: wp.array[int],
+    partial_count: int,
     state_status: wp.array[int],
     completed_iterations: wp.array[int],
     rho: wp.array[wp.float64],
@@ -645,22 +889,35 @@ def _compute_pcg_conjugacy(
     trace_conjugacy: wp.array[wp.float64],
     trace_status: wp.array[int],
 ):
-    if wp.tid() != 0:
+    _tile, lane = wp.tid()
+    residual_norm_squared = wp.float64(0.0)
+    rho_new = wp.float64(0.0)
+    update_failure = wp.int32(0)
+    preconditioner_failure = wp.int32(0)
+    chunk_count = (partial_count + _PCG_REDUCTION_BLOCK_SIZE - 1) // _PCG_REDUCTION_BLOCK_SIZE
+    for chunk in range(chunk_count):
+        offset = chunk * _PCG_REDUCTION_BLOCK_SIZE
+        residual_norm_squared += wp.tile_sum(
+            wp.tile_load(partial_residual_squared, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+        )[0]
+        rho_new += wp.tile_sum(wp.tile_load(partial_rho, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset))[0]
+        update_failure += wp.tile_sum(
+            wp.tile_load(partial_update_failure, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+        )[0]
+        preconditioner_failure += wp.tile_sum(
+            wp.tile_load(partial_preconditioner_failure, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+        )[0]
+    if lane != 0:
         return
+
     status = state_status[0]
     if status != _STATUS_ACTIVE:
         trace_status[iteration] = status
         return
-    residual_norm_squared = wp.float64(0.0)
-    count = residual.shape[0]
-    for index in range(count):
-        if update_valid[index] == 0:
-            status = _STATUS_NONFINITE_UPDATE
-        if not _finite_vec3(solution[index]) or not _finite_vec3(residual[index]):
-            status = _STATUS_NONFINITE_UPDATE
-        residual_norm_squared += wp.dot(residual[index], residual[index])
     trace_residual_squared[iteration] = residual_norm_squared
     recursive_residual_squared[0] = residual_norm_squared
+    if update_failure != 0:
+        status = _STATUS_NONFINITE_UPDATE
     if status == _STATUS_ACTIVE and not wp.isfinite(residual_norm_squared):
         status = _STATUS_NONFINITE_UPDATE
     if status == _STATUS_ACTIVE:
@@ -673,13 +930,8 @@ def _compute_pcg_conjugacy(
             rho[0] = wp.float64(0.0)
         else:
             conjugacy = wp.float64(0.0)
-            for index in range(count):
-                if preconditioner_valid[index] == 0 or not _finite_vec3(preconditioned[index]):
-                    status = _STATUS_NONFINITE_PRECONDITIONER
-            rho_new = wp.float64(0.0)
-            if status == _STATUS_ACTIVE:
-                for index in range(count):
-                    rho_new += wp.dot(residual[index], preconditioned[index])
+            if preconditioner_failure != 0:
+                status = _STATUS_NONFINITE_PRECONDITIONER
             if status == _STATUS_ACTIVE and not wp.isfinite(rho_new):
                 status = _STATUS_NONFINITE_UPDATE
             if status == _STATUS_ACTIVE and rho_new <= wp.float64(0.0):
@@ -696,10 +948,44 @@ def _compute_pcg_conjugacy(
 
 
 @wp.kernel(enable_backward=False)
-def _finalize_pcg_iteration(
+def _reduce_final_pcg_iteration_stage_one(
     solution: wp.array[wp.vec3d],
     residual: wp.array[wp.vec3d],
     update_valid: wp.array[int],
+    state_status: wp.array[int],
+    partial_residual_squared: wp.array[wp.float64],
+    partial_update_failure: wp.array[int],
+):
+    tile, lane = wp.tid()
+    offset = tile * _PCG_REDUCTION_BLOCK_SIZE
+    indices = wp.tile_map(wp.add, wp.tile_arange(_PCG_REDUCTION_BLOCK_SIZE, dtype=wp.int32), wp.int32(offset))
+    solution_values = wp.tile_load(solution, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    residual_values = wp.tile_load(residual, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    update_valid_values = wp.tile_load(update_valid, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+    update_failures = wp.tile_map(
+        _pcg_update_failure_flag,
+        indices,
+        solution_values,
+        residual_values,
+        update_valid_values,
+        wp.int32(residual.shape[0]),
+    )
+    residual_sum = wp.tile_sum(wp.tile_map(wp.dot, residual_values, residual_values))
+    update_failure_sum = wp.tile_sum(update_failures)
+    if lane == 0:
+        if state_status[0] == _STATUS_ACTIVE:
+            partial_residual_squared[tile] = residual_sum[0]
+            partial_update_failure[tile] = update_failure_sum[0]
+        else:
+            partial_residual_squared[tile] = wp.float64(0.0)
+            partial_update_failure[tile] = 0
+
+
+@wp.kernel(enable_backward=False)
+def _finalize_final_pcg_iteration_stage_two(
+    partial_residual_squared: wp.array[wp.float64],
+    partial_update_failure: wp.array[int],
+    partial_count: int,
     state_status: wp.array[int],
     completed_iterations: wp.array[int],
     recursive_residual_squared: wp.array[wp.float64],
@@ -707,22 +993,29 @@ def _finalize_pcg_iteration(
     trace_residual_squared: wp.array[wp.float64],
     trace_status: wp.array[int],
 ):
-    if wp.tid() != 0:
+    _tile, lane = wp.tid()
+    residual_norm_squared = wp.float64(0.0)
+    update_failure = wp.int32(0)
+    chunk_count = (partial_count + _PCG_REDUCTION_BLOCK_SIZE - 1) // _PCG_REDUCTION_BLOCK_SIZE
+    for chunk in range(chunk_count):
+        offset = chunk * _PCG_REDUCTION_BLOCK_SIZE
+        residual_norm_squared += wp.tile_sum(
+            wp.tile_load(partial_residual_squared, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+        )[0]
+        update_failure += wp.tile_sum(
+            wp.tile_load(partial_update_failure, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+        )[0]
+    if lane != 0:
         return
+
     status = state_status[0]
     if status != _STATUS_ACTIVE:
         trace_status[iteration] = status
         return
-    residual_norm_squared = wp.float64(0.0)
-    count = residual.shape[0]
-    for index in range(count):
-        if update_valid[index] == 0:
-            status = _STATUS_NONFINITE_UPDATE
-        if not _finite_vec3(solution[index]) or not _finite_vec3(residual[index]):
-            status = _STATUS_NONFINITE_UPDATE
-        residual_norm_squared += wp.dot(residual[index], residual[index])
     trace_residual_squared[iteration] = residual_norm_squared
     recursive_residual_squared[0] = residual_norm_squared
+    if update_failure != 0:
+        status = _STATUS_NONFINITE_UPDATE
     if status == _STATUS_ACTIVE and not wp.isfinite(residual_norm_squared):
         status = _STATUS_NONFINITE_UPDATE
     if status == _STATUS_ACTIVE:
@@ -755,22 +1048,55 @@ def _update_pcg_direction(
 
 
 @wp.kernel(enable_backward=False)
-def _verify_true_residual(
+def _reduce_true_residual_stage_one(
     rhs: wp.array[wp.vec3d],
     operator_solution: wp.array[wp.vec3d],
+    partial_residual_squared: wp.array[wp.float64],
+    partial_nonfinite_residual: wp.array[int],
+):
+    tile, lane = wp.tid()
+    offset = tile * _PCG_REDUCTION_BLOCK_SIZE
+    indices = wp.tile_map(wp.add, wp.tile_arange(_PCG_REDUCTION_BLOCK_SIZE, dtype=wp.int32), wp.int32(offset))
+    residual_values = wp.tile_load(rhs, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset) - wp.tile_load(
+        operator_solution,
+        shape=_PCG_REDUCTION_BLOCK_SIZE,
+        offset=offset,
+    )
+    nonfinite = wp.tile_map(
+        _nonfinite_vec3_reduction_flag,
+        indices,
+        residual_values,
+        wp.int32(rhs.shape[0]),
+    )
+    residual_sum = wp.tile_sum(wp.tile_map(wp.dot, residual_values, residual_values))
+    nonfinite_sum = wp.tile_sum(nonfinite)
+    if lane == 0:
+        partial_residual_squared[tile] = residual_sum[0]
+        partial_nonfinite_residual[tile] = nonfinite_sum[0]
+
+
+@wp.kernel(enable_backward=False)
+def _finalize_true_residual_stage_two(
+    partial_residual_squared: wp.array[wp.float64],
+    partial_nonfinite_residual: wp.array[int],
+    partial_count: int,
     state_status: wp.array[int],
     true_residual_squared: wp.array[wp.float64],
 ):
-    if wp.tid() != 0:
-        return
+    _tile, lane = wp.tid()
     value = wp.float64(0.0)
-    finite = bool(True)
-    count = rhs.shape[0]
-    for index in range(count):
-        residual = rhs[index] - operator_solution[index]
-        finite = finite and _finite_vec3(residual)
-        value += wp.dot(residual, residual)
-    if not finite or not wp.isfinite(value):
+    nonfinite = wp.int32(0)
+    chunk_count = (partial_count + _PCG_REDUCTION_BLOCK_SIZE - 1) // _PCG_REDUCTION_BLOCK_SIZE
+    for chunk in range(chunk_count):
+        offset = chunk * _PCG_REDUCTION_BLOCK_SIZE
+        value += wp.tile_sum(wp.tile_load(partial_residual_squared, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset))[0]
+        nonfinite += wp.tile_sum(
+            wp.tile_load(partial_nonfinite_residual, shape=_PCG_REDUCTION_BLOCK_SIZE, offset=offset)
+        )[0]
+    if lane != 0:
+        return
+
+    if nonfinite != 0 or not wp.isfinite(value):
         if (
             state_status[0] == _STATUS_ACTIVE
             or state_status[0] == _STATUS_COMPLETED
@@ -1145,6 +1471,10 @@ class WarpFixedPCGWork:
     residual_verification_applications: int
     preconditioner_applications: int
     scalar_reductions: int
+    reduction_stages: int
+    reduction_block_size: int
+    reduction_tile_count: int
+    reduction_kernel_launches: int
     kernel_launches: int
 
     def __post_init__(self) -> None:
@@ -1152,6 +1482,14 @@ class WarpFixedPCGWork:
             value = getattr(self, field.name)
             if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 0:
                 raise ValueError(f"{field.name} must be a non-negative integer")
+        if self.reduction_stages != _PCG_REDUCTION_STAGES:
+            raise ValueError("fixed PCG reductions must use exactly two stages")
+        if self.reduction_block_size != _PCG_REDUCTION_BLOCK_SIZE:
+            raise ValueError("fixed PCG reductions must use the frozen block size")
+        if self.reduction_tile_count < 1:
+            raise ValueError("fixed PCG reductions require at least one persistent tile")
+        if self.reduction_kernel_launches != self.scalar_reductions * self.reduction_stages:
+            raise ValueError("reduction kernel launches must cover every stage of every reduction")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1334,6 +1672,13 @@ class WarpFixedPCGWorkspace:
         self.trace_residual_squared = wp.empty(self.iterations, dtype=wp.float64, device=device)
         self.trace_conjugacy = wp.empty(self.iterations, dtype=wp.float64, device=device)
         self.trace_status = wp.empty(self.iterations, dtype=wp.int32, device=device)
+        self.reduction_block_size = _PCG_REDUCTION_BLOCK_SIZE
+        self.reduction_tile_count = (count + self.reduction_block_size - 1) // self.reduction_block_size
+        self.reduction_padded_count = self.reduction_tile_count * self.reduction_block_size
+        self.reduction_partial_first = wp.empty(self.reduction_tile_count, dtype=wp.float64, device=device)
+        self.reduction_partial_second = wp.empty(self.reduction_tile_count, dtype=wp.float64, device=device)
+        self.reduction_partial_flag_first = wp.empty(self.reduction_tile_count, dtype=wp.int32, device=device)
+        self.reduction_partial_flag_second = wp.empty(self.reduction_tile_count, dtype=wp.int32, device=device)
 
         if device_preconditioner is not None and external_preconditioner_inverse is not None:
             raise ValueError("device_preconditioner and external_preconditioner_inverse are mutually exclusive")
@@ -1389,21 +1734,31 @@ class WarpFixedPCGWorkspace:
     @property
     def work(self) -> WarpFixedPCGWork:
         """Exact scheduled work, including masked launches after failure."""
+        scalar_reductions = 2 * self.iterations + 2
+        reduction_kernel_launches = scalar_reductions * _PCG_REDUCTION_STAGES
         if self.device_preconditioner is not None:
             preconditioner_launches = self.device_preconditioner.application_kernel_launches
             # Initial vector/trace/state setup contributes five kernels around
             # the first preconditioner apply. Each nonfinal PCG update adds
             # seven non-preconditioner kernels, the final update adds five,
-            # and true-residual verification adds three.
-            kernel_launches = preconditioner_launches + 13 + (self.iterations - 1) * (preconditioner_launches + 7)
+            # and true-residual verification adds three in the serial-reduction
+            # baseline. Every logical reduction now has one additional tiled
+            # stage-two launch.
+            serial_baseline_launches = (
+                preconditioner_launches + 13 + (self.iterations - 1) * (preconditioner_launches + 7)
+            )
             return WarpFixedPCGWork(
                 geometry_evaluations=0,
                 preconditioner_builds=0,
                 operator_applications=self.iterations + 1,
                 residual_verification_applications=1,
                 preconditioner_applications=self.iterations,
-                scalar_reductions=2 * self.iterations + 2,
-                kernel_launches=kernel_launches,
+                scalar_reductions=scalar_reductions,
+                reduction_stages=_PCG_REDUCTION_STAGES,
+                reduction_block_size=self.reduction_block_size,
+                reduction_tile_count=self.reduction_tile_count,
+                reduction_kernel_launches=reduction_kernel_launches,
+                kernel_launches=serial_baseline_launches + scalar_reductions,
             )
         preconditioner_build_launches = 2 if self._build_preconditioner else 0
         return WarpFixedPCGWork(
@@ -1412,8 +1767,12 @@ class WarpFixedPCGWorkspace:
             operator_applications=self.iterations + 1,
             residual_verification_applications=1,
             preconditioner_applications=self.iterations + 1,
-            scalar_reductions=2 * self.iterations + 2,
-            kernel_launches=preconditioner_build_launches + 7 * self.iterations + 6,
+            scalar_reductions=scalar_reductions,
+            reduction_stages=_PCG_REDUCTION_STAGES,
+            reduction_block_size=self.reduction_block_size,
+            reduction_tile_count=self.reduction_tile_count,
+            reduction_kernel_launches=reduction_kernel_launches,
+            kernel_launches=preconditioner_build_launches + 9 * self.iterations + 8,
         )
 
     def set_rhs(self, rhs: np.ndarray | Sequence[float]) -> None:
@@ -1424,6 +1783,188 @@ class WarpFixedPCGWorkspace:
                 f"rhs must have shape ({self.operator.n_free}, 3) or ({self.operator.n_free_dofs},), got {values.shape}"
             )
         self.rhs.assign(values.reshape(-1, 3))
+
+    def _launch_initial_reduction(self) -> None:
+        """Launch the fused two-stage ``rhs.T rhs`` and ``r.T z`` reduction."""
+        device = self.operator.device
+        wp.launch(
+            _reduce_initial_pcg_state_stage_one,
+            dim=(self.reduction_tile_count, self.reduction_block_size),
+            inputs=[
+                self.rhs,
+                self.residual,
+                self.preconditioned,
+                self.block_valid,
+                self.preconditioner_valid,
+                self.reduction_partial_first,
+                self.reduction_partial_second,
+                self.reduction_partial_flag_first,
+                self.reduction_partial_flag_second,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
+        wp.launch(
+            _finalize_initial_pcg_state_stage_two,
+            dim=(1, self.reduction_block_size),
+            inputs=[
+                self.reduction_partial_first,
+                self.reduction_partial_second,
+                self.reduction_partial_flag_first,
+                self.reduction_partial_flag_second,
+                self.reduction_tile_count,
+                self.state_status,
+                self.completed_iterations,
+                self.rho,
+                self.rhs_squared,
+                self.recursive_residual_squared,
+                self.true_residual_squared,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
+
+    def _launch_step_reduction(self, iteration: int) -> None:
+        """Launch the two-stage ``p.T A p`` reduction and step finalizer."""
+        device = self.operator.device
+        wp.launch(
+            _reduce_pcg_step_stage_one,
+            dim=(self.reduction_tile_count, self.reduction_block_size),
+            inputs=[
+                self.direction,
+                self.operator_direction,
+                self.direction_valid,
+                self.state_status,
+                self.reduction_partial_first,
+                self.reduction_partial_flag_first,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
+        wp.launch(
+            _finalize_pcg_step_stage_two,
+            dim=(1, self.reduction_block_size),
+            inputs=[
+                self.reduction_partial_first,
+                self.reduction_partial_flag_first,
+                self.reduction_tile_count,
+                self.state_status,
+                self.rho,
+                iteration,
+                self.trace_curvature,
+                self.trace_step_size,
+                self.trace_status,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
+
+    def _launch_conjugacy_reduction(self, iteration: int) -> None:
+        """Launch fused two-stage ``r.T r`` and ``r.T z`` reductions."""
+        device = self.operator.device
+        wp.launch(
+            _reduce_pcg_conjugacy_stage_one,
+            dim=(self.reduction_tile_count, self.reduction_block_size),
+            inputs=[
+                self.solution,
+                self.residual,
+                self.preconditioned,
+                self.update_valid,
+                self.preconditioner_valid,
+                self.state_status,
+                self.reduction_partial_first,
+                self.reduction_partial_second,
+                self.reduction_partial_flag_first,
+                self.reduction_partial_flag_second,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
+        wp.launch(
+            _finalize_pcg_conjugacy_stage_two,
+            dim=(1, self.reduction_block_size),
+            inputs=[
+                self.reduction_partial_first,
+                self.reduction_partial_second,
+                self.reduction_partial_flag_first,
+                self.reduction_partial_flag_second,
+                self.reduction_tile_count,
+                self.state_status,
+                self.completed_iterations,
+                self.rho,
+                self.recursive_residual_squared,
+                iteration,
+                self.trace_residual_squared,
+                self.trace_conjugacy,
+                self.trace_status,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
+
+    def _launch_final_iteration_reduction(self, iteration: int) -> None:
+        """Launch the final two-stage ``r.T r`` reduction."""
+        device = self.operator.device
+        wp.launch(
+            _reduce_final_pcg_iteration_stage_one,
+            dim=(self.reduction_tile_count, self.reduction_block_size),
+            inputs=[
+                self.solution,
+                self.residual,
+                self.update_valid,
+                self.state_status,
+                self.reduction_partial_first,
+                self.reduction_partial_flag_first,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
+        wp.launch(
+            _finalize_final_pcg_iteration_stage_two,
+            dim=(1, self.reduction_block_size),
+            inputs=[
+                self.reduction_partial_first,
+                self.reduction_partial_flag_first,
+                self.reduction_tile_count,
+                self.state_status,
+                self.completed_iterations,
+                self.recursive_residual_squared,
+                iteration,
+                self.trace_residual_squared,
+                self.trace_status,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
+
+    def _launch_true_residual_reduction(self) -> None:
+        """Launch the two-stage independently recomputed residual norm."""
+        device = self.operator.device
+        wp.launch(
+            _reduce_true_residual_stage_one,
+            dim=(self.reduction_tile_count, self.reduction_block_size),
+            inputs=[
+                self.rhs,
+                self.operator_solution,
+                self.reduction_partial_first,
+                self.reduction_partial_flag_first,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
+        wp.launch(
+            _finalize_true_residual_stage_two,
+            dim=(1, self.reduction_block_size),
+            inputs=[
+                self.reduction_partial_first,
+                self.reduction_partial_flag_first,
+                self.reduction_tile_count,
+                self.state_status,
+                self.true_residual_squared,
+            ],
+            block_dim=self.reduction_block_size,
+            device=device,
+        )
 
     def launch(self) -> None:
         """Launch the complete allocation-free fixed PCG schedule."""
@@ -1467,42 +2008,10 @@ class WarpFixedPCGWorkspace:
             ],
             device=device,
         )
-        wp.launch(
-            _initialize_pcg_state,
-            dim=1,
-            inputs=[
-                self.rhs,
-                self.residual,
-                self.preconditioned,
-                self.block_valid,
-                self.preconditioner_valid,
-                self.state_status,
-                self.completed_iterations,
-                self.rho,
-                self.rhs_squared,
-                self.recursive_residual_squared,
-                self.true_residual_squared,
-            ],
-            device=device,
-        )
+        self._launch_initial_reduction()
         for iteration in range(self.iterations):
             self.operator.launch_apply(self.direction, self.operator_direction, self.apply_workspace)
-            wp.launch(
-                _compute_pcg_step,
-                dim=1,
-                inputs=[
-                    self.direction,
-                    self.operator_direction,
-                    self.direction_valid,
-                    self.state_status,
-                    self.rho,
-                    iteration,
-                    self.trace_curvature,
-                    self.trace_step_size,
-                    self.trace_status,
-                ],
-                device=device,
-            )
+            self._launch_step_reduction(iteration)
             wp.launch(
                 _update_solution_residual,
                 dim=count,
@@ -1530,26 +2039,7 @@ class WarpFixedPCGWorkspace:
                 ],
                 device=device,
             )
-            wp.launch(
-                _compute_pcg_conjugacy,
-                dim=1,
-                inputs=[
-                    self.solution,
-                    self.residual,
-                    self.preconditioned,
-                    self.update_valid,
-                    self.preconditioner_valid,
-                    self.state_status,
-                    self.completed_iterations,
-                    self.rho,
-                    self.recursive_residual_squared,
-                    iteration,
-                    self.trace_residual_squared,
-                    self.trace_conjugacy,
-                    self.trace_status,
-                ],
-                device=device,
-            )
+            self._launch_conjugacy_reduction(iteration)
             wp.launch(
                 _update_pcg_direction,
                 dim=count,
@@ -1564,12 +2054,7 @@ class WarpFixedPCGWorkspace:
                 device=device,
             )
         self.operator.launch_apply(self.solution, self.operator_solution, self.apply_workspace)
-        wp.launch(
-            _verify_true_residual,
-            dim=1,
-            inputs=[self.rhs, self.operator_solution, self.state_status, self.true_residual_squared],
-            device=device,
-        )
+        self._launch_true_residual_reduction()
 
     def _launch_device_preconditioned(self) -> None:
         """Launch fixed PCG with exactly one typed device apply per Krylov step."""
@@ -1613,42 +2098,10 @@ class WarpFixedPCGWorkspace:
             inputs=[self.preconditioned, self.preconditioner_valid, self.direction, self.direction_valid],
             device=device,
         )
-        wp.launch(
-            _initialize_pcg_state,
-            dim=1,
-            inputs=[
-                self.rhs,
-                self.residual,
-                self.preconditioned,
-                self.block_valid,
-                self.preconditioner_valid,
-                self.state_status,
-                self.completed_iterations,
-                self.rho,
-                self.rhs_squared,
-                self.recursive_residual_squared,
-                self.true_residual_squared,
-            ],
-            device=device,
-        )
+        self._launch_initial_reduction()
         for iteration in range(self.iterations):
             self.operator.launch_apply(self.direction, self.operator_direction, self.apply_workspace)
-            wp.launch(
-                _compute_pcg_step,
-                dim=1,
-                inputs=[
-                    self.direction,
-                    self.operator_direction,
-                    self.direction_valid,
-                    self.state_status,
-                    self.rho,
-                    iteration,
-                    self.trace_curvature,
-                    self.trace_step_size,
-                    self.trace_status,
-                ],
-                device=device,
-            )
+            self._launch_step_reduction(iteration)
             wp.launch(
                 _update_solution_residual,
                 dim=count,
@@ -1665,22 +2118,7 @@ class WarpFixedPCGWorkspace:
                 device=device,
             )
             if iteration + 1 == self.iterations:
-                wp.launch(
-                    _finalize_pcg_iteration,
-                    dim=1,
-                    inputs=[
-                        self.solution,
-                        self.residual,
-                        self.update_valid,
-                        self.state_status,
-                        self.completed_iterations,
-                        self.recursive_residual_squared,
-                        iteration,
-                        self.trace_residual_squared,
-                        self.trace_status,
-                    ],
-                    device=device,
-                )
+                self._launch_final_iteration_reduction(iteration)
                 continue
             preconditioner.launch_apply(
                 self.residual,
@@ -1693,26 +2131,7 @@ class WarpFixedPCGWorkspace:
                 inputs=[self.state_status, self.preconditioned, self.preconditioner_valid],
                 device=device,
             )
-            wp.launch(
-                _compute_pcg_conjugacy,
-                dim=1,
-                inputs=[
-                    self.solution,
-                    self.residual,
-                    self.preconditioned,
-                    self.update_valid,
-                    self.preconditioner_valid,
-                    self.state_status,
-                    self.completed_iterations,
-                    self.rho,
-                    self.recursive_residual_squared,
-                    iteration,
-                    self.trace_residual_squared,
-                    self.trace_conjugacy,
-                    self.trace_status,
-                ],
-                device=device,
-            )
+            self._launch_conjugacy_reduction(iteration)
             wp.launch(
                 _update_pcg_direction,
                 dim=count,
@@ -1727,12 +2146,7 @@ class WarpFixedPCGWorkspace:
                 device=device,
             )
         self.operator.launch_apply(self.solution, self.operator_solution, self.apply_workspace)
-        wp.launch(
-            _verify_true_residual,
-            dim=1,
-            inputs=[self.rhs, self.operator_solution, self.state_status, self.true_residual_squared],
-            device=device,
-        )
+        self._launch_true_residual_reduction()
 
     def record(self, *, capture_replay: bool = False) -> WarpFixedPCGRecord:
         """Synchronously materialize a diagnostic record after execution."""

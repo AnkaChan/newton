@@ -93,6 +93,33 @@ def _oracle_and_device(device: str) -> tuple[MatrixFreeStableNHOperator, WarpMat
     return oracle, WarpMatrixFreeStableNHOperator.from_oracle(oracle, device=device)
 
 
+def _diagonal_oracle_and_device(
+    vector_count: int,
+    device: str,
+) -> tuple[MatrixFreeStableNHOperator, WarpMatrixFreeStableNHOperator]:
+    """Build an inertia-only SPD operator with an exact requested row count."""
+    positions = np.zeros((vector_count, 3), dtype=np.float64)
+    oracle = MatrixFreeStableNHOperator(
+        positions=positions,
+        tets=np.array(((0, 1, 2, 3),), dtype=np.int64),
+        shape_gradients=np.zeros((1, 4, 3), dtype=np.float64),
+        volumes=np.ones(1, dtype=np.float64),
+        mass=np.linspace(0.75, 1.75, vector_count, dtype=np.float64),
+        mu=np.zeros(1, dtype=np.float64),
+        lam=np.zeros(1, dtype=np.float64),
+        inertial_target=positions,
+        pinned=np.empty(0, dtype=np.int64),
+        free=np.arange(vector_count, dtype=np.int64),
+        pin_targets=np.empty((0, 3), dtype=np.float64),
+        dt=0.2,
+    )
+    return oracle, WarpMatrixFreeStableNHOperator.from_oracle(oracle, device=device)
+
+
+def _identity_block_preconditioner(vector_count: int) -> np.ndarray:
+    return np.repeat(np.eye(3, dtype=np.float64)[None], vector_count, axis=0)
+
+
 class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -100,8 +127,8 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
         cls.oracle, cls.operator = _oracle_and_device("cpu")
 
     def test_kernel_version_is_explicit(self):
-        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-operator-v1")
-        self.assertEqual(CONTRACT_ID, "mg-vbd-warp-fixed-pcg-research-v1")
+        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-operator-v2-tiled-pcg")
+        self.assertEqual(CONTRACT_ID, "mg-vbd-warp-fixed-pcg-research-v2")
 
     def test_sorted_gather_and_exact_free_elimination(self):
         operator = self.operator
@@ -210,6 +237,10 @@ class TestWarpFixedPCG(unittest.TestCase):
                 "state_status",
                 "rho",
                 "trace_curvature",
+                "reduction_partial_first",
+                "reduction_partial_second",
+                "reduction_partial_flag_first",
+                "reduction_partial_flag_second",
             )
         }
         workspace.set_rhs(self.rhs)
@@ -232,9 +263,81 @@ class TestWarpFixedPCG(unittest.TestCase):
         self.assertEqual(result.work.residual_verification_applications, 1)
         self.assertEqual(result.work.preconditioner_applications, iterations + 1)
         self.assertEqual(result.work.scalar_reductions, 2 * iterations + 2)
-        self.assertEqual(result.work.kernel_launches, 2 + 7 * iterations + 6)
+        self.assertEqual(result.work.reduction_stages, 2)
+        self.assertEqual(result.work.reduction_block_size, 256)
+        self.assertEqual(result.work.reduction_tile_count, 1)
+        self.assertEqual(result.work.reduction_kernel_launches, 2 * result.work.scalar_reductions)
+        self.assertEqual(result.work.kernel_launches, 2 + 7 * iterations + 6 + result.work.scalar_reductions)
         np.testing.assert_allclose(result.solution.reshape(-1), expected.solution, rtol=3.0e-13, atol=3.0e-14)
         self.assertAlmostEqual(result.true_residual_norm, expected.true_residual_norm, places=13)
+
+    def test_tiled_reductions_cover_rows_around_block_boundary(self):
+        iterations = 4
+        for vector_count in (255, 256, 257):
+            with self.subTest(vector_count=vector_count):
+                oracle, operator = _diagonal_oracle_and_device(vector_count, "cpu")
+                rhs = np.random.default_rng(900 + vector_count).normal(size=oracle.n_free_dofs)
+                expected = solve_fixed_pcg(
+                    oracle,
+                    rhs,
+                    iterations,
+                    preconditioner=lambda value: value,
+                    preconditioner_identity="test-identity-tiled-reduction-v1",
+                )
+                workspace = WarpFixedPCGWorkspace(
+                    operator,
+                    iterations,
+                    external_preconditioner_inverse=_identity_block_preconditioner(vector_count),
+                    preconditioner_identity="test-identity-tiled-reduction-v1",
+                )
+                partial_names = (
+                    "reduction_partial_first",
+                    "reduction_partial_second",
+                    "reduction_partial_flag_first",
+                    "reduction_partial_flag_second",
+                )
+                pointers = tuple(int(getattr(workspace, name).ptr) for name in partial_names)
+                snapshots = []
+                for _ in range(2):
+                    workspace.set_rhs(rhs)
+                    workspace.launch()
+                    snapshots.append(workspace.record())
+
+                actual = snapshots[0]
+                self.assertTrue(actual.success, actual.deterministic_record())
+                self.assertEqual(actual.reason, "completed")
+                self.assertEqual(actual.work.reduction_block_size, 256)
+                self.assertEqual(actual.work.reduction_tile_count, (vector_count + 255) // 256)
+                self.assertEqual(workspace.reduction_padded_count, actual.work.reduction_tile_count * 256)
+                self.assertEqual(actual.work.reduction_kernel_launches, 2 * actual.work.scalar_reductions)
+                np.testing.assert_allclose(actual.solution.reshape(-1), expected.solution, rtol=8.0e-13, atol=8.0e-14)
+                np.testing.assert_array_equal(snapshots[1].solution, actual.solution)
+                self.assertEqual(snapshots[1].deterministic_record(), actual.deterministic_record())
+                self.assertEqual(pointers, tuple(int(getattr(workspace, name).ptr) for name in partial_names))
+
+    def test_nonfinite_rhs_in_second_tile_preserves_primary_status(self):
+        vector_count = 257
+        oracle, operator = _diagonal_oracle_and_device(vector_count, "cpu")
+        rhs = np.random.default_rng(1171).normal(size=oracle.n_free_dofs)
+        rhs[3 * 256 + 1] = np.nan
+        workspace = WarpFixedPCGWorkspace(
+            operator,
+            3,
+            external_preconditioner_inverse=_identity_block_preconditioner(vector_count),
+            preconditioner_identity="test-identity-tiled-nonfinite-v1",
+        )
+        workspace.set_rhs(rhs)
+        workspace.launch()
+        result = workspace.record()
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.reason, "nonfinite_rhs")
+        self.assertEqual(result.completed_iterations, 0)
+        self.assertIsNone(result.rhs_norm)
+        self.assertEqual(result.work.reduction_tile_count, 2)
+        self.assertEqual(result.work.reduction_kernel_launches, 2 * result.work.scalar_reductions)
+        self.assertEqual([item.status for item in result.trace], [result.reason] * 3)
+        json.dumps(result.deterministic_record(), allow_nan=False)
 
     def test_breakdown_is_masked_without_shortening_schedule(self):
         iterations = 3
@@ -263,7 +366,9 @@ class TestWarpFixedPCG(unittest.TestCase):
         self.assertEqual(result.work.operator_applications, iterations + 1)
         self.assertEqual(result.work.preconditioner_applications, iterations + 1)
         self.assertEqual(result.work.scalar_reductions, 2 * iterations + 2)
-        self.assertEqual(result.work.kernel_launches, 7 * iterations + 6)
+        self.assertEqual(result.work.reduction_stages, 2)
+        self.assertEqual(result.work.reduction_kernel_launches, 2 * result.work.scalar_reductions)
+        self.assertEqual(result.work.kernel_launches, 7 * iterations + 6 + result.work.scalar_reductions)
 
     def test_external_preconditioner_requires_exact_symmetric_positive_definite_blocks(self):
         blocks = np.repeat(np.eye(3, dtype=np.float64)[None], self.operator.n_free, axis=0)
