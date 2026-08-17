@@ -27,7 +27,7 @@ from newton._src.solvers.solver import integrate_rigid_body
 
 wp.set_module_options({"enable_backward": False})
 
-_KERNEL_VERSION = "cable_relative_twist_v2b"
+_KERNEL_VERSION = "cable_lazy_history_v3"
 print(f"[rigid_vbd_kernels] version: {_KERNEL_VERSION}")
 
 # ---------------------------------
@@ -1910,29 +1910,22 @@ def evaluate_joint_force_hessian(
 
     if parent_index >= 0:
         parent_pose = body_q[parent_index]
-        parent_pose_prev = body_q_prev[parent_index]
         parent_com = body_com[parent_index]
     else:
         parent_pose = wp.transform(wp.vec3(0.0), wp.quat_identity())
-        parent_pose_prev = parent_pose
         parent_com = wp.vec3(0.0)
 
     child_pose = body_q[child_index]
-    child_pose_prev = body_q_prev[child_index]
     child_com = body_com[child_index]
 
     X_wp = parent_pose * X_pj
     X_wc = child_pose * X_cj
-    X_wp_prev = parent_pose_prev * X_pj
-    X_wc_prev = child_pose_prev * X_cj
 
     c_start = joint_constraint_start[joint_index]
 
     # Hoist quaternion extraction (shared by all angular constraints and drive/limits)
     q_wp = wp.transform_get_rotation(X_wp)
     q_wc = wp.transform_get_rotation(X_wc)
-    q_wp_prev = wp.transform_get_rotation(X_wp_prev)
-    q_wc_prev = wp.transform_get_rotation(X_wc_prev)
 
     if jt == JointType.CABLE:
         stretch_idx = c_start
@@ -1947,6 +1940,23 @@ def evaluate_joint_force_hessian(
         k_twist = joint_penalty_k[twist_idx]
         kd_bend = joint_penalty_kd[bend_idx]
         kd_twist = joint_penalty_kd[twist_idx]
+
+        X_wp_prev = X_wp
+        X_wc_prev = X_wc
+        q_wp_prev = q_wp
+        q_wc_prev = q_wc
+        cable_damping_active = (
+            kd_stretch > 0.0 or kd_shear > 0.0 or kd_bend > 0.0 or kd_twist > 0.0
+        )
+        if cable_damping_active:
+            parent_pose_prev = parent_pose
+            if parent_index >= 0:
+                parent_pose_prev = body_q_prev[parent_index]
+            child_pose_prev = body_q_prev[child_index]
+            X_wp_prev = parent_pose_prev * X_pj
+            X_wc_prev = child_pose_prev * X_cj
+            q_wp_prev = wp.transform_get_rotation(X_wp_prev)
+            q_wc_prev = wp.transform_get_rotation(X_wc_prev)
 
         total_force = wp.vec3(0.0)
         total_torque = wp.vec3(0.0)
@@ -2061,6 +2071,15 @@ def evaluate_joint_force_hessian(
             total_H_aa = total_H_aa + Haa_l
 
         return total_force, total_torque, total_H_ll, total_H_al, total_H_aa
+
+    parent_pose_prev = parent_pose
+    if parent_index >= 0:
+        parent_pose_prev = body_q_prev[parent_index]
+    child_pose_prev = body_q_prev[child_index]
+    X_wp_prev = parent_pose_prev * X_pj
+    X_wc_prev = child_pose_prev * X_cj
+    q_wp_prev = wp.transform_get_rotation(X_wp_prev)
+    q_wc_prev = wp.transform_get_rotation(X_wc_prev)
 
     P_I = wp.identity(3, float)
 
