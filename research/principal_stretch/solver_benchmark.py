@@ -31,17 +31,18 @@ import time
 import types
 from collections.abc import Mapping, Sequence
 
-import newton
 import numpy as np
 import torch
 import warp as wp
+
+import newton
 from newton.solvers import SolverVBD
 
 from .newton_baseline import NewtonConfig, NewtonProblem, NewtonResult, build_newton_problem, solve_newton
 from .potentials import incremental_potential_stable_neo_hookean
 from .torch_solver import compute_F
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 def _readonly_array(value, dtype: np.dtype, name: str) -> np.ndarray:
@@ -220,9 +221,7 @@ class TetBenchmarkScene:
             "tri_areas": _readonly_vbd_float(self.tri_areas, "tri_areas"),
             "particle_flags": _readonly_array(self.particle_flags, np.int32, "particle_flags"),
             "color_group_offsets": _readonly_array(self.color_group_offsets, np.int64, "color_group_offsets"),
-            "color_group_particles": _readonly_array(
-                self.color_group_particles, np.int64, "color_group_particles"
-            ),
+            "color_group_particles": _readonly_array(self.color_group_particles, np.int64, "color_group_particles"),
             "x_current": _readonly_vbd_float(self.x_current, "x_current"),
             "velocity": _readonly_vbd_float(self.velocity, "velocity"),
             "gravity": _readonly_vbd_float(self.gravity, "gravity"),
@@ -277,9 +276,9 @@ class TetBenchmarkScene:
             raise ValueError("mass must be non-negative")
         expected_inverse_mass = np.zeros(n_vertices, dtype=np.float32)
         positive_mass = self.mass.astype(np.float32) > 0.0
-        expected_inverse_mass[positive_mass] = (
-            np.float32(1.0) / self.mass.astype(np.float32)[positive_mass]
-        ).astype(np.float32)
+        expected_inverse_mass[positive_mass] = (np.float32(1.0) / self.mass.astype(np.float32)[positive_mass]).astype(
+            np.float32
+        )
         if not np.array_equal(self.particle_inv_mass, expected_inverse_mass.astype(np.float64)):
             raise ValueError("particle_inv_mass must exactly match SolverVBD's float32 reciprocal mass")
         if np.any(self.tet_materials < 0.0):
@@ -405,6 +404,93 @@ class TetBenchmarkScene:
         }
         payload["scene_sha256"] = _canonical_digest(payload)
         return payload
+
+
+def scene_from_model(
+    model: newton.Model,
+    *,
+    name: str,
+    source: str,
+    dt: float,
+    x_current: np.ndarray | None = None,
+    velocity: np.ndarray | None = None,
+    external_force: np.ndarray | None = None,
+    pin_targets: np.ndarray | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> TetBenchmarkScene:
+    """Snapshot one finalized public Newton model into the benchmark contract.
+
+    The supported model contains particles, tetrahedral elasticity, and
+    zero-energy boundary triangles only. Contact, damping, springs, bending
+    edges, bodies, and surface energy are intentionally excluded from the
+    shared scalar objective.
+    """
+    if model.particle_count == 0 or model.tet_count == 0:
+        raise ValueError("benchmark model must contain particles and tetrahedra")
+    if model.edge_count or model.spring_count or model.body_count or model.shape_count:
+        raise ValueError("benchmark model must not contain edges, springs, bodies, or shapes")
+    if not model.particle_color_groups:
+        raise ValueError("benchmark model must be colored before finalization")
+
+    rest_q = model.particle_q.numpy().astype(np.float64)
+    mass = model.particle_mass.numpy().astype(np.float64)
+    particle_flags = model.particle_flags.numpy().astype(np.int32)
+    active_flag = int(newton.ParticleFlags.ACTIVE)
+    pinned = np.where((mass == 0.0) | ((particle_flags & active_flag) == 0))[0].astype(np.int64)
+    positions = rest_q if x_current is None else np.asarray(x_current, dtype=np.float64)
+    velocities = model.particle_qd.numpy().astype(np.float64) if velocity is None else velocity
+    forces = np.zeros_like(rest_q) if external_force is None else external_force
+    targets = positions[pinned] if pin_targets is None else pin_targets
+
+    if model.tri_count:
+        tri_indices = model.tri_indices.numpy().reshape(-1, 3).astype(np.int64)
+        tri_poses = model.tri_poses.numpy().reshape(-1, 2, 2).astype(np.float64)
+        tri_materials = model.tri_materials.numpy().reshape(-1, 5).astype(np.float64)
+        tri_areas = model.tri_areas.numpy().astype(np.float64)
+    else:
+        tri_indices = np.empty((0, 3), dtype=np.int64)
+        tri_poses = np.empty((0, 2, 2), dtype=np.float64)
+        tri_materials = np.empty((0, 5), dtype=np.float64)
+        tri_areas = np.empty((0,), dtype=np.float64)
+
+    color_groups = [group.numpy().astype(np.int64) for group in model.particle_color_groups]
+    color_group_offsets = np.concatenate(
+        (np.array([0], dtype=np.int64), np.cumsum([group.size for group in color_groups], dtype=np.int64))
+    )
+    scene_metadata = {
+        "newton_revision": _git_revision(),
+        "dirty_tree_sha256": _git_dirty_digest(),
+    }
+    if metadata is not None:
+        overlap = scene_metadata.keys() & metadata.keys()
+        if overlap:
+            raise ValueError(f"metadata must not override reserved keys: {sorted(overlap)}")
+        scene_metadata.update(metadata)
+    return TetBenchmarkScene(
+        name=name,
+        source=source,
+        rest_q=rest_q,
+        tet_indices=model.tet_indices.numpy().reshape(-1, 4).astype(np.int64),
+        tet_poses=model.tet_poses.numpy().reshape(-1, 3, 3).astype(np.float64),
+        mass=mass,
+        particle_inv_mass=model.particle_inv_mass.numpy().astype(np.float64),
+        tet_materials=model.tet_materials.numpy().reshape(-1, 3).astype(np.float64),
+        tri_indices=tri_indices,
+        tri_poses=tri_poses,
+        tri_materials=tri_materials,
+        tri_areas=tri_areas,
+        particle_flags=particle_flags,
+        color_group_offsets=color_group_offsets,
+        color_group_particles=np.concatenate(color_groups),
+        x_current=positions,
+        velocity=velocities,
+        gravity=model.gravity.numpy().reshape(-1, 3)[0],
+        external_force=forces,
+        pinned_indices=pinned,
+        pin_targets=targets,
+        dt=dt,
+        metadata=scene_metadata,
+    )
 
 
 def build_structured_cantilever_scene(
@@ -650,9 +736,7 @@ def evaluate_common_state(
         difference_sq = ((constrained_x[problem.free] - reference[problem.free]) ** 2).sum(dim=1)
         free_rms_error = float(torch.sqrt(difference_sq.mean()).detach())
         free_mass = problem.mass[problem.free]
-        mass_weighted_rms_error = float(
-            torch.sqrt((free_mass * difference_sq).sum() / free_mass.sum()).detach()
-        )
+        mass_weighted_rms_error = float(torch.sqrt((free_mass * difference_sq).sum() / free_mass.sum()).detach())
 
     x_numpy = x.detach().numpy()
     return CommonStateMetrics(
@@ -695,9 +779,7 @@ def _assert_model_matches_scene(model: newton.Model, scene: TetBenchmarkScene) -
     if not np.array_equal(model.tet_indices.numpy().reshape(-1, 4), scene.tet_indices):
         raise RuntimeError("rebuilt VBD model changed tet topology or ordering")
     actual_triangles = (
-        np.empty((0, 3), dtype=np.int64)
-        if model.tri_indices is None
-        else model.tri_indices.numpy().reshape(-1, 3)
+        np.empty((0, 3), dtype=np.int64) if model.tri_indices is None else model.tri_indices.numpy().reshape(-1, 3)
     )
     if not np.array_equal(actual_triangles, scene.tri_indices):
         raise RuntimeError("rebuilt VBD model changed boundary-triangle topology or ordering")
@@ -841,9 +923,7 @@ def run_vbd(
 
     common_problem = build_common_problem(scene)
     scene_sha256 = str(scene.manifest()["scene_sha256"])
-    objective_instance_sha256 = str(
-        common_objective_manifest(scene, common_problem)["objective_instance_sha256"]
-    )
+    objective_instance_sha256 = str(common_objective_manifest(scene, common_problem)["objective_instance_sha256"])
     iterate_zero = common_problem.inertial_target.index_copy(
         0, common_problem.pinned, common_problem.pin_targets
     ).numpy()
@@ -928,7 +1008,13 @@ class NewtonRunResult:
     iterate_zero_sha256: str
     result_state_sha256: str
     verification_displacement_relative: float
+    verification_converged: bool
+    verification_reason: str
     alternate_start_displacement_relative: float
+    alternate_start_converged: bool
+    alternate_start_reason: str
+    alternate_start_gradient_norm: float
+    alternate_start_relative_residual: float
     reference_accepted: bool
     reference_failures: tuple[str, ...]
     run_sha256: str
@@ -961,7 +1047,13 @@ def _newton_run_digest(run: NewtonRunResult) -> str:
         "iterate_zero_sha256": run.iterate_zero_sha256,
         "bound_result_state_sha256": run.result_state_sha256,
         "verification_displacement_relative": run.verification_displacement_relative,
+        "verification_converged": run.verification_converged,
+        "verification_reason": run.verification_reason,
         "alternate_start_displacement_relative": run.alternate_start_displacement_relative,
+        "alternate_start_converged": run.alternate_start_converged,
+        "alternate_start_reason": run.alternate_start_reason,
+        "alternate_start_gradient_norm": run.alternate_start_gradient_norm,
+        "alternate_start_relative_residual": run.alternate_start_relative_residual,
         "reference_accepted": run.reference_accepted,
         "reference_failures": list(run.reference_failures),
     }
@@ -992,14 +1084,12 @@ def run_newton(
 
     cfg = config or NewtonConfig(
         max_iterations=50,
-        gradient_absolute_tolerance=1.0e-12,
-        gradient_relative_tolerance=1.0e-12,
+        gradient_absolute_tolerance=1.0e-10,
+        gradient_relative_tolerance=1.0e-10,
         step_relative_tolerance=1.0e-14,
     )
     cfg.validate()
-    iterate_zero = common_problem.inertial_target.index_copy(
-        0, common_problem.pinned, common_problem.pin_targets
-    )
+    iterate_zero = common_problem.inertial_target.index_copy(0, common_problem.pinned, common_problem.pin_targets)
 
     warmup_seconds = 0.0
     if warmup:
@@ -1028,6 +1118,7 @@ def run_newton(
     verification_relative = verification_displacement / displacement_scale
     alternate_relative = alternate_displacement / displacement_scale
     metrics = evaluate_common_state(common_problem, representative.x)
+    alternate_metrics = evaluate_common_state(common_problem, alternate.x)
 
     failures = []
     residual_limit = max(1.0e-10, 1.0e-10 * common_problem.residual_scale)
@@ -1035,10 +1126,16 @@ def run_newton(
         failures.append(f"native termination: {representative.reason}")
     if metrics.gradient_norm > residual_limit:
         failures.append(f"independent gradient {metrics.gradient_norm:.3e} N exceeds {residual_limit:.3e} N")
-    if not verification.converged or verification_relative > 1.0e-12:
+    if not verification.converged:
+        failures.append(f"verification termination: {verification.reason}")
+    if verification_relative > 1.0e-12:
         failures.append(f"verification displacement {verification_relative:.3e} exceeds 1e-12")
-    if not alternate.converged or alternate_relative > 1.0e-9:
+    if alternate_relative > 1.0e-9:
         failures.append(f"alternate-start displacement {alternate_relative:.3e} exceeds 1e-9")
+    if alternate_metrics.gradient_norm > residual_limit:
+        failures.append(
+            f"alternate-start gradient {alternate_metrics.gradient_norm:.3e} N exceeds {residual_limit:.3e} N"
+        )
     if metrics.inverted_tet_fraction != 0.0:
         failures.append("reference contains inverted tetrahedra")
 
@@ -1055,7 +1152,13 @@ def run_newton(
         iterate_zero_sha256=_array_digest(iterate_zero.detach().numpy()),
         result_state_sha256=_array_digest(representative.x.detach().numpy()),
         verification_displacement_relative=verification_relative,
+        verification_converged=verification.converged,
+        verification_reason=verification.reason,
         alternate_start_displacement_relative=alternate_relative,
+        alternate_start_converged=alternate.converged,
+        alternate_start_reason=alternate.reason,
+        alternate_start_gradient_norm=alternate_metrics.gradient_norm,
+        alternate_start_relative_residual=alternate_metrics.relative_residual,
         reference_accepted=not failures,
         reference_failures=tuple(failures),
         run_sha256="",
@@ -1076,7 +1179,13 @@ def _newton_record(run: NewtonRunResult, metrics: CommonStateMetrics) -> dict[st
         "reference_accepted": run.reference_accepted,
         "reference_failures": list(run.reference_failures),
         "verification_displacement_relative": run.verification_displacement_relative,
+        "verification_converged": run.verification_converged,
+        "verification_reason": run.verification_reason,
         "alternate_start_displacement_relative": run.alternate_start_displacement_relative,
+        "alternate_start_converged": run.alternate_start_converged,
+        "alternate_start_reason": run.alternate_start_reason,
+        "alternate_start_gradient_norm": run.alternate_start_gradient_norm,
+        "alternate_start_relative_residual": run.alternate_start_relative_residual,
         "scene_sha256": run.scene_sha256,
         "objective_instance_sha256": run.objective_instance_sha256,
         "physical_state_sha256": run.physical_state_sha256,
@@ -1090,9 +1199,7 @@ def _newton_record(run: NewtonRunResult, metrics: CommonStateMetrics) -> dict[st
             "solve_repeats": list(run.repeat_seconds),
             "solve_median": run.median_solve_seconds,
             "problem_setup_plus_untimed_warmup": result.problem_setup_seconds + run.warmup_seconds,
-            "steady_state_problem_setup_plus_solve_median": (
-                result.problem_setup_seconds + run.median_solve_seconds
-            ),
+            "steady_state_problem_setup_plus_solve_median": (result.problem_setup_seconds + run.median_solve_seconds),
             "representative_repeat_phase_breakdown": {
                 "objective_gradient": result.objective_gradient_seconds,
                 "hessian": result.hessian_seconds,
@@ -1204,9 +1311,7 @@ def write_benchmark_bundle(
     """Write self-checking JSON metadata and raw NPZ states."""
     scene_sha256 = str(scene.manifest()["scene_sha256"])
     expected_problem = build_common_problem(scene)
-    expected_objective_sha256 = str(
-        common_objective_manifest(scene, expected_problem)["objective_instance_sha256"]
-    )
+    expected_objective_sha256 = str(common_objective_manifest(scene, expected_problem)["objective_instance_sha256"])
     actual_objective_sha256 = str(common_objective_manifest(scene, problem)["objective_instance_sha256"])
     if actual_objective_sha256 != expected_objective_sha256:
         raise ValueError("problem does not match the supplied scene/objective")

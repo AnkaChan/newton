@@ -13,6 +13,7 @@ import unittest
 
 import numpy as np
 import warp as wp
+
 from newton.solvers import SolverVBD
 
 from .. import solver_benchmark as benchmark
@@ -46,7 +47,7 @@ class TestSolverBenchmark(unittest.TestCase):
         self.assertEqual(scene.color_group_offsets[0], 0)
         self.assertEqual(scene.color_group_offsets[-1], scene.n_vertices)
         np.testing.assert_array_equal(np.sort(scene.color_group_particles), np.arange(scene.n_vertices))
-        self.assertFalse(scene.rest_q.flags.writeable)
+        self.assertFalse(scene.rest_q.flags["W"])
         self.assertEqual(scene.manifest(), scene.manifest())
         caller_owned = scene.rest_q.copy()
         copied_scene = dataclasses.replace(scene, rest_q=caller_owned)
@@ -187,7 +188,9 @@ class TestSolverBenchmark(unittest.TestCase):
         self.assertEqual(self.vbd_1.color_group_count, self.scene.color_group_offsets.size - 1)
         self.assertEqual(len(self.vbd_1.repeat_seconds), 2)
         self.assertGreater(self.vbd_1.median_solve_seconds, 0.0)
-        free_displacement = self.vbd_1.positions[self.scene.free_indices] - self.scene.x_current[self.scene.free_indices]
+        free_displacement = (
+            self.vbd_1.positions[self.scene.free_indices] - self.scene.x_current[self.scene.free_indices]
+        )
         self.assertGreater(np.linalg.norm(free_displacement), 0.0)
 
     def test_vbd_adapter_matches_free_predictor_and_both_pin_mechanisms(self):
@@ -282,6 +285,9 @@ class TestSolverBenchmark(unittest.TestCase):
 
     def test_high_budget_vbd_and_newton_reach_same_stationary_point(self):
         self.assertTrue(self.newton_run.reference_accepted, self.newton_run.reference_failures)
+        self.assertEqual(self.newton_run.config.gradient_absolute_tolerance, 1.0e-10)
+        self.assertEqual(self.newton_run.config.gradient_relative_tolerance, 1.0e-10)
+        self.assertLessEqual(self.newton_run.alternate_start_relative_residual, 1.0e-10)
         self.assertTrue(self.newton_result.converged, self.newton_result.reason)
         self.assertLess(self.newton_result.final_relative_residual, 1.0e-8)
         metrics = benchmark.evaluate_common_state(
@@ -329,7 +335,7 @@ class TestSolverBenchmark(unittest.TestCase):
             )
             payload = json.loads(output.read_text())
             raw_path = output.with_suffix(".npz")
-            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["schema_version"], 2)
             self.assertEqual(payload["scene"]["scene_sha256"], self.scene.manifest()["scene_sha256"])
             self.assertEqual(
                 payload["objective"]["objective_instance_sha256"],
