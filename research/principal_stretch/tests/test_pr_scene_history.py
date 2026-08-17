@@ -46,6 +46,42 @@ class TestPRSceneHistory(unittest.TestCase):
             timing_record={"seconds": 0.125},
         )
 
+    @staticmethod
+    def _stalled_reference(scene, config, *, failures=None):
+        positions = scene.vbd_inertial_target.copy()
+        rejected_failures = (
+            "native termination: stalled",
+            "independent gradient 5.000e-07 N exceeds 2.000e-09 N",
+            "verification termination: stalled",
+            "verification displacement 2.000e-12 exceeds 1e-12",
+        )
+        if failures is not None:
+            rejected_failures = failures
+        return history._ReferenceStep(
+            positions=positions,
+            accepted=False,
+            failures=rejected_failures,
+            deterministic_record={
+                "method": "unittest-stalled-reference",
+                "config": dataclasses.asdict(config),
+                "scene_sha256": "1" * 64,
+                "objective_instance_sha256": "2" * 64,
+                "accepted": False,
+                "failures": list(rejected_failures),
+                "native_converged": False,
+                "native_reason": "stalled",
+                "final_objective": 5.0,
+                "final_gradient_norm": 5.0e-7,
+                "final_relative_residual": 2.5e-8,
+                "verification_displacement_relative": 2.0e-12,
+                "alternate_start_displacement_relative": 4.0e-12,
+                "alternate_start_gradient_norm": 1.0e-11,
+                "alternate_start_relative_residual": 5.0e-13,
+                "position_sha256": history._array_digest(positions),
+            },
+            timing_record={"seconds": 0.25},
+        )
+
     def test_exact_schedule_endpoints(self):
         self.assertEqual(self.stretch.frame_schedule(0).value, 1.0)
         self.assertEqual(self.stretch.frame_schedule(1).value, 1.0 + 1.0 / 200.0)
@@ -270,6 +306,241 @@ class TestPRSceneHistory(unittest.TestCase):
         self.assertIn("alternate-start", chain.failed_reference.failures[0])
         self.assertEqual(len(chain.timings), 2)
         self.assertFalse(chain.timings[-1].accepted)
+
+    def test_healthy_native_stall_retries_only_step_tolerance_and_authenticates_attempts(self):
+        configs = []
+
+        def stall_then_accept(scene, config):
+            configs.append(config)
+            if len(configs) == 1:
+                return self._stalled_reference(scene, config)
+            accepted = self._accepted_reference(scene, config)
+            deterministic_record = dict(accepted.deterministic_record)
+            deterministic_record.update(
+                {
+                    "config": dataclasses.asdict(config),
+                    "scene_sha256": "1" * 64,
+                    "objective_instance_sha256": "2" * 64,
+                }
+            )
+            return dataclasses.replace(accepted, deterministic_record=deterministic_record)
+
+        with mock.patch.object(history, "_solve_dense_reference", side_effect=stall_then_accept):
+            chain = self.stretch.generate(max_transitions=1)
+
+        self.assertEqual(chain.termination, "range_complete")
+        self.assertEqual(len(configs), 2)
+        self.assertEqual(configs[0], history._default_newton_config())
+        self.assertEqual(configs[1], dataclasses.replace(configs[0], step_relative_tolerance=0.0))
+
+        transition = chain.transitions[0]
+        record = transition.reference_record
+        self.assertEqual(record["retry_policy"], history._STALLED_RETRY_POLICY)
+        self.assertEqual(record["selected_attempt"], 1)
+        self.assertEqual(len(record["attempts"]), 2)
+        self.assertEqual(record["attempts"][0]["record"]["native_reason"], "stalled")
+        self.assertTrue(record["attempts"][1]["record"]["accepted"])
+
+        timing = chain.timings[0]
+        self.assertEqual(timing.values["selected_attempt"], 1)
+        self.assertEqual(len(timing.values["attempts"]), 2)
+        tampered_values = history._thaw_json(timing.values)
+        tampered_values["attempts"][0]["record"]["seconds"] = 999.0
+        tampered_timing = dataclasses.replace(timing, values=tampered_values)
+        self.assertNotEqual(tampered_timing.timing_sha256, timing.timing_sha256)
+
+        tampered_record = history._thaw_json(record)
+        tampered_record["attempts"][0]["record"]["final_gradient_norm"] = 1.0
+        tampered_transition = dataclasses.replace(transition, reference_record=tampered_record)
+        self.assertNotEqual(tampered_transition.transition_sha256, transition.transition_sha256)
+
+    def test_primary_acceptance_returns_the_exact_unwrapped_reference_step(self):
+        scene = self.stretch.build_atomic_scene(
+            self.stretch.initial_checkpoint.state,
+            self.stretch.apply_callback(self.stretch.initial_checkpoint.state),
+        )
+        primary = self._accepted_reference(scene, history._default_newton_config())
+        with mock.patch.object(history, "_solve_dense_reference", return_value=primary) as solve:
+            selected = history._solve_dense_reference_with_retry(scene, history._default_newton_config())
+
+        solve.assert_called_once_with(scene, history._default_newton_config())
+        self.assertIs(selected, primary)
+        self.assertEqual(selected.deterministic_record, primary.deterministic_record)
+        self.assertEqual(selected.timing_record, primary.timing_record)
+
+    def test_retry_config_tamper_fails_closed_and_preserves_both_attempts(self):
+        calls = 0
+
+        def stalled_then_tampered_acceptance(scene, config):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return self._stalled_reference(scene, config)
+            accepted = self._accepted_reference(scene, config)
+            tampered_config = dataclasses.asdict(config)
+            tampered_config["max_iterations"] += 1
+            record = dict(accepted.deterministic_record)
+            record.update(
+                {
+                    "config": tampered_config,
+                    "scene_sha256": "1" * 64,
+                    "objective_instance_sha256": "2" * 64,
+                }
+            )
+            return dataclasses.replace(accepted, deterministic_record=record)
+
+        with mock.patch.object(
+            history,
+            "_solve_dense_reference",
+            side_effect=stalled_then_tampered_acceptance,
+        ):
+            chain = self.stretch.generate(max_transitions=1)
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(chain.termination, "failed_reference")
+        self.assertEqual(
+            chain.failed_reference.failures,
+            ("dense reference retry config does not match the requested retry config",),
+        )
+        record = chain.failed_reference.reference_record
+        self.assertFalse(record["accepted"])
+        self.assertEqual(record["selected_attempt"], 1)
+        self.assertEqual(record["provenance_failures"], chain.failed_reference.failures)
+        self.assertEqual(len(record["attempts"]), 2)
+        self.assertEqual(record["attempts"][1]["record"]["config"]["max_iterations"], 51)
+        self.assertEqual(len(chain.timings[0].values["attempts"]), 2)
+        self.assertFalse(chain.timings[0].accepted)
+
+        tampered_record = history._thaw_json(record)
+        tampered_record["attempts"][1]["record"]["config"]["max_iterations"] = 52
+        tampered_failure = dataclasses.replace(chain.failed_reference, reference_record=tampered_record)
+        self.assertNotEqual(tampered_failure.failure_sha256, chain.failed_reference.failure_sha256)
+        tampered_timing_values = history._thaw_json(chain.timings[0].values)
+        tampered_timing_values["attempts"][1]["record"]["seconds"] = 999.0
+        tampered_timing = dataclasses.replace(chain.timings[0], values=tampered_timing_values)
+        self.assertNotEqual(tampered_timing.timing_sha256, chain.timings[0].timing_sha256)
+
+    def test_retry_combine_anomaly_fails_closed_and_preserves_both_attempts(self):
+        cases = (
+            ("scene_sha256", "3" * 64, "changed scene_sha256"),
+            ("objective_instance_sha256", "4" * 64, "changed objective_instance_sha256"),
+            ("position_sha256", "5" * 64, "position hash does not match"),
+        )
+        for field, value, expected_failure in cases:
+            with self.subTest(field=field):
+                calls = 0
+
+                def stalled_then_anomalous_acceptance(
+                    scene,
+                    config,
+                    *,
+                    anomaly_field=field,
+                    anomaly_value=value,
+                ):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        return self._stalled_reference(scene, config)
+                    accepted = self._accepted_reference(scene, config)
+                    record = dict(accepted.deterministic_record)
+                    record.update(
+                        {
+                            "config": dataclasses.asdict(config),
+                            "scene_sha256": "1" * 64,
+                            "objective_instance_sha256": "2" * 64,
+                            anomaly_field: anomaly_value,
+                        }
+                    )
+                    return dataclasses.replace(accepted, deterministic_record=record)
+
+                with mock.patch.object(
+                    history,
+                    "_solve_dense_reference",
+                    side_effect=stalled_then_anomalous_acceptance,
+                ):
+                    chain = self.stretch.generate(max_transitions=1)
+
+                self.assertEqual(calls, 2)
+                self.assertEqual(chain.termination, "failed_reference")
+                self.assertIn(expected_failure, chain.failed_reference.failures[0])
+                record = chain.failed_reference.reference_record
+                self.assertFalse(record["accepted"])
+                self.assertEqual(record["selected_attempt"], 1)
+                self.assertEqual(record["provenance_failures"], chain.failed_reference.failures)
+                self.assertEqual(len(record["attempts"]), 2)
+                self.assertEqual(len(chain.timings[0].values["attempts"]), 2)
+                self.assertFalse(chain.timings[0].accepted)
+
+    def test_retry_policy_rejects_inversion_nonfinite_and_other_termination(self):
+        cases = (
+            (
+                "inversion",
+                "stalled",
+                ("native termination: stalled", "reference contains inverted tetrahedra"),
+            ),
+            ("nonfinite", "nonfinite", ("native termination: nonfinite",)),
+            ("other", "max_iterations", ("native termination: max_iterations",)),
+        )
+        for label, reason, failures in cases:
+            with self.subTest(label=label):
+                calls = 0
+
+                def rejected(scene, config, *, expected_reason=reason, expected_failures=failures):
+                    nonlocal calls
+                    calls += 1
+                    reference = self._stalled_reference(scene, config, failures=expected_failures)
+                    record = dict(reference.deterministic_record)
+                    record["native_reason"] = expected_reason
+                    return dataclasses.replace(reference, deterministic_record=record)
+
+                with mock.patch.object(history, "_solve_dense_reference", side_effect=rejected):
+                    chain = self.stretch.generate(max_transitions=1)
+                self.assertEqual(calls, 1)
+                self.assertEqual(chain.termination, "failed_reference")
+                self.assertNotIn("attempts", chain.failed_reference.reference_record)
+
+    def test_stalled_retry_exception_remains_fail_closed_with_both_attempts(self):
+        calls = 0
+
+        def stall_then_raise(scene, config):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return self._stalled_reference(scene, config)
+            raise RuntimeError("synthetic retry factorization failure")
+
+        with mock.patch.object(history, "_solve_dense_reference", side_effect=stall_then_raise):
+            chain = self.stretch.generate(max_transitions=1)
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(chain.termination, "failed_reference")
+        self.assertIn("stalled retry raised RuntimeError", chain.failed_reference.failures[0])
+        self.assertEqual(chain.failed_reference.reference_record["selected_attempt"], 1)
+        self.assertEqual(len(chain.failed_reference.reference_record["attempts"]), 2)
+        self.assertEqual(chain.timings[0].values["selected_attempt"], 1)
+
+    def test_real_bounded_ordinal8_retry_connects_through_ordinal9(self):
+        chain = self.stretch.generate(
+            stop=history.AtomicCoordinate.from_ordinal(10),
+            max_transitions=10,
+        )
+
+        self.assertEqual(chain.termination, "range_complete")
+        self.assertEqual(len(chain.transitions), 10)
+        chain.verify()
+        ordinal8 = chain.transitions[8]
+        ordinal9 = chain.transitions[9]
+        self.assertEqual(ordinal8.coordinate.ordinal, 8)
+        self.assertEqual(ordinal8.reference_record["selected_attempt"], 1)
+        attempts = ordinal8.reference_record["attempts"]
+        self.assertEqual(attempts[0]["record"]["native_reason"], "stalled")
+        self.assertFalse(attempts[0]["record"]["accepted"])
+        self.assertTrue(attempts[1]["record"]["accepted"])
+        self.assertEqual(attempts[0]["record"]["config"]["step_relative_tolerance"], 1.0e-14)
+        self.assertEqual(attempts[1]["record"]["config"]["step_relative_tolerance"], 0.0)
+        self.assertEqual(ordinal9.coordinate.ordinal, 9)
+        self.assertEqual(ordinal9.input_state_sha256, ordinal8.output_state.state_sha256)
+        self.assertNotIn("attempts", ordinal9.reference_record)
 
     def test_reference_exception_stops_before_commit(self):
         with mock.patch.object(

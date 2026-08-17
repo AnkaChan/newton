@@ -27,6 +27,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import numbers
 import struct
 import types
@@ -52,6 +53,7 @@ _TOTAL_FRAMES = 400
 _DT = float(np.float32(1.0 / 300.0))
 _ACTIVE_FLAG = int(newton.ParticleFlags.ACTIVE)
 _KINDS = ("stretch", "twist", "compression-50", "compression-90")
+_STALLED_RETRY_POLICY = "stalled-step-relative-tolerance-zero-v1"
 _TRAINING_STATIC_ARRAY_NAMES = (
     "rest_q",
     "tet_indices",
@@ -1025,6 +1027,160 @@ def _solve_dense_reference(
     )
 
 
+def _stalled_reference_is_retryable(reference: _ReferenceStep, config: NewtonConfig) -> bool:
+    """Return whether a rejected native stall is safe for the zero-step-tolerance retry."""
+    if reference.accepted or config.step_relative_tolerance == 0.0:
+        return False
+    record = reference.deterministic_record
+    if record.get("native_converged") is not False or record.get("native_reason") != "stalled":
+        return False
+    if _thaw_json(record.get("config")) != dataclasses.asdict(config):
+        return False
+
+    required_finite_scalars = (
+        "final_objective",
+        "final_gradient_norm",
+        "final_relative_residual",
+        "verification_displacement_relative",
+        "alternate_start_displacement_relative",
+        "alternate_start_gradient_norm",
+        "alternate_start_relative_residual",
+    )
+    for name in required_finite_scalars:
+        value = record.get(name)
+        if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(float(value)):
+            return False
+
+    allowed_failures = (
+        "native termination: stalled",
+        "independent gradient ",
+        "verification termination: stalled",
+        "verification displacement ",
+    )
+    return allowed_failures[0] in reference.failures and all(
+        failure == allowed_failures[0] or failure.startswith(allowed_failures[1:]) for failure in reference.failures
+    )
+
+
+def _retry_provenance_failures(
+    primary: _ReferenceStep,
+    retry: _ReferenceStep,
+    retry_config: NewtonConfig,
+) -> tuple[str, ...]:
+    """Return deterministic provenance failures that prohibit selecting a retry."""
+    failures = []
+    record = retry.deterministic_record
+    if _thaw_json(record.get("config")) != dataclasses.asdict(retry_config):
+        failures.append("dense reference retry config does not match the requested retry config")
+
+    for name in ("scene_sha256", "objective_instance_sha256"):
+        primary_identity = primary.deterministic_record.get(name)
+        retry_identity = record.get(name)
+        if retry.accepted and (primary_identity is None or retry_identity is None):
+            failures.append(f"accepted dense reference retry omitted {name}")
+        elif retry_identity is not None and primary_identity != retry_identity:
+            failures.append(f"dense reference retry changed {name}")
+
+    if retry.accepted:
+        if record.get("accepted") is not True:
+            failures.append("accepted dense reference retry record does not declare acceptance")
+        if record.get("position_sha256") != _array_digest(retry.positions):
+            failures.append("accepted dense reference retry position hash does not match its positions")
+    return tuple(failures)
+
+
+def _combine_reference_attempts(
+    primary: _ReferenceStep,
+    retry: _ReferenceStep,
+    provenance_failures: tuple[str, ...] = (),
+) -> _ReferenceStep:
+    """Bind both conditional-retry attempts and the selected attempt into their records."""
+    selected_failures = provenance_failures or retry.failures
+    selected_accepted = retry.accepted and not provenance_failures
+    deterministic_record = dict(_thaw_json(retry.deterministic_record))
+    deterministic_record.update(
+        {
+            "accepted": selected_accepted,
+            "failures": list(selected_failures),
+            "retry_policy": _STALLED_RETRY_POLICY,
+            "selected_attempt": 1,
+            "attempts": [
+                {
+                    "index": 0,
+                    "role": "primary",
+                    "record": _thaw_json(primary.deterministic_record),
+                },
+                {
+                    "index": 1,
+                    "role": "step-relative-tolerance-zero",
+                    "record": _thaw_json(retry.deterministic_record),
+                },
+            ],
+        }
+    )
+    if provenance_failures:
+        deterministic_record["provenance_failures"] = list(provenance_failures)
+    timing_record = dict(_thaw_json(retry.timing_record))
+    timing_record.update(
+        {
+            "retry_policy": _STALLED_RETRY_POLICY,
+            "selected_attempt": 1,
+            "attempts": [
+                {
+                    "index": 0,
+                    "role": "primary",
+                    "record": _thaw_json(primary.timing_record),
+                },
+                {
+                    "index": 1,
+                    "role": "step-relative-tolerance-zero",
+                    "record": _thaw_json(retry.timing_record),
+                },
+            ],
+        }
+    )
+    return _ReferenceStep(
+        positions=retry.positions,
+        accepted=selected_accepted,
+        failures=selected_failures,
+        deterministic_record=deterministic_record,
+        timing_record=timing_record,
+    )
+
+
+def _solve_dense_reference_with_retry(
+    scene: TetBenchmarkScene,
+    config: NewtonConfig,
+) -> _ReferenceStep:
+    """Run the exact primary solve and conditionally retry one healthy native stall."""
+    primary = _solve_dense_reference(scene, config)
+    if not _stalled_reference_is_retryable(primary, config):
+        return primary
+
+    retry_config = dataclasses.replace(config, step_relative_tolerance=0.0)
+    retry_config.validate()
+    try:
+        retry = _solve_dense_reference(scene, retry_config)
+    except Exception as exc:
+        message = f"dense reference stalled retry raised {type(exc).__name__}: {exc}"
+        retry = _ReferenceStep(
+            positions=primary.positions,
+            accepted=False,
+            failures=(message,),
+            deterministic_record={
+                "method": "dense-cpu-newton-float64",
+                "config": dataclasses.asdict(retry_config),
+                "accepted": False,
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+            timing_record={"unavailable_due_to_exception": True},
+        )
+
+    provenance_failures = _retry_provenance_failures(primary, retry, retry_config)
+    return _combine_reference_attempts(primary, retry, provenance_failures)
+
+
 class PRSceneHistory:
     """Exact PR callback schedule and fail-closed dense-Newton chain runner."""
 
@@ -1334,7 +1490,7 @@ class PRSceneHistory:
             problem = build_common_problem(scene)
             objective = common_objective_manifest(scene, problem)
             try:
-                reference = _solve_dense_reference(scene, config)
+                reference = _solve_dense_reference_with_retry(scene, config)
             except Exception as exc:
                 message = f"dense reference raised {type(exc).__name__}: {exc}"
                 reference = _ReferenceStep(
