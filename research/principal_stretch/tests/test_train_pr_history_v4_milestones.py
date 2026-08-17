@@ -63,7 +63,7 @@ class TestPhaseBalancedEpochSchedule(unittest.TestCase):
         self.assertEqual(first.batches.shape, (3, 10))
         self.assertEqual(first.record["exposure_by_sample_index"], [2] * 15)
         for batch in first.batches:
-            self.assertEqual(len(set(int(index) for index in batch)), 10)
+            self.assertEqual(len({int(index) for index in batch}), 10)
             phases = [records[int(index)]["coordinate"]["substep"] for index in batch]
             np.testing.assert_array_equal(np.bincount(phases, minlength=5), np.full(5, 2))
 
