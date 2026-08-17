@@ -121,6 +121,7 @@ def _sample_and_record(
         torch.device("cpu"),
         dtype=torch.float64,
         projection_backend="dense",
+        operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
     )
     dt = 0.1
     x_current = torch.as_tensor(rest, dtype=torch.float64).clone()
@@ -161,6 +162,7 @@ def _sample_and_record(
         sample_id=sample_id,
         ordinal=ordinal,
         topology_sha256=state.static_mesh_sha256,
+        operator_geometry_sha256=state.operator_geometry_sha256,
         material_sha256=_digest(f"material:{trajectory_id}"),
         pin_signature_sha256=_digest(f"pins:{trajectory_id}"),
         dt_seconds=dt,
@@ -208,6 +210,7 @@ def _trajectory(
         load_program_sha256=_digest(f"load-program:{name}"),
         source_chain_sha256=_digest(f"chain:{name}"),
         topology_sha256=sample.topology_sha256,
+        operator_geometry_sha256=sample.operator_geometry_sha256,
         material_sha256=sample.material_sha256,
         provenance=provenance,
         source_transition_count=1,
@@ -301,6 +304,7 @@ def _contract(
             preconditioner="none",
             require_runtime_diagnostics=True,
             execution_dtype="torch.float64",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         ),
         constraint=ConstraintContract.build(
             {
@@ -338,7 +342,7 @@ def _contract(
         ),
         physical_timestep_source="common-objective-context-per-sample",
         rng_algorithm="torch-cpu-plus-numpy-pcg64",
-        batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v1",
+        batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2",
     )
 
 
@@ -484,6 +488,21 @@ class TestExecutableV5Trainer(unittest.TestCase):
                 payloads=payloads,
             )
 
+        wrong_policy = dataclasses.replace(
+            contract,
+            projection=dataclasses.replace(
+                contract.projection,
+                operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "operator-geometry policy"):
+            train_pr_history_v5(
+                solver_contract=wrong_policy,
+                sampling_schedule=schedule,
+                access_ledger=DataAccessLedger(manifest),
+                payloads=payloads,
+            )
+
     def test_checkpoint_and_sample_digest_tampering_are_rejected(self):
         manifest, schedule, contract, payloads = self._fixture(steps=8, representation_end=4)
         result = train_pr_history_v5(
@@ -512,6 +531,23 @@ class TestExecutableV5Trainer(unittest.TestCase):
             V5TrainingSample(
                 trajectory_id=sample.trajectory_id,
                 sample_record=wrong_record,
+                physical_step=sample.physical_step,
+                common_objective=sample.common_objective,
+                projection_state=sample.projection_state,
+                producer_attested_reference_positions=sample.producer_attested_reference_positions,
+                producer_attested_reference_deformation_gradient=(
+                    sample.producer_attested_reference_deformation_gradient
+                ),
+            )
+
+        wrong_operator_record = dataclasses.replace(
+            sample.sample_record,
+            operator_geometry_sha256=_digest("wrong-operator"),
+        )
+        with self.assertRaisesRegex(ValueError, "operator-geometry SHA-256"):
+            V5TrainingSample(
+                trajectory_id=sample.trajectory_id,
+                sample_record=wrong_operator_record,
                 physical_step=sample.physical_step,
                 common_objective=sample.common_objective,
                 projection_state=sample.projection_state,
@@ -572,6 +608,7 @@ class TestExecutableV5Trainer(unittest.TestCase):
             load_program_sha256=_digest("load-program:pair"),
             source_chain_sha256=_digest("chain:pair"),
             topology_sha256=sample0.topology_sha256,
+            operator_geometry_sha256=sample0.operator_geometry_sha256,
             material_sha256=sample0.material_sha256,
             provenance=provenance,
             source_transition_count=2,

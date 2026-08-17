@@ -43,11 +43,14 @@ from .iterative_solver import (
 )
 from .predictor import StretchPredictor, predictor_architecture_version
 from .torch_solver import (
+    OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+    OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
     ProjectionDiagnostics,
     SolverState,
     compute_F,
     project_deformation_gradient,
     projection_state_sha256,
+    validate_authenticated_operator_geometry,
 )
 from .v5_dataset import (
     DataAccessLedger,
@@ -70,9 +73,9 @@ from .v5_training import (
 _SCHEMA_VERSION = 5
 _CHECKPOINT_CONTRACT = "pss-iterative-principal-stretch-checkpoint-v5"
 _SOLVER_CONTRACT = "pss-iterative-principal-stretch-solver-contract-v5"
-_EVALUATION_SCHEMA_VERSION = 1
-_EVALUATION_CONTRACT = "pss-v5-held-out-evaluation-binding-v1"
-_TRAJECTORY_CONTRACT = "pss-v5-dataset-trajectory-v1"
+_EVALUATION_SCHEMA_VERSION = 2
+_EVALUATION_CONTRACT = "pss-v5-held-out-evaluation-binding-v2"
+_TRAJECTORY_CONTRACT = "pss-v5-dataset-trajectory-v2"
 _MODEL_SEMANTICS = "weight-shared-residual-aware-principal-stretch-v5"
 _REPRESENTATION_FORMULA = "F_target=A_iterate@exp(skew(omega))@exp(H_iterate+delta_H)"
 _RESIDUAL_DEFINITION = "exact-common-objective-gradient-at-current-iterate-v1"
@@ -110,7 +113,7 @@ _REPRESENTATION_LOSS_FORMULA = "cap-normalized-delta-h-plus-omega-mse-v1"
 _COMPATIBLE_STATE_LOSS_FORMULA = "mass-position-plus-volume-deformation-relative-mse-v1"
 _POTENTIAL_EXCESS_LOSS_FORMULA = "signed-common-objective-potential-excess-v1"
 _RNG_ALGORITHM = "torch-cpu-plus-numpy-pcg64"
-_BATCH_STREAM_CONTRACT = "pss-v5-static-layout-homogeneous-trajectory-first-sampling-v1"
+_BATCH_STREAM_CONTRACT = "pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2"
 _RUNTIME_CLAIM_SCOPE = "authenticated-development-replay-not-learned-contribution-or-promotion-evidence"
 
 
@@ -684,12 +687,23 @@ class ProjectionContract:
     preconditioner: str
     require_runtime_diagnostics: bool = True
     execution_dtype: str = "torch.float64"
+    operator_geometry_policy: str = OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE
 
     def __post_init__(self) -> None:
         if self.backend not in ("dense", "sparse_pcg"):
             raise ValueError("projection backend must be 'dense' or 'sparse_pcg'")
         if self.execution_dtype not in _V5_PARAMETER_DTYPES:
             raise ValueError("projection execution_dtype must be registered float32 or float64")
+        if type(self.operator_geometry_policy) is not str or self.operator_geometry_policy not in (
+            OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+            OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+        ):
+            raise ValueError("projection operator_geometry_policy must be an authenticated v5 policy")
+        if (
+            self.operator_geometry_policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED
+            and self.execution_dtype != "torch.float64"
+        ):
+            raise ValueError("source-tet-poses-promoted requires torch.float64 projection execution")
         _require_bool(self.raise_on_nonconvergence, "projection raise_on_nonconvergence")
         if not _require_bool(self.require_runtime_diagnostics, "projection require_runtime_diagnostics"):
             raise ValueError("v5 runtime replay evidence must require projection diagnostics")
@@ -739,6 +753,7 @@ class ProjectionContract:
                 "preconditioner",
                 "require_runtime_diagnostics",
                 "execution_dtype",
+                "operator_geometry_policy",
             },
             "projection",
         )
@@ -1766,6 +1781,7 @@ def _verified_held_out_trajectory(value: object) -> dict[str, object]:
         raise ValueError("held-out trajectory uses an unsupported record contract")
     _require_string(body.get("trajectory_id"), "held-out trajectory_id")
     _require_sha256(body.get("topology_sha256"), "held-out topology_sha256")
+    _require_sha256(body.get("operator_geometry_sha256"), "held-out operator_geometry_sha256")
     samples = body.get("samples")
     if not isinstance(samples, Sequence) or isinstance(samples, (str, bytes)) or not samples:
         raise ValueError("held-out trajectory must contain sample records")
@@ -1870,33 +1886,6 @@ def _require_reconstructed_tensor(
     bound = epsilon_multiplier * epsilon * expected.abs()
     if not bool(((observed - expected).abs() <= bound).all()):
         raise ValueError(f"{name} differs from its canonical reconstruction")
-
-
-def _require_inverse_backward_error(
-    source_matrix: torch.Tensor,
-    inverse: object,
-) -> None:
-    """Authenticate a NumPy/Torch inverse by its scale-local residual."""
-    if (
-        not isinstance(inverse, torch.Tensor)
-        or inverse.layout != torch.strided
-        or inverse.shape != source_matrix.shape
-        or inverse.dtype != source_matrix.dtype
-        or inverse.device != source_matrix.device
-        or not inverse.is_floating_point()
-    ):
-        raise ValueError("evaluation projection state Dm_inv has incompatible tensor metadata")
-    if not torch.isfinite(source_matrix).all() or not torch.isfinite(inverse).all():
-        raise ValueError("evaluation projection state Dm_inv must be finite")
-    identity = torch.eye(3, dtype=inverse.dtype, device=inverse.device).expand_as(inverse)
-    epsilon = torch.finfo(inverse.dtype).eps
-    gamma = 3.0 * epsilon / (1.0 - 3.0 * epsilon)
-    for left, right in ((source_matrix, inverse), (inverse, source_matrix)):
-        product = left @ right
-        contribution_scale = left.abs() @ right.abs()
-        bound = 128.0 * gamma * contribution_scale
-        if not bool(((product - identity).abs() <= bound).all()):
-            raise ValueError("evaluation projection state Dm_inv fails the canonical backward-error bound")
 
 
 def _require_contribution_scaled_tensor(
@@ -2051,6 +2040,9 @@ def _verify_projection_operator(state: SolverState, contract: ProjectionContract
     """Rebuild geometry and the compatibility operator without trusting its hash."""
     if state.projection_backend != contract.backend or state.tikhonov != 0.0:
         raise ValueError("evaluation projection backend or regularization differs from the solver contract")
+    if state.operator_geometry_policy != contract.operator_geometry_policy:
+        raise ValueError("evaluation operator-geometry policy differs from the solver contract")
+    validate_authenticated_operator_geometry(state)
     rest = state.rest_q
     source_rest = state.source_rest_q
     if rest.layout != torch.strided or str(rest.dtype) != contract.execution_dtype:
@@ -2090,24 +2082,13 @@ def _verify_projection_operator(state: SolverState, contract: ProjectionContract
     if not torch.equal(state.free, expected_free):
         raise ValueError("evaluation projection free-vertex ordering is noncanonical")
 
-    origin = source_rest[state.tets[:, 0]]
-    source_rest_matrix = torch.stack(
-        (
-            source_rest[state.tets[:, 1]] - origin,
-            source_rest[state.tets[:, 2]] - origin,
-            source_rest[state.tets[:, 3]] - origin,
-        ),
-        dim=-1,
-    )
-    determinant = torch.linalg.det(source_rest_matrix)
-    if not torch.isfinite(determinant).all() or (determinant <= 0.0).any():
-        raise ValueError("evaluation projection rest tetrahedra are invalid")
-    runtime_rest_matrix = source_rest_matrix.to(dtype=rest.dtype)
-    _require_inverse_backward_error(runtime_rest_matrix, state.Dm_inv)
+    expected_dm_inv = state.source_tet_poses.to(dtype=rest.dtype)
+    if not torch.equal(state.Dm_inv, expected_dm_inv):
+        raise ValueError("evaluation projection Dm_inv differs from the exact source-pose promotion")
     expected_j = torch.zeros(state.n_tets, 4, 3, dtype=rest.dtype, device=rest.device)
-    expected_j[:, 1:, :] = state.Dm_inv
-    expected_j[:, 0, :] = -state.Dm_inv.sum(dim=1)
-    expected_volume = 1.0 / (6.0 * torch.linalg.det(state.Dm_inv))
+    expected_j[:, 1:, :] = expected_dm_inv
+    expected_j[:, 0, :] = -expected_dm_inv.sum(dim=1)
+    expected_volume = 1.0 / (6.0 * torch.linalg.det(expected_dm_inv))
     _require_reconstructed_tensor("evaluation projection state J", state.J, expected_j, epsilon_multiplier=1024.0)
     _require_reconstructed_tensor(
         "evaluation projection state volume", state.w, expected_volume, epsilon_multiplier=1024.0
@@ -2320,6 +2301,7 @@ class EvaluationSampleSelection:
     dt_float64_bits: str
     physical_step_sha256: str
     common_objective_sha256: str
+    operator_geometry_sha256: str
 
     def __post_init__(self) -> None:
         _require_string(self.sample_id, "evaluation sample_id")
@@ -2331,6 +2313,7 @@ class EvaluationSampleSelection:
             raise ValueError("evaluation sample dt_float64_bits differs from dt_seconds")
         _require_sha256(self.physical_step_sha256, "evaluation sample physical_step_sha256")
         _require_sha256(self.common_objective_sha256, "evaluation sample common_objective_sha256")
+        _require_sha256(self.operator_geometry_sha256, "evaluation sample operator_geometry_sha256")
 
     def as_dict(self) -> dict[str, object]:
         """Return canonical JSON data."""
@@ -2349,6 +2332,7 @@ class EvaluationSampleSelection:
                 "dt_float64_bits",
                 "physical_step_sha256",
                 "common_objective_sha256",
+                "operator_geometry_sha256",
             },
             "evaluation sample selection",
         )
@@ -2368,6 +2352,7 @@ class V5EvaluationBinding:
     held_out_trajectory_id: str
     held_out_trajectory_sha256: str
     held_out_topology_sha256: str
+    held_out_operator_geometry_sha256: str
     projection_state_sha256: str
     static_graph_sha256: str
     selected_samples: tuple[EvaluationSampleSelection, ...]
@@ -2395,6 +2380,7 @@ class V5EvaluationBinding:
         _require_string(self.held_out_trajectory_id, "held-out trajectory id")
         _require_sha256(self.held_out_trajectory_sha256, "held-out trajectory sha256")
         _require_sha256(self.held_out_topology_sha256, "held-out topology sha256")
+        _require_sha256(self.held_out_operator_geometry_sha256, "held-out operator-geometry sha256")
         _require_sha256(self.projection_state_sha256, "evaluation projection_state_sha256")
         _require_sha256(self.static_graph_sha256, "evaluation static_graph_sha256")
         selected = tuple(self.selected_samples)
@@ -2402,6 +2388,8 @@ class V5EvaluationBinding:
             raise ValueError("evaluation selection must contain canonical held-out samples")
         if len({sample.sample_id for sample in selected}) != len(selected):
             raise ValueError("evaluation selected sample ids must be unique")
+        if any(sample.operator_geometry_sha256 != self.held_out_operator_geometry_sha256 for sample in selected):
+            raise ValueError("evaluation sample operator geometry differs from its held-out trajectory")
         object.__setattr__(self, "selected_samples", selected)
         object.__setattr__(
             self,
@@ -2439,6 +2427,7 @@ class V5EvaluationBinding:
                 "trajectory_id": self.held_out_trajectory_id,
                 "trajectory_sha256": self.held_out_trajectory_sha256,
                 "topology_sha256": self.held_out_topology_sha256,
+                "operator_geometry_sha256": self.held_out_operator_geometry_sha256,
                 "projection_state_sha256": self.projection_state_sha256,
                 "static_graph_sha256": self.static_graph_sha256,
             },
@@ -2517,6 +2506,7 @@ class V5EvaluationBinding:
                 "trajectory_id",
                 "trajectory_sha256",
                 "topology_sha256",
+                "operator_geometry_sha256",
                 "projection_state_sha256",
                 "static_graph_sha256",
             },
@@ -2542,6 +2532,7 @@ class V5EvaluationBinding:
             held_out_trajectory_id=held_out["trajectory_id"],
             held_out_trajectory_sha256=held_out["trajectory_sha256"],
             held_out_topology_sha256=held_out["topology_sha256"],
+            held_out_operator_geometry_sha256=held_out["operator_geometry_sha256"],
             projection_state_sha256=held_out["projection_state_sha256"],
             static_graph_sha256=held_out["static_graph_sha256"],
             selected_samples=tuple(EvaluationSampleSelection.from_dict(sample) for sample in selection),
@@ -2597,6 +2588,8 @@ def build_v5_evaluation_binding(
         raise ValueError("evaluation projection state differs from its authenticated identity")
     if projection_state.static_mesh_sha256 != held_out_trajectory.topology_sha256:
         raise ValueError("evaluation projection static mesh differs from the held-out topology")
+    if projection_state.operator_geometry_sha256 != held_out_trajectory.operator_geometry_sha256:
+        raise ValueError("evaluation projection operator geometry differs from the held-out trajectory")
     if type(predictor) is not StretchPredictor:
         raise ValueError("evaluation predictor must be an architecture-v5 StretchPredictor")
     if type(predictor.model) is not PrincipalStretchGraphTransformer:
@@ -2641,6 +2634,7 @@ def build_v5_evaluation_binding(
             dt_float64_bits=samples[identifier]["dt_float64_bits"],
             physical_step_sha256=samples[identifier]["physical_step_sha256"],
             common_objective_sha256=samples[identifier]["common_objective_sha256"],
+            operator_geometry_sha256=samples[identifier]["operator_geometry_sha256"],
         )
         for identifier in identifiers
     )
@@ -2654,6 +2648,7 @@ def build_v5_evaluation_binding(
         held_out_trajectory_id=trajectory["trajectory_id"],
         held_out_trajectory_sha256=trajectory["trajectory_sha256"],
         held_out_topology_sha256=trajectory["topology_sha256"],
+        held_out_operator_geometry_sha256=trajectory["operator_geometry_sha256"],
         projection_state_sha256=actual_projection_sha256,
         static_graph_sha256=actual_static_graph_sha256,
         selected_samples=selected,
@@ -2705,6 +2700,7 @@ class VerifiedV5Runtime:
     evaluation_binding_sha256: str
     learned_state_sha256: str
     held_out_topology_sha256: str
+    operator_geometry_sha256: str
     projection_state_sha256: str
     static_graph_sha256: str
     physical_step_sha256: str
@@ -2876,6 +2872,9 @@ def verify_v5_runtime_compatibility(
         raise ValueError("runtime projection_state must be a SolverState")
     if projection_state.static_mesh_sha256 != binding.held_out_topology_sha256:
         raise ValueError("runtime static mesh differs from the held-out topology")
+    actual_operator_sha256 = validate_authenticated_operator_geometry(projection_state)
+    if actual_operator_sha256 != binding.held_out_operator_geometry_sha256:
+        raise ValueError("runtime operator geometry differs from the held-out evaluation binding")
     if getattr(predictor.model, "static_mesh_sha256", None) != binding.held_out_topology_sha256:
         raise ValueError("runtime predictor static mesh differs from the held-out topology")
     actual_projection_sha256 = projection_state_sha256(projection_state)
@@ -2992,6 +2991,8 @@ def verify_v5_runtime_compatibility(
         raise ValueError("runtime result physical-step identity differs from the invoked solve")
     if result.common_objective_sha256 != objective.common_objective_sha256:
         raise ValueError("runtime result common-objective identity differs from the invoked solve")
+    if result.operator_geometry_sha256 != actual_operator_sha256:
+        raise ValueError("runtime result operator-geometry identity differs from the invoked solve")
     if result.projection_state_sha256 != actual_projection_sha256:
         raise ValueError("runtime result projection-state identity differs from the invoked solve")
     if result.static_graph_sha256 != actual_static_graph_sha256:
@@ -3251,6 +3252,7 @@ def verify_v5_runtime_compatibility(
         evaluation_binding_sha256=binding.evaluation_binding_sha256,
         learned_state_sha256=runtime_state_sha256,
         held_out_topology_sha256=binding.held_out_topology_sha256,
+        operator_geometry_sha256=actual_operator_sha256,
         projection_state_sha256=actual_projection_sha256,
         static_graph_sha256=actual_static_graph_sha256,
         physical_step_sha256=physical_step.physical_step_sha256,

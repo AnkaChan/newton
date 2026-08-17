@@ -32,6 +32,13 @@ _DENSE_BACKEND = "dense"
 _SPARSE_PCG_BACKEND = "sparse_pcg"
 _JACOBI_PRECONDITIONER = "jacobi"
 _MULTIGRID_PRECONDITIONER = "multigrid"
+OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE = "canonical-rest-inverse"
+OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED = "source-tet-poses-promoted"
+_LEGACY_OPERATOR_GEOMETRY_POLICY = "legacy-unverified"
+_AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES = (
+    OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+    OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+)
 
 
 def static_mesh_sha256(rest_q: np.ndarray, tet_indices: np.ndarray) -> str:
@@ -50,6 +57,117 @@ def static_mesh_sha256(rest_q: np.ndarray, tet_indices: np.ndarray) -> str:
         digest.update(array.dtype.str.encode("ascii") + b"\0")
         digest.update(memoryview(array).cast("B"))
     return digest.hexdigest()
+
+
+def _update_source_array_digest(digest, name: str, value: np.ndarray) -> None:
+    array = np.ascontiguousarray(value)
+    digest.update(name.encode("ascii") + b"\0")
+    digest.update(json.dumps(array.shape, separators=(",", ":")).encode("ascii") + b"\0")
+    digest.update(array.dtype.str.encode("ascii") + b"\0")
+    raw = memoryview(array).cast("B")
+    digest.update(len(raw).to_bytes(8, "big"))
+    digest.update(raw)
+
+
+def operator_geometry_sha256(
+    rest_q: np.ndarray,
+    tet_indices: np.ndarray,
+    tet_poses: np.ndarray,
+    *,
+    policy: str,
+) -> str:
+    """Hash the exact authenticated source operator geometry.
+
+    The identity is deliberately independent of execution dtype and runtime
+    assembly. Those are bound by :func:`projection_state_sha256`. Source
+    arrays retain their exact dtype and C-order bytes; no float64
+    canonicalization like :func:`static_mesh_sha256` is performed here.
+    """
+    if type(policy) is not str or policy not in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES:
+        raise ValueError("operator geometry policy is not an authenticated v5 policy")
+    rest = np.ascontiguousarray(np.asarray(rest_q))
+    tets = np.ascontiguousarray(np.asarray(tet_indices))
+    poses = np.ascontiguousarray(np.asarray(tet_poses))
+    _validate_authenticated_source_geometry(rest, tets, poses, policy)
+    digest = hashlib.sha256(b"principal-stretch-operator-geometry-v1\0")
+    digest.update(policy.encode("ascii") + b"\0")
+    for name, array in (("rest_q", rest), ("tet_indices", tets), ("tet_poses", poses)):
+        _update_source_array_digest(digest, name, array)
+    return digest.hexdigest()
+
+
+def _require_inverse_backward_error_numpy(source_matrix: np.ndarray, inverse: np.ndarray) -> None:
+    """Require a fixed contribution-scaled two-sided inverse residual."""
+    identity = np.broadcast_to(np.eye(3, dtype=inverse.dtype), inverse.shape)
+    epsilon = np.finfo(inverse.dtype).eps
+    gamma = 3.0 * epsilon / (1.0 - 3.0 * epsilon)
+    for left, right in ((source_matrix, inverse), (inverse, source_matrix)):
+        product = left @ right
+        contribution_scale = np.abs(left) @ np.abs(right)
+        bound = np.asarray(128.0 * gamma, dtype=inverse.dtype) * contribution_scale
+        if (
+            not np.isfinite(product).all()
+            or not np.isfinite(contribution_scale).all()
+            or not np.isfinite(bound).all()
+            or not np.all(np.abs(product - identity) <= bound)
+        ):
+            raise ValueError("source tet_poses fail the fixed two-sided backward-error bound")
+
+
+def _validate_authenticated_source_geometry(
+    rest_q: np.ndarray,
+    tet_indices: np.ndarray,
+    tet_poses: np.ndarray,
+    policy: str,
+) -> None:
+    """Validate exact source arrays under one non-relabelable v5 policy."""
+    if policy not in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES:
+        raise ValueError("operator geometry policy is not an authenticated v5 policy")
+    if tet_indices.dtype != np.dtype(np.int64):
+        raise ValueError("authenticated operator source tet_indices must have exact int64 dtype")
+    expected_float_dtype = (
+        np.dtype(np.float64) if policy == OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE else np.dtype(np.float32)
+    )
+    if rest_q.dtype != expected_float_dtype or tet_poses.dtype != expected_float_dtype:
+        raise ValueError(f"{policy} requires exact source rest_q and tet_poses dtype {expected_float_dtype}")
+    if rest_q.ndim != 2 or rest_q.shape[1] != 3:
+        raise ValueError(f"authenticated source rest_q must have shape (V, 3), got {rest_q.shape}")
+    if tet_indices.ndim != 2 or tet_indices.shape[1] != 4:
+        raise ValueError(f"authenticated source tet_indices must have shape (T, 4), got {tet_indices.shape}")
+    if tet_poses.shape != (tet_indices.shape[0], 3, 3):
+        raise ValueError("authenticated source tet_poses must have shape (T, 3, 3)")
+    if not np.isfinite(rest_q).all() or not np.isfinite(tet_poses).all():
+        raise ValueError("authenticated operator source geometry must be finite")
+    if (tet_indices < 0).any() or (tet_indices >= rest_q.shape[0]).any():
+        raise ValueError("authenticated source tet_indices contains an out-of-range vertex")
+    if any(len(set(row.tolist())) != 4 for row in tet_indices):
+        raise ValueError("authenticated source tetrahedra must contain four distinct vertices")
+
+    rest_in_pose_dtype = rest_q
+    origin = rest_in_pose_dtype[tet_indices[:, 0]]
+    rest_matrix = np.stack(
+        (
+            rest_in_pose_dtype[tet_indices[:, 1]] - origin,
+            rest_in_pose_dtype[tet_indices[:, 2]] - origin,
+            rest_in_pose_dtype[tet_indices[:, 3]] - origin,
+        ),
+        axis=-1,
+    )
+    rest_det = np.linalg.det(rest_matrix)
+    inverse_det = np.linalg.det(tet_poses)
+    if (
+        not np.isfinite(rest_det).all()
+        or not np.isfinite(inverse_det).all()
+        or (rest_det <= 0.0).any()
+        or (inverse_det <= 0.0).any()
+    ):
+        raise ValueError("authenticated source tetrahedra must have finite positive orientation")
+    source_volume = np.asarray(1.0, dtype=expected_float_dtype) / (
+        np.asarray(6.0, dtype=expected_float_dtype) * inverse_det
+    )
+    if not np.isfinite(source_volume).all() or (source_volume <= 0.0).any():
+        raise ValueError("authenticated source tet_poses produce invalid rest volumes")
+    _require_inverse_backward_error_numpy(rest_matrix, tet_poses)
 
 
 def _build_J(Dm_inv: torch.Tensor) -> torch.Tensor:
@@ -169,7 +287,12 @@ class SolverState:
     L_fp: torch.Tensor  # (F, P), dense or sparse CSR according to backend
     rest_q: torch.Tensor  # (V, 3)
     source_rest_q: torch.Tensor  # (V, 3) exact canonical float64 source geometry
+    source_rest_q_exact: torch.Tensor  # (V, 3) exact authenticated input; legacy uses canonical placeholder
+    source_tet_indices: torch.Tensor  # (T, 4) exact authenticated input; legacy uses canonical placeholder
+    source_tet_poses: torch.Tensor  # (T, 3, 3) exact authenticated input; legacy uses runtime placeholder
     static_mesh_sha256: str
+    operator_geometry_policy: str = _LEGACY_OPERATOR_GEOMETRY_POLICY
+    operator_geometry_sha256: str | None = None
     projection_state_sha256: str = ""
     tikhonov: float = 0.0
     projection_backend: str = _DENSE_BACKEND
@@ -215,7 +338,12 @@ def projection_state_sha256(state: SolverState) -> str:
     """Hash every tensor and policy that defines compatibility projection."""
     if not isinstance(state, SolverState):
         raise TypeError("state must be a SolverState")
-    digest = hashlib.sha256(b"principal-stretch-projection-state-v2\0")
+    authenticated_operator = state.operator_geometry_policy in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES
+    digest = hashlib.sha256(
+        b"principal-stretch-projection-state-v3\0"
+        if authenticated_operator
+        else b"principal-stretch-projection-state-v2\0"
+    )
     metadata = {
         "n_verts": state.n_verts,
         "n_tets": state.n_tets,
@@ -228,6 +356,13 @@ def projection_state_sha256(state: SolverState) -> str:
         "pcg_raise_on_nonconvergence": state.pcg_raise_on_nonconvergence,
         "pcg_preconditioner": state.pcg_preconditioner,
     }
+    if authenticated_operator:
+        metadata.update(
+            {
+                "operator_geometry_policy": state.operator_geometry_policy,
+                "operator_geometry_sha256": state.operator_geometry_sha256,
+            }
+        )
     digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
     for name in (
         "tets",
@@ -245,6 +380,9 @@ def projection_state_sha256(state: SolverState) -> str:
         "L_ff_inverse_diagonal",
     ):
         _update_projection_tensor_digest(digest, name, getattr(state, name))
+    if authenticated_operator:
+        for name in ("source_rest_q_exact", "source_tet_indices", "source_tet_poses"):
+            _update_projection_tensor_digest(digest, name, getattr(state, name))
     hierarchy = state.multigrid_hierarchy
     if hierarchy is None:
         digest.update(b"multigrid_hierarchy\0none\0")
@@ -266,6 +404,57 @@ def projection_state_sha256(state: SolverState) -> str:
             _update_projection_tensor_digest(digest, f"multigrid.{level_index}.aggregate", level.aggregate)
         _update_projection_tensor_digest(digest, "multigrid.coarse_cholesky", hierarchy.coarse_cholesky)
     return digest.hexdigest()
+
+
+def validate_authenticated_operator_geometry(state: SolverState) -> str:
+    """Reauthenticate a v5 source operator and its exact runtime promotion."""
+    if type(state) is not SolverState:
+        raise TypeError("state must be a canonical SolverState")
+    policy = state.operator_geometry_policy
+    if type(policy) is not str or policy not in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES:
+        raise ValueError("solver state has no authenticated v5 operator geometry")
+    for name in ("source_rest_q_exact", "source_tet_indices", "source_tet_poses"):
+        value = getattr(state, name)
+        if not isinstance(value, torch.Tensor) or value.layout != torch.strided or value.device != state.rest_q.device:
+            raise ValueError(f"solver state {name} has incompatible tensor metadata")
+        if value.requires_grad:
+            raise ValueError(f"solver state {name} must not require gradients")
+    rest_source = state.source_rest_q_exact.detach().contiguous().cpu().numpy()
+    tet_source = state.source_tet_indices.detach().contiguous().cpu().numpy()
+    pose_source = state.source_tet_poses.detach().contiguous().cpu().numpy()
+    expected_sha256 = operator_geometry_sha256(rest_source, tet_source, pose_source, policy=policy)
+    if state.operator_geometry_sha256 != expected_sha256:
+        raise ValueError("solver state operator_geometry_sha256 verification failed")
+    if state.static_mesh_sha256 != static_mesh_sha256(rest_source, tet_source):
+        raise ValueError("solver state static mesh differs from authenticated source geometry")
+    if state.source_rest_q.dtype != torch.float64 or not torch.equal(
+        state.source_rest_q, state.source_rest_q_exact.to(dtype=torch.float64)
+    ):
+        raise ValueError("solver state canonical source_rest_q differs from exact source geometry")
+    if state.tets.dtype != torch.int64 or not torch.equal(state.tets, state.source_tet_indices.to(dtype=torch.int64)):
+        raise ValueError("solver state runtime tetrahedra differ from exact source connectivity")
+    if not state.rest_q.is_floating_point() or state.rest_q.dtype not in (torch.float32, torch.float64):
+        raise ValueError("solver state runtime geometry must use float32 or float64")
+    if policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED and state.rest_q.dtype != torch.float64:
+        raise ValueError("source-tet-poses-promoted requires float64 execution")
+    if not torch.equal(state.rest_q, state.source_rest_q_exact.to(dtype=state.rest_q.dtype)):
+        raise ValueError("solver state runtime rest_q is not the exact contracted source cast")
+    expected_dm_inv = state.source_tet_poses.to(dtype=state.rest_q.dtype)
+    if not torch.equal(state.Dm_inv, expected_dm_inv):
+        raise ValueError("solver state Dm_inv is not the exact contracted source-pose cast")
+    expected_j = _build_J(expected_dm_inv)
+    expected_det = torch.linalg.det(expected_dm_inv)
+    expected_volume = 1.0 / (6.0 * expected_det)
+    if (
+        not torch.isfinite(expected_det).all()
+        or not torch.isfinite(expected_volume).all()
+        or (expected_det <= 0.0).any()
+        or (expected_volume <= 0.0).any()
+    ):
+        raise ValueError("solver state runtime source operator has invalid orientation or volume")
+    if not torch.equal(state.J, expected_j) or not torch.equal(state.w, expected_volume):
+        raise ValueError("solver state J or volume is not the exact source-pose-derived runtime operator")
+    return expected_sha256
 
 
 def _validate_pcg_options(relative_tolerance: float, absolute_tolerance: float, max_iterations: int) -> None:
@@ -597,6 +786,7 @@ def build_solver(
     multigrid_max_levels: int = 12,
     multigrid_smoothing_steps: int = 1,
     multigrid_smoother_damping: float = 0.8,
+    operator_geometry_policy: str | None = None,
 ) -> SolverState:
     r"""Build the fixed linear system used by the stretch decoder.
 
@@ -633,6 +823,9 @@ def build_solver(
         multigrid_smoothing_steps: Symmetric pre/post L1-Jacobi sweeps per
             non-coarse level and V-cycle.
         multigrid_smoother_damping: L1-Jacobi damping in ``(0, 1)``.
+        operator_geometry_policy: Explicit authenticated v5 source-operator
+            policy, or ``None`` for the backward-compatible but deliberately
+            unauthenticated legacy path. V5 consumers reject legacy states.
 
     Returns:
         Precomputed solver state.
@@ -652,10 +845,49 @@ def build_solver(
         )
     elif pcg_preconditioner != _JACOBI_PRECONDITIONER:
         raise ValueError("pcg_preconditioner applies only to projection_backend='sparse_pcg'")
+    if operator_geometry_policy is None:
+        canonical_operator_policy = _LEGACY_OPERATOR_GEOMETRY_POLICY
+    elif type(operator_geometry_policy) is not str or operator_geometry_policy not in (
+        OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+        OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+    ):
+        raise ValueError("operator_geometry_policy must name an explicit authenticated v5 policy or be omitted")
+    else:
+        canonical_operator_policy = operator_geometry_policy
+
+    source_rest_array_exact = np.ascontiguousarray(np.asarray(rest_q))
+    source_tet_indices_array = np.ascontiguousarray(np.asarray(tet_indices))
+    source_tet_poses_array = np.ascontiguousarray(np.asarray(tet_poses))
+    authenticated_operator_sha256 = None
+    if canonical_operator_policy in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES:
+        if canonical_operator_policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED and dtype != torch.float64:
+            raise ValueError("source-tet-poses-promoted requires torch.float64 execution")
+        authenticated_operator_sha256 = operator_geometry_sha256(
+            source_rest_array_exact,
+            source_tet_indices_array,
+            source_tet_poses_array,
+            policy=canonical_operator_policy,
+        )
+
     source_rest_q = torch.as_tensor(np.asarray(rest_q, dtype=np.float64), dtype=torch.float64, device=device).clone()
+    if authenticated_operator_sha256 is None:
+        # These unbound compatibility placeholders deliberately preserve the
+        # legacy conversion surface, including inputs whose raw NumPy dtype
+        # has no Torch equivalent. V5 consumers reject this policy.
+        source_rest_q_exact = source_rest_q.clone()
+        source_tet_indices = torch.as_tensor(tet_indices, dtype=torch.int64, device=device).clone()
+        source_tet_poses = torch.as_tensor(tet_poses, dtype=dtype, device=device).clone()
+    else:
+        source_rest_q_exact = torch.as_tensor(source_rest_array_exact, device=device).clone()
+        source_tet_indices = torch.as_tensor(source_tet_indices_array, device=device).clone()
+        source_tet_poses = torch.as_tensor(source_tet_poses_array, device=device).clone()
     rest_q_t = source_rest_q.to(dtype=dtype).clone()
     tets = torch.as_tensor(tet_indices, dtype=torch.int64, device=device)
-    Dm_inv = torch.as_tensor(tet_poses, dtype=dtype, device=device)
+    Dm_inv = (
+        torch.as_tensor(tet_poses, dtype=dtype, device=device)
+        if authenticated_operator_sha256 is None
+        else source_tet_poses.to(dtype=dtype).clone()
+    )
     pinned = torch.as_tensor(pinned_indices, dtype=torch.int64, device=device)
 
     n_verts = rest_q_t.shape[0]
@@ -671,7 +903,12 @@ def build_solver(
 
     det_inv = torch.linalg.det(Dm_inv)
     w = 1.0 / (6.0 * det_inv)
-    if (w <= 0).any():
+    invalid_volume = (w <= 0).any()
+    if authenticated_operator_sha256 is not None:
+        invalid_volume = (
+            invalid_volume | ~torch.isfinite(det_inv).all() | ~torch.isfinite(w).all() | (det_inv <= 0.0).any()
+        )
+    if invalid_volume:
         raise ValueError("non-positive rest volumes — check tet orientation")
 
     J = _build_J(Dm_inv)  # (T, 4, 3)
@@ -740,7 +977,12 @@ def build_solver(
         L_fp=L_fp,
         rest_q=rest_q_t,
         source_rest_q=source_rest_q,
+        source_rest_q_exact=source_rest_q_exact,
+        source_tet_indices=source_tet_indices,
+        source_tet_poses=source_tet_poses,
         static_mesh_sha256=static_mesh_sha256(rest_q, tet_indices),
+        operator_geometry_policy=canonical_operator_policy,
+        operator_geometry_sha256=authenticated_operator_sha256,
         tikhonov=float(tikhonov),
         projection_backend=projection_backend,
         L_ff_sparse=L_ff_sparse,
@@ -752,6 +994,8 @@ def build_solver(
         pcg_preconditioner=pcg_preconditioner,
         multigrid_hierarchy=multigrid_hierarchy,
     )
+    if authenticated_operator_sha256 is not None:
+        validate_authenticated_operator_geometry(state)
     state.projection_state_sha256 = projection_state_sha256(state)
     return state
 

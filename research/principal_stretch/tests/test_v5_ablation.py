@@ -56,6 +56,7 @@ class TestV5IdenticalCorrectorAblation(unittest.TestCase):
             np.asarray([0, 1, 2], dtype=np.int64),
             device=torch.device("cpu"),
             dtype=torch.float64,
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         x_current, x_previous, force, gravity, mu, lam, pin = _inputs(self.rest, self.tets)
         rest_positions = torch.as_tensor(self.rest, dtype=torch.float64)
@@ -135,6 +136,7 @@ class TestV5IdenticalCorrectorAblation(unittest.TestCase):
             "physical_step_sha256": physical.physical_step_sha256,
             "common_objective_sha256": self.objective.common_objective_sha256,
             "static_mesh_sha256": self.projection.static_mesh_sha256,
+            "operator_geometry_sha256": self.projection.operator_geometry_sha256,
             "projection_state_sha256": self.projection.projection_state_sha256,
             "pin_binding_sha256": pin_binding_sha256(self.projection.pinned, targets),
         }
@@ -360,6 +362,11 @@ class TestV5IdenticalCorrectorAblation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "checkpoint or DAT limitation"):
             scope_tamper.validate_immutable()
 
+        operator_tamper = copy.deepcopy(result)
+        object.__setattr__(operator_tamper, "operator_geometry_sha256", _digest("wrong-operator"))
+        with self.assertRaisesRegex(RuntimeError, "operator_geometry_sha256"):
+            operator_tamper.validate_immutable()
+
         comparison_tamper = copy.deepcopy(result)
         object.__setattr__(
             comparison_tamper.arms[0].corrected_metrics,
@@ -414,6 +421,10 @@ class TestV5IdenticalCorrectorAblation(unittest.TestCase):
         wrong_common = self._vbd_attestation(common_objective_sha256=_digest("wrong-common"))
         with self.assertRaisesRegex(ValueError, "common_objective_sha256"):
             self._run(vbd_k1=wrong_common)
+
+        wrong_operator = self._vbd_attestation(operator_geometry_sha256=_digest("wrong-operator"))
+        with self.assertRaisesRegex(ValueError, "operator_geometry_sha256"):
+            self._run(vbd_k1=wrong_operator)
 
         tampered = self._vbd_attestation()
         object.__getattribute__(tampered, "positions")[self.projection.free[0], 0] += 1.0e-3

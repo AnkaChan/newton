@@ -162,6 +162,7 @@ class TestV5PrincipalStretchRepresentation(unittest.TestCase):
             np.array([0, 1, 2], dtype=np.int64),
             device=torch.device("cpu"),
             dtype=torch.float64,
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         cls.inputs = _inputs(cls.rest, cls.tets)
 
@@ -562,6 +563,7 @@ class TestV5IterativeSolver(unittest.TestCase):
             np.array([0, 1, 2], dtype=np.int64),
             device=torch.device("cpu"),
             dtype=torch.float64,
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         cls.inputs = _inputs(cls.rest, cls.tets)
         mass = torch.linspace(0.8, 1.2, cls.rest.shape[0], dtype=torch.float64)
@@ -983,6 +985,7 @@ class TestV5IterativeSolver(unittest.TestCase):
             device=torch.device("cpu"),
             dtype=torch.float64,
             projection_backend="sparse_pcg",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
 
         def project(_state, _target, _pins, **kwargs):

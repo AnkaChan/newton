@@ -67,6 +67,7 @@ def _trajectory(
     name: str,
     topology: str,
     *,
+    operator_geometry_sha256: str | None = None,
     physical_step_sha256: str | None = None,
     common_objective_sha256: str | None = None,
 ) -> TrajectoryRecord:
@@ -110,6 +111,7 @@ def _trajectory(
         sample_id=f"{name}:0",
         ordinal=0,
         topology_sha256=topology,
+        operator_geometry_sha256=operator_geometry_sha256 or _digest(f"operator:{name}"),
         material_sha256=material,
         pin_signature_sha256=provenance.pin_schedule_sha256,
         dt_seconds=dt,
@@ -124,6 +126,7 @@ def _trajectory(
         load_program_sha256=_digest(f"load:{name}"),
         source_chain_sha256=_digest(f"chain:{name}"),
         topology_sha256=topology,
+        operator_geometry_sha256=sample.operator_geometry_sha256,
         material_sha256=material,
         provenance=provenance,
         source_transition_count=1,
@@ -163,6 +166,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             pcg_max_iterations=24,
             pcg_raise_on_nonconvergence=True,
             pcg_preconditioner="jacobi",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         self.positions = torch.as_tensor(self.rest, dtype=torch.float64)
         self.mu = torch.tensor([2.0e4], dtype=torch.float64)
@@ -192,6 +196,7 @@ class TestV5CheckpointContract(unittest.TestCase):
         self.held_out = _trajectory(
             "held-out",
             self.projection.static_mesh_sha256,
+            operator_geometry_sha256=self.projection.operator_geometry_sha256,
             physical_step_sha256=self.physical_step.physical_step_sha256,
             common_objective_sha256=self.objective.common_objective_sha256,
         )
@@ -308,6 +313,7 @@ class TestV5CheckpointContract(unittest.TestCase):
                 warm_start="current-iterate",
                 raise_on_nonconvergence=True,
                 preconditioner="jacobi",
+                operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
             ),
             constraint=ConstraintContract.build(
                 {
@@ -344,7 +350,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             ),
             physical_timestep_source="common-objective-context-per-sample",
             rng_algorithm="torch-cpu-plus-numpy-pcg64",
-            batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v1",
+            batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2",
         )
 
     def test_roundtrip_and_deterministic_tensor_hash(self):
@@ -566,7 +572,7 @@ class TestV5CheckpointContract(unittest.TestCase):
                 optimizer=self.contract.optimizer,
                 physical_timestep_source="common-objective-context-per-sample",
                 rng_algorithm="torch-cpu-plus-numpy-pcg64",
-                batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v1",
+                batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2",
             )
 
         with self.assertRaisesRegex(ValueError, "no greater than"):
@@ -619,6 +625,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             torch.device("cpu"),
             dtype=torch.float64,
             projection_backend="dense",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         contract = ProjectionContract(
             backend="dense",
@@ -628,6 +635,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             warm_start="not-applicable",
             raise_on_nonconvergence=True,
             preconditioner="none",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         checkpoint_contract._verify_projection_operator(state, contract)
 
@@ -684,6 +692,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             torch.device("cpu"),
             dtype=torch.float64,
             projection_backend="dense",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         contract = ProjectionContract(
             backend="dense",
@@ -693,6 +702,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             warm_start="not-applicable",
             raise_on_nonconvergence=True,
             preconditioner="none",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         reduced = state.L[state.free][:, state.free]
         product = state.L_ff_chol @ state.L_ff_chol.transpose(0, 1)
@@ -754,6 +764,7 @@ class TestV5CheckpointContract(unittest.TestCase):
                     pcg_max_iterations=24,
                     pcg_raise_on_nonconvergence=True,
                     pcg_preconditioner="jacobi",
+                    operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
                 )
                 contract = ProjectionContract(
                     backend="sparse_pcg",
@@ -764,6 +775,7 @@ class TestV5CheckpointContract(unittest.TestCase):
                     raise_on_nonconvergence=True,
                     preconditioner="jacobi",
                     execution_dtype=str(dtype),
+                    operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
                 )
                 checkpoint_contract._verify_projection_operator(state, contract)
 
@@ -799,6 +811,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             torch.device("cpu"),
             dtype=torch.float64,
             projection_backend="dense",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         torch_inverse = torch.linalg.inv(torch.as_tensor(rest_matrix, dtype=torch.float64))
         relative_eps = (state.Dm_inv - torch_inverse).abs() / torch_inverse.abs() / torch.finfo(torch.float64).eps
@@ -811,8 +824,49 @@ class TestV5CheckpointContract(unittest.TestCase):
             warm_start="not-applicable",
             raise_on_nonconvergence=True,
             preconditioner="none",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         checkpoint_contract._verify_projection_operator(state, contract)
+
+    def test_source_promoted_operator_is_reconstructed_from_exact_float32_bytes(self):
+        rest32 = np.asarray(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        )
+        tets = np.asarray([[0, 1, 2, 3]], dtype=np.int64)
+        poses32 = np.eye(3, dtype=np.float32)[None]
+        state = ts.build_solver(
+            rest32,
+            tets,
+            poses32,
+            np.asarray([0, 1, 2], dtype=np.int64),
+            torch.device("cpu"),
+            dtype=torch.float64,
+            projection_backend="dense",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+        )
+        contract = ProjectionContract(
+            backend="dense",
+            relative_tolerance=None,
+            absolute_tolerance=None,
+            max_iterations=0,
+            warm_start="not-applicable",
+            raise_on_nonconvergence=True,
+            preconditioner="none",
+            execution_dtype="torch.float64",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+        )
+
+        checkpoint_contract._verify_projection_operator(state, contract)
+        self.assertTrue(torch.equal(state.Dm_inv, state.source_tet_poses.to(torch.float64)))
+        with self.assertRaisesRegex(ValueError, "policy differs"):
+            checkpoint_contract._verify_projection_operator(
+                state,
+                dataclasses.replace(
+                    contract,
+                    operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+                ),
+            )
 
     def test_cross_topology_evaluation_uses_a_separate_verified_binding(self):
         self.assertNotEqual(self.train.topology_sha256, self.held_out.topology_sha256)
@@ -846,6 +900,8 @@ class TestV5CheckpointContract(unittest.TestCase):
         self.assertEqual(verified, binding)
         self.assertEqual(binding.checkpoint_payload_sha256, self.checkpoint["checkpoint_payload_sha256"])
         self.assertEqual(binding.held_out_topology_sha256, self.held_out.topology_sha256)
+        self.assertEqual(binding.held_out_operator_geometry_sha256, self.projection.operator_geometry_sha256)
+        self.assertEqual(binding.selected_samples[0].operator_geometry_sha256, self.projection.operator_geometry_sha256)
         self.assertEqual(binding.physical_dt_seconds, 1.0 / 120.0)
         self.assertEqual(binding.physical_timestep_source, "common-objective-context-per-sample")
 
@@ -899,6 +955,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             pcg_max_iterations=24,
             pcg_raise_on_nonconvergence=True,
             pcg_preconditioner="jacobi",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         )
         float32_contract = dataclasses.replace(
             self.contract,
@@ -1048,6 +1105,7 @@ class TestV5CheckpointContract(unittest.TestCase):
         self.assertEqual(verified.iterations, 3)
         self.assertEqual(verified.physical_step_sha256, self.physical_step.physical_step_sha256)
         self.assertEqual(verified.common_objective_sha256, self.objective.common_objective_sha256)
+        self.assertEqual(verified.operator_geometry_sha256, self.projection.operator_geometry_sha256)
 
         with self.assertRaisesRegex(ValueError, "iteration count"):
             verify_v5_runtime_compatibility(
@@ -1148,7 +1206,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             static_mesh_sha256=_digest("other-mesh"),
         )
         wrong_mesh_projection.projection_state_sha256 = ts.projection_state_sha256(wrong_mesh_projection)
-        with self.assertRaisesRegex(ValueError, "static mesh differs from the held-out topology"):
+        with self.assertRaisesRegex(ValueError, "static mesh differs"):
             verify_v5_runtime_compatibility(
                 self.checkpoint,
                 evaluation_binding=binding,

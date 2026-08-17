@@ -42,7 +42,12 @@ from .iterative_solver import (
     solve_iterative_principal_stretch,
 )
 from .predictor import StretchPredictor, build_stretch_predictor
-from .torch_solver import SolverState, compute_F, projection_state_sha256
+from .torch_solver import (
+    SolverState,
+    compute_F,
+    projection_state_sha256,
+    validate_authenticated_operator_geometry,
+)
 from .v5_checkpoint import (
     OptimizerContract,
     ParentLineage,
@@ -228,6 +233,7 @@ class V5TrainingSample:
     producer_attested_reference_deformation_gradient: torch.Tensor
     producer_attested_reference_positions_sha256: str = dataclasses.field(init=False)
     producer_attested_reference_deformation_gradient_sha256: str = dataclasses.field(init=False)
+    operator_geometry_sha256: str = dataclasses.field(init=False)
     projection_state_sha256: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -267,6 +273,8 @@ class V5TrainingSample:
             "producer_attested_reference_deformation_gradient_sha256",
             deformation_sha256,
         )
+        operator_sha256 = validate_authenticated_operator_geometry(self.projection_state)
+        object.__setattr__(self, "operator_geometry_sha256", operator_sha256)
         object.__setattr__(self, "projection_state_sha256", projection_state_sha256(self.projection_state))
         self.validate_immutable()
 
@@ -300,6 +308,12 @@ class V5TrainingSample:
             raise ValueError("reference deformation-gradient SHA-256 differs from reference_f in the sample record")
 
         state = self.projection_state
+        actual_operator_sha256 = validate_authenticated_operator_geometry(state)
+        if (
+            actual_operator_sha256 != self.operator_geometry_sha256
+            or actual_operator_sha256 != self.sample_record.operator_geometry_sha256
+        ):
+            raise ValueError("operator-geometry SHA-256 differs from the training sample record")
         actual_projection_sha256 = projection_state_sha256(state)
         if (
             state.projection_state_sha256 != actual_projection_sha256
@@ -320,6 +334,7 @@ class V5TrainingSample:
                 preconditioner="none",
                 require_runtime_diagnostics=True,
                 execution_dtype=str(state.rest_q.dtype),
+                operator_geometry_policy=state.operator_geometry_policy,
             ),
         )
         if state.source_rest_q.dtype != torch.float64:
@@ -366,7 +381,19 @@ class V5TrainingSample:
                 raise ValueError(f"{name} must be finite")
             if value.requires_grad:
                 raise ValueError(f"training data tensor {name} must not require gradients")
-        for name in ("Dm_inv", "J", "w", "L", "L_ff_chol", "L_fp", "rest_q", "source_rest_q"):
+        for name in (
+            "Dm_inv",
+            "J",
+            "w",
+            "L",
+            "L_ff_chol",
+            "L_fp",
+            "rest_q",
+            "source_rest_q",
+            "source_rest_q_exact",
+            "source_tet_indices",
+            "source_tet_poses",
+        ):
             value = getattr(state, name)
             if value is not None and value.requires_grad:
                 raise ValueError(f"training projection tensor {name} must not require gradients")
@@ -412,6 +439,8 @@ def _verify_sample_topology(sample: V5TrainingSample) -> str:
     )
     if actual != sample.sample_record.topology_sha256 or actual != state.static_mesh_sha256:
         raise ValueError("materialized projection topology differs from the training sample record")
+    if validate_authenticated_operator_geometry(state) != sample.sample_record.operator_geometry_sha256:
+        raise ValueError("materialized projection operator differs from the training sample record")
     return actual
 
 
@@ -545,6 +574,7 @@ def _reference_matches(reference: SamplingReference, sample: V5TrainingSample) -
     expected = {
         "trajectory_id": sample.trajectory_id,
         "topology_sha256": record.topology_sha256,
+        "operator_geometry_sha256": record.operator_geometry_sha256,
         "pin_signature_sha256": record.pin_signature_sha256,
         "static_layout_sha256": record.static_layout_sha256,
         "sample_id": record.sample_id,
@@ -580,6 +610,8 @@ def _validate_sample_against_solver_contract(sample: V5TrainingSample, contract:
     state = sample.projection_state
     if str(state.rest_q.dtype) != contract.projection.execution_dtype:
         raise ValueError("training projection execution dtype differs from the solver contract")
+    if state.operator_geometry_policy != contract.projection.operator_geometry_policy:
+        raise ValueError("training operator-geometry policy differs from the solver contract")
     _verify_projection_operator(state, contract.projection)
 
 

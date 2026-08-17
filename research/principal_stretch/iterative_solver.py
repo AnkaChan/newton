@@ -445,7 +445,8 @@ class IterativeSolverIteration:
 class IterativeSolverResult:
     """Final constrained iterate, residual, work, and full learned trace.
 
-    ``projection_state_sha256`` and ``static_graph_sha256`` identify the
+    ``operator_geometry_sha256``, ``projection_state_sha256``, and
+    ``static_graph_sha256`` identify the
     solver inputs authenticated at entry. They are not, by themselves, proof
     that arbitrary Python constraint code left those inputs unchanged while
     the solver ran. ``constraint_registration`` makes that claim boundary
@@ -466,6 +467,7 @@ class IterativeSolverResult:
     head_permutation: tuple[int, ...] | None
     physical_step_sha256: str
     common_objective_sha256: str
+    operator_geometry_sha256: str
     projection_state_sha256: str
     static_graph_sha256: str
     objective: torch.Tensor
@@ -531,6 +533,7 @@ def _validate_problem_identity(
     objective: CommonObjectiveContext,
 ) -> None:
     objective.validate_immutable()
+    torch_solver.validate_authenticated_operator_geometry(projection_state)
     actual_projection_sha256 = torch_solver.projection_state_sha256(projection_state)
     if projection_state.projection_state_sha256 != actual_projection_sha256:
         raise ValueError("compatibility projection state differs from its authenticated identity")
@@ -956,6 +959,7 @@ def solve_iterative_principal_stretch(
         head_permutation=config.head_permutation,
         physical_step_sha256=physical_step.physical_step_sha256,
         common_objective_sha256=objective.common_objective_sha256,
+        operator_geometry_sha256=projection_state.operator_geometry_sha256,
         projection_state_sha256=projection_state.projection_state_sha256,
         static_graph_sha256=predictor.model.static_graph_sha256,
         objective=objective_value,

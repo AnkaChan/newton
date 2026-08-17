@@ -37,14 +37,14 @@ _NUMERIC_COMPONENTS = (
 )
 _OBJECTIVE_COMPONENTS = ("physical_step", "common_objective")
 _PAYLOAD_COMPONENTS = (*_NUMERIC_COMPONENTS, *_OBJECTIVE_COMPONENTS)
-_SAMPLE_CONTRACT = "pss-v5-dataset-sample-v1"
-_STATIC_LAYOUT_CONTRACT = "pss-v5-dataset-static-layout-v1"
+_SAMPLE_CONTRACT = "pss-v5-dataset-sample-v2"
+_STATIC_LAYOUT_CONTRACT = "pss-v5-dataset-static-layout-v2"
 _PROVENANCE_CONTRACT = "pss-v5-dataset-trajectory-provenance-v1"
-_TRAJECTORY_CONTRACT = "pss-v5-dataset-trajectory-v1"
-_SPLIT_CONTRACT = "pss-v5-dataset-split-v1"
+_TRAJECTORY_CONTRACT = "pss-v5-dataset-trajectory-v2"
+_SPLIT_CONTRACT = "pss-v5-dataset-split-v2"
 _ACCESS_CONTRACT = "pss-v5-dataset-access-ledger-v1"
 _PAYLOAD_SELECTION_CONTRACT = "pss-v5-dataset-payload-selection-v1"
-_SAMPLING_CONTRACT = "pss-v5-static-layout-homogeneous-trajectory-first-sampling-v1"
+_SAMPLING_CONTRACT = "pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2"
 _OBJECTIVE_ROUTING = "per-sample-unbatched-physical-objective-v1"
 _COMPLETE_TRAJECTORY_SELECTION = "complete-contiguous-trajectory-v1"
 _AUTHENTICATED_SUBRANGE_SELECTION = "authenticated-contiguous-subrange-v1"
@@ -374,6 +374,7 @@ class TrajectorySampleRecord:
     sample_id: str
     ordinal: int
     topology_sha256: str
+    operator_geometry_sha256: str
     material_sha256: str
     pin_signature_sha256: str
     dt_seconds: float
@@ -395,6 +396,7 @@ class TrajectorySampleRecord:
             raise ValueError("sample ordinal must be a non-negative integer")
         for name in (
             "topology_sha256",
+            "operator_geometry_sha256",
             "material_sha256",
             "pin_signature_sha256",
             "physical_step_sha256",
@@ -411,6 +413,7 @@ class TrajectorySampleRecord:
                 {
                     "contract": _STATIC_LAYOUT_CONTRACT,
                     "topology_sha256": self.topology_sha256,
+                    "operator_geometry_sha256": self.operator_geometry_sha256,
                     "material_sha256": self.material_sha256,
                     "pin_signature_sha256": self.pin_signature_sha256,
                     "dt_float64_bits": self.dt_float64_bits,
@@ -435,6 +438,7 @@ class TrajectorySampleRecord:
             "sample_id": self.sample_id,
             "ordinal": self.ordinal,
             "topology_sha256": self.topology_sha256,
+            "operator_geometry_sha256": self.operator_geometry_sha256,
             "material_sha256": self.material_sha256,
             "pin_signature_sha256": self.pin_signature_sha256,
             "dt_seconds": self.dt_seconds,
@@ -467,6 +471,7 @@ class TrajectoryRecord:
     load_program_sha256: str
     source_chain_sha256: str
     topology_sha256: str
+    operator_geometry_sha256: str
     material_sha256: str
     provenance: TrajectoryProvenance
     source_transition_count: int
@@ -480,7 +485,13 @@ class TrajectoryRecord:
         for name in ("trajectory_id", "scene_family", "load_program_id"):
             _identifier(getattr(self, name), name)
         object.__setattr__(self, "trajectory_id_sha256", hashlib.sha256(self.trajectory_id.encode("utf-8")).hexdigest())
-        for name in ("load_program_sha256", "source_chain_sha256", "topology_sha256", "material_sha256"):
+        for name in (
+            "load_program_sha256",
+            "source_chain_sha256",
+            "topology_sha256",
+            "operator_geometry_sha256",
+            "material_sha256",
+        ):
             _sha256(getattr(self, name), name)
         if type(self.provenance) is not TrajectoryProvenance:
             raise ValueError("provenance must be a canonical TrajectoryProvenance")
@@ -517,6 +528,8 @@ class TrajectoryRecord:
         for sample in samples:
             if sample.topology_sha256 != self.topology_sha256:
                 raise ValueError("sample topology disagrees with its trajectory")
+            if sample.operator_geometry_sha256 != self.operator_geometry_sha256:
+                raise ValueError("sample operator geometry disagrees with its trajectory")
             if sample.material_sha256 != self.material_sha256:
                 raise ValueError("sample material disagrees with its trajectory")
             if sample.dt_float64_bits != self.provenance.dt_float64_bits:
@@ -536,6 +549,7 @@ class TrajectoryRecord:
             "load_program_sha256": self.load_program_sha256,
             "source_chain_sha256": self.source_chain_sha256,
             "topology_sha256": self.topology_sha256,
+            "operator_geometry_sha256": self.operator_geometry_sha256,
             "material_sha256": self.material_sha256,
             "provenance": self.provenance.as_dict(),
             "source_transition_count": self.source_transition_count,
@@ -553,11 +567,12 @@ class TrajectoryRecord:
 
 @dataclasses.dataclass(frozen=True)
 class SplitRoleOverlap:
-    """Topology and material overlap for one pair of split roles."""
+    """Topology, source-operator, and material overlap for two split roles."""
 
     first: DatasetRole
     second: DatasetRole
     topology_sha256: tuple[str, ...]
+    operator_geometry_sha256: tuple[str, ...]
     material_sha256: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -565,7 +580,7 @@ class SplitRoleOverlap:
         object.__setattr__(self, "second", _dataset_role(self.second))
         if _ROLE_ORDER.index(self.first) >= _ROLE_ORDER.index(self.second):
             raise ValueError("split overlap roles must use canonical order")
-        for name in ("topology_sha256", "material_sha256"):
+        for name in ("topology_sha256", "operator_geometry_sha256", "material_sha256"):
             values = tuple(sorted(getattr(self, name)))
             if len(set(values)) != len(values):
                 raise ValueError(f"{name} overlap values must be unique")
@@ -578,13 +593,14 @@ class SplitRoleOverlap:
         return {
             "roles": [self.first.value, self.second.value],
             "topology_sha256": list(self.topology_sha256),
+            "operator_geometry_sha256": list(self.operator_geometry_sha256),
             "material_sha256": list(self.material_sha256),
         }
 
 
 @dataclasses.dataclass(frozen=True)
 class SplitOverlapReport:
-    """Non-fatal topology and material overlap across dataset roles."""
+    """Non-fatal topology, source-operator, and material split overlap."""
 
     role_pairs: tuple[SplitRoleOverlap, ...]
 
@@ -613,11 +629,17 @@ class SplitOverlapReport:
         """Whether any role pair shares a material."""
         return any(pair.material_sha256 for pair in self.role_pairs)
 
+    @property
+    def has_operator_geometry_overlap(self) -> bool:
+        """Whether any role pair shares exact authenticated source geometry."""
+        return any(pair.operator_geometry_sha256 for pair in self.role_pairs)
+
     def as_dict(self) -> dict[str, object]:
         """Return a JSON-compatible overlap report."""
         return {
             "role_pairs": [pair.as_dict() for pair in self.role_pairs],
             "has_topology_overlap": self.has_topology_overlap,
+            "has_operator_geometry_overlap": self.has_operator_geometry_overlap,
             "has_material_overlap": self.has_material_overlap,
         }
 
@@ -654,13 +676,13 @@ class SplitManifest:
     consumed_regression: tuple[TrajectoryRecord, ...] = ()
     reject_topology_overlap: bool = False
     reject_material_overlap: bool = False
-    schema_version: int = 1
+    schema_version: int = 2
     overlap_report: SplitOverlapReport = dataclasses.field(init=False)
     manifest_sha256: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version != 1:
-            raise ValueError("v5 dataset split schema_version must be exactly 1")
+        if type(self.schema_version) is not int or self.schema_version != 2:
+            raise ValueError("v5 dataset split schema_version must be exactly 2")
         if type(self.reject_topology_overlap) is not bool or type(self.reject_material_overlap) is not bool:
             raise ValueError("overlap rejection settings must be bool values")
 
@@ -724,16 +746,20 @@ class SplitManifest:
         for first, second in itertools.combinations(_ROLE_ORDER, 2):
             first_topologies = {record.topology_sha256 for record in canonical_roles[first]}
             second_topologies = {record.topology_sha256 for record in canonical_roles[second]}
+            first_operators = {record.operator_geometry_sha256 for record in canonical_roles[first]}
+            second_operators = {record.operator_geometry_sha256 for record in canonical_roles[second]}
             first_materials = {record.material_sha256 for record in canonical_roles[first]}
             second_materials = {record.material_sha256 for record in canonical_roles[second]}
             topology_overlap = tuple(sorted(first_topologies & second_topologies))
+            operator_overlap = tuple(sorted(first_operators & second_operators))
             material_overlap = tuple(sorted(first_materials & second_materials))
-            if topology_overlap or material_overlap:
+            if topology_overlap or operator_overlap or material_overlap:
                 role_pairs.append(
                     SplitRoleOverlap(
                         first=first,
                         second=second,
                         topology_sha256=topology_overlap,
+                        operator_geometry_sha256=operator_overlap,
                         material_sha256=material_overlap,
                     )
                 )
@@ -1015,6 +1041,7 @@ class SamplingReference:
     trajectory_id: str
     trajectory_sha256: str
     topology_sha256: str
+    operator_geometry_sha256: str
     pin_signature_sha256: str
     static_layout_sha256: str
     sample_id: str
@@ -1029,6 +1056,7 @@ class SamplingReference:
         for name in (
             "trajectory_sha256",
             "topology_sha256",
+            "operator_geometry_sha256",
             "pin_signature_sha256",
             "static_layout_sha256",
             "sample_sha256",
@@ -1046,7 +1074,7 @@ class SamplingReference:
 
 @dataclasses.dataclass(frozen=True)
 class SamplingBatch:
-    """One topology/material/pin/timestep static-layout-homogeneous batch.
+    """One topology/operator/material/pin/timestep homogeneous batch.
 
     Static-layout compatibility does not mean the samples share a physical
     objective. Inertial targets, external loads, and history remain per-sample
@@ -1055,12 +1083,18 @@ class SamplingBatch:
     """
 
     topology_sha256: str
+    operator_geometry_sha256: str
     pin_signature_sha256: str
     static_layout_sha256: str
     samples: tuple[SamplingReference, ...]
 
     def __post_init__(self) -> None:
-        for name in ("topology_sha256", "pin_signature_sha256", "static_layout_sha256"):
+        for name in (
+            "topology_sha256",
+            "operator_geometry_sha256",
+            "pin_signature_sha256",
+            "static_layout_sha256",
+        ):
             _sha256(getattr(self, name), f"batch {name}")
         samples = tuple(self.samples)
         if not samples:
@@ -1069,6 +1103,8 @@ class SamplingBatch:
             raise ValueError("sampling batch must contain canonical SamplingReference values")
         if any(sample.topology_sha256 != self.topology_sha256 for sample in samples):
             raise ValueError("sampling batch mixes topologies")
+        if any(sample.operator_geometry_sha256 != self.operator_geometry_sha256 for sample in samples):
+            raise ValueError("sampling batch mixes operator geometries")
         if any(sample.pin_signature_sha256 != self.pin_signature_sha256 for sample in samples):
             raise ValueError("sampling batch mixes pin signatures")
         if any(sample.static_layout_sha256 != self.static_layout_sha256 for sample in samples):
@@ -1079,6 +1115,7 @@ class SamplingBatch:
         """Return a JSON-compatible sampling batch."""
         return {
             "topology_sha256": self.topology_sha256,
+            "operator_geometry_sha256": self.operator_geometry_sha256,
             "pin_signature_sha256": self.pin_signature_sha256,
             "static_layout_sha256": self.static_layout_sha256,
             "physical_objective_routing": _OBJECTIVE_ROUTING,
@@ -1090,8 +1127,8 @@ class SamplingBatch:
 class SamplingSchedule:
     """Immutable deterministic static-layout-homogeneous sample stream.
 
-    A batch is homogeneous only in topology, material, pin signature, and
-    timestep. The schedule explicitly requires physical objectives to be
+    A batch is homogeneous only in topology, source operator, material, pin
+    signature, and timestep. The schedule explicitly requires physical objectives to be
     reconstructed and evaluated per sample; it does not authenticate a shared
     inertial target, external load, or history context.
     """
@@ -1140,6 +1177,8 @@ class SamplingSchedule:
             for reference in batch.samples:
                 if reference.topology_sha256 != batch.topology_sha256:
                     raise ValueError("scheduled reference disagrees with its batch topology")
+                if reference.operator_geometry_sha256 != batch.operator_geometry_sha256:
+                    raise ValueError("scheduled reference disagrees with its batch operator geometry")
                 if reference.pin_signature_sha256 != batch.pin_signature_sha256:
                     raise ValueError("scheduled reference disagrees with its batch pin signature")
                 if reference.static_layout_sha256 != batch.static_layout_sha256:
@@ -1151,6 +1190,8 @@ class SamplingSchedule:
                     raise ValueError("scheduled trajectory hash disagrees with the split manifest")
                 if reference.topology_sha256 != trajectory.topology_sha256:
                     raise ValueError("scheduled topology hash disagrees with the split manifest")
+                if reference.operator_geometry_sha256 != trajectory.operator_geometry_sha256:
+                    raise ValueError("scheduled operator-geometry hash disagrees with the split manifest")
                 sample = samples_by_trajectory[trajectory.trajectory_id].get(reference.sample_id)
                 if sample is None:
                     raise ValueError("scheduled sample does not belong to its trajectory")
@@ -1227,7 +1268,7 @@ class SamplingSchedule:
         return {
             "contract": _SAMPLING_CONTRACT,
             "generator": "numpy.random.Generator(PCG64)",
-            "selection_order": "trajectory -> static_layout(topology,pins,material,dt) -> sample",
+            "selection_order": "trajectory -> static_layout(topology,operator,pins,material,dt) -> sample",
             "physical_objective_routing": _OBJECTIVE_ROUTING,
             "manifest_sha256": self.manifest_sha256,
             "role": self.role.value,
@@ -1316,6 +1357,7 @@ def _build_sampling_batches(
                     trajectory_id=trajectory.trajectory_id,
                     trajectory_sha256=trajectory.trajectory_sha256,
                     topology_sha256=trajectory.topology_sha256,
+                    operator_geometry_sha256=trajectory.operator_geometry_sha256,
                     pin_signature_sha256=sample.pin_signature_sha256,
                     static_layout_sha256=sample.static_layout_sha256,
                     sample_id=sample.sample_id,
@@ -1328,6 +1370,7 @@ def _build_sampling_batches(
         batches.append(
             SamplingBatch(
                 topology_sha256=trajectory.topology_sha256,
+                operator_geometry_sha256=trajectory.operator_geometry_sha256,
                 pin_signature_sha256=representative.pin_signature_sha256,
                 static_layout_sha256=static_layout_sha256,
                 samples=tuple(references),
@@ -1351,7 +1394,7 @@ def build_sampling_schedule(
     shuffled cycle, then the entire batch is drawn only from samples in that
     layout. Every trajectory therefore receives exactly ``batch_size``
     selections per outer cycle regardless of its recorded length, while no
-    batch mixes topology, pin set, material, or timestep.
+    batch mixes topology, source operator, pin set, material, or timestep.
 
     Static-layout homogeneity is not physical-objective compatibility.
     Inertial targets, external loads, and history can differ between samples

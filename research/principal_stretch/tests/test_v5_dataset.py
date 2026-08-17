@@ -86,6 +86,7 @@ def _sample(
     ordinal: int,
     *,
     topology_sha256: str | None = None,
+    operator_geometry_sha256: str | None = None,
     material_sha256: str | None = None,
     pin_signature_sha256: str | None = None,
     physical_step_sha256: str | None = None,
@@ -99,6 +100,7 @@ def _sample(
         sample_id=f"{namespace}:sample:{ordinal}",
         ordinal=ordinal,
         topology_sha256=topology_sha256 or _digest(f"topology:{namespace}"),
+        operator_geometry_sha256=operator_geometry_sha256 or _digest(f"operator:{namespace}"),
         material_sha256=material_sha256 or _digest(f"material:{namespace}"),
         pin_signature_sha256=pin_signature_sha256 or _digest(f"pins:{namespace}:default"),
         dt_seconds=dt_seconds,
@@ -114,12 +116,14 @@ def _trajectory(
     sample_count: int = 2,
     load_program_id: str | None = None,
     topology: str | None = None,
+    operator_geometry: str | None = None,
     material: str | None = None,
     samples: tuple[TrajectorySampleRecord, ...] | None = None,
     provenance: TrajectoryProvenance | None = None,
 ) -> TrajectoryRecord:
     trajectory_provenance = provenance or _provenance(trajectory_id)
     trajectory_topology = topology or _digest(f"topology:{trajectory_id}")
+    trajectory_operator = operator_geometry or _digest(f"operator:{trajectory_id}")
     trajectory_material = material or _digest(f"material:{trajectory_id}")
     trajectory_samples = samples
     if trajectory_samples is None:
@@ -128,6 +132,7 @@ def _trajectory(
                 trajectory_id,
                 ordinal,
                 topology_sha256=trajectory_topology,
+                operator_geometry_sha256=trajectory_operator,
                 material_sha256=trajectory_material,
                 dt_seconds=trajectory_provenance.dt_seconds,
             )
@@ -140,6 +145,7 @@ def _trajectory(
         load_program_sha256=_digest(f"load-program:{load_program_id or trajectory_id}"),
         source_chain_sha256=_digest(f"chain:{trajectory_id}"),
         topology_sha256=trajectory_topology,
+        operator_geometry_sha256=trajectory_operator,
         material_sha256=trajectory_material,
         provenance=trajectory_provenance,
         source_transition_count=len(trajectory_samples),
@@ -350,19 +356,22 @@ class TestCanonicalDatasetRecords(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "numeric content identifier overlap across roles"):
             SplitManifest(train=(train,), validation=(validation,), confirmation=())
 
-    def test_reports_topology_and_material_overlap_unless_configured_to_reject(self):
+    def test_reports_topology_operator_and_material_overlap_unless_configured_to_reject(self):
         topology = _digest("shared-topology")
+        operator = _digest("shared-operator")
         material = _digest("shared-material")
-        train = _trajectory("train", topology=topology, material=material)
-        validation = _trajectory("validation", topology=topology, material=material)
+        train = _trajectory("train", topology=topology, operator_geometry=operator, material=material)
+        validation = _trajectory("validation", topology=topology, operator_geometry=operator, material=material)
 
         manifest = SplitManifest(train=(train,), validation=(validation,), confirmation=())
         self.assertTrue(manifest.overlap_report.has_topology_overlap)
+        self.assertTrue(manifest.overlap_report.has_operator_geometry_overlap)
         self.assertTrue(manifest.overlap_report.has_material_overlap)
         self.assertEqual(len(manifest.overlap_report.role_pairs), 1)
         overlap = manifest.overlap_report.role_pairs[0]
         self.assertEqual((overlap.first, overlap.second), (DatasetRole.TRAIN, DatasetRole.VALIDATION))
         self.assertEqual(overlap.topology_sha256, (topology,))
+        self.assertEqual(overlap.operator_geometry_sha256, (operator,))
         self.assertEqual(overlap.material_sha256, (material,))
 
         with self.assertRaisesRegex(ValueError, "topology overlap across roles"):
@@ -378,6 +387,20 @@ class TestCanonicalDatasetRecords(unittest.TestCase):
                 validation=(validation,),
                 confirmation=(),
                 reject_material_overlap=True,
+            )
+
+    def test_same_topology_different_operator_geometry_separates_static_layouts(self):
+        topology = _digest("one-topology")
+        first = _trajectory("first-operator", topology=topology, operator_geometry=_digest("operator-a"))
+        second = _trajectory("second-operator", topology=topology, operator_geometry=_digest("operator-b"))
+
+        self.assertNotEqual(first.samples[0].static_layout_sha256, second.samples[0].static_layout_sha256)
+        manifest = SplitManifest(train=(first, second), validation=(), confirmation=())
+        schedule = build_sampling_schedule(manifest, steps=2, batch_size=2, seed=11)
+        for batch in schedule.batches:
+            self.assertEqual(
+                {reference.operator_geometry_sha256 for reference in batch.samples},
+                {batch.operator_geometry_sha256},
             )
 
     def test_complete_trajectory_rejects_slices_and_subranges_are_explicit(self):

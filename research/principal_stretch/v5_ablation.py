@@ -210,11 +210,12 @@ class VBDK1MethodRecord:
 
 def _vbd_attestation_payload(value: AttestedVBDK1Start) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "positions_sha256": object.__getattribute__(value, "positions_sha256"),
         "physical_step_sha256": object.__getattribute__(value, "physical_step_sha256"),
         "common_objective_sha256": object.__getattribute__(value, "common_objective_sha256"),
         "static_mesh_sha256": object.__getattribute__(value, "static_mesh_sha256"),
+        "operator_geometry_sha256": object.__getattribute__(value, "operator_geometry_sha256"),
         "projection_state_sha256": object.__getattribute__(value, "projection_state_sha256"),
         "pin_binding_sha256": object.__getattribute__(value, "pin_binding_sha256"),
         "method_record_sha256": object.__getattribute__(value, "method_record").method_record_sha256,
@@ -230,6 +231,7 @@ class AttestedVBDK1Start:
     physical_step_sha256: str
     common_objective_sha256: str
     static_mesh_sha256: str
+    operator_geometry_sha256: str
     projection_state_sha256: str
     pin_binding_sha256: str
     method_record: VBDK1MethodRecord
@@ -252,6 +254,7 @@ class AttestedVBDK1Start:
             "physical_step_sha256",
             "common_objective_sha256",
             "static_mesh_sha256",
+            "operator_geometry_sha256",
             "projection_state_sha256",
             "pin_binding_sha256",
         ):
@@ -350,6 +353,7 @@ class AblationArmResult:
     physical_step_sha256: str
     common_objective_sha256: str
     static_mesh_sha256: str
+    operator_geometry_sha256: str
     static_graph_sha256: str
     projection_state_sha256: str
     pin_binding_sha256: str
@@ -391,6 +395,7 @@ class V5AblationResult:
     physical_step_sha256: str
     common_objective_sha256: str
     static_mesh_sha256: str
+    operator_geometry_sha256: str
     projection_state_sha256: str
     static_graph_sha256: str
     predictor_state_sha256: str
@@ -416,7 +421,7 @@ class V5AblationResult:
         names = tuple(arm.name for arm in self.arms)
         if names != MANDATORY_ARM_NAMES or len(set(names)) != len(names):
             raise ValueError("ablation result must contain each mandatory canonical row exactly once in order")
-        if self.schema_version != 1 or self.claim_scope != _CLAIM_SCOPE:
+        if self.schema_version != 2 or self.claim_scope != _CLAIM_SCOPE:
             raise ValueError("ablation result has an unsupported claim schema")
         if not self.development_only or self.learned_value_claim:
             raise ValueError("this harness may report only development diagnostics without a learned-value claim")
@@ -439,6 +444,7 @@ class V5AblationResult:
             "physical_step_sha256",
             "common_objective_sha256",
             "static_mesh_sha256",
+            "operator_geometry_sha256",
             "projection_state_sha256",
             "static_graph_sha256",
             "predictor_state_sha256",
@@ -499,6 +505,7 @@ class V5AblationResult:
                 "physical_step_sha256",
                 "common_objective_sha256",
                 "static_mesh_sha256",
+                "operator_geometry_sha256",
                 "static_graph_sha256",
                 "projection_state_sha256",
                 "pin_binding_sha256",
@@ -717,6 +724,7 @@ class V5AblationResult:
             "physical_step_sha256": self.physical_step_sha256,
             "common_objective_sha256": self.common_objective_sha256,
             "static_mesh_sha256": self.static_mesh_sha256,
+            "operator_geometry_sha256": self.operator_geometry_sha256,
             "projection_state_sha256": self.projection_state_sha256,
             "static_graph_sha256": self.static_graph_sha256,
             "predictor_state_sha256": self.predictor_state_sha256,
@@ -971,6 +979,8 @@ def _validate_iterative_result(
         raise RuntimeError("v5 ablation arm changed the physical-step identity")
     if result.common_objective_sha256 != objective.common_objective_sha256:
         raise RuntimeError("v5 ablation arm changed the common-objective identity")
+    if result.operator_geometry_sha256 != projection_state.operator_geometry_sha256:
+        raise RuntimeError("v5 ablation arm changed the operator-geometry identity")
     if result.projection_state_sha256 != projection_state.projection_state_sha256:
         raise RuntimeError("v5 ablation arm changed the projection identity")
     if result.static_graph_sha256 != static_graph_sha256:
@@ -1036,6 +1046,7 @@ def _row_evidence_payload(arm: AblationArmResult) -> dict[str, object]:
         "physical_step_sha256": arm.physical_step_sha256,
         "common_objective_sha256": arm.common_objective_sha256,
         "static_mesh_sha256": arm.static_mesh_sha256,
+        "operator_geometry_sha256": arm.operator_geometry_sha256,
         "static_graph_sha256": arm.static_graph_sha256,
         "projection_state_sha256": arm.projection_state_sha256,
         "pin_binding_sha256": arm.pin_binding_sha256,
@@ -1070,7 +1081,7 @@ def _ablation_evidence_sha256(
     return canonical_json_sha256(
         _canonical_evidence_value(
             {
-                "contract": "v5-identical-corrector-development-ablation-v1",
+                "contract": "v5-identical-corrector-development-ablation-v2",
                 **identities,
                 "arms": tuple(_row_evidence_payload(arm) for arm in arms),
             }
@@ -1136,6 +1147,7 @@ def run_v5_identical_corrector_ablation(
         "physical_step_sha256": physical_step.physical_step_sha256,
         "common_objective_sha256": objective.common_objective_sha256,
         "static_mesh_sha256": projection_state.static_mesh_sha256,
+        "operator_geometry_sha256": projection_state.operator_geometry_sha256,
         "projection_state_sha256": projection_state.projection_state_sha256,
         "pin_binding_sha256": binding_sha256,
     }
@@ -1328,6 +1340,7 @@ def run_v5_identical_corrector_ablation(
                     physical_step_sha256=physical_step.physical_step_sha256,
                     common_objective_sha256=objective.common_objective_sha256,
                     static_mesh_sha256=projection_state.static_mesh_sha256,
+                    operator_geometry_sha256=projection_state.operator_geometry_sha256,
                     static_graph_sha256=static_graph_sha256,
                     projection_state_sha256=projection_state.projection_state_sha256,
                     pin_binding_sha256=binding_sha256,
@@ -1368,7 +1381,7 @@ def run_v5_identical_corrector_ablation(
     assert scheduled_work_sha256 is not None
     final_rows = tuple(rows)
     identities = {
-        "schema_version": 1,
+        "schema_version": 2,
         "claim_scope": _CLAIM_SCOPE,
         "development_only": True,
         "learned_value_claim": False,
@@ -1377,6 +1390,7 @@ def run_v5_identical_corrector_ablation(
         "physical_step_sha256": physical_step.physical_step_sha256,
         "common_objective_sha256": objective.common_objective_sha256,
         "static_mesh_sha256": projection_state.static_mesh_sha256,
+        "operator_geometry_sha256": projection_state.operator_geometry_sha256,
         "projection_state_sha256": projection_state.projection_state_sha256,
         "static_graph_sha256": static_graph_sha256,
         "predictor_state_sha256": predictor_state_sha256,
@@ -1395,7 +1409,7 @@ def run_v5_identical_corrector_ablation(
     }
     evidence_sha256 = _ablation_evidence_sha256(identities=identities, arms=final_rows)
     return V5AblationResult(
-        schema_version=1,
+        schema_version=2,
         claim_scope=_CLAIM_SCOPE,
         development_only=True,
         learned_value_claim=False,
@@ -1405,6 +1419,7 @@ def run_v5_identical_corrector_ablation(
         physical_step_sha256=physical_step.physical_step_sha256,
         common_objective_sha256=objective.common_objective_sha256,
         static_mesh_sha256=projection_state.static_mesh_sha256,
+        operator_geometry_sha256=projection_state.operator_geometry_sha256,
         projection_state_sha256=projection_state.projection_state_sha256,
         static_graph_sha256=static_graph_sha256,
         predictor_state_sha256=predictor_state_sha256,
