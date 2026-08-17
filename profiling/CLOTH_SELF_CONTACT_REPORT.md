@@ -4,6 +4,7 @@
 - Baseline: `2ba7ffd608648b485ce145173985e9556523af4c`
 - Profiled candidate: `c84f62fb00d71ee000faf06476610d37bbd7751c`
 - Final equivalent source commit: `a4c6a1a2`
+- Detector block-size follow-up: `647a1f1a`
 - Branch: `ankac/cloth-franka-perf`
 - Device: NVIDIA L40, CUDA device 2 (isolated by the Newton GPU claim)
 
@@ -74,6 +75,78 @@ end-to-end evidence. Each trace is one fresh process and inherits the solver's
 normal atomic-order trajectory variation, so the kernel totals localize the
 gain while the 32-process ABBA suite supports the workload-level claim.
 
+## Detector block-size follow-up
+
+After completing the baseline-to-candidate comparison above, a frozen-state
+follow-up swept independent VT and EE launch sizes. The native cloth state was
+replicated into 1, 2, 4, 8, and 16 independent collision worlds so the launch
+geometry could be varied without changing per-world contacts. All graph
+specializations were warmed before the balanced event-timing schedule.
+
+| World copies | Best VT block: us | Best EE block: us | Best common block: us | Best split: us |
+|---:|---:|---:|---:|---:|
+| 1 | 4: 63.602 | 8: 172.789 | 8: 251.976 | 4/8: 236.391 |
+| 2 | 8: 80.453 | 16: 245.180 | 16: 342.536 | 8/16: 325.633 |
+| 4 | 12: 95.529 | 16: 387.354 | 16: 490.023 | 12/16: 482.883 |
+| 8 | 24: 155.968 | 24: 663.185 | 24: 819.153 | 24/24: 819.153 |
+| 16 | 16: 275.755 | 64: 1173.246 | 64: 1464.803 | 16/64: 1449.002 |
+
+These are tested-grid optima for the synthetic replicated workloads, not a
+general prescription for those mesh sizes. In particular, the K=16 EE 32/64
+difference and K=8 VT 24/64 difference were only 0.106% and 0.093%.
+
+Every tested specialization produced bitwise-identical live count arrays,
+canonical stored pairs, owner minimum distances, and resize flags. Each
+replicated world retained exactly 1,739 VT and 10,652 EE pairs, targets stayed
+within their world, and no row overflowed. Triangle-owned reverse VT buffers
+were not included in the snapshot because `record_triangle_contacting_vertices`
+is disabled for this workload; they are not live solver outputs here.
+
+Warp's BVH query is a scalar per-thread traversal with no warp vote, shuffle,
+or barrier. Its 32-entry stack is laid out per CUDA thread in shared memory, so
+sub-warp blocks are correct but still consume a physical warp. The native L40
+trace reported 106 VT registers/thread and reduced static shared memory from
+1,056 bytes at block 8 to 528 bytes at block 4. VT block 4 launches 1,609 CTAs
+instead of 805, giving the irregular traversal more independent work; EE
+already launches 2,397 CTAs at block 8.
+
+Correct CUDA graph-node captures contained 300 VT calls per variant. VT time
+fell from 17.855490 ms at block 8 to 14.583589 ms at block 4 over 30 frames,
+an additional **1.224355x** traversal speedup. EE remained at block 8 and was
+effectively unchanged. The earlier captures made without graph-node tracing
+contained no detector kernels and were discarded.
+
+The authoritative end-to-end follow-up used 32 fresh processes in eight
+alternating BCCB/CBBC blocks, comparing common 8/8 against split VT4/EE8. The
+balanced-block geometric speedup was **1.006617x**, with a 95% whole-block
+bootstrap interval of **[1.003078x, 1.010002x]**. This is an incremental
+comparison on top of the optimized candidate and does not replace the original
+1.135x baseline-to-candidate result.
+
+After committing the production policy, a smaller clean-tree confirmation ran
+four BCCB/CBBC blocks at `647a1f1a`, with warm-up processes excluded:
+
+| Variant | Processes | Median ms/frame | Mean ms/frame | CV |
+|---|---:|---:|---:|---:|
+| Explicit common VT8/EE8 | 8 | 14.834293 | 14.826974 | 0.604% |
+| Production adaptive VT4/EE8 | 8 | 14.688145 | 14.735277 | 0.562% |
+
+All four blocks favored production, for a geometric speedup of **1.006221x**
+and 0.618% lower latency; its 100,000-resample whole-block interval was
+**[1.004225x, 1.008446x]**. All processes used the same clean source and
+harness hashes, the control resolved to VT8/EE8 through an explicit override,
+production resolved to VT4/EE8 without an override, and no row overflowed.
+This confirms wiring at the committed source; the larger 32-process result
+remains the authoritative estimate.
+
+Commit `647a1f1a` retains the default maximum of eight threads but halves VT or
+EE independently until an uncapped CUDA launch supplies at least eight CTAs per
+SM. It therefore resolves cloth Franka on the 142-SM L40 to VT4/EE8 while
+preserving explicit settings, the compatibility attribute, and CPU block 8.
+The added `unittest` covers every halving boundary, the L40 cloth resolution,
+the CPU default, and explicit-setting preservation; the frozen graph sweep
+provides live CUDA output-equivalence coverage.
+
 ## Retained changes
 
 1. `b3d4b82b` — bound all segmented-buffer consumers by each row's clamped
@@ -90,6 +163,12 @@ gain while the 32-process ABBA suite supports the workload-level claim.
 6. `a4c6a1a2` — remove the historical one-block-per-SM force-launch cap. The
    128-register kernel can resident two 256-thread blocks per L40 SM, so the
    natural grid doubles active warps without changing logical indexing.
+7. `d01d72af` — add the frozen detector benchmark and exact live-output checks
+   across independent VT/EE launch sizes and replicated collision worlds.
+8. `b5fb5264` — support independent VT and EE launch overrides in the
+   end-to-end cloth Franka benchmark.
+9. `647a1f1a` — resolve default CUDA VT and EE block sizes independently from
+   the primitive count and SM count while preserving explicit and CPU sizes.
 
 Three measured force experiments were rejected and fully reverted: repeated
 single-output stencil evaluation (about 5.6% slower end to end), predicate-local

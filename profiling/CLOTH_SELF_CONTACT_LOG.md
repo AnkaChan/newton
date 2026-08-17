@@ -408,3 +408,65 @@ The mandated repository-wide `pre-commit run -a` was invoked as well; it is
 blocked by inherited, unrelated import-lint failures and typo matches in older
 profiling scripts, CSV exports, and process logs. The hook made no remaining
 finding in the cloth self-contact task files.
+
+## 2026-08-17: adaptive detector block-size follow-up
+
+Swept the raw VT and EE traversal kernels against the frozen final-frame cloth
+state, then replicated that state into independent collision worlds to expose
+the launch-size crossover without changing per-world contacts. The K=1/2/4/8/16
+tested-grid VT optima were 4/8/12/24/16; the EE optima were 8/16/16/24/64.
+The corresponding best common sizes were 8/16/16/24/64. High-K results are
+tested-grid optima only: K=16 EE 32/64 differed by 0.106%, and K=8 VT 24/64
+by 0.093%.
+
+All block sizes within each workload produced bitwise-identical live count
+arrays, canonical stored pair sets, owner minimum distances, and resize flags.
+Each replicated world had exactly 1,739 VT and 10,652 EE pairs, all targets
+remained in-world, and no row overflowed. The snapshot intentionally omitted
+triangle-owned reverse VT buffers because cloth Franka disables
+`record_triangle_contacting_vertices`; those buffers are not live in this
+workload.
+
+The resource audit found that Warp's BVH iterator is scalar per thread and
+uses no warp collective. Its per-thread 32-entry stack is allocated in shared
+memory, while a block smaller than 32 still occupies one physical warp. The
+L40 node trace measured VT at 106 registers/thread. Moving from block 8 to 4
+halved static shared memory from 1,056 to 528 bytes and increased the native VT
+grid from 805 to 1,609 CTAs; native EE already supplies 2,397 CTAs at block 8.
+
+Re-captured with CUDA graph-node tracing after discovering that the first two
+Nsight captures omitted graph kernels. Across 300 calls, VT block 8 took
+17.855490 ms and VT block 4 took 14.583589 ms, a **1.224355x** speedup. EE
+remained block 8 and changed only from 38.908167 to 38.671218 ms. The invalid
+non-node captures were excluded.
+
+The authoritative workload comparison used 32 fresh 30-frame processes in
+eight alternating BCCB/CBBC blocks. Common VT8/EE8 averaged 14.838717 ms/frame;
+split VT4/EE8 averaged 14.741146 ms/frame. The balanced-block geometric
+speedup was **1.006617x**, with a 95% whole-block bootstrap interval of
+**[1.003078x, 1.010002x]**. Seven of eight blocks favored the split launch.
+
+After committing the policy, repeated the comparison from clean HEAD
+`647a1f1a` with four BCCB/CBBC blocks and 16 measured processes. The common
+VT8/EE8 control had median/mean 14.834293/14.826974 ms/frame and 0.604% CV;
+the no-override production policy resolved to VT4/EE8 and had
+14.688145/14.735277 ms/frame and 0.562% CV. Block ratios were 1.003395,
+1.006720, 1.009506, and 1.005272. Their geometric mean was **1.006221x**
+(0.618% lower latency), with the 100,000-resample, seed-20260817 whole-block
+interval **[1.004225x, 1.008446x]**. All four blocks favored production and no
+row overflowed. All result files recorded clean source hash `13ed4cca...` and
+harness hash `d7148081...`; the control alone reported a launch override. This
+smaller suite confirms the committed production path, while the 32-process
+suite remains authoritative for the effect size.
+
+Commit `647a1f1a` implements a conservative adaptive default: begin at block 8
+and halve VT and EE independently until each natural CUDA grid supplies at
+least eight CTAs per SM. Cloth Franka therefore resolves to VT4/EE8 on the
+142-SM L40. Explicit sizes, the compatibility setting, and CPU block 8 remain
+unchanged. The new pure `unittest` covers all halving thresholds, cloth Franka
+resolution, CPU behavior, and explicit override preservation; the frozen graph
+sweep supplies the live-output CUDA check.
+
+Raw `.nsys-rep`, SQLite, frozen-state, and process JSON artifacts remain
+uncommitted under `/tmp/cloth-franka-block-followup`. Only the concise,
+credential-safe aggregates above are retained in the repository.
