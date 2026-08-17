@@ -23,6 +23,7 @@ evidence until an integrated, captured benchmark establishes that separately.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import math
 import numbers
 from collections.abc import Sequence
@@ -34,6 +35,80 @@ from .correction_gpu import MatrixFreeStableNHOperator
 
 KERNEL_VERSION = "mg-vbd-warp-operator-v1"
 CONTRACT_ID = "mg-vbd-warp-fixed-pcg-research-v1"
+
+
+def _current_operator_arrays_sha256(
+    *,
+    tets: np.ndarray,
+    shape_gradients: np.ndarray,
+    volumes: np.ndarray,
+    mass: np.ndarray,
+    mu: np.ndarray,
+    lam: np.ndarray,
+    free: np.ndarray,
+    cofactors: np.ndarray,
+    dt: float,
+) -> str:
+    """Hash canonical arrays defining one free-space Gauss--Newton operator."""
+    digest = hashlib.sha256()
+
+    def add(payload: bytes) -> None:
+        digest.update(len(payload).to_bytes(8, "little"))
+        digest.update(payload)
+
+    add(b"matrix-free-stable-nh-current-gn-operator-v1")
+    for name, value in (
+        ("tets", tets),
+        ("shape_gradients", shape_gradients),
+        ("volumes", volumes),
+        ("mass", mass),
+        ("mu", mu),
+        ("lam", lam),
+        ("free", free),
+        ("cofactors", cofactors),
+    ):
+        array = np.asarray(value)
+        add(name.encode("utf-8"))
+        add(array.dtype.str.encode("ascii"))
+        add(repr(array.shape).encode("ascii"))
+        add(np.ascontiguousarray(array).tobytes())
+    add(b"dt")
+    add(np.float64(dt).tobytes())
+    return digest.hexdigest()
+
+
+def _current_operator_sha256(operator: MatrixFreeStableNHOperator) -> str:
+    """Hash the exact frozen NumPy free-space Gauss--Newton operator."""
+    return _current_operator_arrays_sha256(
+        tets=operator.tets,
+        shape_gradients=operator.shape_gradients,
+        volumes=operator.volumes,
+        mass=operator.mass,
+        mu=operator.mu,
+        lam=operator.lam,
+        free=operator.free,
+        cofactors=operator.cofactors,
+        dt=operator.dt,
+    )
+
+
+def _operator_preconditioner_binding_sha256(
+    current_operator_sha256: str,
+    preconditioner_identity: str,
+    static_preconditioner_sha256: str | None,
+) -> str:
+    """Bind the current matrix-free operator to one exact preconditioner."""
+    digest = hashlib.sha256()
+    for value in (
+        "warp-fixed-pcg-operator-preconditioner-binding-v1",
+        current_operator_sha256,
+        preconditioner_identity,
+        "none" if static_preconditioner_sha256 is None else static_preconditioner_sha256,
+    ):
+        payload = value.encode("utf-8")
+        digest.update(len(payload).to_bytes(8, "little"))
+        digest.update(payload)
+    return digest.hexdigest()
 
 
 @wp.func
@@ -360,6 +435,68 @@ def _initialize_pcg_vectors(
 
 
 @wp.kernel(enable_backward=False)
+def _initialize_unpreconditioned_pcg_vectors(
+    rhs: wp.array[wp.vec3d],
+    solution: wp.array[wp.vec3d],
+    residual: wp.array[wp.vec3d],
+    preconditioned: wp.array[wp.vec3d],
+    direction: wp.array[wp.vec3d],
+):
+    index = wp.tid()
+    value = rhs[index]
+    if not _finite_vec3(value):
+        value = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    zero = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    solution[index] = zero
+    residual[index] = value
+    preconditioned[index] = zero
+    direction[index] = zero
+
+
+@wp.kernel(enable_backward=False)
+def _validate_initial_device_preconditioner(
+    preconditioned: wp.array[wp.vec3d],
+    preconditioner_valid: wp.array[int],
+):
+    index = wp.tid()
+    value = preconditioned[index]
+    valid = _finite_vec3(value)
+    if not valid:
+        preconditioned[index] = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    preconditioner_valid[index] = int(valid)
+
+
+@wp.kernel(enable_backward=False)
+def _initialize_direction_from_preconditioner(
+    preconditioned: wp.array[wp.vec3d],
+    preconditioner_valid: wp.array[int],
+    direction: wp.array[wp.vec3d],
+    direction_valid: wp.array[int],
+):
+    index = wp.tid()
+    direction[index] = preconditioned[index]
+    direction_valid[index] = preconditioner_valid[index]
+
+
+@wp.kernel(enable_backward=False)
+def _validate_device_preconditioner(
+    state_status: wp.array[int],
+    preconditioned: wp.array[wp.vec3d],
+    preconditioner_valid: wp.array[int],
+):
+    index = wp.tid()
+    if state_status[0] != _STATUS_ACTIVE:
+        preconditioned[index] = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+        preconditioner_valid[index] = 1
+        return
+    value = preconditioned[index]
+    valid = _finite_vec3(value)
+    if not valid:
+        preconditioned[index] = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    preconditioner_valid[index] = int(valid)
+
+
+@wp.kernel(enable_backward=False)
 def _initialize_pcg_state(
     rhs: wp.array[wp.vec3d],
     residual: wp.array[wp.vec3d],
@@ -515,35 +652,82 @@ def _compute_pcg_conjugacy(
         trace_status[iteration] = status
         return
     residual_norm_squared = wp.float64(0.0)
-    rho_new = wp.float64(0.0)
     count = residual.shape[0]
     for index in range(count):
         if update_valid[index] == 0:
             status = _STATUS_NONFINITE_UPDATE
-        if preconditioner_valid[index] == 0 and status == _STATUS_ACTIVE:
-            status = _STATUS_NONFINITE_PRECONDITIONER
         if not _finite_vec3(solution[index]) or not _finite_vec3(residual[index]):
             status = _STATUS_NONFINITE_UPDATE
         residual_norm_squared += wp.dot(residual[index], residual[index])
-        rho_new += wp.dot(residual[index], preconditioned[index])
     trace_residual_squared[iteration] = residual_norm_squared
     recursive_residual_squared[0] = residual_norm_squared
-    if status == _STATUS_ACTIVE and (not wp.isfinite(residual_norm_squared) or not wp.isfinite(rho_new)):
+    if status == _STATUS_ACTIVE and not wp.isfinite(residual_norm_squared):
         status = _STATUS_NONFINITE_UPDATE
     if status == _STATUS_ACTIVE:
+        # The x/r update is complete before the next preconditioner is
+        # consumed. Preserve that completed work even if this application or
+        # its subsequent r.T z reduction fails.
         completed_iterations[0] = completed_iterations[0] + 1
         if residual_norm_squared == wp.float64(0.0):
             status = _STATUS_CONVERGED
             rho[0] = wp.float64(0.0)
-        elif rho_new <= wp.float64(0.0):
-            status = _STATUS_NONPOSITIVE_PRECONDITIONER
         else:
-            conjugacy = rho_new / rho[0]
-            if not wp.isfinite(conjugacy) or conjugacy < wp.float64(0.0):
+            conjugacy = wp.float64(0.0)
+            for index in range(count):
+                if preconditioner_valid[index] == 0 or not _finite_vec3(preconditioned[index]):
+                    status = _STATUS_NONFINITE_PRECONDITIONER
+            rho_new = wp.float64(0.0)
+            if status == _STATUS_ACTIVE:
+                for index in range(count):
+                    rho_new += wp.dot(residual[index], preconditioned[index])
+            if status == _STATUS_ACTIVE and not wp.isfinite(rho_new):
                 status = _STATUS_NONFINITE_UPDATE
-            else:
+            if status == _STATUS_ACTIVE and rho_new <= wp.float64(0.0):
+                status = _STATUS_NONPOSITIVE_PRECONDITIONER
+            if status == _STATUS_ACTIVE:
+                conjugacy = rho_new / rho[0]
+                if not wp.isfinite(conjugacy) or conjugacy < wp.float64(0.0):
+                    status = _STATUS_NONFINITE_UPDATE
+            if status == _STATUS_ACTIVE:
                 trace_conjugacy[iteration] = conjugacy
                 rho[0] = rho_new
+    state_status[0] = status
+    trace_status[iteration] = status
+
+
+@wp.kernel(enable_backward=False)
+def _finalize_pcg_iteration(
+    solution: wp.array[wp.vec3d],
+    residual: wp.array[wp.vec3d],
+    update_valid: wp.array[int],
+    state_status: wp.array[int],
+    completed_iterations: wp.array[int],
+    recursive_residual_squared: wp.array[wp.float64],
+    iteration: int,
+    trace_residual_squared: wp.array[wp.float64],
+    trace_status: wp.array[int],
+):
+    if wp.tid() != 0:
+        return
+    status = state_status[0]
+    if status != _STATUS_ACTIVE:
+        trace_status[iteration] = status
+        return
+    residual_norm_squared = wp.float64(0.0)
+    count = residual.shape[0]
+    for index in range(count):
+        if update_valid[index] == 0:
+            status = _STATUS_NONFINITE_UPDATE
+        if not _finite_vec3(solution[index]) or not _finite_vec3(residual[index]):
+            status = _STATUS_NONFINITE_UPDATE
+        residual_norm_squared += wp.dot(residual[index], residual[index])
+    trace_residual_squared[iteration] = residual_norm_squared
+    recursive_residual_squared[0] = residual_norm_squared
+    if status == _STATUS_ACTIVE and not wp.isfinite(residual_norm_squared):
+        status = _STATUS_NONFINITE_UPDATE
+    if status == _STATUS_ACTIVE:
+        completed_iterations[0] = completed_iterations[0] + 1
+        status = _STATUS_COMPLETED
     state_status[0] = status
     trace_status[iteration] = status
 
@@ -655,7 +839,9 @@ class WarpMatrixFreeStableNHOperator:
         self.n_tets = int(oracle.tets.shape[0])
         self.n_free = int(oracle.free.size)
         self.n_free_dofs = oracle.n_free_dofs
+        self.dt = float(oracle.dt)
         self.inverse_dt_squared = float(1.0 / (oracle.dt * oracle.dt))
+        self.current_operator_sha256 = _current_operator_sha256(oracle)
 
         tets = np.asarray(oracle.tets, dtype=np.int32)
         free = np.asarray(oracle.free, dtype=np.int32)
@@ -702,6 +888,22 @@ class WarpMatrixFreeStableNHOperator:
     def create_apply_workspace(self) -> WarpMatrixFreeWorkspace:
         """Allocate reusable tet-local operator storage."""
         return WarpMatrixFreeWorkspace(self)
+
+    def record_current_operator_sha256(self) -> str:
+        """Synchronously hash the exact device arrays defining current ``A``."""
+        result = _current_operator_arrays_sha256(
+            tets=np.asarray(self.tets.numpy(), dtype=np.int64).reshape(self.n_tets, 4),
+            shape_gradients=np.asarray(self.shape_gradients.numpy(), dtype=np.float64).reshape(self.n_tets, 4, 3),
+            volumes=np.asarray(self.volumes.numpy(), dtype=np.float64),
+            mass=np.asarray(self.mass.numpy(), dtype=np.float64),
+            mu=np.asarray(self.mu.numpy(), dtype=np.float64),
+            lam=np.asarray(self.lam.numpy(), dtype=np.float64),
+            free=np.asarray(self.free.numpy(), dtype=np.int64),
+            cofactors=np.asarray(self.cofactors.numpy(), dtype=np.float64),
+            dt=self.dt,
+        )
+        self.current_operator_sha256 = result
+        return result
 
     def _validate_vector(self, vector: wp.array[wp.vec3d], name: str) -> None:
         if vector.device != self.device or vector.dtype != wp.vec3d or vector.shape != (self.n_free,):
@@ -822,6 +1024,117 @@ class WarpMatrixFreeStableNHOperator:
         )
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class WarpDevicePreconditionerApplication:
+    """Retained exact evidence for one device preconditioner application."""
+
+    application_index: int
+    preconditioner_identity: str
+    static_preconditioner_sha256: str
+    device_snapshot_sha256: str
+    input_sha256: str
+    output_sha256: str
+    algebraic_work_sha256: str
+    rhs_count: int
+    level_visits: tuple[int, ...]
+    matrix_block_products: int
+    smoother_block_solves: int
+    restriction_block_products: int
+    prolongation_block_products: int
+    coarsest_factor_solves: int
+    scheduled_kernel_launches: int
+    output_finite: bool
+    capture_replay: bool
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.application_index, bool)
+            or not isinstance(self.application_index, numbers.Integral)
+            or self.application_index < 0
+        ):
+            raise ValueError("application_index must be a non-negative integer")
+        if type(self.preconditioner_identity) is not str or not self.preconditioner_identity:
+            raise ValueError("preconditioner_identity must be a non-empty exact string")
+        for name in (
+            "static_preconditioner_sha256",
+            "device_snapshot_sha256",
+            "input_sha256",
+            "output_sha256",
+            "algebraic_work_sha256",
+        ):
+            value = getattr(self, name)
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+        for name in (
+            "rhs_count",
+            "matrix_block_products",
+            "smoother_block_solves",
+            "restriction_block_products",
+            "prolongation_block_products",
+            "coarsest_factor_solves",
+            "scheduled_kernel_launches",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.rhs_count < 1 or self.scheduled_kernel_launches < 1:
+            raise ValueError("application RHS count and scheduled kernel work must be positive")
+        object.__setattr__(self, "level_visits", tuple(self.level_visits))
+        if not self.level_visits or any(
+            isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 0
+            for value in self.level_visits
+        ):
+            raise ValueError("level_visits must contain non-negative integer counts")
+        if not isinstance(self.output_finite, bool) or not isinstance(self.capture_replay, bool):
+            raise TypeError("device preconditioner flags must be bools")
+
+    def deterministic_record(self) -> dict[str, object]:
+        """Serialize immutable application identity and exact work."""
+        return dataclasses.asdict(self)
+
+
+class WarpDevicePreconditioner:
+    """Typed allocation-free device preconditioner boundary.
+
+    Implementations own immutable device data and allocate one persistent
+    workspace per scheduled application before :meth:`WarpFixedPCGWorkspace.launch`.
+    Launch and record methods are deliberately separate: the former may only
+    enqueue device work, while the latter is called after replay and may
+    synchronize to retain diagnostic evidence.
+    """
+
+    device: object
+    vector_count: int
+    free_vertices_host: np.ndarray
+    preconditioner_identity: str
+    static_preconditioner_sha256: str
+    device_snapshot_sha256: str
+    application_kernel_launches: int
+
+    def create_application_workspace(self) -> object:
+        """Allocate persistent buffers for one independently retained apply."""
+        raise NotImplementedError
+
+    def launch_apply(
+        self,
+        rhs: wp.array[wp.vec3d],
+        output: wp.array[wp.vec3d],
+        workspace: object,
+    ) -> None:
+        """Enqueue one application without allocation or host reads."""
+        raise NotImplementedError
+
+    def record_application(
+        self,
+        application_index: int,
+        workspace: object,
+        *,
+        capture_replay: bool,
+    ) -> WarpDevicePreconditionerApplication:
+        """Synchronously retain one completed application's exact evidence."""
+        raise NotImplementedError
+
+
 @dataclasses.dataclass(frozen=True)
 class WarpFixedPCGWork:
     """Exact scheduled primitive work for one launcher execution."""
@@ -878,6 +1191,10 @@ class WarpFixedPCGRecord:
     work: WarpFixedPCGWork
     preconditioner_identity: str
     capture_replay: bool
+    current_operator_sha256: str
+    static_preconditioner_sha256: str | None
+    operator_preconditioner_binding_sha256: str
+    preconditioner_evidence: tuple[WarpDevicePreconditionerApplication, ...]
     contract_id: str = CONTRACT_ID
     research_only: bool = True
     performance_evidence: bool = False
@@ -886,6 +1203,7 @@ class WarpFixedPCGRecord:
         solution = _immutable_array(np.asarray(self.solution, dtype=np.float64), np.dtype(np.float64))
         object.__setattr__(self, "solution", solution)
         object.__setattr__(self, "trace", tuple(self.trace))
+        object.__setattr__(self, "preconditioner_evidence", tuple(self.preconditioner_evidence))
         if self.reason not in set(_STATUS_NAMES.values()) - {"active"}:
             raise ValueError(f"unknown terminal PCG reason: {self.reason}")
         if self.requested_iterations < 1 or not 0 <= self.completed_iterations <= self.requested_iterations:
@@ -900,6 +1218,32 @@ class WarpFixedPCGRecord:
             raise ValueError("successful PCG must record all finite norms")
         if type(self.preconditioner_identity) is not str or not self.preconditioner_identity:
             raise ValueError("preconditioner_identity must be a non-empty exact string")
+        for name in ("current_operator_sha256", "operator_preconditioner_binding_sha256"):
+            value = getattr(self, name)
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+        if self.static_preconditioner_sha256 is not None:
+            value = self.static_preconditioner_sha256
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError("static_preconditioner_sha256 must be a lowercase SHA-256 digest")
+            if len(self.preconditioner_evidence) != self.work.preconditioner_applications:
+                raise ValueError("device preconditioner evidence must retain every scheduled application")
+        elif self.preconditioner_evidence:
+            raise ValueError("block preconditioners cannot carry device application evidence")
+        for application_index, evidence in enumerate(self.preconditioner_evidence):
+            if evidence.application_index != application_index:
+                raise ValueError("device preconditioner evidence indices must be contiguous")
+            if evidence.preconditioner_identity != self.preconditioner_identity:
+                raise ValueError("device application and PCG preconditioner identities disagree")
+            if evidence.static_preconditioner_sha256 != self.static_preconditioner_sha256:
+                raise ValueError("device application and PCG static identities disagree")
+        expected_binding = _operator_preconditioner_binding_sha256(
+            self.current_operator_sha256,
+            self.preconditioner_identity,
+            self.static_preconditioner_sha256,
+        )
+        if self.operator_preconditioner_binding_sha256 != expected_binding:
+            raise ValueError("operator_preconditioner_binding_sha256 does not bind the recorded identities")
         if not isinstance(self.capture_replay, bool):
             raise TypeError("capture_replay must be a bool")
         if not self.research_only or self.performance_evidence:
@@ -920,12 +1264,16 @@ class WarpFixedPCGRecord:
             "success": self.success,
             "reason": self.reason,
             "preconditioner_identity": self.preconditioner_identity,
+            "current_operator_sha256": self.current_operator_sha256,
+            "static_preconditioner_sha256": self.static_preconditioner_sha256,
+            "operator_preconditioner_binding_sha256": self.operator_preconditioner_binding_sha256,
             "requested_iterations": self.requested_iterations,
             "completed_iterations": self.completed_iterations,
             "rhs_norm": self.rhs_norm,
             "recursive_residual_norm": self.recursive_residual_norm,
             "true_residual_norm": self.true_residual_norm,
             "work": dataclasses.asdict(self.work),
+            "preconditioner_evidence": [item.deterministic_record() for item in self.preconditioner_evidence],
             "trace": [dataclasses.asdict(item) for item in self.trace],
         }
 
@@ -937,10 +1285,11 @@ class WarpFixedPCGWorkspace:
     reads.  Every call schedules all requested iterations even after a
     device-side failure or exact convergence.  :meth:`record` is the explicit
     post-execution synchronization point and must stay outside graph capture.
-    The correctness-first recurrence uses serial single-thread scalar
-    reductions and schedules ``K + 1`` preconditioner applications for ``K``
-    iterations; the final application is intentionally masked/unused when the
-    last update completes.  Neither choice is a GPU-performance claim.
+    The legacy block path retains its ``K + 1`` masked applications. Typed
+    device preconditioners schedule exactly ``K`` applications: one initial
+    application and one after each nonfinal update.  Each device application
+    has an independent persistent workspace so its evidence is retained.
+    Neither schedule is a GPU-performance claim.
     """
 
     def __init__(
@@ -950,6 +1299,7 @@ class WarpFixedPCGWorkspace:
         *,
         external_preconditioner_inverse: np.ndarray | Sequence[Sequence[Sequence[float]]] | None = None,
         preconditioner_identity: str | None = None,
+        device_preconditioner: WarpDevicePreconditioner | None = None,
     ):
         if not isinstance(operator, WarpMatrixFreeStableNHOperator):
             raise TypeError("operator must be a WarpMatrixFreeStableNHOperator")
@@ -985,12 +1335,39 @@ class WarpFixedPCGWorkspace:
         self.trace_conjugacy = wp.empty(self.iterations, dtype=wp.float64, device=device)
         self.trace_status = wp.empty(self.iterations, dtype=wp.int32, device=device)
 
-        self._build_preconditioner = external_preconditioner_inverse is None
-        if self._build_preconditioner:
+        if device_preconditioner is not None and external_preconditioner_inverse is not None:
+            raise ValueError("device_preconditioner and external_preconditioner_inverse are mutually exclusive")
+        if device_preconditioner is not None:
+            if not isinstance(device_preconditioner, WarpDevicePreconditioner):
+                raise TypeError("device_preconditioner must implement WarpDevicePreconditioner")
+            if preconditioner_identity not in (None, device_preconditioner.preconditioner_identity):
+                raise ValueError("a device preconditioner cannot be relabelled")
+            if device_preconditioner.device != device:
+                raise ValueError("device preconditioner and operator must reside on the same device")
+            if device_preconditioner.vector_count != count:
+                raise ValueError("device preconditioner size does not match the free operator")
+            if not np.array_equal(device_preconditioner.free_vertices_host, operator.free_host):
+                raise ValueError("device preconditioner free-vertex order does not match the operator")
+            if device_preconditioner.application_kernel_launches < 1:
+                raise ValueError("device preconditioner application work must be positive")
+            self.device_preconditioner = device_preconditioner
+            self.device_preconditioner_workspaces = tuple(
+                device_preconditioner.create_application_workspace() for _ in range(self.iterations)
+            )
+            self._build_preconditioner = False
+            self.preconditioner_identity = device_preconditioner.preconditioner_identity
+            self.static_preconditioner_sha256 = device_preconditioner.static_preconditioner_sha256
+            self.block_valid.assign(np.ones(count, dtype=np.int32))
+        else:
+            self.device_preconditioner = None
+            self.device_preconditioner_workspaces = ()
+            self._build_preconditioner = external_preconditioner_inverse is None
+            self.static_preconditioner_sha256 = None
+        if self.device_preconditioner is None and self._build_preconditioner:
             if preconditioner_identity not in (None, "block-jacobi-3x3-warp-v1"):
                 raise ValueError("the built block-Jacobi preconditioner cannot be relabelled")
             self.preconditioner_identity = "block-jacobi-3x3-warp-v1"
-        else:
+        elif self.device_preconditioner is None:
             if type(preconditioner_identity) is not str or not preconditioner_identity:
                 raise ValueError("an external preconditioner requires a non-empty exact identity")
             inverse = np.asarray(external_preconditioner_inverse, dtype=np.float64)
@@ -1012,6 +1389,22 @@ class WarpFixedPCGWorkspace:
     @property
     def work(self) -> WarpFixedPCGWork:
         """Exact scheduled work, including masked launches after failure."""
+        if self.device_preconditioner is not None:
+            preconditioner_launches = self.device_preconditioner.application_kernel_launches
+            # Initial vector/trace/state setup contributes five kernels around
+            # the first preconditioner apply. Each nonfinal PCG update adds
+            # seven non-preconditioner kernels, the final update adds five,
+            # and true-residual verification adds three.
+            kernel_launches = preconditioner_launches + 13 + (self.iterations - 1) * (preconditioner_launches + 7)
+            return WarpFixedPCGWork(
+                geometry_evaluations=0,
+                preconditioner_builds=0,
+                operator_applications=self.iterations + 1,
+                residual_verification_applications=1,
+                preconditioner_applications=self.iterations,
+                scalar_reductions=2 * self.iterations + 2,
+                kernel_launches=kernel_launches,
+            )
         preconditioner_build_launches = 2 if self._build_preconditioner else 0
         return WarpFixedPCGWork(
             geometry_evaluations=0,
@@ -1034,6 +1427,9 @@ class WarpFixedPCGWorkspace:
 
     def launch(self) -> None:
         """Launch the complete allocation-free fixed PCG schedule."""
+        if self.device_preconditioner is not None:
+            self._launch_device_preconditioned()
+            return
         device = self.operator.device
         count = self.operator.n_free
         if self._build_preconditioner:
@@ -1175,6 +1571,169 @@ class WarpFixedPCGWorkspace:
             device=device,
         )
 
+    def _launch_device_preconditioned(self) -> None:
+        """Launch fixed PCG with exactly one typed device apply per Krylov step."""
+        preconditioner = self.device_preconditioner
+        if preconditioner is None:
+            raise RuntimeError("typed device preconditioner is not configured")
+        device = self.operator.device
+        count = self.operator.n_free
+        wp.launch(
+            _clear_trace,
+            dim=self.iterations,
+            inputs=[
+                self.trace_curvature,
+                self.trace_step_size,
+                self.trace_residual_squared,
+                self.trace_conjugacy,
+                self.trace_status,
+            ],
+            device=device,
+        )
+        wp.launch(
+            _initialize_unpreconditioned_pcg_vectors,
+            dim=count,
+            inputs=[self.rhs, self.solution, self.residual, self.preconditioned, self.direction],
+            device=device,
+        )
+        preconditioner.launch_apply(
+            self.residual,
+            self.preconditioned,
+            self.device_preconditioner_workspaces[0],
+        )
+        wp.launch(
+            _validate_initial_device_preconditioner,
+            dim=count,
+            inputs=[self.preconditioned, self.preconditioner_valid],
+            device=device,
+        )
+        wp.launch(
+            _initialize_direction_from_preconditioner,
+            dim=count,
+            inputs=[self.preconditioned, self.preconditioner_valid, self.direction, self.direction_valid],
+            device=device,
+        )
+        wp.launch(
+            _initialize_pcg_state,
+            dim=1,
+            inputs=[
+                self.rhs,
+                self.residual,
+                self.preconditioned,
+                self.block_valid,
+                self.preconditioner_valid,
+                self.state_status,
+                self.completed_iterations,
+                self.rho,
+                self.rhs_squared,
+                self.recursive_residual_squared,
+                self.true_residual_squared,
+            ],
+            device=device,
+        )
+        for iteration in range(self.iterations):
+            self.operator.launch_apply(self.direction, self.operator_direction, self.apply_workspace)
+            wp.launch(
+                _compute_pcg_step,
+                dim=1,
+                inputs=[
+                    self.direction,
+                    self.operator_direction,
+                    self.direction_valid,
+                    self.state_status,
+                    self.rho,
+                    iteration,
+                    self.trace_curvature,
+                    self.trace_step_size,
+                    self.trace_status,
+                ],
+                device=device,
+            )
+            wp.launch(
+                _update_solution_residual,
+                dim=count,
+                inputs=[
+                    self.direction,
+                    self.operator_direction,
+                    self.state_status,
+                    iteration,
+                    self.trace_step_size,
+                    self.solution,
+                    self.residual,
+                    self.update_valid,
+                ],
+                device=device,
+            )
+            if iteration + 1 == self.iterations:
+                wp.launch(
+                    _finalize_pcg_iteration,
+                    dim=1,
+                    inputs=[
+                        self.solution,
+                        self.residual,
+                        self.update_valid,
+                        self.state_status,
+                        self.completed_iterations,
+                        self.recursive_residual_squared,
+                        iteration,
+                        self.trace_residual_squared,
+                        self.trace_status,
+                    ],
+                    device=device,
+                )
+                continue
+            preconditioner.launch_apply(
+                self.residual,
+                self.preconditioned,
+                self.device_preconditioner_workspaces[iteration + 1],
+            )
+            wp.launch(
+                _validate_device_preconditioner,
+                dim=count,
+                inputs=[self.state_status, self.preconditioned, self.preconditioner_valid],
+                device=device,
+            )
+            wp.launch(
+                _compute_pcg_conjugacy,
+                dim=1,
+                inputs=[
+                    self.solution,
+                    self.residual,
+                    self.preconditioned,
+                    self.update_valid,
+                    self.preconditioner_valid,
+                    self.state_status,
+                    self.completed_iterations,
+                    self.rho,
+                    self.recursive_residual_squared,
+                    iteration,
+                    self.trace_residual_squared,
+                    self.trace_conjugacy,
+                    self.trace_status,
+                ],
+                device=device,
+            )
+            wp.launch(
+                _update_pcg_direction,
+                dim=count,
+                inputs=[
+                    self.preconditioned,
+                    self.state_status,
+                    iteration,
+                    self.trace_conjugacy,
+                    self.direction,
+                    self.direction_valid,
+                ],
+                device=device,
+            )
+        self.operator.launch_apply(self.solution, self.operator_solution, self.apply_workspace)
+        wp.launch(
+            _verify_true_residual,
+            dim=1,
+            inputs=[self.rhs, self.operator_solution, self.state_status, self.true_residual_squared],
+            device=device,
+        )
+
     def record(self, *, capture_replay: bool = False) -> WarpFixedPCGRecord:
         """Synchronously materialize a diagnostic record after execution."""
         if not isinstance(capture_replay, bool):
@@ -1207,7 +1766,12 @@ class WarpFixedPCGWorkspace:
                     float(step_size[index]) if index < completed and math.isfinite(float(step_size[index])) else None
                 ),
                 conjugacy=(
-                    float(conjugacy[index]) if index < completed and math.isfinite(float(conjugacy[index])) else None
+                    float(conjugacy[index])
+                    if index < completed
+                    and (self.device_preconditioner is None or index + 1 < self.iterations)
+                    and int(trace_status[index]) == _STATUS_ACTIVE
+                    and math.isfinite(float(conjugacy[index]))
+                    else None
                 ),
             )
             for index in range(self.iterations)
@@ -1219,6 +1783,25 @@ class WarpFixedPCGWorkspace:
 
         def norm_from_squared(value: float) -> float | None:
             return math.sqrt(value) if math.isfinite(value) and value >= 0.0 else None
+
+        preconditioner_evidence = (
+            tuple(
+                self.device_preconditioner.record_application(
+                    application_index,
+                    workspace,
+                    capture_replay=capture_replay,
+                )
+                for application_index, workspace in enumerate(self.device_preconditioner_workspaces)
+            )
+            if self.device_preconditioner is not None
+            else ()
+        )
+        current_operator_sha256 = self.operator.record_current_operator_sha256()
+        binding_sha256 = _operator_preconditioner_binding_sha256(
+            current_operator_sha256,
+            self.preconditioner_identity,
+            self.static_preconditioner_sha256,
+        )
 
         return WarpFixedPCGRecord(
             solution=self.solution.numpy(),
@@ -1233,4 +1816,8 @@ class WarpFixedPCGWorkspace:
             work=self.work,
             preconditioner_identity=self.preconditioner_identity,
             capture_replay=capture_replay,
+            current_operator_sha256=current_operator_sha256,
+            static_preconditioner_sha256=self.static_preconditioner_sha256,
+            operator_preconditioner_binding_sha256=binding_sha256,
+            preconditioner_evidence=preconditioner_evidence,
         )

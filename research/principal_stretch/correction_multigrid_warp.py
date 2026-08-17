@@ -27,6 +27,7 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 import warp as wp
 
+from .correction_gpu_warp import WarpDevicePreconditioner, WarpDevicePreconditionerApplication
 from .correction_multigrid import (
     SPECTRAL_FREE_CONTRACT,
     StaticMultigridHierarchy,
@@ -312,6 +313,11 @@ class WarpStaticMultigridHierarchy:
         self.device = wp.get_device(device)
         self.hierarchy_sha256 = hierarchy.content_sha256
         self.solver_contract = hierarchy.solver_contract
+        self.static_model_sha256 = hierarchy.static_model_sha256
+        self.free_vertices_host = _immutable_array(
+            _as_int32(hierarchy.free_vertices, name="free_vertices"),
+            np.int32,
+        )
         self.pre_smooth_steps = hierarchy.pre_smooth_steps
         self.post_smooth_steps = hierarchy.post_smooth_steps
         self.n_free = hierarchy.levels[0].matrix.block_row_count
@@ -414,6 +420,13 @@ class WarpStaticMultigridHierarchy:
     def create_workspace(self) -> WarpVCycleWorkspace:
         """Allocate all reusable temporaries required by one V-cycle."""
         return WarpVCycleWorkspace(self)
+
+    @property
+    def scheduled_kernel_launches(self) -> int:
+        """Exact fixed launch count for one V-cycle application."""
+        noncoarse = len(self.levels) - 1
+        smooth_steps = self.pre_smooth_steps + self.post_smooth_steps
+        return 3 + noncoarse * (5 + 3 * smooth_steps)
 
     def _validate_fine_vector(self, vector: wp.array[wp.vec3d], *, name: str) -> None:
         if vector.device != self.device or vector.dtype != wp.vec3d or vector.shape != (self.n_free,):
@@ -601,9 +614,7 @@ class WarpVCycleWorkspace:
     @property
     def scheduled_kernel_launches(self) -> int:
         """Exact launch count for one fixed V-cycle application."""
-        noncoarse = len(self.hierarchy.levels) - 1
-        smooth_steps = self.hierarchy.pre_smooth_steps + self.hierarchy.post_smooth_steps
-        return 3 + noncoarse * (5 + 3 * smooth_steps)
+        return self.hierarchy.scheduled_kernel_launches
 
     def set_rhs(self, rhs: np.ndarray | Sequence[float]) -> None:
         """Copy one finite host RHS into the persistent fine input buffer."""
@@ -626,8 +637,28 @@ class WarpVCycleWorkspace:
         """Synchronously materialize immutable result and work evidence."""
         if not isinstance(capture_replay, bool):
             raise TypeError("capture_replay must be a bool")
-        rhs = np.asarray(self.rhs.numpy(), dtype=np.float64).reshape(self.hierarchy.n_free_dofs, 1)
+        rhs = np.asarray(self.rhs.numpy(), dtype=np.float64).reshape(-1)
         correction = np.asarray(self.correction.numpy(), dtype=np.float64).reshape(-1)
+        return self._record_host_vectors(rhs, correction, capture_replay=capture_replay)
+
+    def record_internal_application(self, *, capture_replay: bool = False) -> WarpVCycleRecord:
+        """Record an external-array apply retained in this workspace's levels."""
+        if not isinstance(capture_replay, bool):
+            raise TypeError("capture_replay must be a bool")
+        rhs = np.asarray(self.level_rhs[0].numpy(), dtype=np.float64).reshape(-1)
+        correction = np.asarray(self.level_correction[0].numpy(), dtype=np.float64).reshape(-1)
+        return self._record_host_vectors(rhs, correction, capture_replay=capture_replay)
+
+    def _record_host_vectors(
+        self,
+        rhs: np.ndarray,
+        correction: np.ndarray,
+        *,
+        capture_replay: bool,
+    ) -> WarpVCycleRecord:
+        """Build one immutable record from synchronized flat host vectors."""
+        rhs = np.asarray(rhs, dtype=np.float64).reshape(self.hierarchy.n_free_dofs, 1)
+        correction = np.asarray(correction, dtype=np.float64).reshape(-1)
         rhs_frozen = _immutable_array(rhs, np.float64)
         correction_frozen = _immutable_array(correction, np.float64)
         rhs_sha256 = _hash_parts("v-cycle-rhs-v1", (("rhs", rhs_frozen),))
@@ -684,4 +715,71 @@ class WarpVCycleWorkspace:
             scheduled_kernel_launches=self.scheduled_kernel_launches,
             capture_replay=capture_replay,
             content_sha256=content_sha256,
+        )
+
+
+class WarpStaticMultigridPreconditioner(WarpDevicePreconditioner):
+    """Typed PCG boundary for one immutable static Warp MG hierarchy."""
+
+    def __init__(self, hierarchy: WarpStaticMultigridHierarchy):
+        if not isinstance(hierarchy, WarpStaticMultigridHierarchy):
+            raise TypeError("hierarchy must be a WarpStaticMultigridHierarchy")
+        self.hierarchy = hierarchy
+        self.device = hierarchy.device
+        self.vector_count = hierarchy.n_free
+        self.free_vertices_host = hierarchy.free_vertices_host
+        self.static_preconditioner_sha256 = hierarchy.hierarchy_sha256
+        self.device_snapshot_sha256 = hierarchy.device_snapshot_sha256
+        self.preconditioner_identity = f"static-mg-v-cycle-warp-v1:{hierarchy.hierarchy_sha256}"
+        self.application_kernel_launches = hierarchy.scheduled_kernel_launches
+
+    def create_application_workspace(self) -> WarpVCycleWorkspace:
+        """Allocate one independently retained V-cycle workspace."""
+        return self.hierarchy.create_workspace()
+
+    def launch_apply(
+        self,
+        rhs: wp.array[wp.vec3d],
+        output: wp.array[wp.vec3d],
+        workspace: object,
+    ) -> None:
+        """Enqueue one V-cycle without host synchronization or allocation."""
+        if not isinstance(workspace, WarpVCycleWorkspace):
+            raise TypeError("workspace must be a WarpVCycleWorkspace")
+        if workspace._hierarchy_identity != id(self.hierarchy):
+            raise ValueError("workspace belongs to a different static multigrid preconditioner")
+        self.hierarchy.launch_apply(rhs, output, workspace)
+
+    def record_application(
+        self,
+        application_index: int,
+        workspace: object,
+        *,
+        capture_replay: bool,
+    ) -> WarpDevicePreconditionerApplication:
+        """Synchronously retain one V-cycle's hashes and exact algebraic work."""
+        if not isinstance(workspace, WarpVCycleWorkspace):
+            raise TypeError("workspace must be a WarpVCycleWorkspace")
+        if workspace._hierarchy_identity != id(self.hierarchy):
+            raise ValueError("workspace belongs to a different static multigrid preconditioner")
+        result = workspace.record_internal_application(capture_replay=capture_replay)
+        work = result.work
+        return WarpDevicePreconditionerApplication(
+            application_index=application_index,
+            preconditioner_identity=self.preconditioner_identity,
+            static_preconditioner_sha256=self.static_preconditioner_sha256,
+            device_snapshot_sha256=self.device_snapshot_sha256,
+            input_sha256=work.rhs_sha256,
+            output_sha256=work.result_sha256,
+            algebraic_work_sha256=work.content_sha256,
+            rhs_count=work.rhs_count,
+            level_visits=work.level_visits,
+            matrix_block_products=work.matrix_block_products,
+            smoother_block_solves=work.smoother_block_solves,
+            restriction_block_products=work.restriction_block_products,
+            prolongation_block_products=work.prolongation_block_products,
+            coarsest_factor_solves=work.coarsest_factor_solves,
+            scheduled_kernel_launches=result.scheduled_kernel_launches,
+            output_finite=bool(np.isfinite(result.correction).all()),
+            capture_replay=capture_replay,
         )
