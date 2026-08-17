@@ -167,6 +167,16 @@ def _same_float64_measurement(left: float, right: float) -> bool:
     return abs(left - right) <= guard
 
 
+def _same_cross_backend_gradient_measurement(left: float, right: float) -> bool:
+    """Compare gradient norms from NumPy scatter and Torch autograd paths."""
+    if not math.isfinite(left) or not math.isfinite(right):
+        return False
+    scale = max(1.0, abs(left), abs(right))
+    absolute_guard = 512.0 * np.finfo(np.float64).eps * scale
+    absolute_delta = abs(left - right)
+    return bool(absolute_delta <= absolute_guard and absolute_delta / scale <= 1.0e-9)
+
+
 @dataclasses.dataclass(frozen=True)
 class MGVBDCorrectionConfig:
     """Fixed multiplicative outer work and static hierarchy settings."""
@@ -502,14 +512,19 @@ class MGOuterCorrectionEvidence:
             raise ValueError("fallback outer correction did not preserve its exact start state")
         scalar_pairs = (
             (self.result.initial_objective, self.start_metrics.objective, "initial objective"),
-            (self.result.initial_gradient_norm, self.start_metrics.gradient_norm, "initial gradient"),
             (self.result.initial_minimum_determinant, self.start_metrics.determinant_min, "initial determinant"),
             (self.result.final_objective, self.metrics.objective, "final objective"),
-            (self.result.final_gradient_norm, self.metrics.gradient_norm, "final gradient"),
             (self.result.final_minimum_determinant, self.metrics.determinant_min, "final determinant"),
         )
         for measured, independent, label in scalar_pairs:
             if not _same_float64_measurement(measured, independent):
+                raise ValueError(f"outer correction {label} disagrees with independent common metrics")
+        gradient_pairs = (
+            (self.result.initial_gradient_norm, self.start_metrics.gradient_norm, "initial gradient"),
+            (self.result.final_gradient_norm, self.metrics.gradient_norm, "final gradient"),
+        )
+        for measured, independent, label in gradient_pairs:
+            if not _same_cross_backend_gradient_measurement(measured, independent):
                 raise ValueError(f"outer correction {label} disagrees with independent common metrics")
 
     @property

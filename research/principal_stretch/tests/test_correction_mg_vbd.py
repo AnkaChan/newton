@@ -15,7 +15,7 @@ from .. import correction_mg_vbd as integration
 from ..correction_gpu import MatrixFreeCorrectionConfig, MatrixFreeStableNHOperator, solve_matrix_free_correction
 from ..correction_multigrid import assemble_current_stable_nh_block_matrix
 from ..solver_benchmark import build_common_problem, evaluate_common_state
-from ..solver_scenes import build_stretch_scene
+from ..solver_scenes import build_sliver_scene, build_stretch_scene
 
 
 class TestMultiplicativeMGVBD(unittest.TestCase):
@@ -158,6 +158,44 @@ class TestMultiplicativeMGVBD(unittest.TestCase):
         self.assertLess(quality.gate.versus_k4.residual_ratio, 0.004)
         self.assertLess(quality.gate.versus_k4.free_rms_ratio, 0.004)
         self.assertTrue(quality.gate.passed)
+
+    def test_sliver_cross_backend_gradient_agreement_is_narrow_and_fail_closed(self):
+        scene = build_sliver_scene()
+        quality = integration.run_multiplicative_mg_vbd(scene).quality
+        self.assertEqual(len(quality.outer_corrections), 3)
+        self.assertTrue(quality.gate.passed)
+        self.assertTrue(all(outer.result.accepted for outer in quality.outer_corrections))
+
+        old_guard_exceedances = []
+        expected_start = quality.k1_metrics.position_sha256
+        for outer in quality.outer_corrections:
+            self.assertEqual(outer.start_position_sha256, expected_start)
+            self.assertEqual(outer.end_position_sha256, outer.metrics.position_sha256)
+            expected_start = outer.end_position_sha256
+            for role, measured, independent in (
+                (
+                    "initial",
+                    outer.result.initial_gradient_norm,
+                    outer.start_metrics.gradient_norm,
+                ),
+                ("final", outer.result.final_gradient_norm, outer.metrics.gradient_norm),
+            ):
+                old_guard = 128.0 * np.finfo(np.float64).eps * max(1.0, abs(measured), abs(independent))
+                if abs(measured - independent) > old_guard:
+                    old_guard_exceedances.append((outer.outer_index, role))
+                self.assertTrue(integration._same_cross_backend_gradient_measurement(measured, independent))
+        self.assertIn((1, "final"), old_guard_exceedances)
+        self.assertEqual(expected_start, quality.final_metrics.position_sha256)
+
+        outer = quality.outer_corrections[1]
+        tampered_gradient = outer.metrics.gradient_norm + 1.0e-8
+        tampered_result = dataclasses.replace(
+            outer.result,
+            candidate_gradient_norm=tampered_gradient,
+            final_gradient_norm=tampered_gradient,
+        )
+        with self.assertRaisesRegex(ValueError, "final gradient"):
+            dataclasses.replace(outer, result=tampered_result)
 
     def test_identity_mismatch_and_safeguard_fallback_fail_closed(self):
         wrong_k4 = dataclasses.replace(self.k4_run, objective_instance_sha256="0" * 64)
