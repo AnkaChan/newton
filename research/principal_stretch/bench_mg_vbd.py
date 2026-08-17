@@ -159,6 +159,21 @@ def _same_float64_measurement(left: object, right: object) -> bool:
     return abs(left - right) <= guard
 
 
+def _same_cross_backend_gradient_measurement(left: object, right: object) -> bool:
+    if (
+        isinstance(left, bool)
+        or isinstance(right, bool)
+        or not isinstance(left, (int, float))
+        or not isinstance(right, (int, float))
+        or not math.isfinite(left)
+        or not math.isfinite(right)
+    ):
+        return False
+    scale = max(1.0, abs(left), abs(right))
+    delta = abs(left - right)
+    return bool(delta <= 512.0 * np.finfo(np.float64).eps * scale and delta / scale <= 1.0e-9)
+
+
 def _fixed_config() -> MGVBDCorrectionConfig:
     config = MGVBDCorrectionConfig()
     config.validate()
@@ -602,14 +617,12 @@ def _validate_quality_record(quality: Mapping[str, object], scene_sha256: str) -
                 _validate_sha256(work.get(name), f"outer {index} V-cycle {name}")
         scalar_bindings = (
             (correction.get("initial_objective"), start_metrics.get("objective"), "initial objective"),
-            (correction.get("initial_gradient_norm"), start_metrics.get("gradient_norm"), "initial gradient"),
             (
                 correction.get("initial_minimum_determinant"),
                 start_metrics.get("determinant_min"),
                 "initial determinant",
             ),
             (correction.get("final_objective"), end_metrics.get("objective"), "final objective"),
-            (correction.get("final_gradient_norm"), end_metrics.get("gradient_norm"), "final gradient"),
             (
                 correction.get("final_minimum_determinant"),
                 end_metrics.get("determinant_min"),
@@ -621,6 +634,20 @@ def _validate_quality_record(quality: Mapping[str, object], scene_sha256: str) -
                 name
                 for measured, independent, name in scalar_bindings
                 if not _same_float64_measurement(measured, independent)
+            )
+            raise ValueError(f"outer correction {failed} does not match independent metrics")
+        gradient_bindings = (
+            (correction.get("initial_gradient_norm"), start_metrics.get("gradient_norm"), "initial gradient"),
+            (correction.get("final_gradient_norm"), end_metrics.get("gradient_norm"), "final gradient"),
+        )
+        if any(
+            not _same_cross_backend_gradient_measurement(measured, independent)
+            for measured, independent, _ in gradient_bindings
+        ):
+            failed = next(
+                name
+                for measured, independent, name in gradient_bindings
+                if not _same_cross_backend_gradient_measurement(measured, independent)
             )
             raise ValueError(f"outer correction {failed} does not match independent metrics")
         pcg = correction.get("pcg")

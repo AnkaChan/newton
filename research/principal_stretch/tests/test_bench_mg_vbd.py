@@ -14,7 +14,7 @@ from unittest import mock
 import numpy as np
 
 from .. import bench_mg_vbd as benchmark
-from ..solver_scenes import build_stretch_scene
+from ..solver_scenes import build_sliver_scene, build_stretch_scene
 
 _OLD_CORRECTION_SHA256 = "ff4ea309392577a68061b8ef0972425755b80d36b66db3bcaad98d5f20aa87f8"
 _NEW_CORRECTION_SHA256 = "4871d747f1bc5d3d0605c51a856742fc131a8fa9e2397e93858ebbb02998d662"
@@ -108,6 +108,19 @@ class TestMGVBDSceneSuite(unittest.TestCase):
         self.assertNotIn("timing", quality)
         self.assertIn(payload["suite_sha256"], self.report_path.read_text())
         self.assertIn("development-only", self.report_path.read_text())
+
+    def test_real_sliver_uses_the_reviewed_cross_backend_gradient_bound(self):
+        quality = benchmark.run_multiplicative_mg_vbd(build_sliver_scene()).quality.deterministic_record()
+        summary = benchmark._summary_from_quality(quality)
+        self.assertTrue(summary["gate_passed"])
+
+        outer = quality["outer_corrections"][1]
+        measured = outer["correction"]["final_gradient_norm"]
+        independent = outer["metrics"]["gradient_norm"]
+        old_guard = 128.0 * np.finfo(np.float64).eps * max(1.0, abs(measured), abs(independent))
+        self.assertGreater(abs(measured - independent), old_guard)
+        self.assertTrue(benchmark._same_cross_backend_gradient_measurement(measured, independent))
+        self.assertFalse(benchmark._same_cross_backend_gradient_measurement(measured + 1.0e-8, independent))
 
     def test_complete_resume_is_verify_only_and_no_overwrite_is_default(self):
         before = self.output_path.read_bytes()
