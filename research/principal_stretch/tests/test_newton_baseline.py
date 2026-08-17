@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import unittest
 
@@ -13,7 +14,13 @@ import warp as wp
 
 from newton._src.solvers.vbd.particle_vbd_kernels import evaluate_volumetric_neo_hookean_force_and_hessian
 
-from ..newton_baseline import NewtonConfig, build_newton_problem, solve_newton
+from ..newton_baseline import (
+    NewtonConfig,
+    NewtonResidualPolishConfig,
+    build_newton_problem,
+    solve_newton,
+    solve_newton_residual_polish,
+)
 from ..potentials import incremental_potential_stable_neo_hookean, stable_neo_hookean_energy_density
 
 
@@ -708,6 +715,225 @@ class TestNewtonBaseline(unittest.TestCase):
         free = problem.free_from_positions(rest_tensor)
         self.assertFalse(free.requires_grad)
         self.assertIsNone(free.grad_fn)
+
+    @staticmethod
+    def _scalar_problem(objective):
+        class ScalarProblem:
+            rest_q = torch.zeros((1, 3), dtype=torch.float64)
+            pinned = torch.empty(0, dtype=torch.int64)
+            pin_targets = torch.empty((0, 3), dtype=torch.float64)
+            residual_scale = 1.0
+
+            @staticmethod
+            def free_from_positions(x):
+                return torch.as_tensor(x, dtype=torch.float64).reshape(-1).detach().clone()
+
+            @staticmethod
+            def positions_from_free(z):
+                return z.reshape(1, 3)
+
+            @staticmethod
+            def objective_free(z):
+                return objective(z)
+
+        return ScalarProblem()
+
+    @staticmethod
+    def _polish_config(*, max_line_search_steps=30):
+        return NewtonResidualPolishConfig(
+            max_iterations=8,
+            gradient_absolute_tolerance=1.0e-12,
+            gradient_relative_tolerance=1.0e-12,
+            armijo=1.0e-4,
+            backtrack=0.5,
+            max_line_search_steps=max_line_search_steps,
+        )
+
+    def test_residual_polish_converges_flat_offset_quadratic_with_exact_accounting(self):
+        problem = self._scalar_problem(lambda z: torch.tensor(1.0e16, dtype=z.dtype) + 0.5 * (z * z).sum())
+        config = self._polish_config()
+        result = solve_newton_residual_polish(
+            problem,
+            np.array([[1.0e-8, 0.0, 0.0]], dtype=np.float64),
+            config,
+        )
+
+        self.assertTrue(result.converged, result.reason)
+        self.assertEqual(result.reason, "gradient")
+        self.assertEqual(result.accepted_iterations, 1)
+        self.assertEqual(len(result.trace), 2)
+        self.assertLess(result.trace[1].gradient_norm, result.trace[0].gradient_norm)
+        self.assertEqual(result.objective_evaluations, result.gradient_evaluations)
+        self.assertEqual(result.objective_evaluations, len(result.trace) + result.line_search_trials)
+        self.assertEqual(result.hessian_evaluations, result.eigenvalue_evaluations)
+        self.assertEqual(result.hessian_evaluations, result.accepted_iterations)
+        self.assertEqual(result.factorization_attempts, result.accepted_iterations)
+        self.assertGreaterEqual(result.line_search_trials, result.accepted_iterations)
+        phase_seconds = (
+            result.timing.objective_gradient_seconds
+            + result.timing.hessian_seconds
+            + result.timing.linear_solve_seconds
+            + result.timing.line_search_seconds
+        )
+        self.assertLessEqual(phase_seconds, result.timing.total_seconds)
+        self.assertNotIn("total_seconds", result.deterministic_record())
+        self.assertNotIn("elapsed_seconds", result.deterministic_record()["trace"][0])
+        self.assertEqual(len(result.timing_record()["trace_elapsed_seconds"]), len(result.trace))
+        self.assertIn("8*eps", config.deterministic_record()["objective_roundoff_guard"])
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            config.max_iterations = 9
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            result.trace[0].gradient_norm = 0.0
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            result.reason = "max_iterations"
+
+    def test_residual_polish_rejects_non_spd_hessian(self):
+        problem = self._scalar_problem(lambda z: -0.5 * z[0] * z[0] + 0.5 * (z[1:] * z[1:]).sum())
+        result = solve_newton_residual_polish(
+            problem,
+            np.array([[1.0, 0.0, 0.0]], dtype=np.float64),
+            self._polish_config(),
+        )
+
+        self.assertFalse(result.converged)
+        self.assertEqual(result.reason, "non_spd_hessian")
+        self.assertEqual(result.accepted_iterations, 0)
+        self.assertEqual(result.hessian_evaluations, 1)
+        self.assertEqual(result.eigenvalue_evaluations, 1)
+        self.assertEqual(result.factorization_attempts, 0)
+        self.assertLess(result.trace[0].hessian_minimum_eigenvalue, 0.0)
+
+    def test_residual_polish_nonfinite_and_iteration_limit_are_closed(self):
+        problem = self._scalar_problem(lambda z: 0.5 * (z * z).sum())
+        nonfinite = solve_newton_residual_polish(
+            problem,
+            np.array([[math.nan, 0.0, 0.0]], dtype=np.float64),
+            self._polish_config(),
+        )
+        self.assertFalse(nonfinite.converged)
+        self.assertEqual(nonfinite.reason, "nonfinite")
+        self.assertEqual(nonfinite.trace, ())
+        self.assertEqual(nonfinite.objective_evaluations, 0)
+        self.assertEqual(nonfinite.gradient_evaluations, 0)
+        self.assertEqual(nonfinite.hessian_evaluations, 0)
+        self.assertEqual(nonfinite.line_search_trials, 0)
+
+        limited = solve_newton_residual_polish(
+            problem,
+            np.array([[1.0, 0.0, 0.0]], dtype=np.float64),
+            dataclasses.replace(self._polish_config(), max_iterations=0),
+        )
+        self.assertFalse(limited.converged)
+        self.assertEqual(limited.reason, "max_iterations")
+        self.assertEqual(limited.accepted_iterations, 0)
+        self.assertEqual(len(limited.trace), 1)
+        self.assertEqual(limited.objective_evaluations, 1)
+        self.assertEqual(limited.gradient_evaluations, 1)
+        self.assertEqual(limited.hessian_evaluations, 0)
+        self.assertEqual(limited.line_search_trials, 0)
+
+    def test_residual_polish_eliminates_pinned_dofs_exactly(self):
+        problem = self._problem()
+        initial = problem.rest_q.detach().clone()
+        initial[problem.pinned] = 123.0
+        result = solve_newton_residual_polish(
+            problem,
+            initial,
+            NewtonResidualPolishConfig.from_newton_config(
+                NewtonConfig(
+                    max_iterations=20,
+                    gradient_absolute_tolerance=1.0e-10,
+                    gradient_relative_tolerance=1.0e-10,
+                )
+            ),
+        )
+        torch.testing.assert_close(result.x[problem.pinned], problem.pin_targets, rtol=0.0, atol=0.0)
+
+    def test_residual_polish_config_validation(self):
+        base = dataclasses.asdict(self._polish_config())
+        for field, invalid in (
+            ("max_iterations", True),
+            ("max_iterations", -1),
+            ("gradient_absolute_tolerance", -1.0),
+            ("gradient_relative_tolerance", math.nan),
+            ("armijo", 1.0),
+            ("backtrack", 0.0),
+            ("max_line_search_steps", 0),
+        ):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                NewtonResidualPolishConfig(**(base | {field: invalid})).validate()
+
+    def test_residual_polish_result_rejects_status_accounting_and_trace_tamper(self):
+        problem = self._scalar_problem(lambda z: 0.5 * (z * z).sum())
+        result = solve_newton_residual_polish(
+            problem,
+            np.array([[1.0, 0.0, 0.0]], dtype=np.float64),
+            self._polish_config(),
+        )
+        self.assertTrue(result.converged, result.reason)
+
+        with self.assertRaisesRegex(ValueError, "convergence"):
+            dataclasses.replace(result, reason="max_iterations")
+        with self.assertRaisesRegex(ValueError, "objective/gradient work"):
+            dataclasses.replace(result, objective_evaluations=result.objective_evaluations + 1)
+        with self.assertRaisesRegex(ValueError, "trace length"):
+            dataclasses.replace(result, accepted_iterations=result.accepted_iterations + 1)
+        changed_indices = (
+            dataclasses.replace(result.trace[0], iteration=1),
+            *result.trace[1:],
+        )
+        with self.assertRaisesRegex(ValueError, "iteration indices"):
+            dataclasses.replace(result, trace=changed_indices)
+        changed_eigenvalue = (
+            dataclasses.replace(result.trace[0], hessian_minimum_eigenvalue=math.nan),
+            *result.trace[1:],
+        )
+        with self.assertRaisesRegex(ValueError, "finite SPD|trace scalars"):
+            dataclasses.replace(result, trace=changed_eigenvalue)
+        changed_objective = (
+            result.trace[0],
+            dataclasses.replace(result.trace[1], objective=result.trace[0].objective + 1.0),
+            *result.trace[2:],
+        )
+        with self.assertRaisesRegex(ValueError, "objective roundoff guard"):
+            dataclasses.replace(result, trace=changed_objective)
+        with self.assertRaisesRegex(ValueError, "timings"):
+            dataclasses.replace(
+                result,
+                timing=dataclasses.replace(result.timing, total_seconds=-1.0),
+            )
+        reversed_trace_timings = tuple(reversed(result.timing.trace_elapsed_seconds))
+        with self.assertRaisesRegex(ValueError, "trace timings"):
+            dataclasses.replace(
+                result,
+                timing=dataclasses.replace(result.timing, trace_elapsed_seconds=reversed_trace_timings),
+            )
+
+    def test_residual_polish_objective_roundoff_guard_fails_closed(self):
+        a = -0.26814307801880943
+        b = -1.5007641114752346
+
+        def objective(z):
+            x = z[0]
+            return 0.5 * x * x + a * x**3 + b * x**4 + 0.5 * (z[1:] * z[1:]).sum()
+
+        problem = self._scalar_problem(objective)
+        result = solve_newton_residual_polish(
+            problem,
+            np.array([[0.17132823379228146, 0.0, 0.0]], dtype=np.float64),
+            self._polish_config(max_line_search_steps=1),
+        )
+
+        self.assertFalse(result.converged)
+        self.assertEqual(result.reason, "residual_line_search")
+        self.assertEqual(result.accepted_iterations, 0)
+        self.assertEqual(result.line_search_trials, 1)
+        self.assertEqual(result.trace[0].accepted_step_size, 0.0)
+        self.assertEqual(result.objective_evaluations, result.gradient_evaluations)
+        self.assertEqual(result.objective_evaluations, len(result.trace) + result.line_search_trials)
+        self.assertEqual(result.hessian_evaluations, result.eigenvalue_evaluations)
+        self.assertEqual(result.hessian_evaluations, result.accepted_iterations + 1)
+        self.assertEqual(result.factorization_attempts, 1)
 
 
 def dataclasses_as_numeric(item):

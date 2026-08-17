@@ -10,6 +10,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -301,6 +302,100 @@ class TestSolverBenchmark(unittest.TestCase):
         self.assertEqual(metrics.inverted_tet_fraction, 0.0)
         self.assertLess(abs(metrics.objective - self.newton_result.final_objective), 1.0e-8)
         self.assertLessEqual(self.newton_result.final_objective, metrics.objective + 1.0e-10)
+
+    def test_residual_recovery_binds_a_real_zero_step_newton_run(self):
+        source_config = dataclasses.replace(self.newton_run.config, step_relative_tolerance=0.0)
+        source_run = benchmark.run_newton(
+            self.scene,
+            self.problem,
+            config=source_config,
+            warmup=False,
+            repeats=1,
+        )
+        self.assertEqual(benchmark._newton_run_digest(source_run), source_run.run_sha256)
+        self.assertTrue(source_run.reference_accepted)
+        with self.assertRaisesRegex(ValueError, "rejected Newton run"):
+            benchmark.recover_newton_reference_with_residual_polish(self.scene, self.problem, source_run)
+
+        invalid_digest = dataclasses.replace(source_run, run_sha256="0" * 64)
+        with self.assertRaisesRegex(ValueError, "run digest"):
+            benchmark.recover_newton_reference_with_residual_polish(self.scene, self.problem, invalid_digest)
+
+        def relabel_run(run, reason, *, config=None, result=None, result_state_sha256=None):
+            relabeled_result = result or dataclasses.replace(run.result, converged=False, reason=reason)
+            relabeled = dataclasses.replace(
+                run,
+                result=relabeled_result,
+                config=run.config if config is None else config,
+                result_state_sha256=(
+                    benchmark._array_digest(relabeled_result.x.detach().numpy())
+                    if result_state_sha256 is None
+                    else result_state_sha256
+                ),
+                reference_accepted=False,
+                reference_failures=(f"native termination: {reason}",),
+                run_sha256="",
+            )
+            return dataclasses.replace(relabeled, run_sha256=benchmark._newton_run_digest(relabeled))
+
+        line_search_run = relabel_run(source_run, "line_search")
+        recovery = benchmark.recover_newton_reference_with_residual_polish(
+            self.scene,
+            self.problem,
+            line_search_run,
+        )
+        self.assertEqual(recovery.native_reason, "line_search")
+        self.assertIs(recovery.source_run, line_search_run)
+        self.assertFalse(recovery.reference_accepted)
+        self.assertIn("finite SPD first Hessian", recovery.reference_failures[0])
+        self.assertEqual(
+            recovery.deterministic_record()["source_run_deterministic_sha256"],
+            benchmark._canonical_digest(benchmark._residual_recovery_source_record(line_search_run)),
+        )
+
+        unsupported_run = relabel_run(source_run, "max_iterations")
+        with self.assertRaisesRegex(ValueError, "stalled or line_search"):
+            benchmark.recover_newton_reference_with_residual_polish(
+                self.scene,
+                self.problem,
+                unsupported_run,
+            )
+        nonzero_config_run = relabel_run(
+            source_run,
+            "stalled",
+            config=dataclasses.replace(source_config, step_relative_tolerance=1.0e-14),
+        )
+        with self.assertRaisesRegex(ValueError, "zero-step-tolerance"):
+            benchmark.recover_newton_reference_with_residual_polish(
+                self.scene,
+                self.problem,
+                nonzero_config_run,
+            )
+
+        wrong_identity = dataclasses.replace(line_search_run, scene_sha256="0" * 64, run_sha256="")
+        wrong_identity = dataclasses.replace(
+            wrong_identity,
+            run_sha256=benchmark._newton_run_digest(wrong_identity),
+        )
+        with self.assertRaisesRegex(ValueError, "changed scene_sha256"):
+            benchmark.recover_newton_reference_with_residual_polish(self.scene, self.problem, wrong_identity)
+
+        wrong_state_hash = relabel_run(source_run, "stalled", result_state_sha256="0" * 64)
+        with self.assertRaisesRegex(ValueError, "result-state hash"):
+            benchmark.recover_newton_reference_with_residual_polish(self.scene, self.problem, wrong_state_hash)
+
+        pin_mismatch = source_run.result.x.detach().numpy().copy()
+        pin_mismatch[self.scene.pinned_indices[0], 0] += 1.0e-12
+        pin_result = dataclasses.replace(
+            source_run.result, x=benchmark.torch.from_numpy(pin_mismatch), converged=False, reason="stalled"
+        )
+        pin_run = relabel_run(source_run, "stalled", result=pin_result)
+        with (
+            mock.patch.object(benchmark, "solve_newton_residual_polish") as polish,
+            self.assertRaisesRegex(ValueError, "Dirichlet"),
+        ):
+            benchmark.recover_newton_reference_with_residual_polish(self.scene, self.problem, pin_run)
+        polish.assert_not_called()
 
     def test_two_timesteps_are_not_a_two_iteration_convergence_endpoint(self):
         model = benchmark._build_vbd_model(self.scene, "cpu")

@@ -37,16 +37,23 @@ import numpy as np
 
 import newton
 
-from .newton_baseline import NewtonConfig
+from .newton_baseline import NewtonConfig, NewtonResidualPolishConfig
 from .solver_benchmark import (
+    NewtonAlternateResidualVerification,
+    NewtonResidualReferenceRecovery,
+    NewtonRunResult,
     TetBenchmarkScene,
+    _newton_result_deterministic_record,
     build_common_problem,
     common_objective_manifest,
+    evaluate_common_state,
+    recover_newton_reference_with_residual_polish,
     run_newton,
+    verify_newton_alternate_start_with_residual_polish,
 )
 from .solver_scenes import build_compression_scene, build_stretch_scene, build_twist_scene
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _SOURCE_REVISION = "a513d446e42477a8ada78070f92ffb60d3108eeb"
 _SUBSTEPS_PER_FRAME = 5
 _TOTAL_FRAMES = 400
@@ -54,6 +61,10 @@ _DT = float(np.float32(1.0 / 300.0))
 _ACTIVE_FLAG = int(newton.ParticleFlags.ACTIVE)
 _KINDS = ("stretch", "twist", "compression-50", "compression-90")
 _STALLED_RETRY_POLICY = "stalled-step-relative-tolerance-zero-v1"
+_RESIDUAL_RECOVERY_RETRY_POLICY = "strict-reference-zero-step-prerequisite-v1"
+_RESIDUAL_POLISH_POLICY = "strict-reference-residual-newton-three-start-v1"
+_ALTERNATE_RECOVERY_RETRY_POLICY = "alternate-residual-zero-step-prerequisite-v1"
+_ALTERNATE_RESIDUAL_POLICY = "alternate-start-only-residual-verification-v1"
 _TRAINING_STATIC_ARRAY_NAMES = (
     "rest_q",
     "tet_indices",
@@ -230,7 +241,7 @@ class PRHistoryManifest:
     def _payload(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
-            "contract": "pr2901-callback-dense-newton-history-v1",
+            "contract": "pr2901-callback-dense-newton-history-v2",
             "kind": self.kind,
             "source_path": self.source_path,
             "source_revision": self.source_revision,
@@ -245,7 +256,19 @@ class PRHistoryManifest:
             "schedule": _thaw_json(self.schedule),
             "callback_order": "C_k -> frame callback at substep 0 -> A_k -> T_k",
             "commit_order": "q_next=float32(x_newton64); qd_next=float32((q_next-A_k.q)/dt32)",
-            "reference_gate": "solver_benchmark.run_newton reference_accepted",
+            "reference_gate": {
+                "stages": [
+                    "solver_benchmark.run_newton primary",
+                    "conditional zero-step-tolerance Newton retry",
+                    "conditional strict three-start residual polish",
+                    "conditional alternate-start-only residual verification",
+                ],
+                "gradient_limit_N": "max(1e-10, 1e-10*residual_scale)",
+                "verification_displacement_relative_max": 1.0e-12,
+                "alternate_displacement_relative_max": 1.0e-9,
+                "requires_exact_pins": True,
+                "requires_finite_uninverted_state": True,
+            },
         }
 
     def as_dict(self) -> dict[str, object]:
@@ -490,6 +513,7 @@ class _ReferenceStep:
     failures: tuple[str, ...]
     deterministic_record: Mapping[str, object]
     timing_record: Mapping[str, object]
+    newton_run: NewtonRunResult | None = dataclasses.field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "positions", _readonly_array(self.positions, np.float64, "reference positions"))
@@ -951,15 +975,10 @@ def _default_newton_config() -> NewtonConfig:
     )
 
 
-def _solve_dense_reference(
-    scene: TetBenchmarkScene,
-    config: NewtonConfig,
-) -> _ReferenceStep:
-    problem = build_common_problem(scene)
-    objective = common_objective_manifest(scene, problem)
-    run = run_newton(scene, problem, config=config, warmup=False, repeats=1)
+def _dense_reference_deterministic_record(run: NewtonRunResult) -> dict[str, object]:
+    """Reconstruct every deterministic field serialized for one Newton run."""
     result = run.result
-    deterministic_record = {
+    return {
         "method": "dense-cpu-newton-float64",
         "config": dataclasses.asdict(run.config),
         "scene_sha256": run.scene_sha256,
@@ -1002,6 +1021,17 @@ def _solve_dense_reference(
         ],
         "position_sha256": _array_digest(result.x.detach().numpy()),
     }
+
+
+def _solve_dense_reference(
+    scene: TetBenchmarkScene,
+    config: NewtonConfig,
+) -> _ReferenceStep:
+    problem = build_common_problem(scene)
+    objective = common_objective_manifest(scene, problem)
+    run = run_newton(scene, problem, config=config, warmup=False, repeats=1)
+    result = run.result
+    deterministic_record = _dense_reference_deterministic_record(run)
     if objective["objective_instance_sha256"] != run.objective_instance_sha256:
         raise RuntimeError("dense reference changed the objective instance")
     timing_record = {
@@ -1024,6 +1054,7 @@ def _solve_dense_reference(
         failures=run.reference_failures,
         deterministic_record=deterministic_record,
         timing_record=timing_record,
+        newton_run=run,
     )
 
 
@@ -1093,6 +1124,8 @@ def _combine_reference_attempts(
     primary: _ReferenceStep,
     retry: _ReferenceStep,
     provenance_failures: tuple[str, ...] = (),
+    *,
+    retry_policy: str = _STALLED_RETRY_POLICY,
 ) -> _ReferenceStep:
     """Bind both conditional-retry attempts and the selected attempt into their records."""
     selected_failures = provenance_failures or retry.failures
@@ -1102,7 +1135,7 @@ def _combine_reference_attempts(
         {
             "accepted": selected_accepted,
             "failures": list(selected_failures),
-            "retry_policy": _STALLED_RETRY_POLICY,
+            "retry_policy": retry_policy,
             "selected_attempt": 1,
             "attempts": [
                 {
@@ -1123,7 +1156,7 @@ def _combine_reference_attempts(
     timing_record = dict(_thaw_json(retry.timing_record))
     timing_record.update(
         {
-            "retry_policy": _STALLED_RETRY_POLICY,
+            "retry_policy": retry_policy,
             "selected_attempt": 1,
             "attempts": [
                 {
@@ -1145,6 +1178,7 @@ def _combine_reference_attempts(
         failures=selected_failures,
         deterministic_record=deterministic_record,
         timing_record=timing_record,
+        newton_run=retry.newton_run,
     )
 
 
@@ -1179,6 +1213,976 @@ def _solve_dense_reference_with_retry(
 
     provenance_failures = _retry_provenance_failures(primary, retry, retry_config)
     return _combine_reference_attempts(primary, retry, provenance_failures)
+
+
+def _reference_is_recovery_prerequisite(reference: _ReferenceStep, config: NewtonConfig) -> bool:
+    """Allow one explicitly versioned zero-step prerequisite for residual polish."""
+    if reference.accepted or config.step_relative_tolerance == 0.0:
+        return False
+    record = reference.deterministic_record
+    native_reason = record.get("native_reason")
+    if record.get("native_converged") is not False or native_reason not in ("stalled", "line_search"):
+        return False
+    if _thaw_json(record.get("config")) != dataclasses.asdict(config):
+        return False
+    required_finite_scalars = (
+        "final_objective",
+        "final_gradient_norm",
+        "final_relative_residual",
+        "verification_displacement_relative",
+        "alternate_start_displacement_relative",
+        "alternate_start_gradient_norm",
+        "alternate_start_relative_residual",
+    )
+    for name in required_finite_scalars:
+        value = record.get(name)
+        if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(float(value)):
+            return False
+    allowed_failures = (
+        "native termination: stalled",
+        "native termination: line_search",
+        "independent gradient ",
+        "verification termination: stalled",
+        "verification termination: line_search",
+        "verification displacement ",
+        "alternate-start gradient ",
+    )
+    native_failure = f"native termination: {native_reason}"
+    return native_failure in reference.failures and all(
+        failure in allowed_failures[:2] or failure.startswith(allowed_failures[2:]) for failure in reference.failures
+    )
+
+
+def _run_residual_recovery_zero_step_prerequisite(
+    scene: TetBenchmarkScene,
+    reference: _ReferenceStep,
+    config: NewtonConfig,
+) -> _ReferenceStep:
+    """Run the staged zero-step prerequisite without changing the v1 retry."""
+    if not _reference_is_recovery_prerequisite(reference, config):
+        return reference
+    retry_config = dataclasses.replace(config, step_relative_tolerance=0.0)
+    retry_config.validate()
+    try:
+        retry = _solve_dense_reference(scene, retry_config)
+    except Exception as exc:
+        message = f"residual-recovery zero-step prerequisite raised {type(exc).__name__}: {exc}"
+        retry = _ReferenceStep(
+            positions=reference.positions,
+            accepted=False,
+            failures=(message,),
+            deterministic_record={
+                "method": "dense-cpu-newton-float64",
+                "config": dataclasses.asdict(retry_config),
+                "accepted": False,
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+            timing_record={"unavailable_due_to_exception": True},
+        )
+    provenance_failures = _retry_provenance_failures(reference, retry, retry_config)
+    return _combine_reference_attempts(
+        reference,
+        retry,
+        provenance_failures,
+        retry_policy=_RESIDUAL_RECOVERY_RETRY_POLICY,
+    )
+
+
+def _reference_is_alternate_verification_prerequisite(
+    reference: _ReferenceStep,
+    config: NewtonConfig,
+    problem,
+) -> bool:
+    """Recognize one valid representative with only an alternate-gradient failure."""
+    if reference.accepted or config.step_relative_tolerance == 0.0 or reference.newton_run is None:
+        return False
+    record = reference.deterministic_record
+    if _thaw_json(record.get("config")) != dataclasses.asdict(config):
+        return False
+    if record.get("accepted") is not False:
+        return False
+    if record.get("native_converged") is not True or record.get("native_reason") != "gradient":
+        return False
+    if record.get("verification_converged") is not True or record.get("verification_reason") != "gradient":
+        return False
+    if record.get("alternate_start_converged") is not False or record.get("alternate_start_reason") not in (
+        "stalled",
+        "line_search",
+        "max_iterations",
+    ):
+        return False
+    if len(reference.failures) != 1 or not reference.failures[0].startswith("alternate-start gradient "):
+        return False
+    required_finite_scalars = (
+        "final_objective",
+        "final_gradient_norm",
+        "final_relative_residual",
+        "verification_displacement_relative",
+        "alternate_start_displacement_relative",
+        "alternate_start_gradient_norm",
+        "alternate_start_relative_residual",
+    )
+    if any(
+        isinstance(record.get(name), bool)
+        or not isinstance(record.get(name), numbers.Real)
+        or not math.isfinite(float(record[name]))
+        for name in required_finite_scalars
+    ):
+        return False
+    residual_limit = max(1.0e-10, 1.0e-10 * problem.residual_scale)
+    if (
+        float(record["final_gradient_norm"]) > residual_limit
+        or float(record["verification_displacement_relative"]) > 1.0e-12
+        or float(record["alternate_start_displacement_relative"]) > 1.0e-9
+        or float(record["alternate_start_gradient_norm"]) <= residual_limit
+    ):
+        return False
+    if record.get("position_sha256") != _array_digest(reference.positions):
+        return False
+    try:
+        metrics = evaluate_common_state(problem, reference.positions)
+    except (RuntimeError, ValueError):
+        return False
+    return (
+        metrics.gradient_norm <= residual_limit
+        and metrics.max_pin_error_m == 0.0
+        and metrics.inverted_tet_fraction == 0.0
+    )
+
+
+def _run_alternate_verification_zero_step_prerequisite(
+    scene: TetBenchmarkScene,
+    problem,
+    reference: _ReferenceStep,
+    config: NewtonConfig,
+) -> _ReferenceStep:
+    """Run a separately versioned zero-step prerequisite for alternate verification."""
+    if not _reference_is_alternate_verification_prerequisite(reference, config, problem):
+        return reference
+    retry_config = dataclasses.replace(config, step_relative_tolerance=0.0)
+    retry_config.validate()
+    try:
+        retry = _solve_dense_reference(scene, retry_config)
+    except Exception as exc:
+        message = f"alternate-verification zero-step prerequisite raised {type(exc).__name__}: {exc}"
+        retry = _ReferenceStep(
+            positions=reference.positions,
+            accepted=False,
+            failures=(message,),
+            deterministic_record={
+                "method": "dense-cpu-newton-float64",
+                "config": dataclasses.asdict(retry_config),
+                "accepted": False,
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+            timing_record={"unavailable_due_to_exception": True},
+        )
+    provenance_failures = _retry_provenance_failures(reference, retry, retry_config)
+    return _combine_reference_attempts(
+        reference,
+        retry,
+        provenance_failures,
+        retry_policy=_ALTERNATE_RECOVERY_RETRY_POLICY,
+    )
+
+
+def _residual_polish_retry_config(
+    reference: _ReferenceStep,
+    primary_config: NewtonConfig,
+    scene_sha256: str,
+    objective_instance_sha256: str,
+) -> NewtonConfig | None:
+    """Return the authenticated zero-step retry config eligible for polish."""
+    if reference.accepted:
+        return None
+    retry_config = dataclasses.replace(primary_config, step_relative_tolerance=0.0)
+    retry_config.validate()
+    record = _thaw_json(reference.deterministic_record)
+    attempts = record.get("attempts")
+    if (
+        record.get("retry_policy") not in (_STALLED_RETRY_POLICY, _RESIDUAL_RECOVERY_RETRY_POLICY)
+        or record.get("selected_attempt") != 1
+        or record.get("accepted") is not False
+        or record.get("provenance_failures")
+        or not isinstance(attempts, list)
+        or len(attempts) != 2
+    ):
+        return None
+    primary_attempt, retry_attempt = attempts
+    if (
+        primary_attempt.get("index") != 0
+        or primary_attempt.get("role") != "primary"
+        or retry_attempt.get("index") != 1
+        or retry_attempt.get("role") != "step-relative-tolerance-zero"
+    ):
+        return None
+    primary_record = primary_attempt.get("record")
+    retry_record = retry_attempt.get("record")
+    if not isinstance(primary_record, dict) or not isinstance(retry_record, dict):
+        return None
+    if primary_record.get("config") != dataclasses.asdict(primary_config):
+        return None
+    if retry_record.get("config") != dataclasses.asdict(retry_config):
+        return None
+    if record.get("config") != dataclasses.asdict(retry_config):
+        return None
+
+    for identity, expected in (
+        ("scene_sha256", scene_sha256),
+        ("objective_instance_sha256", objective_instance_sha256),
+    ):
+        if expected is None or any(
+            attempt.get(identity) != expected for attempt in (record, primary_record, retry_record)
+        ):
+            return None
+    position_sha256 = _array_digest(reference.positions)
+    if record.get("position_sha256") != position_sha256 or retry_record.get("position_sha256") != position_sha256:
+        return None
+    if retry_record.get("accepted") is not False:
+        return None
+    native_reason = retry_record.get("native_reason")
+    if retry_record.get("native_converged") is not False or native_reason not in ("stalled", "line_search"):
+        return None
+    run = reference.newton_run
+    if (
+        run is None
+        or run.config != retry_config
+        or run.reference_accepted
+        or run.result.converged
+        or run.result.reason not in ("stalled", "line_search")
+        or run.result_state_sha256 != position_sha256
+        or _array_digest(run.result.x.detach().numpy()) != position_sha256
+    ):
+        return None
+    if retry_record != _dense_reference_deterministic_record(run):
+        return None
+
+    required_finite_scalars = (
+        "final_objective",
+        "final_gradient_norm",
+        "final_relative_residual",
+        "verification_displacement_relative",
+        "alternate_start_displacement_relative",
+        "alternate_start_gradient_norm",
+        "alternate_start_relative_residual",
+    )
+    if any(
+        isinstance(retry_record.get(name), bool)
+        or not isinstance(retry_record.get(name), numbers.Real)
+        or not math.isfinite(float(retry_record[name]))
+        for name in required_finite_scalars
+    ):
+        return None
+    allowed_failures = (
+        "native termination: stalled",
+        "native termination: line_search",
+        "independent gradient ",
+        "verification termination: stalled",
+        "verification termination: line_search",
+        "verification displacement ",
+        "alternate-start gradient ",
+    )
+    native_failure = f"native termination: {native_reason}"
+    if native_failure not in reference.failures or not all(
+        failure in allowed_failures[:2] or failure.startswith(allowed_failures[2:]) for failure in reference.failures
+    ):
+        return None
+    return retry_config
+
+
+def _alternate_verification_retry_config(
+    reference: _ReferenceStep,
+    primary_config: NewtonConfig,
+    problem,
+    scene_sha256: str,
+    objective_instance_sha256: str,
+) -> NewtonConfig | None:
+    """Authenticate the zero-step run eligible for alternate-only verification."""
+    if reference.accepted or reference.newton_run is None:
+        return None
+    retry_config = dataclasses.replace(primary_config, step_relative_tolerance=0.0)
+    retry_config.validate()
+    record = _thaw_json(reference.deterministic_record)
+    attempts = record.get("attempts")
+    if (
+        record.get("retry_policy")
+        not in (
+            _STALLED_RETRY_POLICY,
+            _RESIDUAL_RECOVERY_RETRY_POLICY,
+            _ALTERNATE_RECOVERY_RETRY_POLICY,
+        )
+        or record.get("selected_attempt") != 1
+        or record.get("accepted") is not False
+        or record.get("provenance_failures")
+        or not isinstance(attempts, list)
+        or len(attempts) != 2
+    ):
+        return None
+    primary_attempt, retry_attempt = attempts
+    if (
+        primary_attempt.get("index") != 0
+        or primary_attempt.get("role") != "primary"
+        or retry_attempt.get("index") != 1
+        or retry_attempt.get("role") != "step-relative-tolerance-zero"
+    ):
+        return None
+    primary_record = primary_attempt.get("record")
+    retry_record = retry_attempt.get("record")
+    if not isinstance(primary_record, dict) or not isinstance(retry_record, dict):
+        return None
+    if primary_record.get("config") != dataclasses.asdict(primary_config):
+        return None
+    if retry_record.get("config") != dataclasses.asdict(retry_config):
+        return None
+    if record.get("config") != dataclasses.asdict(retry_config):
+        return None
+    for identity, expected in (
+        ("scene_sha256", scene_sha256),
+        ("objective_instance_sha256", objective_instance_sha256),
+    ):
+        if any(attempt.get(identity) != expected for attempt in (record, primary_record, retry_record)):
+            return None
+    position_sha256 = _array_digest(reference.positions)
+    if record.get("position_sha256") != position_sha256 or retry_record.get("position_sha256") != position_sha256:
+        return None
+    run = reference.newton_run
+    if (
+        run.config != retry_config
+        or run.reference_accepted
+        or not run.result.converged
+        or run.result.reason != "gradient"
+        or not run.verification_converged
+        or run.verification_reason != "gradient"
+        or run.verification_displacement_relative > 1.0e-12
+        or run.alternate_start_converged
+        or run.alternate_start_reason not in ("stalled", "line_search", "max_iterations")
+        or run.result_state_sha256 != position_sha256
+        or _array_digest(run.result.x.detach().numpy()) != position_sha256
+    ):
+        return None
+    if retry_record != _dense_reference_deterministic_record(run):
+        return None
+    if len(reference.failures) != 1 or not reference.failures[0].startswith("alternate-start gradient "):
+        return None
+    residual_limit = max(1.0e-10, 1.0e-10 * problem.residual_scale)
+    if (
+        run.result.final_gradient_norm > residual_limit
+        or run.alternate_start_gradient_norm <= residual_limit
+        or run.alternate_start_displacement_relative > 1.0e-9
+    ):
+        return None
+    try:
+        metrics = evaluate_common_state(problem, reference.positions)
+    except (RuntimeError, ValueError):
+        return None
+    if metrics.gradient_norm > residual_limit or metrics.max_pin_error_m != 0.0 or metrics.inverted_tet_fraction != 0.0:
+        return None
+    return retry_config
+
+
+def _recovery_provenance_failures(
+    reference: _ReferenceStep,
+    recovery: NewtonResidualReferenceRecovery,
+    retry_config: NewtonConfig,
+    problem,
+    scene_sha256: str,
+    objective_instance_sha256: str,
+    displacement_scale: float,
+) -> tuple[str, ...]:
+    """Authenticate a three-start recovery before selecting its endpoint."""
+    failures = []
+    record = recovery.deterministic_record()
+    expected_polish_config = NewtonResidualPolishConfig.from_newton_config(retry_config)
+    if record.get("source_newton_config") != dataclasses.asdict(retry_config):
+        failures.append("residual recovery source config does not match the zero-step Newton retry")
+    if record.get("polish_config") != expected_polish_config.deterministic_record():
+        failures.append("residual recovery polish config does not match the requested polish config")
+    if recovery.source_newton_config != retry_config:
+        failures.append("residual recovery object changed the zero-step Newton retry config")
+    if recovery.polish_config != expected_polish_config:
+        failures.append("residual recovery object changed the requested polish config")
+    if reference.newton_run is None or recovery.source_run is not reference.newton_run:
+        failures.append("residual recovery is not bound to the selected zero-step Newton run")
+    if recovery.displacement_scale != displacement_scale or record.get("displacement_scale") != displacement_scale:
+        failures.append("residual recovery changed the displacement normalization scale")
+    expected_gradient_limit = max(
+        retry_config.gradient_absolute_tolerance,
+        retry_config.gradient_relative_tolerance * problem.residual_scale,
+    )
+    for role in ("canonical", "verification", "alternate"):
+        result = getattr(recovery, role)
+        if result.residual_scale != problem.residual_scale:
+            failures.append(f"residual recovery {role} changed the problem residual scale")
+        if result.gradient_limit != expected_gradient_limit:
+            failures.append(f"residual recovery {role} changed the configured gradient limit")
+    recomputed_displacements = {
+        "verification_displacement_relative": float(
+            np.linalg.norm(recovery.verification.x.detach().numpy() - recovery.canonical.x.detach().numpy())
+        )
+        / displacement_scale,
+        "alternate_start_displacement_relative": float(
+            np.linalg.norm(recovery.alternate.x.detach().numpy() - recovery.canonical.x.detach().numpy())
+        )
+        / displacement_scale,
+    }
+    for name, recomputed in recomputed_displacements.items():
+        recorded = getattr(recovery, name)
+        roundoff = 8.0 * np.finfo(np.float64).eps * max(1.0, abs(recorded), abs(recomputed))
+        if abs(recorded - recomputed) > roundoff or record.get(name) != recorded:
+            failures.append(f"residual recovery {name} does not match its attempt positions")
+
+    for identity, expected in (
+        ("scene_sha256", scene_sha256),
+        ("objective_instance_sha256", objective_instance_sha256),
+    ):
+        if expected is None or recovery.deterministic_record().get(identity) != expected:
+            failures.append(f"residual recovery changed {identity}")
+        if reference.deterministic_record.get(identity) != expected:
+            failures.append(f"rejected Newton retry changed {identity}")
+
+    rejected_sha256 = _array_digest(reference.positions)
+    if recovery.rejected_state_sha256 != rejected_sha256 or record.get("rejected_state_sha256") != rejected_sha256:
+        failures.append("residual recovery rejected-state hash does not match the zero-step Newton retry")
+    if recovery.rejected_metrics.position_sha256 != rejected_sha256:
+        failures.append("residual recovery rejected metrics belong to different positions")
+    try:
+        expected_rejected_metrics = evaluate_common_state(problem, reference.positions)
+    except (RuntimeError, ValueError) as exc:
+        failures.append(f"residual recovery rejected-state evaluation raised {type(exc).__name__}: {exc}")
+    else:
+        if recovery.rejected_metrics.as_dict() != expected_rejected_metrics.as_dict():
+            failures.append("residual recovery rejected metrics do not match independent evaluation")
+    attempt_records = record.get("attempts", {})
+    for role in ("canonical", "verification", "alternate"):
+        result = getattr(recovery, role)
+        metrics = getattr(recovery, f"{role}_metrics")
+        position_sha256 = _array_digest(result.x.detach().numpy())
+        attempt_record = attempt_records.get(role, {})
+        if attempt_record.get("position_sha256") != position_sha256:
+            failures.append(f"residual recovery {role} position hash does not match its positions")
+        if metrics is not None and metrics.position_sha256 != position_sha256:
+            failures.append(f"residual recovery {role} metrics belong to different positions")
+        try:
+            expected_metrics = evaluate_common_state(problem, result.x)
+        except (RuntimeError, ValueError) as exc:
+            failures.append(f"residual recovery {role} evaluation raised {type(exc).__name__}: {exc}")
+        else:
+            if metrics is None or metrics.as_dict() != expected_metrics.as_dict():
+                failures.append(f"residual recovery {role} metrics do not match independent evaluation")
+            for name, recorded, expected in (
+                ("objective", result.final_objective, expected_metrics.objective),
+                ("gradient", result.final_gradient_norm, expected_metrics.gradient_norm),
+                ("relative residual", result.final_relative_residual, expected_metrics.relative_residual),
+            ):
+                roundoff = 8.0 * np.finfo(np.float64).eps * max(1.0, abs(recorded), abs(expected))
+                if not math.isfinite(recorded) or abs(recorded - expected) > roundoff:
+                    failures.append(f"residual recovery {role} final {name} does not match independent evaluation")
+
+    digest_payload = dict(record)
+    declared_digest = digest_payload.pop("recovery_sha256", None)
+    if declared_digest != recovery.recovery_sha256 or _canonical_digest(digest_payload) != recovery.recovery_sha256:
+        failures.append("residual recovery deterministic record hash is invalid")
+    if recovery.reference_accepted:
+        if record.get("reference_accepted") is not True or record.get("reference_failures") != []:
+            failures.append("accepted residual recovery record does not declare acceptance")
+        if any(
+            metrics is None
+            for metrics in (
+                recovery.canonical_metrics,
+                recovery.verification_metrics,
+                recovery.alternate_metrics,
+            )
+        ):
+            failures.append("accepted residual recovery omitted common-state metrics")
+    return tuple(failures)
+
+
+def _recovery_attempt_records(reference: _ReferenceStep, *, timing: bool) -> list[dict[str, object]]:
+    """Copy the authenticated primary/zero-step records for a third attempt."""
+    source = reference.timing_record if timing else reference.deterministic_record
+    record = _thaw_json(source)
+    attempts = record.get("attempts")
+    if isinstance(attempts, list):
+        return attempts
+    return [{"index": 0, "role": "primary", "record": record}]
+
+
+def _combine_reference_recovery(
+    reference: _ReferenceStep,
+    recovery: NewtonResidualReferenceRecovery,
+    retry_config: NewtonConfig,
+    provenance_failures: tuple[str, ...] = (),
+) -> _ReferenceStep:
+    """Bind ordinary and three-start-polish evidence into one selected record."""
+    selected_failures = provenance_failures or recovery.reference_failures
+    selected_accepted = recovery.reference_accepted and not provenance_failures
+    result_record = recovery.canonical.deterministic_record()
+    deterministic_record = {
+        "method": "dense-cpu-newton-float64-with-strict-residual-polish",
+        "config": dataclasses.asdict(retry_config),
+        "scene_sha256": recovery.scene_sha256,
+        "objective_instance_sha256": recovery.objective_instance_sha256,
+        "accepted": selected_accepted,
+        "failures": list(selected_failures),
+        "native_converged": recovery.canonical.converged,
+        "native_reason": recovery.canonical.reason,
+        "accepted_iterations": recovery.canonical.accepted_iterations,
+        "final_objective": recovery.canonical.final_objective,
+        "final_gradient_norm": recovery.canonical.final_gradient_norm,
+        "final_relative_residual": recovery.canonical.final_relative_residual,
+        "verification_displacement_relative": recovery.verification_displacement_relative,
+        "verification_converged": recovery.verification.converged,
+        "verification_reason": recovery.verification.reason,
+        "alternate_start_displacement_relative": recovery.alternate_start_displacement_relative,
+        "alternate_start_converged": recovery.alternate.converged,
+        "alternate_start_reason": recovery.alternate.reason,
+        "alternate_start_gradient_norm": (
+            None if recovery.alternate_metrics is None else recovery.alternate_metrics.gradient_norm
+        ),
+        "alternate_start_relative_residual": (
+            None if recovery.alternate_metrics is None else recovery.alternate_metrics.relative_residual
+        ),
+        "work": result_record["work"],
+        "trace": result_record["trace"],
+        "position_sha256": _array_digest(recovery.canonical.x.detach().numpy()),
+        "prerequisite_retry_policy": reference.deterministic_record.get("retry_policy"),
+        "residual_polish_policy": _RESIDUAL_POLISH_POLICY,
+        "selected_attempt": 2,
+        "attempts": [
+            *_recovery_attempt_records(reference, timing=False),
+            {
+                "index": 2,
+                "role": "strict-residual-polish",
+                "record": recovery.deterministic_record(),
+            },
+        ],
+    }
+    if provenance_failures:
+        deterministic_record["provenance_failures"] = list(provenance_failures)
+    timing_record = {
+        "prerequisite_retry_policy": reference.timing_record.get("retry_policy"),
+        "residual_polish_policy": _RESIDUAL_POLISH_POLICY,
+        "selected_attempt": 2,
+        "attempts": [
+            *_recovery_attempt_records(reference, timing=True),
+            {
+                "index": 2,
+                "role": "strict-residual-polish",
+                "record": recovery.timing_record(),
+            },
+        ],
+    }
+    return _ReferenceStep(
+        positions=recovery.canonical.x.detach().numpy(),
+        accepted=selected_accepted,
+        failures=selected_failures,
+        deterministic_record=deterministic_record,
+        timing_record=timing_record,
+    )
+
+
+def _combine_reference_recovery_exception(
+    reference: _ReferenceStep,
+    retry_config: NewtonConfig,
+    exc: Exception,
+) -> _ReferenceStep:
+    """Preserve both ordinary attempts when residual recovery raises."""
+    message = f"strict residual reference recovery raised {type(exc).__name__}: {exc}"
+    deterministic_record = dict(_thaw_json(reference.deterministic_record))
+    deterministic_record.update(
+        {
+            "accepted": False,
+            "failures": [message],
+            "prerequisite_retry_policy": reference.deterministic_record.get("retry_policy"),
+            "residual_polish_policy": _RESIDUAL_POLISH_POLICY,
+            "selected_attempt": 2,
+            "attempts": [
+                *_recovery_attempt_records(reference, timing=False),
+                {
+                    "index": 2,
+                    "role": "strict-residual-polish",
+                    "record": {
+                        "method": _RESIDUAL_POLISH_POLICY,
+                        "source_newton_config": dataclasses.asdict(retry_config),
+                        "polish_config": NewtonResidualPolishConfig.from_newton_config(
+                            retry_config
+                        ).deterministic_record(),
+                        "reference_accepted": False,
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                    },
+                },
+            ],
+        }
+    )
+    timing_record = {
+        "prerequisite_retry_policy": reference.timing_record.get("retry_policy"),
+        "residual_polish_policy": _RESIDUAL_POLISH_POLICY,
+        "selected_attempt": 2,
+        "attempts": [
+            *_recovery_attempt_records(reference, timing=True),
+            {
+                "index": 2,
+                "role": "strict-residual-polish",
+                "record": {"unavailable_due_to_exception": True},
+            },
+        ],
+    }
+    return _ReferenceStep(
+        positions=reference.positions,
+        accepted=False,
+        failures=(message,),
+        deterministic_record=deterministic_record,
+        timing_record=timing_record,
+    )
+
+
+def _alternate_verification_provenance_failures(
+    reference: _ReferenceStep,
+    verification: NewtonAlternateResidualVerification,
+    retry_config: NewtonConfig,
+    problem,
+    scene_sha256: str,
+    objective_instance_sha256: str,
+    displacement_scale: float,
+) -> tuple[str, ...]:
+    """Independently authenticate alternate-only residual evidence."""
+    failures = []
+    record = verification.deterministic_record()
+    expected_polish_config = NewtonResidualPolishConfig.from_newton_config(retry_config)
+    if record.get("source_newton_config") != dataclasses.asdict(retry_config):
+        failures.append("alternate residual verification source config does not match the zero-step retry")
+    if record.get("polish_config") != expected_polish_config.deterministic_record():
+        failures.append("alternate residual verification polish config does not match the requested config")
+    if verification.source_run is not reference.newton_run:
+        failures.append("alternate residual verification is not bound to the selected zero-step Newton run")
+    for identity, expected in (
+        ("scene_sha256", scene_sha256),
+        ("objective_instance_sha256", objective_instance_sha256),
+    ):
+        if record.get(identity) != expected or reference.deterministic_record.get(identity) != expected:
+            failures.append(f"alternate residual verification changed {identity}")
+
+    representative_sha256 = _array_digest(reference.positions)
+    if (
+        verification.representative_state_sha256 != representative_sha256
+        or record.get("representative_state_sha256") != representative_sha256
+    ):
+        failures.append("alternate residual verification changed the representative state hash")
+    if verification.displacement_scale != displacement_scale or record.get("displacement_scale") != displacement_scale:
+        failures.append("alternate residual verification changed the displacement normalization scale")
+    source_alternate_record = record.get("ordinary_alternate", {})
+    recomputed_source_alternate_displacement = (
+        float(np.linalg.norm(verification.source_alternate.x.detach().numpy() - reference.positions))
+        / displacement_scale
+    )
+    source_alternate_roundoff = (
+        8.0
+        * np.finfo(np.float64).eps
+        * max(
+            1.0,
+            abs(verification.source_alternate_displacement_relative),
+            abs(recomputed_source_alternate_displacement),
+        )
+    )
+    if (
+        abs(verification.source_alternate_displacement_relative - recomputed_source_alternate_displacement)
+        > source_alternate_roundoff
+        or source_alternate_record.get("displacement_relative") != verification.source_alternate_displacement_relative
+    ):
+        failures.append("ordinary alternate displacement does not match its positions")
+    recomputed_displacements = {
+        "alternate_displacement_relative": float(
+            np.linalg.norm(verification.alternate.x.detach().numpy() - reference.positions)
+        )
+        / displacement_scale,
+        "repeat_displacement_relative": float(
+            np.linalg.norm(verification.repeat.x.detach().numpy() - verification.alternate.x.detach().numpy())
+        )
+        / displacement_scale,
+    }
+    for name, recomputed in recomputed_displacements.items():
+        recorded = getattr(verification, name)
+        roundoff = 8.0 * np.finfo(np.float64).eps * max(1.0, abs(recorded), abs(recomputed))
+        if abs(recorded - recomputed) > roundoff or record.get(name) != recorded:
+            failures.append(f"alternate residual verification {name} does not match its positions")
+
+    expected_gradient_limit = max(
+        retry_config.gradient_absolute_tolerance,
+        retry_config.gradient_relative_tolerance * problem.residual_scale,
+    )
+    for role in ("alternate", "repeat"):
+        result = getattr(verification, role)
+        if result.residual_scale != problem.residual_scale:
+            failures.append(f"alternate residual verification {role} changed the problem residual scale")
+        if result.gradient_limit != expected_gradient_limit:
+            failures.append(f"alternate residual verification {role} changed the configured gradient limit")
+
+    expected_states = {
+        "representative": reference.positions,
+        "source_alternate": verification.source_alternate.x,
+    }
+    expected_states.update(
+        {
+            "alternate": verification.alternate.x,
+            "repeat": verification.repeat.x,
+        }
+    )
+    stored_metrics = {
+        "representative": verification.representative_metrics,
+        "source_alternate": verification.source_alternate_metrics,
+    }
+    stored_metrics.update(
+        {
+            "alternate": verification.alternate_metrics,
+            "repeat": verification.repeat_metrics,
+        }
+    )
+    for role, positions in expected_states.items():
+        try:
+            expected_metrics = evaluate_common_state(problem, positions)
+        except (RuntimeError, ValueError) as exc:
+            failures.append(f"alternate residual verification {role} evaluation raised {type(exc).__name__}: {exc}")
+            continue
+        metrics = stored_metrics[role]
+        if metrics is None or metrics.as_dict() != expected_metrics.as_dict():
+            failures.append(f"alternate residual verification {role} metrics do not match independent evaluation")
+        if role in ("alternate", "repeat"):
+            result = getattr(verification, role)
+            for name, recorded, expected in (
+                ("objective", result.final_objective, expected_metrics.objective),
+                ("gradient", result.final_gradient_norm, expected_metrics.gradient_norm),
+                ("relative residual", result.final_relative_residual, expected_metrics.relative_residual),
+            ):
+                roundoff = 8.0 * np.finfo(np.float64).eps * max(1.0, abs(recorded), abs(expected))
+                if not math.isfinite(recorded) or abs(recorded - expected) > roundoff:
+                    failures.append(
+                        f"alternate residual verification {role} final {name} does not match independent evaluation"
+                    )
+
+    attempt_records = record.get("attempts", {})
+    for role in ("alternate", "repeat"):
+        result = getattr(verification, role)
+        position_sha256 = _array_digest(result.x.detach().numpy())
+        attempt_record = attempt_records.get(role, {})
+        if attempt_record.get("position_sha256") != position_sha256:
+            failures.append(f"alternate residual verification {role} position hash is invalid")
+    source_alternate_sha256 = _array_digest(verification.source_alternate.x.detach().numpy())
+    if source_alternate_record.get("position_sha256") != source_alternate_sha256:
+        failures.append("ordinary alternate position hash is invalid")
+    if source_alternate_record.get("result") != _newton_result_deterministic_record(verification.source_alternate):
+        failures.append("ordinary alternate deterministic result record is invalid")
+    if source_alternate_record.get("metrics") != verification.source_alternate_metrics.as_dict():
+        failures.append("ordinary alternate metrics record is invalid")
+    if source_alternate_record.get("displacement_relative") != verification.source_alternate_displacement_relative:
+        failures.append("ordinary alternate displacement record is invalid")
+    source_run = verification.source_run
+    if (
+        verification.source_alternate.converged != source_run.alternate_start_converged
+        or verification.source_alternate.reason != source_run.alternate_start_reason
+        or verification.source_alternate_metrics.gradient_norm != source_run.alternate_start_gradient_norm
+        or verification.source_alternate_metrics.relative_residual != source_run.alternate_start_relative_residual
+    ):
+        failures.append("ordinary alternate result does not reproduce the source Newton run summary")
+    digest_payload = dict(record)
+    declared_digest = digest_payload.pop("verification_sha256", None)
+    if (
+        declared_digest != verification.verification_sha256
+        or _canonical_digest(digest_payload) != verification.verification_sha256
+    ):
+        failures.append("alternate residual verification deterministic record hash is invalid")
+    if verification.reference_accepted:
+        if record.get("reference_accepted") is not True or record.get("reference_failures") != []:
+            failures.append("accepted alternate residual verification record does not declare acceptance")
+        if verification.alternate_metrics is None or verification.repeat_metrics is None:
+            failures.append("accepted alternate residual verification omitted common-state metrics")
+    return tuple(failures)
+
+
+def _combine_alternate_residual_verification(
+    reference: _ReferenceStep,
+    verification: NewtonAlternateResidualVerification,
+    provenance_failures: tuple[str, ...] = (),
+) -> _ReferenceStep:
+    """Select the unchanged representative after alternate residual verification."""
+    selected_failures = provenance_failures or verification.reference_failures
+    selected_accepted = verification.reference_accepted and not provenance_failures
+    deterministic_record = dict(_thaw_json(reference.deterministic_record))
+    deterministic_record.update(
+        {
+            "method": "dense-cpu-newton-float64-with-alternate-residual-verification",
+            "accepted": selected_accepted,
+            "failures": list(selected_failures),
+            "position_sha256": _array_digest(reference.positions),
+            "prerequisite_retry_policy": reference.deterministic_record.get("retry_policy"),
+            "alternate_residual_policy": _ALTERNATE_RESIDUAL_POLICY,
+            "selected_attempt": 2,
+            "selected_state": "zero-step-newton-representative",
+            "attempts": [
+                *_recovery_attempt_records(reference, timing=False),
+                {
+                    "index": 2,
+                    "role": "alternate-start-residual-verification",
+                    "record": verification.deterministic_record(),
+                },
+            ],
+        }
+    )
+    if provenance_failures:
+        deterministic_record["provenance_failures"] = list(provenance_failures)
+    timing_record = {
+        "prerequisite_retry_policy": reference.timing_record.get("retry_policy"),
+        "alternate_residual_policy": _ALTERNATE_RESIDUAL_POLICY,
+        "selected_attempt": 2,
+        "attempts": [
+            *_recovery_attempt_records(reference, timing=True),
+            {
+                "index": 2,
+                "role": "alternate-start-residual-verification",
+                "record": verification.timing_record(),
+            },
+        ],
+    }
+    return _ReferenceStep(
+        positions=reference.positions,
+        accepted=selected_accepted,
+        failures=selected_failures,
+        deterministic_record=deterministic_record,
+        timing_record=timing_record,
+    )
+
+
+def _combine_alternate_residual_verification_exception(
+    reference: _ReferenceStep,
+    retry_config: NewtonConfig,
+    exc: Exception,
+) -> _ReferenceStep:
+    """Preserve both ordinary attempts when alternate verification raises."""
+    message = f"alternate residual verification raised {type(exc).__name__}: {exc}"
+    deterministic_record = dict(_thaw_json(reference.deterministic_record))
+    deterministic_record.update(
+        {
+            "accepted": False,
+            "failures": [message],
+            "prerequisite_retry_policy": reference.deterministic_record.get("retry_policy"),
+            "alternate_residual_policy": _ALTERNATE_RESIDUAL_POLICY,
+            "selected_attempt": 2,
+            "attempts": [
+                *_recovery_attempt_records(reference, timing=False),
+                {
+                    "index": 2,
+                    "role": "alternate-start-residual-verification",
+                    "record": {
+                        "method": _ALTERNATE_RESIDUAL_POLICY,
+                        "source_newton_config": dataclasses.asdict(retry_config),
+                        "polish_config": NewtonResidualPolishConfig.from_newton_config(
+                            retry_config
+                        ).deterministic_record(),
+                        "reference_accepted": False,
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                    },
+                },
+            ],
+        }
+    )
+    timing_record = {
+        "prerequisite_retry_policy": reference.timing_record.get("retry_policy"),
+        "alternate_residual_policy": _ALTERNATE_RESIDUAL_POLICY,
+        "selected_attempt": 2,
+        "attempts": [
+            *_recovery_attempt_records(reference, timing=True),
+            {
+                "index": 2,
+                "role": "alternate-start-residual-verification",
+                "record": {"unavailable_due_to_exception": True},
+            },
+        ],
+    }
+    return _ReferenceStep(
+        positions=reference.positions,
+        accepted=False,
+        failures=(message,),
+        deterministic_record=deterministic_record,
+        timing_record=timing_record,
+    )
+
+
+def _solve_dense_reference_with_recovery(
+    scene: TetBenchmarkScene,
+    problem,
+    config: NewtonConfig,
+) -> _ReferenceStep:
+    """Run ordinary attempts first, then conditionally try strict residual polish."""
+    reference = _solve_dense_reference_with_retry(scene, config)
+    if reference.accepted:
+        return reference
+    reference = _run_residual_recovery_zero_step_prerequisite(scene, reference, config)
+    if reference.accepted:
+        return reference
+    scene_sha256 = str(scene.manifest()["scene_sha256"])
+    objective_instance_sha256 = str(common_objective_manifest(scene, problem)["objective_instance_sha256"])
+    free_count = int(problem.free.numel())
+    bbox_diagonal = float(np.linalg.norm(scene.rest_q.max(axis=0) - scene.rest_q.min(axis=0)))
+    displacement_scale = max(math.sqrt(free_count) * bbox_diagonal, 1.0e-30)
+    retry_config = _residual_polish_retry_config(
+        reference,
+        config,
+        scene_sha256,
+        objective_instance_sha256,
+    )
+    if retry_config is not None and reference.newton_run is not None:
+        try:
+            recovery = recover_newton_reference_with_residual_polish(
+                scene,
+                problem,
+                reference.newton_run,
+            )
+            provenance_failures = _recovery_provenance_failures(
+                reference,
+                recovery,
+                retry_config,
+                problem,
+                scene_sha256,
+                objective_instance_sha256,
+                displacement_scale,
+            )
+            return _combine_reference_recovery(reference, recovery, retry_config, provenance_failures)
+        except Exception as exc:
+            return _combine_reference_recovery_exception(reference, retry_config, exc)
+
+    reference = _run_alternate_verification_zero_step_prerequisite(scene, problem, reference, config)
+    if reference.accepted:
+        return reference
+    alternate_retry_config = _alternate_verification_retry_config(
+        reference,
+        config,
+        problem,
+        scene_sha256,
+        objective_instance_sha256,
+    )
+    if alternate_retry_config is None or reference.newton_run is None:
+        return reference
+    try:
+        verification = verify_newton_alternate_start_with_residual_polish(
+            scene,
+            problem,
+            reference.newton_run,
+        )
+        provenance_failures = _alternate_verification_provenance_failures(
+            reference,
+            verification,
+            alternate_retry_config,
+            problem,
+            scene_sha256,
+            objective_instance_sha256,
+            displacement_scale,
+        )
+        return _combine_alternate_residual_verification(reference, verification, provenance_failures)
+    except Exception as exc:
+        return _combine_alternate_residual_verification_exception(reference, alternate_retry_config, exc)
 
 
 class PRSceneHistory:
@@ -1490,7 +2494,7 @@ class PRSceneHistory:
             problem = build_common_problem(scene)
             objective = common_objective_manifest(scene, problem)
             try:
-                reference = _solve_dense_reference_with_retry(scene, config)
+                reference = _solve_dense_reference_with_recovery(scene, problem, config)
             except Exception as exc:
                 message = f"dense reference raised {type(exc).__name__}: {exc}"
                 reference = _ReferenceStep(

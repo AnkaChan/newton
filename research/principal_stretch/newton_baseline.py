@@ -447,6 +447,372 @@ class NewtonResult:
         return self.trace[-1].relative_residual if self.trace else math.nan
 
 
+_RESIDUAL_POLISH_REASONS = (
+    "gradient",
+    "max_iterations",
+    "nonfinite",
+    "nonfinite_hessian",
+    "non_spd_hessian",
+    "factorization",
+    "non_descent",
+    "residual_line_search",
+)
+_RESIDUAL_POLISH_OBJECTIVE_ROUNDOFF_FACTOR = 8.0
+
+
+@dataclasses.dataclass(frozen=True)
+class NewtonResidualPolishConfig:
+    """Bounded strict-reference root-polish configuration."""
+
+    max_iterations: int
+    gradient_absolute_tolerance: float
+    gradient_relative_tolerance: float
+    armijo: float
+    backtrack: float
+    max_line_search_steps: int
+
+    @classmethod
+    def from_newton_config(cls, config: NewtonConfig) -> NewtonResidualPolishConfig:
+        """Copy only the primary settings used by residual polish."""
+        config.validate()
+        return cls(
+            max_iterations=config.max_iterations,
+            gradient_absolute_tolerance=config.gradient_absolute_tolerance,
+            gradient_relative_tolerance=config.gradient_relative_tolerance,
+            armijo=config.armijo,
+            backtrack=config.backtrack,
+            max_line_search_steps=config.max_line_search_steps,
+        )
+
+    def validate(self) -> None:
+        """Validate bounded work and convergence settings."""
+        for name in ("max_iterations", "max_line_search_steps"):
+            value = getattr(self, name)
+            if not isinstance(value, numbers.Integral) or isinstance(value, bool):
+                raise ValueError(f"{name} must be an integer")
+        for name in (
+            "gradient_absolute_tolerance",
+            "gradient_relative_tolerance",
+            "armijo",
+            "backtrack",
+        ):
+            if not math.isfinite(getattr(self, name)):
+                raise ValueError(f"{name} must be finite")
+        if self.max_iterations < 0:
+            raise ValueError("max_iterations must be non-negative")
+        if self.max_line_search_steps < 1:
+            raise ValueError("max_line_search_steps must be positive")
+        if self.gradient_absolute_tolerance < 0.0 or self.gradient_relative_tolerance < 0.0:
+            raise ValueError("gradient tolerances must be non-negative")
+        if not 0.0 < self.armijo < 1.0:
+            raise ValueError("armijo must lie in (0, 1)")
+        if not 0.0 < self.backtrack < 1.0:
+            raise ValueError("backtrack must lie in (0, 1)")
+
+    def deterministic_record(self) -> dict[str, object]:
+        """Return the fixed numerical contract without timings."""
+        return {
+            **dataclasses.asdict(self),
+            "contract": "strict-reference-residual-newton-v1",
+            "merit": "half-squared-gradient-norm",
+            "hessian_policy": "finite-symmetric-unregularized-spd",
+            "line_search_policy": "armijo-and-strict-residual-decrease",
+            "constraint_policy": "free-dof-elimination-exact-pins",
+            "objective_roundoff_guard": "E1 <= E0 + 8*eps*max(1,abs(E0),abs(E1))",
+            "objective_roundoff_factor": _RESIDUAL_POLISH_OBJECTIVE_ROUNDOFF_FACTOR,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class NewtonResidualPolishIteration:
+    """One deterministic residual-polish iterate and its outgoing step."""
+
+    iteration: int
+    objective: float
+    gradient_norm: float
+    relative_residual: float
+    residual_merit: float
+    accepted_step_norm: float
+    accepted_step_size: float
+    merit_directional_derivative: float | None
+    hessian_minimum_eigenvalue: float | None
+    hessian_maximum_eigenvalue: float | None
+
+
+@dataclasses.dataclass(frozen=True)
+class NewtonResidualPolishTiming:
+    """Timing-only residual-polish measurements."""
+
+    total_seconds: float
+    objective_gradient_seconds: float
+    hessian_seconds: float
+    linear_solve_seconds: float
+    line_search_seconds: float
+    trace_elapsed_seconds: tuple[float, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class NewtonResidualPolishResult:
+    """Fail-closed stationary-root polish result with explicit work."""
+
+    x: torch.Tensor
+    converged: bool
+    reason: str
+    accepted_iterations: int
+    residual_scale: float
+    gradient_limit: float
+    trace: tuple[NewtonResidualPolishIteration, ...]
+    objective_evaluations: int
+    gradient_evaluations: int
+    hessian_evaluations: int
+    eigenvalue_evaluations: int
+    factorization_attempts: int
+    line_search_trials: int
+    timing: NewtonResidualPolishTiming
+
+    def __post_init__(self) -> None:
+        if self.reason not in _RESIDUAL_POLISH_REASONS:
+            raise ValueError(f"unknown residual-polish reason: {self.reason}")
+        if self.converged != (self.reason == "gradient"):
+            raise ValueError("residual-polish convergence must agree with the gradient reason")
+        for name in (
+            "accepted_iterations",
+            "objective_evaluations",
+            "gradient_evaluations",
+            "hessian_evaluations",
+            "eigenvalue_evaluations",
+            "factorization_attempts",
+            "line_search_trials",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, numbers.Integral) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if not math.isfinite(self.residual_scale) or self.residual_scale <= 0.0:
+            raise ValueError("residual_scale must be finite and positive")
+        if not math.isfinite(self.gradient_limit) or self.gradient_limit < 0.0:
+            raise ValueError("gradient_limit must be finite and non-negative")
+        object.__setattr__(self, "x", self.x.detach().clone())
+        object.__setattr__(self, "trace", tuple(self.trace))
+        if len(self.timing.trace_elapsed_seconds) != len(self.trace):
+            raise ValueError("trace timings do not match residual-polish iterations")
+        if not self.trace:
+            if self.reason != "nonfinite" or self.accepted_iterations != 0:
+                raise ValueError("only an initially nonfinite solve may have an empty residual-polish trace")
+        elif len(self.trace) != self.accepted_iterations + 1:
+            raise ValueError("residual-polish trace length does not match its accepted-update count")
+        if tuple(item.iteration for item in self.trace) != tuple(range(len(self.trace))):
+            raise ValueError("residual-polish trace iteration indices must be contiguous")
+        accepted_outgoing_items = 0
+        roundoff_factor = 8.0 * torch.finfo(torch.float64).eps
+        for index, item in enumerate(self.trace):
+            if math.isfinite(item.gradient_norm):
+                expected_merit = 0.5 * item.gradient_norm * item.gradient_norm
+                expected_relative = item.gradient_norm / self.residual_scale
+                merit_roundoff = roundoff_factor * max(1.0, abs(item.residual_merit), abs(expected_merit))
+                relative_roundoff = roundoff_factor * max(
+                    1.0,
+                    abs(item.relative_residual),
+                    abs(expected_relative),
+                )
+                if not math.isfinite(item.residual_merit) or abs(item.residual_merit - expected_merit) > merit_roundoff:
+                    raise ValueError("residual-polish trace merit does not match its gradient")
+                if (
+                    not math.isfinite(item.relative_residual)
+                    or abs(item.relative_residual - expected_relative) > relative_roundoff
+                ):
+                    raise ValueError("residual-polish trace relative residual does not match its gradient")
+
+            has_step_size = item.accepted_step_size != 0.0
+            has_step_norm = item.accepted_step_norm != 0.0
+            if has_step_size != has_step_norm:
+                raise ValueError("residual-polish outgoing step size and norm are inconsistent")
+            if not has_step_size:
+                continue
+            accepted_outgoing_items += 1
+            if index + 1 >= len(self.trace):
+                raise ValueError("residual-polish final trace item cannot contain an accepted outgoing step")
+            if (
+                not math.isfinite(item.accepted_step_size)
+                or not 0.0 < item.accepted_step_size <= 1.0
+                or not math.isfinite(item.accepted_step_norm)
+                or item.accepted_step_norm <= 0.0
+            ):
+                raise ValueError("residual-polish accepted outgoing step is invalid")
+            if item.merit_directional_derivative is None or not math.isfinite(item.merit_directional_derivative):
+                raise ValueError("residual-polish accepted outgoing direction must be finite")
+            if item.merit_directional_derivative >= 0.0:
+                raise ValueError("residual-polish accepted outgoing direction must be descending")
+            minimum_eigenvalue = item.hessian_minimum_eigenvalue
+            maximum_eigenvalue = item.hessian_maximum_eigenvalue
+            if (
+                minimum_eigenvalue is None
+                or maximum_eigenvalue is None
+                or not math.isfinite(minimum_eigenvalue)
+                or not math.isfinite(maximum_eigenvalue)
+                or minimum_eigenvalue <= 0.0
+                or maximum_eigenvalue < minimum_eigenvalue
+            ):
+                raise ValueError("residual-polish accepted outgoing Hessian must be finite SPD")
+            next_gradient_norm = self.trace[index + 1].gradient_norm
+            if not math.isfinite(next_gradient_norm) or next_gradient_norm >= item.gradient_norm:
+                raise ValueError("residual-polish accepted outgoing step must strictly lower the gradient norm")
+            next_objective = self.trace[index + 1].objective
+            objective_roundoff_guard = (
+                _RESIDUAL_POLISH_OBJECTIVE_ROUNDOFF_FACTOR
+                * torch.finfo(torch.float64).eps
+                * max(1.0, abs(item.objective), abs(next_objective))
+            )
+            if (
+                not math.isfinite(item.objective)
+                or not math.isfinite(next_objective)
+                or next_objective > item.objective + objective_roundoff_guard
+            ):
+                raise ValueError("residual-polish accepted outgoing step violates the objective roundoff guard")
+        if accepted_outgoing_items != self.accepted_iterations:
+            raise ValueError("residual-polish accepted outgoing trace count is invalid")
+        if (
+            self.objective_evaluations != self.gradient_evaluations
+            or self.objective_evaluations != len(self.trace) + self.line_search_trials
+        ):
+            raise ValueError("residual-polish objective/gradient work accounting is invalid")
+        if not (self.accepted_iterations <= self.hessian_evaluations <= self.accepted_iterations + 1):
+            raise ValueError("residual-polish Hessian work accounting is invalid")
+        if not (self.eigenvalue_evaluations <= self.hessian_evaluations <= self.eigenvalue_evaluations + 1):
+            raise ValueError("residual-polish eigenvalue work accounting is invalid")
+        if not (self.accepted_iterations <= self.factorization_attempts <= self.eigenvalue_evaluations):
+            raise ValueError("residual-polish factorization work accounting is invalid")
+        if self.line_search_trials < self.accepted_iterations:
+            raise ValueError("residual-polish line-search work accounting is invalid")
+
+        timing_values = (
+            self.timing.total_seconds,
+            self.timing.objective_gradient_seconds,
+            self.timing.hessian_seconds,
+            self.timing.linear_solve_seconds,
+            self.timing.line_search_seconds,
+            *self.timing.trace_elapsed_seconds,
+        )
+        if any(not math.isfinite(value) or value < 0.0 for value in timing_values):
+            raise ValueError("residual-polish timings must be finite and non-negative")
+        if any(
+            after < before
+            for before, after in zip(
+                self.timing.trace_elapsed_seconds,
+                self.timing.trace_elapsed_seconds[1:],
+                strict=False,
+            )
+        ):
+            raise ValueError("residual-polish trace timings must be monotone")
+
+        if self.converged:
+            if not torch.isfinite(self.x).all():
+                raise ValueError("converged residual-polish positions must be finite")
+            for item in self.trace:
+                required_scalars = (
+                    item.objective,
+                    item.gradient_norm,
+                    item.relative_residual,
+                    item.residual_merit,
+                    item.accepted_step_norm,
+                    item.accepted_step_size,
+                )
+                optional_scalars = (
+                    item.merit_directional_derivative,
+                    item.hessian_minimum_eigenvalue,
+                    item.hessian_maximum_eigenvalue,
+                )
+                if any(not math.isfinite(value) for value in required_scalars) or any(
+                    value is not None and not math.isfinite(value) for value in optional_scalars
+                ):
+                    raise ValueError("converged residual-polish trace scalars must be finite")
+            if self.final_gradient_norm > self.gradient_limit:
+                raise ValueError("converged residual-polish gradient exceeds its configured limit")
+            final = self.trace[-1]
+            if (
+                final.accepted_step_size != 0.0
+                or final.accepted_step_norm != 0.0
+                or final.merit_directional_derivative is not None
+                or final.hessian_minimum_eigenvalue is not None
+                or final.hessian_maximum_eigenvalue is not None
+            ):
+                raise ValueError("converged residual-polish final trace item must have no outgoing step")
+            if not (
+                self.hessian_evaluations
+                == self.eigenvalue_evaluations
+                == self.factorization_attempts
+                == self.accepted_iterations
+            ):
+                raise ValueError("converged residual-polish derivative work must equal accepted updates")
+
+    @property
+    def final_objective(self) -> float:
+        """Final common objective, or NaN when no iterate was evaluated."""
+        return self.trace[-1].objective if self.trace else math.nan
+
+    @property
+    def final_gradient_norm(self) -> float:
+        """Final free-gradient norm, or NaN when no iterate was evaluated."""
+        return self.trace[-1].gradient_norm if self.trace else math.nan
+
+    @property
+    def final_relative_residual(self) -> float:
+        """Final relative residual, or NaN when no iterate was evaluated."""
+        return self.trace[-1].relative_residual if self.trace else math.nan
+
+    def deterministic_record(self) -> dict[str, object]:
+        """Return deterministic status, trace, and work counters."""
+
+        def finite_or_none(value: float | None) -> float | None:
+            if value is None or not math.isfinite(value):
+                return None
+            return value
+
+        return {
+            "converged": self.converged,
+            "reason": self.reason,
+            "accepted_iterations": self.accepted_iterations,
+            "residual_scale": self.residual_scale,
+            "gradient_limit": self.gradient_limit,
+            "final_objective": finite_or_none(self.final_objective),
+            "final_gradient_norm": finite_or_none(self.final_gradient_norm),
+            "final_relative_residual": finite_or_none(self.final_relative_residual),
+            "work": {
+                "objective_evaluations": self.objective_evaluations,
+                "gradient_evaluations": self.gradient_evaluations,
+                "hessian_evaluations": self.hessian_evaluations,
+                "eigenvalue_evaluations": self.eigenvalue_evaluations,
+                "factorization_attempts": self.factorization_attempts,
+                "line_search_trials": self.line_search_trials,
+            },
+            "trace": [
+                {
+                    "iteration": item.iteration,
+                    "objective": finite_or_none(item.objective),
+                    "gradient_norm": finite_or_none(item.gradient_norm),
+                    "relative_residual": finite_or_none(item.relative_residual),
+                    "residual_merit": finite_or_none(item.residual_merit),
+                    "accepted_step_norm": finite_or_none(item.accepted_step_norm),
+                    "accepted_step_size": finite_or_none(item.accepted_step_size),
+                    "merit_directional_derivative": finite_or_none(item.merit_directional_derivative),
+                    "hessian_minimum_eigenvalue": finite_or_none(item.hessian_minimum_eigenvalue),
+                    "hessian_maximum_eigenvalue": finite_or_none(item.hessian_maximum_eigenvalue),
+                }
+                for item in self.trace
+            ],
+        }
+
+    def timing_record(self) -> dict[str, object]:
+        """Return timing fields kept outside deterministic content hashes."""
+        return {
+            "total_seconds": self.timing.total_seconds,
+            "objective_gradient_seconds": self.timing.objective_gradient_seconds,
+            "hessian_seconds": self.timing.hessian_seconds,
+            "linear_solve_seconds": self.timing.linear_solve_seconds,
+            "line_search_seconds": self.timing.line_search_seconds,
+            "trace_elapsed_seconds": list(self.timing.trace_elapsed_seconds),
+        }
+
+
 @dataclasses.dataclass
 class _NewtonWork:
     objective_gradient_seconds: float = 0.0
@@ -677,3 +1043,256 @@ def solve_newton(
                 gradient_converged,
                 "gradient" if gradient_converged else "stalled",
             )
+
+
+@dataclasses.dataclass
+class _ResidualPolishWork:
+    objective_gradient_seconds: float = 0.0
+    hessian_seconds: float = 0.0
+    linear_solve_seconds: float = 0.0
+    line_search_seconds: float = 0.0
+    objective_evaluations: int = 0
+    gradient_evaluations: int = 0
+    hessian_evaluations: int = 0
+    eigenvalue_evaluations: int = 0
+    factorization_attempts: int = 0
+    line_search_trials: int = 0
+
+
+def solve_newton_residual_polish(
+    problem: NewtonProblem,
+    x_initial: np.ndarray | torch.Tensor,
+    config: NewtonResidualPolishConfig,
+) -> NewtonResidualPolishResult:
+    """Polish a strict reference by globalizing Newton on residual norm.
+
+    This is a separate stationary-root solver. It never changes the behavior,
+    counters, or result of :func:`solve_newton`. Every accepted update must
+    satisfy Armijo and strict decrease for ``0.5 * ||gradient||^2``. The
+    common objective may increase only within a fixed ``8 * eps`` relative
+    roundoff guard. Hessians must be finite and positive definite without
+    regularization.
+    """
+    config.validate()
+    start = time.perf_counter()
+    work = _ResidualPolishWork()
+    trace: list[NewtonResidualPolishIteration] = []
+    trace_elapsed_seconds: list[float] = []
+    accepted_iterations = 0
+    gradient_limit = max(
+        config.gradient_absolute_tolerance,
+        config.gradient_relative_tolerance * problem.residual_scale,
+    )
+
+    if isinstance(x_initial, np.ndarray):
+        x0 = torch.from_numpy(np.array(x_initial, dtype=np.float64, copy=True))
+    else:
+        x0 = torch.as_tensor(x_initial, dtype=torch.float64, device="cpu").detach().clone()
+    if x0.shape != problem.rest_q.shape:
+        raise ValueError(f"x_initial must have shape {tuple(problem.rest_q.shape)}")
+
+    def finish(x: torch.Tensor, converged: bool, reason: str) -> NewtonResidualPolishResult:
+        timing = NewtonResidualPolishTiming(
+            total_seconds=time.perf_counter() - start,
+            objective_gradient_seconds=work.objective_gradient_seconds,
+            hessian_seconds=work.hessian_seconds,
+            linear_solve_seconds=work.linear_solve_seconds,
+            line_search_seconds=work.line_search_seconds,
+            trace_elapsed_seconds=tuple(trace_elapsed_seconds),
+        )
+        return NewtonResidualPolishResult(
+            x=x,
+            converged=converged,
+            reason=reason,
+            accepted_iterations=accepted_iterations,
+            residual_scale=problem.residual_scale,
+            gradient_limit=gradient_limit,
+            trace=tuple(trace),
+            objective_evaluations=work.objective_evaluations,
+            gradient_evaluations=work.gradient_evaluations,
+            hessian_evaluations=work.hessian_evaluations,
+            eigenvalue_evaluations=work.eigenvalue_evaluations,
+            factorization_attempts=work.factorization_attempts,
+            line_search_trials=work.line_search_trials,
+            timing=timing,
+        )
+
+    if not torch.isfinite(x0).all():
+        x0 = x0.index_copy(0, problem.pinned, problem.pin_targets)
+        return finish(x0, False, "nonfinite")
+    z = problem.free_from_positions(x0)
+
+    def value_and_gradient(variable: torch.Tensor, *, line_search: bool) -> tuple[torch.Tensor, torch.Tensor]:
+        evaluation_start = time.perf_counter()
+        differentiable = variable.detach().requires_grad_(True)
+        value = problem.objective_free(differentiable)
+        (gradient,) = torch.autograd.grad(value, differentiable)
+        elapsed = time.perf_counter() - evaluation_start
+        if not line_search:
+            work.objective_gradient_seconds += elapsed
+        work.objective_evaluations += 1
+        work.gradient_evaluations += 1
+        return value.detach(), gradient.detach()
+
+    def append_trace(
+        iteration: int,
+        objective: float,
+        current_gradient_norm: float,
+        current_relative_residual: float,
+        current_residual_merit: float,
+        *,
+        accepted_step_norm: float = 0.0,
+        accepted_step_size: float = 0.0,
+        merit_directional_derivative: float | None = None,
+        hessian_minimum_eigenvalue: float | None = None,
+        hessian_maximum_eigenvalue: float | None = None,
+    ) -> None:
+        trace.append(
+            NewtonResidualPolishIteration(
+                iteration=iteration,
+                objective=objective,
+                gradient_norm=current_gradient_norm,
+                relative_residual=current_relative_residual,
+                residual_merit=current_residual_merit,
+                accepted_step_norm=accepted_step_norm,
+                accepted_step_size=accepted_step_size,
+                merit_directional_derivative=merit_directional_derivative,
+                hessian_minimum_eigenvalue=hessian_minimum_eigenvalue,
+                hessian_maximum_eigenvalue=hessian_maximum_eigenvalue,
+            )
+        )
+        trace_elapsed_seconds.append(time.perf_counter() - start)
+
+    while True:
+        value, gradient = value_and_gradient(z, line_search=False)
+        gradient_norm = float(torch.linalg.vector_norm(gradient))
+        relative_residual = gradient_norm / max(problem.residual_scale, 1.0e-30)
+        residual_merit = 0.5 * gradient_norm * gradient_norm
+        current_trace = (
+            accepted_iterations,
+            float(value),
+            gradient_norm,
+            relative_residual,
+            residual_merit,
+        )
+
+        if not torch.isfinite(value) or not torch.isfinite(gradient).all():
+            append_trace(*current_trace)
+            return finish(problem.positions_from_free(z).detach(), False, "nonfinite")
+        if gradient_norm <= gradient_limit:
+            append_trace(*current_trace)
+            return finish(problem.positions_from_free(z).detach(), True, "gradient")
+        if accepted_iterations >= config.max_iterations:
+            append_trace(*current_trace)
+            return finish(problem.positions_from_free(z).detach(), False, "max_iterations")
+
+        hessian_start = time.perf_counter()
+        matrix = torch.autograd.functional.hessian(problem.objective_free, z, vectorize=True)
+        matrix = 0.5 * (matrix + matrix.T)
+        work.hessian_evaluations += 1
+        work.hessian_seconds += time.perf_counter() - hessian_start
+        if not torch.isfinite(matrix).all():
+            append_trace(*current_trace)
+            return finish(problem.positions_from_free(z).detach(), False, "nonfinite_hessian")
+
+        linear_solve_start = time.perf_counter()
+        eigenvalues = torch.linalg.eigvalsh(matrix)
+        work.eigenvalue_evaluations += 1
+        minimum_eigenvalue = float(eigenvalues[0])
+        maximum_eigenvalue = float(eigenvalues[-1])
+        if not torch.isfinite(eigenvalues).all():
+            work.linear_solve_seconds += time.perf_counter() - linear_solve_start
+            append_trace(
+                *current_trace,
+                hessian_minimum_eigenvalue=minimum_eigenvalue,
+                hessian_maximum_eigenvalue=maximum_eigenvalue,
+            )
+            return finish(problem.positions_from_free(z).detach(), False, "nonfinite_hessian")
+        if minimum_eigenvalue <= 0.0:
+            work.linear_solve_seconds += time.perf_counter() - linear_solve_start
+            append_trace(
+                *current_trace,
+                hessian_minimum_eigenvalue=minimum_eigenvalue,
+                hessian_maximum_eigenvalue=maximum_eigenvalue,
+            )
+            return finish(problem.positions_from_free(z).detach(), False, "non_spd_hessian")
+
+        work.factorization_attempts += 1
+        factor, info = torch.linalg.cholesky_ex(matrix)
+        if int(info) != 0:
+            work.linear_solve_seconds += time.perf_counter() - linear_solve_start
+            append_trace(
+                *current_trace,
+                hessian_minimum_eigenvalue=minimum_eigenvalue,
+                hessian_maximum_eigenvalue=maximum_eigenvalue,
+            )
+            return finish(problem.positions_from_free(z).detach(), False, "factorization")
+        direction = torch.cholesky_solve((-gradient)[:, None], factor).squeeze(1)
+        merit_directional_derivative = float(torch.dot(gradient, matrix @ direction))
+        work.linear_solve_seconds += time.perf_counter() - linear_solve_start
+        if not torch.isfinite(direction).all() or not math.isfinite(merit_directional_derivative):
+            append_trace(
+                *current_trace,
+                merit_directional_derivative=merit_directional_derivative,
+                hessian_minimum_eigenvalue=minimum_eigenvalue,
+                hessian_maximum_eigenvalue=maximum_eigenvalue,
+            )
+            return finish(problem.positions_from_free(z).detach(), False, "nonfinite")
+        if merit_directional_derivative >= 0.0:
+            append_trace(
+                *current_trace,
+                merit_directional_derivative=merit_directional_derivative,
+                hessian_minimum_eigenvalue=minimum_eigenvalue,
+                hessian_maximum_eigenvalue=maximum_eigenvalue,
+            )
+            return finish(problem.positions_from_free(z).detach(), False, "non_descent")
+
+        step_size = 1.0
+        accepted = False
+        candidate = z
+        line_search_control_start = time.perf_counter()
+        for _ in range(config.max_line_search_steps):
+            trial = z + step_size * direction
+            trial_value, trial_gradient = value_and_gradient(trial, line_search=True)
+            work.line_search_trials += 1
+            trial_gradient_norm = float(torch.linalg.vector_norm(trial_gradient))
+            trial_merit = 0.5 * trial_gradient_norm * trial_gradient_norm
+            merit_limit = residual_merit + config.armijo * step_size * merit_directional_derivative
+            objective_roundoff_limit = (
+                _RESIDUAL_POLISH_OBJECTIVE_ROUNDOFF_FACTOR
+                * torch.finfo(torch.float64).eps
+                * max(1.0, abs(float(value)), abs(float(trial_value)))
+            )
+            if (
+                torch.isfinite(trial_value)
+                and torch.isfinite(trial_gradient).all()
+                and trial_gradient_norm < gradient_norm
+                and trial_merit <= merit_limit
+                and float(trial_value) <= float(value) + objective_roundoff_limit
+            ):
+                candidate = trial.detach()
+                accepted = True
+                break
+            step_size *= config.backtrack
+        work.line_search_seconds += time.perf_counter() - line_search_control_start
+
+        if not accepted:
+            append_trace(
+                *current_trace,
+                merit_directional_derivative=merit_directional_derivative,
+                hessian_minimum_eigenvalue=minimum_eigenvalue,
+                hessian_maximum_eigenvalue=maximum_eigenvalue,
+            )
+            return finish(problem.positions_from_free(z).detach(), False, "residual_line_search")
+
+        step_norm = float(torch.linalg.vector_norm(candidate - z))
+        append_trace(
+            *current_trace,
+            accepted_step_norm=step_norm,
+            accepted_step_size=step_size,
+            merit_directional_derivative=merit_directional_derivative,
+            hessian_minimum_eigenvalue=minimum_eigenvalue,
+            hessian_maximum_eigenvalue=maximum_eigenvalue,
+        )
+        z = candidate
+        accepted_iterations += 1

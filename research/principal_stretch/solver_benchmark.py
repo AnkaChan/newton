@@ -38,7 +38,16 @@ import warp as wp
 import newton
 from newton.solvers import SolverVBD
 
-from .newton_baseline import NewtonConfig, NewtonProblem, NewtonResult, build_newton_problem, solve_newton
+from .newton_baseline import (
+    NewtonConfig,
+    NewtonProblem,
+    NewtonResidualPolishConfig,
+    NewtonResidualPolishResult,
+    NewtonResult,
+    build_newton_problem,
+    solve_newton,
+    solve_newton_residual_polish,
+)
 from .potentials import incremental_potential_stable_neo_hookean
 from .torch_solver import compute_F
 
@@ -1164,6 +1173,782 @@ def run_newton(
         run_sha256="",
     )
     return dataclasses.replace(run, run_sha256=_newton_run_digest(run))
+
+
+def _newton_result_deterministic_record(result: NewtonResult) -> dict[str, object]:
+    """Return one ordinary Newton result without timing fields."""
+    return {
+        "converged": result.converged,
+        "reason": result.reason,
+        "accepted_iterations": result.accepted_iterations,
+        "final_objective": result.final_objective,
+        "final_gradient_norm": result.final_gradient_norm,
+        "final_relative_residual": result.final_relative_residual,
+        "work": {
+            "objective_evaluations": result.objective_evaluations,
+            "gradient_evaluations": result.gradient_evaluations,
+            "hessian_evaluations": result.hessian_evaluations,
+            "eigenvalue_evaluations": result.eigenvalue_evaluations,
+            "factorization_attempts": result.factorization_attempts,
+            "line_search_trials": result.line_search_trials,
+        },
+        "trace": [
+            {
+                "iteration": item.iteration,
+                "objective": item.objective,
+                "gradient_norm": item.gradient_norm,
+                "relative_residual": item.relative_residual,
+                "accepted_step_norm": item.accepted_step_norm,
+                "accepted_step_size": item.accepted_step_size,
+                "regularization": item.regularization,
+            }
+            for item in result.trace
+        ],
+    }
+
+
+def _newton_result_timing_record(result: NewtonResult) -> dict[str, object]:
+    """Return one ordinary Newton result's timing-only evidence."""
+    return {
+        "total_seconds": result.total_seconds,
+        "objective_gradient_seconds": result.objective_gradient_seconds,
+        "hessian_seconds": result.hessian_seconds,
+        "linear_solve_seconds": result.linear_solve_seconds,
+        "line_search_seconds": result.line_search_seconds,
+        "trace_elapsed_seconds": [item.elapsed_seconds for item in result.trace],
+    }
+
+
+def _residual_recovery_source_record(run: NewtonRunResult) -> dict[str, object]:
+    """Return deterministic zero-step-run evidence without timing fields."""
+    return {
+        "config": dataclasses.asdict(run.config),
+        "scene_sha256": run.scene_sha256,
+        "objective_instance_sha256": run.objective_instance_sha256,
+        "physical_state_sha256": run.physical_state_sha256,
+        "iterate_zero_sha256": run.iterate_zero_sha256,
+        "result_state_sha256": run.result_state_sha256,
+        "reference_accepted": run.reference_accepted,
+        "reference_failures": list(run.reference_failures),
+        "verification_displacement_relative": run.verification_displacement_relative,
+        "verification_converged": run.verification_converged,
+        "verification_reason": run.verification_reason,
+        "alternate_start_displacement_relative": run.alternate_start_displacement_relative,
+        "alternate_start_converged": run.alternate_start_converged,
+        "alternate_start_reason": run.alternate_start_reason,
+        "alternate_start_gradient_norm": run.alternate_start_gradient_norm,
+        "alternate_start_relative_residual": run.alternate_start_relative_residual,
+        "result": _newton_result_deterministic_record(run.result),
+    }
+
+
+def _common_metrics_are_finite(metrics: CommonStateMetrics) -> bool:
+    return all(
+        math.isfinite(value)
+        for value in (
+            metrics.objective,
+            metrics.inertia,
+            metrics.elastic,
+            metrics.gradient_norm,
+            metrics.relative_residual,
+            metrics.determinant_min,
+            metrics.determinant_max,
+            metrics.inverted_tet_fraction,
+            metrics.minimum_singular_value,
+            metrics.max_pin_error_m,
+        )
+    )
+
+
+def _validate_residual_polish_globalization(
+    result: NewtonResidualPolishResult,
+    config: NewtonResidualPolishConfig,
+    role: str,
+) -> None:
+    """Authenticate one converged trace against its bound globalization config."""
+    if not result.converged:
+        return
+    accepted_trial_count = 0
+    for item, next_item in zip(result.trace, result.trace[1:], strict=False):
+        step_size = 1.0
+        accepted_trial_index = None
+        for trial_index in range(config.max_line_search_steps):
+            if item.accepted_step_size == step_size:
+                accepted_trial_index = trial_index
+                break
+            step_size *= config.backtrack
+        if accepted_trial_index is None:
+            raise ValueError(f"{role} residual-polish step size is not in the iterative backtrack sequence")
+        accepted_trial_count += accepted_trial_index + 1
+        merit_limit = item.residual_merit + config.armijo * item.accepted_step_size * item.merit_directional_derivative
+        if next_item.residual_merit > merit_limit:
+            raise ValueError(f"{role} residual-polish accepted step violates Armijo")
+    if result.line_search_trials != accepted_trial_count:
+        raise ValueError(f"{role} residual-polish line-search trials do not match its accepted backtracks")
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class NewtonResidualReferenceRecovery:
+    """Three-start strict-reference recovery with authenticated evidence.
+
+    Standalone records bind their source run and internal evidence. Selecting
+    one as a committed reference additionally requires independent scene and
+    problem authentication, as performed by ``pr_scene_history``.
+    """
+
+    source_run: NewtonRunResult = dataclasses.field(repr=False, compare=False)
+    polish_config: NewtonResidualPolishConfig
+    scene_sha256: str
+    objective_instance_sha256: str
+    rejected_metrics: CommonStateMetrics
+    canonical: NewtonResidualPolishResult
+    verification: NewtonResidualPolishResult
+    alternate: NewtonResidualPolishResult
+    canonical_metrics: CommonStateMetrics | None
+    verification_metrics: CommonStateMetrics | None
+    alternate_metrics: CommonStateMetrics | None
+    displacement_scale: float
+    rejected_state_sha256: str = dataclasses.field(init=False)
+    verification_displacement_relative: float = dataclasses.field(init=False)
+    alternate_start_displacement_relative: float = dataclasses.field(init=False)
+    reference_accepted: bool = dataclasses.field(init=False)
+    reference_failures: tuple[str, ...] = dataclasses.field(init=False)
+    recovery_sha256: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        run = self.source_run
+        run.config.validate()
+        self.polish_config.validate()
+        if _newton_run_digest(run) != run.run_sha256:
+            raise ValueError("residual recovery source Newton run digest is invalid")
+        if run.reference_accepted:
+            raise ValueError("residual recovery requires a rejected Newton run")
+        if run.result.converged or run.result.reason not in ("stalled", "line_search"):
+            raise ValueError("residual recovery requires a stalled or line_search native Newton result")
+        if run.config.step_relative_tolerance != 0.0:
+            raise ValueError("residual recovery requires the zero-step-tolerance Newton retry")
+        expected_polish_config = NewtonResidualPolishConfig.from_newton_config(run.config)
+        if self.polish_config != expected_polish_config:
+            raise ValueError("residual recovery polish config does not match its source Newton run")
+        if self.scene_sha256 != run.scene_sha256:
+            raise ValueError("residual recovery scene identity does not match its source Newton run")
+        if self.objective_instance_sha256 != run.objective_instance_sha256:
+            raise ValueError("residual recovery objective identity does not match its source Newton run")
+        for name in ("scene_sha256", "objective_instance_sha256"):
+            value = getattr(self, name)
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+        if not math.isfinite(self.displacement_scale) or self.displacement_scale <= 0.0:
+            raise ValueError("displacement_scale must be finite and positive")
+        verification_relative = (
+            float(torch.linalg.vector_norm(self.verification.x - self.canonical.x)) / self.displacement_scale
+        )
+        alternate_relative = (
+            float(torch.linalg.vector_norm(self.alternate.x - self.canonical.x)) / self.displacement_scale
+        )
+        object.__setattr__(self, "verification_displacement_relative", verification_relative)
+        object.__setattr__(self, "alternate_start_displacement_relative", alternate_relative)
+
+        rejected_state_sha256 = _array_digest(run.result.x.detach().numpy())
+        if run.result_state_sha256 != rejected_state_sha256:
+            raise ValueError("residual recovery source result-state hash is invalid")
+        if self.rejected_metrics.position_sha256 != rejected_state_sha256:
+            raise ValueError("residual recovery rejected metrics belong to different positions")
+        if not _common_metrics_are_finite(self.rejected_metrics):
+            raise ValueError("residual recovery rejected metrics must be finite")
+        if self.rejected_metrics.max_pin_error_m != 0.0:
+            raise ValueError("residual recovery rejected state violates exact pins")
+        if self.rejected_metrics.inverted_tet_fraction != 0.0:
+            raise ValueError("residual recovery refuses an inverted rejected state")
+        object.__setattr__(self, "rejected_state_sha256", rejected_state_sha256)
+
+        for role in ("canonical", "verification", "alternate"):
+            result = getattr(self, role)
+            metrics = getattr(self, f"{role}_metrics")
+            _validate_residual_polish_globalization(result, self.polish_config, role)
+            if result.residual_scale != self.canonical.residual_scale:
+                raise ValueError("residual recovery polish attempts changed the residual scale")
+            if result.gradient_limit != self.canonical.gradient_limit:
+                raise ValueError("residual recovery polish attempts changed the gradient limit")
+            if metrics is not None:
+                if not _common_metrics_are_finite(metrics):
+                    raise ValueError(f"{role} residual recovery metrics must be finite")
+                if metrics.position_sha256 != _array_digest(result.x.detach().numpy()):
+                    raise ValueError(f"{role} residual recovery metrics belong to different positions")
+
+        failures = self._selection_failures()
+        object.__setattr__(self, "reference_failures", failures)
+        object.__setattr__(self, "reference_accepted", not failures)
+        object.__setattr__(self, "recovery_sha256", _canonical_digest(self._deterministic_payload()))
+
+    @property
+    def source_newton_config(self) -> NewtonConfig:
+        """The authenticated zero-step Newton configuration."""
+        return self.source_run.config
+
+    @property
+    def native_reason(self) -> str:
+        """The authenticated zero-step Newton termination reason."""
+        return self.source_run.result.reason
+
+    def _selection_failures(self) -> tuple[str, ...]:
+        residual_limit = max(1.0e-10, 1.0e-10 * self.canonical.residual_scale)
+        failures = []
+        if not self.canonical.converged:
+            failures.append(f"canonical residual-polish termination: {self.canonical.reason}")
+        canonical_first_eigenvalue = (
+            None if not self.canonical.trace else self.canonical.trace[0].hessian_minimum_eigenvalue
+        )
+        if canonical_first_eigenvalue is None or not math.isfinite(canonical_first_eigenvalue):
+            failures.append("canonical residual polish did not establish a finite SPD first Hessian")
+        elif canonical_first_eigenvalue <= 0.0:
+            failures.append("canonical residual polish first Hessian is not positive definite")
+        failures.extend(self._metrics_failures("canonical", self.canonical_metrics, residual_limit))
+
+        if not self.verification.converged:
+            failures.append(f"verification residual-polish termination: {self.verification.reason}")
+        if self.verification_displacement_relative > 1.0e-12:
+            failures.append(f"verification displacement {self.verification_displacement_relative:.3e} exceeds 1e-12")
+        failures.extend(self._metrics_failures("verification", self.verification_metrics, residual_limit))
+
+        if not self.alternate.converged:
+            failures.append(f"alternate residual-polish termination: {self.alternate.reason}")
+        if self.alternate_start_displacement_relative > 1.0e-9:
+            failures.append(
+                f"alternate-start displacement {self.alternate_start_displacement_relative:.3e} exceeds 1e-9"
+            )
+        failures.extend(self._metrics_failures("alternate", self.alternate_metrics, residual_limit))
+        return tuple(failures)
+
+    @staticmethod
+    def _metrics_failures(
+        role: str,
+        metrics: CommonStateMetrics | None,
+        residual_limit: float,
+    ) -> list[str]:
+        if metrics is None:
+            return [f"{role} residual polish common evaluation failed"]
+        failures = []
+        label = "alternate-start" if role == "alternate" else role
+        if metrics.gradient_norm > residual_limit:
+            failures.append(f"{label} gradient {metrics.gradient_norm:.3e} N exceeds {residual_limit:.3e} N")
+        if metrics.inverted_tet_fraction != 0.0:
+            failures.append(f"{role} residual polish contains inverted tetrahedra")
+        if metrics.max_pin_error_m != 0.0:
+            failures.append(f"{role} residual polish violates exact pins")
+        return failures
+
+    @staticmethod
+    def _attempt_record(
+        result: NewtonResidualPolishResult,
+        metrics: CommonStateMetrics | None,
+    ) -> dict[str, object]:
+        return {
+            "position_sha256": _array_digest(result.x.detach().numpy()),
+            "result": result.deterministic_record(),
+            "metrics": None if metrics is None else metrics.as_dict(),
+        }
+
+    def _deterministic_payload(self) -> dict[str, object]:
+        source_run_record = _residual_recovery_source_record(self.source_run)
+        return {
+            "method": "strict-reference-residual-newton-three-start-v1",
+            "source_newton_config": dataclasses.asdict(self.source_newton_config),
+            "source_run": source_run_record,
+            "source_run_deterministic_sha256": _canonical_digest(source_run_record),
+            "polish_config": self.polish_config.deterministic_record(),
+            "native_reason": self.native_reason,
+            "scene_sha256": self.scene_sha256,
+            "objective_instance_sha256": self.objective_instance_sha256,
+            "rejected_state_sha256": self.rejected_state_sha256,
+            "rejected_metrics": self.rejected_metrics.as_dict(),
+            "attempts": {
+                "canonical": self._attempt_record(self.canonical, self.canonical_metrics),
+                "verification": self._attempt_record(self.verification, self.verification_metrics),
+                "alternate": self._attempt_record(self.alternate, self.alternate_metrics),
+            },
+            "displacement_scale": self.displacement_scale,
+            "verification_displacement_relative": self.verification_displacement_relative,
+            "alternate_start_displacement_relative": self.alternate_start_displacement_relative,
+            "reference_accepted": self.reference_accepted,
+            "reference_failures": list(self.reference_failures),
+        }
+
+    def deterministic_record(self) -> dict[str, object]:
+        """Return the content-addressed recovery record without timings."""
+        payload = self._deterministic_payload()
+        payload["recovery_sha256"] = self.recovery_sha256
+        return payload
+
+    def timing_record(self) -> dict[str, object]:
+        """Return all three complete timing records outside the content hash."""
+        return {
+            "method": "strict-reference-residual-newton-three-start-v1",
+            "validated_source_run_sha256": self.source_run.run_sha256,
+            "attempts": {
+                "canonical": self.canonical.timing_record(),
+                "verification": self.verification.timing_record(),
+                "alternate": self.alternate.timing_record(),
+            },
+        }
+
+
+def _finite_common_metrics(
+    problem: NewtonProblem,
+    positions: np.ndarray | torch.Tensor,
+    role: str,
+) -> tuple[CommonStateMetrics | None, tuple[str, ...]]:
+    """Evaluate one recovery state and turn anomalies into closed failures."""
+    try:
+        metrics = evaluate_common_state(problem, positions)
+    except (RuntimeError, ValueError) as exc:
+        return None, (f"{role} common evaluation raised {type(exc).__name__}: {exc}",)
+    scalar_values = (
+        metrics.objective,
+        metrics.inertia,
+        metrics.elastic,
+        metrics.gradient_norm,
+        metrics.relative_residual,
+        metrics.determinant_min,
+        metrics.determinant_max,
+        metrics.inverted_tet_fraction,
+        metrics.minimum_singular_value,
+        metrics.max_pin_error_m,
+    )
+    if not all(math.isfinite(value) for value in scalar_values):
+        return None, (f"{role} common evaluation produced nonfinite metrics",)
+    return metrics, ()
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class NewtonAlternateResidualVerification:
+    """Alternate-start-only residual verification of a valid representative.
+
+    The authenticated zero-step run must already have an accepted
+    representative and verification endpoint under every ordinary gate, with
+    exactly one remaining failure: the independent alternate-start gradient.
+    Standalone records still require scene/problem authentication before a
+    history may select them.
+    """
+
+    source_run: NewtonRunResult = dataclasses.field(repr=False, compare=False)
+    polish_config: NewtonResidualPolishConfig
+    scene_sha256: str
+    objective_instance_sha256: str
+    representative_metrics: CommonStateMetrics
+    source_alternate: NewtonResult = dataclasses.field(repr=False, compare=False)
+    source_alternate_metrics: CommonStateMetrics
+    alternate: NewtonResidualPolishResult
+    repeat: NewtonResidualPolishResult
+    alternate_metrics: CommonStateMetrics | None
+    repeat_metrics: CommonStateMetrics | None
+    displacement_scale: float
+    representative_state_sha256: str = dataclasses.field(init=False)
+    source_alternate_displacement_relative: float = dataclasses.field(init=False)
+    alternate_displacement_relative: float = dataclasses.field(init=False)
+    repeat_displacement_relative: float = dataclasses.field(init=False)
+    reference_accepted: bool = dataclasses.field(init=False)
+    reference_failures: tuple[str, ...] = dataclasses.field(init=False)
+    verification_sha256: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        run = self.source_run
+        run.config.validate()
+        self.polish_config.validate()
+        if _newton_run_digest(run) != run.run_sha256:
+            raise ValueError("alternate residual verification source Newton run digest is invalid")
+        if run.reference_accepted:
+            raise ValueError("alternate residual verification requires a rejected Newton run")
+        if not run.result.converged or run.result.reason != "gradient":
+            raise ValueError("alternate residual verification requires a converged representative")
+        if not run.verification_converged or run.verification_reason != "gradient":
+            raise ValueError("alternate residual verification requires a converged ordinary verification")
+        if run.verification_displacement_relative > 1.0e-12:
+            raise ValueError("alternate residual verification requires the ordinary verification displacement gate")
+        if run.alternate_start_converged or run.alternate_start_reason not in (
+            "stalled",
+            "line_search",
+            "max_iterations",
+        ):
+            raise ValueError(
+                "alternate residual verification requires a stalled, line_search, or max_iterations alternate solve"
+            )
+        if len(run.reference_failures) != 1 or not run.reference_failures[0].startswith("alternate-start gradient "):
+            raise ValueError("alternate residual verification requires only an alternate-start gradient failure")
+        if run.config.step_relative_tolerance != 0.0:
+            raise ValueError("alternate residual verification requires the zero-step-tolerance Newton retry")
+        expected_polish_config = NewtonResidualPolishConfig.from_newton_config(run.config)
+        if self.polish_config != expected_polish_config:
+            raise ValueError("alternate residual verification polish config does not match its source Newton run")
+        if self.scene_sha256 != run.scene_sha256:
+            raise ValueError("alternate residual verification scene identity does not match its source Newton run")
+        if self.objective_instance_sha256 != run.objective_instance_sha256:
+            raise ValueError("alternate residual verification objective identity does not match its source Newton run")
+        if not math.isfinite(self.displacement_scale) or self.displacement_scale <= 0.0:
+            raise ValueError("displacement_scale must be finite and positive")
+
+        representative_sha256 = _array_digest(run.result.x.detach().numpy())
+        if run.result_state_sha256 != representative_sha256:
+            raise ValueError("alternate residual verification source result-state hash is invalid")
+        if self.representative_metrics.position_sha256 != representative_sha256:
+            raise ValueError("alternate residual verification representative metrics belong to different positions")
+        if not _common_metrics_are_finite(self.representative_metrics):
+            raise ValueError("alternate residual verification representative metrics must be finite")
+        object.__setattr__(self, "representative_state_sha256", representative_sha256)
+
+        if self.source_alternate.converged != run.alternate_start_converged:
+            raise ValueError("ordinary alternate convergence does not reproduce the source Newton run")
+        if self.source_alternate.reason != run.alternate_start_reason:
+            raise ValueError("ordinary alternate reason does not reproduce the source Newton run")
+        if not _common_metrics_are_finite(self.source_alternate_metrics):
+            raise ValueError("ordinary alternate metrics must be finite")
+        source_alternate_sha256 = _array_digest(self.source_alternate.x.detach().numpy())
+        if self.source_alternate_metrics.position_sha256 != source_alternate_sha256:
+            raise ValueError("ordinary alternate metrics belong to different positions")
+        if self.source_alternate_metrics.gradient_norm != run.alternate_start_gradient_norm:
+            raise ValueError("ordinary alternate gradient does not reproduce the source Newton run")
+        if self.source_alternate_metrics.relative_residual != run.alternate_start_relative_residual:
+            raise ValueError("ordinary alternate residual does not reproduce the source Newton run")
+        if not self.source_alternate.trace:
+            raise ValueError("ordinary alternate result must contain an evaluated trace")
+        if len(self.source_alternate.trace) != self.source_alternate.accepted_iterations + 1:
+            raise ValueError("ordinary alternate trace does not match its accepted-update count")
+        if tuple(item.iteration for item in self.source_alternate.trace) != tuple(
+            range(self.source_alternate.accepted_iterations + 1)
+        ):
+            raise ValueError("ordinary alternate trace iterations are not contiguous")
+        if (
+            self.source_alternate.objective_evaluations
+            != self.source_alternate.gradient_evaluations + self.source_alternate.line_search_trials
+            or self.source_alternate.gradient_evaluations != len(self.source_alternate.trace)
+        ):
+            raise ValueError("ordinary alternate objective/gradient work accounting is invalid")
+        expected_hessian_evaluations = self.source_alternate.accepted_iterations + int(
+            self.source_alternate.reason == "line_search"
+        )
+        if (
+            self.source_alternate.hessian_evaluations != expected_hessian_evaluations
+            or self.source_alternate.eigenvalue_evaluations != expected_hessian_evaluations
+            or self.source_alternate.factorization_attempts < expected_hessian_evaluations
+            or self.source_alternate.line_search_trials < self.source_alternate.accepted_iterations
+        ):
+            raise ValueError("ordinary alternate derivative/line-search work accounting is invalid")
+        if (
+            self.source_alternate.reason == "line_search"
+            and self.source_alternate.line_search_trials
+            < self.source_alternate.accepted_iterations + run.config.max_line_search_steps
+        ):
+            raise ValueError("ordinary alternate line-search exhaustion accounting is invalid")
+        if (
+            self.source_alternate.reason == "max_iterations"
+            and self.source_alternate.accepted_iterations != run.config.max_iterations
+        ):
+            raise ValueError("ordinary alternate iteration-limit accounting is invalid")
+        if self.source_alternate.final_objective != self.source_alternate_metrics.objective:
+            raise ValueError("ordinary alternate final objective does not match independent metrics")
+        if self.source_alternate.final_gradient_norm != self.source_alternate_metrics.gradient_norm:
+            raise ValueError("ordinary alternate final gradient does not match independent metrics")
+        if self.source_alternate.final_relative_residual != self.source_alternate_metrics.relative_residual:
+            raise ValueError("ordinary alternate final residual does not match independent metrics")
+
+        for role in ("alternate", "repeat"):
+            result = getattr(self, role)
+            metrics = getattr(self, f"{role}_metrics")
+            _validate_residual_polish_globalization(result, self.polish_config, role)
+            if result.residual_scale != self.alternate.residual_scale:
+                raise ValueError("alternate residual verification attempts changed the residual scale")
+            if result.gradient_limit != self.alternate.gradient_limit:
+                raise ValueError("alternate residual verification attempts changed the gradient limit")
+            if metrics is not None:
+                if not _common_metrics_are_finite(metrics):
+                    raise ValueError(f"{role} residual verification metrics must be finite")
+                if metrics.position_sha256 != _array_digest(result.x.detach().numpy()):
+                    raise ValueError(f"{role} residual verification metrics belong to different positions")
+
+        source_alternate_relative = (
+            float(torch.linalg.vector_norm(self.source_alternate.x - run.result.x)) / self.displacement_scale
+        )
+        source_relative_roundoff = (
+            8.0
+            * torch.finfo(torch.float64).eps
+            * max(
+                1.0,
+                abs(source_alternate_relative),
+                abs(run.alternate_start_displacement_relative),
+            )
+        )
+        if abs(source_alternate_relative - run.alternate_start_displacement_relative) > source_relative_roundoff:
+            raise ValueError("ordinary alternate displacement does not reproduce the source Newton run")
+        alternate_relative = float(torch.linalg.vector_norm(self.alternate.x - run.result.x)) / self.displacement_scale
+        repeat_relative = float(torch.linalg.vector_norm(self.repeat.x - self.alternate.x)) / self.displacement_scale
+        object.__setattr__(self, "source_alternate_displacement_relative", source_alternate_relative)
+        object.__setattr__(self, "alternate_displacement_relative", alternate_relative)
+        object.__setattr__(self, "repeat_displacement_relative", repeat_relative)
+
+        failures = self._selection_failures()
+        object.__setattr__(self, "reference_failures", failures)
+        object.__setattr__(self, "reference_accepted", not failures)
+        object.__setattr__(self, "verification_sha256", _canonical_digest(self._deterministic_payload()))
+
+    def _selection_failures(self) -> tuple[str, ...]:
+        residual_limit = max(1.0e-10, 1.0e-10 * self.alternate.residual_scale)
+        failures = []
+        if self.representative_metrics.gradient_norm > residual_limit:
+            failures.append(
+                "representative gradient "
+                f"{self.representative_metrics.gradient_norm:.3e} N exceeds {residual_limit:.3e} N"
+            )
+        if self.representative_metrics.inverted_tet_fraction != 0.0:
+            failures.append("representative contains inverted tetrahedra")
+        if self.representative_metrics.max_pin_error_m != 0.0:
+            failures.append("representative violates exact pins")
+
+        if not self.alternate.converged:
+            failures.append(f"alternate residual-polish termination: {self.alternate.reason}")
+        alternate_first_eigenvalue = (
+            None if not self.alternate.trace else self.alternate.trace[0].hessian_minimum_eigenvalue
+        )
+        if alternate_first_eigenvalue is None or not math.isfinite(alternate_first_eigenvalue):
+            failures.append("alternate residual polish did not establish a finite SPD first Hessian")
+        elif alternate_first_eigenvalue <= 0.0:
+            failures.append("alternate residual polish first Hessian is not positive definite")
+        failures.extend(self._metrics_failures("alternate", self.alternate_metrics, residual_limit))
+        if self.alternate_displacement_relative > 1.0e-9:
+            failures.append(f"alternate-start displacement {self.alternate_displacement_relative:.3e} exceeds 1e-9")
+
+        if not self.repeat.converged:
+            failures.append(f"alternate repeat termination: {self.repeat.reason}")
+        failures.extend(self._metrics_failures("repeat", self.repeat_metrics, residual_limit))
+        if self.repeat_displacement_relative > 1.0e-12:
+            failures.append(f"alternate repeat displacement {self.repeat_displacement_relative:.3e} exceeds 1e-12")
+        return tuple(failures)
+
+    @staticmethod
+    def _metrics_failures(
+        role: str,
+        metrics: CommonStateMetrics | None,
+        residual_limit: float,
+    ) -> list[str]:
+        if metrics is None:
+            return [f"{role} residual verification common evaluation failed"]
+        failures = []
+        if metrics.gradient_norm > residual_limit:
+            failures.append(f"{role} gradient {metrics.gradient_norm:.3e} N exceeds {residual_limit:.3e} N")
+        if metrics.inverted_tet_fraction != 0.0:
+            failures.append(f"{role} residual verification contains inverted tetrahedra")
+        if metrics.max_pin_error_m != 0.0:
+            failures.append(f"{role} residual verification violates exact pins")
+        return failures
+
+    @staticmethod
+    def _attempt_record(
+        result: NewtonResidualPolishResult,
+        metrics: CommonStateMetrics | None,
+    ) -> dict[str, object]:
+        return {
+            "position_sha256": _array_digest(result.x.detach().numpy()),
+            "result": result.deterministic_record(),
+            "metrics": None if metrics is None else metrics.as_dict(),
+        }
+
+    def _deterministic_payload(self) -> dict[str, object]:
+        source_run_record = _residual_recovery_source_record(self.source_run)
+        return {
+            "method": "alternate-start-only-residual-verification-v1",
+            "source_newton_config": dataclasses.asdict(self.source_run.config),
+            "source_run": source_run_record,
+            "source_run_deterministic_sha256": _canonical_digest(source_run_record),
+            "polish_config": self.polish_config.deterministic_record(),
+            "scene_sha256": self.scene_sha256,
+            "objective_instance_sha256": self.objective_instance_sha256,
+            "representative_state_sha256": self.representative_state_sha256,
+            "representative_metrics": self.representative_metrics.as_dict(),
+            "ordinary_alternate": {
+                "position_sha256": _array_digest(self.source_alternate.x.detach().numpy()),
+                "displacement_relative": self.source_alternate_displacement_relative,
+                "result": _newton_result_deterministic_record(self.source_alternate),
+                "metrics": self.source_alternate_metrics.as_dict(),
+            },
+            "attempts": {
+                "alternate": self._attempt_record(self.alternate, self.alternate_metrics),
+                "repeat": self._attempt_record(self.repeat, self.repeat_metrics),
+            },
+            "displacement_scale": self.displacement_scale,
+            "alternate_displacement_relative": self.alternate_displacement_relative,
+            "repeat_displacement_relative": self.repeat_displacement_relative,
+            "selected_state": "zero-step-newton-representative",
+            "reference_accepted": self.reference_accepted,
+            "reference_failures": list(self.reference_failures),
+        }
+
+    def deterministic_record(self) -> dict[str, object]:
+        """Return content-addressed alternate-verification evidence."""
+        payload = self._deterministic_payload()
+        payload["verification_sha256"] = self.verification_sha256
+        return payload
+
+    def timing_record(self) -> dict[str, object]:
+        """Return ordinary-alternate and both polish timing records."""
+        return {
+            "method": "alternate-start-only-residual-verification-v1",
+            "validated_source_run_sha256": self.source_run.run_sha256,
+            "ordinary_alternate": _newton_result_timing_record(self.source_alternate),
+            "attempts": {
+                "alternate": self.alternate.timing_record(),
+                "repeat": self.repeat.timing_record(),
+            },
+        }
+
+
+def recover_newton_reference_with_residual_polish(
+    scene: TetBenchmarkScene,
+    problem: NewtonProblem,
+    rejected_run: NewtonRunResult,
+) -> NewtonResidualReferenceRecovery:
+    """Try a bounded three-start stationary-root recovery for one reference.
+
+    Eligibility is strict: the problem must be the exact scene objective, the
+    rejected state must be finite, exactly pinned, and uninverted, and the
+    native zero-step-tolerance retry must have stopped as ``stalled`` or
+    ``line_search``. All
+    existing common-gradient, displacement, pin, and inversion gates remain
+    unchanged. The rejected state, reason, configuration, and identities are
+    derived only from the validated run object; callers cannot relabel them.
+    """
+    rejected_run.config.validate()
+    if _newton_run_digest(rejected_run) != rejected_run.run_sha256:
+        raise ValueError("residual recovery source Newton run digest is invalid")
+    if rejected_run.reference_accepted:
+        raise ValueError("residual recovery requires a rejected Newton run")
+    if rejected_run.result.converged or rejected_run.result.reason not in ("stalled", "line_search"):
+        raise ValueError("residual recovery requires a stalled or line_search native Newton result")
+    if rejected_run.config.step_relative_tolerance != 0.0:
+        raise ValueError("residual recovery requires the zero-step-tolerance Newton retry")
+
+    expected_objective = common_objective_manifest(scene, build_common_problem(scene))
+    actual_objective = common_objective_manifest(scene, problem)
+    if actual_objective["objective_instance_sha256"] != expected_objective["objective_instance_sha256"]:
+        raise ValueError("residual-recovery problem does not match the supplied scene")
+    scene_sha256 = str(scene.manifest()["scene_sha256"])
+    objective_instance_sha256 = str(actual_objective["objective_instance_sha256"])
+    iterate_zero = problem.inertial_target.index_copy(0, problem.pinned, problem.pin_targets)
+    expected_identities = {
+        "scene_sha256": scene_sha256,
+        "objective_instance_sha256": objective_instance_sha256,
+        "physical_state_sha256": _array_digest(scene.x_current),
+        "iterate_zero_sha256": _array_digest(iterate_zero.detach().numpy()),
+    }
+    for name, expected in expected_identities.items():
+        if getattr(rejected_run, name) != expected:
+            raise ValueError(f"residual recovery source Newton run changed {name}")
+
+    rejected = rejected_run.result.x.detach().numpy().copy()
+    if rejected.shape != tuple(problem.rest_q.shape) or not np.isfinite(rejected).all():
+        raise ValueError("rejected Newton result must be finite and have the problem shape")
+    if rejected_run.result_state_sha256 != _array_digest(rejected):
+        raise ValueError("residual recovery source result-state hash is invalid")
+    rejected_metrics, rejected_evaluation_failures = _finite_common_metrics(
+        problem, rejected, "rejected zero-step-tolerance Newton result"
+    )
+    if rejected_evaluation_failures:
+        raise ValueError(rejected_evaluation_failures[0])
+    assert rejected_metrics is not None
+    if rejected_metrics.inverted_tet_fraction != 0.0:
+        raise ValueError("residual recovery refuses an inverted rejected state")
+
+    polish_config = NewtonResidualPolishConfig.from_newton_config(rejected_run.config)
+    canonical = solve_newton_residual_polish(problem, rejected, polish_config)
+    verification = solve_newton_residual_polish(problem, canonical.x, polish_config)
+    alternate = solve_newton_residual_polish(problem, scene.x_current, polish_config)
+
+    canonical_metrics, _ = _finite_common_metrics(problem, canonical.x, "canonical residual polish")
+    verification_metrics, _ = _finite_common_metrics(problem, verification.x, "verification residual polish")
+    alternate_metrics, _ = _finite_common_metrics(problem, alternate.x, "alternate residual polish")
+
+    free_count = int(problem.free.numel())
+    bbox_diagonal = float(np.linalg.norm(scene.rest_q.max(axis=0) - scene.rest_q.min(axis=0)))
+    displacement_scale = max(math.sqrt(free_count) * bbox_diagonal, 1.0e-30)
+    return NewtonResidualReferenceRecovery(
+        source_run=rejected_run,
+        polish_config=polish_config,
+        scene_sha256=scene_sha256,
+        objective_instance_sha256=objective_instance_sha256,
+        rejected_metrics=rejected_metrics,
+        canonical=canonical,
+        verification=verification,
+        alternate=alternate,
+        canonical_metrics=canonical_metrics,
+        verification_metrics=verification_metrics,
+        alternate_metrics=alternate_metrics,
+        displacement_scale=displacement_scale,
+    )
+
+
+def verify_newton_alternate_start_with_residual_polish(
+    scene: TetBenchmarkScene,
+    problem: NewtonProblem,
+    rejected_run: NewtonRunResult,
+) -> NewtonAlternateResidualVerification:
+    """Verify only a failed alternate start for an otherwise valid reference."""
+    rejected_run.config.validate()
+    if _newton_run_digest(rejected_run) != rejected_run.run_sha256:
+        raise ValueError("alternate residual verification source Newton run digest is invalid")
+    if rejected_run.reference_accepted:
+        raise ValueError("alternate residual verification requires a rejected Newton run")
+    if not rejected_run.result.converged or rejected_run.result.reason != "gradient":
+        raise ValueError("alternate residual verification requires a converged representative")
+    if rejected_run.config.step_relative_tolerance != 0.0:
+        raise ValueError("alternate residual verification requires the zero-step-tolerance Newton retry")
+
+    expected_objective = common_objective_manifest(scene, build_common_problem(scene))
+    actual_objective = common_objective_manifest(scene, problem)
+    if actual_objective["objective_instance_sha256"] != expected_objective["objective_instance_sha256"]:
+        raise ValueError("alternate residual-verification problem does not match the supplied scene")
+    scene_sha256 = str(scene.manifest()["scene_sha256"])
+    objective_instance_sha256 = str(actual_objective["objective_instance_sha256"])
+    iterate_zero = problem.inertial_target.index_copy(0, problem.pinned, problem.pin_targets)
+    expected_identities = {
+        "scene_sha256": scene_sha256,
+        "objective_instance_sha256": objective_instance_sha256,
+        "physical_state_sha256": _array_digest(scene.x_current),
+        "iterate_zero_sha256": _array_digest(iterate_zero.detach().numpy()),
+    }
+    for name, expected in expected_identities.items():
+        if getattr(rejected_run, name) != expected:
+            raise ValueError(f"alternate residual verification source Newton run changed {name}")
+    representative = rejected_run.result.x
+    if rejected_run.result_state_sha256 != _array_digest(representative.detach().numpy()):
+        raise ValueError("alternate residual verification source result-state hash is invalid")
+    representative_metrics = evaluate_common_state(problem, representative)
+
+    polish_config = NewtonResidualPolishConfig.from_newton_config(rejected_run.config)
+    source_alternate = solve_newton(problem, scene.x_current, rejected_run.config)
+    source_alternate_metrics = evaluate_common_state(problem, source_alternate.x)
+    alternate = solve_newton_residual_polish(problem, scene.x_current, polish_config)
+    repeat = solve_newton_residual_polish(problem, alternate.x, polish_config)
+    alternate_metrics, _ = _finite_common_metrics(problem, alternate.x, "alternate residual verification")
+    repeat_metrics, _ = _finite_common_metrics(problem, repeat.x, "alternate residual verification repeat")
+    free_count = int(problem.free.numel())
+    bbox_diagonal = float(np.linalg.norm(scene.rest_q.max(axis=0) - scene.rest_q.min(axis=0)))
+    displacement_scale = max(math.sqrt(free_count) * bbox_diagonal, 1.0e-30)
+    return NewtonAlternateResidualVerification(
+        source_run=rejected_run,
+        polish_config=polish_config,
+        scene_sha256=scene_sha256,
+        objective_instance_sha256=objective_instance_sha256,
+        representative_metrics=representative_metrics,
+        source_alternate=source_alternate,
+        source_alternate_metrics=source_alternate_metrics,
+        alternate=alternate,
+        repeat=repeat,
+        alternate_metrics=alternate_metrics,
+        repeat_metrics=repeat_metrics,
+        displacement_scale=displacement_scale,
+    )
 
 
 def _newton_record(run: NewtonRunResult, metrics: CommonStateMetrics) -> dict[str, object]:

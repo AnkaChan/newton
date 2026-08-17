@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import unittest
 from unittest import mock
 
 import numpy as np
 
 from .. import pr_scene_history as history
+from .. import solver_benchmark as benchmark
 
 
 class TestPRSceneHistory(unittest.TestCase):
@@ -519,19 +521,192 @@ class TestPRSceneHistory(unittest.TestCase):
         self.assertEqual(len(chain.failed_reference.reference_record["attempts"]), 2)
         self.assertEqual(chain.timings[0].values["selected_attempt"], 1)
 
-    def test_real_bounded_ordinal8_retry_connects_through_ordinal9(self):
-        chain = self.stretch.generate(
-            stop=history.AtomicCoordinate.from_ordinal(10),
-            max_transitions=10,
+    def test_line_search_uses_only_the_versioned_recovery_prerequisite_policy(self):
+        config = history._default_newton_config()
+        state = self.stretch.initial_checkpoint.state
+        scene = self.stretch.build_atomic_scene(state, self.stretch.apply_callback(state))
+        primary = self._stalled_reference(
+            scene,
+            config,
+            failures=(
+                "native termination: line_search",
+                "independent gradient 5.000e-07 N exceeds 2.000e-09 N",
+                "verification termination: line_search",
+                "alternate-start gradient 5.000e-07 N exceeds 2.000e-09 N",
+            ),
         )
+        primary_record = dict(primary.deterministic_record)
+        primary_record["native_reason"] = "line_search"
+        primary = dataclasses.replace(primary, deterministic_record=primary_record)
+        self.assertFalse(history._stalled_reference_is_retryable(primary, config))
+        self.assertTrue(history._reference_is_recovery_prerequisite(primary, config))
+
+        retry_config = dataclasses.replace(config, step_relative_tolerance=0.0)
+        accepted = self._accepted_reference(scene, retry_config)
+        accepted_record = dict(accepted.deterministic_record)
+        accepted_record.update(
+            {
+                "config": dataclasses.asdict(retry_config),
+                "scene_sha256": "1" * 64,
+                "objective_instance_sha256": "2" * 64,
+            }
+        )
+        accepted = dataclasses.replace(accepted, deterministic_record=accepted_record)
+        with mock.patch.object(history, "_solve_dense_reference", return_value=accepted) as solve:
+            selected = history._run_residual_recovery_zero_step_prerequisite(scene, primary, config)
+
+        solve.assert_called_once_with(scene, retry_config)
+        self.assertTrue(selected.accepted)
+        self.assertEqual(selected.deterministic_record["retry_policy"], history._RESIDUAL_RECOVERY_RETRY_POLICY)
+        self.assertEqual(selected.deterministic_record["attempts"][0]["record"]["native_reason"], "line_search")
+
+    def test_alternate_verification_reuses_every_authenticated_zero_step_policy(self):
+        config = history._default_newton_config()
+        retry_config = dataclasses.replace(config, step_relative_tolerance=0.0)
+        state = self.stretch.initial_checkpoint.state
+        scene = self.stretch.build_atomic_scene(state, self.stretch.apply_callback(state))
+        problem = history.build_common_problem(scene)
+        source_run = history.run_newton(
+            scene,
+            problem,
+            config=retry_config,
+            warmup=False,
+            repeats=1,
+        )
+        gradient_limit = max(1.0e-10, 1.0e-10 * problem.residual_scale)
+        source_run = dataclasses.replace(
+            source_run,
+            alternate_start_converged=False,
+            alternate_start_reason="stalled",
+            alternate_start_gradient_norm=2.0 * gradient_limit,
+            alternate_start_relative_residual=2.0 * gradient_limit / problem.residual_scale,
+            alternate_start_displacement_relative=0.0,
+            reference_accepted=False,
+            reference_failures=(
+                f"alternate-start gradient {2.0 * gradient_limit:.3e} N exceeds {gradient_limit:.3e} N",
+            ),
+            run_sha256="",
+        )
+        source_run = dataclasses.replace(source_run, run_sha256=benchmark._newton_run_digest(source_run))
+        retry_record = history._dense_reference_deterministic_record(source_run)
+        primary_record = dict(retry_record)
+        primary_record["config"] = dataclasses.asdict(config)
+        selected = self._accepted_reference(scene, config)
+
+        for policy in (
+            history._STALLED_RETRY_POLICY,
+            history._RESIDUAL_RECOVERY_RETRY_POLICY,
+            history._ALTERNATE_RECOVERY_RETRY_POLICY,
+        ):
+            with self.subTest(policy=policy):
+                combined_record = dict(retry_record)
+                combined_record.update(
+                    {
+                        "retry_policy": policy,
+                        "selected_attempt": 1,
+                        "attempts": [
+                            {"index": 0, "role": "primary", "record": primary_record},
+                            {
+                                "index": 1,
+                                "role": "step-relative-tolerance-zero",
+                                "record": retry_record,
+                            },
+                        ],
+                    }
+                )
+                reference = history._ReferenceStep(
+                    positions=source_run.result.x.detach().numpy(),
+                    accepted=False,
+                    failures=source_run.reference_failures,
+                    deterministic_record=combined_record,
+                    timing_record={"retry_policy": policy, "attempts": []},
+                    newton_run=source_run,
+                )
+                verification = object()
+                with (
+                    mock.patch.object(history, "_solve_dense_reference_with_retry", return_value=reference),
+                    mock.patch.object(
+                        history,
+                        "verify_newton_alternate_start_with_residual_polish",
+                        return_value=verification,
+                    ) as verify,
+                    mock.patch.object(history, "_alternate_verification_provenance_failures", return_value=()),
+                    mock.patch.object(
+                        history,
+                        "_combine_alternate_residual_verification",
+                        return_value=selected,
+                    ),
+                ):
+                    result = history._solve_dense_reference_with_recovery(scene, problem, config)
+
+                self.assertIs(result, selected)
+                verify.assert_called_once_with(scene, problem, source_run)
+
+    def test_real_staged_recoveries_connect_through_ordinal27(self):
+        captured = {}
+        recover = history.recover_newton_reference_with_residual_polish
+        authenticate = history._recovery_provenance_failures
+        verify_alternate = history.verify_newton_alternate_start_with_residual_polish
+        authenticate_alternate = history._alternate_verification_provenance_failures
+
+        def capture_recovery(*args, **kwargs):
+            result = recover(*args, **kwargs)
+            if "recovery" not in captured:
+                captured["recovery_args"] = args
+                captured["recovery_kwargs"] = kwargs
+                captured["recovery"] = result
+            return result
+
+        def capture_authentication(*args, **kwargs):
+            if "authentication_args" not in captured:
+                captured["authentication_args"] = args
+                captured["authentication_kwargs"] = kwargs
+            return authenticate(*args, **kwargs)
+
+        def capture_alternate(*args, **kwargs):
+            captured["alternate_args"] = args
+            captured["alternate_kwargs"] = kwargs
+            result = verify_alternate(*args, **kwargs)
+            captured["alternate_verification"] = result
+            return result
+
+        def capture_alternate_authentication(*args, **kwargs):
+            captured["alternate_authentication_args"] = args
+            captured["alternate_authentication_kwargs"] = kwargs
+            return authenticate_alternate(*args, **kwargs)
+
+        with (
+            mock.patch.object(history, "recover_newton_reference_with_residual_polish", side_effect=capture_recovery),
+            mock.patch.object(history, "_recovery_provenance_failures", side_effect=capture_authentication),
+            mock.patch.object(
+                history,
+                "verify_newton_alternate_start_with_residual_polish",
+                side_effect=capture_alternate,
+            ),
+            mock.patch.object(
+                history,
+                "_alternate_verification_provenance_failures",
+                side_effect=capture_alternate_authentication,
+            ),
+        ):
+            chain = self.stretch.generate(
+                stop=history.AtomicCoordinate.from_ordinal(28),
+                max_transitions=28,
+            )
 
         self.assertEqual(chain.termination, "range_complete")
-        self.assertEqual(len(chain.transitions), 10)
+        self.assertEqual(len(chain.transitions), 28)
         chain.verify()
+        manifest = chain.manifest.as_dict()
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(manifest["contract"], "pr2901-callback-dense-newton-history-v2")
+        self.assertEqual(len(manifest["reference_gate"]["stages"]), 4)
+
         ordinal8 = chain.transitions[8]
         ordinal9 = chain.transitions[9]
         self.assertEqual(ordinal8.coordinate.ordinal, 8)
         self.assertEqual(ordinal8.reference_record["selected_attempt"], 1)
+        self.assertEqual(ordinal8.reference_record["retry_policy"], history._STALLED_RETRY_POLICY)
         attempts = ordinal8.reference_record["attempts"]
         self.assertEqual(attempts[0]["record"]["native_reason"], "stalled")
         self.assertFalse(attempts[0]["record"]["accepted"])
@@ -541,6 +716,606 @@ class TestPRSceneHistory(unittest.TestCase):
         self.assertEqual(ordinal9.coordinate.ordinal, 9)
         self.assertEqual(ordinal9.input_state_sha256, ordinal8.output_state.state_sha256)
         self.assertNotIn("attempts", ordinal9.reference_record)
+
+        ordinal14 = chain.transitions[14]
+        ordinal15 = chain.transitions[15]
+        record = history._thaw_json(ordinal14.reference_record)
+        self.assertEqual(record["selected_attempt"], 2)
+        self.assertEqual(record["prerequisite_retry_policy"], history._RESIDUAL_RECOVERY_RETRY_POLICY)
+        self.assertEqual(record["residual_polish_policy"], history._RESIDUAL_POLISH_POLICY)
+        self.assertEqual(record["position_sha256"], history._array_digest(ordinal14.reference_positions))
+        self.assertEqual([item["index"] for item in record["attempts"]], [0, 1, 2])
+        self.assertEqual(
+            [item["role"] for item in record["attempts"]],
+            ["primary", "step-relative-tolerance-zero", "strict-residual-polish"],
+        )
+        self.assertEqual(record["attempts"][0]["record"]["native_reason"], "stalled")
+        self.assertEqual(record["attempts"][1]["record"]["native_reason"], "stalled")
+        self.assertFalse(record["attempts"][0]["record"]["accepted"])
+        self.assertFalse(record["attempts"][1]["record"]["accepted"])
+        recovery_record = record["attempts"][2]["record"]
+        self.assertTrue(recovery_record["reference_accepted"])
+        self.assertEqual(recovery_record["reference_failures"], [])
+        self.assertEqual(recovery_record["native_reason"], "stalled")
+        self.assertEqual(
+            recovery_record["polish_config"]["objective_roundoff_guard"],
+            "E1 <= E0 + 8*eps*max(1,abs(E0),abs(E1))",
+        )
+        residual_limit = max(1.0e-10, 1.0e-10 * captured["recovery"].canonical.residual_scale)
+        for role, attempt in recovery_record["attempts"].items():
+            result = attempt["result"]
+            metrics = attempt["metrics"]
+            work = result["work"]
+            with self.subTest(role=role):
+                self.assertTrue(result["converged"], result["reason"])
+                self.assertLessEqual(metrics["gradient_norm"], residual_limit)
+                self.assertEqual(metrics["max_pin_error_m"], 0.0)
+                self.assertEqual(metrics["inverted_tet_fraction"], 0.0)
+                self.assertEqual(work["objective_evaluations"], work["gradient_evaluations"])
+                self.assertEqual(
+                    work["objective_evaluations"],
+                    len(result["trace"]) + work["line_search_trials"],
+                )
+                self.assertEqual(len(result["trace"]), result["accepted_iterations"] + 1)
+                self.assertEqual(work["hessian_evaluations"], result["accepted_iterations"])
+                self.assertEqual(work["eigenvalue_evaluations"], result["accepted_iterations"])
+                self.assertEqual(work["factorization_attempts"], result["accepted_iterations"])
+                residuals = [item["gradient_norm"] for item in result["trace"]]
+                self.assertTrue(all(after < before for before, after in itertools.pairwise(residuals)))
+
+        self.assertLessEqual(recovery_record["verification_displacement_relative"], 1.0e-12)
+        self.assertLessEqual(recovery_record["alternate_start_displacement_relative"], 1.0e-9)
+        self.assertEqual(ordinal15.input_state_sha256, ordinal14.output_state.state_sha256)
+        self.assertNotIn("attempts", ordinal15.reference_record)
+        self.assertLessEqual(ordinal15.reference_record["final_gradient_norm"], residual_limit)
+
+        ordinal16 = chain.transitions[16]
+        ordinal17 = chain.transitions[17]
+        alternate_record = history._thaw_json(ordinal16.reference_record)
+        self.assertEqual(alternate_record["selected_attempt"], 2)
+        self.assertEqual(
+            alternate_record["prerequisite_retry_policy"],
+            history._ALTERNATE_RECOVERY_RETRY_POLICY,
+        )
+        self.assertEqual(alternate_record["alternate_residual_policy"], history._ALTERNATE_RESIDUAL_POLICY)
+        self.assertEqual(alternate_record["selected_state"], "zero-step-newton-representative")
+        self.assertEqual(
+            alternate_record["position_sha256"],
+            alternate_record["attempts"][1]["record"]["position_sha256"],
+        )
+        self.assertEqual(alternate_record["position_sha256"], history._array_digest(ordinal16.reference_positions))
+        self.assertEqual(
+            [item["role"] for item in alternate_record["attempts"]],
+            ["primary", "step-relative-tolerance-zero", "alternate-start-residual-verification"],
+        )
+        self.assertFalse(alternate_record["attempts"][0]["record"]["accepted"])
+        self.assertFalse(alternate_record["attempts"][1]["record"]["accepted"])
+        alternate_verification_record = alternate_record["attempts"][2]["record"]
+        self.assertTrue(alternate_verification_record["reference_accepted"])
+        self.assertEqual(alternate_verification_record["reference_failures"], [])
+        self.assertEqual(
+            alternate_verification_record["representative_state_sha256"],
+            alternate_record["position_sha256"],
+        )
+        self.assertLessEqual(alternate_verification_record["alternate_displacement_relative"], 1.0e-9)
+        self.assertLessEqual(alternate_verification_record["repeat_displacement_relative"], 1.0e-12)
+        alternate_gate = max(
+            1.0e-10,
+            1.0e-10 * alternate_verification_record["attempts"]["alternate"]["result"]["residual_scale"],
+        )
+        for role, attempt in alternate_verification_record["attempts"].items():
+            result = attempt["result"]
+            metrics = attempt["metrics"]
+            work = result["work"]
+            with self.subTest(alternate_role=role):
+                self.assertTrue(result["converged"], result["reason"])
+                self.assertLessEqual(metrics["gradient_norm"], alternate_gate)
+                self.assertEqual(metrics["max_pin_error_m"], 0.0)
+                self.assertEqual(metrics["inverted_tet_fraction"], 0.0)
+                self.assertEqual(work["objective_evaluations"], work["gradient_evaluations"])
+                self.assertEqual(
+                    work["objective_evaluations"],
+                    len(result["trace"]) + work["line_search_trials"],
+                )
+                residuals = [item["gradient_norm"] for item in result["trace"]]
+                self.assertTrue(all(after < before for before, after in itertools.pairwise(residuals)))
+        self.assertEqual(ordinal17.input_state_sha256, ordinal16.output_state.state_sha256)
+        self.assertTrue(ordinal17.reference_record["accepted"])
+
+        ordinal18 = chain.transitions[18]
+        ordinal18_record = history._thaw_json(ordinal18.reference_record)
+        self.assertEqual(ordinal18_record["alternate_residual_policy"], history._ALTERNATE_RESIDUAL_POLICY)
+        self.assertEqual(ordinal18_record["selected_state"], "zero-step-newton-representative")
+        self.assertEqual(
+            ordinal18_record["position_sha256"],
+            ordinal18_record["attempts"][1]["record"]["position_sha256"],
+        )
+        ordinal18_verification = ordinal18_record["attempts"][2]["record"]
+        ordinary_alternate = ordinal18_verification["ordinary_alternate"]
+        ordinary_result = ordinary_alternate["result"]
+        ordinary_work = ordinary_result["work"]
+        self.assertFalse(ordinary_result["converged"])
+        self.assertEqual(ordinary_result["reason"], "max_iterations")
+        self.assertEqual(ordinary_result["accepted_iterations"], 50)
+        self.assertEqual(len(ordinary_result["trace"]), 51)
+        self.assertEqual(ordinary_work["objective_evaluations"], 953)
+        self.assertEqual(ordinary_work["gradient_evaluations"], 51)
+        self.assertEqual(ordinary_work["hessian_evaluations"], 50)
+        self.assertEqual(ordinary_work["eigenvalue_evaluations"], 50)
+        self.assertEqual(ordinary_work["factorization_attempts"], 50)
+        self.assertEqual(ordinary_work["line_search_trials"], 902)
+        self.assertEqual(
+            ordinary_alternate["metrics"]["gradient_norm"],
+            ordinal18_verification["source_run"]["alternate_start_gradient_norm"],
+        )
+        self.assertEqual(
+            ordinary_alternate["displacement_relative"],
+            ordinal18_verification["source_run"]["alternate_start_displacement_relative"],
+        )
+        ordinal26 = chain.transitions[26]
+        ordinal27 = chain.transitions[27]
+        ordinal26_record = history._thaw_json(ordinal26.reference_record)
+        self.assertEqual(ordinal26_record["selected_attempt"], 2)
+        self.assertEqual(
+            ordinal26_record["prerequisite_retry_policy"],
+            history._RESIDUAL_RECOVERY_RETRY_POLICY,
+        )
+        self.assertEqual(ordinal26_record["alternate_residual_policy"], history._ALTERNATE_RESIDUAL_POLICY)
+        self.assertEqual(ordinal26_record["selected_state"], "zero-step-newton-representative")
+        self.assertEqual(
+            ordinal26_record["position_sha256"],
+            ordinal26_record["attempts"][1]["record"]["position_sha256"],
+        )
+        self.assertEqual(
+            ordinal26_record["attempts"][2]["record"]["ordinary_alternate"]["result"]["reason"],
+            "stalled",
+        )
+        self.assertTrue(ordinal26_record["attempts"][2]["record"]["reference_accepted"])
+        self.assertEqual(ordinal27.input_state_sha256, ordinal26.output_state.state_sha256)
+        self.assertTrue(ordinal27.reference_record["accepted"])
+        self.assertEqual(chain.final_checkpoint.state.coordinate.ordinal, 28)
+        self.assertEqual(chain.final_checkpoint.state.state_sha256, ordinal27.output_state.state_sha256)
+
+        recovery = captured["recovery"]
+        repeated = recover(*captured["recovery_args"], **captured["recovery_kwargs"])
+        self.assertEqual(repeated.recovery_sha256, recovery.recovery_sha256)
+        deterministic_record = recovery.deterministic_record()
+        retimed = dataclasses.replace(
+            recovery,
+            canonical=dataclasses.replace(
+                recovery.canonical,
+                timing=dataclasses.replace(
+                    recovery.canonical.timing,
+                    total_seconds=recovery.canonical.timing.total_seconds + 1.0,
+                ),
+            ),
+        )
+        self.assertEqual(retimed.recovery_sha256, recovery.recovery_sha256)
+        self.assertEqual(retimed.deterministic_record(), deterministic_record)
+        self.assertNotEqual(retimed.timing_record(), recovery.timing_record())
+
+        with self.assertRaisesRegex(ValueError, "polish config"):
+            dataclasses.replace(
+                recovery,
+                polish_config=dataclasses.replace(
+                    recovery.polish_config,
+                    max_iterations=recovery.polish_config.max_iterations + 1,
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "convergence"):
+            dataclasses.replace(
+                recovery,
+                canonical=dataclasses.replace(recovery.canonical, reason="max_iterations"),
+            )
+        with self.assertRaisesRegex(ValueError, "objective/gradient work"):
+            dataclasses.replace(
+                recovery,
+                canonical=dataclasses.replace(
+                    recovery.canonical,
+                    objective_evaluations=recovery.canonical.objective_evaluations + 1,
+                ),
+            )
+        changed_canonical_trace = (
+            *recovery.canonical.trace[:-1],
+            dataclasses.replace(
+                recovery.canonical.trace[-1],
+                gradient_norm=0.0,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "merit|relative residual|independent metrics"):
+            dataclasses.replace(
+                recovery,
+                canonical=dataclasses.replace(recovery.canonical, trace=changed_canonical_trace),
+            )
+        changed_direction_trace = (
+            dataclasses.replace(
+                recovery.canonical.trace[0],
+                merit_directional_derivative=1.0,
+            ),
+            *recovery.canonical.trace[1:],
+        )
+        with self.assertRaisesRegex(ValueError, "direction must be descending"):
+            dataclasses.replace(
+                recovery,
+                canonical=dataclasses.replace(recovery.canonical, trace=changed_direction_trace),
+            )
+        invalid_alpha_trace = (
+            dataclasses.replace(
+                recovery.canonical.trace[0],
+                accepted_step_size=0.3,
+            ),
+            *recovery.canonical.trace[1:],
+        )
+        with self.assertRaisesRegex(ValueError, "backtrack sequence"):
+            dataclasses.replace(
+                recovery,
+                canonical=dataclasses.replace(recovery.canonical, trace=invalid_alpha_trace),
+            )
+        invalid_armijo_trace = (
+            dataclasses.replace(
+                recovery.canonical.trace[0],
+                merit_directional_derivative=-1.0e30,
+            ),
+            *recovery.canonical.trace[1:],
+        )
+        with self.assertRaisesRegex(ValueError, "Armijo"):
+            dataclasses.replace(
+                recovery,
+                canonical=dataclasses.replace(recovery.canonical, trace=invalid_armijo_trace),
+            )
+        with self.assertRaisesRegex(ValueError, "line-search trials"):
+            dataclasses.replace(
+                recovery,
+                canonical=dataclasses.replace(
+                    recovery.canonical,
+                    objective_evaluations=recovery.canonical.objective_evaluations + 1,
+                    gradient_evaluations=recovery.canonical.gradient_evaluations + 1,
+                    line_search_trials=recovery.canonical.line_search_trials + 1,
+                ),
+            )
+        nan_canonical_trace = (
+            dataclasses.replace(
+                recovery.canonical.trace[-1],
+                iteration=0,
+                hessian_minimum_eigenvalue=np.nan,
+                hessian_maximum_eigenvalue=1.0,
+            ),
+        )
+        nan_canonical = dataclasses.replace(
+            recovery.canonical,
+            converged=False,
+            reason="non_spd_hessian",
+            accepted_iterations=0,
+            trace=nan_canonical_trace,
+            objective_evaluations=1,
+            gradient_evaluations=1,
+            hessian_evaluations=1,
+            eigenvalue_evaluations=1,
+            factorization_attempts=0,
+            line_search_trials=0,
+            timing=dataclasses.replace(
+                recovery.canonical.timing,
+                trace_elapsed_seconds=(recovery.canonical.timing.trace_elapsed_seconds[-1],),
+            ),
+        )
+        nan_recovery = dataclasses.replace(recovery, canonical=nan_canonical)
+        self.assertFalse(nan_recovery.reference_accepted)
+        self.assertTrue(any("finite SPD first Hessian" in item for item in nan_recovery.reference_failures))
+        with self.assertRaisesRegex(ValueError, "rejected metrics"):
+            dataclasses.replace(
+                recovery,
+                rejected_metrics=dataclasses.replace(recovery.rejected_metrics, position_sha256="0" * 64),
+            )
+        with self.assertRaisesRegex(ValueError, "canonical residual recovery metrics"):
+            changed_x = recovery.canonical.x.detach().clone()
+            changed_x.reshape(-1)[-1] += 1.0e-12
+            dataclasses.replace(
+                recovery,
+                canonical=dataclasses.replace(recovery.canonical, x=changed_x),
+            )
+        with self.assertRaisesRegex(ValueError, "init=False"):
+            dataclasses.replace(recovery, verification_displacement_relative=0.0)
+
+        authentication_args = captured["authentication_args"]
+
+        def rescale_result(result):
+            residual_scale = result.residual_scale * 2.0
+            return dataclasses.replace(
+                result,
+                residual_scale=residual_scale,
+                gradient_limit=result.gradient_limit * 2.0,
+                trace=tuple(
+                    dataclasses.replace(
+                        item,
+                        relative_residual=item.gradient_norm / residual_scale,
+                    )
+                    for item in result.trace
+                ),
+            )
+
+        coordinated_results = {
+            role: rescale_result(getattr(recovery, role)) for role in ("canonical", "verification", "alternate")
+        }
+        coordinated = dataclasses.replace(recovery, **coordinated_results)
+        coordinated_args = (authentication_args[0], coordinated, *authentication_args[2:])
+        coordinated_failures = authenticate(*coordinated_args, **captured["authentication_kwargs"])
+        self.assertTrue(any("residual scale" in item for item in coordinated_failures))
+        self.assertTrue(any("gradient limit" in item for item in coordinated_failures))
+
+        false_final = dataclasses.replace(
+            recovery.canonical.trace[-1],
+            gradient_norm=0.0,
+            relative_residual=0.0,
+            residual_merit=0.0,
+        )
+        false_trace_recovery = dataclasses.replace(
+            recovery,
+            canonical=dataclasses.replace(
+                recovery.canonical,
+                trace=(*recovery.canonical.trace[:-1], false_final),
+            ),
+        )
+        false_trace_args = (authentication_args[0], false_trace_recovery, *authentication_args[2:])
+        false_trace_failures = authenticate(*false_trace_args, **captured["authentication_kwargs"])
+        self.assertIn(
+            "residual recovery canonical final gradient does not match independent evaluation",
+            false_trace_failures,
+        )
+
+        rescaled = dataclasses.replace(recovery, displacement_scale=recovery.displacement_scale * 2.0)
+        rescaled_args = (authentication_args[0], rescaled, *authentication_args[2:])
+        rescaled_failures = authenticate(*rescaled_args, **captured["authentication_kwargs"])
+        self.assertIn("residual recovery changed the displacement normalization scale", rescaled_failures)
+
+        for field, value in (
+            ("gradient_norm", 0.0),
+            ("inverted_tet_fraction", 1.0),
+            ("max_pin_error_m", 1.0e-9),
+        ):
+            with self.subTest(tampered_metric=field):
+                tampered_metrics = dataclasses.replace(recovery.canonical_metrics, **{field: value})
+                tampered = dataclasses.replace(recovery, canonical_metrics=tampered_metrics)
+                tampered_args = (authentication_args[0], tampered, *authentication_args[2:])
+                failures = authenticate(*tampered_args, **captured["authentication_kwargs"])
+                self.assertIn(
+                    "residual recovery canonical metrics do not match independent evaluation",
+                    failures,
+                )
+
+        reference = authentication_args[0]
+        retry_config = authentication_args[2]
+        exception = history._combine_reference_recovery_exception(
+            reference,
+            retry_config,
+            RuntimeError("synthetic residual-polish failure"),
+        )
+        self.assertFalse(exception.accepted)
+        self.assertEqual(exception.deterministic_record["selected_attempt"], 2)
+        self.assertEqual(len(exception.deterministic_record["attempts"]), 3)
+        self.assertEqual(len(exception.timing_record["attempts"]), 3)
+
+        tampered_reference_record = history._thaw_json(reference.deterministic_record)
+        tampered_reference_record["attempts"][1]["record"]["trace"][0]["gradient_norm"] *= 2.0
+        tampered_reference = dataclasses.replace(reference, deterministic_record=tampered_reference_record)
+        primary_config = dataclasses.replace(retry_config, step_relative_tolerance=1.0e-14)
+        self.assertIsNone(
+            history._residual_polish_retry_config(
+                tampered_reference,
+                primary_config,
+                authentication_args[4],
+                authentication_args[5],
+            )
+        )
+
+        alternate_verification = captured["alternate_verification"]
+        repeated_alternate = verify_alternate(*captured["alternate_args"], **captured["alternate_kwargs"])
+        self.assertEqual(
+            repeated_alternate.verification_sha256,
+            alternate_verification.verification_sha256,
+        )
+        alternate_deterministic = alternate_verification.deterministic_record()
+        retimed_alternate = dataclasses.replace(
+            alternate_verification,
+            alternate=dataclasses.replace(
+                alternate_verification.alternate,
+                timing=dataclasses.replace(
+                    alternate_verification.alternate.timing,
+                    total_seconds=alternate_verification.alternate.timing.total_seconds + 1.0,
+                ),
+            ),
+        )
+        self.assertEqual(retimed_alternate.verification_sha256, alternate_verification.verification_sha256)
+        self.assertEqual(retimed_alternate.deterministic_record(), alternate_deterministic)
+        retimed_source_alternate = dataclasses.replace(
+            alternate_verification,
+            source_alternate=dataclasses.replace(
+                alternate_verification.source_alternate,
+                total_seconds=alternate_verification.source_alternate.total_seconds + 1.0,
+            ),
+        )
+        self.assertEqual(
+            retimed_source_alternate.verification_sha256,
+            alternate_verification.verification_sha256,
+        )
+        self.assertEqual(retimed_source_alternate.deterministic_record(), alternate_deterministic)
+        self.assertNotEqual(retimed_source_alternate.timing_record(), alternate_verification.timing_record())
+        with self.assertRaisesRegex(ValueError, "work accounting"):
+            dataclasses.replace(
+                alternate_verification,
+                source_alternate=dataclasses.replace(
+                    alternate_verification.source_alternate,
+                    line_search_trials=alternate_verification.source_alternate.line_search_trials + 1,
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "reason does not reproduce"):
+            dataclasses.replace(
+                alternate_verification,
+                source_alternate=dataclasses.replace(
+                    alternate_verification.source_alternate,
+                    reason="line_search",
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "polish config"):
+            dataclasses.replace(
+                alternate_verification,
+                polish_config=dataclasses.replace(
+                    alternate_verification.polish_config,
+                    max_iterations=alternate_verification.polish_config.max_iterations + 1,
+                ),
+            )
+        invalid_alternate_alpha_trace = (
+            dataclasses.replace(
+                alternate_verification.alternate.trace[0],
+                accepted_step_size=0.3,
+            ),
+            *alternate_verification.alternate.trace[1:],
+        )
+        with self.assertRaisesRegex(ValueError, "backtrack sequence"):
+            dataclasses.replace(
+                alternate_verification,
+                alternate=dataclasses.replace(
+                    alternate_verification.alternate,
+                    trace=invalid_alternate_alpha_trace,
+                ),
+            )
+        nan_alternate_trace = (
+            dataclasses.replace(
+                alternate_verification.alternate.trace[-1],
+                iteration=0,
+                hessian_minimum_eigenvalue=np.nan,
+                hessian_maximum_eigenvalue=1.0,
+            ),
+        )
+        nan_alternate = dataclasses.replace(
+            alternate_verification.alternate,
+            converged=False,
+            reason="non_spd_hessian",
+            accepted_iterations=0,
+            trace=nan_alternate_trace,
+            objective_evaluations=1,
+            gradient_evaluations=1,
+            hessian_evaluations=1,
+            eigenvalue_evaluations=1,
+            factorization_attempts=0,
+            line_search_trials=0,
+            timing=dataclasses.replace(
+                alternate_verification.alternate.timing,
+                trace_elapsed_seconds=(alternate_verification.alternate.timing.trace_elapsed_seconds[-1],),
+            ),
+        )
+        nan_alternate_verification = dataclasses.replace(
+            alternate_verification,
+            alternate=nan_alternate,
+        )
+        self.assertFalse(nan_alternate_verification.reference_accepted)
+        self.assertTrue(
+            any("finite SPD first Hessian" in item for item in nan_alternate_verification.reference_failures)
+        )
+        with self.assertRaisesRegex(ValueError, "alternate residual verification metrics"):
+            changed_alternate_x = alternate_verification.alternate.x.detach().clone()
+            changed_alternate_x.reshape(-1)[-1] += 1.0e-12
+            dataclasses.replace(
+                alternate_verification,
+                alternate=dataclasses.replace(alternate_verification.alternate, x=changed_alternate_x),
+            )
+
+        alternate_authentication_args = captured["alternate_authentication_args"]
+        coordinated_alternate = dataclasses.replace(
+            alternate_verification,
+            alternate=rescale_result(alternate_verification.alternate),
+            repeat=rescale_result(alternate_verification.repeat),
+        )
+        coordinated_alternate_args = (
+            alternate_authentication_args[0],
+            coordinated_alternate,
+            *alternate_authentication_args[2:],
+        )
+        alternate_failures = authenticate_alternate(
+            *coordinated_alternate_args,
+            **captured["alternate_authentication_kwargs"],
+        )
+        self.assertTrue(any("residual scale" in item for item in alternate_failures))
+        self.assertTrue(any("gradient limit" in item for item in alternate_failures))
+        false_alternate_final = dataclasses.replace(
+            alternate_verification.alternate.trace[-1],
+            gradient_norm=0.0,
+            relative_residual=0.0,
+            residual_merit=0.0,
+        )
+        false_trace_alternate = dataclasses.replace(
+            alternate_verification,
+            alternate=dataclasses.replace(
+                alternate_verification.alternate,
+                trace=(
+                    *alternate_verification.alternate.trace[:-1],
+                    false_alternate_final,
+                ),
+            ),
+        )
+        false_trace_alternate_args = (
+            alternate_authentication_args[0],
+            false_trace_alternate,
+            *alternate_authentication_args[2:],
+        )
+        false_trace_alternate_failures = authenticate_alternate(
+            *false_trace_alternate_args,
+            **captured["alternate_authentication_kwargs"],
+        )
+        self.assertIn(
+            "alternate residual verification alternate final gradient does not match independent evaluation",
+            false_trace_alternate_failures,
+        )
+        tampered_representative_metrics = dataclasses.replace(
+            alternate_verification.representative_metrics,
+            gradient_norm=0.0,
+        )
+        tampered_alternate = dataclasses.replace(
+            alternate_verification,
+            representative_metrics=tampered_representative_metrics,
+        )
+        tampered_alternate_args = (
+            alternate_authentication_args[0],
+            tampered_alternate,
+            *alternate_authentication_args[2:],
+        )
+        alternate_failures = authenticate_alternate(
+            *tampered_alternate_args,
+            **captured["alternate_authentication_kwargs"],
+        )
+        self.assertIn(
+            "alternate residual verification representative metrics do not match independent evaluation",
+            alternate_failures,
+        )
+        alternate_reference = alternate_authentication_args[0]
+        alternate_retry_config = alternate_authentication_args[2]
+        alternate_exception = history._combine_alternate_residual_verification_exception(
+            alternate_reference,
+            alternate_retry_config,
+            RuntimeError("synthetic alternate verification failure"),
+        )
+        self.assertFalse(alternate_exception.accepted)
+        self.assertEqual(alternate_exception.deterministic_record["selected_attempt"], 2)
+        self.assertEqual(len(alternate_exception.deterministic_record["attempts"]), 3)
+        self.assertEqual(len(alternate_exception.timing_record["attempts"]), 3)
+        tampered_alternate_record = history._thaw_json(alternate_reference.deterministic_record)
+        tampered_alternate_record["attempts"][1]["record"]["final_objective"] += 1.0
+        tampered_alternate_reference = dataclasses.replace(
+            alternate_reference,
+            deterministic_record=tampered_alternate_record,
+        )
+        alternate_primary_config = dataclasses.replace(
+            alternate_retry_config,
+            step_relative_tolerance=1.0e-14,
+        )
+        self.assertIsNone(
+            history._alternate_verification_retry_config(
+                tampered_alternate_reference,
+                alternate_primary_config,
+                alternate_authentication_args[3],
+                alternate_authentication_args[4],
+                alternate_authentication_args[5],
+            )
+        )
 
     def test_reference_exception_stops_before_commit(self):
         with mock.patch.object(
