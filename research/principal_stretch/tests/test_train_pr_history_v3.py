@@ -79,6 +79,35 @@ class TestPRHistoryV3Trainer(unittest.TestCase):
             training_config=cls.training_config,
             device="cpu",
         )
+        cls.v4_graph_config = dataclasses.replace(
+            cls.graph_config,
+            architecture_version=4,
+            max_multiplicative_update=0.25,
+        )
+        cls.v4_training_config = PRV3TrainingConfig(
+            steps=1,
+            batch_size=1,
+            learning_rate=1.0e-3,
+            position_loss_weight=0.0,
+            deformation_gradient_loss_weight=0.0,
+            loss_mode="normalized-raw-deformation-gradient",
+            raw_deformation_gradient_floor=1.0e-8,
+            seed=23,
+            log_every=1,
+        )
+        # Raw target supervision must not pay for or differentiate through the
+        # global projection used only by decoded-position evaluation.
+        with mock.patch(
+            "research.principal_stretch.train_pr_history_v3.torch_solver.project_deformation_gradient",
+            side_effect=AssertionError("v4 raw target training unexpectedly decoded positions"),
+        ):
+            cls.v4_result = train_pr_history_v3(
+                cls.history,
+                cls.transitions[1:],
+                graph_config=cls.v4_graph_config,
+                training_config=cls.v4_training_config,
+                device="cpu",
+            )
 
     def test_moving_targets_and_authenticated_checkpoint(self):
         first_targets = self.transitions[0].model_inputs()["pin_targets"]
@@ -258,6 +287,121 @@ class TestPRHistoryV3Trainer(unittest.TestCase):
         self.assertLess(rest_log["normalized_raw_deformation_gradient_loss"], 1.0e-8)
         self.assertLess(rest_log["raw_target_deformation_gradient_loss"], 1.0e-16)
         self.assertEqual(rest_log["raw_deformation_gradient_normalizers"], [1.0e-8])
+
+    def test_v4_normalized_raw_training_loads_and_evaluates_one_shot(self):
+        checkpoint = self.v4_result.checkpoint
+        log = checkpoint["metadata"]["training_log"]
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]["loss_mode"], "normalized-raw-deformation-gradient")
+        self.assertAlmostEqual(log[0]["normalized_raw_deformation_gradient_loss"], 1.0, places=12)
+        self.assertAlmostEqual(
+            log[0]["raw_target_deformation_gradient_loss"],
+            log[0]["raw_deformation_gradient_normalizers"][0],
+            places=14,
+        )
+        self.assertGreater(log[0]["gradient_norm_before_clipping"], 0.0)
+
+        state_dict = checkpoint["state_dict"]
+        self.assertGreater(float(torch.linalg.vector_norm(state_dict["output_head.2.weight"])), 0.0)
+        self.assertGreater(float(torch.linalg.vector_norm(state_dict["rotation_head.2.weight"])), 0.0)
+        graph_config = checkpoint["predictor_config"]["graph_transformer"]
+        self.assertEqual(graph_config["architecture_version"], 4)
+        self.assertEqual(graph_config["max_multiplicative_update"], 0.25)
+        self.assertEqual(checkpoint["schema_version"], 3)
+        self.assertEqual(checkpoint["contract"], "pr2901-history-v3-checkpoint-v3")
+        self.assertEqual(checkpoint["decoder_work"]["global_triangular_solves"], 1)
+        self.assertEqual(checkpoint["decoder_work"]["local_polar_sweeps"], 0)
+
+        predictor, dataset, loaded = load_pr_history_v3_checkpoint(
+            checkpoint,
+            self.history,
+            self.transitions[1:],
+            device="cpu",
+        )
+        self.assertEqual(len(dataset.samples), 1)
+        self.assertEqual(predictor.model.config.architecture_version, 4)
+        self.assertEqual(predictor.model.config.max_multiplicative_update, 0.25)
+        self.assertEqual(loaded["checkpoint_payload_sha256"], checkpoint["checkpoint_payload_sha256"])
+
+        report = evaluate_pr_history_v3(
+            self.history,
+            self.transitions[1:],
+            checkpoint,
+            device="cpu",
+            warmup=0,
+            repeats=1,
+        )
+        deterministic = report["deterministic"]
+        self.assertEqual(deterministic["schema_version"], 3)
+        self.assertEqual(deterministic["contract"], "pr2901-history-v3-evaluation-v3")
+        self.assertEqual(deterministic["checkpoint_identity"]["schema_version"], 3)
+        self.assertEqual(
+            deterministic["predictor_config"]["graph_transformer"]["architecture_version"],
+            4,
+        )
+        self.assertEqual(
+            deterministic["predictor_config"]["graph_transformer"]["max_multiplicative_update"],
+            0.25,
+        )
+        self.assertEqual(deterministic["decoder_work"]["global_triangular_solves"], 1)
+        self.assertTrue(math.isfinite(deterministic["samples"][0]["metrics"]["relative_residual"]))
+        self.assertTrue(math.isfinite(deterministic["samples"][0]["metrics"]["free_rms_error_m"]))
+        self.assertEqual(deterministic["samples"][0]["metrics"]["max_pin_error_m"], 0.0)
+
+    def test_v3_without_multiplicative_cap_remains_loadable(self):
+        legacy_v3 = copy.deepcopy(self.result.checkpoint)
+        metadata_config = legacy_v3["metadata"]["predictor_config"]
+        metadata_config["graph_transformer"].pop("max_multiplicative_update", None)
+        legacy_v3["predictor_config"] = copy.deepcopy(metadata_config)
+        self._reauthenticate_checkpoint(legacy_v3)
+
+        predictor, _dataset, loaded = load_pr_history_v3_checkpoint(
+            legacy_v3,
+            self.history,
+            self.transitions,
+            device="cpu",
+        )
+        self.assertEqual(predictor.model.config.architecture_version, 3)
+        self.assertEqual(
+            predictor.model.config.max_multiplicative_update,
+            GraphTransformerConfig.max_multiplicative_update,
+        )
+        self.assertNotIn(
+            "max_multiplicative_update",
+            loaded["metadata"]["predictor_config"]["graph_transformer"],
+        )
+
+        report = evaluate_pr_history_v3(
+            self.history,
+            self.transitions,
+            legacy_v3,
+            device="cpu",
+            warmup=0,
+            repeats=1,
+        )
+        self.assertEqual(
+            report["deterministic"]["predictor_config"]["graph_transformer"]["architecture_version"],
+            3,
+        )
+        self.assertNotIn(
+            "max_multiplicative_update",
+            report["deterministic"]["predictor_config"]["graph_transformer"],
+        )
+
+    def test_v4_checkpoint_requires_multiplicative_cap(self):
+        malformed = copy.deepcopy(self.v4_result.checkpoint)
+        metadata_config = malformed["metadata"]["predictor_config"]
+        metadata_config["graph_transformer"].pop("max_multiplicative_update")
+        malformed["predictor_config"] = copy.deepcopy(metadata_config)
+        self._reauthenticate_checkpoint(malformed)
+
+        with self.assertRaisesRegex(ValueError, "architecture-v4 checkpoint is missing max_multiplicative_update"):
+            load_pr_history_v3_checkpoint(
+                malformed,
+                self.history,
+                self.transitions[1:],
+                device="cpu",
+            )
 
     def test_loss_mode_validation_preserves_decoded_default(self):
         self.assertEqual(PRV3TrainingConfig().loss_mode, "decoded-position-deformation")
@@ -463,6 +607,15 @@ class TestPRHistoryV3Trainer(unittest.TestCase):
     def test_fail_closed_on_config_or_history_mismatch(self):
         with self.assertRaisesRegex(ValueError, "unsupported projection_backend"):
             PRV3TrainingConfig(projection_backend="sparse_pcg")
+
+        with self.assertRaisesRegex(ValueError, "architecture version 3 or 4"):
+            train_pr_history_v3(
+                self.history,
+                self.transitions[:1],
+                graph_config=dataclasses.replace(self.graph_config, architecture_version=2),
+                training_config=PRV3TrainingConfig(steps=1, batch_size=1),
+                device="cpu",
+            )
 
         wrong_dt = GraphTransformerConfig(
             hidden_dim=16,

@@ -31,13 +31,33 @@ the observed ``F``.  It remains finite for collapsed or inverted observations,
 but it cannot repair either condition in its target field; those states need a
 separate validity/recovery mechanism.
 
-This is positive definite by construction and invariant to an active world
-rigid transform.  World vectors (gravity, load, velocity, and current edge
-offsets) are pulled into a covariant deformation frame before entering
-ordinary MLPs.  Under ``x' = Q x + t`` and ``f' = Q f``, the frame becomes
-``A' = Q A``, so every learned feature and the material-frame target stretch
-remain unchanged.  The downstream local-global decoder then makes the full
-position solver SE(3)-equivariant.
+Architecture version 4 removes every spectral operation from the full-gradient
+inference path.  It observes the Green strain
+
+``E = 0.5 * (F.T @ F - I)``
+
+and predicts one bounded material right correction
+
+``M = rho R / sqrt(rho**2 + ||R||_F**2)``,
+``R = symmetric(raw_6) + skew(raw_3)``,
+``F_target = F (I + M)``.
+
+Here ``0 < rho < 1``, so ``||M||_2 <= ||M||_F < 1``.  The Neumann
+criterion makes ``I + M`` invertible, and the nonsingular path ``I + t M``
+connects it continuously to the identity.  Therefore ``det(I + M) > 0``:
+version 4 preserves both the rank and determinant sign of the observed
+gradient.  As in version 3, it deliberately cannot repair an already collapsed
+or inverted observation.
+
+The legacy right-stretch output is positive definite by construction, and all
+versions are invariant to an active world rigid transform.  World vectors
+(gravity, load, velocity, and current edge offsets) are pulled into a
+covariant deformation frame before entering ordinary MLPs.  Under
+``x' = Q x + t`` and ``f' = Q f``, the frame becomes ``A' = Q A`` in v0-v3
+and ``F' = Q F`` in v4.  Every learned feature therefore remains unchanged;
+the downstream decoder makes the full position solver SE(3)-equivariant.
+The component MLPs do not, however, impose covariance under an arbitrary
+change of the rest/material coordinate basis.
 
 The topology path follows HOOD's useful multiresolution principle.  Tets are
 coarsened only along shared faces, each quotient graph runs content-dependent
@@ -76,6 +96,7 @@ class GraphTransformerConfig:
     dropout: float = 0.0
     max_hencky_update: float = 0.35
     max_rotation_update: float = 0.75
+    max_multiplicative_update: float = 0.5
     dt: float = 1.0 / 60.0
     architecture_version: int = 3
 
@@ -92,10 +113,12 @@ class GraphTransformerConfig:
             raise ValueError("max_rotation_update must be positive")
         if self.max_rotation_update > math.pi:
             raise ValueError("max_rotation_update must not exceed pi")
+        if not math.isfinite(self.max_multiplicative_update) or not 0.0 < self.max_multiplicative_update < 1.0:
+            raise ValueError("max_multiplicative_update must be strictly between zero and one")
         if not math.isfinite(self.dt) or self.dt <= 0.0:
             raise ValueError("dt must be positive")
-        if self.architecture_version not in (0, 1, 2, 3):
-            raise ValueError("architecture_version must be 0, 1, 2, or 3")
+        if self.architecture_version not in (0, 1, 2, 3, 4):
+            raise ValueError("architecture_version must be 0, 1, 2, 3, or 4")
 
 
 def _mlp(in_dim: int, hidden_dim: int, out_dim: int) -> nn.Sequential:
@@ -145,6 +168,34 @@ def _radially_bound_vector(raw: torch.Tensor, maximum: float) -> torch.Tensor:
     norm = torch.sqrt((raw * raw).sum(dim=-1, keepdim=True) + 1.0e-16)
     scale = maximum / torch.sqrt(maximum * maximum + norm * norm)
     return raw * scale
+
+
+def _radially_bound_matrix(raw: torch.Tensor, maximum: float) -> torch.Tensor:
+    """Bound a general matrix by its Frobenius norm, without axis bias.
+
+    Since the operator norm is no larger than the Frobenius norm and
+    ``maximum < 1`` for architecture v4, adding the result to the identity
+    always gives an invertible matrix with positive determinant.  The
+    effective cap stays at least eight representable steps below one so a
+    valid Python ``maximum`` cannot round to one in a lower-precision neural
+    dtype.  A cap below that dtype's smallest positive normal conservatively
+    produces a zero correction because accelerators may flush subnormals.
+    Max-scaling keeps the normalization finite for every finite input without
+    a device-to-host synchronization or data-dependent control flow.
+    """
+    dtype_info = torch.finfo(raw.dtype)
+    if maximum < dtype_info.tiny:
+        return raw * 0.0
+    dtype_margin = 8.0 * dtype_info.eps
+    safe_maximum = min(maximum, 1.0 - dtype_margin)
+    magnitude = raw.abs().amax(dim=(-2, -1), keepdim=True)
+    normalization_scale = magnitude.clamp(min=safe_maximum)
+    scaled_raw = raw / normalization_scale
+    scaled_maximum = safe_maximum / normalization_scale
+    denominator = torch.sqrt(
+        scaled_maximum * scaled_maximum + (scaled_raw * scaled_raw).sum(dim=(-2, -1), keepdim=True)
+    )
+    return scaled_raw * (safe_maximum / denominator)
 
 
 def _skew(vector: torch.Tensor) -> torch.Tensor:
@@ -328,7 +379,7 @@ class ParentCrossAttention(nn.Module):
 
 
 class PrincipalStretchGraphTransformer(nn.Module):
-    """Sparse graph U-transformer that predicts an SPD right-stretch field."""
+    """Sparse graph U-transformer for stretch or full-gradient targets."""
 
     def __init__(
         self,
@@ -552,6 +603,171 @@ class PrincipalStretchGraphTransformer(nn.Module):
             raise RuntimeError(f"internal edge feature size {feature.shape[-1]} != {EDGE_FEATURE_DIM}")
         return feature.to(dtype=self.output_head[-1].weight.dtype)
 
+    def _node_features_v4(
+        self,
+        fields: dict[str, torch.Tensor],
+        gravity: torch.Tensor,
+        level: int,
+    ) -> torch.Tensor:
+        """Build spectral-free active-world-invariant node observations."""
+        strain = fields["strain"]
+        strain_previous = fields["strain_previous"]
+        frame = fields["frame"]
+        gravity_material = self._project(frame, gravity[:, None].expand(-1, strain.shape[1], -1))
+        force_material = self._project(frame, fields["force"])
+        velocity_material = self._project(frame, fields["velocity"])
+        determinant = torch.linalg.det(fields["F"])
+        rms_deformation = fields["F"].square().mean(dim=(-2, -1)).sqrt()
+        orientation = determinant / (math.sqrt(3.0) * rms_deformation).pow(3).clamp(min=1.0e-12)
+        volume = self._level_buffer("volume", level).to(strain)
+        log_relative_volume = torch.log(volume / volume.mean()).expand(strain.shape[0], -1)
+
+        feature = torch.cat(
+            [
+                sym_to_vec(strain),
+                sym_to_vec(strain_previous),
+                sym_to_vec(strain - strain_previous),
+                torch.asinh(gravity_material / 10.0),
+                torch.asinh(force_material / 30.0),
+                torch.asinh(velocity_material),
+                torch.log(fields["mu"].clamp(min=1.0) / 1.0e5),
+                torch.log(fields["lam"].clamp(min=1.0) / 1.0e5),
+                fields["pin"],
+                log_relative_volume[..., None],
+                orientation[..., None],
+                torch.log(determinant.abs().clamp(min=1.0e-6)).clamp(min=-8.0, max=8.0)[..., None],
+                _spectral_invariants(strain),
+            ],
+            dim=-1,
+        )
+        if feature.shape[-1] != NODE_FEATURE_DIM:
+            raise RuntimeError(f"internal v4 node feature size {feature.shape[-1]} != {NODE_FEATURE_DIM}")
+        return feature.to(dtype=self.output_head[-1].weight.dtype)
+
+    def _edge_features_v4(self, fields: dict[str, torch.Tensor], level: int) -> torch.Tensor:
+        """Build spectral-free edge observations from deformation contractions."""
+        adjacency = self._level_buffer("adjacency", level)
+        valid = adjacency >= 0
+        index = adjacency.clamp(min=0)
+        centroid = fields["centroid"]
+        frame = fields["frame"]
+        strain = fields["strain"]
+        offset = centroid[:, index] - centroid[:, :, None]
+        rest_length = self._level_buffer("rest_length", level).to(offset)[None, :, :, None]
+        offset_material = torch.einsum("bnji,bnkj->bnki", frame, offset) / rest_length
+        extension = offset.norm(dim=-1, keepdim=True) / rest_length - 1.0
+        neighbor_frame = frame[:, index]
+        relative_deformation = torch.einsum("bnji,bnkjl->bnkil", frame, neighbor_frame)
+
+        neighbor_strain = strain[:, index]
+        strain_difference = neighbor_strain - strain[:, :, None]
+        trace_difference = strain_difference.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+        commutator = strain[:, :, None] @ neighbor_strain - neighbor_strain @ strain[:, :, None]
+        tensor_relation = torch.stack(
+            [
+                torch.sqrt((strain_difference * strain_difference).sum(dim=(-2, -1)) + 1.0e-16),
+                trace_difference,
+                torch.sqrt((commutator * commutator).sum(dim=(-2, -1)) + 1.0e-16),
+            ],
+            dim=-1,
+        )
+        rest_direction = self._level_buffer("rest_direction", level).to(offset_material)
+        log_weight = self._level_buffer("log_edge_weight", level).to(offset_material)
+        feature = torch.cat(
+            [
+                offset_material,
+                rest_direction[None].expand(offset.shape[0], -1, -1, -1),
+                extension,
+                relative_deformation.flatten(-2),
+                tensor_relation,
+                log_weight[None, :, :, None].expand(offset.shape[0], -1, -1, -1),
+            ],
+            dim=-1,
+        )
+        feature = torch.where(valid[None, :, :, None], feature, torch.zeros_like(feature))
+        if feature.shape[-1] != EDGE_FEATURE_DIM:
+            raise RuntimeError(f"internal v4 edge feature size {feature.shape[-1]} != {EDGE_FEATURE_DIM}")
+        return feature.to(dtype=self.output_head[-1].weight.dtype)
+
+    def _prepare_v4(
+        self,
+        state: SolverState,
+        x_current: torch.Tensor,
+        x_previous: torch.Tensor,
+        force: torch.Tensor,
+        gravity: torch.Tensor,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        pin: torch.Tensor,
+    ) -> tuple[bool, torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+        """Prepare v4 features without spectral, matrix-log/exp, or polar operations."""
+        batched = x_current.dim() == 3
+        if not batched:
+            x_current = x_current[None]
+            x_previous = x_previous[None]
+            force = force[None]
+        batch_size = x_current.shape[0]
+        if gravity.dim() == 1:
+            gravity = gravity[None].expand(batch_size, -1)
+        if mu.dim() == 1:
+            mu = mu[None].expand(batch_size, -1)
+            lam = lam[None].expand(batch_size, -1)
+            pin = pin[None].expand(batch_size, -1)
+
+        x_tet = x_current[:, self.tets]
+        x_previous_tet = x_previous[:, self.tets]
+        F = torch.einsum("tac,btad->btdc", state.J, x_tet)
+        F_previous = torch.einsum("tac,btad->btdc", state.J, x_previous_tet)
+        eye = torch.eye(3, dtype=F.dtype, device=F.device)
+        strain = 0.5 * (F.transpose(-1, -2) @ F - eye)
+        strain_previous = 0.5 * (F_previous.transpose(-1, -2) @ F_previous - eye)
+        centroid = x_tet.mean(dim=2)
+        previous_centroid = x_previous_tet.mean(dim=2)
+        fields: dict[str, torch.Tensor] = {
+            "strain": strain,
+            "strain_previous": strain_previous,
+            "F": F,
+            # F transforms as Q F under an active world rotation, so F.T v,
+            # F.T offset, and F_i.T F_j are invariant without a polar frame.
+            "frame": F,
+            "centroid": centroid,
+            "velocity": (centroid - previous_centroid) / self.config.dt,
+            "force": self.conservative_tet_load(force),
+            "mu": mu[..., None],
+            "lam": lam[..., None],
+            "pin": pin[..., None],
+        }
+        node_features: list[torch.Tensor] = []
+        edge_features: list[torch.Tensor] = []
+
+        for level in range(self.n_levels + 1):
+            node_features.append(self._node_features_v4(fields, gravity, level))
+            edge_features.append(self._edge_features_v4(fields, level))
+            if level == self.n_levels:
+                break
+            next_level = level + 1
+            assign = self._level_buffer("assign", next_level)
+            child_volume = self._level_buffer("child_volume", next_level).to(strain)
+            n_parent = self._level_buffer("volume", next_level).shape[0]
+            pooled: dict[str, torch.Tensor] = {}
+            for name, value in fields.items():
+                if name == "force":
+                    pooled[name] = _batch_pool_sum(value, assign, n_parent)
+                elif name not in ("F", "frame"):
+                    pooled[name] = _batch_pool_mean(value, assign, child_volume, n_parent)
+            # A representative child F avoids cancellation in mean(F) for
+            # both frame projections and determinant-derived node features,
+            # while retaining exact active-world covariance at every level.
+            representative = self._level_buffer("representative", next_level)
+            pooled["F"] = fields["F"][:, representative]
+            pooled["frame"] = fields["frame"][:, representative]
+            fields = pooled
+
+        # _encode has one legacy tuple shape.  v4 consumes base_F and ignores
+        # the two legacy Hencky/frame slots, so return finite aliases without
+        # introducing any spectral compatibility work.
+        return batched, F, strain, F, node_features, edge_features
+
     def _prepare(
         self,
         state: SolverState,
@@ -563,6 +779,8 @@ class PrincipalStretchGraphTransformer(nn.Module):
         lam: torch.Tensor,
         pin: torch.Tensor,
     ) -> tuple[bool, torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+        if self.config.architecture_version == 4:
+            return self._prepare_v4(state, x_current, x_previous, force, gravity, mu, lam, pin)
         batched = x_current.dim() == 3
         if not batched:
             x_current = x_current[None]
@@ -730,6 +948,10 @@ class PrincipalStretchGraphTransformer(nn.Module):
         Returns:
             SPD target right stretches, ``(T, 3, 3)`` or ``(B, T, 3, 3)``.
         """
+        if self.config.architecture_version == 4:
+            raise RuntimeError(
+                "architecture_version 4 predicts only full deformation gradients; use predict_deformation_gradient"
+            )
         batched, _base_F, base_H, _base_frame, hidden = self._encode(
             state, x_current, x_previous, force, gravity, mu, lam, pin
         )
@@ -749,25 +971,37 @@ class PrincipalStretchGraphTransformer(nn.Module):
     ) -> torch.Tensor:
         """Predict a full, active-SE(3)-equivariant deformation gradient.
 
-        This v3-only path retains the invariant SPD Hencky update and adds an
-        invariant material-frame relative rotation.  For observed gradient
-        ``F`` and Hencky tensor ``H``, it returns
-        ``A exp(skew(omega)) exp(H + delta_H)``, where
-        ``A = F exp(-H)``.  Both heads are zero-initialized, so a new model
-        returns the observed ``F`` up to kinematic floating-point roundoff.
-        Since every learned right factor is invertible with positive
-        determinant, the target preserves the rank and determinant sign of
-        the observation; this method does not repair collapse or inversion.
+        Version 3 retains the invariant SPD Hencky update and adds an invariant
+        material-frame relative rotation.  Version 4 instead assembles a
+        general material correction ``R`` from the symmetric and skew heads,
+        jointly bounds its Frobenius norm to ``M``, and returns ``F (I + M)``.
+        Since the v4 bound is strictly below one, ``I + M`` is invertible with
+        positive determinant.  Both versions therefore preserve the rank and
+        determinant sign of the observation rather than repairing collapse or
+        inversion.
 
         Returns:
             Target deformation gradients, ``(T, 3, 3)`` or
             ``(B, T, 3, 3)``.
         """
         if self.config.architecture_version < 3:
-            raise RuntimeError("full deformation-gradient prediction requires architecture_version 3")
-        batched, _base_F, base_H, base_frame, hidden = self._encode(
+            raise RuntimeError("full deformation-gradient prediction requires architecture_version 3 or 4")
+        batched, base_F, base_H, base_frame, hidden = self._encode(
             state, x_current, x_previous, force, gravity, mu, lam, pin
         )
+        if self.config.architecture_version == 4:
+            raw_symmetric = vec_to_sym(self.output_head(hidden))
+            raw_skew = _skew(self.rotation_head(hidden))
+            correction = _radially_bound_matrix(
+                raw_symmetric + raw_skew,
+                self.config.max_multiplicative_update,
+            ).to(dtype=base_F.dtype)
+            # F + F M is algebraically F (I + M), while making a zero-head
+            # model recover the observed F exactly instead of through a
+            # numerically redundant multiplication by an explicit identity.
+            target = base_F + base_F @ correction
+            return target if batched else target[0]
+
         target_H = self._target_hencky(base_H, hidden)
         omega = _radially_bound_vector(self.rotation_head(hidden), self.config.max_rotation_update)
         relative_rotation = torch.matrix_exp(_skew(omega.to(dtype=base_H.dtype)))

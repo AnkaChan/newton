@@ -6,26 +6,32 @@ from __future__ import annotations
 
 import math
 import unittest
+from unittest import mock
 
 import numpy as np
 import torch
 
+from research.principal_stretch import graph_transformer as gt
 from research.principal_stretch import torch_solver as ts
 from research.principal_stretch.graph_transformer import (
     EDGE_FEATURE_DIM,
     GraphTransformerConfig,
     PrincipalStretchGraphTransformer,
     RelationAttentionBlock,
+    _radially_bound_matrix,
     _radially_bound_symmetric,
     _radially_bound_vector,
     _skew,
     covariant_observation_frame,
 )
 from research.principal_stretch.hierarchy import build_hierarchy
+from research.principal_stretch.model import vec_to_sym
 from research.principal_stretch.predictor import (
     build_stretch_predictor,
     checkpoint_predictor_config,
     load_stretch_predictor_state,
+    predictor_decoder_work,
+    resolve_solver_iterations,
 )
 from research.principal_stretch.spd_log import spd_floor, sym_exp, sym_log
 
@@ -136,6 +142,9 @@ class TestGraphTransformerConfig(unittest.TestCase):
         self.assertEqual(config.architecture_version, 3)
         self.assertGreater(config.max_rotation_update, 0.0)
         self.assertLessEqual(config.max_rotation_update, math.pi)
+        self.assertGreater(config.max_multiplicative_update, 0.0)
+        self.assertLess(config.max_multiplicative_update, 1.0)
+        self.assertEqual(GraphTransformerConfig(architecture_version=4).architecture_version, 4)
 
         invalid = (
             ({"max_hencky_update": 0.0}, "max_hencky_update"),
@@ -143,8 +152,12 @@ class TestGraphTransformerConfig(unittest.TestCase):
             ({"max_rotation_update": 0.0}, "max_rotation_update"),
             ({"max_rotation_update": math.inf}, "max_rotation_update"),
             ({"max_rotation_update": math.pi + 1.0e-6}, "must not exceed pi"),
+            ({"max_multiplicative_update": 0.0}, "max_multiplicative_update"),
+            ({"max_multiplicative_update": math.nan}, "max_multiplicative_update"),
+            ({"max_multiplicative_update": 1.0}, "strictly between"),
+            ({"max_multiplicative_update": 1.1}, "strictly between"),
             ({"dt": math.inf}, "dt"),
-            ({"architecture_version": 4}, "architecture_version"),
+            ({"architecture_version": 5}, "architecture_version"),
         )
         for kwargs, message in invalid:
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
@@ -172,6 +185,54 @@ class TestGraphTransformerConfig(unittest.TestCase):
         (bounded_H.square().sum() + rotation.square().sum()).backward()
         self.assertTrue(torch.isfinite(symmetric_raw.grad).all())
         self.assertTrue(torch.isfinite(vector_raw.grad).all())
+
+    def test_multiplicative_matrix_bound_is_orientation_preserving(self):
+        raw = torch.linspace(-20.0, 17.0, 36, dtype=torch.float64).reshape(4, 3, 3).requires_grad_(True)
+        maximum = 0.5
+        correction = _radially_bound_matrix(raw, maximum)
+        frobenius = torch.linalg.matrix_norm(correction, ord="fro")
+        factor = torch.eye(3, dtype=torch.float64) + correction
+
+        self.assertTrue(bool((frobenius < maximum).all()))
+        self.assertGreater(torch.linalg.det(factor).min().item(), 0.0)
+        self.assertGreater(torch.linalg.svdvals(factor)[..., -1].min().item(), 1.0 - maximum - 1.0e-12)
+
+        factor.square().sum().backward()
+        self.assertTrue(torch.isfinite(raw.grad).all())
+
+    def test_multiplicative_matrix_bound_is_safe_near_one_for_extreme_neural_dtypes(self):
+        maximum = math.nextafter(1.0, 0.0)
+        for dtype in (torch.float32, torch.bfloat16):
+            with self.subTest(dtype=dtype):
+                largest = torch.finfo(dtype).max
+                raw = torch.zeros((2, 3, 3), dtype=dtype)
+                raw[0, 0, 0] = -largest
+                raw[1].fill_(largest)
+
+                correction = _radially_bound_matrix(raw, maximum)
+                correction64 = correction.double()
+                operator_norm = torch.linalg.matrix_norm(correction64, ord=2)
+                frobenius_norm = torch.linalg.matrix_norm(correction64, ord="fro")
+                usable_upper_bound = 1.0 - 4.0 * torch.finfo(dtype).eps
+                factor = torch.eye(3, dtype=torch.float64) + correction64
+
+                self.assertTrue(torch.isfinite(correction).all())
+                self.assertLessEqual(operator_norm.max().item(), usable_upper_bound)
+                self.assertLessEqual(frobenius_norm.max().item(), usable_upper_bound)
+                self.assertGreater(torch.linalg.det(factor).min().item(), 0.0)
+
+    def test_multiplicative_matrix_bound_handles_cap_below_head_dtype_range(self):
+        maximum = 1.0e-100
+        GraphTransformerConfig(architecture_version=4, max_multiplicative_update=maximum)
+        for dtype in (torch.float32, torch.bfloat16):
+            with self.subTest(dtype=dtype):
+                raw = torch.full((2, 3, 3), torch.finfo(dtype).max, dtype=dtype, requires_grad=True)
+                correction = _radially_bound_matrix(raw, maximum)
+
+                self.assertTrue(torch.isfinite(correction).all())
+                self.assertTrue(torch.equal(correction, torch.zeros_like(correction)))
+                correction.sum().backward()
+                self.assertTrue(torch.isfinite(raw.grad).all())
 
 
 class TestRelationAttention(unittest.TestCase):
@@ -509,6 +570,155 @@ class TestPrincipalStretchGraphTransformer(unittest.TestCase):
         self.assertLess((target_force[:8] - target_zero[:8]).abs().max().item(), 1.0e-7)
 
 
+class TestMultiplicativeV4(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.rest, cls.tets = _chain_mesh(12)
+
+    def _model_and_state(self):
+        return _model_and_state(self.rest, self.tets, architecture_version=4)[:2]
+
+    def test_zero_heads_are_exact_identity_and_legacy_forward_fails(self):
+        model, state = self._model_and_state()
+        inputs = _inputs(self.rest, self.tets)
+        target = model.predict_deformation_gradient(state, *inputs)
+        observed = ts.compute_F(inputs[0], state.tets, state.J)
+
+        self.assertTrue(torch.equal(target, observed))
+        self.assertEqual(target.dtype, observed.dtype)
+        with self.assertRaisesRegex(RuntimeError, "predicts only full deformation gradients"):
+            model(state, *inputs)
+
+        probe = torch.linspace(-0.8, 1.2, target.numel(), dtype=target.dtype).reshape_as(target)
+        (target * probe).sum().backward()
+        self.assertGreater(model.output_head[-1].bias.grad.abs().max().item(), 0.0)
+        self.assertGreater(model.rotation_head[-1].bias.grad.abs().max().item(), 0.0)
+
+    def test_heads_follow_joint_bounded_right_correction_formula(self):
+        model, state = self._model_and_state()
+        inputs = _inputs(self.rest, self.tets)
+        raw_symmetric = torch.tensor([0.7, -0.2, 0.4, 0.1, -0.6, 0.3])
+        raw_axial = torch.tensor([0.9, -0.5, 0.4])
+        with torch.no_grad():
+            model.output_head[-1].bias.copy_(raw_symmetric)
+            model.rotation_head[-1].bias.copy_(raw_axial)
+
+        target = model.predict_deformation_gradient(state, *inputs)
+        observed = ts.compute_F(inputs[0], state.tets, state.J)
+        raw = vec_to_sym(raw_symmetric).expand(self.tets.shape[0], -1, -1) + _skew(
+            raw_axial.expand(self.tets.shape[0], -1)
+        )
+        correction = _radially_bound_matrix(raw, model.config.max_multiplicative_update).double()
+        expected = observed + observed @ correction
+
+        torch.testing.assert_close(target, expected, rtol=2.0e-7, atol=2.0e-7)
+        self.assertLess(
+            torch.linalg.matrix_norm(correction, ord="fro").max().item(),
+            model.config.max_multiplicative_update,
+        )
+        factor = torch.eye(3, dtype=correction.dtype) + correction
+        self.assertGreater(torch.linalg.det(factor).min().item(), 0.0)
+
+    def test_rank_and_determinant_sign_survive_bad_observations(self):
+        model, state = self._model_and_state()
+        inputs = list(_inputs(self.rest, self.tets))
+        with torch.no_grad():
+            model.output_head[-1].bias.copy_(torch.tensor([4.0, -3.0, 2.0, 1.5, -2.5, 0.7]))
+            model.rotation_head[-1].bias.copy_(torch.tensor([3.0, -4.0, 2.0]))
+
+        transforms = (
+            torch.diag(torch.tensor([-1.0, 1.0, 1.0], dtype=torch.float64)),
+            torch.diag(torch.tensor([1.0, 1.0, 0.0], dtype=torch.float64)),
+        )
+        for transform in transforms:
+            with self.subTest(transform=transform.diagonal().tolist()):
+                model.zero_grad(set_to_none=True)
+                x_current = (torch.as_tensor(self.rest, dtype=torch.float64) @ transform.T).requires_grad_(True)
+                target = model.predict_deformation_gradient(state, x_current, x_current, *inputs[2:])
+                observed = ts.compute_F(x_current, state.tets, state.J)
+                self.assertTrue(torch.isfinite(target).all())
+
+                observed_det = torch.linalg.det(observed)
+                target_det = torch.linalg.det(target)
+                collapsed = observed_det.abs() < 1.0e-12
+                if bool(collapsed.any()):
+                    self.assertLess(target_det[collapsed].abs().max().item(), 1.0e-12)
+                if bool((~collapsed).any()):
+                    self.assertTrue(
+                        torch.equal(torch.sign(target_det[~collapsed]), torch.sign(observed_det[~collapsed]))
+                    )
+                self.assertTrue(
+                    torch.equal(
+                        torch.linalg.matrix_rank(target, atol=1.0e-10, rtol=0.0),
+                        torch.linalg.matrix_rank(observed, atol=1.0e-10, rtol=0.0),
+                    )
+                )
+
+                target.square().mean().backward()
+                self.assertTrue(torch.isfinite(x_current.grad).all())
+                for parameter in model.parameters():
+                    if parameter.grad is not None:
+                        self.assertTrue(torch.isfinite(parameter.grad).all())
+
+    def test_active_se3_batch_and_gradients(self):
+        model, state = self._model_and_state()
+        _randomize_output(model)
+        model.eval()
+        inputs = list(_inputs(self.rest, self.tets))
+        target = model.predict_deformation_gradient(state, *inputs)
+
+        batched = [torch.stack([value, value]) if value.dim() > 1 else value for value in inputs]
+        batched[3:] = inputs[3:]
+        target_batch = model.predict_deformation_gradient(state, *batched)
+        torch.testing.assert_close(target_batch, torch.stack([target, target]), rtol=2.0e-6, atol=2.0e-6)
+
+        rotation = _rotation()
+        translation = torch.tensor([0.3, -0.2, 0.5], dtype=torch.float64)
+
+        def rotate(vector):
+            return vector @ rotation.T
+
+        transformed = model.predict_deformation_gradient(
+            state,
+            rotate(inputs[0]) + translation,
+            rotate(inputs[1]) + translation,
+            rotate(inputs[2]),
+            rotate(inputs[3]),
+            *inputs[4:],
+        )
+        expected = torch.einsum("ij,tjk->tik", rotation, target)
+        torch.testing.assert_close(transformed, expected, rtol=5.0e-6, atol=5.0e-6)
+
+        model.zero_grad(set_to_none=True)
+        x_current = inputs[0].clone().requires_grad_(True)
+        differentiable = model.predict_deformation_gradient(state, x_current, *inputs[1:])
+        differentiable.square().mean().backward()
+        self.assertTrue(torch.isfinite(x_current.grad).all())
+        self.assertGreater(model.down_attention[0].query.weight.grad.abs().max().item(), 0.0)
+
+    def test_hot_path_does_not_call_spectral_or_polar_operations(self):
+        model, state = self._model_and_state()
+        _randomize_output(model)
+        inputs = _inputs(self.rest, self.tets)
+        forbidden = {
+            "spd_floor": mock.Mock(side_effect=AssertionError("spd_floor")),
+            "sym_log": mock.Mock(side_effect=AssertionError("sym_log")),
+            "sym_exp": mock.Mock(side_effect=AssertionError("sym_exp")),
+            "polar_rotation": mock.Mock(side_effect=AssertionError("polar_rotation")),
+            "polar_rotation_forward": mock.Mock(side_effect=AssertionError("polar_rotation_forward")),
+            "covariant_observation_frame": mock.Mock(side_effect=AssertionError("covariant_observation_frame")),
+        }
+        with (
+            mock.patch.multiple(gt, **forbidden),
+            mock.patch.object(torch, "matrix_exp", side_effect=AssertionError("matrix_exp")),
+            mock.patch.object(torch.linalg, "eigh", side_effect=AssertionError("eigh")),
+        ):
+            target = model.predict_deformation_gradient(state, *inputs)
+            self.assertTrue(torch.isfinite(target).all())
+            with self.assertRaisesRegex(RuntimeError, "predicts only full deformation gradients"):
+                model(state, *inputs)
+
+
 class TestCovariantObservationFrame(unittest.TestCase):
     def test_rotation_covariance_and_gradients_on_bad_states(self):
         Q = _rotation()
@@ -646,6 +856,7 @@ class TestGraphCheckpointCompatibility(unittest.TestCase):
         config = source.checkpoint_config()
         del config["graph_transformer"]["architecture_version"]
         del config["graph_transformer"]["max_rotation_update"]
+        self.assertNotIn("max_multiplicative_update", config["graph_transformer"])
         checkpoint = {"predictor_config": config, "state_dict": source.model.state_dict()}
         normalized = checkpoint_predictor_config(checkpoint)
         self.assertEqual(normalized["graph_transformer"]["architecture_version"], 1)
@@ -653,6 +864,8 @@ class TestGraphCheckpointCompatibility(unittest.TestCase):
             normalized["graph_transformer"]["max_rotation_update"],
             GraphTransformerConfig.max_rotation_update,
         )
+        self.assertNotIn("max_multiplicative_update", normalized["graph_transformer"])
+        self.assertEqual(normalized, source.checkpoint_config())
 
         rebuilt = self._predictor(1)
         load_stretch_predictor_state(rebuilt, checkpoint)
@@ -681,12 +894,16 @@ class TestGraphCheckpointCompatibility(unittest.TestCase):
             with self.subTest(version=version):
                 source = self._predictor(version)
                 self.assertFalse(any(name.startswith("rotation_head.") for name in source.model.state_dict()))
+                config = source.checkpoint_config()
+                self.assertNotIn("max_multiplicative_update", config["graph_transformer"])
                 checkpoint = {
-                    "predictor_config": source.checkpoint_config(),
+                    "predictor_config": config,
                     "state_dict": source.model.state_dict(),
                 }
                 normalized = checkpoint_predictor_config(checkpoint)
                 self.assertEqual(normalized["graph_transformer"]["architecture_version"], version)
+                self.assertNotIn("max_multiplicative_update", normalized["graph_transformer"])
+                self.assertEqual(normalized, source.checkpoint_config())
                 rebuilt = self._predictor(version)
                 load_stretch_predictor_state(rebuilt, checkpoint)
                 for name, value in source.model.state_dict().items():
@@ -697,14 +914,40 @@ class TestGraphCheckpointCompatibility(unittest.TestCase):
                         *_inputs(self.rest, self.tets),
                     )
 
+    def test_v0_through_v3_normalization_matches_strict_init_config(self):
+        for version in range(4):
+            with self.subTest(version=version):
+                source = self._predictor(version)
+                current_config = source.checkpoint_config()
+                normalized = checkpoint_predictor_config(
+                    {
+                        "predictor_config": current_config,
+                        "state_dict": source.model.state_dict(),
+                    }
+                )
+
+                # train.py's default resume guard compares these dictionaries
+                # directly; adding an unused v4-only field would reject a
+                # bit-compatible legacy checkpoint.
+                self.assertEqual(normalized, current_config)
+                reconstructed = GraphTransformerConfig(**normalized["graph_transformer"])
+                self.assertEqual(
+                    reconstructed.max_multiplicative_update,
+                    GraphTransformerConfig.max_multiplicative_update,
+                )
+
     def test_v3_checkpoint_records_and_loads_both_heads(self):
         source = self._predictor(3)
         config = source.checkpoint_config()
         self.assertEqual(config["graph_transformer"]["architecture_version"], 3)
         self.assertIn("max_rotation_update", config["graph_transformer"])
+        self.assertNotIn("max_multiplicative_update", config["graph_transformer"])
         self.assertTrue(any(name.startswith("rotation_head.") for name in source.model.state_dict()))
 
         checkpoint = {"predictor_config": config, "state_dict": source.model.state_dict()}
+        normalized = checkpoint_predictor_config(checkpoint)
+        self.assertNotIn("max_multiplicative_update", normalized["graph_transformer"])
+        self.assertEqual(normalized, source.checkpoint_config())
         rebuilt = self._predictor(3)
         load_stretch_predictor_state(rebuilt, checkpoint)
         for name, value in source.model.state_dict().items():
@@ -717,6 +960,42 @@ class TestGraphCheckpointCompatibility(unittest.TestCase):
 
         del config["graph_transformer"]["max_rotation_update"]
         with self.assertRaisesRegex(ValueError, "max_rotation_update"):
+            checkpoint_predictor_config({"predictor_config": config, "state_dict": source.model.state_dict()})
+
+    def test_v4_checkpoint_requires_bound_and_routes_one_shot_projection(self):
+        source = self._predictor(4)
+        config = source.checkpoint_config()
+        self.assertEqual(config["graph_transformer"]["architecture_version"], 4)
+        self.assertEqual(
+            config["graph_transformer"]["max_multiplicative_update"],
+            GraphTransformerConfig.max_multiplicative_update,
+        )
+        v3_keys = self._predictor(3).model.state_dict().keys()
+        self.assertEqual(source.model.state_dict().keys(), v3_keys)
+
+        checkpoint = {"predictor_config": config, "state_dict": source.model.state_dict()}
+        normalized = checkpoint_predictor_config(checkpoint)
+        rebuilt = self._predictor(4)
+        load_stretch_predictor_state(rebuilt, checkpoint)
+        self.assertEqual(normalized["graph_transformer"], config["graph_transformer"])
+
+        _model, state, _hierarchy = _model_and_state(self.rest, self.tets, architecture_version=4)
+        inputs = _inputs(self.rest, self.tets)
+        self.assertTrue(
+            torch.equal(
+                source.predict_deformation_gradient(state, *inputs),
+                rebuilt.predict_deformation_gradient(state, *inputs),
+            )
+        )
+        self.assertEqual(resolve_solver_iterations(source, None), 1)
+        self.assertEqual(predictor_decoder_work(source, 1, 1)["target"], "full-deformation-gradient")
+        with self.assertRaisesRegex(ValueError, "architecture v4"):
+            resolve_solver_iterations(source, 2)
+        with self.assertRaisesRegex(ValueError, "architecture v4"):
+            predictor_decoder_work(source, 1, 2)
+
+        del config["graph_transformer"]["max_multiplicative_update"]
+        with self.assertRaisesRegex(ValueError, "max_multiplicative_update"):
             checkpoint_predictor_config({"predictor_config": config, "state_dict": source.model.state_dict()})
 
 

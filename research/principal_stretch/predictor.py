@@ -116,7 +116,13 @@ class StretchPredictor(nn.Module):
         """Serializable architecture metadata for checkpoint reconstruction."""
         config: dict[str, Any] = {"kind": self.kind, "residual": self.residual}
         if self.kind == "graph-transformer":
-            config["graph_transformer"] = dataclasses.asdict(self.model.config)
+            graph_config = dataclasses.asdict(self.model.config)
+            if self.model.config.architecture_version < 4:
+                # Preserve the learned checkpoint schema of v0-v3 exactly.
+                # GraphTransformerConfig reconstruction supplies the unused
+                # internal default without changing serialized metadata.
+                del graph_config["max_multiplicative_update"]
+            config["graph_transformer"] = graph_config
         return config
 
     def predict_deformation_gradient(
@@ -130,11 +136,11 @@ class StretchPredictor(nn.Module):
         lam: torch.Tensor,
         pin: torch.Tensor,
     ) -> torch.Tensor:
-        """Predict v3 full deformation gradients through the shared adapter.
+        """Predict v3/v4 full deformation gradients through the shared adapter.
 
         The ordinary :meth:`forward` path deliberately remains the legacy SPD
-        right-stretch API so v0-v2 training, evaluation, and checkpoints keep
-        their existing semantics.
+        right-stretch API so v0-v3 training, evaluation, and checkpoints keep
+        their existing semantics.  Architecture v4 rejects that legacy path.
         """
         if self.kind != "graph-transformer":
             raise RuntimeError("full deformation-gradient prediction requires a graph-transformer predictor")
@@ -142,14 +148,14 @@ class StretchPredictor(nn.Module):
 
 
 def resolve_solver_iterations(predictor: StretchPredictor, requested: int | None) -> int:
-    """Resolve legacy iteration defaults and enforce the one-shot v3 decoder."""
+    """Resolve legacy defaults and enforce the one-shot full-gradient decoder."""
     version = predictor_architecture_version(predictor)
     if requested is None:
-        return 1 if version == 3 else 10
+        return 1 if version in (3, 4) else 10
     if requested < 1:
         raise ValueError("solver_iterations must be positive")
-    if version == 3 and requested != 1:
-        raise ValueError("architecture v3 uses exactly one global projection; solver_iterations must be 1")
+    if version in (3, 4) and requested != 1:
+        raise ValueError(f"architecture v{version} uses exactly one global projection; solver_iterations must be 1")
     return requested
 
 
@@ -162,11 +168,13 @@ def predictor_decoder_work(
     if blocks < 1:
         raise ValueError("blocks must be positive")
     version = predictor_architecture_version(predictor)
-    if version == 3:
+    if version in (3, 4):
         if blocks != 1:
-            raise ValueError("architecture v3 uses one predictor pass and one global projection; blocks must be 1")
+            raise ValueError(
+                f"architecture v{version} uses one predictor pass and one global projection; blocks must be 1"
+            )
         if solver_iterations != 1:
-            raise ValueError("architecture v3 uses exactly one global projection; solver_iterations must be 1")
+            raise ValueError(f"architecture v{version} uses exactly one global projection; solver_iterations must be 1")
         return {
             "schema_version": 1,
             "target": "full-deformation-gradient",
@@ -208,9 +216,9 @@ def decode_predictor_step(
 ) -> torch.Tensor:
     """Predict and reconstruct one step with version-correct decoder work.
 
-    Architecture v3 predicts a complete deformation-gradient field and uses
-    exactly one global compatibility projection.  Earlier graph versions and
-    the flat MLP retain their existing unrolled stretch/polar decoder.
+    Architectures v3 and v4 predict a complete deformation-gradient field and
+    use exactly one global compatibility projection.  Earlier graph versions
+    and the flat MLP retain their existing unrolled stretch/polar decoder.
     """
     work = predictor_decoder_work(predictor, solver_iterations, blocks)
     if work["target"] == "full-deformation-gradient":
@@ -291,13 +299,21 @@ def checkpoint_predictor_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
             if "architecture_version" not in graph_config:
                 state_dict = checkpoint.get("state_dict", {})
                 graph_config["architecture_version"] = 0 if any(_is_static_graph_key(k) for k in state_dict) else 1
-            if graph_config["architecture_version"] in (0, 1, 2):
+            architecture_version = graph_config["architecture_version"]
+            if architecture_version in (0, 1, 2):
                 # This field is unused by v0-v2 and did not exist in their
                 # saved metadata.  Materialize its default so provenance sees
                 # a canonical configuration without changing legacy inference.
                 graph_config.setdefault("max_rotation_update", GraphTransformerConfig.max_rotation_update)
-            elif graph_config["architecture_version"] == 3 and "max_rotation_update" not in graph_config:
-                raise ValueError("architecture-v3 checkpoint is missing max_rotation_update metadata")
+            elif architecture_version == 3:
+                if "max_rotation_update" not in graph_config:
+                    raise ValueError("architecture-v3 checkpoint is missing max_rotation_update metadata")
+            elif architecture_version == 4:
+                if "max_multiplicative_update" not in graph_config:
+                    raise ValueError("architecture-v4 checkpoint is missing max_multiplicative_update metadata")
+                # Rotation-head parameters are reused as the skew part of the
+                # joint v4 correction; the independent v3 cap is not used.
+                graph_config.setdefault("max_rotation_update", GraphTransformerConfig.max_rotation_update)
             config["graph_transformer"] = graph_config
         return config
     args = checkpoint.get("args", {})

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-"""Provenance-bound v3 training and evaluation on audited PR transitions.
+"""Provenance-bound full-gradient training on audited PR transitions.
 
 This module is the common-objective counterpart to the legacy trajectory
 trainer.  Every sample is an accepted :class:`HistoryTransition` from
@@ -10,7 +10,7 @@ trainer.  Every sample is an accepted :class:`HistoryTransition` from
 ``x_previous = float32(C_k.q - float32(C_k.qd * dt32))``.
 
 Pin indices and targets are transition-local, so moving Dirichlet data are not
-collapsed to a rest-pose constant.  Architecture v3 predicts a full
+collapsed to a rest-pose constant.  Architectures v3 and v4 predict a full
 deformation-gradient field, which is decoded by exactly one weighted global
 projection.  The default dense Cholesky projection is the only backend this
 initial trainer accepts; a checkpoint records that choice explicitly.
@@ -22,7 +22,7 @@ free-vertex error,
 
 where ``ell`` is the static RMS rest-edge length. An optional decoded
 deformation-gradient term is the rest-volume-weighted mean squared component
-error. An explicit alternative supervises the raw v3 target field before
+error. An explicit alternative supervises the raw full-gradient target before
 projection and normalizes each transition by its zero-head observed-to-
 reference error. Every choice and normalization is checkpoint-authenticated.
 
@@ -58,6 +58,7 @@ from .pr_scene_history import HistoryTransition, PRHistoryStaticBundle, PRSceneH
 from .predictor import (
     StretchPredictor,
     build_stretch_predictor,
+    checkpoint_predictor_config,
     load_stretch_predictor_state,
     predictor_decoder_work,
 )
@@ -489,8 +490,8 @@ def _prepare_dataset(
 
 
 def _validate_graph_config(config: GraphTransformerConfig, dt: float) -> None:
-    if config.architecture_version != 3:
-        raise ValueError("PR history common training requires graph-transformer architecture version 3")
+    if config.architecture_version not in (3, 4):
+        raise ValueError("PR history common training requires graph-transformer architecture version 3 or 4")
     if float(np.float32(config.dt)) != dt or config.dt != dt:
         raise ValueError(
             "graph-transformer dt must exactly equal the transition float32 dt; "
@@ -534,7 +535,7 @@ def _build_predictor_and_solvers(
     )
     shared_work = predictor_decoder_work(predictor, solver_iterations=1, blocks=1)
     if shared_work["target"] != "full-deformation-gradient" or shared_work["global_triangular_solves"] != 1:
-        raise RuntimeError("shared predictor work contract is not the v3 one-shot projection")
+        raise RuntimeError("shared predictor work contract is not the full-gradient one-shot projection")
 
     return predictor, _build_solvers(dataset, device)
 
@@ -725,15 +726,15 @@ def _normalized_raw_deformation_gradient_loss(
     state: torch_solver.SolverState,
     supervision: _RawTargetSupervision,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Supervise the pre-projection v3 target with a transition-local scale.
+    """Supervise the pre-projection full-gradient target with a local scale.
 
     The numerator is the rest-volume-weighted mean squared component error to
     the accepted reference deformation gradient. Its normalizer is the same
     error between the observed post-callback state and that reference, floored
-    by ``floor``. On a healthy floor-inactive state, a zero-head v3 model
-    starts at normalized loss one up to the floating-point error in the
-    ``A exp(H)`` reconstruction. All kinematic tensors remain float64 even
-    though neural features are float32.
+    by ``floor``. On a healthy floor-inactive state, a zero-head full-gradient
+    model starts at normalized loss one. The v3 reconstruction can introduce
+    spectral roundoff, while v4 returns the observed gradient directly. All
+    kinematic tensors remain float64 even though neural features are float32.
     """
     target_F = target_F.to(dtype=torch.float64)
     weight = state.w[:, None, None]
@@ -812,13 +813,13 @@ def train_pr_history_v3(
     device: torch.device | str = "cpu",
     output_path: pathlib.Path | str | None = None,
 ) -> PRV3TrainingResult:
-    """Train architecture v3 on accepted, authenticated PR transitions.
+    """Train architecture v3 or v4 on authenticated PR transitions.
 
     Args:
         history: Exact PR schedule and static common-objective bundle.
         transitions: One or more accepted same-topology transition samples.
-        graph_config: Exact v3 graph configuration.  When omitted, defaults are
-            used with the history's canonical float32 timestep.
+        graph_config: Exact v3 or v4 graph configuration. When omitted, the v3
+            compatibility default is used with the canonical float32 timestep.
         training_config: Optimizer, seed, losses, and projection backend.
         device: Torch device for predictor and dense projection.
         output_path: Optional checkpoint path written with :func:`torch.save`.
@@ -1227,16 +1228,21 @@ def _verify_checkpoint(
     predictor_config = metadata.get("predictor_config")
     if not isinstance(predictor_config, Mapping):
         raise ValueError("checkpoint predictor_config is missing")
-    predictor_config_copy = dict(predictor_config)
+    if checkpoint.get("predictor_config") != predictor_config:
+        raise ValueError("checkpoint predictor config copies disagree")
+    predictor_config_copy = checkpoint_predictor_config(
+        {
+            "predictor_config": dict(predictor_config),
+            "state_dict": tensor_state,
+        }
+    )
     graph = predictor_config_copy.get("graph_transformer")
     if predictor_config_copy.get("kind") != "graph-transformer" or not isinstance(graph, Mapping):
         raise ValueError("checkpoint is not a graph-transformer checkpoint")
-    if graph.get("architecture_version") != 3:
-        raise ValueError("checkpoint is not architecture version 3")
+    if graph.get("architecture_version") not in (3, 4):
+        raise ValueError("checkpoint is not architecture version 3 or 4")
     if graph.get("dt") != dataset.history.manifest.dt_seconds:
         raise ValueError("checkpoint graph timestep does not exactly match evaluation transitions")
-    if checkpoint.get("predictor_config") != predictor_config:
-        raise ValueError("checkpoint predictor config copies disagree")
     if checkpoint.get("decoder_work") != metadata.get("decoder_work"):
         raise ValueError("checkpoint decoder work copies disagree")
     if metadata.get("decoder_work") != _decoder_work(_SUPPORTED_PROJECTION_BACKEND):
@@ -1253,7 +1259,7 @@ def load_pr_history_v3_checkpoint(
     *,
     device: torch.device | str = "cpu",
 ) -> tuple[StretchPredictor, _PreparedDataset, dict[str, object]]:
-    """Verify and load a v3 checkpoint against an exact history dataset."""
+    """Verify and load a v3/v4 checkpoint against an exact history dataset."""
     dataset = _prepare_dataset(history, transitions)
     device = torch.device(device)
     if isinstance(checkpoint_or_path, Mapping):
@@ -1286,7 +1292,7 @@ def evaluate_pr_history_v3(
     warmup: int = 1,
     repeats: int = 5,
 ) -> dict[str, object]:
-    """Evaluate v3 positions with the independent common-objective scorer.
+    """Evaluate v3/v4 positions with the independent common-objective scorer.
 
     The requested transitions may be held-out samples, but they must share the
     exact authenticated history manifest, static mesh, material, and timestep
