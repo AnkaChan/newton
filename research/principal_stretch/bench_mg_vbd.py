@@ -93,6 +93,21 @@ _METRIC_FIELDS = (
     "max_pin_error_m",
     "position_sha256",
 )
+_ACCEPTED_PCG_WORK = {
+    "operator_applications": 5,
+    "residual_verification_applications": 1,
+    "preconditioner_builds": 0,
+    "preconditioner_applications": 4,
+    "inner_products": 8,
+    "vector_updates": 11,
+}
+_ACCEPTED_CORRECTION_WORK = {
+    "operator_builds": 2,
+    "objective_evaluations": 2,
+    "gradient_evaluations": 2,
+    "candidate_evaluations": 1,
+    "pcg": _ACCEPTED_PCG_WORK,
+}
 
 
 def _canonical_sha256(value: object) -> str:
@@ -276,6 +291,51 @@ def _selected_metrics(record: Mapping[str, object], name: str) -> dict[str, obje
             raise ValueError(f"{name} metric {field} must be finite or null")
         selected[field] = value
     return selected
+
+
+def _expected_metric_comparison(
+    candidate: Mapping[str, object], comparator: Mapping[str, object], comparator_role: str
+) -> dict[str, object]:
+    tiny = np.finfo(np.float64).tiny
+    candidate_objective = float(candidate["objective"])
+    comparator_objective = float(comparator["objective"])
+    objective_delta = candidate_objective - comparator_objective
+    objective_guard = float(
+        8.0 * np.finfo(np.float64).eps * max(1.0, abs(candidate_objective), abs(comparator_objective))
+    )
+    residual_ratio = float(candidate["relative_residual"]) / max(float(comparator["relative_residual"]), tiny)
+    free_rms_ratio = float(candidate["free_rms_error_m"]) / max(float(comparator["free_rms_error_m"]), tiny)
+    mass_rms_ratio = float(candidate["mass_weighted_rms_error_m"]) / max(
+        float(comparator["mass_weighted_rms_error_m"]), tiny
+    )
+    return {
+        "comparator_role": comparator_role,
+        "candidate_position_sha256": candidate["position_sha256"],
+        "comparator_position_sha256": comparator["position_sha256"],
+        "objective_magnitude_ratio": abs(candidate_objective) / max(abs(comparator_objective), tiny),
+        "objective_delta": objective_delta,
+        "objective_roundoff_guard": objective_guard,
+        "residual_ratio": residual_ratio,
+        "free_rms_ratio": free_rms_ratio,
+        "mass_weighted_rms_ratio": mass_rms_ratio,
+        "objective_no_worse": objective_delta <= objective_guard,
+        "residual_no_worse": residual_ratio <= 1.0,
+        "free_rms_no_worse": free_rms_ratio <= 1.0,
+        "mass_weighted_rms_no_worse": mass_rms_ratio <= 1.0,
+    }
+
+
+def _validate_metric_comparison(
+    record: Mapping[str, object],
+    candidate: Mapping[str, object],
+    comparator: Mapping[str, object],
+    comparator_role: str,
+) -> dict[str, object]:
+    expected = _expected_metric_comparison(candidate, comparator, comparator_role)
+    for name, value in expected.items():
+        if record.get(name) != value:
+            raise ValueError(f"quality {comparator_role} comparison changed recomputed {name}")
+    return expected
 
 
 def _summary_from_quality(quality: Mapping[str, object]) -> dict[str, object]:
@@ -575,9 +635,31 @@ def _validate_quality_record(quality: Mapping[str, object], scene_sha256: str) -
             trace = pcg.get("trace")
             if not isinstance(trace, list) or len(trace) != pcg.get("completed_iterations"):
                 raise ValueError("outer PCG trace does not bind its completed iteration count")
+            if [item.get("iteration") if isinstance(item, Mapping) else None for item in trace] != list(
+                range(len(trace))
+            ):
+                raise ValueError("outer PCG trace iteration indices are not contiguous")
         if len(v_cycles) != expected_vcycles:
             raise ValueError("V-cycle record count does not match preconditioner applications")
         accepted = correction.get("accepted") is True
+        if accepted:
+            correction_work = correction.get("work")
+            if (
+                correction.get("reason") != "accepted"
+                or correction.get("alpha") != _fixed_config().correction.alpha
+                or correction.get("performance_evidence") is not False
+            ):
+                raise ValueError("accepted outer correction changed its fixed safeguard contract")
+            if pcg is None or pcg.get("success") is not True or pcg.get("reason") != "completed" or not exact_pcg:
+                raise ValueError("accepted outer correction changed its exact four-step PCG schedule")
+            if pcg.get("work") != _ACCEPTED_PCG_WORK:
+                raise ValueError("accepted outer correction changed exact PCG primitive work")
+            if correction_work != _ACCEPTED_CORRECTION_WORK:
+                raise ValueError("accepted outer correction changed exact registered correction work")
+            if correction_work.get("pcg") != pcg.get("work"):
+                raise ValueError("accepted correction and PCG work records disagree")
+            if len(v_cycles) != 4:
+                raise ValueError("accepted outer correction did not retain exactly four V-cycles")
         fallback_used |= not accepted
         accepted_count += int(accepted)
         exact_outer = bool(accepted and exact_pcg and item.get("exact_work_completed") is True)
@@ -618,41 +700,25 @@ def _validate_quality_record(quality: Mapping[str, object], scene_sha256: str) -
     ):
         if not _same_float64_measurement(reference_source.get(name), metric):
             raise ValueError(f"fresh dense Newton source record changed {name}")
-    comparison = gate.get("versus_k4")
-    if not isinstance(comparison, Mapping):
-        raise ValueError("quality gate lacks a K4 comparison")
-    if (
-        comparison.get("candidate_position_sha256") != final_metrics.get("position_sha256")
-        or comparison.get("comparator_position_sha256") != k4_metrics.get("position_sha256")
-        or comparison.get("comparator_role") != "fresh-vbd-k4"
-    ):
-        raise ValueError("quality K4 comparison does not bind candidate and comparator states")
-    tiny = np.finfo(np.float64).tiny
-    expected_ratios = {
-        "objective_magnitude_ratio": abs(float(final_metrics["objective"]))
-        / max(abs(float(k4_metrics["objective"])), tiny),
-        "objective_delta": float(final_metrics["objective"]) - float(k4_metrics["objective"]),
-        "residual_ratio": float(final_metrics["relative_residual"]) / max(float(k4_metrics["relative_residual"]), tiny),
-        "free_rms_ratio": float(final_metrics["free_rms_error_m"]) / max(float(k4_metrics["free_rms_error_m"]), tiny),
-        "mass_weighted_rms_ratio": float(final_metrics["mass_weighted_rms_error_m"])
-        / max(float(k4_metrics["mass_weighted_rms_error_m"]), tiny),
-    }
-    if any(comparison.get(name) != value for name, value in expected_ratios.items()):
-        raise ValueError("quality K4 ratios do not match raw common metrics")
+    comparison_k1 = gate.get("versus_k1")
+    comparison_k4 = gate.get("versus_k4")
+    if not isinstance(comparison_k1, Mapping) or not isinstance(comparison_k4, Mapping):
+        raise ValueError("quality gate lacks K1 or K4 comparison evidence")
+    _validate_metric_comparison(comparison_k1, final_metrics, k1_metrics, "fresh-vbd-k1")
+    expected_comparison_k4 = _validate_metric_comparison(comparison_k4, final_metrics, k4_metrics, "fresh-vbd-k4")
     exact_pins = final_metrics.get("max_pin_error_m") == 0.0
     inversion_free = bool(
         final_metrics.get("inverted_tet_fraction") == 0.0 and float(final_metrics["determinant_min"]) > 0.0
     )
-    objective_no_worse = bool(comparison.get("objective_delta") <= comparison.get("objective_roundoff_guard"))
     expected_passed = bool(
         exact_pins
         and inversion_free
         and all_outer_work_completed
         and not fallback_used
-        and objective_no_worse
-        and comparison.get("residual_ratio") <= 1.0
-        and comparison.get("free_rms_ratio") <= 1.0
-        and comparison.get("mass_weighted_rms_ratio") <= 1.0
+        and expected_comparison_k4["objective_no_worse"]
+        and expected_comparison_k4["residual_no_worse"]
+        and expected_comparison_k4["free_rms_no_worse"]
+        and expected_comparison_k4["mass_weighted_rms_no_worse"]
     )
     expected_gate = {
         "exact_pins": exact_pins,

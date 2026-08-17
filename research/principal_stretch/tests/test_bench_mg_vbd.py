@@ -11,8 +11,28 @@ import tempfile
 import unittest
 from unittest import mock
 
+import numpy as np
+
 from .. import bench_mg_vbd as benchmark
 from ..solver_scenes import build_stretch_scene
+
+
+def _coordinated_rehash(payload):
+    entry = payload["scenes"][0]
+    quality = entry["quality"]
+    quality.pop("quality_sha256", None)
+    quality["quality_sha256"] = benchmark._canonical_sha256(quality)
+
+    timing = entry["diagnostic_timing"]["integration_timing"]
+    timing["quality_sha256"] = quality["quality_sha256"]
+    timing.pop("timing_sha256", None)
+    timing["timing_sha256"] = benchmark._canonical_sha256(timing)
+    entry["diagnostic_timing"].pop("diagnostic_sha256", None)
+    entry["diagnostic_timing"]["diagnostic_sha256"] = benchmark._canonical_sha256(entry["diagnostic_timing"])
+    entry["summary"] = benchmark._summary_from_quality(quality)
+    entry.pop("entry_sha256", None)
+    entry["entry_sha256"] = benchmark._canonical_sha256(entry)
+    return benchmark._seal_suite(payload)
 
 
 class TestMGVBDSceneSuite(unittest.TestCase):
@@ -114,25 +134,49 @@ class TestMGVBDSceneSuite(unittest.TestCase):
 
     def test_semantic_tamper_is_rejected_even_after_rehashing_every_container(self):
         payload = copy.deepcopy(self.payload)
-        entry = payload["scenes"][0]
-        quality = entry["quality"]
+        quality = payload["scenes"][0]["quality"]
         quality["gate"]["versus_k4"]["residual_ratio"] *= 2.0
-        quality.pop("quality_sha256")
-        quality["quality_sha256"] = benchmark._canonical_sha256(quality)
+        payload = _coordinated_rehash(payload)
 
-        timing = entry["diagnostic_timing"]["integration_timing"]
-        timing["quality_sha256"] = quality["quality_sha256"]
-        timing.pop("timing_sha256")
-        timing["timing_sha256"] = benchmark._canonical_sha256(timing)
-        entry["diagnostic_timing"].pop("diagnostic_sha256")
-        entry["diagnostic_timing"]["diagnostic_sha256"] = benchmark._canonical_sha256(entry["diagnostic_timing"])
-        entry["summary"] = benchmark._summary_from_quality(quality)
-        entry.pop("entry_sha256")
-        entry["entry_sha256"] = benchmark._canonical_sha256(entry)
-        payload = benchmark._seal_suite(payload)
-
-        with self.assertRaisesRegex(ValueError, "ratios do not match raw common metrics"):
+        with self.assertRaisesRegex(ValueError, "recomputed residual_ratio"):
             benchmark.verify_suite_payload(payload)
+
+    def test_comparison_guard_and_no_worse_boolean_tamper_fail_after_coordinated_rehash(self):
+        mutations = (
+            ("objective_roundoff_guard", 2.0 * np.finfo(np.float64).eps),
+            ("residual_no_worse", False),
+            ("free_rms_no_worse", False),
+            ("mass_weighted_rms_no_worse", False),
+            ("objective_no_worse", False),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                payload = copy.deepcopy(self.payload)
+                payload["scenes"][0]["quality"]["gate"]["versus_k4"][field] = value
+                payload = _coordinated_rehash(payload)
+                with self.assertRaisesRegex(ValueError, field):
+                    benchmark.verify_suite_payload(payload)
+
+    def test_exact_registered_work_and_four_retained_vcycles_fail_closed(self):
+        for case in ("pcg-work", "correction-work", "deleted-vcycle"):
+            with self.subTest(case=case):
+                payload = copy.deepcopy(self.payload)
+                quality = payload["scenes"][0]["quality"]
+                outer = quality["outer_corrections"][0]
+                if case == "pcg-work":
+                    outer["correction"]["pcg"]["work"]["operator_applications"] = 4
+                    outer["correction"]["work"]["pcg"]["operator_applications"] = 4
+                    message = "exact PCG primitive work"
+                elif case == "correction-work":
+                    outer["correction"]["work"]["objective_evaluations"] = 1
+                    message = "exact registered correction work"
+                else:
+                    outer["v_cycle_work"].pop()
+                    quality["total_v_cycle_count"] -= 1
+                    message = "V-cycle record count"
+                payload = _coordinated_rehash(payload)
+                with self.assertRaisesRegex(ValueError, message):
+                    benchmark.verify_suite_payload(payload)
 
     def test_partial_checkpoint_resumes_ordered_prefix_without_repeating_first_scene(self):
         root = pathlib.Path(self.temporary_directory.name)
