@@ -68,6 +68,7 @@ from .rigid_vbd_kernels import (
     reset_rigid_state,
     snapshot_body_body_contact_history,
     solve_rigid_body,
+    solve_rigid_body_cable,
     step_body_body_contact_C0_lambda,
     step_joint_C0_lambda,
     update_body_velocity,
@@ -754,6 +755,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             # Joint constraint layout + penalty stiffness (mutable k, frozen bounds)
             self._init_joint_constraint_layout()
             self.joint_penalty_k, self.joint_penalty_k_min, self.joint_penalty_k_max = self._init_joint_penalty_k()
+            self._fused_cable_dual_updates_condition = wp.array(
+                [int(self._joint_hard_count != 0)], dtype=wp.int32, device=self.device
+            )
             self.joint_rest_angle = self._init_joint_rest_angle()
 
             # Body-body contact state (pre-allocated in __init__ when possible, resized on first step otherwise).
@@ -1246,6 +1250,56 @@ class SolverVBD(SolverBase, CouplingInterface):
             jt = self._to_numpy(self.model.joint_type, dtype=int)
             jdof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
 
+            self._use_cable_rigid_solve = bool(n_j > 0 and np.all(jt == int(JointType.CABLE)))
+            self._use_fused_cable_dual_updates = self._use_cable_rigid_solve
+            joint_dual_update_body_np = np.full((n_j,), -1, dtype=np.int32)
+            if self._use_fused_cable_dual_updates:
+                body_color_np = np.full((self.model.body_count,), -1, dtype=np.int32)
+                for color, color_group in enumerate(self.model.body_color_groups):
+                    body_ids = self._to_numpy(color_group, dtype=np.int32)
+                    if np.any((body_ids < 0) | (body_ids >= self.model.body_count)):
+                        self._use_fused_cable_dual_updates = False
+                        break
+                    if np.unique(body_ids).size != body_ids.size:
+                        self._use_fused_cable_dual_updates = False
+                        break
+                    if np.any(body_color_np[body_ids] != -1):
+                        self._use_fused_cable_dual_updates = False
+                        break
+                    body_color_np[body_ids] = color
+
+                if np.any(body_color_np < 0):
+                    self._use_fused_cable_dual_updates = False
+
+                if self._use_fused_cable_dual_updates:
+                    joint_parent_np = self._to_numpy(self.model.joint_parent, dtype=np.int32)
+                    joint_child_np = self._to_numpy(self.model.joint_child, dtype=np.int32)
+                    for j in range(n_j):
+                        parent = int(joint_parent_np[j])
+                        child = int(joint_child_np[j])
+                        if child < 0 or child >= self.model.body_count or body_color_np[child] < 0:
+                            self._use_fused_cable_dual_updates = False
+                            break
+                        if parent < -1 or parent >= self.model.body_count:
+                            self._use_fused_cable_dual_updates = False
+                            break
+                        if parent < 0:
+                            joint_dual_update_body_np[j] = child
+                        elif body_color_np[parent] < 0 or body_color_np[parent] == body_color_np[child]:
+                            self._use_fused_cable_dual_updates = False
+                            break
+                        elif body_color_np[parent] > body_color_np[child]:
+                            joint_dual_update_body_np[j] = parent
+                        else:
+                            joint_dual_update_body_np[j] = child
+
+                if not self._use_fused_cable_dual_updates:
+                    joint_dual_update_body_np.fill(-1)
+
+            self.joint_dual_update_body = wp.array(
+                joint_dual_update_body_np, dtype=wp.int32, device=self.device
+            )
+
             dim_np = np.zeros((n_j,), dtype=np.int32)
             for j in range(n_j):
                 if jt[j] == JointType.CABLE:
@@ -1489,6 +1543,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             self.joint_penalty_kd = wp.array(joint_kd_np, dtype=float, device=self.device)
             self.joint_is_hard = wp.array(is_hard_np, dtype=wp.int32, device=self.device)
+            self._joint_hard_count = int(np.count_nonzero(is_hard_np))
             k = wp.array(joint_k_init_np, dtype=float, device=self.device)
             k_min = wp.array(joint_k_init_np.copy(), dtype=float, device=self.device)
             k_max = wp.array(joint_k_max_np, dtype=float, device=self.device)
@@ -1774,6 +1829,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             # Mutate in place: a rebuilt wp.array would orphan pointers captured
             # in existing CUDA graphs, silently ignoring the mode change on replay.
             self.joint_is_hard.assign(is_hard_np)
+            self._joint_hard_count = int(np.count_nonzero(is_hard_np))
+            self._fused_cable_dual_updates_condition.assign(
+                np.asarray([self._joint_hard_count != 0], dtype=np.int32)
+            )
 
     @override
     def step(
@@ -2904,9 +2963,51 @@ class SolverVBD(SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
-            wp.launch(
-                kernel=solve_rigid_body,
-                inputs=[
+            if self._use_cable_rigid_solve:
+                rigid_solve_kernel = solve_rigid_body_cable
+                rigid_solve_inputs = [
+                    dt,
+                    color_group,
+                    state_in.body_q,
+                    self.body_q_prev,
+                    model.body_mass,
+                    self.body_inv_mass_effective,
+                    model.body_inertia,
+                    self.body_inertia_q,
+                    model.body_com,
+                    self.rigid_adjacency,
+                    self.joint_dual_update_body,
+                    self._fused_cable_dual_updates_condition,
+                    model.joint_enabled,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    self.joint_cable_rest_kb_local,
+                    self.joint_cable_rest_twist,
+                    self.joint_constraint_start,
+                    self.joint_penalty_k,
+                    self.joint_penalty_kd,
+                    self.joint_penalty_k_max,
+                    self.joint_sigma_start,
+                    self.joint_C_fric,
+                    self.joint_lambda_lin,
+                    self.joint_lambda_ang,
+                    self.joint_C0_lin,
+                    self.joint_C0_ang,
+                    self.joint_is_hard,
+                    self.rigid_joint_alpha,
+                    self.rigid_linear_beta,
+                    self.rigid_angular_beta,
+                    self.body_forces,
+                    self.body_torques,
+                    self.body_hessian_ll,
+                    self.body_hessian_al,
+                    self.body_hessian_aa,
+                ]
+            else:
+                rigid_solve_kernel = solve_rigid_body
+                rigid_solve_inputs = [
                     dt,
                     color_group,
                     state_in.body_q,
@@ -2955,7 +3056,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.body_hessian_ll,
                     self.body_hessian_al,
                     self.body_hessian_aa,
-                ],
+                ]
+
+            wp.launch(
+                kernel=rigid_solve_kernel,
+                inputs=rigid_solve_inputs,
                 outputs=[
                     state_in.body_q,
                 ],
@@ -3018,7 +3123,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
-        if model.joint_count > 0:
+        def launch_joint_dual_updates():
             wp.launch(
                 kernel=update_duals_joint,
                 dim=model.joint_count,
@@ -3057,6 +3162,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ],
                 device=self.device,
             )
+
+        if model.joint_count > 0 and not self._use_fused_cable_dual_updates:
+            launch_joint_dual_updates()
 
     def collect_rigid_contact_forces(
         self,

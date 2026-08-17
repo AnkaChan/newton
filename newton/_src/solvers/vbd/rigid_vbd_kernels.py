@@ -27,7 +27,7 @@ from newton._src.solvers.solver import integrate_rigid_body
 
 wp.set_module_options({"enable_backward": False})
 
-_KERNEL_VERSION = "cable_lazy_history_v3"
+_KERNEL_VERSION = "fused_cable_duals_beta_safe_v9"
 print(f"[rigid_vbd_kernels] version: {_KERNEL_VERSION}")
 
 # ---------------------------------
@@ -1820,6 +1820,207 @@ def apply_linear_drive_limit_force(
 def _zero_force_hessian():
     """Zero (force, torque, H_ll, H_al, H_aa) tuple for early-exit paths."""
     return wp.vec3(0.0), wp.vec3(0.0), wp.mat33(0.0), wp.mat33(0.0), wp.mat33(0.0)
+
+
+@wp.func
+def evaluate_cable_joint_force_hessian(
+    body_index: int,
+    joint_index: int,
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
+    joint_constraint_start: wp.array[int],
+    joint_penalty_k: wp.array[float],
+    joint_penalty_kd: wp.array[float],
+    joint_sigma_start: wp.array[wp.vec3],
+    joint_C_fric: wp.array[wp.vec3],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_is_hard: wp.array[wp.int32],
+    avbd_alpha: float,
+    dt: float,
+):
+    """Compute cable joint force and Hessian contributions for one adjacent body."""
+    if not joint_enabled[joint_index]:
+        return _zero_force_hessian()
+
+    parent_index = joint_parent[joint_index]
+    child_index = joint_child[joint_index]
+    if child_index < 0 or (body_index != child_index and (parent_index < 0 or body_index != parent_index)):
+        return _zero_force_hessian()
+
+    is_parent_body = parent_index >= 0 and body_index == parent_index
+    X_pj = joint_X_p[joint_index]
+    X_cj = joint_X_c[joint_index]
+
+    if parent_index >= 0:
+        parent_pose = body_q[parent_index]
+        parent_com = body_com[parent_index]
+    else:
+        parent_pose = wp.transform(wp.vec3(0.0), wp.quat_identity())
+        parent_com = wp.vec3(0.0)
+
+    child_pose = body_q[child_index]
+    child_com = body_com[child_index]
+    X_wp = parent_pose * X_pj
+    X_wc = child_pose * X_cj
+    q_wp = wp.transform_get_rotation(X_wp)
+    q_wc = wp.transform_get_rotation(X_wc)
+
+    c_start = joint_constraint_start[joint_index]
+    stretch_idx = c_start
+    shear_idx = c_start + 1
+    bend_idx = c_start + 2
+    twist_idx = c_start + 3
+    k_stretch = joint_penalty_k[stretch_idx]
+    k_shear = joint_penalty_k[shear_idx]
+    kd_stretch = joint_penalty_kd[stretch_idx]
+    kd_shear = joint_penalty_kd[shear_idx]
+    k_bend = joint_penalty_k[bend_idx]
+    k_twist = joint_penalty_k[twist_idx]
+    kd_bend = joint_penalty_kd[bend_idx]
+    kd_twist = joint_penalty_kd[twist_idx]
+
+    X_wp_prev = X_wp
+    X_wc_prev = X_wc
+    q_wp_prev = q_wp
+    q_wc_prev = q_wc
+    cable_damping_active = (
+        kd_stretch > 0.0 or kd_shear > 0.0 or kd_bend > 0.0 or kd_twist > 0.0
+    )
+    if cable_damping_active:
+        parent_pose_prev = parent_pose
+        if parent_index >= 0:
+            parent_pose_prev = body_q_prev[parent_index]
+        child_pose_prev = body_q_prev[child_index]
+        X_wp_prev = parent_pose_prev * X_pj
+        X_wc_prev = child_pose_prev * X_cj
+        q_wp_prev = wp.transform_get_rotation(X_wp_prev)
+        q_wc_prev = wp.transform_get_rotation(X_wc_prev)
+
+    total_force = wp.vec3(0.0)
+    total_torque = wp.vec3(0.0)
+    total_H_ll = wp.mat33(0.0)
+    total_H_al = wp.mat33(0.0)
+    total_H_aa = wp.mat33(0.0)
+
+    bend_stiff = k_bend > 0.0
+    twist_stiff = k_twist > 0.0
+    bend_active = bend_stiff or kd_bend > 0.0
+    twist_active = twist_stiff or kd_twist > 0.0
+    if bend_active or twist_active:
+        K_elastic_diag = wp.vec3(k_bend, k_bend, k_twist)
+        K_damp_diag = wp.vec3(kd_bend, kd_bend, kd_twist)
+        damping_active = kd_bend > 0.0 or kd_twist > 0.0
+
+        sigma = wp.vec3(0.0)
+        H_fric_diag = wp.vec3(0.0)
+        lambda_projected = wp.vec3(0.0)
+        C0_force = wp.vec3(0.0)
+        dahl_sigma = joint_sigma_start[joint_index]
+        dahl_fric = joint_C_fric[joint_index]
+        bend_hard = bend_stiff and joint_is_hard[bend_idx] == 1
+        twist_hard = twist_stiff and joint_is_hard[twist_idx] == 1
+        lambda_ang = wp.vec3(0.0)
+        C0_ang = wp.vec3(0.0)
+        if bend_hard or twist_hard:
+            lambda_ang = joint_lambda_ang[joint_index]
+            C0_ang = joint_C0_ang[joint_index]
+
+        if bend_hard:
+            lambda_projected = lambda_projected + wp.vec3(lambda_ang[0], lambda_ang[1], 0.0)
+            C0_force = C0_force + (k_bend * avbd_alpha) * wp.vec3(C0_ang[0], C0_ang[1], 0.0)
+        elif bend_stiff:
+            sigma = sigma + wp.vec3(dahl_sigma[0], dahl_sigma[1], 0.0)
+            H_fric_diag = H_fric_diag + wp.vec3(dahl_fric[0], dahl_fric[1], 0.0)
+
+        if twist_hard:
+            lambda_projected = lambda_projected + wp.vec3(0.0, 0.0, lambda_ang[2])
+            C0_force = C0_force + (k_twist * avbd_alpha) * wp.vec3(0.0, 0.0, C0_ang[2])
+        elif twist_stiff:
+            sigma = sigma + wp.vec3(0.0, 0.0, dahl_sigma[2])
+            H_fric_diag = H_fric_diag + wp.vec3(0.0, 0.0, dahl_fric[2])
+
+        cable_torque, cable_H_aa, _cable_kappa, _cable_J = evaluate_cable_bend_twist_force_hessian_z(
+            q_wp,
+            q_wc,
+            joint_cable_rest_kb_local[joint_index],
+            joint_cable_rest_twist[joint_index],
+            q_wp_prev,
+            q_wc_prev,
+            is_parent_body,
+            K_elastic_diag,
+            C0_force,
+            sigma,
+            H_fric_diag,
+            lambda_projected,
+            K_damp_diag,
+            damping_active,
+            dt,
+        )
+        total_torque = total_torque + cable_torque
+        total_H_aa = total_H_aa + cable_H_aa
+
+    stretch_stiff = k_stretch > 0.0
+    shear_stiff = k_shear > 0.0
+    stretch_active = stretch_stiff or kd_stretch > 0.0
+    shear_active = shear_stiff or kd_shear > 0.0
+    if stretch_active or shear_active:
+        k_diag = wp.vec3(k_shear, k_shear, k_stretch)
+        kd_diag = wp.vec3(kd_shear, kd_shear, kd_stretch)
+        damping_active = kd_stretch > 0.0 or kd_shear > 0.0
+
+        lambda_local = wp.vec3(0.0)
+        C0_force_local = wp.vec3(0.0)
+        stretch_hard = stretch_stiff and joint_is_hard[stretch_idx] == 1
+        shear_hard = shear_stiff and joint_is_hard[shear_idx] == 1
+        if stretch_hard or shear_hard:
+            lambda_lin = joint_lambda_lin[joint_index]
+            C0_lin = joint_C0_lin[joint_index]
+            if stretch_hard:
+                lambda_local = lambda_local + wp.vec3(0.0, 0.0, lambda_lin[2])
+                C0_force_local = C0_force_local + (k_stretch * avbd_alpha) * wp.vec3(
+                    0.0, 0.0, C0_lin[2]
+                )
+            if shear_hard:
+                lambda_local = lambda_local + wp.vec3(lambda_lin[0], lambda_lin[1], 0.0)
+                C0_force_local = C0_force_local + (k_shear * avbd_alpha) * wp.vec3(
+                    C0_lin[0], C0_lin[1], 0.0
+                )
+
+        f_l, t_l, Hll_l, Hal_l, Haa_l = evaluate_cable_stretch_shear_force_hessian(
+            X_wp,
+            X_wc,
+            X_wp_prev,
+            X_wc_prev,
+            parent_pose,
+            child_pose,
+            parent_com,
+            child_com,
+            is_parent_body,
+            k_diag,
+            C0_force_local,
+            lambda_local,
+            kd_diag,
+            damping_active,
+            dt,
+        )
+        total_force = total_force + f_l
+        total_torque = total_torque + t_l
+        total_H_ll = total_H_ll + Hll_l
+        total_H_al = total_H_al + Hal_l
+        total_H_aa = total_H_aa + Haa_l
+
+    return total_force, total_torque, total_H_ll, total_H_al, total_H_aa
 
 
 @wp.func
@@ -4395,6 +4596,440 @@ def solve_rigid_body(
     pos_new = com_new - wp.quat_rotate(rot_new, body_com_local)
 
     body_q_new[body_index] = wp.transform(pos_new, rot_new)
+
+
+@wp.func
+def update_cable_joint_duals(
+    j: int,
+    owner_body_index: int,
+    owner_body_q: wp.transform,
+    body_q: wp.array[wp.transform],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
+    joint_constraint_start: wp.array[int],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_is_hard: wp.array[wp.int32],
+    avbd_alpha: float,
+    joint_penalty_k_max: wp.array[float],
+    beta_lin: float,
+    beta_ang: float,
+    joint_penalty_k: wp.array[float],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+):
+    """Update one cable joint's structural dual and penalty state."""
+    if not joint_enabled[j]:
+        return
+
+    parent = joint_parent[j]
+    child = joint_child[j]
+    if child < 0:
+        return
+
+    c_start = joint_constraint_start[j]
+    stretch_idx = c_start
+    shear_idx = c_start + 1
+    bend_idx = c_start + 2
+    twist_idx = c_start + 3
+
+    if (
+        beta_lin == 0.0
+        and beta_ang == 0.0
+        and joint_is_hard[stretch_idx] == 0
+        and joint_is_hard[shear_idx] == 0
+        and joint_is_hard[bend_idx] == 0
+        and joint_is_hard[twist_idx] == 0
+    ):
+        joint_penalty_k[stretch_idx] = wp.min(
+            joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx]
+        )
+        joint_penalty_k[shear_idx] = wp.min(joint_penalty_k_max[shear_idx], joint_penalty_k[shear_idx])
+        joint_penalty_k[bend_idx] = wp.min(joint_penalty_k_max[bend_idx], joint_penalty_k[bend_idx])
+        joint_penalty_k[twist_idx] = wp.min(joint_penalty_k_max[twist_idx], joint_penalty_k[twist_idx])
+        joint_lambda_lin[j] = wp.vec3(0.0)
+        joint_lambda_ang[j] = wp.vec3(0.0)
+        return
+
+    if parent >= 0:
+        parent_q = body_q[parent]
+        if parent == owner_body_index:
+            parent_q = owner_body_q
+        X_wp = parent_q * joint_X_p[j]
+    else:
+        X_wp = joint_X_p[j]
+    child_q = body_q[child]
+    if child == owner_body_index:
+        child_q = owner_body_q
+    X_wc = child_q * joint_X_c[j]
+
+    q_wp = wp.transform_get_rotation(X_wp)
+    q_wc = wp.transform_get_rotation(X_wc)
+    C_vec = wp.transform_get_translation(X_wc) - wp.transform_get_translation(X_wp)
+    kappa = compute_geometric_cable_kappa_cached_z(
+        q_wp,
+        q_wc,
+        joint_cable_rest_kb_local[j],
+        joint_cable_rest_twist[j],
+    )
+
+    u = wp.quat_rotate_inv(q_wp, C_vec)
+    lambda_lin = joint_lambda_lin[j]
+    C0_lin = joint_C0_lin[j]
+
+    u_stretch = wp.vec3(0.0, 0.0, u[2])
+    lam_stretch = _update_dual_vec3(
+        u_stretch,
+        wp.vec3(0.0, 0.0, C0_lin[2]),
+        avbd_alpha,
+        joint_penalty_k[stretch_idx],
+        wp.vec3(0.0, 0.0, lambda_lin[2]),
+        joint_is_hard[stretch_idx],
+    )
+    if joint_is_hard[stretch_idx] == 0:
+        lam_stretch = wp.vec3(0.0)
+    joint_penalty_k[stretch_idx] = wp.min(
+        joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx] + beta_lin * wp.abs(u[2])
+    )
+
+    u_shear = wp.vec3(u[0], u[1], 0.0)
+    lam_shear = _update_dual_vec3(
+        u_shear,
+        wp.vec3(C0_lin[0], C0_lin[1], 0.0),
+        avbd_alpha,
+        joint_penalty_k[shear_idx],
+        wp.vec3(lambda_lin[0], lambda_lin[1], 0.0),
+        joint_is_hard[shear_idx],
+    )
+    if joint_is_hard[shear_idx] == 0:
+        lam_shear = wp.vec3(0.0)
+    joint_lambda_lin[j] = lam_stretch + lam_shear
+    joint_penalty_k[shear_idx] = wp.min(
+        joint_penalty_k_max[shear_idx], joint_penalty_k[shear_idx] + beta_lin * wp.length(u_shear)
+    )
+
+    lambda_ang = joint_lambda_ang[j]
+    C0_ang = joint_C0_ang[j]
+    kappa_bend = wp.vec3(kappa[0], kappa[1], 0.0)
+    lam_bend = _update_dual_vec3(
+        kappa_bend,
+        wp.vec3(C0_ang[0], C0_ang[1], 0.0),
+        avbd_alpha,
+        joint_penalty_k[bend_idx],
+        wp.vec3(lambda_ang[0], lambda_ang[1], 0.0),
+        joint_is_hard[bend_idx],
+    )
+    if joint_is_hard[bend_idx] == 0:
+        lam_bend = wp.vec3(0.0)
+    joint_penalty_k[bend_idx] = wp.min(
+        joint_penalty_k_max[bend_idx], joint_penalty_k[bend_idx] + beta_ang * wp.length(kappa_bend)
+    )
+
+    kappa_twist = wp.vec3(0.0, 0.0, kappa[2])
+    lam_twist = _update_dual_vec3(
+        kappa_twist,
+        wp.vec3(0.0, 0.0, C0_ang[2]),
+        avbd_alpha,
+        joint_penalty_k[twist_idx],
+        wp.vec3(0.0, 0.0, lambda_ang[2]),
+        joint_is_hard[twist_idx],
+    )
+    if joint_is_hard[twist_idx] == 0:
+        lam_twist = wp.vec3(0.0)
+    joint_lambda_ang[j] = lam_bend + lam_twist
+    joint_penalty_k[twist_idx] = wp.min(
+        joint_penalty_k_max[twist_idx], joint_penalty_k[twist_idx] + beta_ang * wp.length(kappa_twist)
+    )
+
+
+@wp.func
+def update_body_cable_joint_duals(
+    body_index: int,
+    body_q_current: wp.transform,
+    body_q: wp.array[wp.transform],
+    adjacency: RigidForceElementAdjacencyInfo,
+    joint_dual_update_body: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
+    joint_constraint_start: wp.array[int],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_is_hard: wp.array[wp.int32],
+    avbd_alpha: float,
+    joint_penalty_k_max: wp.array[float],
+    beta_lin: float,
+    beta_ang: float,
+    joint_penalty_k: wp.array[float],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+):
+    """Update cable duals owned by a body after its color has been solved."""
+    num_adj_joints = get_body_num_adjacent_joints(adjacency, body_index)
+    for joint_counter in range(num_adj_joints):
+        joint_idx = get_body_adjacent_joint_id(adjacency, body_index, joint_counter)
+        if joint_dual_update_body[joint_idx] == body_index:
+            update_cable_joint_duals(
+                joint_idx,
+                body_index,
+                body_q_current,
+                body_q,
+                joint_enabled,
+                joint_parent,
+                joint_child,
+                joint_X_p,
+                joint_X_c,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
+                joint_constraint_start,
+                joint_C0_lin,
+                joint_C0_ang,
+                joint_is_hard,
+                avbd_alpha,
+                joint_penalty_k_max,
+                beta_lin,
+                beta_ang,
+                joint_penalty_k,
+                joint_lambda_lin,
+                joint_lambda_ang,
+            )
+
+
+@wp.kernel
+def solve_rigid_body_cable(
+    dt: float,
+    body_ids_in_color: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_mass: wp.array[float],
+    body_inv_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    body_inertia_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    adjacency: RigidForceElementAdjacencyInfo,
+    joint_dual_update_body: wp.array[int],
+    joint_dual_updates_condition: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
+    joint_constraint_start: wp.array[int],
+    joint_penalty_k: wp.array[float],
+    joint_penalty_kd: wp.array[float],
+    joint_penalty_k_max: wp.array[float],
+    joint_sigma_start: wp.array[wp.vec3],
+    joint_C_fric: wp.array[wp.vec3],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_is_hard: wp.array[wp.int32],
+    avbd_alpha: float,
+    beta_lin: float,
+    beta_ang: float,
+    external_forces: wp.array[wp.vec3],
+    external_torques: wp.array[wp.vec3],
+    external_hessian_ll: wp.array[wp.mat33],
+    external_hessian_al: wp.array[wp.mat33],
+    external_hessian_aa: wp.array[wp.mat33],
+    body_q_new: wp.array[wp.transform],
+):
+    """Solve one AVBD body block for a model containing only cable joints."""
+    tid = wp.tid()
+    body_index = body_ids_in_color[tid]
+
+    q_current = body_q[body_index]
+
+    if body_inv_mass[body_index] == 0.0:
+        body_q_new[body_index] = q_current
+        if beta_lin != 0.0 or beta_ang != 0.0 or joint_dual_updates_condition[0] != 0:
+            update_body_cable_joint_duals(
+                body_index,
+                q_current,
+                body_q,
+                adjacency,
+                joint_dual_update_body,
+                joint_enabled,
+                joint_parent,
+                joint_child,
+                joint_X_p,
+                joint_X_c,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
+                joint_constraint_start,
+                joint_C0_lin,
+                joint_C0_ang,
+                joint_is_hard,
+                avbd_alpha,
+                joint_penalty_k_max,
+                beta_lin,
+                beta_ang,
+                joint_penalty_k,
+                joint_lambda_lin,
+                joint_lambda_ang,
+            )
+        return
+
+    dt_sqr_reciprocal = 1.0 / (dt * dt)
+
+    q_inertial = body_inertia_q[body_index]
+    body_com_local = body_com[body_index]
+    m = body_mass[body_index]
+    I_body = body_inertia[body_index]
+
+    pos_current = wp.transform_get_translation(q_current)
+    rot_current = wp.transform_get_rotation(q_current)
+    pos_star = wp.transform_get_translation(q_inertial)
+    rot_star = wp.transform_get_rotation(q_inertial)
+
+    com_current = pos_current + wp.quat_rotate(rot_current, body_com_local)
+    com_star = pos_star + wp.quat_rotate(rot_star, body_com_local)
+
+    inertial_coeff = m * dt_sqr_reciprocal
+    f_lin = (com_star - com_current) * inertial_coeff
+
+    q_delta = wp.mul(wp.quat_inverse(rot_current), rot_star)
+    if q_delta[3] < 0.0:
+        q_delta = wp.quat(-q_delta[0], -q_delta[1], -q_delta[2], -q_delta[3])
+
+    axis_body, angle_body = wp.quat_to_axis_angle(q_delta)
+    theta_body = axis_body * angle_body
+
+    tau_body = I_body * (theta_body * dt_sqr_reciprocal)
+    tau_world = wp.quat_rotate(rot_current, tau_body)
+
+    R_cur = wp.quat_to_matrix(rot_current)
+    I_world = R_cur * I_body * wp.transpose(R_cur)
+    angular_hessian = dt_sqr_reciprocal * I_world
+
+    ext_torque = external_torques[body_index]
+    ext_force = external_forces[body_index]
+    ext_h_aa = external_hessian_aa[body_index]
+    ext_h_al = external_hessian_al[body_index]
+    ext_h_ll = external_hessian_ll[body_index]
+
+    f_torque = tau_world + ext_torque
+    f_force = f_lin + ext_force
+
+    h_aa = angular_hessian + ext_h_aa
+    h_al = ext_h_al
+    h_ll = wp.mat33(
+        ext_h_ll[0, 0] + inertial_coeff,
+        ext_h_ll[0, 1],
+        ext_h_ll[0, 2],
+        ext_h_ll[1, 0],
+        ext_h_ll[1, 1] + inertial_coeff,
+        ext_h_ll[1, 2],
+        ext_h_ll[2, 0],
+        ext_h_ll[2, 1],
+        ext_h_ll[2, 2] + inertial_coeff,
+    )
+
+    num_adj_joints = get_body_num_adjacent_joints(adjacency, body_index)
+    for joint_counter in range(num_adj_joints):
+        joint_idx = get_body_adjacent_joint_id(adjacency, body_index, joint_counter)
+
+        joint_force, joint_torque, joint_H_ll, joint_H_al, joint_H_aa = evaluate_cable_joint_force_hessian(
+            body_index,
+            joint_idx,
+            body_q,
+            body_q_prev,
+            body_com,
+            joint_enabled,
+            joint_parent,
+            joint_child,
+            joint_X_p,
+            joint_X_c,
+            joint_cable_rest_kb_local,
+            joint_cable_rest_twist,
+            joint_constraint_start,
+            joint_penalty_k,
+            joint_penalty_kd,
+            joint_sigma_start,
+            joint_C_fric,
+            joint_lambda_lin,
+            joint_lambda_ang,
+            joint_C0_lin,
+            joint_C0_ang,
+            joint_is_hard,
+            avbd_alpha,
+            dt,
+        )
+
+        f_force = f_force + joint_force
+        f_torque = f_torque + joint_torque
+
+        h_ll = h_ll + joint_H_ll
+        h_al = h_al + joint_H_al
+        h_aa = h_aa + joint_H_aa
+
+    trA = wp.trace(h_aa) / 3.0
+    epsA = 1.0e-9 * (trA + 1.0)
+    h_aa[0, 0] = h_aa[0, 0] + epsA
+    h_aa[1, 1] = h_aa[1, 1] + epsA
+    h_aa[2, 2] = h_aa[2, 2] + epsA
+
+    x_inc, w_world = ldlt6_solve(h_ll, h_aa, h_al, f_force, f_torque)
+
+    if _USE_SMALL_ANGLE_APPROX:
+        half_w = w_world * 0.5
+        dq_world = wp.quat(half_w[0], half_w[1], half_w[2], 1.0)
+        dq_world = wp.normalize(dq_world)
+    else:
+        ang_mag = wp.length(w_world)
+        if ang_mag > _SMALL_ANGLE_EPS:
+            dq_world = wp.quat_from_axis_angle(w_world / ang_mag, ang_mag)
+        else:
+            half_w = w_world * 0.5
+            dq_world = wp.quat(half_w[0], half_w[1], half_w[2], 1.0)
+            dq_world = wp.normalize(dq_world)
+
+    rot_new = wp.mul(dq_world, rot_current)
+    rot_new = wp.normalize(rot_new)
+
+    com_new = com_current + x_inc
+    pos_new = com_new - wp.quat_rotate(rot_new, body_com_local)
+
+    q_new = wp.transform(pos_new, rot_new)
+    body_q_new[body_index] = q_new
+    if beta_lin != 0.0 or beta_ang != 0.0 or joint_dual_updates_condition[0] != 0:
+        update_body_cable_joint_duals(
+            body_index,
+            q_new,
+            body_q,
+            adjacency,
+            joint_dual_update_body,
+            joint_enabled,
+            joint_parent,
+            joint_child,
+            joint_X_p,
+            joint_X_c,
+            joint_cable_rest_kb_local,
+            joint_cable_rest_twist,
+            joint_constraint_start,
+            joint_C0_lin,
+            joint_C0_ang,
+            joint_is_hard,
+            avbd_alpha,
+            joint_penalty_k_max,
+            beta_lin,
+            beta_ang,
+            joint_penalty_k,
+            joint_lambda_lin,
+            joint_lambda_ang,
+        )
 
 
 @wp.kernel
