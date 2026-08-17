@@ -11,6 +11,9 @@ from .types import (
     GeoType,
 )
 
+_VERSION = "self_contact_detection_narrowphase_v1"
+print(f"[geometry.kernels] version: {_VERSION}")
+
 
 @wp.func
 def resolve_mesh_sign_method(mesh_properties: int):
@@ -1398,6 +1401,25 @@ def vertex_triangle_collision_detection_kernel(
     min_dis_to_tris = max_query_radius
     vertex_world = particle_world[v_index]
 
+    use_vertex_triangle_filter = bool(False)
+    filter_start = wp.int32(0)
+    filter_end = wp.int32(0)
+    filter_first = wp.int32(0)
+    filter_last = wp.int32(0)
+    if vertex_triangle_filtering_list:
+        filter_start = vertex_triangle_filtering_list_offsets[v_index]
+        filter_end = vertex_triangle_filtering_list_offsets[v_index + 1]
+        if filter_end > filter_start:
+            use_vertex_triangle_filter = True
+            filter_first = vertex_triangle_filtering_list[filter_start]
+            filter_last = vertex_triangle_filtering_list[filter_end - 1]
+
+    use_reference_filter = bool(False)
+    vertex_ref = wp.vec3(0.0)
+    if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+        use_reference_filter = True
+        vertex_ref = min_distance_filtering_ref_pos[v_index]
+
     # Only collide a vertex with triangles in its own world or in the global
     # (world -1) group. The BVH is grouped by world, so a real-world vertex queries
     # two subtrees: its own world's, then the global one. A global (world -1) vertex
@@ -1433,21 +1455,12 @@ def vertex_triangle_collision_detection_kernel(
                 if vertex_adjacent_to_triangle(v_index, t1, t2, t3):
                     continue
 
-                if vertex_triangle_filtering_list:
-                    fl_start = vertex_triangle_filtering_list_offsets[v_index]
-                    fl_end = vertex_triangle_filtering_list_offsets[
-                        v_index + 1
-                    ]  # start of next vertex slice (end exclusive)
-
-                    if fl_end > fl_start:
-                        # Optional fast-fail using first/last elements (remember end is exclusive)
-                        first_val = vertex_triangle_filtering_list[fl_start]
-                        last_val = vertex_triangle_filtering_list[fl_end - 1]
-                        if (tri_index >= first_val) and (tri_index <= last_val):
-                            idx = binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end)
-                            # `idx` is the first index > tri_index within [fl_start, fl_end)
-                            if idx > fl_start and vertex_triangle_filtering_list[idx - 1] == tri_index:
-                                continue
+                if use_vertex_triangle_filter:
+                    if (tri_index >= filter_first) and (tri_index <= filter_last):
+                        idx = binary_search(vertex_triangle_filtering_list, tri_index, filter_start, filter_end)
+                        # `idx` is the first index > tri_index within [filter_start, filter_end)
+                        if idx > filter_start and vertex_triangle_filtering_list[idx - 1] == tri_index:
+                            continue
 
                 u1 = pos[t1]
                 u2 = pos[t2]
@@ -1457,19 +1470,19 @@ def vertex_triangle_collision_detection_kernel(
 
                 dist = wp.length(closest_p - v)
 
-                if min_distance_filtering_ref_pos and min_query_radius > 0.0:
-                    closest_p_ref, _, __ = triangle_closest_point(
-                        min_distance_filtering_ref_pos[t1],
-                        min_distance_filtering_ref_pos[t2],
-                        min_distance_filtering_ref_pos[t3],
-                        min_distance_filtering_ref_pos[v_index],
-                    )
-                    dist_ref = wp.length(closest_p_ref - min_distance_filtering_ref_pos[v_index])
-
-                    if dist_ref < min_query_radius:
-                        continue
-
                 if dist < max_query_radius:
+                    if use_reference_filter:
+                        closest_p_ref, _, __ = triangle_closest_point(
+                            min_distance_filtering_ref_pos[t1],
+                            min_distance_filtering_ref_pos[t2],
+                            min_distance_filtering_ref_pos[t3],
+                            vertex_ref,
+                        )
+                        dist_ref = wp.length(closest_p_ref - vertex_ref)
+
+                        if dist_ref < min_query_radius:
+                            continue
+
                     # record v-f collision to vertex
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
                     if vertex_num_collisions < vertex_buffer_size:
@@ -1554,6 +1567,30 @@ def edge_colliding_edges_detection_kernel(
     min_dis_to_edges = max_query_radius
     edge_world = particle_world[e0_v0]
 
+    edge_buffer_offset = edge_colliding_edges_offsets[e_index]
+    edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
+
+    use_edge_filter = bool(False)
+    filter_start = wp.int32(0)
+    filter_end = wp.int32(0)
+    filter_first = wp.int32(0)
+    filter_last = wp.int32(0)
+    if edge_filtering_list:
+        filter_start = edge_filtering_list_offsets[e_index]
+        filter_end = edge_filtering_list_offsets[e_index + 1]
+        if filter_end > filter_start:
+            use_edge_filter = True
+            filter_first = edge_filtering_list[filter_start]
+            filter_last = edge_filtering_list[filter_end - 1]
+
+    use_reference_filter = bool(False)
+    e0_v0_pos_ref = wp.vec3(0.0)
+    e0_v1_pos_ref = wp.vec3(0.0)
+    if min_distance_filtering_ref_pos and min_query_radius > 0.0:
+        use_reference_filter = True
+        e0_v0_pos_ref = min_distance_filtering_ref_pos[e0_v0]
+        e0_v1_pos_ref = min_distance_filtering_ref_pos[e0_v1]
+
     # Only collide an edge with edges in its own world or in the global (world -1)
     # group. The BVH is grouped by world, so a real-world edge queries two subtrees:
     # its own world's, then the global one. A global (world -1) edge can hit any
@@ -1588,19 +1625,13 @@ def edge_colliding_edges_detection_kernel(
                 if e0_v0 == e1_v0 or e0_v0 == e1_v1 or e0_v1 == e1_v0 or e0_v1 == e1_v1:
                     continue
 
-                if edge_filtering_list:
-                    fl_start = edge_filtering_list_offsets[e_index]
-                    fl_end = edge_filtering_list_offsets[e_index + 1]  # start of next vertex slice (end exclusive)
-
-                    if fl_end > fl_start:
-                        # Optional fast-fail using first/last elements (remember end is exclusive)
-                        first_val = edge_filtering_list[fl_start]
-                        last_val = edge_filtering_list[fl_end - 1]
-                        if (colliding_edge_index >= first_val) and (colliding_edge_index <= last_val):
-                            idx = binary_search(edge_filtering_list, colliding_edge_index, fl_start, fl_end)
-                            if idx > fl_start and edge_filtering_list[idx - 1] == colliding_edge_index:
-                                continue
-                        # else: key is out of range, cannot be present -> skip_this remains False
+                if use_edge_filter:
+                    if (colliding_edge_index >= filter_first) and (colliding_edge_index <= filter_last):
+                        idx = binary_search(
+                            edge_filtering_list, colliding_edge_index, filter_start, filter_end
+                        )
+                        if idx > filter_start and edge_filtering_list[idx - 1] == colliding_edge_index:
+                            continue
 
                 e1_v0_pos = pos[e1_v0]
                 e1_v1_pos = pos[e1_v1]
@@ -1608,22 +1639,21 @@ def edge_colliding_edges_detection_kernel(
                 std = wp.closest_point_edge_edge(e0_v0_pos, e0_v1_pos, e1_v0_pos, e1_v1_pos, edge_edge_parallel_epsilon)
                 dist = std[2]
 
-                if min_distance_filtering_ref_pos and min_query_radius > 0.0:
-                    e0_v0_pos_ref = min_distance_filtering_ref_pos[e0_v0]
-                    e0_v1_pos_ref = min_distance_filtering_ref_pos[e0_v1]
-                    e1_v0_pos_ref = min_distance_filtering_ref_pos[e1_v0]
-                    e1_v1_pos_ref = min_distance_filtering_ref_pos[e1_v1]
-                    std_ref = wp.closest_point_edge_edge(
-                        e0_v0_pos_ref, e0_v1_pos_ref, e1_v0_pos_ref, e1_v1_pos_ref, edge_edge_parallel_epsilon
-                    )
-
-                    dist_ref = std_ref[2]
-                    if dist_ref < min_query_radius:
-                        continue
-
                 if dist < max_query_radius:
-                    edge_buffer_offset = edge_colliding_edges_offsets[e_index]
-                    edge_buffer_size = edge_colliding_edges_offsets[e_index + 1] - edge_buffer_offset
+                    if use_reference_filter:
+                        e1_v0_pos_ref = min_distance_filtering_ref_pos[e1_v0]
+                        e1_v1_pos_ref = min_distance_filtering_ref_pos[e1_v1]
+                        std_ref = wp.closest_point_edge_edge(
+                            e0_v0_pos_ref,
+                            e0_v1_pos_ref,
+                            e1_v0_pos_ref,
+                            e1_v1_pos_ref,
+                            edge_edge_parallel_epsilon,
+                        )
+
+                        dist_ref = std_ref[2]
+                        if dist_ref < min_query_radius:
+                            continue
 
                     # record e-e collision to e0, and leave e1; e1 will detect this collision from its own thread
                     min_dis_to_edges = wp.min(min_dis_to_edges, dist)
