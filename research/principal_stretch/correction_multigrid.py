@@ -1010,7 +1010,7 @@ def _galerkin(matrix: StaticBlockMatrix, prolongation: TentativeProlongation) ->
 
 
 def _build_smoother(matrix: StaticBlockMatrix, safety: float) -> BlockJacobiSmoother:
-    """Build ``omega D^-1`` using a block-Gershgorin spectral bound."""
+    """Build ``omega D^-1`` below the proven symmetric-smoothing limit."""
     if not math.isfinite(safety) or not 0.0 < safety < 1.0:
         raise ValueError("smoother_safety must be strictly between zero and one")
     diagonal = matrix.diagonal_blocks()
@@ -1036,7 +1036,11 @@ def _build_smoother(matrix: StaticBlockMatrix, safety: float) -> BlockJacobiSmoo
     upper_bound = float(np.max(row_bounds))
     if not math.isfinite(upper_bound) or upper_bound <= 0.0:
         raise RuntimeError("invalid normalized block-Jacobi spectral bound")
-    omega = min(2.0 / 3.0, safety / upper_bound)
+    # If rho bounds lambda_max(D^-1/2 A D^-1/2), then the symmetric
+    # pre/post-smoothing contribution 2S-SAS is positive definite whenever
+    # omega*rho < 2 for S=omega*D^-1.  ``safety`` is the registered fraction
+    # of that full interval.  The classical 2/3 cap only decreases omega.
+    omega = min(2.0 / 3.0, 2.0 * safety / upper_bound)
     inverse_frozen = _frozen_array(inverse, np.float64)
     content_sha256 = _hash_parts(
         "block-jacobi-smoother-v1",
@@ -1222,7 +1226,8 @@ def build_static_multigrid(
         maximum_levels: Maximum number of retained matrix levels.
         pre_smooth_steps: Damped block-Jacobi sweeps before coarse correction.
         post_smooth_steps: Matching sweeps after coarse correction.
-        smoother_safety: Fraction of a block-Gershgorin spectral bound.
+        smoother_safety: Fraction of the full SPD damping interval established
+            by the block-Frobenius row bound.
         static_model_sha256: Optional digest of the static operator/model
             inputs used to assemble ``fine_matrix``.
     """
@@ -1397,7 +1402,8 @@ def build_stable_nh_rest_multigrid(
         maximum_levels: Maximum retained matrix levels.
         pre_smooth_steps: Block-Jacobi pre-smoothing sweeps.
         post_smooth_steps: Matching post-smoothing sweeps.
-        smoother_safety: Fraction of the Cholesky-whitened row bound.
+        smoother_safety: Fraction of the full SPD damping interval established
+            by the Cholesky-whitened block-Frobenius row bound.
     """
     matrix = assemble_stable_nh_rest_block_matrix(operator, rest_positions)
     model_sha256 = stable_nh_static_model_digest(operator, rest_positions)

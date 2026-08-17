@@ -317,7 +317,12 @@ class TestCorrectionMultigrid(unittest.TestCase):
                 row_bounds.append(bound)
             expected = max(row_bounds)
             self.assertAlmostEqual(level.smoother.normalized_spectral_upper_bound, expected, places=14)
-            self.assertLessEqual(level.smoother.omega * expected, 0.9 + 2.0e-15)
+            self.assertAlmostEqual(level.smoother.omega, min(2.0 / 3.0, 1.8 / expected), places=15)
+            self.assertLess(level.smoother.omega * expected, 2.0)
+
+        capped = build_block_jacobi(StaticBlockMatrix.from_dense(np.eye(6, dtype=np.float64)))
+        self.assertEqual(capped.omega, 2.0 / 3.0)
+        self.assertLess(capped.omega * capped.normalized_spectral_upper_bound, 2.0)
 
     def test_rigid_rayleigh_is_nonzero_and_improves_rotation_solve_ablation(self):
         matrix, rigid, rest = _build(12, mode_kind="rigid")
