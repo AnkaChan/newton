@@ -27,6 +27,9 @@ from newton._src.solvers.solver import integrate_rigid_body
 
 wp.set_module_options({"enable_backward": False})
 
+_KERNEL_VERSION = "cable_dual_fast_path_v1"
+print(f"[rigid_vbd_kernels] version: {_KERNEL_VERSION}")
+
 # ---------------------------------
 # Constants
 # ---------------------------------
@@ -4429,6 +4432,32 @@ def update_duals_joint(
 
     # Read solver constraint start index
     c_start = joint_constraint_start[j]
+
+    # Default cables use fixed penalties and soft structural slots, so their
+    # per-iteration dual update only clears lambda and re-applies the stiffness
+    # ceiling. Avoid evaluating bend/twist geometry in that common case.
+    if jt == JointType.CABLE and beta_lin == 0.0 and beta_ang == 0.0:
+        stretch_idx = c_start
+        shear_idx = c_start + 1
+        bend_idx = c_start + 2
+        twist_idx = c_start + 3
+        if (
+            joint_is_hard[stretch_idx] == 0
+            and joint_is_hard[shear_idx] == 0
+            and joint_is_hard[bend_idx] == 0
+            and joint_is_hard[twist_idx] == 0
+        ):
+            joint_penalty_k[stretch_idx] = wp.min(
+                joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx]
+            )
+            joint_penalty_k[shear_idx] = wp.min(joint_penalty_k_max[shear_idx], joint_penalty_k[shear_idx])
+            joint_penalty_k[bend_idx] = wp.min(joint_penalty_k_max[bend_idx], joint_penalty_k[bend_idx])
+            joint_penalty_k[twist_idx] = wp.min(
+                joint_penalty_k_max[twist_idx], joint_penalty_k[twist_idx]
+            )
+            joint_lambda_lin[j] = wp.vec3(0.0)
+            joint_lambda_ang[j] = wp.vec3(0.0)
+            return
 
     # Compute joint frames in world space
     if parent >= 0:
