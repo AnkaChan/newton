@@ -1327,9 +1327,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 if not self._use_fused_cable_dual_updates:
                     joint_dual_update_body_np.fill(-1)
 
-            self.joint_dual_update_body = wp.array(
-                joint_dual_update_body_np, dtype=wp.int32, device=self.device
-            )
+            self.joint_dual_update_body = wp.array(joint_dual_update_body_np, dtype=wp.int32, device=self.device)
 
             dim_np = np.zeros((n_j,), dtype=np.int32)
             for j in range(n_j):
@@ -1861,9 +1859,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             # in existing CUDA graphs, silently ignoring the mode change on replay.
             self.joint_is_hard.assign(is_hard_np)
             self._joint_hard_count = int(np.count_nonzero(is_hard_np))
-            self._fused_cable_dual_updates_condition.assign(
-                np.asarray([self._joint_hard_count != 0], dtype=np.int32)
-            )
+            self._fused_cable_dual_updates_condition.assign(np.asarray([self._joint_hard_count != 0], dtype=np.int32))
 
     @override
     def step(

@@ -27,9 +27,6 @@ from newton._src.solvers.solver import integrate_rigid_body
 
 wp.set_module_options({"enable_backward": False})
 
-_KERNEL_VERSION = "mixed_cable_and_sparse_contacts_v12"
-print(f"[rigid_vbd_kernels] version: {_KERNEL_VERSION}")
-
 # ---------------------------------
 # Constants
 # ---------------------------------
@@ -496,9 +493,17 @@ def _transported_twist_angle_derivative_from_measure(
     """
     t0 = measure.t0
     t1 = measure.t1
+
+    c = wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
+    denom = 1.0 + c
+    if denom > _CABLE_TWIST_JACOBIAN_DIRECTIONAL_DENOM:
+        twist_gradient = (t0 + t1) / denom
+        if is_parent:
+            return -wp.dot(omega_world, twist_gradient)
+        return wp.dot(omega_world, twist_gradient)
+
     m0 = measure.m0
     m1 = measure.m1
-
     dt0 = wp.vec3(0.0)
     dt1 = wp.vec3(0.0)
     dm0 = wp.vec3(0.0)
@@ -510,8 +515,6 @@ def _transported_twist_angle_derivative_from_measure(
         dt1 = wp.cross(omega_world, t1)
         dm1 = wp.cross(omega_world, m1)
 
-    c = wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
-    denom = 1.0 + c
     if denom <= _CABLE_TRANSPORT_DENOM_EPS:
         # At a 180-degree kink the transport derivative is singular. Use bounded
         # tangent spin while the residual fallback supplies the finite angle.
@@ -1894,9 +1897,7 @@ def evaluate_cable_joint_force_hessian(
     X_wc_prev = X_wc
     q_wp_prev = q_wp
     q_wc_prev = q_wc
-    cable_damping_active = (
-        kd_stretch > 0.0 or kd_shear > 0.0 or kd_bend > 0.0 or kd_twist > 0.0
-    )
+    cable_damping_active = kd_stretch > 0.0 or kd_shear > 0.0 or kd_bend > 0.0 or kd_twist > 0.0
     if cable_damping_active:
         parent_pose_prev = parent_pose
         if parent_index >= 0:
@@ -1988,14 +1989,10 @@ def evaluate_cable_joint_force_hessian(
             C0_lin = joint_C0_lin[joint_index]
             if stretch_hard:
                 lambda_local = lambda_local + wp.vec3(0.0, 0.0, lambda_lin[2])
-                C0_force_local = C0_force_local + (k_stretch * avbd_alpha) * wp.vec3(
-                    0.0, 0.0, C0_lin[2]
-                )
+                C0_force_local = C0_force_local + (k_stretch * avbd_alpha) * wp.vec3(0.0, 0.0, C0_lin[2])
             if shear_hard:
                 lambda_local = lambda_local + wp.vec3(lambda_lin[0], lambda_lin[1], 0.0)
-                C0_force_local = C0_force_local + (k_shear * avbd_alpha) * wp.vec3(
-                    C0_lin[0], C0_lin[1], 0.0
-                )
+                C0_force_local = C0_force_local + (k_shear * avbd_alpha) * wp.vec3(C0_lin[0], C0_lin[1], 0.0)
 
         f_l, t_l, Hll_l, Hal_l, Haa_l = evaluate_cable_stretch_shear_force_hessian(
             X_wp,
@@ -2146,9 +2143,7 @@ def evaluate_joint_force_hessian(
         X_wc_prev = X_wc
         q_wp_prev = q_wp
         q_wc_prev = q_wc
-        cable_damping_active = (
-            kd_stretch > 0.0 or kd_shear > 0.0 or kd_bend > 0.0 or kd_twist > 0.0
-        )
+        cable_damping_active = kd_stretch > 0.0 or kd_shear > 0.0 or kd_bend > 0.0 or kd_twist > 0.0
         if cable_damping_active:
             parent_pose_prev = parent_pose
             if parent_index >= 0:
@@ -4650,9 +4645,7 @@ def update_cable_joint_duals(
         and joint_is_hard[bend_idx] == 0
         and joint_is_hard[twist_idx] == 0
     ):
-        joint_penalty_k[stretch_idx] = wp.min(
-            joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx]
-        )
+        joint_penalty_k[stretch_idx] = wp.min(joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx])
         joint_penalty_k[shear_idx] = wp.min(joint_penalty_k_max[shear_idx], joint_penalty_k[shear_idx])
         joint_penalty_k[bend_idx] = wp.min(joint_penalty_k_max[bend_idx], joint_penalty_k[bend_idx])
         joint_penalty_k[twist_idx] = wp.min(joint_penalty_k_max[twist_idx], joint_penalty_k[twist_idx])
@@ -5120,14 +5113,10 @@ def update_duals_joint(
             and joint_is_hard[bend_idx] == 0
             and joint_is_hard[twist_idx] == 0
         ):
-            joint_penalty_k[stretch_idx] = wp.min(
-                joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx]
-            )
+            joint_penalty_k[stretch_idx] = wp.min(joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx])
             joint_penalty_k[shear_idx] = wp.min(joint_penalty_k_max[shear_idx], joint_penalty_k[shear_idx])
             joint_penalty_k[bend_idx] = wp.min(joint_penalty_k_max[bend_idx], joint_penalty_k[bend_idx])
-            joint_penalty_k[twist_idx] = wp.min(
-                joint_penalty_k_max[twist_idx], joint_penalty_k[twist_idx]
-            )
+            joint_penalty_k[twist_idx] = wp.min(joint_penalty_k_max[twist_idx], joint_penalty_k[twist_idx])
             joint_lambda_lin[j] = wp.vec3(0.0)
             joint_lambda_ang[j] = wp.vec3(0.0)
             return

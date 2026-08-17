@@ -2588,6 +2588,238 @@ def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
     return model
 
 
+def _make_vbd_cable_routing_model(device, *, include_cable=True, extra_joint_type=None):
+    """Build a minimal rigid topology for cable-route selection tests."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    cable_joint = None
+    extra_joint = None
+
+    if include_cable:
+        parent = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        child = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(parent, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(child, hx=0.1, hy=0.1, hz=0.1)
+        cable_joint = builder.add_joint_cable(
+            parent,
+            child,
+            parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(-0.5, 0.0, 0.0), wp.quat_identity()),
+            stretch_stiffness=100.0,
+            bend_stiffness=10.0,
+        )
+        builder.add_articulation([cable_joint])
+    else:
+        body = builder.add_body(mass=1.0)
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+
+    if extra_joint_type is not None:
+        body = builder.add_link(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        if extra_joint_type == newton.JointType.FREE:
+            extra_joint = builder.add_joint_free(child=body)
+        elif extra_joint_type == newton.JointType.BALL:
+            extra_joint = builder.add_joint_ball(parent=-1, child=body)
+        else:
+            raise ValueError(f"Unsupported extra joint type: {extra_joint_type}")
+        builder.add_articulation([extra_joint])
+
+    builder.color()
+    return builder.finalize(device=device), cable_joint, extra_joint
+
+
+def _make_vbd_cable_parity_model(device):
+    """Build a damped three-body cable with nonzero stiffness in every slot."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    points, quaternions = newton.utils.create_straight_cable_points_and_quaternions(
+        start=wp.vec3(0.0, 0.0, 0.0),
+        direction=wp.vec3(1.0, 0.0, 0.0),
+        length=0.6,
+        num_segments=3,
+    )
+    bodies, joints = builder.add_rod(
+        positions=points,
+        quaternions=quaternions,
+        radius=0.02,
+        stretch_stiffness=1.0e4,
+        stretch_damping=4.0,
+        shear_stiffness=8.0e3,
+        shear_damping=3.0,
+        bend_stiffness=1.0e3,
+        bend_damping=2.0,
+        twist_stiffness=8.0e2,
+        twist_damping=1.0,
+        body_frame_origin="com",
+    )
+    builder.color()
+    return builder.finalize(device=device), bodies, joints
+
+
+def _cable_rigid_solve_selects_supported_topologies(test, device):
+    """Select the cable rigid path only for cable and cable-plus-FREE topologies."""
+    cases = (
+        ("pure cable", True, None, True, False),
+        ("cable plus FREE", True, newton.JointType.FREE, True, True),
+        ("mixed constrained", True, newton.JointType.BALL, False, True),
+        ("no cable", False, None, False, True),
+    )
+
+    for label, include_cable, extra_joint_type, expected, force_application_required in cases:
+        with test.subTest(topology=label):
+            model, cable_joint, extra_joint = _make_vbd_cable_routing_model(
+                device,
+                include_cable=include_cable,
+                extra_joint_type=extra_joint_type,
+            )
+            solver = newton.solvers.SolverVBD(model)
+
+            test.assertEqual(solver._use_cable_rigid_solve, expected)
+            test.assertEqual(solver._use_fused_cable_dual_updates, expected)
+            test.assertEqual(solver._joint_force_application_required, force_application_required)
+
+            owners = solver.joint_dual_update_body.numpy()
+            if expected:
+                owner = int(owners[cable_joint])
+                test.assertIn(
+                    owner,
+                    (int(model.joint_parent.numpy()[cable_joint]), int(model.joint_child.numpy()[cable_joint])),
+                )
+                adjacency_joints = solver.cable_rigid_adjacency.body_adj_joints.numpy()
+                np.testing.assert_array_equal(np.unique(adjacency_joints), [cable_joint])
+                if extra_joint is not None:
+                    test.assertEqual(int(owners[extra_joint]), -1)
+                    test.assertNotIn(extra_joint, adjacency_joints)
+            else:
+                test.assertTrue(np.all(owners == -1))
+
+
+def _cable_specialized_fused_step_matches_generic(test, device):
+    """Match one damped beta-ramped cable step between specialized and generic paths."""
+    model, bodies, joints = _make_vbd_cable_parity_model(device)
+    solver_args = {
+        "iterations": 3,
+        "rigid_avbd_linear_beta": 2.0e5,
+        "rigid_avbd_angular_beta": 2.0e5,
+        "rigid_joint_linear_k_start": 10.0,
+        "rigid_joint_angular_k_start": 10.0,
+    }
+    specialized = newton.solvers.SolverVBD(model, **solver_args)
+    generic = newton.solvers.SolverVBD(model, **solver_args)
+    test.assertTrue(specialized._use_cable_rigid_solve)
+    test.assertTrue(specialized._use_fused_cable_dual_updates)
+    test.assertTrue(generic._use_cable_rigid_solve)
+    test.assertTrue(generic._use_fused_cable_dual_updates)
+
+    # Force only the comparison solver through the pre-specialization route.
+    generic._use_cable_rigid_solve = False
+    generic._use_fused_cable_dual_updates = False
+    hard_slots = (
+        (joints[0], specialized.JointSlot.STRETCH),
+        (joints[1], specialized.JointSlot.BEND),
+    )
+    for solver in (specialized, generic):
+        for joint, slot in hard_slots:
+            solver.set_joint_constraint_mode(joint, True, slot=slot)
+
+    specialized_in = model.state()
+    specialized_out = model.state()
+    generic_in = model.state()
+    generic_out = model.state()
+    initial_q = model.body_q.numpy()
+    initial_qd = np.zeros_like(model.body_qd.numpy())
+    test.assertEqual(len(bodies), 3)
+    initial_qd[:] = np.asarray(
+        [
+            [0.35, -0.12, 0.08, 0.20, -0.10, 0.30],
+            [-0.25, 0.18, -0.05, -0.15, 0.25, -0.20],
+            [0.10, -0.08, 0.12, 0.05, -0.30, 0.15],
+        ],
+        dtype=initial_qd.dtype,
+    )
+    specialized_in.body_qd.assign(initial_qd)
+    generic_in.body_qd.assign(initial_qd)
+
+    initial_penalty = specialized.joint_penalty_k.numpy().copy()
+    test.assertTrue(np.all(specialized.joint_penalty_kd.numpy() > 0.0))
+
+    dt = 5.0e-3
+    specialized.step(specialized_in, specialized_out, model.control(), None, dt)
+    generic.step(generic_in, generic_out, model.control(), None, dt)
+
+    test.assertGreater(
+        np.max(np.abs(specialized_out.body_q.numpy()[:, :3] - initial_q[:, :3])),
+        1.0e-5,
+    )
+    test.assertTrue(np.any(specialized.joint_penalty_k.numpy() > initial_penalty + 1.0e-6))
+    hard_duals = np.concatenate(
+        (
+            specialized.joint_lambda_lin.numpy().ravel(),
+            specialized.joint_lambda_ang.numpy().ravel(),
+        )
+    )
+    test.assertGreater(np.max(np.abs(hard_duals)), 1.0e-6)
+    for state_field in ("body_q", "body_qd"):
+        np.testing.assert_allclose(
+            getattr(specialized_out, state_field).numpy(),
+            getattr(generic_out, state_field).numpy(),
+            rtol=2.0e-5,
+            atol=2.0e-6,
+            err_msg=state_field,
+        )
+    for solver_field in (
+        "joint_penalty_k",
+        "joint_lambda_lin",
+        "joint_lambda_ang",
+        "joint_C0_lin",
+        "joint_C0_ang",
+    ):
+        np.testing.assert_allclose(
+            getattr(specialized, solver_field).numpy(),
+            getattr(generic, solver_field).numpy(),
+            rtol=2.0e-5,
+            atol=2.0e-6,
+            err_msg=solver_field,
+        )
+
+
+def _cable_constraint_mode_updates_captured_fusion_condition(test, device):
+    """Preserve captured fusion-condition pointers across runtime cable mode changes."""
+    model, cable_joint, _extra_joint = _make_vbd_cable_routing_model(device)
+    solver = newton.solvers.SolverVBD(model)
+    condition = solver._fused_cable_dual_updates_condition
+    condition_ptr = condition.ptr
+    hard_ptr = solver.joint_is_hard.ptr
+    constraint = int(solver.joint_constraint_start.numpy()[cable_joint]) + solver.JointSlot.BEND
+
+    test.assertEqual(int(condition.numpy()[0]), 0)
+    test.assertEqual(int(solver.joint_is_hard.numpy()[constraint]), 0)
+
+    graph = None
+    observed = None
+    if device.is_cuda:
+        observed = wp.zeros_like(condition)
+        with wp.ScopedCapture(device=device) as capture:
+            wp.copy(observed, condition)
+        graph = capture.graph
+
+    solver.set_joint_constraint_mode(cable_joint, True, slot=solver.JointSlot.BEND)
+    test.assertEqual(condition.ptr, condition_ptr)
+    test.assertEqual(solver.joint_is_hard.ptr, hard_ptr)
+    test.assertEqual(int(condition.numpy()[0]), 1)
+    test.assertEqual(int(solver.joint_is_hard.numpy()[constraint]), 1)
+    if graph is not None:
+        wp.capture_launch(graph)
+        test.assertEqual(int(observed.numpy()[0]), 1)
+
+    solver.set_joint_constraint_mode(cable_joint, False, slot=solver.JointSlot.BEND)
+    test.assertEqual(condition.ptr, condition_ptr)
+    test.assertEqual(solver.joint_is_hard.ptr, hard_ptr)
+    test.assertEqual(int(condition.numpy()[0]), 0)
+    test.assertEqual(int(solver.joint_is_hard.numpy()[constraint]), 0)
+    if graph is not None:
+        wp.capture_launch(graph)
+        test.assertEqual(int(observed.numpy()[0]), 0)
+
+
 def _vbd_dahl_detection_requires_positive_values(test, device):
     model = _make_vbd_dahl_detection_model(device)
 
@@ -3097,6 +3329,24 @@ add_function_test(
     TestSolverVBD,
     "test_cable_soft_dual_slots_clear_preserved_lambda",
     _cable_soft_dual_slots_clear_preserved_lambda,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_rigid_solve_selects_supported_topologies",
+    _cable_rigid_solve_selects_supported_topologies,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_specialized_fused_step_matches_generic",
+    _cable_specialized_fused_step_matches_generic,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_constraint_mode_updates_captured_fusion_condition",
+    _cable_constraint_mode_updates_captured_fusion_condition,
     devices=devices,
 )
 add_function_test(
