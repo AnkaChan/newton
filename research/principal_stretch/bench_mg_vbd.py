@@ -70,14 +70,18 @@ _SCENE_FACTORIES: dict[str, Callable[[], TetBenchmarkScene]] = {
     "refinement-medium": functools.partial(build_refinement_scene, "medium"),
 }
 
-# These are the reviewed source contents at the benchmark decision point.  A
-# suite cannot silently resume or start against a locally modified solver.
-_PINNED_SOURCE_SHA256 = {
-    "correction_mg_vbd.py": "ff4ea309392577a68061b8ef0972425755b80d36b66db3bcaad98d5f20aa87f8",
-    "correction_gpu.py": "a80e12ab04306c7d5d964902d9e23d30d23b89076af5d090630e64d69110e53f",
-    "correction_multigrid.py": "b0d6eee9cc150b5f691950a9f1afaebd8a5ed0b21a7acbe017e534ddf9f3a8a9",
-    "solver_benchmark.py": "0ca95df0c511c716aa9b05969bb700cd50ed75c00cc1e37dbe97c7b4498fc877",
-    "solver_scenes.py": "aedd680a31e0ed6126ce803bfcf91d47321144639a4b78eba078ef8ae4342c92",
+# These explicit tuples are the complete reviewed source allowlists.  A suite
+# records exactly the reviewed content it ran; membership never permits an
+# arbitrary hash and current-source verification still detects version drift.
+_REVIEWED_SOURCE_SHA256 = {
+    "correction_mg_vbd.py": (
+        "ff4ea309392577a68061b8ef0972425755b80d36b66db3bcaad98d5f20aa87f8",
+        "4871d747f1bc5d3d0605c51a856742fc131a8fa9e2397e93858ebbb02998d662",
+    ),
+    "correction_gpu.py": ("a80e12ab04306c7d5d964902d9e23d30d23b89076af5d090630e64d69110e53f",),
+    "correction_multigrid.py": ("b0d6eee9cc150b5f691950a9f1afaebd8a5ed0b21a7acbe017e534ddf9f3a8a9",),
+    "solver_benchmark.py": ("0ca95df0c511c716aa9b05969bb700cd50ed75c00cc1e37dbe97c7b4498fc877",),
+    "solver_scenes.py": ("aedd680a31e0ed6126ce803bfcf91d47321144639a4b78eba078ef8ae4342c92",),
 }
 
 _METRIC_FIELDS = (
@@ -213,12 +217,12 @@ def _configuration_record(scene_keys: Sequence[str], max_newton_free_dofs: int) 
 def _source_manifest() -> dict[str, object]:
     module_dir = pathlib.Path(__file__).resolve().parent
     records: dict[str, object] = {}
-    for filename, expected in _PINNED_SOURCE_SHA256.items():
+    for filename, reviewed_hashes in _REVIEWED_SOURCE_SHA256.items():
         path = module_dir / filename
         actual = _file_sha256(path)
-        if actual != expected:
-            raise RuntimeError(f"pinned source {filename} changed: expected {expected}, found {actual}")
-        records[filename] = {"sha256": actual, "pinned_sha256": expected, "reviewed": True}
+        if actual not in reviewed_hashes:
+            raise RuntimeError(f"source {filename} is not reviewed: expected one of {reviewed_hashes}, found {actual}")
+        records[filename] = {"sha256": actual, "pinned_sha256": actual, "reviewed": True}
     benchmark_path = pathlib.Path(__file__).resolve()
     records[benchmark_path.name] = {
         "sha256": _file_sha256(benchmark_path),
@@ -238,11 +242,12 @@ def _verify_source_manifest(record: Mapping[str, object], *, verify_current_sour
     files = record.get("files")
     if not isinstance(files, Mapping):
         raise ValueError("source manifest files must be a mapping")
-    for filename, expected in _PINNED_SOURCE_SHA256.items():
+    for filename, reviewed_hashes in _REVIEWED_SOURCE_SHA256.items():
         item = files.get(filename)
         if not isinstance(item, Mapping):
             raise ValueError(f"source manifest is missing {filename}")
-        if item.get("sha256") != expected or item.get("pinned_sha256") != expected or item.get("reviewed") is not True:
+        actual = item.get("sha256")
+        if actual != item.get("pinned_sha256") or actual not in reviewed_hashes or item.get("reviewed") is not True:
             raise ValueError(f"source manifest does not bind reviewed {filename}")
     benchmark_item = files.get(pathlib.Path(__file__).name)
     if not isinstance(benchmark_item, Mapping):

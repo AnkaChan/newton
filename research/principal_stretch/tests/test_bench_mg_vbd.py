@@ -16,6 +16,9 @@ import numpy as np
 from .. import bench_mg_vbd as benchmark
 from ..solver_scenes import build_stretch_scene
 
+_OLD_CORRECTION_SHA256 = "ff4ea309392577a68061b8ef0972425755b80d36b66db3bcaad98d5f20aa87f8"
+_NEW_CORRECTION_SHA256 = "4871d747f1bc5d3d0605c51a856742fc131a8fa9e2397e93858ebbb02998d662"
+
 
 def _coordinated_rehash(payload):
     entry = payload["scenes"][0]
@@ -255,10 +258,56 @@ class TestMGVBDSceneSuite(unittest.TestCase):
         decoded = json.loads(self.output_path.read_text())
         self.assertEqual(decoded, self.payload)
         sources = decoded["source_manifest"]["files"]
-        for filename, expected in benchmark._PINNED_SOURCE_SHA256.items():
-            self.assertEqual(sources[filename]["sha256"], expected)
-            self.assertEqual(sources[filename]["pinned_sha256"], expected)
+        for filename, reviewed_hashes in benchmark._REVIEWED_SOURCE_SHA256.items():
+            actual = sources[filename]["sha256"]
+            self.assertIn(actual, reviewed_hashes)
+            self.assertEqual(sources[filename]["pinned_sha256"], actual)
             self.assertTrue(sources[filename]["reviewed"])
+        self.assertEqual(sources["correction_mg_vbd.py"]["sha256"], _NEW_CORRECTION_SHA256)
+
+    def test_historical_reviewed_source_fixture_verifies_but_current_source_check_rejects(self):
+        payload = copy.deepcopy(self.payload)
+        source_manifest = payload["source_manifest"]
+        correction_source = source_manifest["files"]["correction_mg_vbd.py"]
+        correction_source["sha256"] = _OLD_CORRECTION_SHA256
+        correction_source["pinned_sha256"] = _OLD_CORRECTION_SHA256
+        source_manifest.pop("source_manifest_sha256")
+        source_manifest["source_manifest_sha256"] = benchmark._canonical_sha256(source_manifest)
+        payload = benchmark._seal_suite(payload)
+
+        verified = benchmark.verify_suite_payload(payload, verify_current_sources=False)
+        self.assertEqual(
+            verified["source_manifest"]["files"]["correction_mg_vbd.py"]["sha256"],
+            _OLD_CORRECTION_SHA256,
+        )
+        with self.assertRaisesRegex(ValueError, "does not match current source files"):
+            benchmark.verify_suite_payload(payload, verify_current_sources=True)
+
+    def test_unreviewed_source_hash_is_rejected_by_writer_and_verifier(self):
+        unreviewed = "0" * 64
+        original_file_sha256 = benchmark._file_sha256
+
+        def replace_correction_hash(path):
+            if pathlib.Path(path).name == "correction_mg_vbd.py":
+                return unreviewed
+            return original_file_sha256(path)
+
+        with (
+            mock.patch.object(benchmark, "_file_sha256", side_effect=replace_correction_hash),
+            self.assertRaisesRegex(RuntimeError, "not reviewed"),
+        ):
+            benchmark._source_manifest()
+
+        payload = copy.deepcopy(self.payload)
+        source_manifest = payload["source_manifest"]
+        source = source_manifest["files"]["correction_mg_vbd.py"]
+        source["sha256"] = unreviewed
+        source["pinned_sha256"] = unreviewed
+        source_manifest.pop("source_manifest_sha256")
+        source_manifest["source_manifest_sha256"] = benchmark._canonical_sha256(source_manifest)
+        payload = benchmark._seal_suite(payload)
+        with self.assertRaisesRegex(ValueError, "does not bind reviewed correction_mg_vbd.py"):
+            benchmark.verify_suite_payload(payload)
 
 
 if __name__ == "__main__":
