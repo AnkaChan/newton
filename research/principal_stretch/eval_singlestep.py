@@ -12,7 +12,16 @@ import numpy as np
 import torch
 
 from . import torch_solver as ts
-from .predictor import build_stretch_predictor, checkpoint_predictor_config, load_stretch_predictor_state
+from .predictor import (
+    build_stretch_predictor,
+    checkpoint_predictor_config,
+    decode_predictor_step,
+    load_stretch_predictor_state,
+    predictor_architecture_version,
+    predictor_decoder_work,
+    resolve_solver_iterations,
+    validate_static_pin_trajectory,
+)
 from .rollout import vert_to_tet_pin_flag
 from .torch_solver import compute_S_from_x, inertial_predictor
 
@@ -21,7 +30,12 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", required=True)
     p.add_argument("--data", required=True)
-    p.add_argument("--solver-iters", type=int, default=10)
+    p.add_argument(
+        "--solver-iters",
+        type=int,
+        default=None,
+        help="legacy local-global sweeps (default 10); v3 requires its single projection",
+    )
     p.add_argument("--out", help="optional NPZ with per-sample and per-trajectory errors")
     args = p.parse_args()
 
@@ -62,10 +76,25 @@ def main():
     )
     load_stretch_predictor_state(predictor, ckpt)
     predictor.eval()
+    if predictor_architecture_version(predictor) == 3:
+        validate_static_pin_trajectory(rest_q, pinned_np, x_all)
     ckpt_args = ckpt.get("args", {})
     warm = ckpt_args.get("warm", "prev")
     blocks = int(ckpt_args.get("blocks", 1))
-    print(f"ckpt config: predictor={predictor.kind} warm={warm} blocks={blocks} solver_iters={args.solver_iters}")
+    solver_iterations = resolve_solver_iterations(predictor, args.solver_iters)
+    decoder_work = predictor_decoder_work(predictor, solver_iterations, blocks)
+    full_gradient_decoder = decoder_work["target"] == "full-deformation-gradient"
+    if predictor_architecture_version(predictor) == 3:
+        saved_work = ckpt.get("decoder_work")
+        if saved_work != decoder_work:
+            raise ValueError(
+                "architecture-v3 checkpoint decoder_work is missing or inconsistent; "
+                f"saved={saved_work!r}, expected={decoder_work!r}"
+            )
+    print(
+        f"ckpt config: predictor={predictor.kind} warm={warm} blocks={blocks} "
+        f"solver_iters={solver_iterations} decoder_work={decoder_work}"
+    )
 
     errs = []
     sample_trajectory = []
@@ -79,27 +108,35 @@ def main():
                 x_t = torch.as_tensor(x_all[t], dtype=torch.float64, device=device)
                 x_target = torch.as_tensor(x_all[t + 1], dtype=torch.float64, device=device)
                 f_ext = torch.as_tensor(f_ext_all[t], dtype=torch.float64, device=device)
-                S_previous = compute_S_from_x(state, x_prev)
-                x0 = inertial_predictor(state, x_t, x_prev, pinned_targets) if warm == "inertial" else x_t
-                iters_per_block = max(1, args.solver_iters // blocks)
-                x_next = x0
-                S_cur = compute_S_from_x(state, x_t)
-                for _b in range(blocks):
-                    S_star = predictor(
-                        state,
-                        x_t,
-                        x_prev,
-                        f_ext,
-                        gravity,
-                        mu_t,
-                        lam_t,
-                        pin_flag,
-                        S_cur,
-                        S_previous,
-                    )
-                    x_next = ts.solve(state, S_star.double(), pinned_targets, x_init=x_next, n_iters=iters_per_block)
-                    if _b + 1 < blocks:
-                        S_cur = compute_S_from_x(state, x_next)
+                if full_gradient_decoder:
+                    x0 = None
+                    S_previous = None
+                    S_cur = None
+                elif warm == "inertial":
+                    x0 = inertial_predictor(state, x_t, x_prev, pinned_targets)
+                    S_previous = compute_S_from_x(state, x_prev)
+                    S_cur = compute_S_from_x(state, x_t)
+                else:
+                    x0 = x_t
+                    S_previous = compute_S_from_x(state, x_prev)
+                    S_cur = compute_S_from_x(state, x_t)
+                x_next = decode_predictor_step(
+                    predictor,
+                    state,
+                    x_t,
+                    x_prev,
+                    f_ext,
+                    gravity,
+                    mu_t,
+                    lam_t,
+                    pin_flag,
+                    S_cur,
+                    S_previous,
+                    pinned_targets,
+                    x_init=x0,
+                    solver_iterations=solver_iterations,
+                    blocks=blocks,
+                )
                 e_per_v = (x_next - x_target).norm(dim=-1)
                 errs.append(e_per_v.cpu().numpy())
                 sample_trajectory.append(traj)
@@ -122,7 +159,10 @@ def main():
             trajectory_index=trajectory_index,
             frame_index=np.asarray(sample_frame, dtype=np.int64),
             trajectory_mean=trajectory_mean,
-            solver_iters=args.solver_iters,
+            solver_iters=solver_iterations,
+            decoder=np.asarray(decoder_work["decoder"]),
+            global_triangular_solves=np.asarray(decoder_work["global_triangular_solves"], dtype=np.int64),
+            local_polar_sweeps=np.asarray(decoder_work["local_polar_sweeps"], dtype=np.int64),
         )
         print(f"wrote {out}")
 

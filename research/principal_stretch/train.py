@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-"""Train the stretch predictor through the batched differentiable decoder.
+"""Train the stretch or full-gradient predictor through its batched decoder.
 
 Supersedes the original per-sample-loop trainer and folds in the repairs from
 the 2026-07-28 takeover review:
@@ -18,6 +18,14 @@ the 2026-07-28 takeover review:
   (``--loss phys``) is retained as an ablation; note it is one backward-Euler
   step at ``--dt`` while the reference data is 10 substeps at ``dt/10``, which
   caps its fidelity (review §2.3).
+
+The legacy trajectory NPZ contains one rest-pose pin target rather than a
+per-transition boundary schedule.  Architecture v3 therefore fails closed on
+moving pinned vertices here; moving-boundary PR scenes require the separate
+common-trajectory data path.
+
+This legacy trajectory loss is a training diagnostic, not common-objective
+solver evidence; objective claims require the separately audited benchmark.
 """
 
 from __future__ import annotations
@@ -37,7 +45,11 @@ from .predictor import (
     PREDICTOR_KINDS,
     build_stretch_predictor,
     checkpoint_predictor_config,
+    decode_predictor_step,
     load_stretch_predictor_state,
+    predictor_decoder_work,
+    resolve_solver_iterations,
+    validate_static_pin_trajectory,
 )
 from .torch_solver import compute_S_from_x, inertial_predictor
 
@@ -84,7 +96,12 @@ def main():
     parser.add_argument("--steps", type=int, default=4000)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--solver-iters", type=int, default=10)
+    parser.add_argument(
+        "--solver-iters",
+        type=int,
+        default=None,
+        help="local-global sweeps (default 10); v3 defaults to and requires one global projection",
+    )
     parser.add_argument("--dt", type=float, default=1.0 / 60.0)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -135,11 +152,17 @@ def main():
     parser.add_argument("--gt-dropout", type=float, default=0.0)
     parser.add_argument("--gt-max-delta", type=float, default=0.35, help="maximum Hencky update Frobenius norm")
     parser.add_argument(
+        "--gt-max-rotation",
+        type=float,
+        default=0.75,
+        help="maximum v3 material-frame relative rotation [rad]",
+    )
+    parser.add_argument(
         "--gt-architecture-version",
         type=int,
-        choices=(1, 2),
+        choices=(1, 2, 3),
         default=2,
-        help="graph feature/checkpoint schema; v2 uses covariant differentiable frames",
+        help="graph schema; v3 predicts full deformation gradients and uses one global projection",
     )
     args = parser.parse_args()
 
@@ -166,6 +189,8 @@ def main():
     tets_np = data["tet_indices"]
     x_all = data["x"].astype(np.float64)
     n_total = x_all.shape[0]
+    if args.predictor == "graph-transformer" and args.gt_architecture_version == 3:
+        validate_static_pin_trajectory(rest_q, data["pinned_indices"], x_all)
 
     solver = ts.build_solver(
         rest_q, tets_np, data["tet_poses"], data["pinned_indices"], device=device, dtype=torch.float64
@@ -195,6 +220,7 @@ def main():
         cluster_size=args.gt_cluster_size,
         dropout=args.gt_dropout,
         max_hencky_update=args.gt_max_delta,
+        max_rotation_update=args.gt_max_rotation,
         dt=args.dt,
         architecture_version=args.gt_architecture_version,
     )
@@ -207,7 +233,13 @@ def main():
         residual=args.residual,
         graph_config=graph_config,
     )
+    args.solver_iters = resolve_solver_iterations(predictor, args.solver_iters)
+    decoder_work = predictor_decoder_work(predictor, args.solver_iters, args.blocks)
+    full_gradient_decoder = decoder_work["target"] == "full-deformation-gradient"
     print(f"predictor={predictor.kind} config={predictor.checkpoint_config()}")
+    print(f"decoder work per predicted step: {decoder_work}")
+    if full_gradient_decoder:
+        print("decoder warm start: unused by the one-shot v3 projection")
     parameter_count = sum(parameter.numel() for parameter in predictor.parameters())
     print(f"trainable parameters: {parameter_count:,}")
     if predictor.kind == "graph-transformer":
@@ -273,6 +305,12 @@ def main():
             x_t = x_t.clone()
             x_prev[:, solver.pinned] = pinned_targets
             x_t[:, solver.pinned] = pinned_targets
+        if full_gradient_decoder:
+            # V3 reconstructs H and F internally and never enters a polar
+            # stretch path.  Keep the recorded zero-sweep work contract real.
+            S_prev = None
+            S_now = None
+        elif args.noise_std > 0.0:
             S_prev = compute_S_from_x(solver, x_prev)
             S_now = compute_S_from_x(solver, x_t)
         else:
@@ -289,33 +327,29 @@ def main():
         for k in range(k_roll):
             f_ext = f_ext_gpu[i_t0 + k]  # (B, V, 3)
 
-            if args.warm == "inertial":
+            if full_gradient_decoder:
+                x0 = None
+            elif args.warm == "inertial":
                 x0 = inertial_predictor(solver, x_t, x_prev, pin_b)
             else:
                 x0 = x_t
-            # Alternating network <-> decoder blocks (PoissonNet-style).  Each
-            # block's global solve propagates the previous block's local
-            # prediction across the whole mesh, so B blocks give the *network*
-            # B global hops of receptive field at matched total decoder cost.
-            iters_per_block = max(1, args.solver_iters // args.blocks)
-            x_next = x0
-            S_cur = S_now
-            for _b in range(args.blocks):
-                S_star = predictor(
-                    solver,
-                    x_t,
-                    x_prev,
-                    f_ext,
-                    gravity64,
-                    mu32,
-                    lam32,
-                    pin_flag,
-                    S_cur,
-                    S_prev,
-                )
-                x_next = ts.solve(solver, S_star.double(), pin_b, x_init=x_next, n_iters=iters_per_block)
-                if _b + 1 < args.blocks:
-                    S_cur = compute_S_from_x(solver, x_next)
+            x_next = decode_predictor_step(
+                predictor,
+                solver,
+                x_t,
+                x_prev,
+                f_ext,
+                gravity64,
+                mu32,
+                lam32,
+                pin_flag,
+                S_now,
+                S_prev,
+                pin_b,
+                x_init=x0,
+                solver_iterations=args.solver_iters,
+                blocks=args.blocks,
+            )
 
             if args.loss == "pos":
                 diff = x_next - x_gpu[i_t0 + k + 1]
@@ -351,8 +385,9 @@ def main():
                     dt=args.dt,
                 )
 
-            S_prev = S_now
-            S_now = compute_S_from_x(solver, x_next)
+            if not full_gradient_decoder:
+                S_prev = S_now
+                S_now = compute_S_from_x(solver, x_next)
             x_prev = x_t
             x_t = x_next
             x_pred = x_next
@@ -371,6 +406,8 @@ def main():
 
     train_seconds = time.time() - t0
     runtime = {"train_seconds": train_seconds, "parameter_count": parameter_count}
+    if predictor.kind == "graph-transformer":
+        runtime["realized_hierarchy_levels"] = predictor.model.n_levels
     if device.type == "cuda":
         runtime.update(
             {
@@ -387,17 +424,18 @@ def main():
     print(f"training done in {train_seconds:.1f}s")
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "state_dict": predictor.model.state_dict(),
-            "predictor_config": predictor.checkpoint_config(),
-            "log": log,
-            "args": vars(args),
-            "runtime": runtime,
-            "torch_version": str(torch.__version__),
-        },
-        out,
-    )
+    checkpoint = {
+        "state_dict": predictor.model.state_dict(),
+        "predictor_config": predictor.checkpoint_config(),
+        "decoder_work": decoder_work,
+        "log": log,
+        "args": vars(args),
+        "runtime": runtime,
+        "torch_version": str(torch.__version__),
+    }
+    if predictor.kind == "graph-transformer":
+        checkpoint["training_realized_hierarchy_levels"] = predictor.model.n_levels
+    torch.save(checkpoint, out)
     print(f"wrote {out}")
 
 

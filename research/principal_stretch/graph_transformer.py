@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Multiresolution graph transformer for principal-stretch dynamics.
 
-The learned state is the Hencky tensor
+The learned stretch state is the Hencky tensor
 
 ``H = log(U) = 0.5 log(F.T @ F)``,
 
@@ -12,6 +12,24 @@ eigenspaces are not continuous.  Instead, the complete symmetric tensor is
 carried in the material frame and the output is
 
 ``U_target = exp(H_current + delta_H)``.
+
+Architecture version 3 additionally predicts a bounded material-frame
+relative rotation ``omega`` and exposes the complete target deformation
+gradient
+
+``F_target = A exp(skew(omega)) exp(H_current + delta_H)``,
+
+where ``A = F_current exp(-H_current)``.  Both learned updates are invariant
+to an active world rigid transform, while ``A`` is covariant.  Consequently
+``F_target' = Q F_target``.  Zero-initializing both heads recovers the observed
+deformation gradient (up to floating-point roundoff) instead of discarding its
+rotation.
+
+The factors to the right of ``A`` are invertible and have positive
+determinant.  Version 3 therefore preserves the rank and determinant sign of
+the observed ``F``.  It remains finite for collapsed or inverted observations,
+but it cannot repair either condition in its target field; those states need a
+separate validity/recovery mechanism.
 
 This is positive definite by construction and invariant to an active world
 rigid transform.  World vectors (gravity, load, velocity, and current edge
@@ -57,8 +75,9 @@ class GraphTransformerConfig:
     cluster_size: int = 8
     dropout: float = 0.0
     max_hencky_update: float = 0.35
+    max_rotation_update: float = 0.75
     dt: float = 1.0 / 60.0
-    architecture_version: int = 2
+    architecture_version: int = 3
 
     def __post_init__(self):
         if self.hidden_dim % self.num_heads != 0:
@@ -67,12 +86,16 @@ class GraphTransformerConfig:
             raise ValueError("n_levels must be non-negative")
         if self.cluster_size < 2:
             raise ValueError("cluster_size must be at least 2")
-        if self.max_hencky_update <= 0.0:
+        if not math.isfinite(self.max_hencky_update) or self.max_hencky_update <= 0.0:
             raise ValueError("max_hencky_update must be positive")
-        if self.dt <= 0.0:
+        if not math.isfinite(self.max_rotation_update) or self.max_rotation_update <= 0.0:
+            raise ValueError("max_rotation_update must be positive")
+        if self.max_rotation_update > math.pi:
+            raise ValueError("max_rotation_update must not exceed pi")
+        if not math.isfinite(self.dt) or self.dt <= 0.0:
             raise ValueError("dt must be positive")
-        if self.architecture_version not in (0, 1, 2):
-            raise ValueError("architecture_version must be 0, 1, or 2")
+        if self.architecture_version not in (0, 1, 2, 3):
+            raise ValueError("architecture_version must be 0, 1, 2, or 3")
 
 
 def _mlp(in_dim: int, hidden_dim: int, out_dim: int) -> nn.Sequential:
@@ -115,6 +138,23 @@ def _radially_bound_symmetric(raw: torch.Tensor, maximum: float) -> torch.Tensor
     norm = torch.sqrt((matrix * matrix).sum(dim=(-2, -1), keepdim=True) + 1.0e-16)
     scale = maximum / torch.sqrt(maximum * maximum + norm * norm)
     return matrix * scale
+
+
+def _radially_bound_vector(raw: torch.Tensor, maximum: float) -> torch.Tensor:
+    """Bound a vector by its Euclidean norm, without a preferred axis."""
+    norm = torch.sqrt((raw * raw).sum(dim=-1, keepdim=True) + 1.0e-16)
+    scale = maximum / torch.sqrt(maximum * maximum + norm * norm)
+    return raw * scale
+
+
+def _skew(vector: torch.Tensor) -> torch.Tensor:
+    """Return the skew matrix whose axial vector is ``vector``."""
+    x, y, z = vector.unbind(dim=-1)
+    zero = torch.zeros_like(x)
+    return torch.stack(
+        [zero, -z, y, z, zero, -x, -y, x, zero],
+        dim=-1,
+    ).reshape(*vector.shape[:-1], 3, 3)
 
 
 def _observation_rotation(F: torch.Tensor) -> torch.Tensor:
@@ -375,6 +415,10 @@ class PrincipalStretchGraphTransformer(nn.Module):
         self.output_head = _mlp(hidden_dim, hidden_dim, 6)
         nn.init.zeros_(self.output_head[-1].weight)
         nn.init.zeros_(self.output_head[-1].bias)
+        if self.config.architecture_version >= 3:
+            self.rotation_head = _mlp(hidden_dim, hidden_dim, 3)
+            nn.init.zeros_(self.rotation_head[-1].weight)
+            nn.init.zeros_(self.rotation_head[-1].bias)
 
     def _register_level(
         self,
@@ -518,7 +562,7 @@ class PrincipalStretchGraphTransformer(nn.Module):
         mu: torch.Tensor,
         lam: torch.Tensor,
         pin: torch.Tensor,
-    ) -> tuple[bool, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+    ) -> tuple[bool, torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
         batched = x_current.dim() == 3
         if not batched:
             x_current = x_current[None]
@@ -562,7 +606,12 @@ class PrincipalStretchGraphTransformer(nn.Module):
             "lam": lam[..., None],
             "pin": pin[..., None],
         }
-        base_H = H.to(dtype=self.output_head[-1].weight.dtype)
+        # Keep the kinematic tensors in the decoder dtype.  Only observations
+        # enter the neural dtype; casting H here would make the v3 zero-head
+        # identity lose float64 precision before composing A exp(H).
+        base_F = F
+        base_H = H
+        base_frame = rotation
         node_features: list[torch.Tensor] = []
         edge_features: list[torch.Tensor] = []
 
@@ -590,9 +639,9 @@ class PrincipalStretchGraphTransformer(nn.Module):
                 pooled["rotation"] = fields["rotation"][:, representative]
             fields = pooled
 
-        return batched, base_H, node_features, edge_features
+        return batched, base_F, base_H, base_frame, node_features, edge_features
 
-    def forward(
+    def _encode(
         self,
         state: SolverState,
         x_current: torch.Tensor,
@@ -602,23 +651,9 @@ class PrincipalStretchGraphTransformer(nn.Module):
         mu: torch.Tensor,
         lam: torch.Tensor,
         pin: torch.Tensor,
-    ) -> torch.Tensor:
-        """Predict material-frame target right stretches.
-
-        Args:
-            state: Local-global decoder state for the shared tet mesh.
-            x_current: Current vertex positions [m], ``(V, 3)`` or ``(B, V, 3)``.
-            x_previous: Previous positions [m], same shape as ``x_current``.
-            force: Current per-vertex external force [N], same shape as positions.
-            gravity: Gravity [m/s^2], ``(3,)`` or ``(B, 3)``.
-            mu: Per-tet first Lamé parameter [Pa], ``(T,)`` or ``(B, T)``.
-            lam: Per-tet second Lamé parameter [Pa], same shape as ``mu``.
-            pin: Per-tet pin-incidence flag, same shape as ``mu``.
-
-        Returns:
-            SPD target right stretches, ``(T, 3, 3)`` or ``(B, T, 3, 3)``.
-        """
-        batched, base_H, node_features, edge_features = self._prepare(
+    ) -> tuple[bool, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return fine kinematics and the invariant fine-level latent field."""
+        batched, base_F, base_H, base_frame, node_features, edge_features = self._prepare(
             state, x_current, x_previous, force, gravity, mu, lam, pin
         )
 
@@ -660,6 +695,81 @@ class PrincipalStretchGraphTransformer(nn.Module):
                 self._level_buffer("edge_weight", level),
             )
 
+        return batched, base_F, base_H, base_frame, hidden
+
+    def _target_hencky(self, base_H: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:
+        """Apply the bounded SPD head, retaining legacy output precision."""
         delta_H = _radially_bound_symmetric(self.output_head(hidden), self.config.max_hencky_update)
-        target = sym_exp(base_H + delta_H)
+        if self.config.architecture_version < 3:
+            return base_H.to(dtype=delta_H.dtype) + delta_H
+        return base_H + delta_H.to(dtype=base_H.dtype)
+
+    def forward(
+        self,
+        state: SolverState,
+        x_current: torch.Tensor,
+        x_previous: torch.Tensor,
+        force: torch.Tensor,
+        gravity: torch.Tensor,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        pin: torch.Tensor,
+    ) -> torch.Tensor:
+        """Predict material-frame target right stretches.
+
+        Args:
+            state: Local-global decoder state for the shared tet mesh.
+            x_current: Current vertex positions [m], ``(V, 3)`` or ``(B, V, 3)``.
+            x_previous: Previous positions [m], same shape as ``x_current``.
+            force: Current per-vertex external force [N], same shape as positions.
+            gravity: Gravity [m/s^2], ``(3,)`` or ``(B, 3)``.
+            mu: Per-tet first Lamé parameter [Pa], ``(T,)`` or ``(B, T)``.
+            lam: Per-tet second Lamé parameter [Pa], same shape as ``mu``.
+            pin: Per-tet pin-incidence flag, same shape as ``mu``.
+
+        Returns:
+            SPD target right stretches, ``(T, 3, 3)`` or ``(B, T, 3, 3)``.
+        """
+        batched, _base_F, base_H, _base_frame, hidden = self._encode(
+            state, x_current, x_previous, force, gravity, mu, lam, pin
+        )
+        target = sym_exp(self._target_hencky(base_H, hidden))
+        return target if batched else target[0]
+
+    def predict_deformation_gradient(
+        self,
+        state: SolverState,
+        x_current: torch.Tensor,
+        x_previous: torch.Tensor,
+        force: torch.Tensor,
+        gravity: torch.Tensor,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        pin: torch.Tensor,
+    ) -> torch.Tensor:
+        """Predict a full, active-SE(3)-equivariant deformation gradient.
+
+        This v3-only path retains the invariant SPD Hencky update and adds an
+        invariant material-frame relative rotation.  For observed gradient
+        ``F`` and Hencky tensor ``H``, it returns
+        ``A exp(skew(omega)) exp(H + delta_H)``, where
+        ``A = F exp(-H)``.  Both heads are zero-initialized, so a new model
+        returns the observed ``F`` up to kinematic floating-point roundoff.
+        Since every learned right factor is invertible with positive
+        determinant, the target preserves the rank and determinant sign of
+        the observation; this method does not repair collapse or inversion.
+
+        Returns:
+            Target deformation gradients, ``(T, 3, 3)`` or
+            ``(B, T, 3, 3)``.
+        """
+        if self.config.architecture_version < 3:
+            raise RuntimeError("full deformation-gradient prediction requires architecture_version 3")
+        batched, _base_F, base_H, base_frame, hidden = self._encode(
+            state, x_current, x_previous, force, gravity, mu, lam, pin
+        )
+        target_H = self._target_hencky(base_H, hidden)
+        omega = _radially_bound_vector(self.rotation_head(hidden), self.config.max_rotation_update)
+        relative_rotation = torch.matrix_exp(_skew(omega.to(dtype=base_H.dtype)))
+        target = base_frame @ relative_rotation @ sym_exp(target_H)
         return target if batched else target[0]

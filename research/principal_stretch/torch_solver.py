@@ -11,8 +11,10 @@ Shapes throughout:
 - tets:    (T, 4) int64
 - Dm_inv:  (T, 3, 3)
 - J:       (T, 4, 3)  rows: a=0..3, cols: c=0..2.  F[t,:,c] = sum_a J[t,a,c] * x[tets[t,a],:]
-- L:       (V, V) dense  (small enough)
+- L:       (V, V) dense for the legacy direct backend
+- L_ff:    (F, F) sparse CSR for the scalable PCG backend
 - S*:      (T, 3, 3) symmetric
+- F*:      (T, 3, 3) full target deformation gradient
 """
 
 from __future__ import annotations
@@ -23,6 +25,9 @@ import numpy as np
 import torch
 
 from .polar import polar_rotation
+
+_DENSE_BACKEND = "dense"
+_SPARSE_PCG_BACKEND = "sparse_pcg"
 
 
 def _build_J(Dm_inv: torch.Tensor) -> torch.Tensor:
@@ -42,9 +47,9 @@ def _build_J(Dm_inv: torch.Tensor) -> torch.Tensor:
 
 
 def compute_F(x: torch.Tensor, tets: torch.Tensor, J: torch.Tensor) -> torch.Tensor:
-    """F[t, d, c] = sum_a J[t, a, c] * x[tets[t, a], d]."""
-    x_tet = x[tets]  # (T, 4, 3)
-    return torch.einsum("tac,tad->tdc", J, x_tet)
+    """Compute deformation gradients, preserving optional batch dimensions."""
+    x_tet = x[..., tets, :]  # (..., T, 4, 3)
+    return torch.einsum("tac,...tad->...tdc", J, x_tet)
 
 
 def polar_R(M: torch.Tensor) -> torch.Tensor:
@@ -72,6 +77,38 @@ def assemble_rhs(
 
 
 @dataclasses.dataclass
+class ProjectionDiagnostics:
+    """Auditable work and convergence data for a full-gradient projection.
+
+    ``matrix_vector_products`` counts sparse matrix-matrix calls, each of which
+    advances all ``rhs_count`` scalar right-hand sides.  The corresponding
+    scalar-RHS work is therefore their product.  A dense projection reports one
+    factor solve and no iterative work.
+    """
+
+    backend: str
+    converged: bool
+    iterations: int
+    rhs_count: int
+    converged_rhs: int
+    matrix_vector_products: int
+    preconditioner_applications: int
+    factor_solves: int
+    rhs_norm_max: float
+    initial_residual_norm_max: float
+    residual_norm_max: float
+    relative_residual_max: float
+    relative_tolerance: float | None
+    absolute_tolerance: float | None
+    breakdown: bool = False
+
+    @property
+    def scalar_rhs_matrix_vector_products(self) -> int:
+        """Equivalent count if every right-hand side were solved separately."""
+        return self.matrix_vector_products * self.rhs_count
+
+
+@dataclasses.dataclass
 class SolverState:
     """Precomputed mesh + factorisation that does not depend on x or S*."""
 
@@ -83,10 +120,125 @@ class SolverState:
     w: torch.Tensor  # (T,) rest volumes
     pinned: torch.Tensor  # (P,) int64
     free: torch.Tensor  # (F,) int64
-    L: torch.Tensor  # (V, V) dense
-    L_ff_chol: torch.Tensor  # (F, F) lower-triangular cholesky factor
-    L_fp: torch.Tensor  # (F, P)
+    L: torch.Tensor | None  # (V, V) dense, direct backend only
+    L_ff_chol: torch.Tensor | None  # (F, F) Cholesky, direct backend only
+    L_fp: torch.Tensor  # (F, P), dense or sparse CSR according to backend
     rest_q: torch.Tensor  # (V, 3)
+    tikhonov: float = 0.0
+    projection_backend: str = _DENSE_BACKEND
+    L_ff_sparse: torch.Tensor | None = None  # (F, F) sparse CSR
+    L_ff_inverse_diagonal: torch.Tensor | None = None  # (F,) Jacobi preconditioner
+    pcg_relative_tolerance: float = 1.0e-8
+    pcg_absolute_tolerance: float = 0.0
+    pcg_max_iterations: int = 512
+    pcg_raise_on_nonconvergence: bool = True
+
+
+def _validate_pcg_options(relative_tolerance: float, absolute_tolerance: float, max_iterations: int) -> None:
+    if not np.isfinite(relative_tolerance) or relative_tolerance < 0.0:
+        raise ValueError("pcg_relative_tolerance must be finite and non-negative")
+    if not np.isfinite(absolute_tolerance) or absolute_tolerance < 0.0:
+        raise ValueError("pcg_absolute_tolerance must be finite and non-negative")
+    if relative_tolerance == 0.0 and absolute_tolerance == 0.0:
+        raise ValueError("at least one PCG tolerance must be positive")
+    if isinstance(max_iterations, bool) or not isinstance(max_iterations, int) or max_iterations <= 0:
+        raise ValueError("pcg_max_iterations must be a positive integer")
+
+
+def _validate_sparse_components(tet_indices: np.ndarray, pinned_indices: np.ndarray, n_verts: int) -> None:
+    """Require a Dirichlet anchor in every connected vertex component."""
+    parents = np.arange(n_verts, dtype=np.int64)
+
+    def find(vertex: int) -> int:
+        root = vertex
+        while parents[root] != root:
+            root = int(parents[root])
+        while parents[vertex] != vertex:
+            next_vertex = int(parents[vertex])
+            parents[vertex] = root
+            vertex = next_vertex
+        return root
+
+    def union(a: int, b: int) -> None:
+        root_a = find(a)
+        root_b = find(b)
+        if root_a != root_b:
+            parents[root_b] = root_a
+
+    used = np.zeros(n_verts, dtype=bool)
+    for tet in np.asarray(tet_indices, dtype=np.int64):
+        used[tet] = True
+        union(int(tet[0]), int(tet[1]))
+        union(int(tet[0]), int(tet[2]))
+        union(int(tet[0]), int(tet[3]))
+
+    pinned_set = {int(vertex) for vertex in np.asarray(pinned_indices, dtype=np.int64)}
+    anchored_roots = {find(vertex) for vertex in pinned_set}
+    missing = sorted({find(vertex) for vertex in np.flatnonzero(used)} - anchored_roots)
+    unused_free = [vertex for vertex in np.flatnonzero(~used) if vertex not in pinned_set]
+    if missing or unused_free:
+        raise ValueError("sparse projection requires every connected component and unused vertex to be pinned")
+
+
+def _assemble_sparse_reduced_system(
+    K: torch.Tensor,
+    tets: torch.Tensor,
+    free: torch.Tensor,
+    pinned: torch.Tensor,
+    n_verts: int,
+    tikhonov: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Assemble ``L_ff``, ``L_fp``, and inverse Jacobi diagonal in O(T) storage."""
+    device = K.device
+    dtype = K.dtype
+    n_free = free.numel()
+    n_pinned = pinned.numel()
+
+    free_index = torch.full((n_verts,), -1, dtype=torch.int64, device=device)
+    free_index[free] = torch.arange(n_free, dtype=torch.int64, device=device)
+    pinned_index = torch.full((n_verts,), -1, dtype=torch.int64, device=device)
+    pinned_index[pinned] = torch.arange(n_pinned, dtype=torch.int64, device=device)
+
+    row_vertices = tets[:, :, None].expand(-1, -1, 4)
+    col_vertices = tets[:, None, :].expand(-1, 4, -1)
+    free_rows = free_index[row_vertices]
+    free_cols = free_index[col_vertices]
+    pinned_cols = pinned_index[col_vertices]
+
+    ff_mask = (free_rows >= 0) & (free_cols >= 0)
+    ff_indices = torch.stack((free_rows[ff_mask], free_cols[ff_mask]))
+    ff_values = K[ff_mask]
+    if tikhonov > 0.0:
+        diagonal = torch.arange(n_free, dtype=torch.int64, device=device)
+        ff_indices = torch.cat((ff_indices, torch.stack((diagonal, diagonal))), dim=1)
+        ff_values = torch.cat((ff_values, torch.full((n_free,), tikhonov, dtype=dtype, device=device)))
+    L_ff = torch.sparse_coo_tensor(
+        ff_indices,
+        ff_values,
+        size=(n_free, n_free),
+        dtype=dtype,
+        device=device,
+    ).coalesce()
+
+    coalesced_indices = L_ff.indices()
+    coalesced_values = L_ff.values()
+    diagonal_mask = coalesced_indices[0] == coalesced_indices[1]
+    diagonal = torch.zeros(n_free, dtype=dtype, device=device)
+    diagonal.index_add_(0, coalesced_indices[0, diagonal_mask], coalesced_values[diagonal_mask])
+    if n_free and (not torch.isfinite(diagonal).all() or (diagonal <= 0.0).any()):
+        raise ValueError("sparse projection matrix must have a finite positive diagonal")
+
+    fp_mask = (free_rows >= 0) & (pinned_cols >= 0)
+    fp_indices = torch.stack((free_rows[fp_mask], pinned_cols[fp_mask]))
+    fp_values = K[fp_mask]
+    L_fp = torch.sparse_coo_tensor(
+        fp_indices,
+        fp_values,
+        size=(n_free, n_pinned),
+        dtype=dtype,
+        device=device,
+    ).coalesce()
+    return L_ff.to_sparse_csr(), L_fp.to_sparse_csr(), diagonal.reciprocal()
 
 
 def build_solver(
@@ -97,7 +249,46 @@ def build_solver(
     device: torch.device,
     dtype=torch.float64,
     tikhonov: float = 0.0,
+    projection_backend: str = _DENSE_BACKEND,
+    pcg_relative_tolerance: float = 1.0e-8,
+    pcg_absolute_tolerance: float = 0.0,
+    pcg_max_iterations: int = 512,
+    pcg_raise_on_nonconvergence: bool = True,
 ) -> SolverState:
+    r"""Build the fixed linear system used by the stretch decoder.
+
+    ``projection_backend="dense"`` preserves the original Cholesky-backed
+    state and remains the default.  ``"sparse_pcg"`` never allocates a dense
+    vertex-by-vertex matrix: it assembles reduced CSR matrices with at most
+    O(T) entries and a Jacobi preconditioner.  Sparse states support
+    :func:`project_deformation_gradient`, but not the legacy local-global
+    :func:`solve` routine.
+
+    Args:
+        rest_q: Rest vertex positions [m], shape ``[V, 3]``.
+        tet_indices: Tetrahedron vertex indices, shape ``[T, 4]``.
+        tet_poses: Inverse rest matrices [1/m], shape ``[T, 3, 3]``.
+        pinned_indices: Dirichlet vertex indices, shape ``[P]``.
+        device: Torch device on which to assemble the state.
+        dtype: Floating-point dtype for the solve.
+        tikhonov: Diagonal regularization. Exact full-gradient projection
+            requires zero regularization.
+        projection_backend: ``"dense"`` or ``"sparse_pcg"``.
+        pcg_relative_tolerance: Relative residual tolerance for sparse PCG.
+        pcg_absolute_tolerance: Absolute residual tolerance for sparse PCG.
+        pcg_max_iterations: Maximum sparse PCG iterations.
+        pcg_raise_on_nonconvergence: Whether sparse projection fails closed
+            when the requested tolerance is not reached.
+
+    Returns:
+        Precomputed solver state.
+    """
+    if not np.isfinite(tikhonov) or tikhonov < 0.0:
+        raise ValueError("tikhonov must be finite and non-negative")
+    if projection_backend not in (_DENSE_BACKEND, _SPARSE_PCG_BACKEND):
+        raise ValueError(f"projection_backend must be '{_DENSE_BACKEND}' or '{_SPARSE_PCG_BACKEND}'")
+    if projection_backend == _SPARSE_PCG_BACKEND:
+        _validate_pcg_options(pcg_relative_tolerance, pcg_absolute_tolerance, pcg_max_iterations)
     rest_q_t = torch.as_tensor(rest_q, dtype=dtype, device=device)
     tets = torch.as_tensor(tet_indices, dtype=torch.int64, device=device)
     Dm_inv = torch.as_tensor(tet_poses, dtype=dtype, device=device)
@@ -106,6 +297,14 @@ def build_solver(
     n_verts = rest_q_t.shape[0]
     n_tets = tets.shape[0]
 
+    if projection_backend == _SPARSE_PCG_BACKEND:
+        pinned_np = np.asarray(pinned_indices, dtype=np.int64)
+        if pinned_np.ndim != 1 or len(np.unique(pinned_np)) != len(pinned_np):
+            raise ValueError("sparse projection requires unique one-dimensional pinned_indices")
+        if (pinned_np < 0).any() or (pinned_np >= n_verts).any():
+            raise ValueError("pinned_indices contains an out-of-range vertex")
+        _validate_sparse_components(np.asarray(tet_indices), pinned_np, n_verts)
+
     det_inv = torch.linalg.det(Dm_inv)
     w = 1.0 / (6.0 * det_inv)
     if (w <= 0).any():
@@ -113,23 +312,37 @@ def build_solver(
 
     J = _build_J(Dm_inv)  # (T, 4, 3)
 
-    # Dense assembly of L on rest mesh: L = sum_e w_e * (J_e @ J_e^T) scattered.
     # K[t, a, b] = w[t] * sum_c J[t, a, c] * J[t, b, c]
     K = torch.einsum("tac,tbc->tab", J, J) * w[:, None, None]  # (T, 4, 4)
-    L = torch.zeros(n_verts, n_verts, dtype=dtype, device=device)
-    rows = tets[:, :, None].expand(-1, -1, 4)  # (T, 4, 4)
-    cols = tets[:, None, :].expand(-1, 4, -1)
-    L.index_put_((rows.reshape(-1), cols.reshape(-1)), K.reshape(-1), accumulate=True)
-
     mask = torch.ones(n_verts, dtype=torch.bool, device=device)
     mask[pinned] = False
     free = torch.where(mask)[0]
 
-    L_ff = L[free][:, free]
-    if tikhonov > 0.0:
-        L_ff = L_ff + tikhonov * torch.eye(free.numel(), dtype=dtype, device=device)
-    L_fp = L[free][:, pinned]
-    L_ff_chol = torch.linalg.cholesky(L_ff)
+    L = None
+    L_ff_chol = None
+    L_ff_sparse = None
+    L_ff_inverse_diagonal = None
+    if projection_backend == _DENSE_BACKEND:
+        # Dense assembly of L: L = sum_e w_e * (J_e @ J_e^T) scattered.
+        L = torch.zeros(n_verts, n_verts, dtype=dtype, device=device)
+        rows = tets[:, :, None].expand(-1, -1, 4)  # (T, 4, 4)
+        cols = tets[:, None, :].expand(-1, 4, -1)
+        L.index_put_((rows.reshape(-1), cols.reshape(-1)), K.reshape(-1), accumulate=True)
+
+        L_ff = L[free][:, free]
+        if tikhonov > 0.0:
+            L_ff = L_ff + tikhonov * torch.eye(free.numel(), dtype=dtype, device=device)
+        L_fp = L[free][:, pinned]
+        L_ff_chol = torch.linalg.cholesky(L_ff)
+    else:
+        L_ff_sparse, L_fp, L_ff_inverse_diagonal = _assemble_sparse_reduced_system(
+            K,
+            tets,
+            free,
+            pinned,
+            n_verts,
+            tikhonov,
+        )
 
     return SolverState(
         n_verts=n_verts,
@@ -144,6 +357,14 @@ def build_solver(
         L_ff_chol=L_ff_chol,
         L_fp=L_fp,
         rest_q=rest_q_t,
+        tikhonov=float(tikhonov),
+        projection_backend=projection_backend,
+        L_ff_sparse=L_ff_sparse,
+        L_ff_inverse_diagonal=L_ff_inverse_diagonal,
+        pcg_relative_tolerance=float(pcg_relative_tolerance),
+        pcg_absolute_tolerance=float(pcg_absolute_tolerance),
+        pcg_max_iterations=pcg_max_iterations,
+        pcg_raise_on_nonconvergence=bool(pcg_raise_on_nonconvergence),
     )
 
 
@@ -182,6 +403,283 @@ def inertial_predictor(
     return x0
 
 
+def _projection_rhs(
+    state: SolverState,
+    F_target: torch.Tensor,
+    pinned_targets: torch.Tensor,
+) -> torch.Tensor:
+    """Assemble the reduced normal-equation right-hand side."""
+    batch = F_target.shape[:-3]
+    contrib = torch.einsum("...tdc,tac->...tad", F_target, state.J) * state.w[:, None, None]
+    rhs = torch.zeros(*batch, state.n_verts, 3, dtype=state.rest_q.dtype, device=state.rest_q.device)
+    rhs.reshape(-1, state.n_verts, 3).index_add_(
+        1,
+        state.tets.reshape(-1),
+        contrib.reshape(-1, state.n_tets * 4, 3),
+    )
+
+    if state.projection_backend == _DENSE_BACKEND:
+        bc_rhs = torch.einsum("fp,...pd->...fd", state.L_fp, pinned_targets)
+    else:
+        pin_flat = pinned_targets.reshape(-1, state.pinned.numel(), 3)
+        pin_columns = pin_flat.permute(1, 0, 2).reshape(state.pinned.numel(), -1)
+        bc_columns = torch.sparse.mm(state.L_fp, pin_columns)
+        bc_rhs = bc_columns.reshape(state.free.numel(), -1, 3).permute(1, 0, 2).reshape(*batch, state.free.numel(), 3)
+    return rhs[..., state.free, :] - bc_rhs
+
+
+def _relative_residual(residual_norm: torch.Tensor, rhs_norm: torch.Tensor) -> torch.Tensor:
+    return torch.where(rhs_norm > 0.0, residual_norm / rhs_norm, residual_norm)
+
+
+def _pcg_solve(
+    matrix: torch.Tensor,
+    inverse_diagonal: torch.Tensor,
+    rhs: torch.Tensor,
+    initial_guess: torch.Tensor,
+    relative_tolerance: float,
+    absolute_tolerance: float,
+    max_iterations: int,
+) -> tuple[torch.Tensor, ProjectionDiagnostics]:
+    """Solve independent RHS columns with deterministic Jacobi PCG."""
+    n_rows, rhs_count = rhs.shape
+    x = initial_guess
+    rhs_norm = torch.linalg.vector_norm(rhs, dim=0)
+    threshold = absolute_tolerance + relative_tolerance * rhs_norm
+    if n_rows:
+        residual = rhs - torch.sparse.mm(matrix, x)
+        matvec_count = 1
+    else:
+        residual = rhs
+        matvec_count = 0
+    residual_norm = torch.linalg.vector_norm(residual, dim=0)
+    initial_residual_norm = residual_norm
+    active = residual_norm > threshold
+    failed = torch.zeros(rhs_count, dtype=torch.bool, device=rhs.device)
+    preconditioner_count = 0
+    iterations = 0
+    residual_is_true = True
+
+    if n_rows and bool(active.any().item()):
+        z = inverse_diagonal[:, None] * residual
+        direction = torch.where(active[None, :], z, torch.zeros_like(z))
+        residual_dot_z = (residual * z).sum(dim=0)
+        preconditioner_count = 1
+        # Avoid a device-to-host synchronization after every CUDA iteration.
+        convergence_check_interval = 1 if rhs.device.type == "cpu" else 8
+
+        for iteration in range(1, max_iterations + 1):
+            iterations = iteration
+            matrix_direction = torch.sparse.mm(matrix, direction)
+            matvec_count += 1
+            denominator = (direction * matrix_direction).sum(dim=0)
+            bad_denominator = active & ((denominator <= 0.0) | ~torch.isfinite(denominator))
+            failed = failed | bad_denominator
+            valid = active & ~bad_denominator
+            safe_denominator = torch.where(valid, denominator, torch.ones_like(denominator))
+            alpha = torch.where(valid, residual_dot_z / safe_denominator, torch.zeros_like(denominator))
+            x = x + direction * alpha[None, :]
+            residual = residual - matrix_direction * alpha[None, :]
+            residual_is_true = False
+            residual_norm = torch.linalg.vector_norm(residual, dim=0)
+            active = (residual_norm > threshold) & ~failed
+
+            if iteration % convergence_check_interval == 0 and not bool(active.any().item()):
+                # Recursive CG residuals can drift at tight tolerances.  Confirm
+                # convergence against the actual normal equations, and restart
+                # from that residual if necessary.
+                residual = rhs - torch.sparse.mm(matrix, x)
+                matvec_count += 1
+                residual_is_true = True
+                residual_norm = torch.linalg.vector_norm(residual, dim=0)
+                active = (residual_norm > threshold) & ~failed
+                if not bool(active.any().item()):
+                    break
+                z = inverse_diagonal[:, None] * residual
+                direction = torch.where(active[None, :], z, torch.zeros_like(z))
+                residual_dot_z = (residual * z).sum(dim=0)
+                preconditioner_count += 1
+                continue
+
+            z_new = inverse_diagonal[:, None] * residual
+            residual_dot_z_new = (residual * z_new).sum(dim=0)
+            bad_numerator = active & (
+                (residual_dot_z <= 0.0) | (residual_dot_z_new <= 0.0) | ~torch.isfinite(residual_dot_z_new)
+            )
+            failed = failed | bad_numerator
+            active = active & ~bad_numerator
+            safe_residual_dot_z = torch.where(active, residual_dot_z, torch.ones_like(residual_dot_z))
+            beta = torch.where(active, residual_dot_z_new / safe_residual_dot_z, torch.zeros_like(residual_dot_z_new))
+            direction = torch.where(active[None, :], z_new + direction * beta[None, :], torch.zeros_like(direction))
+            residual_dot_z = residual_dot_z_new
+            preconditioner_count += 1
+
+    if n_rows and not residual_is_true:
+        residual = rhs - torch.sparse.mm(matrix, x)
+        matvec_count += 1
+        residual_norm = torch.linalg.vector_norm(residual, dim=0)
+    converged_mask = (residual_norm <= threshold) & ~failed
+    relative = _relative_residual(residual_norm, rhs_norm)
+    converged_rhs = int(converged_mask.sum().item())
+    diagnostics = ProjectionDiagnostics(
+        backend=_SPARSE_PCG_BACKEND,
+        converged=converged_rhs == rhs_count,
+        iterations=iterations,
+        rhs_count=rhs_count,
+        converged_rhs=converged_rhs,
+        matrix_vector_products=matvec_count,
+        preconditioner_applications=preconditioner_count,
+        factor_solves=0,
+        rhs_norm_max=float(rhs_norm.max().item()),
+        initial_residual_norm_max=float(initial_residual_norm.max().item()),
+        residual_norm_max=float(residual_norm.max().item()),
+        relative_residual_max=float(relative.max().item()),
+        relative_tolerance=relative_tolerance,
+        absolute_tolerance=absolute_tolerance,
+        breakdown=bool(failed.any().item()),
+    )
+    return x, diagnostics
+
+
+def project_deformation_gradient(
+    state: SolverState,
+    F_target: torch.Tensor,
+    pinned_targets: torch.Tensor,
+    *,
+    relative_tolerance: float | None = None,
+    absolute_tolerance: float | None = None,
+    max_iterations: int | None = None,
+    raise_on_nonconvergence: bool | None = None,
+    initial_positions: torch.Tensor | None = None,
+    return_diagnostics: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, ProjectionDiagnostics]:
+    r"""Project a full target-gradient field to one globally compatible mesh.
+
+    This is the exact one-shot minimizer
+
+    .. math::
+
+        \operatorname*{argmin}_{x,\;x_p=\bar{x}_p}
+        \sum_t V_t\lVert F_t(x)-F_t^*\rVert_F^2.
+
+    Since each ``F_t(x)`` is linear in the vertex positions, the normal matrix
+    is the rest-mesh Laplacian in :class:`SolverState`.  Dense states perform
+    one prefactored triangular solve.  Sparse states use Jacobi-preconditioned
+    conjugate gradients on a CSR matrix assembled once at build time.  Both
+    paths preserve pins exactly and have no polar or local fixed-point step.
+    Leading batch dimensions are broadcast and preserved.
+
+    Args:
+        state: Precomputed decoder state for the shared tetrahedral mesh.
+        F_target: Full target deformation gradients, ``(..., T, 3, 3)``.
+        pinned_targets: Pinned world positions [m], ``(..., P, 3)``.
+        relative_tolerance: Optional per-call sparse relative residual
+            tolerance override.
+        absolute_tolerance: Optional per-call sparse absolute residual
+            tolerance override.
+        max_iterations: Optional per-call sparse PCG iteration limit.
+        raise_on_nonconvergence: Optional per-call fail-closed override.
+        initial_positions: Optional sparse PCG initial positions [m],
+            ``(..., V, 3)``. Defaults to the rest positions. Ignored by the
+            direct backend because its factor solve is not iterative.
+        return_diagnostics: Return work and residual diagnostics with the
+            positions. The default preserves the original tensor-only API.
+
+    Returns:
+        Projected vertex positions [m], ``(..., V, 3)``, optionally paired with
+        :class:`ProjectionDiagnostics`.
+    """
+    dtype = state.rest_q.dtype
+    device = state.rest_q.device
+    if state.tikhonov != 0.0:
+        raise ValueError("exact deformation-gradient projection requires a solver state without tikhonov")
+    F_target = F_target.to(dtype=dtype, device=device)
+    pinned_targets = pinned_targets.to(dtype=dtype, device=device)
+
+    if F_target.shape[-3:] != (state.n_tets, 3, 3):
+        raise ValueError(f"F_target must end in ({state.n_tets}, 3, 3), got {tuple(F_target.shape)}")
+    if pinned_targets.shape[-2:] != (state.pinned.numel(), 3):
+        raise ValueError(f"pinned_targets must end in ({state.pinned.numel()}, 3), got {tuple(pinned_targets.shape)}")
+    if initial_positions is not None:
+        initial_positions = initial_positions.to(dtype=dtype, device=device)
+        if initial_positions.shape[-2:] != (state.n_verts, 3):
+            raise ValueError(
+                f"initial_positions must end in ({state.n_verts}, 3), got {tuple(initial_positions.shape)}"
+            )
+
+    initial_batch = () if initial_positions is None else initial_positions.shape[:-2]
+    batch = torch.broadcast_shapes(F_target.shape[:-3], pinned_targets.shape[:-2], initial_batch)
+    F_target = F_target.expand(*batch, state.n_tets, 3, 3)
+    pinned_targets = pinned_targets.expand(*batch, state.pinned.numel(), 3)
+    b = _projection_rhs(state, F_target, pinned_targets)
+    flat_b = b.reshape(-1, *b.shape[-2:])
+    b_columns = flat_b.permute(1, 0, 2).reshape(flat_b.shape[1], -1)
+    if state.projection_backend == _DENSE_BACKEND:
+        if state.L_ff_chol is None:
+            raise RuntimeError("dense projection state is missing its Cholesky factor")
+        x_columns = torch.cholesky_solve(b_columns, state.L_ff_chol)
+        if return_diagnostics:
+            normal_residual = state.L_ff_chol @ (state.L_ff_chol.transpose(0, 1) @ x_columns) - b_columns
+            residual_norm = torch.linalg.vector_norm(normal_residual, dim=0)
+            rhs_norm = torch.linalg.vector_norm(b_columns, dim=0)
+            relative = _relative_residual(residual_norm, rhs_norm)
+            diagnostics = ProjectionDiagnostics(
+                backend=_DENSE_BACKEND,
+                converged=True,
+                iterations=0,
+                rhs_count=b_columns.shape[1],
+                converged_rhs=b_columns.shape[1],
+                matrix_vector_products=0,
+                preconditioner_applications=0,
+                factor_solves=1,
+                rhs_norm_max=float(rhs_norm.max().item()),
+                initial_residual_norm_max=float(rhs_norm.max().item()),
+                residual_norm_max=float(residual_norm.max().item()),
+                relative_residual_max=float(relative.max().item()),
+                relative_tolerance=None,
+                absolute_tolerance=None,
+            )
+    else:
+        if state.L_ff_sparse is None or state.L_ff_inverse_diagonal is None:
+            raise RuntimeError("sparse projection state is missing its CSR matrix or preconditioner")
+        relative_tolerance = state.pcg_relative_tolerance if relative_tolerance is None else float(relative_tolerance)
+        absolute_tolerance = state.pcg_absolute_tolerance if absolute_tolerance is None else float(absolute_tolerance)
+        max_iterations = state.pcg_max_iterations if max_iterations is None else max_iterations
+        _validate_pcg_options(relative_tolerance, absolute_tolerance, max_iterations)
+        if initial_positions is None:
+            initial_positions = state.rest_q.expand(*batch, state.n_verts, 3)
+        else:
+            initial_positions = initial_positions.expand(*batch, state.n_verts, 3)
+        initial_flat = initial_positions[..., state.free, :].reshape(-1, state.free.numel(), 3)
+        initial_columns = initial_flat.permute(1, 0, 2).reshape(state.free.numel(), -1)
+        x_columns, diagnostics = _pcg_solve(
+            state.L_ff_sparse,
+            state.L_ff_inverse_diagonal,
+            b_columns,
+            initial_columns,
+            relative_tolerance,
+            absolute_tolerance,
+            max_iterations,
+        )
+        fail_closed = state.pcg_raise_on_nonconvergence if raise_on_nonconvergence is None else raise_on_nonconvergence
+        if fail_closed and not diagnostics.converged:
+            raise RuntimeError(
+                "sparse deformation-gradient projection did not converge: "
+                f"{diagnostics.converged_rhs}/{diagnostics.rhs_count} RHS, "
+                f"iterations={diagnostics.iterations}, "
+                f"max_relative_residual={diagnostics.relative_residual_max:.3e}, "
+                f"breakdown={diagnostics.breakdown}"
+            )
+    x_free = x_columns.reshape(-1, flat_b.shape[0], 3).permute(1, 0, 2).reshape(b.shape)
+
+    x = torch.zeros(*batch, state.n_verts, 3, dtype=dtype, device=device)
+    x[..., state.free, :] = x_free
+    x[..., state.pinned, :] = pinned_targets
+    if return_diagnostics:
+        return x, diagnostics
+    return x
+
+
 def solve(
     state: SolverState,
     S_target: torch.Tensor,
@@ -204,6 +702,11 @@ def solve(
             dominates the result at any practical ``n_iters``.
         n_iters: number of unrolled local-global iterations.
     """
+    if state.L_ff_chol is None:
+        raise ValueError(
+            "local-global solve requires projection_backend='dense'; "
+            "a sparse_pcg state supports only project_deformation_gradient"
+        )
     dtype = state.L_ff_chol.dtype
     device = state.L_ff_chol.device
     S_target = S_target.to(dtype=dtype, device=device)

@@ -40,6 +40,18 @@ from .run_forward import build_model
 from .torch_solver import compute_S_from_x, inertial_predictor
 
 
+def validate_legacy_net_checkpoint(predictor_config: dict) -> None:
+    """Reject full-gradient checkpoints from this legacy trajectory benchmark."""
+    if predictor_config.get("kind") != "graph-transformer":
+        return
+    graph_config = predictor_config.get("graph_transformer", {})
+    if int(graph_config.get("architecture_version", 0)) >= 3:
+        raise ValueError(
+            "bench_pareto evaluates the legacy right-stretch/local-global pipeline and cannot score "
+            "architecture-v3 full-gradient checkpoints; use the common-objective solver benchmark"
+        )
+
+
 def vbd_curve(data, trajs, grid, dims, frame_dt, device="cuda:0"):
     wp.init()
     results = []
@@ -113,6 +125,7 @@ def net_curve(data, trajs, ckpt_path, iters_list, frame_dt, device="cuda:0"):
 
     ckpt = torch.load(ckpt_path, map_location=dev, weights_only=False)
     predictor_config = checkpoint_predictor_config(ckpt)
+    validate_legacy_net_checkpoint(predictor_config)
     predictor = build_stretch_predictor(
         predictor_config["kind"],
         rest_q,

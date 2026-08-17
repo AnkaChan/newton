@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from . import torch_solver
 from .graph_transformer import GraphTransformerConfig, PrincipalStretchGraphTransformer
 from .hierarchy import build_hierarchy
 from .model import StretchNet, build_face_adjacency, build_features
@@ -36,6 +37,32 @@ _STATIC_GRAPH_PREFIXES = (
 
 def _is_static_graph_key(name: str) -> bool:
     return name in _STATIC_GRAPH_KEYS or name.startswith(_STATIC_GRAPH_PREFIXES)
+
+
+def predictor_architecture_version(predictor: StretchPredictor) -> int | None:
+    """Return the graph architecture version, or ``None`` for the flat MLP."""
+    if predictor.kind != "graph-transformer":
+        return None
+    return int(predictor.model.config.architecture_version)
+
+
+def validate_static_pin_trajectory(
+    rest_q: np.ndarray,
+    pinned_indices: np.ndarray,
+    positions: np.ndarray,
+) -> None:
+    """Reject moving-boundary data from the legacy single-pin-target schema."""
+    rest_q = np.asarray(rest_q)
+    pinned_indices = np.asarray(pinned_indices, dtype=np.int64)
+    positions = np.asarray(positions)
+    expected = np.broadcast_to(rest_q[pinned_indices], (positions.shape[0], pinned_indices.size, 3))
+    actual = positions[:, pinned_indices]
+    if not np.array_equal(actual, expected):
+        discrepancy = float(np.max(np.abs(actual.astype(np.float64) - expected.astype(np.float64))))
+        raise ValueError(
+            "architecture v3 legacy trajectory routing supports only static rest pins; "
+            f"observed maximum pinned displacement {discrepancy:.6e} m"
+        )
 
 
 class StretchPredictor(nn.Module):
@@ -92,6 +119,135 @@ class StretchPredictor(nn.Module):
             config["graph_transformer"] = dataclasses.asdict(self.model.config)
         return config
 
+    def predict_deformation_gradient(
+        self,
+        state: SolverState,
+        x_current: torch.Tensor,
+        x_previous: torch.Tensor,
+        force: torch.Tensor,
+        gravity: torch.Tensor,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        pin: torch.Tensor,
+    ) -> torch.Tensor:
+        """Predict v3 full deformation gradients through the shared adapter.
+
+        The ordinary :meth:`forward` path deliberately remains the legacy SPD
+        right-stretch API so v0-v2 training, evaluation, and checkpoints keep
+        their existing semantics.
+        """
+        if self.kind != "graph-transformer":
+            raise RuntimeError("full deformation-gradient prediction requires a graph-transformer predictor")
+        return self.model.predict_deformation_gradient(state, x_current, x_previous, force, gravity, mu, lam, pin)
+
+
+def resolve_solver_iterations(predictor: StretchPredictor, requested: int | None) -> int:
+    """Resolve legacy iteration defaults and enforce the one-shot v3 decoder."""
+    version = predictor_architecture_version(predictor)
+    if requested is None:
+        return 1 if version == 3 else 10
+    if requested < 1:
+        raise ValueError("solver_iterations must be positive")
+    if version == 3 and requested != 1:
+        raise ValueError("architecture v3 uses exactly one global projection; solver_iterations must be 1")
+    return requested
+
+
+def predictor_decoder_work(
+    predictor: StretchPredictor,
+    solver_iterations: int,
+    blocks: int,
+) -> dict[str, int | str]:
+    """Return explicit, serializable decoder work for one predicted step."""
+    if blocks < 1:
+        raise ValueError("blocks must be positive")
+    version = predictor_architecture_version(predictor)
+    if version == 3:
+        if blocks != 1:
+            raise ValueError("architecture v3 uses one predictor pass and one global projection; blocks must be 1")
+        if solver_iterations != 1:
+            raise ValueError("architecture v3 uses exactly one global projection; solver_iterations must be 1")
+        return {
+            "schema_version": 1,
+            "target": "full-deformation-gradient",
+            "decoder": "weighted-global-projection",
+            "predictor_passes": 1,
+            "global_triangular_solves": 1,
+            "local_polar_sweeps": 0,
+        }
+
+    iterations_per_block = max(1, solver_iterations // blocks)
+    sweeps = blocks * iterations_per_block
+    return {
+        "schema_version": 1,
+        "target": "right-stretch",
+        "decoder": "local-global-polar",
+        "predictor_passes": blocks,
+        "global_triangular_solves": sweeps,
+        "local_polar_sweeps": sweeps,
+    }
+
+
+def decode_predictor_step(
+    predictor: StretchPredictor,
+    state: SolverState,
+    x_current: torch.Tensor,
+    x_previous: torch.Tensor,
+    force: torch.Tensor,
+    gravity: torch.Tensor,
+    mu: torch.Tensor,
+    lam: torch.Tensor,
+    pin: torch.Tensor,
+    S_current: torch.Tensor | None,
+    S_previous: torch.Tensor | None,
+    pinned_targets: torch.Tensor,
+    *,
+    x_init: torch.Tensor | None,
+    solver_iterations: int,
+    blocks: int,
+) -> torch.Tensor:
+    """Predict and reconstruct one step with version-correct decoder work.
+
+    Architecture v3 predicts a complete deformation-gradient field and uses
+    exactly one global compatibility projection.  Earlier graph versions and
+    the flat MLP retain their existing unrolled stretch/polar decoder.
+    """
+    work = predictor_decoder_work(predictor, solver_iterations, blocks)
+    if work["target"] == "full-deformation-gradient":
+        F_target = predictor.predict_deformation_gradient(state, x_current, x_previous, force, gravity, mu, lam, pin)
+        return torch_solver.project_deformation_gradient(state, F_target, pinned_targets)
+
+    if x_init is None:
+        raise ValueError("the legacy right-stretch decoder requires x_init")
+    if S_current is None or S_previous is None:
+        raise ValueError("the legacy right-stretch decoder requires current and previous stretches")
+    iterations_per_block = max(1, solver_iterations // blocks)
+    x_next = x_init
+    S_block = S_current
+    for block in range(blocks):
+        S_target = predictor(
+            state,
+            x_current,
+            x_previous,
+            force,
+            gravity,
+            mu,
+            lam,
+            pin,
+            S_block,
+            S_previous,
+        )
+        x_next = torch_solver.solve(
+            state,
+            S_target.double(),
+            pinned_targets,
+            x_init=x_next,
+            n_iters=iterations_per_block,
+        )
+        if block + 1 < blocks:
+            S_block = torch_solver.compute_S_from_x(state, x_next)
+    return x_next
+
 
 def build_stretch_predictor(
     kind: str,
@@ -135,6 +291,13 @@ def checkpoint_predictor_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
             if "architecture_version" not in graph_config:
                 state_dict = checkpoint.get("state_dict", {})
                 graph_config["architecture_version"] = 0 if any(_is_static_graph_key(k) for k in state_dict) else 1
+            if graph_config["architecture_version"] in (0, 1, 2):
+                # This field is unused by v0-v2 and did not exist in their
+                # saved metadata.  Materialize its default so provenance sees
+                # a canonical configuration without changing legacy inference.
+                graph_config.setdefault("max_rotation_update", GraphTransformerConfig.max_rotation_update)
+            elif graph_config["architecture_version"] == 3 and "max_rotation_update" not in graph_config:
+                raise ValueError("architecture-v3 checkpoint is missing max_rotation_update metadata")
             config["graph_transformer"] = graph_config
         return config
     args = checkpoint.get("args", {})
