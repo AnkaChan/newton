@@ -1250,9 +1250,40 @@ class SolverVBD(SolverBase, CouplingInterface):
             jt = self._to_numpy(self.model.joint_type, dtype=int)
             jdof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
 
-            self._use_cable_rigid_solve = bool(n_j > 0 and np.all(jt == int(JointType.CABLE)))
+            cable_mask = jt == int(JointType.CABLE)
+            cable_or_free_mask = cable_mask | (jt == int(JointType.FREE))
+            self._use_cable_rigid_solve = bool(np.any(cable_mask) and np.all(cable_or_free_mask))
+            self._joint_force_application_required = bool(
+                np.any((jt != int(JointType.CABLE)) & (jt != int(JointType.FIXED)))
+            )
             self._use_fused_cable_dual_updates = self._use_cable_rigid_solve
             joint_dual_update_body_np = np.full((n_j,), -1, dtype=np.int32)
+
+            cable_adjacency = RigidForceElementAdjacencyInfo()
+            if self._use_cable_rigid_solve:
+                joint_parent_np = self._to_numpy(self.model.joint_parent, dtype=np.int32)
+                joint_child_np = self._to_numpy(self.model.joint_child, dtype=np.int32)
+                cable_body_joints: list[list[int]] = [[] for _ in range(self.model.body_count)]
+                for j in np.flatnonzero(cable_mask):
+                    parent = int(joint_parent_np[j])
+                    child = int(joint_child_np[j])
+                    if parent >= 0:
+                        cable_body_joints[parent].append(int(j))
+                    if child >= 0:
+                        cable_body_joints[child].append(int(j))
+                cable_offsets_np = np.zeros((self.model.body_count + 1,), dtype=np.int32)
+                for body, joints in enumerate(cable_body_joints):
+                    cable_offsets_np[body + 1] = cable_offsets_np[body] + len(joints)
+                cable_joints_np = np.asarray(
+                    [joint for joints in cable_body_joints for joint in joints], dtype=np.int32
+                )
+                cable_adjacency.body_adj_joints = wp.array(cable_joints_np, dtype=wp.int32)
+                cable_adjacency.body_adj_joints_offsets = wp.array(cable_offsets_np, dtype=wp.int32)
+                cable_adjacency = cable_adjacency.to(self.device)
+            else:
+                cable_adjacency = self.rigid_adjacency
+            self.cable_rigid_adjacency = cable_adjacency
+
             if self._use_fused_cable_dual_updates:
                 body_color_np = np.full((self.model.body_count,), -1, dtype=np.int32)
                 for color, color_group in enumerate(self.model.body_color_groups):
@@ -1272,9 +1303,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self._use_fused_cable_dual_updates = False
 
                 if self._use_fused_cable_dual_updates:
-                    joint_parent_np = self._to_numpy(self.model.joint_parent, dtype=np.int32)
-                    joint_child_np = self._to_numpy(self.model.joint_child, dtype=np.int32)
                     for j in range(n_j):
+                        if not cable_mask[j]:
+                            continue
                         parent = int(joint_parent_np[j])
                         child = int(joint_child_np[j])
                         if child < 0 or child >= self.model.body_count or body_color_np[child] < 0:
@@ -2426,7 +2457,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             # Accumulate joint_f into body wrenches (scratch buffer avoids mutating user state).
             body_f_for_integration = state_in.body_f
-            if model.joint_count > 0 and control is not None and control.joint_f is not None:
+            if self._joint_force_application_required and control is not None and control.joint_f is not None:
                 wp.copy(self._body_f_for_integration, state_in.body_f)
                 body_f_for_integration = self._body_f_for_integration
                 wp.launch(
@@ -2975,7 +3006,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     model.body_inertia,
                     self.body_inertia_q,
                     model.body_com,
-                    self.rigid_adjacency,
+                    self.cable_rigid_adjacency,
                     self.joint_dual_update_body,
                     self._fused_cable_dual_updates_condition,
                     model.joint_enabled,
