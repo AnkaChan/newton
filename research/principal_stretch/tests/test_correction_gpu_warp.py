@@ -500,32 +500,69 @@ class TestWarpFixedPCG(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("MG_VBD_TEST_CUDA") == "1", "set MG_VBD_TEST_CUDA=1 after claiming a GPU")
 class TestWarpFixedPCGCudaCapture(unittest.TestCase):
-    def test_fixed_schedule_is_cuda_graph_capturable(self):
+    def test_fixed_schedule_replays_changed_rhs_across_tile_boundary(self):
         if wp.get_cuda_device_count() < 1:
             self.skipTest("no claimed CUDA device is visible")
         torch.set_default_dtype(torch.float64)
-        oracle, operator = _oracle_and_device("cuda:0")
-        rhs = -oracle.gradient_free()
-        workspace = WarpFixedPCGWorkspace(operator, 4)
+        vector_count = 257
+        oracle, operator = _diagonal_oracle_and_device(vector_count, "cuda:0")
+        rhs_a = np.random.default_rng(1201).normal(size=oracle.n_free_dofs)
+        rhs_b = np.random.default_rng(1207).normal(size=oracle.n_free_dofs)
+        preconditioner_identity = "test-identity-tiled-capture-v1"
+        expected_b = solve_fixed_pcg(
+            oracle,
+            rhs_b,
+            4,
+            preconditioner=lambda value: value,
+            preconditioner_identity=preconditioner_identity,
+        )
+        workspace = WarpFixedPCGWorkspace(
+            operator,
+            4,
+            external_preconditioner_inverse=_identity_block_preconditioner(vector_count),
+            preconditioner_identity=preconditioner_identity,
+        )
+        partial_names = (
+            "reduction_partial_first",
+            "reduction_partial_second",
+            "reduction_partial_flag_first",
+            "reduction_partial_flag_second",
+        )
+        pointers = tuple(int(getattr(workspace, name).ptr) for name in partial_names)
 
         # Warm compilation and allocations before capture.  The fixed launcher
         # itself performs neither allocation nor host synchronization.
-        workspace.set_rhs(rhs)
+        workspace.set_rhs(rhs_a)
         workspace.launch()
-        expected = workspace.record()
-        workspace.set_rhs(rhs)
+        warm = workspace.record()
+        workspace.set_rhs(rhs_b)
+        workspace.launch()
+        direct_b = workspace.record()
+        workspace.set_rhs(rhs_a)
         with wp.ScopedCapture(device=operator.device) as capture:
             workspace.launch()
+        workspace.set_rhs(rhs_b)
         wp.capture_launch(capture.graph)
         captured = workspace.record(capture_replay=True)
+        wp.capture_launch(capture.graph)
+        repeated = workspace.record(capture_replay=True)
 
         self.assertTrue(captured.success, captured.deterministic_record())
         self.assertTrue(captured.capture_replay)
         self.assertTrue(captured.research_only)
         self.assertFalse(captured.performance_evidence)
-        self.assertEqual(captured.work, expected.work)
-        np.testing.assert_array_equal(captured.solution, expected.solution)
-        self.assertAlmostEqual(captured.true_residual_norm, expected.true_residual_norm, places=13)
+        self.assertEqual(captured.work, direct_b.work)
+        self.assertEqual(captured.work.reduction_tile_count, 2)
+        self.assertEqual(captured.work.reduction_block_size, 256)
+        self.assertEqual(captured.work.reduction_stages, 2)
+        self.assertEqual(captured.work.reduction_kernel_launches, 2 * captured.work.scalar_reductions)
+        self.assertEqual(pointers, tuple(int(getattr(workspace, name).ptr) for name in partial_names))
+        np.testing.assert_array_equal(captured.solution, direct_b.solution)
+        np.testing.assert_array_equal(repeated.solution, captured.solution)
+        self.assertEqual(repeated.deterministic_record(), captured.deterministic_record())
+        self.assertNotEqual(captured.solution.tobytes(), warm.solution.tobytes())
+        np.testing.assert_allclose(captured.solution.reshape(-1), expected_b.solution, rtol=8.0e-13, atol=8.0e-14)
+        self.assertAlmostEqual(captured.true_residual_norm, direct_b.true_residual_norm, places=13)
 
 
 if __name__ == "__main__":

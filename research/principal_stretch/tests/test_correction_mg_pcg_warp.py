@@ -183,6 +183,10 @@ def _workspace_pointers(workspace) -> tuple[int, ...]:
         int(workspace.residual.ptr),
         int(workspace.preconditioned.ptr),
         int(workspace.direction.ptr),
+        int(workspace.reduction_partial_first.ptr),
+        int(workspace.reduction_partial_second.ptr),
+        int(workspace.reduction_partial_flag_first.ptr),
+        int(workspace.reduction_partial_flag_second.ptr),
     ]
     for application in workspace.device_preconditioner_workspaces:
         pointers.extend(int(array.ptr) for array in application.level_rhs)
@@ -229,6 +233,8 @@ class TestWarpMGFixedPCG(unittest.TestCase):
         self.assertEqual(actual.work.operator_applications, _ITERATIONS + 1)
         self.assertEqual(actual.work.scalar_reductions, 2 * _ITERATIONS + 2)
         self.assertEqual(actual.work.reduction_stages, 2)
+        self.assertEqual(actual.work.reduction_block_size, 256)
+        self.assertEqual(actual.work.reduction_tile_count, 1)
         self.assertEqual(actual.work.reduction_kernel_launches, 2 * actual.work.scalar_reductions)
         self.assertEqual(actual.work.kernel_launches, 90 + actual.work.scalar_reductions)
         self.assertEqual(len(workspace.device_preconditioner_workspaces), _ITERATIONS)
