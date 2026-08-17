@@ -90,6 +90,8 @@ from .vbd_coupling_kernels import (
 
 __all__ = ["SolverVBD"]
 
+_RIGID_SOLVE_BLOCK_DIM = 64
+
 
 class SolverVBD(SolverBase, CouplingInterface):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
@@ -2960,6 +2962,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     state_in.body_q,
                 ],
                 dim=color_group.size,
+                block_dim=_RIGID_SOLVE_BLOCK_DIM,
                 device=self.device,
             )
 
