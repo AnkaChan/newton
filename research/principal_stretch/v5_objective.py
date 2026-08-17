@@ -75,9 +75,10 @@ class CommonObjectiveContext:
     public tensor attributes return clones, so ordinary caller mutation cannot
     change the owned problem. Construction and every external trust-boundary
     validation copy canonical bytes to the host for authentication. The
-    iterative solver performs those checks before and after its hot execution
-    scope, not inside every residual evaluation; this cold per-step cost must
-    still be reported. Candidate positions may be unbatched or have arbitrary
+    iterative solver performs those checks at solve boundaries and around
+    every external constraint-hook call, not inside every residual evaluation;
+    this cold per-step cost must still be reported. Candidate positions may be
+    unbatched or have arbitrary
     leading batch dimensions. The normalized-residual force scale is derived
     exactly from total rest volume, material coefficients, free mass, and
     ``dt``; callers cannot choose it. Construction also proves that the
