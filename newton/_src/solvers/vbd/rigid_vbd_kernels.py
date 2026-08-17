@@ -27,7 +27,7 @@ from newton._src.solvers.solver import integrate_rigid_body
 
 wp.set_module_options({"enable_backward": False})
 
-_KERNEL_VERSION = "cable_dual_fast_path_v1"
+_KERNEL_VERSION = "cable_relative_twist_v2"
 print(f"[rigid_vbd_kernels] version: {_KERNEL_VERSION}")
 
 # ---------------------------------
@@ -427,6 +427,15 @@ def _transported_twist_angle_from_material_axes(
     return wp.atan2(sin_theta, cos_theta)
 
 
+@wp.func
+def _relative_twist_angle_z(q_parent: wp.quat, q_child: wp.quat) -> float:
+    """Return principal swing-twist spin about the parent-frame local +Z axis."""
+    q_rel = wp.mul(wp.quat_inverse(q_parent), q_child)
+    z = q_rel[2]
+    w = q_rel[3]
+    return wp.atan2(2.0 * z * w, w * w - z * z)
+
+
 @wp.struct
 class CableBendTwistMeasure:
     """Live bend/twist geometry for one cable joint.
@@ -454,7 +463,10 @@ def _measure_cable_bend_twist_z(q_wp: wp.quat, q_wc: wp.quat) -> CableBendTwistM
     t0 = _quat_rotate_local_z(q_wp)
     t1 = _quat_rotate_local_z(q_wc)
     m0 = _quat_rotate_local_x(q_wp)
-    m1 = _quat_rotate_local_x(q_wc)
+    tangent_denom = 1.0 + wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
+    m1 = wp.vec3(0.0)
+    if tangent_denom <= _CABLE_TWIST_JACOBIAN_DIRECTIONAL_DENOM:
+        m1 = _quat_rotate_local_x(q_wc)
 
     # DER-style split: bend comes from the finite curvature binormal of the two
     # tangents; twist is material spin after no-twist/Bishop transport.
@@ -463,7 +475,10 @@ def _measure_cable_bend_twist_z(q_wp: wp.quat, q_wc: wp.quat) -> CableBendTwistM
     measure.t1 = t1
     measure.m0 = m0
     measure.m1 = m1
-    measure.twist = _transported_twist_angle_from_material_axes(t0, t1, m0, m1, m0)
+    if tangent_denom > _CABLE_TRANSPORT_DENOM_EPS:
+        measure.twist = _relative_twist_angle_z(q_wp, q_wc)
+    else:
+        measure.twist = _transported_twist_angle_from_material_axes(t0, t1, m0, m1, m0)
     measure.kb_world = _finite_curvature_binormal(t0, t1, m0)
     return measure
 
