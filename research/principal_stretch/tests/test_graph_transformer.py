@@ -98,7 +98,7 @@ def _model_and_state(
         architecture_version=architecture_version,
     )
     hierarchy = build_hierarchy(tets, rest, n_levels=config.n_levels, target=config.cluster_size)
-    model = PrincipalStretchGraphTransformer(hierarchy, tets, rest.shape[0], config)
+    model = PrincipalStretchGraphTransformer(hierarchy, tets, rest.shape[0], config, rest_q=rest)
     return model, state, hierarchy
 
 
@@ -145,6 +145,7 @@ class TestGraphTransformerConfig(unittest.TestCase):
         self.assertGreater(config.max_multiplicative_update, 0.0)
         self.assertLess(config.max_multiplicative_update, 1.0)
         self.assertEqual(GraphTransformerConfig(architecture_version=4).architecture_version, 4)
+        self.assertEqual(GraphTransformerConfig(architecture_version=5).architecture_version, 5)
 
         invalid = (
             ({"max_hencky_update": 0.0}, "max_hencky_update"),
@@ -157,7 +158,7 @@ class TestGraphTransformerConfig(unittest.TestCase):
             ({"max_multiplicative_update": 1.0}, "strictly between"),
             ({"max_multiplicative_update": 1.1}, "strictly between"),
             ({"dt": math.inf}, "dt"),
-            ({"architecture_version": 5}, "architecture_version"),
+            ({"architecture_version": 6}, "architecture_version"),
         )
         for kwargs, message in invalid:
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
@@ -185,6 +186,27 @@ class TestGraphTransformerConfig(unittest.TestCase):
         (bounded_H.square().sum() + rotation.square().sum()).backward()
         self.assertTrue(torch.isfinite(symmetric_raw.grad).all())
         self.assertTrue(torch.isfinite(vector_raw.grad).all())
+
+    def test_principal_radial_bounds_fail_closed_on_unrepresentable_caps(self):
+        largest = torch.finfo(torch.float32).max
+        symmetric_raw = torch.full((2, 6), largest, dtype=torch.float32, requires_grad=True)
+        vector_raw = torch.full((2, 3), -largest, dtype=torch.float32, requires_grad=True)
+        bounded_h = _radially_bound_symmetric(symmetric_raw, 0.35)
+        bounded_omega = _radially_bound_vector(vector_raw, 0.75)
+        self.assertTrue(torch.isfinite(bounded_h).all())
+        self.assertTrue(torch.isfinite(bounded_omega).all())
+        self.assertLessEqual(torch.linalg.matrix_norm(bounded_h).max().item(), 0.35)
+        self.assertLessEqual(torch.linalg.vector_norm(bounded_omega, dim=-1).max().item(), 0.75)
+        (bounded_h.square().sum() + bounded_omega.square().sum()).backward()
+        self.assertTrue(torch.isfinite(symmetric_raw.grad).all())
+        self.assertTrue(torch.isfinite(vector_raw.grad).all())
+
+        for maximum in (1.0e300, 1.0e-300):
+            with (
+                self.subTest(maximum=maximum),
+                self.assertRaisesRegex(ValueError, "not a finite positive normal in torch.float32"),
+            ):
+                _radially_bound_symmetric(torch.zeros(1, 6, dtype=torch.float32), maximum)
 
     def test_multiplicative_matrix_bound_is_orientation_preserving(self):
         raw = torch.linspace(-20.0, 17.0, 36, dtype=torch.float64).reshape(4, 3, 3).requires_grad_(True)

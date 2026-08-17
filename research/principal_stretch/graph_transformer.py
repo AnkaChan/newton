@@ -49,6 +49,22 @@ version 4 preserves both the rank and determinant sign of the observed
 gradient.  As in version 3, it deliberately cannot repair an already collapsed
 or inverted observation.
 
+Architecture version 5 returns to the explicit version-3 principal-stretch
+composition and uses it as one weight-shared iteration of a residual-aware
+solver.  Physical states ``x_n`` and ``x_{n-1}`` remain separate from the
+current nonlinear iterate ``x_k``.  The base ``H_k`` and covariant frame are
+formed from ``x_k``; physical velocity and strain history remain tied to the
+actual timestep.  A v5-only additive context encoder observes the detached,
+normalized common-objective residual at all four tet corners, constraint
+normal/slack features, physical strain rate, and the fixed iteration fraction.
+The learned output remains bounded symmetric ``delta_H`` plus bounded
+material-frame ``omega`` and is composed as
+
+``F_target_k = A_k exp(skew(omega_k)) exp(H_k + delta_H_k)``.
+
+Compatibility projection, DAT or another displacement constraint, and the
+next residual evaluation are orchestrated outside this pure learned iteration.
+
 The legacy right-stretch output is positive definite by construction, and all
 versions are invariant to an active world rigid transform.  World vectors
 (gravity, load, velocity, and current edge offsets) are pulled into a
@@ -69,6 +85,8 @@ edge, absolute node embedding, or per-mesh learned parameter is used.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import math
 
 import numpy as np
@@ -79,10 +97,11 @@ from .hierarchy import Hierarchy
 from .model import sym_to_vec, vec_to_sym
 from .polar import polar_rotation, polar_rotation_forward
 from .spd_log import spd_floor, sym_exp, sym_log
-from .torch_solver import SolverState
+from .torch_solver import SolverState, static_mesh_sha256
 
 NODE_FEATURE_DIM = 36
 EDGE_FEATURE_DIM = 20
+V5_CONTEXT_FEATURE_DIM = 35
 
 
 @dataclasses.dataclass(frozen=True)
@@ -117,8 +136,8 @@ class GraphTransformerConfig:
             raise ValueError("max_multiplicative_update must be strictly between zero and one")
         if not math.isfinite(self.dt) or self.dt <= 0.0:
             raise ValueError("dt must be positive")
-        if self.architecture_version not in (0, 1, 2, 3, 4):
-            raise ValueError("architecture_version must be 0, 1, 2, 3, or 4")
+        if self.architecture_version not in (0, 1, 2, 3, 4, 5):
+            raise ValueError("architecture_version must be 0, 1, 2, 3, 4, or 5")
 
 
 def _mlp(in_dim: int, hidden_dim: int, out_dim: int) -> nn.Sequential:
@@ -158,16 +177,39 @@ def _spectral_invariants(H: torch.Tensor) -> torch.Tensor:
 def _radially_bound_symmetric(raw: torch.Tensor, maximum: float) -> torch.Tensor:
     """Bound a symmetric generator by its Frobenius norm, without axis bias."""
     matrix = vec_to_sym(raw)
-    norm = torch.sqrt((matrix * matrix).sum(dim=(-2, -1), keepdim=True) + 1.0e-16)
-    scale = maximum / torch.sqrt(maximum * maximum + norm * norm)
-    return matrix * scale
+    return _radially_bound_tensor(matrix, maximum, dimensions=(-2, -1))
 
 
 def _radially_bound_vector(raw: torch.Tensor, maximum: float) -> torch.Tensor:
     """Bound a vector by its Euclidean norm, without a preferred axis."""
-    norm = torch.sqrt((raw * raw).sum(dim=-1, keepdim=True) + 1.0e-16)
-    scale = maximum / torch.sqrt(maximum * maximum + norm * norm)
-    return raw * scale
+    return _radially_bound_tensor(raw, maximum, dimensions=(-1,))
+
+
+def _radially_bound_tensor(
+    raw: torch.Tensor,
+    maximum: float,
+    *,
+    dimensions: tuple[int, ...],
+) -> torch.Tensor:
+    """Apply a finite radial cap without squaring unscaled magnitudes.
+
+    The registered Python cap must remain a finite, positive normal in the
+    execution dtype. This fails closed instead of silently turning an
+    unrepresentable float32 cap into ``inf`` or zero. Max scaling keeps both
+    the raw norm and cap normalization finite for every finite tensor input.
+    """
+    dtype_info = torch.finfo(raw.dtype)
+    if maximum < dtype_info.tiny or maximum > dtype_info.max:
+        raise ValueError(f"radial cap {maximum!r} is not a finite positive normal in {raw.dtype}")
+    # Leave a few ulps of room so the reconstructed Frobenius/Euclidean norm
+    # cannot round just above the registered Python bound.
+    cap = raw.new_tensor(maximum * (1.0 - 4.0 * dtype_info.eps))
+    magnitude = raw.abs().amax(dim=dimensions, keepdim=True)
+    normalization_scale = magnitude.clamp(min=cap)
+    scaled_raw = raw / normalization_scale
+    scaled_cap = cap / normalization_scale
+    denominator = torch.sqrt(scaled_cap.square() + scaled_raw.square().sum(dim=dimensions, keepdim=True))
+    return scaled_raw * (cap / denominator)
 
 
 def _radially_bound_matrix(raw: torch.Tensor, maximum: float) -> torch.Tensor:
@@ -387,6 +429,8 @@ class PrincipalStretchGraphTransformer(nn.Module):
         tets: np.ndarray,
         n_verts: int,
         config: GraphTransformerConfig | None = None,
+        *,
+        rest_q: np.ndarray | None = None,
     ):
         super().__init__()
         self.config = config or GraphTransformerConfig()
@@ -396,6 +440,15 @@ class PrincipalStretchGraphTransformer(nn.Module):
         num_heads = self.config.num_heads
 
         tets = np.asarray(tets, dtype=np.int64)
+        if rest_q is None:
+            if self.config.architecture_version == 5:
+                raise ValueError("architecture v5 requires rest_q for fail-closed static-mesh binding")
+            self.static_mesh_sha256 = None
+        else:
+            rest_q = np.asarray(rest_q, dtype=np.float64)
+            if rest_q.shape != (n_verts, 3):
+                raise ValueError(f"rest_q must have shape ({n_verts}, 3), got {rest_q.shape}")
+            self.static_mesh_sha256 = static_mesh_sha256(rest_q, tets)
         self.register_buffer("tets", torch.as_tensor(tets, dtype=torch.int64), persistent=False)
 
         # Distribute each vertex load among incident tets in proportion to
@@ -470,6 +523,36 @@ class PrincipalStretchGraphTransformer(nn.Module):
             self.rotation_head = _mlp(hidden_dim, hidden_dim, 3)
             nn.init.zeros_(self.rotation_head[-1].weight)
             nn.init.zeros_(self.rotation_head[-1].bias)
+        if self.config.architecture_version == 5:
+            self.v5_context_encoder = _mlp(V5_CONTEXT_FEATURE_DIM, hidden_dim, hidden_dim)
+            # This makes an intentional v3 -> v5 warm start exact before the
+            # new residual/constraint adapter is trained, while v5 still has
+            # distinct learned state keys and checkpoint semantics.
+            nn.init.zeros_(self.v5_context_encoder[-1].weight)
+            nn.init.zeros_(self.v5_context_encoder[-1].bias)
+        self.static_graph_sha256 = self.compute_static_graph_sha256()
+
+    def compute_static_graph_sha256(self) -> str:
+        """Hash every non-learned graph buffer that affects inference."""
+        digest = hashlib.sha256(b"principal-stretch-static-graph-state-v1\0")
+        metadata = {
+            "config": dataclasses.asdict(self.config),
+            "n_levels": self.n_levels,
+            "static_mesh_sha256": self.static_mesh_sha256,
+        }
+        digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+        for name, value in sorted(self.named_buffers(recurse=True)):
+            tensor = value.detach().contiguous()
+            description = {
+                "name": name,
+                "dtype": str(tensor.dtype),
+                "shape": list(tensor.shape),
+            }
+            digest.update(json.dumps(description, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\0")
+            raw = tensor.view(torch.uint8).cpu().numpy().tobytes()
+            digest.update(len(raw).to_bytes(8, "big"))
+            digest.update(raw)
+        return digest.hexdigest()
 
     def _register_level(
         self,
@@ -768,6 +851,182 @@ class PrincipalStretchGraphTransformer(nn.Module):
         # introducing any spectral compatibility work.
         return batched, F, strain, F, node_features, edge_features
 
+    def _prepare_v5(
+        self,
+        state: SolverState,
+        x_current: torch.Tensor,
+        x_previous: torch.Tensor,
+        x_iterate: torch.Tensor,
+        force: torch.Tensor,
+        gravity: torch.Tensor,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        pin: torch.Tensor,
+        normalized_residual: torch.Tensor,
+        constraint_normal: torch.Tensor,
+        normalized_constraint_slack: torch.Tensor,
+        iteration_fraction: float | torch.Tensor,
+        physical_dt: float | torch.Tensor,
+    ) -> tuple[
+        bool,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        list[torch.Tensor],
+        list[torch.Tensor],
+        torch.Tensor,
+    ]:
+        """Prepare one residual-aware v5 iteration without conflating time and iteration state."""
+        if self.config.architecture_version != 5:
+            raise RuntimeError("v5 preparation requires architecture_version 5")
+        if x_iterate.dim() not in (2, 3) or x_iterate.shape[-2:] != (state.n_verts, 3):
+            raise ValueError(f"x_iterate must end in ({state.n_verts}, 3), got {tuple(x_iterate.shape)}")
+        if x_current.shape != x_iterate.shape or x_previous.shape != x_iterate.shape:
+            raise ValueError("physical current, previous, and iterate positions must have identical shapes")
+        if force.shape != x_iterate.shape or normalized_residual.shape != x_iterate.shape:
+            raise ValueError("force and normalized_residual must have the same shape as x_iterate")
+        if constraint_normal.shape != x_iterate.shape:
+            raise ValueError("constraint_normal must have the same shape as x_iterate")
+        if normalized_constraint_slack.shape != x_iterate.shape[:-1]:
+            raise ValueError("normalized_constraint_slack must match x_iterate without its vector dimension")
+
+        batched = x_iterate.dim() == 3
+        if not batched:
+            x_current = x_current[None]
+            x_previous = x_previous[None]
+            x_iterate = x_iterate[None]
+            force = force[None]
+            normalized_residual = normalized_residual[None]
+            constraint_normal = constraint_normal[None]
+            normalized_constraint_slack = normalized_constraint_slack[None]
+        batch_size = x_iterate.shape[0]
+        if gravity.dim() == 1:
+            if gravity.shape != (3,):
+                raise ValueError("gravity must have shape (3,) or (B, 3)")
+            gravity = gravity[None].expand(batch_size, -1)
+        elif gravity.shape != (batch_size, 3):
+            raise ValueError(f"gravity must have shape (3,) or ({batch_size}, 3)")
+        if mu.dim() == 1:
+            if mu.shape != (state.n_tets,) or lam.shape != mu.shape or pin.shape != mu.shape:
+                raise ValueError("mu, lam, and pin must share shape (T,) or (B, T)")
+            mu = mu[None].expand(batch_size, -1)
+            lam = lam[None].expand(batch_size, -1)
+            pin = pin[None].expand(batch_size, -1)
+        elif mu.shape != (batch_size, state.n_tets) or lam.shape != mu.shape or pin.shape != mu.shape:
+            raise ValueError("mu, lam, and pin must share shape (T,) or (B, T)")
+        for name, value in (
+            ("x_current", x_current),
+            ("x_previous", x_previous),
+            ("x_iterate", x_iterate),
+            ("force", force),
+            ("gravity", gravity),
+            ("mu", mu),
+            ("lam", lam),
+            ("pin", pin),
+            ("normalized_residual", normalized_residual),
+            ("constraint_normal", constraint_normal),
+            ("normalized_constraint_slack", normalized_constraint_slack),
+        ):
+            if not torch.isfinite(value).all():
+                raise ValueError(f"{name} must be finite")
+        if (mu < 0.0).any() or (lam < 0.0).any():
+            raise ValueError("mu and lam must be non-negative")
+        if (((mu > 0.0) | (lam > 0.0)) & (lam <= 0.0)).any():
+            raise ValueError("lam must be positive on active tetrahedra")
+        if (pin < 0.0).any() or (pin > 1.0).any():
+            raise ValueError("pin-incidence features must lie in [0, 1]")
+
+        iteration = torch.as_tensor(iteration_fraction, dtype=x_iterate.dtype, device=x_iterate.device)
+        if iteration.ndim == 0:
+            iteration = iteration.expand(batch_size)
+        if iteration.shape != (batch_size,):
+            raise ValueError(f"iteration_fraction must be scalar or shape ({batch_size},)")
+        if not torch.isfinite(iteration).all() or (iteration < 0.0).any() or (iteration > 1.0).any():
+            raise ValueError("iteration_fraction must be finite and lie in [0, 1]")
+        step_dt = torch.as_tensor(physical_dt, dtype=x_iterate.dtype, device=x_iterate.device)
+        if step_dt.ndim == 0:
+            step_dt = step_dt.expand(batch_size)
+        if step_dt.shape != (batch_size,):
+            raise ValueError(f"physical_dt must be scalar or shape ({batch_size},)")
+        if not torch.isfinite(step_dt).all() or (step_dt <= 0.0).any():
+            raise ValueError("physical_dt must be finite and positive")
+
+        iterate_tet = x_iterate[:, self.tets]
+        current_tet = x_current[:, self.tets]
+        previous_tet = x_previous[:, self.tets]
+        F = torch.einsum("tac,btad->btdc", state.J, iterate_tet)
+        F_current = torch.einsum("tac,btad->btdc", state.J, current_tet)
+        F_previous = torch.einsum("tac,btad->btdc", state.J, previous_tet)
+
+        H = 0.5 * sym_log(spd_floor(F.transpose(-1, -2) @ F, lam_min=0.05**2))
+        H_current = 0.5 * sym_log(spd_floor(F_current.transpose(-1, -2) @ F_current, lam_min=0.05**2))
+        H_previous = 0.5 * sym_log(spd_floor(F_previous.transpose(-1, -2) @ F_previous, lam_min=0.05**2))
+        frame = covariant_observation_frame(F, H)
+        iterate_centroid = iterate_tet.mean(dim=2)
+        current_centroid = current_tet.mean(dim=2)
+        previous_centroid = previous_tet.mean(dim=2)
+
+        fields: dict[str, torch.Tensor] = {
+            # The ordinary 36-dimensional v3 state now describes the nonlinear
+            # iterate relative to the physical step-start state.  Physical
+            # temporal evolution remains explicit in velocity and the v5
+            # context's H_current - H_previous term.
+            "H": H,
+            "H_previous": H_current,
+            "F": F,
+            "rotation": frame,
+            "centroid": iterate_centroid,
+            "velocity": (current_centroid - previous_centroid) / step_dt[:, None, None],
+            "force": self.conservative_tet_load(force),
+            "mu": mu[..., None],
+            "lam": lam[..., None],
+            "pin": pin[..., None],
+        }
+
+        residual_corner = normalized_residual[:, self.tets]
+        normal_corner = constraint_normal[:, self.tets]
+        residual_material = torch.einsum("btji,btaj->btai", frame, residual_corner)
+        normal_material = torch.einsum("btji,btaj->btai", frame, normal_corner)
+        slack_corner = normalized_constraint_slack[:, self.tets]
+        context_feature = torch.cat(
+            [
+                torch.asinh(residual_material).flatten(-2),
+                normal_material.flatten(-2),
+                torch.asinh(slack_corner),
+                sym_to_vec(H_current - H_previous),
+                iteration[:, None, None].expand(-1, state.n_tets, 1),
+            ],
+            dim=-1,
+        )
+        if context_feature.shape[-1] != V5_CONTEXT_FEATURE_DIM:
+            raise RuntimeError(
+                f"internal v5 context feature size {context_feature.shape[-1]} != {V5_CONTEXT_FEATURE_DIM}"
+            )
+        context_feature = context_feature.to(dtype=self.output_head[-1].weight.dtype)
+
+        node_features: list[torch.Tensor] = []
+        edge_features: list[torch.Tensor] = []
+        for level in range(self.n_levels + 1):
+            node_features.append(self._node_features(fields, gravity, level))
+            edge_features.append(self._edge_features(fields, level))
+            if level == self.n_levels:
+                break
+            next_level = level + 1
+            assign = self._level_buffer("assign", next_level)
+            child_volume = self._level_buffer("child_volume", next_level).to(H)
+            n_parent = self._level_buffer("volume", next_level).shape[0]
+            pooled: dict[str, torch.Tensor] = {}
+            for name, value in fields.items():
+                if name == "force":
+                    pooled[name] = _batch_pool_sum(value, assign, n_parent)
+                elif name != "rotation":
+                    pooled[name] = _batch_pool_mean(value, assign, child_volume, n_parent)
+            representative = self._level_buffer("representative", next_level)
+            pooled["rotation"] = fields["rotation"][:, representative]
+            fields = pooled
+
+        return batched, F, H, frame, node_features, edge_features, context_feature
+
     def _prepare(
         self,
         state: SolverState,
@@ -875,7 +1134,20 @@ class PrincipalStretchGraphTransformer(nn.Module):
             state, x_current, x_previous, force, gravity, mu, lam, pin
         )
 
+        hidden = self._encode_features(node_features, edge_features)
+        return batched, base_F, base_H, base_frame, hidden
+
+    def _encode_features(
+        self,
+        node_features: list[torch.Tensor],
+        edge_features: list[torch.Tensor],
+        fine_context: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run the shared topology U-Net, with an optional v5 fine-level adapter."""
+
         hidden = self.encoders[0](node_features[0])
+        if fine_context is not None:
+            hidden = hidden + fine_context
         hidden = self.down_attention[0](
             hidden,
             edge_features[0],
@@ -913,6 +1185,43 @@ class PrincipalStretchGraphTransformer(nn.Module):
                 self._level_buffer("edge_weight", level),
             )
 
+        return hidden
+
+    def _encode_v5(
+        self,
+        state: SolverState,
+        x_current: torch.Tensor,
+        x_previous: torch.Tensor,
+        x_iterate: torch.Tensor,
+        force: torch.Tensor,
+        gravity: torch.Tensor,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        pin: torch.Tensor,
+        normalized_residual: torch.Tensor,
+        constraint_normal: torch.Tensor,
+        normalized_constraint_slack: torch.Tensor,
+        iteration_fraction: float | torch.Tensor,
+        physical_dt: float | torch.Tensor,
+    ) -> tuple[bool, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return v5 iterate kinematics and its residual-aware latent field."""
+        batched, base_F, base_H, base_frame, node_features, edge_features, context = self._prepare_v5(
+            state,
+            x_current,
+            x_previous,
+            x_iterate,
+            force,
+            gravity,
+            mu,
+            lam,
+            pin,
+            normalized_residual,
+            constraint_normal,
+            normalized_constraint_slack,
+            iteration_fraction,
+            physical_dt,
+        )
+        hidden = self._encode_features(node_features, edge_features, self.v5_context_encoder(context))
         return batched, base_F, base_H, base_frame, hidden
 
     def _target_hencky(self, base_H: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:
@@ -948,15 +1257,118 @@ class PrincipalStretchGraphTransformer(nn.Module):
         Returns:
             SPD target right stretches, ``(T, 3, 3)`` or ``(B, T, 3, 3)``.
         """
-        if self.config.architecture_version == 4:
+        if self.config.architecture_version in (4, 5):
+            route = (
+                "predict_deformation_gradient"
+                if self.config.architecture_version == 4
+                else "predict_principal_stretch_update"
+            )
             raise RuntimeError(
-                "architecture_version 4 predicts only full deformation gradients; use predict_deformation_gradient"
+                f"architecture_version {self.config.architecture_version} predicts only full deformation gradients; "
+                f"use {route}"
             )
         batched, _base_F, base_H, _base_frame, hidden = self._encode(
             state, x_current, x_previous, force, gravity, mu, lam, pin
         )
         target = sym_exp(self._target_hencky(base_H, hidden))
         return target if batched else target[0]
+
+    def predict_principal_stretch_update(
+        self,
+        state: SolverState,
+        x_current: torch.Tensor,
+        x_previous: torch.Tensor,
+        x_iterate: torch.Tensor,
+        force: torch.Tensor,
+        gravity: torch.Tensor,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        pin: torch.Tensor,
+        normalized_residual: torch.Tensor,
+        constraint_normal: torch.Tensor,
+        normalized_constraint_slack: torch.Tensor,
+        *,
+        iteration_fraction: float | torch.Tensor,
+        physical_dt: float | torch.Tensor,
+        head_mode: str = "learned",
+        head_permutation: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Predict one explicit residual-aware principal-stretch iteration.
+
+        The physical timestep states ``x_current`` and ``x_previous`` remain
+        fixed across an iterative solve. ``x_iterate`` is the current nonlinear
+        iterate. ``normalized_residual`` is the exact common-objective position
+        gradient divided by the problem's registered force scale; callers
+        normally detach it to keep training first order. Constraint normals are
+        world vectors and normalized slack is a scalar per vertex, so the
+        context remains invariant under active world rigid transforms.
+        ``physical_dt`` is supplied by the bound common objective per sample;
+        v5 does not inherit timestep semantics from the legacy static config.
+
+        ``head_mode="zero"`` still executes both learned heads and then zeros
+        their bounded outputs. ``head_mode="permuted"`` executes the same
+        learned work and applies an explicit tet permutation to the bounded
+        outputs before composition. These are controlled learned-contribution
+        ablations, not ordinary learned-route fallbacks.
+
+        Returns:
+            ``(F_target, delta_H, omega)``. ``delta_H`` is a bounded symmetric
+            material-frame log-stretch update and ``omega`` is a bounded
+            material-frame axial rotation vector.
+        """
+        if self.config.architecture_version != 5:
+            raise RuntimeError("iterative principal-stretch prediction requires architecture_version 5")
+        batched, _base_F, base_H, base_frame, hidden = self._encode_v5(
+            state,
+            x_current,
+            x_previous,
+            x_iterate,
+            force,
+            gravity,
+            mu,
+            lam,
+            pin,
+            normalized_residual,
+            constraint_normal,
+            normalized_constraint_slack,
+            iteration_fraction,
+            physical_dt,
+        )
+        delta_H = _radially_bound_symmetric(self.output_head(hidden), self.config.max_hencky_update).to(
+            dtype=base_H.dtype
+        )
+        omega = _radially_bound_vector(self.rotation_head(hidden), self.config.max_rotation_update).to(
+            dtype=base_H.dtype
+        )
+        if head_mode == "learned":
+            if head_permutation is not None:
+                raise ValueError("head_permutation is only valid with head_mode='permuted'")
+        elif head_mode == "zero":
+            if head_permutation is not None:
+                raise ValueError("head_permutation is only valid with head_mode='permuted'")
+            delta_H = torch.zeros_like(delta_H)
+            omega = torch.zeros_like(omega)
+        elif head_mode == "permuted":
+            if head_permutation is None:
+                raise ValueError("head_mode='permuted' requires an explicit head_permutation")
+            if (
+                head_permutation.dtype != torch.int64
+                or head_permutation.device != delta_H.device
+                or head_permutation.shape != (self.tets.shape[0],)
+                or not torch.equal(
+                    torch.sort(head_permutation).values, torch.arange(self.tets.shape[0], device=delta_H.device)
+                )
+            ):
+                raise ValueError("head_permutation must be a device-local permutation of every tet index")
+            delta_H = delta_H.index_select(-3, head_permutation)
+            omega = omega.index_select(-2, head_permutation)
+        else:
+            raise ValueError("head_mode must be 'learned', 'zero', or 'permuted'")
+        relative_rotation = torch.matrix_exp(_skew(omega))
+        target = base_frame @ relative_rotation @ sym_exp(base_H + delta_H)
+        if batched:
+            return target, delta_H, omega
+        return target[0], delta_H[0], omega[0]
 
     def predict_deformation_gradient(
         self,
@@ -984,6 +1396,10 @@ class PrincipalStretchGraphTransformer(nn.Module):
             Target deformation gradients, ``(T, 3, 3)`` or
             ``(B, T, 3, 3)``.
         """
+        if self.config.architecture_version == 5:
+            raise RuntimeError(
+                "architecture v5 is iterative; use predict_principal_stretch_update with residual and constraint state"
+            )
         if self.config.architecture_version < 3:
             raise RuntimeError("full deformation-gradient prediction requires architecture_version 3 or 4")
         batched, base_F, base_H, base_frame, hidden = self._encode(

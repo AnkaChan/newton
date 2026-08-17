@@ -20,6 +20,8 @@ Shapes throughout:
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 
 import numpy as np
 import torch
@@ -30,6 +32,24 @@ _DENSE_BACKEND = "dense"
 _SPARSE_PCG_BACKEND = "sparse_pcg"
 _JACOBI_PRECONDITIONER = "jacobi"
 _MULTIGRID_PRECONDITIONER = "multigrid"
+
+
+def static_mesh_sha256(rest_q: np.ndarray, tet_indices: np.ndarray) -> str:
+    """Hash canonical rest positions and ordered tetrahedral connectivity."""
+    rest = np.ascontiguousarray(np.asarray(rest_q, dtype="<f8"))
+    tets = np.ascontiguousarray(np.asarray(tet_indices, dtype="<i8"))
+    if rest.ndim != 2 or rest.shape[1] != 3:
+        raise ValueError(f"rest_q must have shape (V, 3), got {rest.shape}")
+    if tets.ndim != 2 or tets.shape[1] != 4:
+        raise ValueError(f"tet_indices must have shape (T, 4), got {tets.shape}")
+    digest = hashlib.sha256()
+    digest.update(b"principal-stretch-static-mesh-v1\0")
+    for name, array in (("rest_q", rest), ("tet_indices", tets)):
+        digest.update(name.encode("ascii") + b"\0")
+        digest.update(json.dumps(array.shape, separators=(",", ":")).encode("ascii") + b"\0")
+        digest.update(array.dtype.str.encode("ascii") + b"\0")
+        digest.update(memoryview(array).cast("B"))
+    return digest.hexdigest()
 
 
 def _build_J(Dm_inv: torch.Tensor) -> torch.Tensor:
@@ -148,6 +168,9 @@ class SolverState:
     L_ff_chol: torch.Tensor | None  # (F, F) Cholesky, direct backend only
     L_fp: torch.Tensor  # (F, P), dense or sparse CSR according to backend
     rest_q: torch.Tensor  # (V, 3)
+    source_rest_q: torch.Tensor  # (V, 3) exact canonical float64 source geometry
+    static_mesh_sha256: str
+    projection_state_sha256: str = ""
     tikhonov: float = 0.0
     projection_backend: str = _DENSE_BACKEND
     L_ff_sparse: torch.Tensor | None = None  # (F, F) sparse CSR
@@ -158,6 +181,91 @@ class SolverState:
     pcg_raise_on_nonconvergence: bool = True
     pcg_preconditioner: str = _JACOBI_PRECONDITIONER
     multigrid_hierarchy: _MultigridHierarchy | None = None
+
+
+def _update_projection_tensor_digest(
+    digest,
+    name: str,
+    value: torch.Tensor | None,
+) -> None:
+    digest.update(name.encode("utf-8") + b"\0")
+    if value is None:
+        digest.update(b"none\0")
+        return
+    metadata = {
+        "dtype": str(value.dtype),
+        "layout": str(value.layout),
+        "shape": list(value.shape),
+    }
+    digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\0")
+    if value.layout == torch.strided:
+        raw = value.detach().contiguous().view(torch.uint8).cpu().numpy().tobytes()
+        digest.update(len(raw).to_bytes(8, "big"))
+        digest.update(raw)
+        return
+    if value.layout == torch.sparse_csr:
+        _update_projection_tensor_digest(digest, f"{name}.crow_indices", value.crow_indices())
+        _update_projection_tensor_digest(digest, f"{name}.col_indices", value.col_indices())
+        _update_projection_tensor_digest(digest, f"{name}.values", value.values())
+        return
+    raise ValueError(f"projection-state tensor {name} has unsupported layout {value.layout}")
+
+
+def projection_state_sha256(state: SolverState) -> str:
+    """Hash every tensor and policy that defines compatibility projection."""
+    if not isinstance(state, SolverState):
+        raise TypeError("state must be a SolverState")
+    digest = hashlib.sha256(b"principal-stretch-projection-state-v2\0")
+    metadata = {
+        "n_verts": state.n_verts,
+        "n_tets": state.n_tets,
+        "static_mesh_sha256": state.static_mesh_sha256,
+        "tikhonov": float(state.tikhonov).hex(),
+        "projection_backend": state.projection_backend,
+        "pcg_relative_tolerance": float(state.pcg_relative_tolerance).hex(),
+        "pcg_absolute_tolerance": float(state.pcg_absolute_tolerance).hex(),
+        "pcg_max_iterations": state.pcg_max_iterations,
+        "pcg_raise_on_nonconvergence": state.pcg_raise_on_nonconvergence,
+        "pcg_preconditioner": state.pcg_preconditioner,
+    }
+    digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+    for name in (
+        "tets",
+        "Dm_inv",
+        "J",
+        "w",
+        "pinned",
+        "free",
+        "L",
+        "L_ff_chol",
+        "L_fp",
+        "rest_q",
+        "source_rest_q",
+        "L_ff_sparse",
+        "L_ff_inverse_diagonal",
+    ):
+        _update_projection_tensor_digest(digest, name, getattr(state, name))
+    hierarchy = state.multigrid_hierarchy
+    if hierarchy is None:
+        digest.update(b"multigrid_hierarchy\0none\0")
+    else:
+        digest.update(
+            json.dumps(
+                {"multigrid_levels": len(hierarchy.levels), "smoothing_steps": hierarchy.smoothing_steps},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        for level_index, level in enumerate(hierarchy.levels):
+            _update_projection_tensor_digest(digest, f"multigrid.{level_index}.matrix", level.matrix)
+            _update_projection_tensor_digest(
+                digest,
+                f"multigrid.{level_index}.smoother_inverse",
+                level.smoother_inverse,
+            )
+            _update_projection_tensor_digest(digest, f"multigrid.{level_index}.aggregate", level.aggregate)
+        _update_projection_tensor_digest(digest, "multigrid.coarse_cholesky", hierarchy.coarse_cholesky)
+    return digest.hexdigest()
 
 
 def _validate_pcg_options(relative_tolerance: float, absolute_tolerance: float, max_iterations: int) -> None:
@@ -544,7 +652,8 @@ def build_solver(
         )
     elif pcg_preconditioner != _JACOBI_PRECONDITIONER:
         raise ValueError("pcg_preconditioner applies only to projection_backend='sparse_pcg'")
-    rest_q_t = torch.as_tensor(rest_q, dtype=dtype, device=device)
+    source_rest_q = torch.as_tensor(np.asarray(rest_q, dtype=np.float64), dtype=torch.float64, device=device).clone()
+    rest_q_t = source_rest_q.to(dtype=dtype).clone()
     tets = torch.as_tensor(tet_indices, dtype=torch.int64, device=device)
     Dm_inv = torch.as_tensor(tet_poses, dtype=dtype, device=device)
     pinned = torch.as_tensor(pinned_indices, dtype=torch.int64, device=device)
@@ -617,7 +726,7 @@ def build_solver(
             root_diagonal = _csr_diagonal(root_crow, root_columns, root_values)
             L_ff_inverse_diagonal = torch.as_tensor(root_diagonal, dtype=dtype, device=device).reciprocal()
 
-    return SolverState(
+    state = SolverState(
         n_verts=n_verts,
         n_tets=n_tets,
         tets=tets,
@@ -630,6 +739,8 @@ def build_solver(
         L_ff_chol=L_ff_chol,
         L_fp=L_fp,
         rest_q=rest_q_t,
+        source_rest_q=source_rest_q,
+        static_mesh_sha256=static_mesh_sha256(rest_q, tet_indices),
         tikhonov=float(tikhonov),
         projection_backend=projection_backend,
         L_ff_sparse=L_ff_sparse,
@@ -641,6 +752,8 @@ def build_solver(
         pcg_preconditioner=pcg_preconditioner,
         multigrid_hierarchy=multigrid_hierarchy,
     )
+    state.projection_state_sha256 = projection_state_sha256(state)
+    return state
 
 
 def compute_S_from_x(state: SolverState, x: torch.Tensor) -> torch.Tensor:

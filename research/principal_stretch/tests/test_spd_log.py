@@ -165,6 +165,24 @@ class TestSpdLog(unittest.TestCase):
         R64 = rotation_from_axis_angle((1.0, 2.0, 0.3), 1.1, dtype=torch.float64)
         self.assertLess((so3_log_axial(R32) - so3_log_axial(R64).float()).abs().max().item(), 1e-5)
 
+    def test_so3_log_float32_identity_and_small_angle_have_finite_backward(self):
+        rotations = torch.stack(
+            (
+                torch.eye(3, dtype=torch.float32),
+                rotation_from_axis_angle((1.0, -2.0, 0.5), 1.0e-6, dtype=torch.float32),
+            )
+        ).requires_grad_(True)
+
+        axial = so3_log_axial(rotations)
+        self.assertTrue(torch.isfinite(axial).all())
+        torch.testing.assert_close(axial[0], torch.zeros(3, dtype=torch.float32), rtol=0.0, atol=0.0)
+        expected_axis = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float32)
+        expected = 1.0e-6 * expected_axis / torch.linalg.vector_norm(expected_axis)
+        torch.testing.assert_close(axial[1], expected, rtol=1.0e-5, atol=1.0e-9)
+
+        (gradient,) = torch.autograd.grad(axial.sum(), rotations)
+        self.assertTrue(torch.isfinite(gradient).all())
+
     def test_float32_backward_near_rest(self):
         # sym_exp backward at H ~= 0 with eigenvalue gaps 1e-8..1e-6: the
         # eigenvalues are densely representable, but exp(lam) ~= 1 is stored

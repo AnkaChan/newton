@@ -215,10 +215,14 @@ def so3_log_axial(R: torch.Tensor) -> torch.Tensor:
     if bool((cos_theta < math.cos(_MAX_THETA)).any()):
         raise ValueError(f"so3_log_axial: rotation angle exceeds {_MAX_THETA} rad (out of physical range)")
 
-    # theta < _SMALL_THETA  <=>  cos_theta > cos(_SMALL_THETA).  On the small
-    # branch, feed arccos a dummy 0 so its infinite slope at cos_theta = 1
-    # cannot leak NaN into the gradient via 0 * inf in the torch.where backward.
-    small = cos_theta > math.cos(_SMALL_THETA)
+    # theta < _SMALL_THETA  <=>  1 - cos_theta < 1 - cos(_SMALL_THETA).
+    # Compare the gaps from one: cos(_SMALL_THETA) itself rounds to 1 in
+    # float32, which would otherwise misclassify the identity as non-small.
+    # ``<=`` also keeps identity on the safe branch when the cutoff gap
+    # underflows in a lower-precision execution dtype.  Feed arccos a dummy 0
+    # there so its infinite slope at cos_theta = 1 cannot leak NaN into the
+    # gradient via 0 * inf in the torch.where backward.
+    small = (1.0 - cos_theta) <= (1.0 - math.cos(_SMALL_THETA))
     theta = torch.acos(torch.where(small, torch.zeros_like(cos_theta), cos_theta))
     factor = torch.where(small, torch.full_like(theta, 0.5), theta / (2.0 * torch.sin(theta)))
     w = torch.stack(

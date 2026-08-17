@@ -117,10 +117,10 @@ class StretchPredictor(nn.Module):
         config: dict[str, Any] = {"kind": self.kind, "residual": self.residual}
         if self.kind == "graph-transformer":
             graph_config = dataclasses.asdict(self.model.config)
-            if self.model.config.architecture_version < 4:
+            if self.model.config.architecture_version != 4:
                 # Preserve the learned checkpoint schema of v0-v3 exactly.
-                # GraphTransformerConfig reconstruction supplies the unused
-                # internal default without changing serialized metadata.
+                # V5 also uses the explicit log-stretch formula and must not
+                # authenticate the unrelated v4 multiplicative cap.
                 del graph_config["max_multiplicative_update"]
             config["graph_transformer"] = graph_config
         return config
@@ -146,11 +146,55 @@ class StretchPredictor(nn.Module):
             raise RuntimeError("full deformation-gradient prediction requires a graph-transformer predictor")
         return self.model.predict_deformation_gradient(state, x_current, x_previous, force, gravity, mu, lam, pin)
 
+    def predict_principal_stretch_update(
+        self,
+        state: SolverState,
+        x_current: torch.Tensor,
+        x_previous: torch.Tensor,
+        x_iterate: torch.Tensor,
+        force: torch.Tensor,
+        gravity: torch.Tensor,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        pin: torch.Tensor,
+        normalized_residual: torch.Tensor,
+        constraint_normal: torch.Tensor,
+        normalized_constraint_slack: torch.Tensor,
+        *,
+        iteration_fraction: float | torch.Tensor,
+        physical_dt: float | torch.Tensor,
+        head_mode: str = "learned",
+        head_permutation: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Predict one architecture-v5 bounded principal-stretch update."""
+        if self.kind != "graph-transformer":
+            raise RuntimeError("iterative principal-stretch prediction requires a graph-transformer predictor")
+        return self.model.predict_principal_stretch_update(
+            state,
+            x_current,
+            x_previous,
+            x_iterate,
+            force,
+            gravity,
+            mu,
+            lam,
+            pin,
+            normalized_residual,
+            constraint_normal,
+            normalized_constraint_slack,
+            iteration_fraction=iteration_fraction,
+            physical_dt=physical_dt,
+            head_mode=head_mode,
+            head_permutation=head_permutation,
+        )
+
 
 def resolve_solver_iterations(predictor: StretchPredictor, requested: int | None) -> int:
     """Resolve legacy defaults and enforce the one-shot full-gradient decoder."""
     version = predictor_architecture_version(predictor)
     if requested is None:
+        if version == 5:
+            raise ValueError("architecture v5 requires an explicit fixed solver iteration count")
         return 1 if version in (3, 4) else 10
     if requested < 1:
         raise ValueError("solver_iterations must be positive")
@@ -168,6 +212,26 @@ def predictor_decoder_work(
     if blocks < 1:
         raise ValueError("blocks must be positive")
     version = predictor_architecture_version(predictor)
+    if version == 5:
+        if blocks != 1:
+            raise ValueError("architecture v5 iterative routing requires blocks=1")
+        if solver_iterations < 1:
+            raise ValueError("architecture v5 solver_iterations must be positive")
+        return {
+            "schema_version": 3,
+            "target": "principal-log-stretch-full-deformation-gradient",
+            "decoder": "iterative-weighted-global-projection",
+            "predictor_passes": solver_iterations,
+            "compatibility_projection_calls": solver_iterations,
+            "local_polar_sweeps": 0,
+            "common_residual_evaluations": solver_iterations + 1,
+            "common_objective_evaluations": solver_iterations + 1,
+            "state_validity_evaluations": solver_iterations + 1,
+            "constraint_preparations": solver_iterations,
+            "constraint_applications": solver_iterations,
+            "physical_step_authentications": 2 * solver_iterations + 3,
+            "common_objective_authentications": 2 * solver_iterations + 3,
+        }
     if version in (3, 4):
         if blocks != 1:
             raise ValueError(
@@ -221,6 +285,8 @@ def decode_predictor_step(
     and the flat MLP retain their existing unrolled stretch/polar decoder.
     """
     work = predictor_decoder_work(predictor, solver_iterations, blocks)
+    if predictor_architecture_version(predictor) == 5:
+        raise RuntimeError("architecture v5 requires the iterative solver route with objective and constraint state")
     if work["target"] == "full-deformation-gradient":
         F_target = predictor.predict_deformation_gradient(state, x_current, x_previous, force, gravity, mu, lam, pin)
         return torch_solver.project_deformation_gradient(state, F_target, pinned_targets)
@@ -286,8 +352,11 @@ def build_stretch_predictor(
         n_levels=config.n_levels,
         target=config.cluster_size,
     )
-    model = PrincipalStretchGraphTransformer(hierarchy, tets, rest_q.shape[0], config)
-    return StretchPredictor(kind, model, residual=True).to(device=device, dtype=dtype)
+    model = PrincipalStretchGraphTransformer(hierarchy, tets, rest_q.shape[0], config, rest_q=rest_q)
+    predictor = StretchPredictor(kind, model, residual=True).to(device=device, dtype=dtype)
+    if config.architecture_version == 5:
+        predictor.model.static_graph_sha256 = predictor.model.compute_static_graph_sha256()
+    return predictor
 
 
 def checkpoint_predictor_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
@@ -314,6 +383,13 @@ def checkpoint_predictor_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
                 # Rotation-head parameters are reused as the skew part of the
                 # joint v4 correction; the independent v3 cap is not used.
                 graph_config.setdefault("max_rotation_update", GraphTransformerConfig.max_rotation_update)
+            elif architecture_version == 5:
+                if "max_rotation_update" not in graph_config:
+                    raise ValueError("architecture-v5 checkpoint is missing max_rotation_update metadata")
+                if "max_multiplicative_update" in graph_config:
+                    raise ValueError("architecture-v5 checkpoint must not contain max_multiplicative_update metadata")
+            else:
+                raise ValueError(f"unsupported graph architecture version {architecture_version!r}")
             config["graph_transformer"] = graph_config
         return config
     args = checkpoint.get("args", {})
