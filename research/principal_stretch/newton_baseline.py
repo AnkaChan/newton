@@ -34,7 +34,13 @@ _INTEGER_DTYPES = {
 
 
 def _cpu_float64(value: np.ndarray | torch.Tensor | Sequence[float], name: str) -> torch.Tensor:
-    tensor = torch.as_tensor(value, dtype=torch.float64, device="cpu")
+    if isinstance(value, np.ndarray):
+        # ``TetBenchmarkScene`` intentionally exposes read-only arrays.  Make
+        # the ownership copy before constructing a Tensor so PyTorch does not
+        # warn about undefined writes through a non-writable NumPy view.
+        tensor = torch.from_numpy(np.array(value, dtype=np.float64, copy=True))
+    else:
+        tensor = torch.as_tensor(value, dtype=torch.float64, device="cpu")
     if not torch.isfinite(tensor).all():
         raise ValueError(f"{name} must be finite")
     return tensor.detach().clone()
@@ -44,7 +50,10 @@ def _cpu_int64_indices(
     value: np.ndarray | torch.Tensor | Sequence[int],
     name: str,
 ) -> torch.Tensor:
-    tensor = torch.as_tensor(value, device="cpu")
+    if isinstance(value, np.ndarray):
+        tensor = torch.from_numpy(np.array(value, copy=True))
+    else:
+        tensor = torch.as_tensor(value, device="cpu")
     if tensor.numel() == 0:
         return torch.empty(tensor.shape, dtype=torch.int64, device="cpu")
     if tensor.dtype not in _INTEGER_DTYPES:
@@ -151,6 +160,7 @@ def build_newton_problem(
     external_force: np.ndarray | torch.Tensor | None = None,
     pinned_indices: np.ndarray | torch.Tensor | Sequence[int] = (),
     pin_targets: np.ndarray | torch.Tensor | None = None,
+    inertial_target: np.ndarray | torch.Tensor | None = None,
 ) -> NewtonProblem:
     """Construct a validated common-objective Newton problem.
 
@@ -174,6 +184,10 @@ def build_newton_problem(
         pin_targets: Dirichlet target positions [m], shape ``[P, 3]``, in the
             same order as ``pinned_indices``. Defaults to ``x_current`` at the
             pinned vertices, matching VBD snapshot semantics.
+        inertial_target: Optional precomputed inertial target [m], shape
+            ``[V, 3]``. When supplied, it must contain the exact pin targets.
+            This is useful when matching a lower-precision solver's arithmetic
+            rather than recomputing its predictor in float64.
 
     Returns:
         A CPU float64 :class:`NewtonProblem`.
@@ -257,7 +271,7 @@ def build_newton_problem(
 
     acceleration = gravity_t.expand_as(rest).clone()
     acceleration[free] += f_ext[free] / masses[free, None]
-    inertial_target = x_n + dt * v_n + dt * dt * acceleration
+    computed_inertial_target = x_n + dt * v_n + dt * dt * acceleration
 
     if pin_targets is None:
         targets = x_n[pinned].clone()
@@ -268,7 +282,15 @@ def build_newton_problem(
                 f"pin_targets must have shape ({pinned_input.numel()}, 3), got {tuple(targets_input.shape)}"
             )
         targets = targets_input[pin_order]
-    inertial_target[pinned] = targets
+    if inertial_target is None:
+        target = computed_inertial_target
+        target[pinned] = targets
+    else:
+        target = _cpu_float64(inertial_target, "inertial_target")
+        if target.shape != rest.shape:
+            raise ValueError(f"inertial_target must have shape {tuple(rest.shape)}")
+        if not torch.equal(target[pinned], targets):
+            raise ValueError("inertial_target must contain the exact Dirichlet targets")
 
     problem = NewtonProblem(
         rest_q=rest,
@@ -278,7 +300,7 @@ def build_newton_problem(
         mass=masses,
         mu=mu_t,
         lam=lam_t,
-        inertial_target=inertial_target,
+        inertial_target=target,
         pinned=pinned,
         free=free,
         pin_targets=targets,
@@ -288,7 +310,7 @@ def build_newton_problem(
         residual_scale_seconds=math.nan,
     )
     residual_scale_start = time.perf_counter()
-    reference_x = inertial_target.index_copy(0, pinned, targets)
+    reference_x = target.index_copy(0, pinned, targets)
     reference_z = problem.free_from_positions(reference_x).requires_grad_(True)
     reference_value = problem.objective_free(reference_z)
     (reference_gradient,) = torch.autograd.grad(reference_value, reference_z)
@@ -547,7 +569,10 @@ def solve_newton(
     if x_initial is None:
         x0 = problem.inertial_target.index_copy(0, problem.pinned, problem.pin_targets)
     else:
-        x0 = torch.as_tensor(x_initial, dtype=torch.float64, device="cpu").detach().clone()
+        if isinstance(x_initial, np.ndarray):
+            x0 = torch.from_numpy(np.array(x_initial, dtype=np.float64, copy=True))
+        else:
+            x0 = torch.as_tensor(x_initial, dtype=torch.float64, device="cpu").detach().clone()
         if x0.shape != problem.rest_q.shape:
             raise ValueError(f"x_initial must have shape {tuple(problem.rest_q.shape)}")
         if not torch.isfinite(x0).all():
