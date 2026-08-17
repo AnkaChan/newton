@@ -11,7 +11,7 @@ from .types import (
     GeoType,
 )
 
-_VERSION = "self_contact_detection_narrowphase_v1"
+_VERSION = "self_contact_detection_squared_gate_v1"
 print(f"[geometry.kernels] version: {_VERSION}")
 
 
@@ -1390,6 +1390,8 @@ def vertex_triangle_collision_detection_kernel(
 
     v_index = wp.tid()
     v = pos[v_index]
+    max_query_radius_sq = max_query_radius * max_query_radius
+    min_query_radius_sq = min_query_radius * min_query_radius
     vertex_buffer_offset = vertex_colliding_triangles_offsets[v_index]
     vertex_buffer_size = vertex_colliding_triangles_offsets[v_index + 1] - vertex_buffer_offset
 
@@ -1468,9 +1470,14 @@ def vertex_triangle_collision_detection_kernel(
 
                 closest_p, _bary, _feature_type = triangle_closest_point(u1, u2, u3, v)
 
-                dist = wp.length(closest_p - v)
+                delta = closest_p - v
+                dist_sq = wp.length_sq(delta)
 
-                if dist < max_query_radius:
+                if dist_sq <= max_query_radius_sq:
+                    dist = wp.sqrt(dist_sq)
+                    if not dist < max_query_radius:
+                        continue
+
                     if use_reference_filter:
                         closest_p_ref, _, __ = triangle_closest_point(
                             min_distance_filtering_ref_pos[t1],
@@ -1478,10 +1485,13 @@ def vertex_triangle_collision_detection_kernel(
                             min_distance_filtering_ref_pos[t3],
                             vertex_ref,
                         )
-                        dist_ref = wp.length(closest_p_ref - vertex_ref)
+                        delta_ref = closest_p_ref - vertex_ref
+                        dist_ref_sq = wp.length_sq(delta_ref)
 
-                        if dist_ref < min_query_radius:
-                            continue
+                        if dist_ref_sq <= min_query_radius_sq:
+                            dist_ref = wp.sqrt(dist_ref_sq)
+                            if dist_ref < min_query_radius:
+                                continue
 
                     # record v-f collision to vertex
                     min_dis_to_tris = wp.min(min_dis_to_tris, dist)
