@@ -24,6 +24,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.geometry import kernels as geometry_kernels
 from newton._src.solvers.vbd import particle_vbd_kernels
 from newton.examples.cloth.example_cloth_franka import Example
 from newton.viewer import ViewerNull
@@ -217,6 +218,18 @@ def main() -> None:
     parser.add_argument("--state-output", type=Path)
     parser.add_argument("--cuda-profiler-api", action="store_true")
     parser.add_argument("--collision-detection-block-size", type=int)
+    parser.add_argument(
+        "--vertex-triangle-collision-detection-block-size",
+        "--vt-collision-detection-block-size",
+        dest="vertex_triangle_collision_detection_block_size",
+        type=int,
+    )
+    parser.add_argument(
+        "--edge-edge-collision-detection-block-size",
+        "--ee-collision-detection-block-size",
+        dest="edge_edge_collision_detection_block_size",
+        type=int,
+    )
     parser.add_argument("--self-contact-force-block-dim", type=int, choices=(128, 256))
     parser.add_argument(
         "--self-contact-force-max-blocks",
@@ -229,6 +242,22 @@ def main() -> None:
 
     if args.frames <= 0:
         raise ValueError("--frames must be positive")
+    split_collision_detection_block_size = (
+        args.vertex_triangle_collision_detection_block_size is not None
+        or args.edge_edge_collision_detection_block_size is not None
+    )
+    if args.collision_detection_block_size is not None and split_collision_detection_block_size:
+        raise ValueError(
+            "--collision-detection-block-size cannot be combined with the vertex-triangle or edge-edge override"
+        )
+    collision_detection_block_size_args = {
+        "--collision-detection-block-size": args.collision_detection_block_size,
+        "--vertex-triangle-collision-detection-block-size": args.vertex_triangle_collision_detection_block_size,
+        "--edge-edge-collision-detection-block-size": args.edge_edge_collision_detection_block_size,
+    }
+    for argument, block_size in collision_detection_block_size_args.items():
+        if block_size is not None and block_size <= 0:
+            raise ValueError(f"{argument} must be positive")
     _validate_output_paths(args.output, args.state_output)
 
     source_root = Path(newton.__file__).resolve().parents[1]
@@ -249,9 +278,10 @@ def main() -> None:
     force_launch_override = (
         args.self_contact_force_block_dim is not None or args.self_contact_force_max_blocks is not None
     )
-    defer_capture = args.collision_detection_block_size is not None or force_launch_override
-    if args.collision_detection_block_size is not None and args.collision_detection_block_size <= 0:
-        raise ValueError("--collision-detection-block-size must be positive")
+    collision_detection_launch_override = (
+        args.collision_detection_block_size is not None or split_collision_detection_block_size
+    )
+    defer_capture = collision_detection_launch_override or force_launch_override
 
     capture = None
     if not defer_capture:
@@ -274,11 +304,28 @@ def main() -> None:
         "uncapped": 0,
     }[force_max_blocks_mode]
 
+    collision_detector = example.cloth_solver.trimesh_collision_detector
+    if args.collision_detection_block_size is not None:
+        collision_detector.collision_detection_block_size = args.collision_detection_block_size
+    default_collision_detection_block_size = collision_detector.collision_detection_block_size
+    vertex_triangle_collision_detection_block_size = (
+        args.vertex_triangle_collision_detection_block_size or default_collision_detection_block_size
+    )
+    edge_edge_collision_detection_block_size = (
+        args.edge_edge_collision_detection_block_size or default_collision_detection_block_size
+    )
+
     if defer_capture:
-        if args.collision_detection_block_size is not None:
-            example.cloth_solver.trimesh_collision_detector.collision_detection_block_size = (
-                args.collision_detection_block_size
-            )
+        if collision_detection_launch_override:
+            for block_dim in {
+                vertex_triangle_collision_detection_block_size,
+                edge_edge_collision_detection_block_size,
+            }:
+                wp.load_module(
+                    geometry_kernels,
+                    device=example.model.device,
+                    block_dim=block_dim,
+                )
 
         if force_launch_override:
             wp.load_module(
@@ -287,23 +334,30 @@ def main() -> None:
                 block_dim=force_block_dim,
             )
 
-            original_launch = wp.launch
+        original_launch = wp.launch
 
-            def launch_with_force_settings(*launch_args, **launch_kwargs):
-                kernel = launch_kwargs.get("kernel", launch_args[0] if launch_args else None)
-                if kernel is particle_vbd_kernels.accumulate_self_contact_force_and_hessian:
-                    launch_kwargs["block_dim"] = force_block_dim
-                    if force_max_blocks is not None:
-                        launch_kwargs["max_blocks"] = force_max_blocks
-                return original_launch(*launch_args, **launch_kwargs)
+        def launch_with_settings(*launch_args, **launch_kwargs):
+            kernel = launch_kwargs.get("kernel", launch_args[0] if launch_args else None)
+            if (
+                collision_detection_launch_override
+                and kernel is geometry_kernels.vertex_triangle_collision_detection_kernel
+            ):
+                launch_kwargs["block_dim"] = vertex_triangle_collision_detection_block_size
+            elif (
+                collision_detection_launch_override and kernel is geometry_kernels.edge_colliding_edges_detection_kernel
+            ):
+                launch_kwargs["block_dim"] = edge_edge_collision_detection_block_size
+            elif kernel is particle_vbd_kernels.accumulate_self_contact_force_and_hessian and force_launch_override:
+                launch_kwargs["block_dim"] = force_block_dim
+                if force_max_blocks is not None:
+                    launch_kwargs["max_blocks"] = force_max_blocks
+            return original_launch(*launch_args, **launch_kwargs)
 
-            try:
-                wp.launch = launch_with_force_settings
-                capture(example)
-            finally:
-                wp.launch = original_launch
-        else:
+        try:
+            wp.launch = launch_with_settings
             capture(example)
+        finally:
+            wp.launch = original_launch
     wp.synchronize_device()
 
     profiler = None
@@ -361,8 +415,18 @@ def main() -> None:
             "particle_self_contact_margin": example.particle_self_contact_margin,
             "particle_collision_detection_interval": example.cloth_solver.particle_collision_detection_interval,
             "collision_detection_block_size": (
-                example.cloth_solver.trimesh_collision_detector.collision_detection_block_size
+                vertex_triangle_collision_detection_block_size
+                if vertex_triangle_collision_detection_block_size == edge_edge_collision_detection_block_size
+                else None
             ),
+            "collision_detection_block_size_requested": args.collision_detection_block_size,
+            "vertex_triangle_collision_detection_block_size_requested": (
+                args.vertex_triangle_collision_detection_block_size
+            ),
+            "edge_edge_collision_detection_block_size_requested": args.edge_edge_collision_detection_block_size,
+            "vertex_triangle_collision_detection_block_size_resolved": vertex_triangle_collision_detection_block_size,
+            "edge_edge_collision_detection_block_size_resolved": edge_edge_collision_detection_block_size,
+            "collision_detection_launch_override": collision_detection_launch_override,
             "self_contact_force_block_dim": force_block_dim,
             "self_contact_force_max_blocks": force_max_blocks_mode,
             "self_contact_force_max_blocks_resolved": force_max_blocks,
