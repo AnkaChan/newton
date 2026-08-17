@@ -1,0 +1,3 @@
+# Nsight reports and SQLite exports embed the full launch environment.
+*
+!.gitignore

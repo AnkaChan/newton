@@ -1,0 +1,2065 @@
+{
+  "schema_version": "cloth-franka-trace-comparison-v1",
+  "traces": {
+    "baseline": {
+      "schema_version": "cloth-franka-trace-analysis-v1",
+      "path": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/cloth_self_contact/final_abba_baseline/nsys_final_baseline.sqlite",
+      "file_size": 7589888,
+      "sha256": "5b6d6331e8fe2c447113287f33b688f8b916c84a2bb68c0a5bb027988e58bca2",
+      "provenance": {
+        "command": [
+          "uv",
+          "run",
+          "--project",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf",
+          "--active",
+          "--no-sync",
+          "--offline",
+          "python",
+          "/tmp/cloth-franka-perf/final_abba_20260817/tools/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--cuda-profiler-api",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "final_nsys_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/traces/baseline.json"
+        ],
+        "working_directory": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf",
+        "environment_allowlist": {
+          "PYTHONPATH": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "WARP_CACHE_PATH": "/tmp/cloth-franka-perf/final_abba_20260817/cache_baseline",
+          "PYTHONNOUSERSITE": "1",
+          "UV_NO_SYNC": "1",
+          "UV_CACHE_DIR": "/tmp/cloth-franka-uv",
+          "PYTHONHASHSEED": "0",
+          "CUDA_VISIBLE_DEVICES": "2"
+        },
+        "raw_environment_record_count": 63,
+        "raw_environment_redacted": true,
+        "session_start": [
+          {
+            "utc_epoch_ns": 1786988162900670366,
+            "utc_time": "2026-08-17T17:36:02",
+            "local_time": "2026-08-17T17:36:02"
+          }
+        ],
+        "nsight_export": {
+          "product": "NVIDIA Nsight Systems",
+          "version": "2024.5.1.113",
+          "schema_version": "3.13.2",
+          "export_time_utc": "2026-08-17T17:36:08"
+        },
+        "selected_target_gpus": [
+          {
+            "id": 2,
+            "name": "NVIDIA L40",
+            "uuid": "a22d2778-1799-01e3-4f00-08707072aa0f",
+            "bus_location": "0000:1b:00.0",
+            "chip_name": "AD102",
+            "total_memory_bytes": 50876841984,
+            "compute_capability": "8.9"
+          }
+        ]
+      },
+      "kernel_device_ids": [
+        0
+      ],
+      "kernel_count": 66152,
+      "kernel_time_ns": 434509499,
+      "graph_kernel_count": 64410,
+      "graph_kernel_time_ns": 426319122,
+      "frame_marker_graph_node_id": 8589934592,
+      "frame_count": 30,
+      "workload_expectations": {
+        "frames": 30,
+        "substeps": 10,
+        "iterations": 5,
+        "color_count": 5,
+        "component_counts": {
+          "vertex_triangle_traversal": 300,
+          "edge_edge_traversal": 300,
+          "triangle_aabb": 330,
+          "edge_aabb": 330,
+          "bvh_refit": 600,
+          "bvh_group_roots": 60,
+          "force": 7500,
+          "planar_truncation": 7800,
+          "truncation_update": 7800
+        }
+      },
+      "component_counts": {
+        "bvh_group_roots": 60,
+        "bvh_rebuild_native": 1140,
+        "bvh_refit": 600,
+        "edge_aabb": 330,
+        "edge_edge_traversal": 300,
+        "force": 7500,
+        "planar_truncation": 7800,
+        "self_contact_buffer_fill": 900,
+        "triangle_aabb": 330,
+        "truncation_update": 7800,
+        "vertex_triangle_traversal": 300
+      },
+      "component_totals_ns": {
+        "bvh_group_roots": 770433,
+        "bvh_rebuild_native": 6836118,
+        "bvh_refit": 11346156,
+        "detector": 98431936,
+        "detector_plus_force": 186279118,
+        "edge_aabb": 525439,
+        "edge_edge_traversal": 53021116,
+        "extended_pipeline": 255488768,
+        "force": 87847182,
+        "legacy_traversal_plus_force": 164754371,
+        "planar_truncation": 57410069,
+        "self_contact_buffer_fill": 1500969,
+        "triangle_aabb": 545632,
+        "truncation_update": 11799581,
+        "vertex_triangle_traversal": 23886073
+      },
+      "aggregate_definitions": {
+        "detector": [
+          "vertex_triangle_traversal",
+          "edge_edge_traversal",
+          "triangle_aabb",
+          "edge_aabb",
+          "bvh_refit",
+          "bvh_rebuild_native",
+          "bvh_group_roots",
+          "self_contact_buffer_fill"
+        ],
+        "legacy_traversal_plus_force": [
+          "vertex_triangle_traversal",
+          "edge_edge_traversal",
+          "force"
+        ],
+        "detector_plus_force": [
+          "vertex_triangle_traversal",
+          "edge_edge_traversal",
+          "triangle_aabb",
+          "edge_aabb",
+          "bvh_refit",
+          "bvh_rebuild_native",
+          "bvh_group_roots",
+          "self_contact_buffer_fill",
+          "force"
+        ],
+        "extended_pipeline": [
+          "vertex_triangle_traversal",
+          "edge_edge_traversal",
+          "triangle_aabb",
+          "edge_aabb",
+          "bvh_refit",
+          "bvh_rebuild_native",
+          "bvh_group_roots",
+          "self_contact_buffer_fill",
+          "force",
+          "planar_truncation",
+          "truncation_update"
+        ]
+      },
+      "per_frame_component_ns": {
+        "detector": [
+          1934024,
+          1974224,
+          1992358,
+          2105484,
+          2281577,
+          2434411,
+          2487660,
+          2676523,
+          2771085,
+          2901682,
+          3078158,
+          3110160,
+          3300534,
+          3371375,
+          3365295,
+          3408071,
+          3589230,
+          3745167,
+          3801046,
+          3911224,
+          3896683,
+          3940204,
+          3829048,
+          3808690,
+          3895731,
+          4011153,
+          4080976,
+          4226190,
+          4235924,
+          4268049
+        ],
+        "legacy_traversal_plus_force": [
+          2931852,
+          2974893,
+          3106255,
+          3400077,
+          3827030,
+          3935058,
+          4170864,
+          4354101,
+          4612092,
+          4832832,
+          5032535,
+          5241299,
+          5346004,
+          5507898,
+          5585790,
+          5664833,
+          6030493,
+          6249913,
+          6334810,
+          6510685,
+          6646851,
+          6691032,
+          6756803,
+          6764670,
+          6898986,
+          7036933,
+          7027840,
+          7039002,
+          7108892,
+          7134048
+        ],
+        "detector_plus_force": [
+          3651375,
+          3687316,
+          3822703,
+          4114738,
+          4544469,
+          4651573,
+          4884503,
+          5078230,
+          5340733,
+          5571749,
+          5776217,
+          5974234,
+          6075518,
+          6240444,
+          6305502,
+          6385371,
+          6767101,
+          6977210,
+          7051999,
+          7222053,
+          7341246,
+          7403061,
+          7451434,
+          7455106,
+          7600780,
+          7746855,
+          7730785,
+          7772890,
+          7807201,
+          7846722
+        ],
+        "extended_pipeline": [
+          5182516,
+          5225469,
+          5557656,
+          5989884,
+          6501048,
+          6596921,
+          7104991,
+          7346059,
+          7738715,
+          7886260,
+          8083145,
+          8364096,
+          8570953,
+          8761951,
+          8787622,
+          8806821,
+          9205981,
+          9405569,
+          9533686,
+          9724541,
+          9820736,
+          9899667,
+          10003577,
+          10047536,
+          10173339,
+          10314682,
+          10149670,
+          10249563,
+          10217892,
+          10238222
+        ],
+        "all_graph_kernels": [
+          10876313,
+          10905078,
+          11239384,
+          11673952,
+          12186408,
+          12277901,
+          12789790,
+          13029885,
+          13423315,
+          13566926,
+          13765832,
+          14051366,
+          14262126,
+          14455565,
+          14485474,
+          14502859,
+          14906159,
+          15102836,
+          15230979,
+          15426847,
+          15524292,
+          15603281,
+          15707403,
+          15749903,
+          15875846,
+          16016567,
+          15854024,
+          15959555,
+          15924832,
+          15944424
+        ]
+      },
+      "per_frame_component_counts": {
+        "vertex_triangle_traversal": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "edge_edge_traversal": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "triangle_aabb": [
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11
+        ],
+        "edge_aabb": [
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11
+        ],
+        "bvh_refit": [
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20
+        ],
+        "bvh_group_roots": [
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "force": [
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250
+        ],
+        "planar_truncation": [
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260
+        ],
+        "truncation_update": [
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260
+        ],
+        "bvh_rebuild_native": [
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38
+        ],
+        "self_contact_buffer_fill": [
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30
+        ]
+      },
+      "selected_kernels": [
+        {
+          "name": "DeviceRadixSortExclusiveSumKernel",
+          "grid_x": 8,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 60,
+          "total_ns": 65756
+        },
+        {
+          "name": "DeviceRadixSortHistogramKernel",
+          "grid_x": 1278,
+          "block_x": 128,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 60,
+          "total_ns": 256094
+        },
+        {
+          "name": "DeviceRadixSortOnesweepKernel",
+          "grid_x": 4,
+          "block_x": 384,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 240,
+          "total_ns": 1450560
+        },
+        {
+          "name": "DeviceRadixSortOnesweepKernel",
+          "grid_x": 5,
+          "block_x": 384,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 240,
+          "total_ns": 1545869
+        },
+        {
+          "name": "accumulate_self_contact_force_and_hessian_de362c54_cuda_kernel_forward",
+          "grid_x": 142,
+          "block_x": 256,
+          "components": [
+            "force"
+          ],
+          "count": 7500,
+          "total_ns": 87847182
+        },
+        {
+          "name": "apply_planar_truncation_parallel_by_collision_d55cd2ec_cuda_kernel_forward",
+          "grid_x": 300,
+          "block_x": 256,
+          "components": [
+            "planar_truncation"
+          ],
+          "count": 7800,
+          "total_ns": 57410069
+        },
+        {
+          "name": "apply_truncation_ts_94baa11a_cuda_kernel_forward",
+          "grid_x": 26,
+          "block_x": 256,
+          "components": [
+            "truncation_update"
+          ],
+          "count": 7800,
+          "total_ns": 11799581
+        },
+        {
+          "name": "build_hierarchy",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 1286762
+        },
+        {
+          "name": "build_hierarchy",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 1404130
+        },
+        {
+          "name": "build_leaves",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 47773
+        },
+        {
+          "name": "build_leaves",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 61664
+        },
+        {
+          "name": "bvh_refit_kernel",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_refit"
+          ],
+          "count": 300,
+          "total_ns": 5523987
+        },
+        {
+          "name": "bvh_refit_kernel",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_refit"
+          ],
+          "count": 300,
+          "total_ns": 5822169
+        },
+        {
+          "name": "compute_bvh_group_roots_a4d4455c_cuda_kernel_forward",
+          "grid_x": 1,
+          "block_x": 256,
+          "components": [
+            "bvh_group_roots"
+          ],
+          "count": 60,
+          "total_ns": 770433
+        },
+        {
+          "name": "compute_edge_aabbs_ff9d2753_cuda_kernel_forward",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "edge_aabb"
+          ],
+          "count": 330,
+          "total_ns": 525439
+        },
+        {
+          "name": "compute_key_deltas",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 31712
+        },
+        {
+          "name": "compute_key_deltas",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 32577
+        },
+        {
+          "name": "compute_morton_codes",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 36192
+        },
+        {
+          "name": "compute_morton_codes",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 36352
+        },
+        {
+          "name": "compute_total_bounds",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 117603
+        },
+        {
+          "name": "compute_total_bounds",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 120224
+        },
+        {
+          "name": "compute_total_inv_edges",
+          "grid_x": 1,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 60,
+          "total_ns": 59934
+        },
+        {
+          "name": "compute_tri_aabbs_e943cdb7_cuda_kernel_forward",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "triangle_aabb"
+          ],
+          "count": 330,
+          "total_ns": 545632
+        },
+        {
+          "name": "edge_colliding_edges_detection_kernel_8b309277_cuda_kernel_forward",
+          "grid_x": 1199,
+          "block_x": 16,
+          "components": [
+            "edge_edge_traversal"
+          ],
+          "count": 300,
+          "total_ns": 53021116
+        },
+        {
+          "name": "mark_packed_leaf_nodes",
+          "grid_x": 100,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 92160
+        },
+        {
+          "name": "mark_packed_leaf_nodes",
+          "grid_x": 150,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 95904
+        },
+        {
+          "name": "memset_kernel",
+          "grid_x": 1,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 120,
+          "total_ns": 94852
+        },
+        {
+          "name": "memtile_value_kernel",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "self_contact_buffer_fill"
+          ],
+          "count": 300,
+          "total_ns": 267464
+        },
+        {
+          "name": "memtile_value_kernel",
+          "grid_x": 805,
+          "block_x": 256,
+          "components": [
+            "self_contact_buffer_fill"
+          ],
+          "count": 300,
+          "total_ns": 430684
+        },
+        {
+          "name": "memtile_value_kernel",
+          "grid_x": 2996,
+          "block_x": 256,
+          "components": [
+            "self_contact_buffer_fill"
+          ],
+          "count": 300,
+          "total_ns": 802821
+        },
+        {
+          "name": "vertex_triangle_collision_detection_kernel_723f98e4_cuda_kernel_forward",
+          "grid_x": 403,
+          "block_x": 16,
+          "components": [
+            "vertex_triangle_traversal"
+          ],
+          "count": 300,
+          "total_ns": 23886073
+        }
+      ],
+      "warnings": []
+    },
+    "candidate": {
+      "schema_version": "cloth-franka-trace-analysis-v1",
+      "path": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/cloth_self_contact/final_abba_candidate/nsys_final_candidate.sqlite",
+      "file_size": 7520256,
+      "sha256": "3790ce83dbdf36949fb7ad27858d526953e72a1dcc54272ec721f61c6ad3ddf2",
+      "provenance": {
+        "command": [
+          "uv",
+          "run",
+          "--project",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf",
+          "--active",
+          "--no-sync",
+          "--offline",
+          "python",
+          "/tmp/cloth-franka-perf/final_abba_20260817/tools/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--cuda-profiler-api",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "final_nsys_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/traces/candidate.json"
+        ],
+        "working_directory": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf",
+        "environment_allowlist": {
+          "PYTHONPATH": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "WARP_CACHE_PATH": "/tmp/cloth-franka-perf/final_abba_20260817/cache_candidate",
+          "PYTHONNOUSERSITE": "1",
+          "UV_NO_SYNC": "1",
+          "UV_CACHE_DIR": "/tmp/cloth-franka-uv",
+          "PYTHONHASHSEED": "0",
+          "CUDA_VISIBLE_DEVICES": "2"
+        },
+        "raw_environment_record_count": 63,
+        "raw_environment_redacted": true,
+        "session_start": [
+          {
+            "utc_epoch_ns": 1786988178558237422,
+            "utc_time": "2026-08-17T17:36:18",
+            "local_time": "2026-08-17T17:36:18"
+          }
+        ],
+        "nsight_export": {
+          "product": "NVIDIA Nsight Systems",
+          "version": "2024.5.1.113",
+          "schema_version": "3.13.2",
+          "export_time_utc": "2026-08-17T17:36:24"
+        },
+        "selected_target_gpus": [
+          {
+            "id": 2,
+            "name": "NVIDIA L40",
+            "uuid": "a22d2778-1799-01e3-4f00-08707072aa0f",
+            "bus_location": "0000:1b:00.0",
+            "chip_name": "AD102",
+            "total_memory_bytes": 50876841984,
+            "compute_capability": "8.9"
+          }
+        ]
+      },
+      "kernel_device_ids": [
+        0
+      ],
+      "kernel_count": 65552,
+      "kernel_time_ns": 373098876,
+      "graph_kernel_count": 63810,
+      "graph_kernel_time_ns": 364857619,
+      "frame_marker_graph_node_id": 8589934592,
+      "frame_count": 30,
+      "workload_expectations": {
+        "frames": 30,
+        "substeps": 10,
+        "iterations": 5,
+        "color_count": 5,
+        "component_counts": {
+          "vertex_triangle_traversal": 300,
+          "edge_edge_traversal": 300,
+          "triangle_aabb": 330,
+          "edge_aabb": 330,
+          "bvh_refit": 600,
+          "bvh_group_roots": 60,
+          "force": 7500,
+          "planar_truncation": 7800,
+          "truncation_update": 7800
+        }
+      },
+      "component_counts": {
+        "bvh_group_roots": 60,
+        "bvh_rebuild_native": 1140,
+        "bvh_refit": 600,
+        "edge_aabb": 330,
+        "edge_edge_traversal": 300,
+        "force": 7500,
+        "planar_truncation": 7800,
+        "self_contact_buffer_fill": 300,
+        "triangle_aabb": 330,
+        "truncation_update": 7800,
+        "vertex_triangle_traversal": 300
+      },
+      "component_totals_ns": {
+        "bvh_group_roots": 771204,
+        "bvh_rebuild_native": 6843603,
+        "bvh_refit": 11369854,
+        "detector": 76801801,
+        "detector_plus_force": 133167951,
+        "edge_aabb": 527433,
+        "edge_edge_traversal": 38521513,
+        "extended_pipeline": 193834376,
+        "force": 56366150,
+        "legacy_traversal_plus_force": 112834629,
+        "planar_truncation": 48845961,
+        "self_contact_buffer_fill": 275435,
+        "triangle_aabb": 545793,
+        "truncation_update": 11820464,
+        "vertex_triangle_traversal": 17946966
+      },
+      "aggregate_definitions": {
+        "detector": [
+          "vertex_triangle_traversal",
+          "edge_edge_traversal",
+          "triangle_aabb",
+          "edge_aabb",
+          "bvh_refit",
+          "bvh_rebuild_native",
+          "bvh_group_roots",
+          "self_contact_buffer_fill"
+        ],
+        "legacy_traversal_plus_force": [
+          "vertex_triangle_traversal",
+          "edge_edge_traversal",
+          "force"
+        ],
+        "detector_plus_force": [
+          "vertex_triangle_traversal",
+          "edge_edge_traversal",
+          "triangle_aabb",
+          "edge_aabb",
+          "bvh_refit",
+          "bvh_rebuild_native",
+          "bvh_group_roots",
+          "self_contact_buffer_fill",
+          "force"
+        ],
+        "extended_pipeline": [
+          "vertex_triangle_traversal",
+          "edge_edge_traversal",
+          "triangle_aabb",
+          "edge_aabb",
+          "bvh_refit",
+          "bvh_rebuild_native",
+          "bvh_group_roots",
+          "self_contact_buffer_fill",
+          "force",
+          "planar_truncation",
+          "truncation_update"
+        ]
+      },
+      "per_frame_component_ns": {
+        "detector": [
+          1774030,
+          1772974,
+          1762479,
+          1794832,
+          1877227,
+          2006121,
+          2040684,
+          2139725,
+          2227628,
+          2246438,
+          2376816,
+          2386859,
+          2448013,
+          2504663,
+          2538473,
+          2643917,
+          2633100,
+          2830350,
+          2922802,
+          2998380,
+          3074193,
+          3083697,
+          3068265,
+          2992563,
+          3072275,
+          3081267,
+          3047084,
+          3079762,
+          3180630,
+          3196554
+        ],
+        "legacy_traversal_plus_force": [
+          1740159,
+          1783625,
+          2265185,
+          2386194,
+          2563267,
+          2671215,
+          2884849,
+          3136934,
+          3392016,
+          3331537,
+          3486639,
+          3660305,
+          3777752,
+          3870224,
+          3957816,
+          4107379,
+          4028792,
+          4313044,
+          4400595,
+          4503180,
+          4571894,
+          4599064,
+          4588318,
+          4552474,
+          4606583,
+          4627357,
+          4621086,
+          4746610,
+          4821564,
+          4838972
+        ],
+        "detector_plus_force": [
+          2419747,
+          2454256,
+          2939052,
+          3060534,
+          3239464,
+          3344946,
+          3557144,
+          3820684,
+          4079571,
+          4028849,
+          4197173,
+          4352850,
+          4469277,
+          4553150,
+          4642777,
+          4790744,
+          4724028,
+          5003992,
+          5079801,
+          5167470,
+          5237628,
+          5258683,
+          5246619,
+          5212737,
+          5263006,
+          5289188,
+          5281952,
+          5409398,
+          5517093,
+          5526138
+        ],
+        "extended_pipeline": [
+          3418825,
+          3496652,
+          4492279,
+          4630275,
+          4849293,
+          4947413,
+          5451943,
+          5771671,
+          6365960,
+          6062013,
+          6227080,
+          6445913,
+          6685451,
+          6811814,
+          6770383,
+          6945672,
+          6861947,
+          7145158,
+          7329552,
+          7373956,
+          7417621,
+          7496758,
+          7464669,
+          7411789,
+          7461403,
+          7582338,
+          7549328,
+          7749019,
+          7838915,
+          7779286
+        ],
+        "all_graph_kernels": [
+          9104770,
+          9170422,
+          10173799,
+          10316084,
+          10534896,
+          10631799,
+          11140884,
+          11468707,
+          12066081,
+          11753992,
+          11921306,
+          12144595,
+          12384932,
+          12519450,
+          12476816,
+          12652306,
+          12569366,
+          12855649,
+          13040801,
+          13082787,
+          13128243,
+          13206718,
+          13172013,
+          13118571,
+          13168629,
+          13291806,
+          13265163,
+          13459380,
+          13548631,
+          13489023
+        ]
+      },
+      "per_frame_component_counts": {
+        "vertex_triangle_traversal": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "edge_edge_traversal": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "triangle_aabb": [
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11
+        ],
+        "edge_aabb": [
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11
+        ],
+        "bvh_refit": [
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20
+        ],
+        "bvh_group_roots": [
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "force": [
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250,
+          250
+        ],
+        "planar_truncation": [
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260
+        ],
+        "truncation_update": [
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260,
+          260
+        ],
+        "bvh_rebuild_native": [
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38
+        ],
+        "self_contact_buffer_fill": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ]
+      },
+      "selected_kernels": [
+        {
+          "name": "DeviceRadixSortExclusiveSumKernel",
+          "grid_x": 8,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 60,
+          "total_ns": 65405
+        },
+        {
+          "name": "DeviceRadixSortHistogramKernel",
+          "grid_x": 1278,
+          "block_x": 128,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 60,
+          "total_ns": 256545
+        },
+        {
+          "name": "DeviceRadixSortOnesweepKernel",
+          "grid_x": 4,
+          "block_x": 384,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 240,
+          "total_ns": 1450954
+        },
+        {
+          "name": "DeviceRadixSortOnesweepKernel",
+          "grid_x": 5,
+          "block_x": 384,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 240,
+          "total_ns": 1544236
+        },
+        {
+          "name": "accumulate_self_contact_force_and_hessian_5aec0474_cuda_kernel_forward",
+          "grid_x": 300,
+          "block_x": 256,
+          "components": [
+            "force"
+          ],
+          "count": 7500,
+          "total_ns": 56366150
+        },
+        {
+          "name": "apply_planar_truncation_parallel_by_collision_432dcd83_cuda_kernel_forward",
+          "grid_x": 300,
+          "block_x": 256,
+          "components": [
+            "planar_truncation"
+          ],
+          "count": 7800,
+          "total_ns": 48845961
+        },
+        {
+          "name": "apply_truncation_ts_94baa11a_cuda_kernel_forward",
+          "grid_x": 26,
+          "block_x": 256,
+          "components": [
+            "truncation_update"
+          ],
+          "count": 7800,
+          "total_ns": 11820464
+        },
+        {
+          "name": "build_hierarchy",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 1286602
+        },
+        {
+          "name": "build_hierarchy",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 1410819
+        },
+        {
+          "name": "build_leaves",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 47805
+        },
+        {
+          "name": "build_leaves",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 61151
+        },
+        {
+          "name": "bvh_refit_kernel",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_refit"
+          ],
+          "count": 300,
+          "total_ns": 5543486
+        },
+        {
+          "name": "bvh_refit_kernel",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_refit"
+          ],
+          "count": 300,
+          "total_ns": 5826368
+        },
+        {
+          "name": "compute_bvh_group_roots_a4d4455c_cuda_kernel_forward",
+          "grid_x": 1,
+          "block_x": 256,
+          "components": [
+            "bvh_group_roots"
+          ],
+          "count": 60,
+          "total_ns": 771204
+        },
+        {
+          "name": "compute_edge_aabbs_ff9d2753_cuda_kernel_forward",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "edge_aabb"
+          ],
+          "count": 330,
+          "total_ns": 527433
+        },
+        {
+          "name": "compute_key_deltas",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 31683
+        },
+        {
+          "name": "compute_key_deltas",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 32479
+        },
+        {
+          "name": "compute_morton_codes",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 36164
+        },
+        {
+          "name": "compute_morton_codes",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 36324
+        },
+        {
+          "name": "compute_total_bounds",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 121860
+        },
+        {
+          "name": "compute_total_bounds",
+          "grid_x": 75,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 118402
+        },
+        {
+          "name": "compute_total_inv_edges",
+          "grid_x": 1,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 60,
+          "total_ns": 60354
+        },
+        {
+          "name": "compute_tri_aabbs_e943cdb7_cuda_kernel_forward",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "triangle_aabb"
+          ],
+          "count": 330,
+          "total_ns": 545793
+        },
+        {
+          "name": "edge_colliding_edges_detection_kernel_c8b5a89b_cuda_kernel_forward",
+          "grid_x": 2397,
+          "block_x": 8,
+          "components": [
+            "edge_edge_traversal"
+          ],
+          "count": 300,
+          "total_ns": 38521513
+        },
+        {
+          "name": "mark_packed_leaf_nodes",
+          "grid_x": 100,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 92482
+        },
+        {
+          "name": "mark_packed_leaf_nodes",
+          "grid_x": 150,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 30,
+          "total_ns": 95778
+        },
+        {
+          "name": "memset_kernel",
+          "grid_x": 1,
+          "block_x": 256,
+          "components": [
+            "bvh_rebuild_native"
+          ],
+          "count": 120,
+          "total_ns": 94560
+        },
+        {
+          "name": "memtile_value_kernel",
+          "grid_x": 50,
+          "block_x": 256,
+          "components": [
+            "self_contact_buffer_fill"
+          ],
+          "count": 300,
+          "total_ns": 275435
+        },
+        {
+          "name": "vertex_triangle_collision_detection_kernel_d2feef44_cuda_kernel_forward",
+          "grid_x": 805,
+          "block_x": 8,
+          "components": [
+            "vertex_triangle_traversal"
+          ],
+          "count": 300,
+          "total_ns": 17946966
+        }
+      ],
+      "warnings": []
+    }
+  },
+  "comparisons": {
+    "candidate": {
+      "baseline_label": "baseline",
+      "candidate_label": "candidate",
+      "all_kernel_speedup": 1.1645961082981124,
+      "graph_kernel_speedup": 1.1684533905813819,
+      "components": {
+        "bvh_group_roots": {
+          "baseline_ns": 770433,
+          "candidate_ns": 771204,
+          "saved_ns": -771,
+          "speedup": 0.9990002645214496
+        },
+        "bvh_rebuild_native": {
+          "baseline_ns": 6836118,
+          "candidate_ns": 6843603,
+          "saved_ns": -7485,
+          "speedup": 0.9989062778773111
+        },
+        "bvh_refit": {
+          "baseline_ns": 11346156,
+          "candidate_ns": 11369854,
+          "saved_ns": -23698,
+          "speedup": 0.9979157164199294
+        },
+        "detector": {
+          "baseline_ns": 98431936,
+          "candidate_ns": 76801801,
+          "saved_ns": 21630135,
+          "speedup": 1.2816357783068133
+        },
+        "detector_plus_force": {
+          "baseline_ns": 186279118,
+          "candidate_ns": 133167951,
+          "saved_ns": 53111167,
+          "speedup": 1.3988284463429193
+        },
+        "edge_aabb": {
+          "baseline_ns": 525439,
+          "candidate_ns": 527433,
+          "saved_ns": -1994,
+          "speedup": 0.9962194250264963
+        },
+        "edge_edge_traversal": {
+          "baseline_ns": 53021116,
+          "candidate_ns": 38521513,
+          "saved_ns": 14499603,
+          "speedup": 1.37640273890592
+        },
+        "extended_pipeline": {
+          "baseline_ns": 255488768,
+          "candidate_ns": 193834376,
+          "saved_ns": 61654392,
+          "speedup": 1.3180776974255588
+        },
+        "force": {
+          "baseline_ns": 87847182,
+          "candidate_ns": 56366150,
+          "saved_ns": 31481032,
+          "speedup": 1.5585095309862391
+        },
+        "legacy_traversal_plus_force": {
+          "baseline_ns": 164754371,
+          "candidate_ns": 112834629,
+          "saved_ns": 51919742,
+          "speedup": 1.4601401401337528
+        },
+        "planar_truncation": {
+          "baseline_ns": 57410069,
+          "candidate_ns": 48845961,
+          "saved_ns": 8564108,
+          "speedup": 1.1753288874795604
+        },
+        "self_contact_buffer_fill": {
+          "baseline_ns": 1500969,
+          "candidate_ns": 275435,
+          "saved_ns": 1225534,
+          "speedup": 5.449449053315664
+        },
+        "triangle_aabb": {
+          "baseline_ns": 545632,
+          "candidate_ns": 545793,
+          "saved_ns": -161,
+          "speedup": 0.9997050163706753
+        },
+        "truncation_update": {
+          "baseline_ns": 11799581,
+          "candidate_ns": 11820464,
+          "saved_ns": -20883,
+          "speedup": 0.998233318082945
+        },
+        "vertex_triangle_traversal": {
+          "baseline_ns": 23886073,
+          "candidate_ns": 17946966,
+          "saved_ns": 5939107,
+          "speedup": 1.330925405441789
+        }
+      }
+    }
+  }
+}

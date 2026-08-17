@@ -1,0 +1,2710 @@
+{
+  "schema_version": "cloth-franka-combined-analysis-v1",
+  "abba": {
+    "schema_version": "cloth-franka-abba-analysis-v1",
+    "manifest": "/tmp/cloth-franka-perf/final_abba_20260817/manifest.json",
+    "suite_id": "cloth-franka-final-20260817",
+    "primary_metric": "milliseconds_per_frame",
+    "lower_is_better": true,
+    "all_completed_processes_included": true,
+    "outlier_policy": "No observations removed; modified-z flags are diagnostics only.",
+    "config": {
+      "frames": 30,
+      "abba_blocks": 8,
+      "baseline_git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+      "candidate_git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+      "protocol": "odd blocks BCCB; even blocks CBBC; one excluded warmup per variant",
+      "gpu_lock": "exclusive physical GPU 2; CUDA logical cuda:0"
+    },
+    "validation": {
+      "warnings": [],
+      "immutable_files": [
+        {
+          "path": "/tmp/cloth-franka-perf/final_abba_20260817/tools/analyze_cloth_franka_self_contact.py",
+          "sha256": "762898d05ebd88daf1a3fda0a15ac9891a4184a98c796dfd67fa4a232071bdeb"
+        },
+        {
+          "path": "/tmp/cloth-franka-perf/final_abba_20260817/tools/benchmark_cloth_franka_self_contact.py",
+          "sha256": "a1dcb5ca1f67a78bb836fe17d01f8e8d93ec5fcecbff5d65235705bd0ede5530"
+        }
+      ],
+      "live_sources": {
+        "baseline": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "candidate": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "sources": {
+      "baseline": {
+        "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+        "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+        "source_file_count": 716,
+        "source_byte_count": 20524357,
+        "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+        "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+        "git_dirty_tracked": false,
+        "git_status_tracked": [],
+        "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+      },
+      "candidate": {
+        "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+        "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+        "source_file_count": 717,
+        "source_byte_count": 20539194,
+        "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+        "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+        "git_dirty_tracked": false,
+        "git_status_tracked": [],
+        "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+      }
+    },
+    "device": "cuda:0",
+    "configuration": {
+      "sim_substeps": 10,
+      "iterations": 5,
+      "frame_dt": 0.016666666666666666,
+      "sim_dt": 0.0016666666666666666,
+      "particle_self_contact_radius": 0.2,
+      "particle_self_contact_margin": 0.2,
+      "particle_collision_detection_interval": -1
+    },
+    "variant_configurations": {
+      "baseline": {
+        "sim_substeps": 10,
+        "iterations": 5,
+        "frame_dt": 0.016666666666666666,
+        "sim_dt": 0.0016666666666666666,
+        "particle_self_contact_radius": 0.2,
+        "particle_self_contact_margin": 0.2,
+        "particle_collision_detection_interval": -1,
+        "collision_detection_block_size": 16,
+        "self_contact_force_block_dim": 256,
+        "self_contact_force_max_blocks": "production",
+        "self_contact_force_max_blocks_resolved": null,
+        "self_contact_force_launch_override": false
+      },
+      "candidate": {
+        "sim_substeps": 10,
+        "iterations": 5,
+        "frame_dt": 0.016666666666666666,
+        "sim_dt": 0.0016666666666666666,
+        "particle_self_contact_radius": 0.2,
+        "particle_self_contact_margin": 0.2,
+        "particle_collision_detection_interval": -1,
+        "collision_detection_block_size": 8,
+        "self_contact_force_block_dim": 256,
+        "self_contact_force_max_blocks": "production",
+        "self_contact_force_max_blocks_resolved": null,
+        "self_contact_force_launch_override": false
+      }
+    },
+    "model": {
+      "particle_count": 6436,
+      "triangle_count": 12736,
+      "edge_count": 19174,
+      "color_group_sizes": [
+        1325,
+        1325,
+        1326,
+        1254,
+        1206
+      ]
+    },
+    "baseline": {
+      "n": 16,
+      "mean": 16.868155482613172,
+      "median": 16.87410765637954,
+      "sample_stdev": 0.07721597304270345,
+      "coefficient_of_variation": 0.004577618052091926,
+      "minimum": 16.768461900452774,
+      "maximum": 17.019493350138266,
+      "median_absolute_deviation": 0.06363916521270951,
+      "linear_drift_percent_per_suite_ordinal": 9.096015540563e-05,
+      "modified_z_outlier_ordinals": [],
+      "semantic_diagnostics": {
+        "interpretation": "Particle trajectories and contact ordering may vary across fresh CUDA processes because the workload uses nondeterministic atomics. Hashes are diagnostics, not an equality criterion.",
+        "state_hashes": {
+          "particle_q_sha256": {
+            "unique_count": 16,
+            "values": [
+              "0e8bded4eb14e5df9b0bc0c0e688cb2a19dcf13794a8b9bde12a68d20370a61c",
+              "227002972b0754deb273b83313730868eaf8918a45b81768a0209ee2d2a7bef2",
+              "2f7b6d6dd7d98e0e838d00ef83a0fb4b675978e8132fbf6b0b01f78790ff784c",
+              "3dff83163a9d3be6224d8a5790ae52b13f98d021e768fa2affe3ffa78bf66ffe",
+              "40e615c58c6283adb074f03c98f8048194cea2b26856bb65deefb5f0b60e3bb9",
+              "4dea04fa65649ffbd9721010f3e2a601c25986a0bba12d8061c9a7d0cc7825a1",
+              "81950d0c9f1a98acca29c15db958f23335ec37e222b7d23183b149b42ace9245",
+              "95f3711d17d7ef7ca58fab4e90504c33039cee2ebf2d8215e942e8cd02bc1e42",
+              "a297a071837bb1f4c8645e37217b4eeceb1c5cdef7031b62804f2ad855bf53c5",
+              "ad025fb6af8fa7453b294cf0fcc353d0b9097ef0e1eea564e3f71db194c2d4aa",
+              "b6643cf927d11bb882a2045f97643addf9b86e73bf57f0889f3535668571830f",
+              "b9036cf7acbd7a050d5cbc30303dd1ef9a8522eda5dac5b77ed78804e3faa609",
+              "ba02873d5302ab7f2d97383ea259a95aebab4186da148d4639524e5a14d8077a",
+              "be6cd9e5e1778e11fb6dd2880664db027e7bf64bc63b1f6114366d09dc519240",
+              "c29c4f14f184cad97423a119268ca05d2cafb444993cecf035f2a85c94dd137f",
+              "cb12c71e7200cb0fdff0bb9f39c5d562b00496599eaa3376131bafb31fb90ed7"
+            ]
+          },
+          "particle_qd_sha256": {
+            "unique_count": 16,
+            "values": [
+              "1627a80f2206356f6e51f86f523cb1e0068575ea53d9d5f87ea7b0a32c8c7f51",
+              "22cee55674505e565779ba149425b2154184fcf8d6318c71d888074e7885c7e0",
+              "279423b38aae70d8ccb37f1be596c8852ac38f82b475c29dfbb7771079947c61",
+              "4e419b3bed64a4bb2ca8e379b1278c436eb3eb9d7d0e9f67f021f337f56c2c78",
+              "504aa118d399c1e97f784e5aca02b41fa277d4678caad99beee0b262ff63d71a",
+              "65848dac4f0e98d0f9b0cbba4602fd0ced6c35838b0d7caa253311d9c936cee8",
+              "69868ebce67664f35954746148797d29f20240decc25af97bd0812e3abc7c54e",
+              "77d041f6795487ed787edd0fa7fd3ec7c69996f150d09b9336025cbb9b210f32",
+              "8d88d4246e547850b34f0421da69f98041da19d84e5b129e0a446d8d271af6fa",
+              "9bbcb209d4b3b41c8ba34db4763088a78fa88122a798248429d669f6b6b92e4f",
+              "a488b681f6bc2cd344a8d40ee2b194bb8cec45dd35d57889e5a043d3edadb90a",
+              "beb8329e1d6080935209016895e3d9135b5adf775abad4c04b811954cc3cd86f",
+              "d6c550f7fff42f2ba2dde0e7427e116e041da56096d9e3713e163309b448e46e",
+              "d9e58fecb8bddc3075666c35d5b347454cc4c862342477b6e80b36e8151646cc",
+              "f3849927d29cebf7cb9cb3dd0fb6382b9b77c51eb2476f0d6109415efa4e6676",
+              "fe7a0e34327bb745d32e372e2b81d660e04f610cdd619ff0c139b55bc3f90215"
+            ]
+          },
+          "body_q_sha256": {
+            "unique_count": 1,
+            "values": [
+              "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf"
+            ]
+          },
+          "body_qd_sha256": {
+            "unique_count": 1,
+            "values": [
+              "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2"
+            ]
+          }
+        },
+        "state_scalars": {
+          "particle_q_min": {
+            "n": 16,
+            "mean": -83.46205139160156,
+            "median": -83.46147537231445,
+            "sample_stdev": 0.0021070301156093404,
+            "coefficient_of_variation": -2.524536697190937e-05,
+            "minimum": -83.46491241455078,
+            "maximum": -83.45909881591797,
+            "median_absolute_deviation": 0.001434326171875
+          },
+          "particle_q_max": {
+            "n": 16,
+            "mean": 33.89765501022339,
+            "median": 33.8956356048584,
+            "sample_stdev": 0.005926669452183462,
+            "coefficient_of_variation": 0.00017484010178273407,
+            "minimum": 33.889991760253906,
+            "maximum": 33.91191482543945,
+            "median_absolute_deviation": 0.003276824951171875
+          },
+          "particle_qd_abs_max": {
+            "n": 16,
+            "mean": 49.996089935302734,
+            "median": 50.49591064453125,
+            "sample_stdev": 2.1612492317259413,
+            "coefficient_of_variation": 0.04322836514860859,
+            "minimum": 42.24529266357422,
+            "maximum": 50.99945068359375,
+            "median_absolute_deviation": 0.22830963134765625
+          }
+        },
+        "contacts": {
+          "vertex_triangle": {
+            "raw_count": {
+              "n": 16,
+              "mean": 1765.5625,
+              "median": 1785.0,
+              "sample_stdev": 44.04992432834968,
+              "coefficient_of_variation": 0.02494951287668926,
+              "minimum": 1677.0,
+              "maximum": 1810.0,
+              "median_absolute_deviation": 20.0
+            },
+            "stored_count": {
+              "n": 16,
+              "mean": 1765.5625,
+              "median": 1785.0,
+              "sample_stdev": 44.04992432834968,
+              "coefficient_of_variation": 0.02494951287668926,
+              "minimum": 1677.0,
+              "maximum": 1810.0,
+              "median_absolute_deviation": 20.0
+            },
+            "nonempty_rows": {
+              "n": 16,
+              "mean": 1487.875,
+              "median": 1504.0,
+              "sample_stdev": 36.70399614937498,
+              "coefficient_of_variation": 0.02466873638536502,
+              "minimum": 1413.0,
+              "maximum": 1528.0,
+              "median_absolute_deviation": 12.0
+            },
+            "overflow_rows": {
+              "n": 16,
+              "mean": 0.0,
+              "median": 0.0,
+              "sample_stdev": 0.0,
+              "coefficient_of_variation": null,
+              "minimum": 0.0,
+              "maximum": 0.0,
+              "median_absolute_deviation": 0.0
+            }
+          },
+          "edge_edge": {
+            "raw_count": {
+              "n": 16,
+              "mean": 10887.5625,
+              "median": 11052.0,
+              "sample_stdev": 358.1070545242023,
+              "coefficient_of_variation": 0.032891389098726395,
+              "minimum": 10250.0,
+              "maximum": 11240.0,
+              "median_absolute_deviation": 143.0
+            },
+            "stored_count": {
+              "n": 16,
+              "mean": 10887.5625,
+              "median": 11052.0,
+              "sample_stdev": 358.1070545242023,
+              "coefficient_of_variation": 0.032891389098726395,
+              "minimum": 10250.0,
+              "maximum": 11240.0,
+              "median_absolute_deviation": 143.0
+            },
+            "nonempty_rows": {
+              "n": 16,
+              "mean": 5299.75,
+              "median": 5352.5,
+              "sample_stdev": 120.37247747443489,
+              "coefficient_of_variation": 0.022712859564023753,
+              "minimum": 5066.0,
+              "maximum": 5420.0,
+              "median_absolute_deviation": 52.5
+            },
+            "overflow_rows": {
+              "n": 16,
+              "mean": 0.0,
+              "median": 0.0,
+              "sample_stdev": 0.0,
+              "coefficient_of_variation": null,
+              "minimum": 0.0,
+              "maximum": 0.0,
+              "median_absolute_deviation": 0.0
+            }
+          }
+        }
+      }
+    },
+    "candidate": {
+      "n": 16,
+      "mean": 14.859687410838282,
+      "median": 14.869219794248542,
+      "sample_stdev": 0.08572254749893422,
+      "coefficient_of_variation": 0.005768798840035515,
+      "minimum": 14.727650520702204,
+      "maximum": 14.993049328525862,
+      "median_absolute_deviation": 0.08563506416976452,
+      "linear_drift_percent_per_suite_ordinal": 0.014735280100751081,
+      "modified_z_outlier_ordinals": [],
+      "semantic_diagnostics": {
+        "interpretation": "Particle trajectories and contact ordering may vary across fresh CUDA processes because the workload uses nondeterministic atomics. Hashes are diagnostics, not an equality criterion.",
+        "state_hashes": {
+          "particle_q_sha256": {
+            "unique_count": 16,
+            "values": [
+              "158f2d3754a21647bead6a70584e8e0c5e3227a9f5c281b89d7464d89f66952b",
+              "3487f2c4ceda71b37a761800f71237d927c2f880a13adf7dca93c129af27f2a4",
+              "4fca5ceb1e5e2b50dd99c871ee20e29f584988bc911b0430c0cf5f817b5f6ba0",
+              "67e4d698eb6fbad91bbf5224340130991653aea1329ac49f825af2d605dba67f",
+              "7fcca823ab0294e7da10f750dd86b1208e4df25eabc8068cf51c2db6aeea72b8",
+              "80a66616e76d8e5cafc7469220e25106da07012c3e9ad22ef5b131c84b4f9102",
+              "81db2da3339dbaf4ac16fdcf9552061b598c657336d9a3321858ef1f8501bc32",
+              "85f9da594c11e68f7dad6fc7141c8189dbe5c2feb0e556038519ab5f68b40691",
+              "877d402b32ccd1e66351b0a9910f57b25017bc936bc23af406f0b11bc4056ffe",
+              "8f39ad28a269dcdc12698159a523db3c564dfe02c15f981f2dd91d930fe030a2",
+              "911b0828c08e0bdb86ad1a7e49337736cc32396e3568eda5522122f263da07ad",
+              "9da47446cb087bf4d8021e3a5c70eaf3c46b5a13678f2d37d69a41a03d84a4b3",
+              "adf85f7f4d084fe61b54ccd9d5cfec39bb1294ab3e3e67d029db6deab1ba09ca",
+              "b167903eb80808e3211b710f515bc42191ab4bc17e873a544fdf39adfffb262a",
+              "ce0083499ab1013a051f7d72e9915f2a4eef4d7569783f15ff62f7ab852cc78c",
+              "d951769b029d3630aad2ee9785ddea4a793f69e683b0b0f1e601bb14d8bf6cd6"
+            ]
+          },
+          "particle_qd_sha256": {
+            "unique_count": 16,
+            "values": [
+              "060b1020523f0f4741dcee3c6e2756b7a4cb90d2b57fed52e162cb8e2ca820c5",
+              "17cb428d9d1106dd3ba9f8b3bcff72feb0881250d132d8d703579d29b80f702f",
+              "30f46e9829ce42519e4b9dcd48be7cc2fa4a2815f5148a4b0533dcba279f30db",
+              "4194ec8186e55545980c8ea58854468a1694117853a3a95d2267cd7fadfe4694",
+              "5821c854440cdcb61eb542aa5a91dd4e6f0f0c614c5e02ce3e3ced639a3b2d3a",
+              "5a18909b7804521968d7bc8e9dae1f4cd6c6d8137b36228ad050cd39e6881e2c",
+              "5fe331b1da5ef5964b0e375c6a2324fe548e1a4852b8c9f1743de7b8f0cc5e30",
+              "6e7eba3a26887cb71b89b2e83f896860b3e739c3e8e5a3720f50151b57c8af65",
+              "825f19127e04c0c894c6fde7e1684c21f72959f71a563506e1f4dcbd8b2dacd1",
+              "b3cda7e97dc0fe343aaef0c9b02eab81324af80693b1d92980188674287122b4",
+              "bc5d184d9b422a5516e5b425c7f9867bc606dbd9694cb76c2bdc6da260f9bbaf",
+              "e2d959164d8f281ffd5b1a19e10a2281609e1d8546117a2858dd187116b60a44",
+              "e859a78e7d49209dea9bd3d357c4d8870bf3e6d492745dd470cbbdbf6817cc2a",
+              "e921d1ca192b5a4d1d16862903bfc31c7b760081244c55ca62bb88c1d334d2f1",
+              "edfc6e9890ffe1c7c063fe5479a2ec0bcd68f6048817d37b2906ea37359693b1",
+              "f1d6761b842276031e294946ef3619761f3e55a0d54635e9eb4c02a808801203"
+            ]
+          },
+          "body_q_sha256": {
+            "unique_count": 1,
+            "values": [
+              "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf"
+            ]
+          },
+          "body_qd_sha256": {
+            "unique_count": 1,
+            "values": [
+              "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2"
+            ]
+          }
+        },
+        "state_scalars": {
+          "particle_q_min": {
+            "n": 16,
+            "mean": -83.45856237411499,
+            "median": -83.45937728881836,
+            "sample_stdev": 0.002212936045184605,
+            "coefficient_of_variation": -2.651538658507921e-05,
+            "minimum": -83.46131134033203,
+            "maximum": -83.45443725585938,
+            "median_absolute_deviation": 0.00142669677734375
+          },
+          "particle_q_max": {
+            "n": 16,
+            "mean": 33.900702476501465,
+            "median": 33.90303039550781,
+            "sample_stdev": 0.005859930207518469,
+            "coefficient_of_variation": 0.00017285571623715837,
+            "minimum": 33.89088821411133,
+            "maximum": 33.909000396728516,
+            "median_absolute_deviation": 0.00304412841796875
+          },
+          "particle_qd_abs_max": {
+            "n": 16,
+            "mean": 48.68355989456177,
+            "median": 50.3239631652832,
+            "sample_stdev": 5.992958302962301,
+            "coefficient_of_variation": 0.1231002481318493,
+            "minimum": 26.45130157470703,
+            "maximum": 50.99945068359375,
+            "median_absolute_deviation": 0.6754875183105469
+          }
+        },
+        "contacts": {
+          "vertex_triangle": {
+            "raw_count": {
+              "n": 16,
+              "mean": 1680.75,
+              "median": 1674.5,
+              "sample_stdev": 53.88073248697844,
+              "coefficient_of_variation": 0.032057553167918154,
+              "minimum": 1613.0,
+              "maximum": 1855.0,
+              "median_absolute_deviation": 14.0
+            },
+            "stored_count": {
+              "n": 16,
+              "mean": 1680.75,
+              "median": 1674.5,
+              "sample_stdev": 53.88073248697844,
+              "coefficient_of_variation": 0.032057553167918154,
+              "minimum": 1613.0,
+              "maximum": 1855.0,
+              "median_absolute_deviation": 14.0
+            },
+            "nonempty_rows": {
+              "n": 16,
+              "mean": 1402.75,
+              "median": 1402.0,
+              "sample_stdev": 48.221018930199584,
+              "coefficient_of_variation": 0.03437606054549962,
+              "minimum": 1320.0,
+              "maximum": 1534.0,
+              "median_absolute_deviation": 8.0
+            },
+            "overflow_rows": {
+              "n": 16,
+              "mean": 0.0,
+              "median": 0.0,
+              "sample_stdev": 0.0,
+              "coefficient_of_variation": null,
+              "minimum": 0.0,
+              "maximum": 0.0,
+              "median_absolute_deviation": 0.0
+            }
+          },
+          "edge_edge": {
+            "raw_count": {
+              "n": 16,
+              "mean": 10376.125,
+              "median": 10300.0,
+              "sample_stdev": 339.7265321794379,
+              "coefficient_of_variation": 0.03274117574522646,
+              "minimum": 10058.0,
+              "maximum": 11492.0,
+              "median_absolute_deviation": 90.0
+            },
+            "stored_count": {
+              "n": 16,
+              "mean": 10376.125,
+              "median": 10300.0,
+              "sample_stdev": 339.7265321794379,
+              "coefficient_of_variation": 0.03274117574522646,
+              "minimum": 10058.0,
+              "maximum": 11492.0,
+              "median_absolute_deviation": 90.0
+            },
+            "nonempty_rows": {
+              "n": 16,
+              "mean": 5115.0,
+              "median": 5102.0,
+              "sample_stdev": 135.77579558473104,
+              "coefficient_of_variation": 0.026544632567884856,
+              "minimum": 4941.0,
+              "maximum": 5519.0,
+              "median_absolute_deviation": 51.5
+            },
+            "overflow_rows": {
+              "n": 16,
+              "mean": 0.0,
+              "median": 0.0,
+              "sample_stdev": 0.0,
+              "coefficient_of_variation": null,
+              "minimum": 0.0,
+              "maximum": 0.0,
+              "median_absolute_deviation": 0.0
+            }
+          }
+        }
+      }
+    },
+    "balanced_block_speedup": {
+      "estimator": "geometric mean of complete balanced-block baseline/candidate geometric-mean ratios",
+      "speedup_ratio": 1.1351687660918752,
+      "improvement_percent": 13.516876609187523,
+      "median_block_speedup_ratio": 1.1351572266717154,
+      "ratio_of_variant_medians": 1.134834772091169,
+      "median_nearest_neighbor_speedup_ratio": 1.1352749306876562,
+      "blocks_faster": 8,
+      "block_count": 8,
+      "bootstrap": {
+        "method": "percentile bootstrap of balanced four-process blocks",
+        "resampling_unit": "one complete ABBA or BAAB block",
+        "samples": 200000,
+        "seed": 20260817,
+        "confidence": 0.95,
+        "geometric_mean_block_speedup_ci": [
+          1.1321988633216586,
+          1.138467216506718
+        ]
+      }
+    },
+    "blocks": [
+      {
+        "block": 1,
+        "order": "ABBA",
+        "baseline_ordinals": [
+          1,
+          4
+        ],
+        "candidate_ordinals": [
+          2,
+          3
+        ],
+        "baseline_geometric_mean_ms_per_frame": 16.903375570999472,
+        "candidate_geometric_mean_ms_per_frame": 14.777783953595476,
+        "speedup_ratio": 1.143836966630361
+      },
+      {
+        "block": 2,
+        "order": "BAAB",
+        "baseline_ordinals": [
+          6,
+          7
+        ],
+        "candidate_ordinals": [
+          5,
+          8
+        ],
+        "baseline_geometric_mean_ms_per_frame": 16.826856903535475,
+        "candidate_geometric_mean_ms_per_frame": 14.875665499957908,
+        "speedup_ratio": 1.1311666630029487
+      },
+      {
+        "block": 3,
+        "order": "ABBA",
+        "baseline_ordinals": [
+          9,
+          12
+        ],
+        "candidate_ordinals": [
+          10,
+          11
+        ],
+        "baseline_geometric_mean_ms_per_frame": 16.899688387099907,
+        "candidate_geometric_mean_ms_per_frame": 14.873870621759679,
+        "speedup_ratio": 1.1361997705141098
+      },
+      {
+        "block": 4,
+        "order": "BAAB",
+        "baseline_ordinals": [
+          14,
+          15
+        ],
+        "candidate_ordinals": [
+          13,
+          16
+        ],
+        "baseline_geometric_mean_ms_per_frame": 16.792017148334846,
+        "candidate_geometric_mean_ms_per_frame": 14.851546836039432,
+        "speedup_ratio": 1.1306577916575384
+      },
+      {
+        "block": 5,
+        "order": "ABBA",
+        "baseline_ordinals": [
+          17,
+          20
+        ],
+        "candidate_ordinals": [
+          18,
+          19
+        ],
+        "baseline_geometric_mean_ms_per_frame": 16.838923917632915,
+        "candidate_geometric_mean_ms_per_frame": 14.77501544737709,
+        "speedup_ratio": 1.1396890905195105
+      },
+      {
+        "block": 6,
+        "order": "BAAB",
+        "baseline_ordinals": [
+          22,
+          23
+        ],
+        "candidate_ordinals": [
+          21,
+          24
+        ],
+        "baseline_geometric_mean_ms_per_frame": 16.920061904980663,
+        "candidate_geometric_mean_ms_per_frame": 14.9793687570662,
+        "speedup_ratio": 1.129557739006791
+      },
+      {
+        "block": 7,
+        "order": "ABBA",
+        "baseline_ordinals": [
+          25,
+          28
+        ],
+        "candidate_ordinals": [
+          26,
+          27
+        ],
+        "baseline_geometric_mean_ms_per_frame": 16.93396612845067,
+        "candidate_geometric_mean_ms_per_frame": 14.917057935142267,
+        "speedup_ratio": 1.135208175906918
+      },
+      {
+        "block": 8,
+        "order": "BAAB",
+        "baseline_ordinals": [
+          30,
+          31
+        ],
+        "candidate_ordinals": [
+          29,
+          32
+        ],
+        "baseline_geometric_mean_ms_per_frame": 16.8295964139992,
+        "candidate_geometric_mean_ms_per_frame": 14.82644995322078,
+        "speedup_ratio": 1.1351062774365128
+      }
+    ],
+    "nearest_neighbor_pairs": [
+      {
+        "pair_id": "block_01_pair_1",
+        "baseline_ordinal": 1,
+        "candidate_ordinal": 2,
+        "baseline_ms_per_frame": 16.990890105565388,
+        "candidate_ms_per_frame": 14.783295026669899,
+        "speedup_ratio": 1.1493303810086224
+      },
+      {
+        "pair_id": "block_01_pair_2",
+        "baseline_ordinal": 4,
+        "candidate_ordinal": 3,
+        "baseline_ms_per_frame": 16.816311795264482,
+        "candidate_ms_per_frame": 14.772274934997162,
+        "speedup_ratio": 1.1383698089334073
+      },
+      {
+        "pair_id": "block_02_pair_1",
+        "baseline_ordinal": 6,
+        "candidate_ordinal": 5,
+        "baseline_ms_per_frame": 16.768461900452774,
+        "candidate_ms_per_frame": 14.768887932101885,
+        "speedup_ratio": 1.1353909635948
+      },
+      {
+        "pair_id": "block_02_pair_2",
+        "baseline_ordinal": 7,
+        "candidate_ordinal": 8,
+        "baseline_ms_per_frame": 16.885455263157684,
+        "candidate_ms_per_frame": 14.983215058843294,
+        "speedup_ratio": 1.1269580792135572
+      },
+      {
+        "pair_id": "block_03_pair_1",
+        "baseline_ordinal": 9,
+        "candidate_ordinal": 10,
+        "baseline_ms_per_frame": 16.898439700404804,
+        "candidate_ms_per_frame": 14.888961737354597,
+        "speedup_ratio": 1.1349642774625897
+      },
+      {
+        "pair_id": "block_03_pair_2",
+        "baseline_ordinal": 12,
+        "candidate_ordinal": 11,
+        "baseline_ms_per_frame": 16.900937166064978,
+        "candidate_ms_per_frame": 14.85879480217894,
+        "speedup_ratio": 1.1374366084917311
+      },
+      {
+        "pair_id": "block_04_pair_1",
+        "baseline_ordinal": 14,
+        "candidate_ordinal": 13,
+        "baseline_ms_per_frame": 16.804625187069178,
+        "candidate_ms_per_frame": 14.89895200356841,
+        "speedup_ratio": 1.1279065254418126
+      },
+      {
+        "pair_id": "block_04_pair_2",
+        "baseline_ordinal": 15,
+        "candidate_ordinal": 16,
+        "baseline_ms_per_frame": 16.77941856905818,
+        "candidate_ms_per_frame": 14.804292501260838,
+        "speedup_ratio": 1.1334157689487103
+      },
+      {
+        "pair_id": "block_05_pair_1",
+        "baseline_ordinal": 17,
+        "candidate_ordinal": 18,
+        "baseline_ms_per_frame": 16.896733300139505,
+        "candidate_ms_per_frame": 14.822532702237368,
+        "speedup_ratio": 1.139935639851147
+      },
+      {
+        "pair_id": "block_05_pair_2",
+        "baseline_ordinal": 20,
+        "candidate_ordinal": 19,
+        "baseline_ms_per_frame": 16.781312320381403,
+        "candidate_ms_per_frame": 14.727650520702204,
+        "speedup_ratio": 1.1394425945124398
+      },
+      {
+        "pair_id": "block_06_pair_1",
+        "baseline_ordinal": 22,
+        "candidate_ordinal": 21,
+        "baseline_ms_per_frame": 17.019493350138266,
+        "candidate_ms_per_frame": 14.993049328525862,
+        "speedup_ratio": 1.1351588977805123
+      },
+      {
+        "pair_id": "block_06_pair_2",
+        "baseline_ordinal": 23,
+        "candidate_ordinal": 24,
+        "baseline_ms_per_frame": 16.821211359153192,
+        "candidate_ms_per_frame": 14.965700668593248,
+        "speedup_ratio": 1.1239842177555968
+      },
+      {
+        "pair_id": "block_07_pair_1",
+        "baseline_ordinal": 25,
+        "candidate_ordinal": 26,
+        "baseline_ms_per_frame": 16.92277720818917,
+        "candidate_ms_per_frame": 14.954565155009428,
+        "speedup_ratio": 1.1316127906614817
+      },
+      {
+        "pair_id": "block_07_pair_2",
+        "baseline_ordinal": 28,
+        "candidate_ordinal": 27,
+        "baseline_ms_per_frame": 16.94516244654854,
+        "candidate_ms_per_frame": 14.879644786318144,
+        "speedup_ratio": 1.1388149844900628
+      },
+      {
+        "pair_id": "block_08_pair_1",
+        "baseline_ordinal": 30,
+        "candidate_ordinal": 29,
+        "baseline_ms_per_frame": 16.862760049601395,
+        "candidate_ms_per_frame": 14.89119560768207,
+        "speedup_ratio": 1.1323979950207783
+      },
+      {
+        "pair_id": "block_08_pair_2",
+        "baseline_ordinal": 31,
+        "candidate_ordinal": 32,
+        "baseline_ms_per_frame": 16.796498000621796,
+        "candidate_ms_per_frame": 14.761985807369152,
+        "speedup_ratio": 1.137821037074634
+      }
+    ],
+    "runs": [
+      {
+        "ordinal": 1,
+        "block": 1,
+        "position": 1,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block01_pos1_baseline.json",
+        "result_sha256": "330aa9ddbf676d87df9f4108e39a513f2806ffaf6bff4bb96ff74eaf89a9d16d",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block01_pos1_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block01_pos1_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.990890105565388,
+        "frames_per_second": 58.85506843884822,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1723,
+            "stored_count": 1723,
+            "nonempty_rows": 1457,
+            "overflow_rows": 0,
+            "pair_sha256": "cff680f2a19c54c168a607f20ce4d8fa5c0bf71c93e9bc4ef82d1726e2e58a93"
+          },
+          "edge_edge": {
+            "raw_count": 10536,
+            "stored_count": 10536,
+            "nonempty_rows": 5167,
+            "overflow_rows": 0,
+            "pair_sha256": "26ed97978398b7e7a24a8fa9ed0354b07f8810e11921b3bead58bbb62ee587ee"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "3dff83163a9d3be6224d8a5790ae52b13f98d021e768fa2affe3ffa78bf66ffe",
+          "particle_qd_sha256": "a488b681f6bc2cd344a8d40ee2b194bb8cec45dd35d57889e5a043d3edadb90a",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46491241455078,
+          "particle_q_max": 33.892852783203125,
+          "particle_qd_abs_max": 50.48961639404297
+        }
+      },
+      {
+        "ordinal": 2,
+        "block": 1,
+        "position": 2,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block01_pos2_candidate.json",
+        "result_sha256": "4692083fe6aa35bcf11cb37dd58997ab257816634e9f731495d6bf65bcf40f3a",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block01_pos2_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block01_pos2_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.783295026669899,
+        "frames_per_second": 67.64391823310997,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1671,
+            "stored_count": 1671,
+            "nonempty_rows": 1395,
+            "overflow_rows": 0,
+            "pair_sha256": "36569605029991c1e50801a06d57a51d7a65e3b85d1078ea8e3f417f6dc5cd0c"
+          },
+          "edge_edge": {
+            "raw_count": 10330,
+            "stored_count": 10330,
+            "nonempty_rows": 5095,
+            "overflow_rows": 0,
+            "pair_sha256": "fe570069e39c3b1d9a4db2ae8db2c377dad8f8f4f6e816ba9528729f38968b34"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "158f2d3754a21647bead6a70584e8e0c5e3227a9f5c281b89d7464d89f66952b",
+          "particle_qd_sha256": "30f46e9829ce42519e4b9dcd48be7cc2fa4a2815f5148a4b0533dcba279f30db",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46073913574219,
+          "particle_q_max": 33.89088821411133,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 3,
+        "block": 1,
+        "position": 3,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block01_pos3_candidate.json",
+        "result_sha256": "97db147c90136af4fbcec9966f55ed7713d16e679c60e36afbd39b725515f9e5",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block01_pos3_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block01_pos3_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.772274934997162,
+        "frames_per_second": 67.69438047967066,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1678,
+            "stored_count": 1678,
+            "nonempty_rows": 1407,
+            "overflow_rows": 0,
+            "pair_sha256": "ec1dd9354d502d5ad6db1f4c3c0c916181871b5f78e80b91af7ab7ac5c9a15ea"
+          },
+          "edge_edge": {
+            "raw_count": 10348,
+            "stored_count": 10348,
+            "nonempty_rows": 5156,
+            "overflow_rows": 0,
+            "pair_sha256": "7f0f88487f00f1e3371aaae365bb6dace6e9a5ca790fd44504e88749da5f1fb3"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "877d402b32ccd1e66351b0a9910f57b25017bc936bc23af406f0b11bc4056ffe",
+          "particle_qd_sha256": "4194ec8186e55545980c8ea58854468a1694117853a3a95d2267cd7fadfe4694",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45587921142578,
+          "particle_q_max": 33.89991760253906,
+          "particle_qd_abs_max": 49.161529541015625
+        }
+      },
+      {
+        "ordinal": 4,
+        "block": 1,
+        "position": 4,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block01_pos4_baseline.json",
+        "result_sha256": "53350600d283dd5b10e2df8a5594d51d8bb9d226ee6cda7402d220661199fbc0",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block01_pos4_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block01_pos4_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.816311795264482,
+        "frames_per_second": 59.46607152476815,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1806,
+            "stored_count": 1806,
+            "nonempty_rows": 1510,
+            "overflow_rows": 0,
+            "pair_sha256": "ad972825526f3a7d242a3af81a6573a0d822f99a1b08b0bebb961f336f0a5449"
+          },
+          "edge_edge": {
+            "raw_count": 11156,
+            "stored_count": 11156,
+            "nonempty_rows": 5385,
+            "overflow_rows": 0,
+            "pair_sha256": "8c6a76a14b078229df3d2a2da3664bd70bdbe6f2a0affd486a820b57952be711"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "be6cd9e5e1778e11fb6dd2880664db027e7bf64bc63b1f6114366d09dc519240",
+          "particle_qd_sha256": "504aa118d399c1e97f784e5aca02b41fa277d4678caad99beee0b262ff63d71a",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.4608154296875,
+          "particle_q_max": 33.89302444458008,
+          "particle_qd_abs_max": 50.31280517578125
+        }
+      },
+      {
+        "ordinal": 5,
+        "block": 2,
+        "position": 1,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block02_pos1_candidate.json",
+        "result_sha256": "18a80cdbb6635ed5c7c4e2e4d26714d1f1e3aa10bf7a50bb2e440e7181d814ac",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block02_pos1_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block02_pos1_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.768887932101885,
+        "frames_per_second": 67.70990507866095,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1684,
+            "stored_count": 1684,
+            "nonempty_rows": 1418,
+            "overflow_rows": 0,
+            "pair_sha256": "fae4e7f59e06a10fea0dd3f43adbb7dfac8a279c483613cf936c3c20e918c9cb"
+          },
+          "edge_edge": {
+            "raw_count": 10346,
+            "stored_count": 10346,
+            "nonempty_rows": 5145,
+            "overflow_rows": 0,
+            "pair_sha256": "b8120a3811bedafa46eaaccd08d561aceef419a8b953eaf680b4943f38c996c3"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "adf85f7f4d084fe61b54ccd9d5cfec39bb1294ab3e3e67d029db6deab1ba09ca",
+          "particle_qd_sha256": "e921d1ca192b5a4d1d16862903bfc31c7b760081244c55ca62bb88c1d334d2f1",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45515441894531,
+          "particle_q_max": 33.90320587158203,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 6,
+        "block": 2,
+        "position": 2,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block02_pos2_baseline.json",
+        "result_sha256": "cee6e1a14ffccdd04e5540a28bb2fbb226f04288e925c4519ab606ebfd6e73ed",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block02_pos2_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block02_pos2_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.768461900452774,
+        "frames_per_second": 59.6357618210051,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1677,
+            "stored_count": 1677,
+            "nonempty_rows": 1413,
+            "overflow_rows": 0,
+            "pair_sha256": "1cc070bc4297b0552fb46786889598a8a6093b3d4517af024ab05d4b256a3a80"
+          },
+          "edge_edge": {
+            "raw_count": 10250,
+            "stored_count": 10250,
+            "nonempty_rows": 5066,
+            "overflow_rows": 0,
+            "pair_sha256": "db40949606494c4f999a571b6c80f0d6dfff38a569696cccf659e5a114cfe20c"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "b6643cf927d11bb882a2045f97643addf9b86e73bf57f0889f3535668571830f",
+          "particle_qd_sha256": "279423b38aae70d8ccb37f1be596c8852ac38f82b475c29dfbb7771079947c61",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46473693847656,
+          "particle_q_max": 33.889991760253906,
+          "particle_qd_abs_max": 50.48046112060547
+        }
+      },
+      {
+        "ordinal": 7,
+        "block": 2,
+        "position": 3,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block02_pos3_baseline.json",
+        "result_sha256": "a913345a645eb301d1794b63200846f96a4f0d3ebbb10a4718b8ce8b2d336517",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block02_pos3_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block02_pos3_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.885455263157684,
+        "frames_per_second": 59.22256666551932,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1798,
+            "stored_count": 1798,
+            "nonempty_rows": 1512,
+            "overflow_rows": 0,
+            "pair_sha256": "21deee5e0c04b0ed4a71bffcd32ebc756ab5dc21f6dc642c6ec51ce6e9698afd"
+          },
+          "edge_edge": {
+            "raw_count": 11240,
+            "stored_count": 11240,
+            "nonempty_rows": 5412,
+            "overflow_rows": 0,
+            "pair_sha256": "aebb32da599971c081dddd42e25f0e62bc1a7cf2eb7e6abb9a01fd6b87d85d5f"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "4dea04fa65649ffbd9721010f3e2a601c25986a0bba12d8061c9a7d0cc7825a1",
+          "particle_qd_sha256": "1627a80f2206356f6e51f86f523cb1e0068575ea53d9d5f87ea7b0a32c8c7f51",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46007537841797,
+          "particle_q_max": 33.90106201171875,
+          "particle_qd_abs_max": 50.50849914550781
+        }
+      },
+      {
+        "ordinal": 8,
+        "block": 2,
+        "position": 4,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block02_pos4_candidate.json",
+        "result_sha256": "c7f07719ff6a0f663a8f53fb2f903cf03ab20f056df6b511591823d5910ddf30",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block02_pos4_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block02_pos4_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.983215058843294,
+        "frames_per_second": 66.74134997547048,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1693,
+            "stored_count": 1693,
+            "nonempty_rows": 1403,
+            "overflow_rows": 0,
+            "pair_sha256": "c5976799417b021c0eb5c00e6941d5422a71ce35ce552a40d53617943c841324"
+          },
+          "edge_edge": {
+            "raw_count": 10490,
+            "stored_count": 10490,
+            "nonempty_rows": 5148,
+            "overflow_rows": 0,
+            "pair_sha256": "24421d66079adceca70224a560ab274b97185d6f379ac943b9bcb513d30fb76a"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "3487f2c4ceda71b37a761800f71237d927c2f880a13adf7dca93c129af27f2a4",
+          "particle_qd_sha256": "bc5d184d9b422a5516e5b425c7f9867bc606dbd9694cb76c2bdc6da260f9bbaf",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45902252197266,
+          "particle_q_max": 33.90367126464844,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 9,
+        "block": 3,
+        "position": 1,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block03_pos1_baseline.json",
+        "result_sha256": "9cfd64d3befad31346c0eabfdbc7d84d34751b00bebc1eb7cb8ce88f6b373113",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block03_pos1_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block03_pos1_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.898439700404804,
+        "frames_per_second": 59.177061180154105,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1810,
+            "stored_count": 1810,
+            "nonempty_rows": 1528,
+            "overflow_rows": 0,
+            "pair_sha256": "adafbe8436ee217353cc3f0680bd04db92ead9c8756f270715a46e657acc0000"
+          },
+          "edge_edge": {
+            "raw_count": 11176,
+            "stored_count": 11176,
+            "nonempty_rows": 5403,
+            "overflow_rows": 0,
+            "pair_sha256": "75150588924e78ea21715af0eb4c98d04facb78017b5b0d037cef10023a77318"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "40e615c58c6283adb074f03c98f8048194cea2b26856bb65deefb5f0b60e3bb9",
+          "particle_qd_sha256": "77d041f6795487ed787edd0fa7fd3ec7c69996f150d09b9336025cbb9b210f32",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45956420898438,
+          "particle_q_max": 33.91191482543945,
+          "particle_qd_abs_max": 50.46730041503906
+        }
+      },
+      {
+        "ordinal": 10,
+        "block": 3,
+        "position": 2,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block03_pos2_candidate.json",
+        "result_sha256": "ea6ccac19a542f453c43336c13a2b05d397a6951fce8029b5108318dd813e3f1",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block03_pos2_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block03_pos2_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.888961737354597,
+        "frames_per_second": 67.16385048469306,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1657,
+            "stored_count": 1657,
+            "nonempty_rows": 1394,
+            "overflow_rows": 0,
+            "pair_sha256": "81a05d2cfc0477568b49dbee9f21a7796895d8d2301edc5e960ebcf0e4ca0cb1"
+          },
+          "edge_edge": {
+            "raw_count": 10164,
+            "stored_count": 10164,
+            "nonempty_rows": 5045,
+            "overflow_rows": 0,
+            "pair_sha256": "420f336df9be3e04bf42af9415004779e0de6be0bbf17fd542cf93f582763fbf"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "911b0828c08e0bdb86ad1a7e49337736cc32396e3568eda5522122f263da07ad",
+          "particle_qd_sha256": "17cb428d9d1106dd3ba9f8b3bcff72feb0881250d132d8d703579d29b80f702f",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45990753173828,
+          "particle_q_max": 33.90487289428711,
+          "particle_qd_abs_max": 50.333404541015625
+        }
+      },
+      {
+        "ordinal": 11,
+        "block": 3,
+        "position": 3,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block03_pos3_candidate.json",
+        "result_sha256": "c33149b9a0a3aee9b3535018707f9264db71c7915dec79689b21f70bf5db0fbe",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block03_pos3_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block03_pos3_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.85879480217894,
+        "frames_per_second": 67.30020929108981,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1855,
+            "stored_count": 1855,
+            "nonempty_rows": 1534,
+            "overflow_rows": 0,
+            "pair_sha256": "3185daa33881e463d7e4760aac0da53e0b346ecb9510c79a2ed289dda5fe5e69"
+          },
+          "edge_edge": {
+            "raw_count": 11492,
+            "stored_count": 11492,
+            "nonempty_rows": 5519,
+            "overflow_rows": 0,
+            "pair_sha256": "d1d9ea02e4a637e7460b9b37e07ad495c8b75f9273a94f2bb83394eb6eb23a8b"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "85f9da594c11e68f7dad6fc7141c8189dbe5c2feb0e556038519ab5f68b40691",
+          "particle_qd_sha256": "825f19127e04c0c894c6fde7e1684c21f72959f71a563506e1f4dcbd8b2dacd1",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45893096923828,
+          "particle_q_max": 33.90473175048828,
+          "particle_qd_abs_max": 48.1292724609375
+        }
+      },
+      {
+        "ordinal": 12,
+        "block": 3,
+        "position": 4,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block03_pos4_baseline.json",
+        "result_sha256": "6061dbf7e763d875e5a4117cace83030f2e372be354ed038774a7ae2a1d5643b",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block03_pos4_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block03_pos4_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.900937166064978,
+        "frames_per_second": 59.16831653619056,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1791,
+            "stored_count": 1791,
+            "nonempty_rows": 1518,
+            "overflow_rows": 0,
+            "pair_sha256": "7962b150627ff288f6027f80286f3af9d3c2ccd0235b60ecbfdeb2bf1ecc187d"
+          },
+          "edge_edge": {
+            "raw_count": 11076,
+            "stored_count": 11076,
+            "nonempty_rows": 5372,
+            "overflow_rows": 0,
+            "pair_sha256": "697cb9d938fb02cb088a440f1d817f6385b6855dae4ff7e5a8a79a09f349a1d3"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "a297a071837bb1f4c8645e37217b4eeceb1c5cdef7031b62804f2ad855bf53c5",
+          "particle_qd_sha256": "69868ebce67664f35954746148797d29f20240decc25af97bd0812e3abc7c54e",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45909881591797,
+          "particle_q_max": 33.90155792236328,
+          "particle_qd_abs_max": 42.24529266357422
+        }
+      },
+      {
+        "ordinal": 13,
+        "block": 4,
+        "position": 1,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block04_pos1_candidate.json",
+        "result_sha256": "1a68feec70c4a5d2d1fd0a24883736cd1752115c47dcba6d3b04b00e53eb330a",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block04_pos1_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block04_pos1_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.89895200356841,
+        "frames_per_second": 67.11881478378429,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1725,
+            "stored_count": 1725,
+            "nonempty_rows": 1455,
+            "overflow_rows": 0,
+            "pair_sha256": "f6da900d68c1c11c17669d49fa31ab677d2d602d8dd43cd623cca386ce37f92f"
+          },
+          "edge_edge": {
+            "raw_count": 10714,
+            "stored_count": 10714,
+            "nonempty_rows": 5270,
+            "overflow_rows": 0,
+            "pair_sha256": "54accd4128c00a2170d5ebba2b7a8b6fb1cf381ad1fcdd552e2765901e80c259"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "7fcca823ab0294e7da10f750dd86b1208e4df25eabc8068cf51c2db6aeea72b8",
+          "particle_qd_sha256": "5fe331b1da5ef5964b0e375c6a2324fe548e1a4852b8c9f1743de7b8f0cc5e30",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45591735839844,
+          "particle_q_max": 33.902854919433594,
+          "particle_qd_abs_max": 26.45130157470703
+        }
+      },
+      {
+        "ordinal": 14,
+        "block": 4,
+        "position": 2,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block04_pos2_baseline.json",
+        "result_sha256": "ef3f985edb20b3adbe4559c98afbdfcc1550eedbed4d371c72c450e0c7f99e70",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block04_pos2_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block04_pos2_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.804625187069178,
+        "frames_per_second": 59.50742660832923,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1706,
+            "stored_count": 1706,
+            "nonempty_rows": 1438,
+            "overflow_rows": 0,
+            "pair_sha256": "ff0bf80c7c4f46697669b7f7b2f19c50747e4a594bfc99f6f664cc765ad5300d"
+          },
+          "edge_edge": {
+            "raw_count": 10344,
+            "stored_count": 10344,
+            "nonempty_rows": 5129,
+            "overflow_rows": 0,
+            "pair_sha256": "37786b39c623149b37d1326bf057065d4094c6673646bd15a66d673462f186fb"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "95f3711d17d7ef7ca58fab4e90504c33039cee2ebf2d8215e942e8cd02bc1e42",
+          "particle_qd_sha256": "d9e58fecb8bddc3075666c35d5b347454cc4c862342477b6e80b36e8151646cc",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46470642089844,
+          "particle_q_max": 33.890995025634766,
+          "particle_qd_abs_max": 50.50220489501953
+        }
+      },
+      {
+        "ordinal": 15,
+        "block": 4,
+        "position": 3,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block04_pos3_baseline.json",
+        "result_sha256": "5946d40d6275b73fd1cb609742d8e8811cd2928b9c0f08da8f59d6f0b1124a7f",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block04_pos3_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block04_pos3_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.77941856905818,
+        "frames_per_second": 59.596820705339226,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1766,
+            "stored_count": 1766,
+            "nonempty_rows": 1498,
+            "overflow_rows": 0,
+            "pair_sha256": "8198152242b29b8a418279fa004122931b22beb3b5ef2cd5d4dff8b9ddd8290b"
+          },
+          "edge_edge": {
+            "raw_count": 10920,
+            "stored_count": 10920,
+            "nonempty_rows": 5320,
+            "overflow_rows": 0,
+            "pair_sha256": "aaca6572379477ba926397ebc288c81eda3c63e19f5dfe7598f9b577e08df100"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "81950d0c9f1a98acca29c15db958f23335ec37e222b7d23183b149b42ace9245",
+          "particle_qd_sha256": "4e419b3bed64a4bb2ca8e379b1278c436eb3eb9d7d0e9f67f021f337f56c2c78",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.4623031616211,
+          "particle_q_max": 33.89614486694336,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 16,
+        "block": 4,
+        "position": 4,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block04_pos4_candidate.json",
+        "result_sha256": "aa3d37f4f253eaf68c0040e7627f305c5a87487ae71871958874f897cacb5bb2",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block04_pos4_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block04_pos4_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.804292501260838,
+        "frames_per_second": 67.54797636664048,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1661,
+            "stored_count": 1661,
+            "nonempty_rows": 1395,
+            "overflow_rows": 0,
+            "pair_sha256": "024efa711436debcf7bdd1ace76f04e2e171bb5de80c4b5286d8c65813c95f42"
+          },
+          "edge_edge": {
+            "raw_count": 10190,
+            "stored_count": 10190,
+            "nonempty_rows": 5024,
+            "overflow_rows": 0,
+            "pair_sha256": "b0f271630a3e70b70cc1162d0751e07c299fa854a727f5777e2c9e147745508e"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "81db2da3339dbaf4ac16fdcf9552061b598c657336d9a3321858ef1f8501bc32",
+          "particle_qd_sha256": "5821c854440cdcb61eb542aa5a91dd4e6f0f0c614c5e02ce3e3ced639a3b2d3a",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45973205566406,
+          "particle_q_max": 33.905696868896484,
+          "particle_qd_abs_max": 50.31909942626953
+        }
+      },
+      {
+        "ordinal": 17,
+        "block": 5,
+        "position": 1,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block05_pos1_baseline.json",
+        "result_sha256": "10dbe3dd2cf0c26274f3d0952c771e4cbf668c85db935d19b3255ab98621bd05",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block05_pos1_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block05_pos1_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.896733300139505,
+        "frames_per_second": 59.183037468653396,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1789,
+            "stored_count": 1789,
+            "nonempty_rows": 1514,
+            "overflow_rows": 0,
+            "pair_sha256": "85079ca88a6139ef5bfabe5c1e2ed2949c26be27a1b379ccce5ffff156e4e926"
+          },
+          "edge_edge": {
+            "raw_count": 11052,
+            "stored_count": 11052,
+            "nonempty_rows": 5329,
+            "overflow_rows": 0,
+            "pair_sha256": "49048ad327ed23553b0f510cc8dfae663505b981d30faf47d38a51aabfb7bd5a"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "0e8bded4eb14e5df9b0bc0c0e688cb2a19dcf13794a8b9bde12a68d20370a61c",
+          "particle_qd_sha256": "8d88d4246e547850b34f0421da69f98041da19d84e5b129e0a446d8d271af6fa",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46012878417969,
+          "particle_q_max": 33.90156173706055,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 18,
+        "block": 5,
+        "position": 2,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block05_pos2_candidate.json",
+        "result_sha256": "3433804e25beb85aab1504a2cd8d91cb7bc0f59e31449bc781d3eab96e4367c0",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block05_pos2_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block05_pos2_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.822532702237368,
+        "frames_per_second": 67.46485368516383,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1670,
+            "stored_count": 1670,
+            "nonempty_rows": 1396,
+            "overflow_rows": 0,
+            "pair_sha256": "8e23bec0300ec6264e8f836dc33e92b949a85a86ed1904fb3be4025ea4f20412"
+          },
+          "edge_edge": {
+            "raw_count": 10242,
+            "stored_count": 10242,
+            "nonempty_rows": 5109,
+            "overflow_rows": 0,
+            "pair_sha256": "b08b268c6504c3bfc2516107b2192410565251a86199dc5fbbd41515309e086e"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "80a66616e76d8e5cafc7469220e25106da07012c3e9ad22ef5b131c84b4f9102",
+          "particle_qd_sha256": "edfc6e9890ffe1c7c063fe5479a2ec0bcd68f6048817d37b2906ea37359693b1",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45751953125,
+          "particle_q_max": 33.90513610839844,
+          "particle_qd_abs_max": 50.65040588378906
+        }
+      },
+      {
+        "ordinal": 19,
+        "block": 5,
+        "position": 3,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block05_pos3_candidate.json",
+        "result_sha256": "c9055bf692992a788af2faf90fe51cbd1e41e6484ce7516aa59ed098619b9f9f",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block05_pos3_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block05_pos3_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.727650520702204,
+        "frames_per_second": 67.89949276663857,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1681,
+            "stored_count": 1681,
+            "nonempty_rows": 1416,
+            "overflow_rows": 0,
+            "pair_sha256": "0c8caf4295867695cc457cd14e2eeed5fe7d777de0faad5a02aefad77bb30238"
+          },
+          "edge_edge": {
+            "raw_count": 10270,
+            "stored_count": 10270,
+            "nonempty_rows": 5133,
+            "overflow_rows": 0,
+            "pair_sha256": "a12e0a02d11606eac2bf1a61f8fb7ac34465363c0bf6dd8055aa26f823e38d6a"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "d951769b029d3630aad2ee9785ddea4a793f69e683b0b0f1e601bb14d8bf6cd6",
+          "particle_qd_sha256": "e859a78e7d49209dea9bd3d357c4d8870bf3e6d492745dd470cbbdbf6817cc2a",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.4573745727539,
+          "particle_q_max": 33.90678405761719,
+          "particle_qd_abs_max": 49.14436340332031
+        }
+      },
+      {
+        "ordinal": 20,
+        "block": 5,
+        "position": 4,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block05_pos4_baseline.json",
+        "result_sha256": "48dbb0b4befac6aa37466b7e796073bde30a20d59ab331c0b0fe5cf76b28dfa3",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block05_pos4_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block05_pos4_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.781312320381403,
+        "frames_per_second": 59.59009527434099,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1808,
+            "stored_count": 1808,
+            "nonempty_rows": 1511,
+            "overflow_rows": 0,
+            "pair_sha256": "582913dc7ba612b5bb2d2b39e06afa0a993df8781f9bd085fb1c92f7e8dda0ce"
+          },
+          "edge_edge": {
+            "raw_count": 11214,
+            "stored_count": 11214,
+            "nonempty_rows": 5407,
+            "overflow_rows": 0,
+            "pair_sha256": "0e0f0852d50a34b9b0d23ab20609fad793595805b90448b58b85afd2cf2e4abc"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "2f7b6d6dd7d98e0e838d00ef83a0fb4b675978e8132fbf6b0b01f78790ff784c",
+          "particle_qd_sha256": "fe7a0e34327bb745d32e372e2b81d660e04f610cdd619ff0c139b55bc3f90215",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46086883544922,
+          "particle_q_max": 33.893798828125,
+          "particle_qd_abs_max": 50.32367706298828
+        }
+      },
+      {
+        "ordinal": 21,
+        "block": 6,
+        "position": 1,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block06_pos1_candidate.json",
+        "result_sha256": "82afd22ab3b6ceb3998112386231a895a2fb6b1518957b0d876760bb6ae9c583",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block06_pos1_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block06_pos1_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.993049328525862,
+        "frames_per_second": 66.69757286113868,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1620,
+            "stored_count": 1620,
+            "nonempty_rows": 1325,
+            "overflow_rows": 0,
+            "pair_sha256": "a74fe933458d332453d97254a3f08b4578be2ca4fa1c1c12c6a1007f7b653fda"
+          },
+          "edge_edge": {
+            "raw_count": 10058,
+            "stored_count": 10058,
+            "nonempty_rows": 4960,
+            "overflow_rows": 0,
+            "pair_sha256": "6a5fdca056d94e5a0d4124fd80bcfec7f0b5b7d6215f405a58f3fdb5dc827dfd"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "b167903eb80808e3211b710f515bc42191ab4bc17e873a544fdf39adfffb262a",
+          "particle_qd_sha256": "f1d6761b842276031e294946ef3619761f3e55a0d54635e9eb4c02a808801203",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46131134033203,
+          "particle_q_max": 33.896488189697266,
+          "particle_qd_abs_max": 50.162315368652344
+        }
+      },
+      {
+        "ordinal": 22,
+        "block": 6,
+        "position": 2,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block06_pos2_baseline.json",
+        "result_sha256": "aeae8fd8a3a082684861abc1bb11907ba8ec1431c518b17be80c45fcc2329055",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block06_pos2_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block06_pos2_baseline.json"
+        ],
+        "milliseconds_per_frame": 17.019493350138266,
+        "frames_per_second": 58.756155628562,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1782,
+            "stored_count": 1782,
+            "nonempty_rows": 1494,
+            "overflow_rows": 0,
+            "pair_sha256": "e6a4bf98b146a2f05769f6bc2570648ef5f18de9da5fd7fda47a867a4393108a"
+          },
+          "edge_edge": {
+            "raw_count": 11038,
+            "stored_count": 11038,
+            "nonempty_rows": 5344,
+            "overflow_rows": 0,
+            "pair_sha256": "b7a3e27e4ae52c8cf7ed26acaf2e5d0430c9745e79d0f3e912175d1779b5fd99"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "c29c4f14f184cad97423a119268ca05d2cafb444993cecf035f2a85c94dd137f",
+          "particle_qd_sha256": "f3849927d29cebf7cb9cb3dd0fb6382b9b77c51eb2476f0d6109415efa4e6676",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.4610366821289,
+          "particle_q_max": 33.907127380371094,
+          "particle_qd_abs_max": 50.76942443847656
+        }
+      },
+      {
+        "ordinal": 23,
+        "block": 6,
+        "position": 3,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block06_pos3_baseline.json",
+        "result_sha256": "beb6633ec304e058309d6253a3336cc4257baad95ba627cf7aa9ddbd6887de2a",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block06_pos3_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block06_pos3_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.821211359153192,
+        "frames_per_second": 59.4487506665716,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1800,
+            "stored_count": 1800,
+            "nonempty_rows": 1515,
+            "overflow_rows": 0,
+            "pair_sha256": "61fab90a0f79a45e8cee53b6859156d8916b497d5957515f35a5f3de08713cd9"
+          },
+          "edge_edge": {
+            "raw_count": 11206,
+            "stored_count": 11206,
+            "nonempty_rows": 5420,
+            "overflow_rows": 0,
+            "pair_sha256": "10bca81051f634d138f8bbcbe9bb7be11e0e8b1755b9c8bcd1cc8071c28654b0"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "ba02873d5302ab7f2d97383ea259a95aebab4186da148d4639524e5a14d8077a",
+          "particle_qd_sha256": "9bbcb209d4b3b41c8ba34db4763088a78fa88122a798248429d669f6b6b92e4f",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.4603500366211,
+          "particle_q_max": 33.898406982421875,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 24,
+        "block": 6,
+        "position": 4,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block06_pos4_candidate.json",
+        "result_sha256": "f9e9e7ade6b5ad44cc7817321042ae4bf469052df187c18faf40144c5edec798",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block06_pos4_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block06_pos4_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.965700668593248,
+        "frames_per_second": 66.81945751451399,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1665,
+            "stored_count": 1665,
+            "nonempty_rows": 1401,
+            "overflow_rows": 0,
+            "pair_sha256": "537f471748a0eb36814a96bddbd302d313cd3c87e1ea607afb7e159805e147a2"
+          },
+          "edge_edge": {
+            "raw_count": 10230,
+            "stored_count": 10230,
+            "nonempty_rows": 5053,
+            "overflow_rows": 0,
+            "pair_sha256": "71f254167b5b21214a3aa6d2dfcab70fa456dce6849849efed4e4a0c24a0fb5d"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "4fca5ceb1e5e2b50dd99c871ee20e29f584988bc911b0430c0cf5f817b5f6ba0",
+          "particle_qd_sha256": "e2d959164d8f281ffd5b1a19e10a2281609e1d8546117a2858dd187116b60a44",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46086883544922,
+          "particle_q_max": 33.89253616333008,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 25,
+        "block": 7,
+        "position": 1,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block07_pos1_baseline.json",
+        "result_sha256": "1e73b30d38c0b30d13925cc4d191d22bb98652bdef9466fbf2d47f3e25a869cb",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block07_pos1_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block07_pos1_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.92277720818917,
+        "frames_per_second": 59.09195563456842,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1696,
+            "stored_count": 1696,
+            "nonempty_rows": 1429,
+            "overflow_rows": 0,
+            "pair_sha256": "09565f7cadd32f6fe8400589f4cf592cd1bc40b8ffe11305437047f73a6e6176"
+          },
+          "edge_edge": {
+            "raw_count": 10328,
+            "stored_count": 10328,
+            "nonempty_rows": 5123,
+            "overflow_rows": 0,
+            "pair_sha256": "d1fd97b4d2e9258a70ca4ba9d50cde2f8d6b547fe162da55027cfcb3b6e3f0f1"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "ad025fb6af8fa7453b294cf0fcc353d0b9097ef0e1eea564e3f71db194c2d4aa",
+          "particle_qd_sha256": "65848dac4f0e98d0f9b0cbba4602fd0ced6c35838b0d7caa253311d9c936cee8",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46451568603516,
+          "particle_q_max": 33.89500045776367,
+          "particle_qd_abs_max": 48.35529327392578
+        }
+      },
+      {
+        "ordinal": 26,
+        "block": 7,
+        "position": 2,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block07_pos2_candidate.json",
+        "result_sha256": "c47dd312826759b338ddd780bead5ee1432f372d1d284216831abfa6f24fb2ae",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block07_pos2_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block07_pos2_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.954565155009428,
+        "frames_per_second": 66.86921282127842,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1689,
+            "stored_count": 1689,
+            "nonempty_rows": 1408,
+            "overflow_rows": 0,
+            "pair_sha256": "504eb518b13463393288196e6a19c46fb4b2d47225f16c2f9929286d50d20278"
+          },
+          "edge_edge": {
+            "raw_count": 10468,
+            "stored_count": 10468,
+            "nonempty_rows": 5092,
+            "overflow_rows": 0,
+            "pair_sha256": "8d8e23e4c120681bfc008508eaf304ad68ecb08a0f62f24e7f122db3dd73bb18"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "67e4d698eb6fbad91bbf5224340130991653aea1329ac49f825af2d605dba67f",
+          "particle_qd_sha256": "060b1020523f0f4741dcee3c6e2756b7a4cb90d2b57fed52e162cb8e2ca820c5",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46039581298828,
+          "particle_q_max": 33.8935432434082,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 27,
+        "block": 7,
+        "position": 3,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block07_pos3_candidate.json",
+        "result_sha256": "9a28fa50a93bb740305c92605c37e8eba00214c4c692fd0dad78fbd8e7da9fc3",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block07_pos3_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block07_pos3_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.879644786318144,
+        "frames_per_second": 67.20590540706331,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1645,
+            "stored_count": 1645,
+            "nonempty_rows": 1367,
+            "overflow_rows": 0,
+            "pair_sha256": "7d60d9798eecb73e8b5d55d828f3fd86605d33c0058a8a5cecefcd1ed9dc81d6"
+          },
+          "edge_edge": {
+            "raw_count": 10248,
+            "stored_count": 10248,
+            "nonempty_rows": 5005,
+            "overflow_rows": 0,
+            "pair_sha256": "f57301b4c7e37e70b0bdd684ccf9de2071c3ae776a6117758f8327a28d8921b6"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "8f39ad28a269dcdc12698159a523db3c564dfe02c15f981f2dd91d930fe030a2",
+          "particle_qd_sha256": "5a18909b7804521968d7bc8e9dae1f4cd6c6d8137b36228ad050cd39e6881e2c",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46002960205078,
+          "particle_q_max": 33.8918571472168,
+          "particle_qd_abs_max": 50.3173828125
+        }
+      },
+      {
+        "ordinal": 28,
+        "block": 7,
+        "position": 4,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block07_pos4_baseline.json",
+        "result_sha256": "61bef703f6f0274c23dbcd06a7f49548c349b7333e0f7586d19534210769d4ba",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block07_pos4_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block07_pos4_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.94516244654854,
+        "frames_per_second": 59.01389279414574,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1788,
+            "stored_count": 1788,
+            "nonempty_rows": 1497,
+            "overflow_rows": 0,
+            "pair_sha256": "f48ab2c4c250e5e261636b0dac13e50e8b073eea95301fba851409daa99bae11"
+          },
+          "edge_edge": {
+            "raw_count": 11099,
+            "stored_count": 11099,
+            "nonempty_rows": 5361,
+            "overflow_rows": 0,
+            "pair_sha256": "67fac0b03cbdbc5179fe90b3a03dfc23bc31c9e579919aa8c1ff41be842ae4bf"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "cb12c71e7200cb0fdff0bb9f39c5d562b00496599eaa3376131bafb31fb90ed7",
+          "particle_qd_sha256": "d6c550f7fff42f2ba2dde0e7427e116e041da56096d9e3713e163309b448e46e",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46294403076172,
+          "particle_q_max": 33.894508361816406,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 29,
+        "block": 8,
+        "position": 1,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block08_pos1_candidate.json",
+        "result_sha256": "1682b00c93910974e039b8e4de23520c7bb11896b6c1f2348c8709b17757b532",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block08_pos1_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block08_pos1_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.89119560768207,
+        "frames_per_second": 67.15377504571359,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1613,
+            "stored_count": 1613,
+            "nonempty_rows": 1320,
+            "overflow_rows": 0,
+            "pair_sha256": "ad5324d9cb88f51f2de2006793e06a3228a973fb5b377c00bbdee3562a48c192"
+          },
+          "edge_edge": {
+            "raw_count": 10062,
+            "stored_count": 10062,
+            "nonempty_rows": 4941,
+            "overflow_rows": 0,
+            "pair_sha256": "e8409b9f9e188b30062158ac45ea26be9d626a513735b20fe932d1137b412857"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "ce0083499ab1013a051f7d72e9915f2a4eef4d7569783f15ff62f7ab852cc78c",
+          "particle_qd_sha256": "6e7eba3a26887cb71b89b2e83f896860b3e739c3e8e5a3720f50151b57c8af65",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45977783203125,
+          "particle_q_max": 33.909000396728516,
+          "particle_qd_abs_max": 50.328826904296875
+        }
+      },
+      {
+        "ordinal": 30,
+        "block": 8,
+        "position": 2,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block08_pos2_baseline.json",
+        "result_sha256": "bef6ba86e334ada35567eb30e7ea79e2b158c960d1b648fe2bb4037073f7356a",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block08_pos2_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block08_pos2_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.862760049601395,
+        "frames_per_second": 59.30227300029915,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1779,
+            "stored_count": 1779,
+            "nonempty_rows": 1517,
+            "overflow_rows": 0,
+            "pair_sha256": "a7be518fe22c749b75aad689bb33c795c8c310861a0cd32cee4cdec9a5aa4c09"
+          },
+          "edge_edge": {
+            "raw_count": 11052,
+            "stored_count": 11052,
+            "nonempty_rows": 5366,
+            "overflow_rows": 0,
+            "pair_sha256": "c027219a581adc04d0e05dec34ef221e80a1baad3ddbee8412f8cac698c07a34"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "227002972b0754deb273b83313730868eaf8918a45b81768a0209ee2d2a7bef2",
+          "particle_qd_sha256": "22cee55674505e565779ba149425b2154184fcf8d6318c71d888074e7885c7e0",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.4619140625,
+          "particle_q_max": 33.89940643310547,
+          "particle_qd_abs_max": 50.99945068359375
+        }
+      },
+      {
+        "ordinal": 31,
+        "block": 8,
+        "position": 3,
+        "variant": "baseline",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block08_pos3_baseline.json",
+        "result_sha256": "23d9d2db5e7de089c5de494c0020d2ee670c0defd5eb26ebd5ca0d441d912069",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "--run-id",
+          "block08_pos3_baseline",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block08_pos3_baseline.json"
+        ],
+        "milliseconds_per_frame": 16.796498000621796,
+        "frames_per_second": 59.53621998841548,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline",
+          "source_hash": "74c6be9050612c2eba164f7a3938391acbddde65cf297207013027cc4e7e57f6",
+          "source_file_count": 716,
+          "source_byte_count": 20524357,
+          "git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+          "git_tree": "3a16bcf1a01fe9b7d6a5dc49fe7a880520d24bfc",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-baseline/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1730,
+            "stored_count": 1730,
+            "nonempty_rows": 1455,
+            "overflow_rows": 0,
+            "pair_sha256": "83bdc024b7c1ab8ccc5ef55296255013be6a1b9a90de007ae7130c493eaf1ff8"
+          },
+          "edge_edge": {
+            "raw_count": 10514,
+            "stored_count": 10514,
+            "nonempty_rows": 5192,
+            "overflow_rows": 0,
+            "pair_sha256": "64c52f200928e8aa6f9146cdaf0690e6574bc10b02641321e5f24f3e227a62d3"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "b9036cf7acbd7a050d5cbc30303dd1ef9a8522eda5dac5b77ed78804e3faa609",
+          "particle_qd_sha256": "beb8329e1d6080935209016895e3d9135b5adf775abad4c04b811954cc3cd86f",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.46485137939453,
+          "particle_q_max": 33.89512634277344,
+          "particle_qd_abs_max": 50.48561096191406
+        }
+      },
+      {
+        "ordinal": 32,
+        "block": 8,
+        "position": 4,
+        "variant": "candidate",
+        "status": "completed",
+        "result_path": "/tmp/cloth-franka-perf/final_abba_20260817/runs/block08_pos4_candidate.json",
+        "result_sha256": "8377a689f9b54880b6ba182fc5ee1b4176d627446a3b24879cc2ebb912c68922",
+        "argv": [
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf/profiling/benchmark_cloth_franka_self_contact.py",
+          "--frames",
+          "30",
+          "--expected-source-root",
+          "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "--run-id",
+          "block08_pos4_candidate",
+          "--output",
+          "/tmp/cloth-franka-perf/final_abba_20260817/runs/block08_pos4_candidate.json"
+        ],
+        "milliseconds_per_frame": 14.761985807369152,
+        "frames_per_second": 67.74156357072245,
+        "device": "cuda:0",
+        "source": {
+          "root": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate",
+          "source_hash": "37a127e8738fe50b5cf1c1596a6bdb0464a8a99cd4c7eae2c32ad1b45e4b7af5",
+          "source_file_count": 717,
+          "source_byte_count": 20539194,
+          "git_head": "c84f62fb00d71ee000faf06476610d37bbd7751c",
+          "git_tree": "1b8af7981a41b378d800e673e43b445c1814d1cd",
+          "git_dirty_tracked": false,
+          "git_status_tracked": [],
+          "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "newton_file": "/home/horde/Code/Graphics/newton-working-copies/cloth-franka-perf-abba-candidate/newton/__init__.py"
+        },
+        "contacts_after_final_frame": {
+          "vertex_triangle": {
+            "raw_count": 1685,
+            "stored_count": 1685,
+            "nonempty_rows": 1410,
+            "overflow_rows": 0,
+            "pair_sha256": "37cc15a633b43175f5afbd14e9441d6f7220c0c6927d55992d547e688383413b"
+          },
+          "edge_edge": {
+            "raw_count": 10366,
+            "stored_count": 10366,
+            "nonempty_rows": 5145,
+            "overflow_rows": 0,
+            "pair_sha256": "45863ba98698fc56750677d27b18b4511f6da4e6a25cf79c4e8c8cf7bd4b3901"
+          }
+        },
+        "state": {
+          "particle_q_sha256": "9da47446cb087bf4d8021e3a5c70eaf3c46b5a13678f2d37d69a41a03d84a4b3",
+          "particle_qd_sha256": "b3cda7e97dc0fe343aaef0c9b02eab81324af80693b1d92980188674287122b4",
+          "body_q_sha256": "97a2c86e47b11e4a9f4fdf377c4cf0fa1a42a16b0aa325a5e4c0e029f66808cf",
+          "body_qd_sha256": "fab88ba709475e4907894bc39a30f3e47fe43104eda1a62cc53835c0b77a62f2",
+          "particle_q_min": -83.45443725585938,
+          "particle_q_max": 33.900054931640625,
+          "particle_qd_abs_max": 48.941802978515625
+        }
+      }
+    ]
+  },
+  "traces": {},
+  "trace_comparisons": {}
+}

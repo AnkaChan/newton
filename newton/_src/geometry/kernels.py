@@ -1637,9 +1637,7 @@ def edge_colliding_edges_detection_kernel(
 
                 if use_edge_filter:
                     if (colliding_edge_index >= filter_first) and (colliding_edge_index <= filter_last):
-                        idx = binary_search(
-                            edge_filtering_list, colliding_edge_index, filter_start, filter_end
-                        )
+                        idx = binary_search(edge_filtering_list, colliding_edge_index, filter_start, filter_end)
                         if idx > filter_start and edge_filtering_list[idx - 1] == colliding_edge_index:
                             continue
 

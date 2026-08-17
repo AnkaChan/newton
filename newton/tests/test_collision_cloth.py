@@ -198,9 +198,7 @@ def validate_vertex_collisions(
     v_index = wp.tid()
     v = pos[v_index]
 
-    num_cols = wp.min(
-        vertex_colliding_triangles_count[v_index], vertex_colliding_triangles_buffer_size[v_index]
-    )
+    num_cols = wp.min(vertex_colliding_triangles_count[v_index], vertex_colliding_triangles_buffer_size[v_index])
     offset = vertex_colliding_triangles_offsets[v_index]
     min_dis = vertex_colliding_triangles_min_dist[v_index]
     for col in range(num_cols):
@@ -1167,9 +1165,7 @@ def validate_vertex_collisions_distance_filter(
     v_index = wp.tid()
     v = pos[v_index]
 
-    num_cols = wp.min(
-        vertex_colliding_triangles_count[v_index], vertex_colliding_triangles_buffer_size[v_index]
-    )
+    num_cols = wp.min(vertex_colliding_triangles_count[v_index], vertex_colliding_triangles_buffer_size[v_index])
     offset = vertex_colliding_triangles_offsets[v_index]
     for col in range(num_cols):
         vertex_index = vertex_colliding_triangles[2 * (offset + col)]
