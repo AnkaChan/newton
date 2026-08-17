@@ -90,7 +90,7 @@ from .vbd_coupling_kernels import (
 
 __all__ = ["SolverVBD"]
 
-_RIGID_SOLVE_BLOCK_DIM = 64
+_RIGID_SOLVE_BLOCK_DIM = 128
 
 
 class SolverVBD(SolverBase, CouplingInterface):
