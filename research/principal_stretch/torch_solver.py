@@ -28,6 +28,8 @@ from .polar import polar_rotation
 
 _DENSE_BACKEND = "dense"
 _SPARSE_PCG_BACKEND = "sparse_pcg"
+_JACOBI_PRECONDITIONER = "jacobi"
+_MULTIGRID_PRECONDITIONER = "multigrid"
 
 
 def _build_J(Dm_inv: torch.Tensor) -> torch.Tensor:
@@ -80,10 +82,11 @@ def assemble_rhs(
 class ProjectionDiagnostics:
     """Auditable work and convergence data for a full-gradient projection.
 
-    ``matrix_vector_products`` counts sparse matrix-matrix calls, each of which
-    advances all ``rhs_count`` scalar right-hand sides.  The corresponding
-    scalar-RHS work is therefore their product.  A dense projection reports one
-    factor solve and no iterative work.
+    ``matrix_vector_products`` counts fine Krylov and hierarchy sparse
+    matrix-matrix calls, each of which advances all ``rhs_count`` scalar
+    right-hand sides.  ``preconditioner_matrix_vector_products`` is the subset
+    inside V-cycles.  A dense projection reports one factor solve and no
+    iterative work; multigrid reports one coarsest factor solve per V-cycle.
     """
 
     backend: str
@@ -101,11 +104,32 @@ class ProjectionDiagnostics:
     relative_tolerance: float | None
     absolute_tolerance: float | None
     breakdown: bool = False
+    preconditioner: str | None = None
+    hierarchy_levels: int = 0
+    preconditioner_matrix_vector_products: int = 0
 
     @property
     def scalar_rhs_matrix_vector_products(self) -> int:
         """Equivalent count if every right-hand side were solved separately."""
         return self.matrix_vector_products * self.rhs_count
+
+
+@dataclasses.dataclass(frozen=True)
+class _MultigridLevel:
+    """One fixed Galerkin level in the sparse projection hierarchy."""
+
+    matrix: torch.Tensor
+    smoother_inverse: torch.Tensor | None
+    aggregate: torch.Tensor | None
+
+
+@dataclasses.dataclass(frozen=True)
+class _MultigridHierarchy:
+    """Fixed symmetric V-cycle data suitable for ordinary PCG."""
+
+    levels: tuple[_MultigridLevel, ...]
+    coarse_cholesky: torch.Tensor
+    smoothing_steps: int
 
 
 @dataclasses.dataclass
@@ -132,6 +156,8 @@ class SolverState:
     pcg_absolute_tolerance: float = 0.0
     pcg_max_iterations: int = 512
     pcg_raise_on_nonconvergence: bool = True
+    pcg_preconditioner: str = _JACOBI_PRECONDITIONER
+    multigrid_hierarchy: _MultigridHierarchy | None = None
 
 
 def _validate_pcg_options(relative_tolerance: float, absolute_tolerance: float, max_iterations: int) -> None:
@@ -143,6 +169,210 @@ def _validate_pcg_options(relative_tolerance: float, absolute_tolerance: float, 
         raise ValueError("at least one PCG tolerance must be positive")
     if isinstance(max_iterations, bool) or not isinstance(max_iterations, int) or max_iterations <= 0:
         raise ValueError("pcg_max_iterations must be a positive integer")
+
+
+def _validate_multigrid_options(
+    preconditioner: str,
+    coarse_size: int,
+    max_levels: int,
+    smoothing_steps: int,
+    smoother_damping: float,
+) -> None:
+    if preconditioner not in (_JACOBI_PRECONDITIONER, _MULTIGRID_PRECONDITIONER):
+        raise ValueError(f"pcg_preconditioner must be '{_JACOBI_PRECONDITIONER}' or '{_MULTIGRID_PRECONDITIONER}'")
+    for name, value in (
+        ("multigrid_coarse_size", coarse_size),
+        ("multigrid_max_levels", max_levels),
+        ("multigrid_smoothing_steps", smoothing_steps),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+    if not np.isfinite(smoother_damping) or not 0.0 < smoother_damping < 1.0:
+        raise ValueError("multigrid_smoother_damping must be finite and lie strictly between zero and one")
+
+
+def _csr_numpy(matrix: torch.Tensor) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Copy a CSR matrix into canonical host arrays for deterministic setup."""
+    if matrix.layout != torch.sparse_csr:
+        raise ValueError("multigrid setup requires a CSR matrix")
+    crow = matrix.crow_indices().detach().cpu().numpy().astype(np.int64, copy=True)
+    columns = matrix.col_indices().detach().cpu().numpy().astype(np.int64, copy=True)
+    values = matrix.values().detach().cpu().numpy().copy()
+    return crow, columns, values
+
+
+def _csr_rows(crow: np.ndarray) -> np.ndarray:
+    return np.repeat(np.arange(crow.size - 1, dtype=np.int64), np.diff(crow))
+
+
+def _symmetrize_csr_values(
+    rows: np.ndarray,
+    columns: np.ndarray,
+    values: np.ndarray,
+    n_rows: int,
+) -> np.ndarray:
+    """Validate a square sparsity pattern and average transpose pairs."""
+    if rows.size != columns.size or rows.size != values.size:
+        raise ValueError("invalid CSR arrays in multigrid setup")
+    keys = rows * n_rows + columns
+    if keys.size and (np.diff(keys) <= 0).any():
+        raise ValueError("multigrid setup requires canonical sorted CSR indices")
+    transpose_keys = columns * n_rows + rows
+    transpose_positions = np.searchsorted(keys, transpose_keys)
+    if (transpose_positions >= keys.size).any() or not np.array_equal(keys[transpose_positions], transpose_keys):
+        raise ValueError("multigrid Galerkin matrix must have a symmetric sparsity pattern")
+    transpose_values = values[transpose_positions]
+    scale = max(float(np.abs(values).max(initial=0.0)), 1.0)
+    tolerance = 256.0 * np.finfo(values.dtype).eps * scale
+    if not np.isfinite(values).all() or float(np.abs(values - transpose_values).max(initial=0.0)) > tolerance:
+        raise ValueError("multigrid Galerkin matrix must be finite and symmetric")
+    # Both entries perform the same pairwise addition, so transpose pairs become
+    # bitwise equal.  This removes assembly roundoff before the matrix enters PCG.
+    return 0.5 * (values + transpose_values)
+
+
+def _csr_diagonal(crow: np.ndarray, columns: np.ndarray, values: np.ndarray) -> np.ndarray:
+    n_rows = crow.size - 1
+    rows = _csr_rows(crow)
+    diagonal_mask = rows == columns
+    diagonal = np.zeros(n_rows, dtype=values.dtype)
+    diagonal[rows[diagonal_mask]] = values[diagonal_mask]
+    if not np.isfinite(diagonal).all() or (diagonal <= 0.0).any():
+        raise ValueError("multigrid Galerkin matrix must have a finite positive diagonal")
+    return diagonal
+
+
+def _deterministic_heavy_edge_aggregation(
+    crow: np.ndarray,
+    columns: np.ndarray,
+    values: np.ndarray,
+    diagonal: np.ndarray,
+) -> np.ndarray:
+    """Greedily pair graph neighbors, with normalized coupling and ID tie-breaks."""
+    n_rows = crow.size - 1
+    aggregate = np.full(n_rows, -1, dtype=np.int64)
+    next_aggregate = 0
+    for row in range(n_rows):
+        if aggregate[row] >= 0:
+            continue
+        best_column = -1
+        best_coupling = -1.0
+        for offset in range(int(crow[row]), int(crow[row + 1])):
+            column = int(columns[offset])
+            if column == row or aggregate[column] >= 0 or values[offset] == 0.0:
+                continue
+            coupling = abs(float(values[offset])) / float(np.sqrt(diagonal[row] * diagonal[column]))
+            if coupling > best_coupling or (coupling == best_coupling and column < best_column):
+                best_coupling = coupling
+                best_column = column
+        aggregate[row] = next_aggregate
+        if best_column >= 0:
+            aggregate[best_column] = next_aggregate
+        next_aggregate += 1
+    return aggregate
+
+
+def _galerkin_coarse_csr(
+    crow: np.ndarray,
+    columns: np.ndarray,
+    values: np.ndarray,
+    aggregate: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Form ``P.T @ A @ P`` for unsmoothed aggregate prolongation."""
+    rows = _csr_rows(crow)
+    n_coarse = int(aggregate.max(initial=-1)) + 1
+    coarse_keys = aggregate[rows] * n_coarse + aggregate[columns]
+    order = np.argsort(coarse_keys, kind="stable")
+    sorted_keys = coarse_keys[order]
+    starts = np.flatnonzero(np.r_[True, sorted_keys[1:] != sorted_keys[:-1]])
+    keys = sorted_keys[starts]
+    coarse_values = np.add.reduceat(values[order], starts)
+    coarse_rows = keys // n_coarse
+    coarse_columns = keys % n_coarse
+    coarse_values = _symmetrize_csr_values(coarse_rows, coarse_columns, coarse_values, n_coarse)
+    # Exact cancellation can leave explicit zero off-diagonals.  Drop them, but
+    # retain every diagonal so hierarchy setup remains auditable and fail-closed.
+    keep = (coarse_values != 0.0) | (coarse_rows == coarse_columns)
+    coarse_rows = coarse_rows[keep]
+    coarse_columns = coarse_columns[keep]
+    coarse_values = coarse_values[keep]
+    counts = np.bincount(coarse_rows, minlength=n_coarse)
+    coarse_crow = np.empty(n_coarse + 1, dtype=np.int64)
+    coarse_crow[0] = 0
+    np.cumsum(counts, out=coarse_crow[1:])
+    return coarse_crow, coarse_columns.astype(np.int64, copy=False), coarse_values
+
+
+def _csr_from_numpy(
+    crow: np.ndarray,
+    columns: np.ndarray,
+    values: np.ndarray,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    n_rows = crow.size - 1
+    return torch.sparse_csr_tensor(
+        torch.as_tensor(crow, dtype=torch.int64, device=device),
+        torch.as_tensor(columns, dtype=torch.int64, device=device),
+        torch.as_tensor(values, dtype=dtype, device=device),
+        size=(n_rows, n_rows),
+        dtype=dtype,
+        device=device,
+    )
+
+
+def _build_multigrid_hierarchy(
+    matrix: torch.Tensor,
+    *,
+    coarse_size: int,
+    max_levels: int,
+    smoothing_steps: int,
+    smoother_damping: float,
+) -> _MultigridHierarchy:
+    """Build a deterministic heavy-edge/Galerkin hierarchy and coarse factor."""
+    device = matrix.device
+    dtype = matrix.dtype
+    crow, columns, values = _csr_numpy(matrix)
+    rows = _csr_rows(crow)
+    values = _symmetrize_csr_values(rows, columns, values, crow.size - 1)
+    levels: list[_MultigridLevel] = []
+    current_matrix = _csr_from_numpy(crow, columns, values, device, dtype)
+
+    for _level_index in range(max_levels):
+        n_rows = crow.size - 1
+        diagonal = _csr_diagonal(crow, columns, values)
+        if n_rows <= coarse_size:
+            coarse_dense = current_matrix.to_dense()
+            try:
+                coarse_cholesky = torch.linalg.cholesky(coarse_dense)
+            except RuntimeError as exc:
+                raise ValueError("multigrid coarsest Galerkin matrix is not positive definite") from exc
+            levels.append(_MultigridLevel(current_matrix, None, None))
+            return _MultigridHierarchy(tuple(levels), coarse_cholesky, smoothing_steps)
+
+        row_absolute_sum = np.add.reduceat(np.abs(values), crow[:-1])
+        if not np.isfinite(row_absolute_sum).all() or (row_absolute_sum <= 0.0).any():
+            raise ValueError("multigrid smoother requires finite nonzero rows")
+        # With B = damping * diag(1 / ||A_i||_1) and damping < 1,
+        # 2 B^-1 - A is symmetric strictly diagonally dominant and positive.
+        # Mirrored stationary sweeps therefore produce an SPD smoother.
+        smoother_inverse = torch.as_tensor(
+            smoother_damping / row_absolute_sum,
+            dtype=dtype,
+            device=device,
+        )
+        aggregate = _deterministic_heavy_edge_aggregation(crow, columns, values, diagonal)
+        n_coarse = int(aggregate.max(initial=-1)) + 1
+        if n_coarse <= 0 or n_coarse >= n_rows:
+            raise ValueError("multigrid aggregation did not reduce the free-vertex graph")
+        aggregate_tensor = torch.as_tensor(aggregate, dtype=torch.int64, device=device)
+        levels.append(_MultigridLevel(current_matrix, smoother_inverse, aggregate_tensor))
+        # Every fine row belongs to one nonempty aggregate, so the piecewise-
+        # constant P has full column rank.  Thus P.T @ A @ P remains SPD.
+        crow, columns, values = _galerkin_coarse_csr(crow, columns, values, aggregate)
+        current_matrix = _csr_from_numpy(crow, columns, values, device, dtype)
+
+    raise ValueError(f"multigrid hierarchy did not reach coarse_size={coarse_size} within max_levels={max_levels}")
 
 
 def _validate_sparse_components(tet_indices: np.ndarray, pinned_indices: np.ndarray, n_verts: int) -> None:
@@ -254,13 +484,20 @@ def build_solver(
     pcg_absolute_tolerance: float = 0.0,
     pcg_max_iterations: int = 512,
     pcg_raise_on_nonconvergence: bool = True,
+    pcg_preconditioner: str = _JACOBI_PRECONDITIONER,
+    multigrid_coarse_size: int = 256,
+    multigrid_max_levels: int = 12,
+    multigrid_smoothing_steps: int = 1,
+    multigrid_smoother_damping: float = 0.8,
 ) -> SolverState:
     r"""Build the fixed linear system used by the stretch decoder.
 
     ``projection_backend="dense"`` preserves the original Cholesky-backed
     state and remains the default.  ``"sparse_pcg"`` never allocates a dense
     vertex-by-vertex matrix: it assembles reduced CSR matrices with at most
-    O(T) entries and a Jacobi preconditioner.  Sparse states support
+    O(T) entries and either a Jacobi or fixed symmetric multigrid
+    preconditioner.  Multigrid is an inference-only path until it has an
+    implicit-adjoint backward.  Sparse states support
     :func:`project_deformation_gradient`, but not the legacy local-global
     :func:`solve` routine.
 
@@ -279,6 +516,15 @@ def build_solver(
         pcg_max_iterations: Maximum sparse PCG iterations.
         pcg_raise_on_nonconvergence: Whether sparse projection fails closed
             when the requested tolerance is not reached.
+        pcg_preconditioner: ``"jacobi"`` (the compatible default) or
+            ``"multigrid"``.
+        multigrid_coarse_size: Maximum vertex count for the prefactored exact
+            coarsest solve.
+        multigrid_max_levels: Maximum number of hierarchy levels, including
+            the coarsest level.
+        multigrid_smoothing_steps: Symmetric pre/post L1-Jacobi sweeps per
+            non-coarse level and V-cycle.
+        multigrid_smoother_damping: L1-Jacobi damping in ``(0, 1)``.
 
     Returns:
         Precomputed solver state.
@@ -289,6 +535,15 @@ def build_solver(
         raise ValueError(f"projection_backend must be '{_DENSE_BACKEND}' or '{_SPARSE_PCG_BACKEND}'")
     if projection_backend == _SPARSE_PCG_BACKEND:
         _validate_pcg_options(pcg_relative_tolerance, pcg_absolute_tolerance, pcg_max_iterations)
+        _validate_multigrid_options(
+            pcg_preconditioner,
+            multigrid_coarse_size,
+            multigrid_max_levels,
+            multigrid_smoothing_steps,
+            multigrid_smoother_damping,
+        )
+    elif pcg_preconditioner != _JACOBI_PRECONDITIONER:
+        raise ValueError("pcg_preconditioner applies only to projection_backend='sparse_pcg'")
     rest_q_t = torch.as_tensor(rest_q, dtype=dtype, device=device)
     tets = torch.as_tensor(tet_indices, dtype=torch.int64, device=device)
     Dm_inv = torch.as_tensor(tet_poses, dtype=dtype, device=device)
@@ -322,6 +577,7 @@ def build_solver(
     L_ff_chol = None
     L_ff_sparse = None
     L_ff_inverse_diagonal = None
+    multigrid_hierarchy = None
     if projection_backend == _DENSE_BACKEND:
         # Dense assembly of L: L = sum_e w_e * (J_e @ J_e^T) scattered.
         L = torch.zeros(n_verts, n_verts, dtype=dtype, device=device)
@@ -343,6 +599,23 @@ def build_solver(
             n_verts,
             tikhonov,
         )
+        if pcg_preconditioner == _MULTIGRID_PRECONDITIONER:
+            multigrid_hierarchy = _build_multigrid_hierarchy(
+                L_ff_sparse,
+                coarse_size=multigrid_coarse_size,
+                max_levels=multigrid_max_levels,
+                smoothing_steps=multigrid_smoothing_steps,
+                smoother_damping=multigrid_smoother_damping,
+            )
+            # PCG must use the same bitwise-symmetric root operator that was
+            # validated and used to build the Galerkin hierarchy.  The raw
+            # GPU coalescing path is mathematically symmetric but may differ
+            # between transpose entries by reduction roundoff on other
+            # devices, which is not a sufficient contract for ordinary PCG.
+            L_ff_sparse = multigrid_hierarchy.levels[0].matrix
+            root_crow, root_columns, root_values = _csr_numpy(L_ff_sparse)
+            root_diagonal = _csr_diagonal(root_crow, root_columns, root_values)
+            L_ff_inverse_diagonal = torch.as_tensor(root_diagonal, dtype=dtype, device=device).reciprocal()
 
     return SolverState(
         n_verts=n_verts,
@@ -365,6 +638,8 @@ def build_solver(
         pcg_absolute_tolerance=float(pcg_absolute_tolerance),
         pcg_max_iterations=pcg_max_iterations,
         pcg_raise_on_nonconvergence=bool(pcg_raise_on_nonconvergence),
+        pcg_preconditioner=pcg_preconditioner,
+        multigrid_hierarchy=multigrid_hierarchy,
     )
 
 
@@ -432,16 +707,75 @@ def _relative_residual(residual_norm: torch.Tensor, rhs_norm: torch.Tensor) -> t
     return torch.where(rhs_norm > 0.0, residual_norm / rhs_norm, residual_norm)
 
 
+@dataclasses.dataclass
+class _PreconditionerWork:
+    matrix_vector_products: int = 0
+    factor_solves: int = 0
+
+
+def _multigrid_v_cycle(
+    hierarchy: _MultigridHierarchy,
+    level_index: int,
+    rhs: torch.Tensor,
+    work: _PreconditionerWork,
+) -> torch.Tensor:
+    """Apply one fixed symmetric V-cycle to all RHS columns."""
+    level = hierarchy.levels[level_index]
+    if level.aggregate is None:
+        work.factor_solves += 1
+        return torch.cholesky_solve(rhs, hierarchy.coarse_cholesky)
+    if level.smoother_inverse is None:
+        raise RuntimeError("non-coarse multigrid level is missing its smoother")
+
+    smoother = level.smoother_inverse[:, None]
+    # Starting from zero makes the first pre-sweep exactly B r, without a
+    # redundant A @ 0.  Remaining pre-sweeps, restriction, and the mirrored
+    # post-sweeps are kept explicit.  The post smoother is the transpose of the
+    # pre smoother; adding the recursively SPD coarse correction therefore
+    # makes this fixed V-cycle symmetric positive definite for ordinary PCG.
+    x = smoother * rhs
+    for _ in range(1, hierarchy.smoothing_steps):
+        residual = rhs - torch.sparse.mm(level.matrix, x)
+        work.matrix_vector_products += 1
+        x = x + smoother * residual
+
+    residual = rhs - torch.sparse.mm(level.matrix, x)
+    work.matrix_vector_products += 1
+    n_coarse = hierarchy.levels[level_index + 1].matrix.shape[0]
+    coarse_rhs = torch.zeros(n_coarse, rhs.shape[1], dtype=rhs.dtype, device=rhs.device)
+    coarse_rhs = coarse_rhs.index_add(0, level.aggregate, residual)
+    coarse_correction = _multigrid_v_cycle(hierarchy, level_index + 1, coarse_rhs, work)
+    x = x + coarse_correction[level.aggregate]
+
+    for _ in range(hierarchy.smoothing_steps):
+        residual = rhs - torch.sparse.mm(level.matrix, x)
+        work.matrix_vector_products += 1
+        x = x + smoother * residual
+    return x
+
+
+def _apply_pcg_preconditioner(
+    inverse_diagonal: torch.Tensor,
+    hierarchy: _MultigridHierarchy | None,
+    residual: torch.Tensor,
+    work: _PreconditionerWork,
+) -> torch.Tensor:
+    if hierarchy is None:
+        return inverse_diagonal[:, None] * residual
+    return _multigrid_v_cycle(hierarchy, 0, residual, work)
+
+
 def _pcg_solve(
     matrix: torch.Tensor,
     inverse_diagonal: torch.Tensor,
+    multigrid_hierarchy: _MultigridHierarchy | None,
     rhs: torch.Tensor,
     initial_guess: torch.Tensor,
     relative_tolerance: float,
     absolute_tolerance: float,
     max_iterations: int,
 ) -> tuple[torch.Tensor, ProjectionDiagnostics]:
-    """Solve independent RHS columns with deterministic Jacobi PCG."""
+    """Solve independent RHS columns with deterministic fixed-preconditioner PCG."""
     n_rows, rhs_count = rhs.shape
     x = initial_guess
     rhs_norm = torch.linalg.vector_norm(rhs, dim=0)
@@ -459,9 +793,10 @@ def _pcg_solve(
     preconditioner_count = 0
     iterations = 0
     residual_is_true = True
+    preconditioner_work = _PreconditionerWork()
 
     if n_rows and bool(active.any().item()):
-        z = inverse_diagonal[:, None] * residual
+        z = _apply_pcg_preconditioner(inverse_diagonal, multigrid_hierarchy, residual, preconditioner_work)
         direction = torch.where(active[None, :], z, torch.zeros_like(z))
         residual_dot_z = (residual * z).sum(dim=0)
         preconditioner_count = 1
@@ -495,13 +830,23 @@ def _pcg_solve(
                 active = (residual_norm > threshold) & ~failed
                 if not bool(active.any().item()):
                     break
-                z = inverse_diagonal[:, None] * residual
+                z = _apply_pcg_preconditioner(
+                    inverse_diagonal,
+                    multigrid_hierarchy,
+                    residual,
+                    preconditioner_work,
+                )
                 direction = torch.where(active[None, :], z, torch.zeros_like(z))
                 residual_dot_z = (residual * z).sum(dim=0)
                 preconditioner_count += 1
                 continue
 
-            z_new = inverse_diagonal[:, None] * residual
+            z_new = _apply_pcg_preconditioner(
+                inverse_diagonal,
+                multigrid_hierarchy,
+                residual,
+                preconditioner_work,
+            )
             residual_dot_z_new = (residual * z_new).sum(dim=0)
             bad_numerator = active & (
                 (residual_dot_z <= 0.0) | (residual_dot_z_new <= 0.0) | ~torch.isfinite(residual_dot_z_new)
@@ -527,9 +872,9 @@ def _pcg_solve(
         iterations=iterations,
         rhs_count=rhs_count,
         converged_rhs=converged_rhs,
-        matrix_vector_products=matvec_count,
+        matrix_vector_products=matvec_count + preconditioner_work.matrix_vector_products,
         preconditioner_applications=preconditioner_count,
-        factor_solves=0,
+        factor_solves=preconditioner_work.factor_solves,
         rhs_norm_max=float(rhs_norm.max().item()),
         initial_residual_norm_max=float(initial_residual_norm.max().item()),
         residual_norm_max=float(residual_norm.max().item()),
@@ -537,6 +882,9 @@ def _pcg_solve(
         relative_tolerance=relative_tolerance,
         absolute_tolerance=absolute_tolerance,
         breakdown=bool(failed.any().item()),
+        preconditioner=(_MULTIGRID_PRECONDITIONER if multigrid_hierarchy is not None else _JACOBI_PRECONDITIONER),
+        hierarchy_levels=0 if multigrid_hierarchy is None else len(multigrid_hierarchy.levels),
+        preconditioner_matrix_vector_products=preconditioner_work.matrix_vector_products,
     )
     return x, diagnostics
 
@@ -553,9 +901,9 @@ def project_deformation_gradient(
     initial_positions: torch.Tensor | None = None,
     return_diagnostics: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, ProjectionDiagnostics]:
-    r"""Project a full target-gradient field to one globally compatible mesh.
+    r"""Fit one globally compatible mesh to a full target-gradient field.
 
-    This is the exact one-shot minimizer
+    The projection objective is
 
     .. math::
 
@@ -563,11 +911,19 @@ def project_deformation_gradient(
         \sum_t V_t\lVert F_t(x)-F_t^*\rVert_F^2.
 
     Since each ``F_t(x)`` is linear in the vertex positions, the normal matrix
-    is the rest-mesh Laplacian in :class:`SolverState`.  Dense states perform
-    one prefactored triangular solve.  Sparse states use Jacobi-preconditioned
-    conjugate gradients on a CSR matrix assembled once at build time.  Both
-    paths preserve pins exactly and have no polar or local fixed-point step.
-    Leading batch dimensions are broadcast and preserved.
+    is the rest-mesh Laplacian in :class:`SolverState`.  Dense states obtain the
+    floating-point minimizer with one prefactored Cholesky factor solve.  Sparse
+    states approximate it to the declared normal-equation residual tolerance
+    with conjugate gradients and the state's fixed Jacobi or symmetric
+    Galerkin-multigrid preconditioner.  Sparse convergence is diagnostics-bound
+    and fails closed by default.  Both paths preserve pins exactly and have no
+    polar or local fixed-point step.  Leading batch dimensions are broadcast
+    and preserved.
+
+    The multigrid path is currently inference-only and rejects gradient-bearing
+    inputs.  Its tolerance-terminated unrolled PCG backward is not an implicit
+    derivative of the converged projection.  Dense and Jacobi autograd behavior
+    remains available and unchanged.
 
     Args:
         state: Precomputed decoder state for the shared tetrahedral mesh.
@@ -606,6 +962,14 @@ def project_deformation_gradient(
             raise ValueError(
                 f"initial_positions must end in ({state.n_verts}, 3), got {tuple(initial_positions.shape)}"
             )
+    if state.multigrid_hierarchy is not None and (
+        F_target.requires_grad
+        or pinned_targets.requires_grad
+        or (initial_positions is not None and initial_positions.requires_grad)
+    ):
+        raise ValueError(
+            "multigrid sparse projection is inference-only until an implicit-adjoint backward is implemented"
+        )
 
     initial_batch = () if initial_positions is None else initial_positions.shape[:-2]
     batch = torch.broadcast_shapes(F_target.shape[:-3], pinned_targets.shape[:-2], initial_batch)
@@ -638,10 +1002,13 @@ def project_deformation_gradient(
                 relative_residual_max=float(relative.max().item()),
                 relative_tolerance=None,
                 absolute_tolerance=None,
+                preconditioner=None,
             )
     else:
         if state.L_ff_sparse is None or state.L_ff_inverse_diagonal is None:
             raise RuntimeError("sparse projection state is missing its CSR matrix or preconditioner")
+        if state.pcg_preconditioner == _MULTIGRID_PRECONDITIONER and state.multigrid_hierarchy is None:
+            raise RuntimeError("multigrid sparse projection state is missing its hierarchy")
         relative_tolerance = state.pcg_relative_tolerance if relative_tolerance is None else float(relative_tolerance)
         absolute_tolerance = state.pcg_absolute_tolerance if absolute_tolerance is None else float(absolute_tolerance)
         max_iterations = state.pcg_max_iterations if max_iterations is None else max_iterations
@@ -655,6 +1022,7 @@ def project_deformation_gradient(
         x_columns, diagnostics = _pcg_solve(
             state.L_ff_sparse,
             state.L_ff_inverse_diagonal,
+            state.multigrid_hierarchy,
             b_columns,
             initial_columns,
             relative_tolerance,
