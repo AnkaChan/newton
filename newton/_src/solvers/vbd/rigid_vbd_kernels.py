@@ -27,7 +27,7 @@ from newton._src.solvers.solver import integrate_rigid_body
 
 wp.set_module_options({"enable_backward": False})
 
-_KERNEL_VERSION = "fused_cable_duals_beta_safe_v9"
+_KERNEL_VERSION = "mixed_cable_and_sparse_contacts_v12"
 print(f"[rigid_vbd_kernels] version: {_KERNEL_VERSION}")
 
 # ---------------------------------
@@ -3887,6 +3887,8 @@ def accumulate_body_body_contacts_per_body(
     num_contacts = body_contact_counts[body_id]
     if num_contacts > body_contact_buffer_pre_alloc:
         num_contacts = body_contact_buffer_pre_alloc
+    if thread_id_within_body >= num_contacts:
+        return
 
     contact_count = rigid_contact_count[0]
 
@@ -4226,6 +4228,8 @@ def accumulate_body_particle_contacts_per_body(
     num_contacts = body_particle_contact_counts[body_id]
     if num_contacts > body_particle_contact_buffer_pre_alloc:
         num_contacts = body_particle_contact_buffer_pre_alloc
+    if thread_id_within_body >= num_contacts:
+        return
 
     max_contacts = body_particle_contact_count[0]  # single total soft-contact count
 
