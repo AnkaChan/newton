@@ -20,7 +20,7 @@ from ...geometry.kernels import (
 from ...sim import Model
 from ...utils.mesh import MeshAdjacency
 
-_VERSION = "self_contact_count_bounds_v1"
+_VERSION = "self_contact_block_size_v1"
 print(f"[tri_mesh_collision] version: {_VERSION}")
 
 
@@ -257,7 +257,7 @@ class TriMeshCollisionDetector:
         triangle_triangle_collision_buffer_pre_alloc=8,
         triangle_triangle_collision_buffer_max_alloc=256,
         edge_edge_parallel_epsilon=1e-5,
-        collision_detection_block_size=16,
+        collision_detection_block_size=8,
     ):
         self.model = model
         self.record_triangle_contacting_vertices = record_triangle_contacting_vertices
