@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import unittest
 
-import newton
 import numpy as np
 import torch
 import warp as wp
+
+import newton
 
 from ..solver_benchmark import build_common_problem, run_vbd
 from ..solver_scenes import (

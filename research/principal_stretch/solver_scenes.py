@@ -19,9 +19,10 @@ import dataclasses
 import numbers
 from collections.abc import Mapping, Sequence
 
-import newton
 import numpy as np
 import warp as wp
+
+import newton
 
 from .solver_benchmark import TetBenchmarkScene, scene_from_model
 
