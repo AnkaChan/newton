@@ -27,7 +27,7 @@ from newton._src.solvers.solver import integrate_rigid_body
 
 wp.set_module_options({"enable_backward": False})
 
-_KERNEL_VERSION = "cable_relative_twist_v2"
+_KERNEL_VERSION = "cable_relative_twist_v2b"
 print(f"[rigid_vbd_kernels] version: {_KERNEL_VERSION}")
 
 # ---------------------------------
@@ -475,7 +475,7 @@ def _measure_cable_bend_twist_z(q_wp: wp.quat, q_wc: wp.quat) -> CableBendTwistM
     measure.t1 = t1
     measure.m0 = m0
     measure.m1 = m1
-    if tangent_denom > _CABLE_TRANSPORT_DENOM_EPS:
+    if tangent_denom > _CABLE_TWIST_JACOBIAN_DIRECTIONAL_DENOM:
         measure.twist = _relative_twist_angle_z(q_wp, q_wc)
     else:
         measure.twist = _transported_twist_angle_from_material_axes(t0, t1, m0, m1, m0)
