@@ -15,13 +15,16 @@ deformation-gradient field, which is decoded by exactly one weighted global
 projection.  The default dense Cholesky projection is the only backend this
 initial trainer accepts; a checkpoint records that choice explicitly.
 
-The position loss is a dimensionless mass-weighted free-vertex error,
+The compatibility-default position loss is a dimensionless mass-weighted
+free-vertex error,
 
 ``sum_i m_i ||x_i - x_i_ref||^2 / (sum_i m_i * ell^2)``,
 
-where ``ell`` is the static RMS rest-edge length.  An optional deformation-
-gradient term is the rest-volume-weighted mean squared component error.  Both
-normalizations are fixed by the authenticated static bundle.
+where ``ell`` is the static RMS rest-edge length. An optional decoded
+deformation-gradient term is the rest-volume-weighted mean squared component
+error. An explicit alternative supervises the raw v3 target field before
+projection and normalizes each transition by its zero-head observed-to-
+reference error. Every choice and normalization is checkpoint-authenticated.
 
 Checkpoint tensor state and JSON metadata have separate SHA-256 digests.  The
 metadata binds the history manifest, complete static bundle, selected
@@ -60,10 +63,14 @@ from .predictor import (
 )
 from .solver_benchmark import build_common_problem, common_objective_manifest, evaluate_common_state
 
-_SCHEMA_VERSION = 1
-_CHECKPOINT_CONTRACT = "pr2901-history-v3-checkpoint-v1"
-_EVALUATION_CONTRACT = "pr2901-history-v3-evaluation-v1"
+_SCHEMA_VERSION = 3
+_CHECKPOINT_CONTRACT = "pr2901-history-v3-checkpoint-v3"
+_EVALUATION_CONTRACT = "pr2901-history-v3-evaluation-v3"
+_LEGACY_CHECKPOINT_IDENTITIES = ((1, "pr2901-history-v3-checkpoint-v1"),)
 _SUPPORTED_PROJECTION_BACKEND = "dense_cholesky"
+_DECODED_LOSS_MODE = "decoded-position-deformation"
+_NORMALIZED_RAW_F_LOSS_MODE = "normalized-raw-deformation-gradient"
+_LOSS_MODES = (_DECODED_LOSS_MODE, _NORMALIZED_RAW_F_LOSS_MODE)
 
 
 def _jsonable(value: object) -> object:
@@ -93,6 +100,10 @@ def _canonical_digest(value: object) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _canonical_array(value: np.ndarray) -> np.ndarray:
@@ -183,6 +194,9 @@ def _source_provenance() -> dict[str, str | None]:
     }
 
 
+_SOURCE_PROVENANCE_AT_IMPORT = _source_provenance()
+
+
 def _synchronize(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(device)
@@ -215,7 +229,7 @@ def _float32_previous(transition: HistoryTransition) -> np.ndarray:
 
 @dataclasses.dataclass(frozen=True)
 class PRV3TrainingConfig:
-    """Optimization and loss settings authenticated in every checkpoint."""
+    """Optimization and explicit loss settings authenticated per checkpoint."""
 
     steps: int = 1000
     batch_size: int = 4
@@ -223,19 +237,21 @@ class PRV3TrainingConfig:
     weight_decay: float = 1.0e-5
     position_loss_weight: float = 1.0
     deformation_gradient_loss_weight: float = 0.0
+    loss_mode: str = _DECODED_LOSS_MODE
+    raw_deformation_gradient_floor: float = 1.0e-8
     gradient_clip_norm: float = 5.0
     seed: int = 0
     log_every: int = 50
     projection_backend: str = _SUPPORTED_PROJECTION_BACKEND
 
     def __post_init__(self) -> None:
-        if isinstance(self.steps, bool) or self.steps < 1:
+        if isinstance(self.steps, bool) or not isinstance(self.steps, int) or self.steps < 1:
             raise ValueError("steps must be a positive integer")
-        if isinstance(self.batch_size, bool) or self.batch_size < 1:
+        if isinstance(self.batch_size, bool) or not isinstance(self.batch_size, int) or self.batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
-        if isinstance(self.seed, bool) or self.seed < 0:
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
             raise ValueError("seed must be a non-negative integer")
-        if isinstance(self.log_every, bool) or self.log_every < 1:
+        if isinstance(self.log_every, bool) or not isinstance(self.log_every, int) or self.log_every < 1:
             raise ValueError("log_every must be a positive integer")
         for name in (
             "learning_rate",
@@ -248,8 +264,22 @@ class PRV3TrainingConfig:
                 raise ValueError(f"{name} must be finite and non-negative")
         if self.learning_rate == 0.0:
             raise ValueError("learning_rate must be positive")
-        if self.position_loss_weight == 0.0 and self.deformation_gradient_loss_weight == 0.0:
-            raise ValueError("at least one loss weight must be positive")
+        if not isinstance(self.loss_mode, str) or self.loss_mode not in _LOSS_MODES:
+            raise ValueError(f"loss_mode must be one of {_LOSS_MODES}")
+        if (
+            isinstance(self.raw_deformation_gradient_floor, bool)
+            or not math.isfinite(self.raw_deformation_gradient_floor)
+            or self.raw_deformation_gradient_floor <= 0.0
+        ):
+            raise ValueError("raw_deformation_gradient_floor must be finite and positive")
+        if self.loss_mode == _DECODED_LOSS_MODE:
+            if self.position_loss_weight == 0.0 and self.deformation_gradient_loss_weight == 0.0:
+                raise ValueError("decoded loss mode requires at least one positive loss weight")
+        elif self.position_loss_weight != 0.0 or self.deformation_gradient_loss_weight != 0.0:
+            raise ValueError(
+                "normalized raw deformation-gradient mode requires position_loss_weight=0 and "
+                "deformation_gradient_loss_weight=0"
+            )
         if not math.isfinite(self.weight_decay) or self.weight_decay < 0.0:
             raise ValueError("weight_decay must be finite and non-negative")
         if self.projection_backend != _SUPPORTED_PROJECTION_BACKEND:
@@ -267,6 +297,9 @@ class _PreparedSample:
     pinned_indices: np.ndarray
     pin_targets: np.ndarray
     reference_positions: np.ndarray
+    observed_F: np.ndarray
+    reference_F: np.ndarray
+    raw_deformation_gradient_observed_loss: float
     pin_signature: tuple[int, ...]
 
 
@@ -277,6 +310,29 @@ class _PreparedDataset:
     samples: tuple[_PreparedSample, ...]
     characteristic_length_m: float
     selection_record: dict[str, object]
+
+
+@dataclasses.dataclass(frozen=True)
+class _RawTargetSupervision:
+    """Immutable device-resident tensors reused by every sampled step."""
+
+    reference_F: torch.Tensor
+    normalizer: torch.Tensor
+
+
+@dataclasses.dataclass(frozen=True)
+class _ResidentPredictionInput:
+    """One sample's device-resident inference tensors."""
+
+    state: torch_solver.SolverState
+    x_current: torch.Tensor
+    x_previous: torch.Tensor
+    force: torch.Tensor
+    gravity: torch.Tensor
+    mu: torch.Tensor
+    lam: torch.Tensor
+    pin: torch.Tensor
+    pinned_targets: torch.Tensor
 
 
 @dataclasses.dataclass
@@ -316,6 +372,12 @@ def _prepare_dataset(
     hashes = [transition.transition_sha256 for transition in transitions]
     if len(hashes) != len(set(hashes)):
         raise ValueError("training transition selection contains duplicates")
+
+    static_tets = torch.tensor(static.tet_indices, dtype=torch.int64)
+    static_dm_inverse = torch.tensor(static.tet_poses, dtype=torch.float64)
+    static_J = torch_solver._build_J(static_dm_inverse)
+    static_volume = 1.0 / (6.0 * torch.linalg.det(static_dm_inverse))
+    raw_F_denominator = 9.0 * static_volume.sum()
 
     samples: list[_PreparedSample] = []
     transition_records: list[dict[str, object]] = []
@@ -363,6 +425,19 @@ def _prepare_dataset(
             raise ValueError("transition objective hash does not match reconstructed common objective")
 
         pinned_indices = model_inputs["pinned_indices"]
+        observed = torch.tensor(model_inputs["x_current"], dtype=torch.float64)
+        reference = torch.tensor(transition.reference_positions, dtype=torch.float64)
+        observed_F_tensor = torch_solver.compute_F(observed, static_tets, static_J)
+        reference_F_tensor = torch_solver.compute_F(reference, static_tets, static_J)
+        raw_observed_loss = float(
+            (static_volume[:, None, None] * (observed_F_tensor - reference_F_tensor).square()).sum() / raw_F_denominator
+        )
+        if not math.isfinite(raw_observed_loss) or raw_observed_loss < 0.0:
+            raise ValueError("raw deformation-gradient normalizer must be finite and non-negative")
+        observed_F = np.ascontiguousarray(observed_F_tensor.numpy())
+        reference_F = np.ascontiguousarray(reference_F_tensor.numpy())
+        observed_F.setflags(write=False)
+        reference_F.setflags(write=False)
         samples.append(
             _PreparedSample(
                 transition=transition,
@@ -371,6 +446,9 @@ def _prepare_dataset(
                 pinned_indices=pinned_indices,
                 pin_targets=model_inputs["pin_targets"],
                 reference_positions=transition.reference_positions,
+                observed_F=observed_F,
+                reference_F=reference_F,
+                raw_deformation_gradient_observed_loss=raw_observed_loss,
                 pin_signature=tuple(int(index) for index in pinned_indices),
             )
         )
@@ -384,11 +462,17 @@ def _prepare_dataset(
                 "coordinate": transition.coordinate.as_dict(),
                 "scene_sha256": transition.scene_sha256,
                 "objective_instance_sha256": transition.objective_instance_sha256,
+                "pin_signature": [int(index) for index in pinned_indices],
+                "pin_signature_sha256": _array_digest(pinned_indices),
+                "pin_count": int(pinned_indices.size),
+                "observed_F_sha256": _array_digest(observed_F),
+                "reference_F_sha256": _array_digest(reference_F),
+                "raw_deformation_gradient_observed_loss": raw_observed_loss,
             }
         )
 
     selection_record: dict[str, object] = {
-        "contract": "pr2901-history-selected-transition-set-v1",
+        "contract": "pr2901-history-selected-transition-set-v2",
         "provenance_scope": "selected-content-addressed-transitions-not-a-complete-history-claim",
         "history_manifest_sha256": history.manifest.manifest_sha256,
         "static_sha256": static.static_sha256,
@@ -476,19 +560,76 @@ def _build_solvers(
     return solvers
 
 
-def _grouped_prediction(
+def _prepare_raw_target_supervision(
+    dataset: _PreparedDataset,
+    device: torch.device,
+    floor: float,
+) -> dict[str, _RawTargetSupervision]:
+    """Upload authenticated raw-target references and scales exactly once."""
+    supervision: dict[str, _RawTargetSupervision] = {}
+    for sample in dataset.samples:
+        key = sample.transition.transition_sha256
+        reference_F = torch.tensor(sample.reference_F, dtype=torch.float64, device=device)
+        normalizer = torch.tensor(
+            max(sample.raw_deformation_gradient_observed_loss, floor),
+            dtype=torch.float64,
+            device=device,
+        )
+        supervision[key] = _RawTargetSupervision(reference_F=reference_F, normalizer=normalizer)
+    return supervision
+
+
+def _prepare_resident_prediction_input(
+    solvers: Mapping[tuple[int, ...], torch_solver.SolverState],
+    static: PRHistoryStaticBundle,
+    sample: _PreparedSample,
+    device: torch.device,
+) -> _ResidentPredictionInput:
+    """Upload one sample outside the hot resident inference interval."""
+    return _ResidentPredictionInput(
+        state=solvers[sample.pin_signature],
+        x_current=torch.tensor(sample.x_current[None], dtype=torch.float64, device=device),
+        x_previous=torch.tensor(sample.x_previous[None], dtype=torch.float64, device=device),
+        force=torch.tensor(static.external_force[None], dtype=torch.float64, device=device),
+        gravity=torch.tensor(static.gravity, dtype=torch.float64, device=device),
+        mu=torch.tensor(static.tet_materials[:, 0], dtype=torch.float32, device=device),
+        lam=torch.tensor(static.tet_materials[:, 1], dtype=torch.float32, device=device),
+        pin=torch.tensor(_pin_flag(sample.pinned_indices, static.tet_indices), dtype=torch.float32, device=device),
+        pinned_targets=torch.tensor(sample.pin_targets[None], dtype=torch.float64, device=device),
+    )
+
+
+def _resident_prediction(predictor: StretchPredictor, inputs: _ResidentPredictionInput) -> torch.Tensor:
+    """Run one predictor pass and projection from resident device tensors."""
+    target_F = predictor.predict_deformation_gradient(
+        inputs.state,
+        inputs.x_current,
+        inputs.x_previous,
+        inputs.force,
+        inputs.gravity,
+        inputs.mu,
+        inputs.lam,
+        inputs.pin,
+    )
+    return torch_solver.project_deformation_gradient(inputs.state, target_F, inputs.pinned_targets)[0]
+
+
+def _grouped_prediction_with_targets(
     predictor: StretchPredictor,
     solvers: Mapping[tuple[int, ...], torch_solver.SolverState],
     static: PRHistoryStaticBundle,
     samples: Sequence[_PreparedSample],
     device: torch.device,
-) -> list[torch.Tensor]:
-    """Predict samples in pin-signature batches while preserving input order."""
+    *,
+    decode: bool = True,
+) -> tuple[list[torch.Tensor] | None, list[torch.Tensor]]:
+    """Predict raw target fields and optionally decode positions in input order."""
     groups: dict[tuple[int, ...], list[tuple[int, _PreparedSample]]] = defaultdict(list)
     for output_index, sample in enumerate(samples):
         groups[sample.pin_signature].append((output_index, sample))
 
-    output: list[torch.Tensor | None] = [None] * len(samples)
+    output: list[torch.Tensor | None] | None = [None] * len(samples) if decode else None
+    target_output: list[torch.Tensor | None] = [None] * len(samples)
     force_one = torch.tensor(static.external_force, dtype=torch.float64, device=device)
     gravity = torch.tensor(static.gravity, dtype=torch.float64, device=device)
     mu = torch.tensor(static.tet_materials[:, 0], dtype=torch.float32, device=device)
@@ -513,11 +654,6 @@ def _grouped_prediction(
             dtype=torch.float32,
             device=device,
         )
-        pinned_targets = torch.as_tensor(
-            np.stack([sample.pin_targets for sample in group_samples]),
-            dtype=torch.float64,
-            device=device,
-        )
         target_F = predictor.predict_deformation_gradient(
             state,
             x_current,
@@ -528,13 +664,39 @@ def _grouped_prediction(
             lam,
             pin,
         )
-        predicted = torch_solver.project_deformation_gradient(state, target_F, pinned_targets)
+        predicted = None
+        if decode:
+            pinned_targets = torch.as_tensor(
+                np.stack([sample.pin_targets for sample in group_samples]),
+                dtype=torch.float64,
+                device=device,
+            )
+            predicted = torch_solver.project_deformation_gradient(state, target_F, pinned_targets)
         for local_index, (output_index, _sample) in enumerate(indexed_samples):
-            output[output_index] = predicted[local_index]
+            if output is not None and predicted is not None:
+                output[output_index] = predicted[local_index]
+            target_output[output_index] = target_F[local_index]
 
-    if any(value is None for value in output):
+    if (output is not None and any(value is None for value in output)) or any(value is None for value in target_output):
         raise RuntimeError("internal grouped prediction did not fill every sample")
-    return [value for value in output if value is not None]
+    return (
+        None if output is None else [value for value in output if value is not None],
+        [value for value in target_output if value is not None],
+    )
+
+
+def _grouped_prediction(
+    predictor: StretchPredictor,
+    solvers: Mapping[tuple[int, ...], torch_solver.SolverState],
+    static: PRHistoryStaticBundle,
+    samples: Sequence[_PreparedSample],
+    device: torch.device,
+) -> list[torch.Tensor]:
+    """Predict decoded positions while preserving the established interface."""
+    predictions, _target_fields = _grouped_prediction_with_targets(predictor, solvers, static, samples, device)
+    if predictions is None:
+        raise RuntimeError("decoded grouped prediction unexpectedly omitted positions")
+    return predictions
 
 
 def _sample_loss(
@@ -556,6 +718,89 @@ def _sample_loss(
     deformation_loss = (state.w[:, None, None] * (predicted_F - reference_F).square()).sum()
     deformation_loss = deformation_loss / (9.0 * state.w.sum())
     return position_loss, deformation_loss
+
+
+def _normalized_raw_deformation_gradient_loss(
+    target_F: torch.Tensor,
+    state: torch_solver.SolverState,
+    supervision: _RawTargetSupervision,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Supervise the pre-projection v3 target with a transition-local scale.
+
+    The numerator is the rest-volume-weighted mean squared component error to
+    the accepted reference deformation gradient. Its normalizer is the same
+    error between the observed post-callback state and that reference, floored
+    by ``floor``. On a healthy floor-inactive state, a zero-head v3 model
+    starts at normalized loss one up to the floating-point error in the
+    ``A exp(H)`` reconstruction. All kinematic tensors remain float64 even
+    though neural features are float32.
+    """
+    target_F = target_F.to(dtype=torch.float64)
+    weight = state.w[:, None, None]
+    denominator = 9.0 * state.w.sum()
+    raw_loss = (weight * (target_F - supervision.reference_F).square()).sum() / denominator
+    return raw_loss / supervision.normalizer, raw_loss, supervision.normalizer
+
+
+def _loss_contract(
+    train_config: PRV3TrainingConfig,
+    characteristic_length_m: float,
+) -> dict[str, object]:
+    """Return the exact authenticated loss semantics for schema v3."""
+    return {
+        "active_mode": train_config.loss_mode,
+        "default_mode": _DECODED_LOSS_MODE,
+        "default_compatibility": "preserve decoded position/deformation supervision unless explicitly opted in",
+        "position": "sum_free(m_i*||x_i-x_ref_i||^2)/(sum_free(m_i)*rms_rest_edge^2)",
+        "decoded_deformation_gradient": "sum_t(V_t*||F_t(x_projected)-F_ref_t||_F^2)/(9*sum_t(V_t))",
+        "normalized_raw_deformation_gradient": (
+            "raw(F_target,F_ref)/max(raw(F_observed,F_ref),raw_deformation_gradient_floor), "
+            "raw(A,B)=sum_t(V_t*||A_t-B_t||_F^2)/(9*sum_t(V_t))"
+        ),
+        "raw_deformation_gradient_floor": train_config.raw_deformation_gradient_floor,
+        "raw_deformation_gradient_precision": "float64 target/reference/observed fields and rest-volume reduction",
+        "characteristic_length_m": characteristic_length_m,
+        "pins": "transition-local exact Dirichlet indices and targets excluded from position loss",
+        "common_objective_role": "independent evaluation gate, not a term in either authenticated training mode",
+    }
+
+
+def _training_work_contract(
+    train_config: PRV3TrainingConfig,
+    available_pin_signature_count: int,
+) -> dict[str, object]:
+    """Describe grouped calls exactly, including mixed pin signatures."""
+    if (
+        isinstance(available_pin_signature_count, bool)
+        or not isinstance(available_pin_signature_count, int)
+        or available_pin_signature_count < 1
+    ):
+        raise ValueError("available_pin_signature_count must be a positive integer")
+    decoded_mode = train_config.loss_mode == _DECODED_LOSS_MODE
+    grouped_count = "distinct_pin_signature_count_in_sampled_batch"
+    maximum_group_count = min(train_config.batch_size, available_pin_signature_count)
+    return {
+        "grouping": "one predictor call per distinct pin signature represented in the sampled batch",
+        "available_pin_signature_count": available_pin_signature_count,
+        "predictor_passes_per_step": {
+            "count": grouped_count,
+            "minimum": 1,
+            "maximum": maximum_group_count,
+            "maximum_scope": "exact upper bound for the authenticated training selection",
+        },
+        "global_triangular_solves_per_step": {
+            "count": grouped_count if decoded_mode else 0,
+            "minimum": 1 if decoded_mode else 0,
+            "maximum": maximum_group_count if decoded_mode else 0,
+            "maximum_scope": "exact upper bound for the authenticated training selection",
+        },
+        "decoded_position_loss_evaluated": decoded_mode,
+        "raw_target_deformation_gradient_loss_evaluated": not decoded_mode,
+        "setup_scope": (
+            "one dense projection factorization per available pin signature is built before the timed training loop, "
+            "including in raw-target mode"
+        ),
+    }
 
 
 def train_pr_history_v3(
@@ -584,6 +829,12 @@ def train_pr_history_v3(
     output = None if output_path is None else pathlib.Path(output_path)
     if output is not None and output.exists():
         raise FileExistsError(f"refusing to overwrite existing checkpoint {output}")
+    source_provenance_start = _source_provenance()
+    if source_provenance_start != _SOURCE_PROVENANCE_AT_IMPORT:
+        raise RuntimeError(
+            "Newton source changed after this trainer module was imported; "
+            "restart from one settled source tree before training"
+        )
     dataset = _prepare_dataset(history, transitions)
     train_config = PRV3TrainingConfig() if training_config is None else training_config
     dt = history.manifest.dt_seconds
@@ -593,6 +844,16 @@ def train_pr_history_v3(
     rng = _seed_everything(train_config.seed)
 
     predictor, solvers = _build_predictor_and_solvers(dataset, model_config, device)
+    decoded_mode = train_config.loss_mode == _DECODED_LOSS_MODE
+    raw_supervision = (
+        {}
+        if decoded_mode
+        else _prepare_raw_target_supervision(
+            dataset,
+            device,
+            train_config.raw_deformation_gradient_floor,
+        )
+    )
     predictor.train()
     optimizer = torch.optim.AdamW(
         predictor.parameters(),
@@ -600,6 +861,7 @@ def train_pr_history_v3(
         weight_decay=train_config.weight_decay,
     )
     decoder_work = _decoder_work(train_config.projection_backend)
+    available_pin_signature_count = len({sample.pin_signature for sample in dataset.samples})
 
     log: list[dict[str, object]] = []
     start = time.perf_counter()
@@ -612,25 +874,53 @@ def train_pr_history_v3(
         )
         selected = [dataset.samples[int(index)] for index in selected_indices]
         optimizer.zero_grad(set_to_none=True)
-        predictions = _grouped_prediction(predictor, solvers, dataset.static, selected, device)
+        predictions, target_fields = _grouped_prediction_with_targets(
+            predictor,
+            solvers,
+            dataset.static,
+            selected,
+            device,
+            decode=decoded_mode,
+        )
         position_loss = torch.zeros((), dtype=torch.float64, device=device)
         deformation_loss = torch.zeros((), dtype=torch.float64, device=device)
-        for prediction, sample in zip(predictions, selected, strict=True):
-            sample_position, sample_deformation = _sample_loss(
-                prediction,
-                sample,
-                solvers[sample.pin_signature],
-                dataset.static,
-                dataset.characteristic_length_m,
-            )
-            position_loss = position_loss + sample_position
-            deformation_loss = deformation_loss + sample_deformation
+        normalized_raw_F_loss = torch.zeros((), dtype=torch.float64, device=device)
+        raw_F_loss = torch.zeros((), dtype=torch.float64, device=device)
+        raw_F_normalizers: list[torch.Tensor] = []
+        for sample_index, (target_F, sample) in enumerate(zip(target_fields, selected, strict=True)):
+            state = solvers[sample.pin_signature]
+            if predictions is not None:
+                sample_position, sample_deformation = _sample_loss(
+                    predictions[sample_index],
+                    sample,
+                    state,
+                    dataset.static,
+                    dataset.characteristic_length_m,
+                )
+                position_loss = position_loss + sample_position
+                deformation_loss = deformation_loss + sample_deformation
+            if not decoded_mode:
+                sample_normalized_raw_F, sample_raw_F, sample_raw_F_normalizer = (
+                    _normalized_raw_deformation_gradient_loss(
+                        target_F,
+                        state,
+                        raw_supervision[sample.transition.transition_sha256],
+                    )
+                )
+                normalized_raw_F_loss = normalized_raw_F_loss + sample_normalized_raw_F
+                raw_F_loss = raw_F_loss + sample_raw_F
+                raw_F_normalizers.append(sample_raw_F_normalizer)
         position_loss = position_loss / len(selected)
         deformation_loss = deformation_loss / len(selected)
-        loss = (
-            train_config.position_loss_weight * position_loss
-            + train_config.deformation_gradient_loss_weight * deformation_loss
-        )
+        normalized_raw_F_loss = normalized_raw_F_loss / len(selected)
+        raw_F_loss = raw_F_loss / len(selected)
+        if decoded_mode:
+            loss = (
+                train_config.position_loss_weight * position_loss
+                + train_config.deformation_gradient_loss_weight * deformation_loss
+            )
+        else:
+            loss = normalized_raw_F_loss
         if not torch.isfinite(loss):
             raise RuntimeError(f"non-finite training loss at step {step}")
         loss.backward()
@@ -640,20 +930,38 @@ def train_pr_history_v3(
         optimizer.step()
 
         if step % train_config.log_every == 0 or step + 1 == train_config.steps:
-            log.append(
-                {
-                    "step": step,
-                    "loss": float(loss.detach()),
-                    "normalized_position_loss": float(position_loss.detach()),
-                    "volume_weighted_deformation_gradient_loss": float(deformation_loss.detach()),
-                    "gradient_norm_before_clipping": float(gradient_norm.detach()),
-                    "sample_indices": [int(index) for index in selected_indices],
-                    "transition_sha256": [sample.transition.transition_sha256 for sample in selected],
-                }
-            )
+            log_entry: dict[str, object] = {
+                "step": step,
+                "loss": float(loss.detach()),
+                "loss_mode": train_config.loss_mode,
+                "gradient_norm_before_clipping": float(gradient_norm.detach()),
+                "sample_indices": [int(index) for index in selected_indices],
+                "transition_sha256": [sample.transition.transition_sha256 for sample in selected],
+            }
+            if decoded_mode:
+                log_entry.update(
+                    {
+                        "normalized_position_loss": float(position_loss.detach()),
+                        "volume_weighted_deformation_gradient_loss": float(deformation_loss.detach()),
+                    }
+                )
+            else:
+                log_entry.update(
+                    {
+                        "normalized_raw_deformation_gradient_loss": float(normalized_raw_F_loss.detach()),
+                        "raw_target_deformation_gradient_loss": float(raw_F_loss.detach()),
+                        "raw_deformation_gradient_normalizers": [
+                            float(normalizer.detach()) for normalizer in raw_F_normalizers
+                        ],
+                    }
+                )
+            log.append(log_entry)
 
     _synchronize(device)
     train_seconds = time.perf_counter() - start
+    source_provenance_end = _source_provenance()
+    if source_provenance_end != source_provenance_start:
+        raise RuntimeError("Newton source changed during training; refusing to authenticate the result")
     predictor.eval()
     state_dict = {name: value.detach().cpu().clone() for name, value in predictor.model.state_dict().items()}
     state_dict_sha256 = _state_dict_digest(state_dict)
@@ -668,6 +976,7 @@ def train_pr_history_v3(
         "predictor_config": predictor_config,
         "training_realized_hierarchy_levels": realized_levels,
         "decoder_work": decoder_work,
+        "training_work": _training_work_contract(train_config, available_pin_signature_count),
         "training_config": dataclasses.asdict(train_config),
         "seed_contract": {
             "numpy_generator": "PCG64",
@@ -675,19 +984,20 @@ def train_pr_history_v3(
             "torch_manual_seed": train_config.seed,
             "torch_cuda_manual_seed_all": train_config.seed,
         },
-        "loss_contract": {
-            "position": "sum_free(m_i*||x_i-x_ref_i||^2)/(sum_free(m_i)*rms_rest_edge^2)",
-            "deformation_gradient": "sum_t(V_t*||F_t-F_ref_t||_F^2)/(9*sum_t(V_t))",
-            "characteristic_length_m": dataset.characteristic_length_m,
-            "pins": "transition-local exact Dirichlet indices and targets excluded from position loss",
-        },
+        "loss_contract": _loss_contract(train_config, dataset.characteristic_length_m),
         "training_log": log,
         "runtime": {
             "train_seconds": train_seconds,
             "device_type": device.type,
             "parameter_count": sum(parameter.numel() for parameter in predictor.parameters()),
         },
-        "source_provenance": _source_provenance(),
+        "source_provenance": source_provenance_end,
+        "source_execution_binding": {
+            "module_import": _SOURCE_PROVENANCE_AT_IMPORT,
+            "training_start": source_provenance_start,
+            "training_end": source_provenance_end,
+            "stable": True,
+        },
         "software": {"torch_version": str(torch.__version__), "numpy_version": str(np.__version__)},
     }
     if device.type == "cuda":
@@ -711,6 +1021,8 @@ def train_pr_history_v3(
             "metadata_sha256": metadata_sha256,
         }
     )
+    if _source_provenance() != source_provenance_end:
+        raise RuntimeError("Newton source changed while serializing training metadata; refusing to publish it")
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
         # Exclusive creation also closes the race between the early check and
@@ -720,16 +1032,173 @@ def train_pr_history_v3(
     return PRV3TrainingResult(predictor=predictor, checkpoint=checkpoint)
 
 
+def _verify_schema_v3_training_contract(
+    metadata: Mapping[str, object],
+    dataset: _PreparedDataset,
+) -> None:
+    """Fail closed on the schema-v3 training semantics, not only their hash."""
+    training_config_value = metadata.get("training_config")
+    if not isinstance(training_config_value, Mapping):
+        raise ValueError("schema-v3 checkpoint is missing training_config")
+    if "loss_mode" not in training_config_value or "raw_deformation_gradient_floor" not in training_config_value:
+        raise ValueError("schema-v3 checkpoint training_config is missing required loss semantics")
+    try:
+        train_config = PRV3TrainingConfig(**dict(training_config_value))
+    except (TypeError, ValueError) as error:
+        raise ValueError("schema-v3 checkpoint has an invalid training_config") from error
+    if _jsonable(dataclasses.asdict(train_config)) != _jsonable(training_config_value):
+        raise ValueError("schema-v3 checkpoint training_config is not canonical")
+
+    expected_loss_contract = _loss_contract(train_config, dataset.characteristic_length_m)
+    if _jsonable(metadata.get("loss_contract")) != _jsonable(expected_loss_contract):
+        raise ValueError("schema-v3 checkpoint loss_contract disagrees with training_config")
+
+    selection = metadata.get("transition_selection")
+    if not isinstance(selection, Mapping):
+        raise ValueError("schema-v3 checkpoint is missing its training transition selection")
+    if selection.get("contract") != "pr2901-history-selected-transition-set-v2":
+        raise ValueError("schema-v3 checkpoint has an unsupported training transition-selection contract")
+    if selection.get("provenance_scope") != "selected-content-addressed-transitions-not-a-complete-history-claim":
+        raise ValueError("schema-v3 checkpoint has an invalid training transition-selection scope")
+    history_manifest = metadata.get("history_manifest")
+    static_bundle = metadata.get("static_bundle")
+    if not isinstance(history_manifest, Mapping) or not isinstance(static_bundle, Mapping):
+        raise ValueError("schema-v3 checkpoint is missing its history or static identity")
+    if selection.get("history_manifest_sha256") != history_manifest.get("manifest_sha256"):
+        raise ValueError("schema-v3 checkpoint training selection has the wrong history identity")
+    if selection.get("static_sha256") != static_bundle.get("static_sha256"):
+        raise ValueError("schema-v3 checkpoint training selection has the wrong static identity")
+    selection_without_digest = dict(selection)
+    selection_sha256 = selection_without_digest.pop("selection_sha256", None)
+    if selection_sha256 != _canonical_digest(selection_without_digest):
+        raise ValueError("schema-v3 checkpoint training transition selection is not self-consistent")
+    transition_records = selection.get("transitions")
+    if not isinstance(transition_records, Sequence) or isinstance(transition_records, (str, bytes)):
+        raise ValueError("schema-v3 checkpoint training transition records are missing")
+    if not transition_records:
+        raise ValueError("schema-v3 checkpoint has an empty training transition selection")
+    static_arrays = static_bundle.get("arrays")
+    if not isinstance(static_arrays, Mapping) or not isinstance(static_arrays.get("rest_q"), Mapping):
+        raise ValueError("schema-v3 checkpoint static vertex record is missing")
+    rest_shape = static_arrays["rest_q"].get("shape")
+    if not isinstance(rest_shape, Sequence) or list(rest_shape)[1:] != [3]:
+        raise ValueError("schema-v3 checkpoint static vertex shape is invalid")
+    vertex_count = rest_shape[0]
+    if isinstance(vertex_count, bool) or not isinstance(vertex_count, int) or vertex_count < 1:
+        raise ValueError("schema-v3 checkpoint static vertex count is invalid")
+    pin_signatures: set[str] = set()
+    transition_hashes: set[str] = set()
+    for record in transition_records:
+        if not isinstance(record, Mapping):
+            raise ValueError("schema-v3 checkpoint has a malformed training transition record")
+        digest_names = (
+            "transition_sha256",
+            "training_record_sha256",
+            "input_prefix_sha256",
+            "input_state_sha256",
+            "scene_sha256",
+            "objective_instance_sha256",
+            "pin_signature_sha256",
+            "observed_F_sha256",
+            "reference_F_sha256",
+        )
+        required = (
+            *digest_names,
+            "pin_signature",
+            "pin_count",
+            "raw_deformation_gradient_observed_loss",
+        )
+        if any(name not in record for name in required):
+            raise ValueError("schema-v3 checkpoint training transition record is missing loss provenance")
+        for digest_name in digest_names:
+            digest = record[digest_name]
+            if not _is_sha256(digest):
+                raise ValueError(f"schema-v3 checkpoint has an invalid {digest_name}")
+        transition_hash = record["transition_sha256"]
+        if transition_hash in transition_hashes:
+            raise ValueError("schema-v3 checkpoint training transition selection contains duplicates")
+        transition_hashes.add(transition_hash)
+        pin_signature = record["pin_signature_sha256"]
+        pin_indices = record["pin_signature"]
+        if not isinstance(pin_indices, Sequence) or isinstance(pin_indices, (str, bytes)):
+            raise ValueError("schema-v3 checkpoint has a malformed pin signature")
+        if any(isinstance(index, bool) or not isinstance(index, int) for index in pin_indices):
+            raise ValueError("schema-v3 checkpoint pin signature contains a non-integer index")
+        if list(pin_indices) != sorted(set(pin_indices)):
+            raise ValueError("schema-v3 checkpoint pin signature is not sorted and unique")
+        if pin_indices and (pin_indices[0] < 0 or pin_indices[-1] >= vertex_count):
+            raise ValueError("schema-v3 checkpoint pin signature is outside the static vertex range")
+        pin_count = record["pin_count"]
+        if isinstance(pin_count, bool) or not isinstance(pin_count, int) or pin_count < 0:
+            raise ValueError("schema-v3 checkpoint has an invalid training pin count")
+        if pin_count != len(pin_indices):
+            raise ValueError("schema-v3 checkpoint training pin count disagrees with its signature")
+        pin_array = np.asarray(pin_indices, dtype=np.int64)
+        if _array_digest(pin_array) != pin_signature:
+            raise ValueError("schema-v3 checkpoint training pin-signature digest is inconsistent")
+        raw_observed_loss = record["raw_deformation_gradient_observed_loss"]
+        if (
+            isinstance(raw_observed_loss, bool)
+            or not isinstance(raw_observed_loss, (int, float))
+            or not math.isfinite(raw_observed_loss)
+        ):
+            raise ValueError("schema-v3 checkpoint has an invalid raw deformation-gradient normalizer")
+        if raw_observed_loss < 0.0:
+            raise ValueError("schema-v3 checkpoint has a negative raw deformation-gradient normalizer")
+        pin_signatures.add(pin_signature)
+    expected_training_work = _training_work_contract(train_config, len(pin_signatures))
+    if _jsonable(metadata.get("training_work")) != _jsonable(expected_training_work):
+        raise ValueError("schema-v3 checkpoint training_work disagrees with loss mode or batch grouping")
+    source_provenance = metadata.get("source_provenance")
+    source_binding = metadata.get("source_execution_binding")
+    if not isinstance(source_provenance, Mapping) or not isinstance(source_binding, Mapping):
+        raise ValueError("schema-v3 checkpoint is missing its source execution binding")
+    expected_source_binding = {
+        "module_import": source_provenance,
+        "training_start": source_provenance,
+        "training_end": source_provenance,
+        "stable": True,
+    }
+    if _jsonable(source_binding) != _jsonable(expected_source_binding):
+        raise ValueError("schema-v3 checkpoint source changed while its training process was live")
+
+    training_log = metadata.get("training_log")
+    if not isinstance(training_log, Sequence) or isinstance(training_log, (str, bytes)) or not training_log:
+        raise ValueError("schema-v3 checkpoint has no authenticated training log")
+    decoded_mode = train_config.loss_mode == _DECODED_LOSS_MODE
+    for entry in training_log:
+        if not isinstance(entry, Mapping) or entry.get("loss_mode") != train_config.loss_mode:
+            raise ValueError("schema-v3 checkpoint training log disagrees with its loss mode")
+        decoded_fields = ("normalized_position_loss", "volume_weighted_deformation_gradient_loss")
+        raw_fields = (
+            "normalized_raw_deformation_gradient_loss",
+            "raw_target_deformation_gradient_loss",
+            "raw_deformation_gradient_normalizers",
+        )
+        if decoded_mode and (
+            any(name not in entry for name in decoded_fields) or any(name in entry for name in raw_fields)
+        ):
+            raise ValueError("schema-v3 checkpoint decoded training log has inconsistent loss fields")
+        if not decoded_mode and (
+            any(name in entry for name in decoded_fields) or any(name not in entry for name in raw_fields)
+        ):
+            raise ValueError("schema-v3 checkpoint raw-target training log has inconsistent loss fields")
+
+
 def _verify_checkpoint(
     checkpoint: Mapping[str, object],
     dataset: _PreparedDataset,
 ) -> tuple[dict[str, Any], dict[str, torch.Tensor]]:
-    if checkpoint.get("schema_version") != _SCHEMA_VERSION or checkpoint.get("contract") != _CHECKPOINT_CONTRACT:
+    identity = (checkpoint.get("schema_version"), checkpoint.get("contract"))
+    supported_identities = ((_SCHEMA_VERSION, _CHECKPOINT_CONTRACT), *_LEGACY_CHECKPOINT_IDENTITIES)
+    if identity not in supported_identities:
         raise ValueError("unsupported PR history v3 checkpoint schema")
     metadata = checkpoint.get("metadata")
     state_dict = checkpoint.get("state_dict")
     if not isinstance(metadata, Mapping) or not isinstance(state_dict, Mapping):
         raise ValueError("checkpoint is missing metadata or state_dict")
+    if (metadata.get("schema_version"), metadata.get("contract")) != identity:
+        raise ValueError("checkpoint and metadata schema identities disagree")
     if _canonical_digest(metadata) != checkpoint.get("metadata_sha256"):
         raise ValueError("checkpoint metadata SHA-256 verification failed")
     tensor_state: dict[str, torch.Tensor] = {}
@@ -741,7 +1210,7 @@ def _verify_checkpoint(
         raise ValueError("checkpoint state_dict SHA-256 verification failed")
     expected_payload = _canonical_digest(
         {
-            "contract": _CHECKPOINT_CONTRACT,
+            "contract": identity[1],
             "state_dict_sha256": checkpoint["state_dict_sha256"],
             "metadata_sha256": checkpoint["metadata_sha256"],
         }
@@ -753,6 +1222,8 @@ def _verify_checkpoint(
         raise ValueError("checkpoint history manifest does not match evaluation history")
     if _jsonable(metadata.get("static_bundle")) != _jsonable(dataset.static.as_dict()):
         raise ValueError("checkpoint static bundle does not match evaluation history")
+    if identity == (_SCHEMA_VERSION, _CHECKPOINT_CONTRACT):
+        _verify_schema_v3_training_contract(metadata, dataset)
     predictor_config = metadata.get("predictor_config")
     if not isinstance(predictor_config, Mapping):
         raise ValueError("checkpoint predictor_config is missing")
@@ -819,9 +1290,10 @@ def evaluate_pr_history_v3(
 
     The requested transitions may be held-out samples, but they must share the
     exact authenticated history manifest, static mesh, material, and timestep
-    with the checkpoint.  Timings cover one predictor pass plus one projection;
-    common-objective scoring is timed separately and never included in solver
-    inference time.
+    with the checkpoint. Primary inference timings use device-resident inputs
+    and cover one predictor pass plus one projection. Adapter end-to-end
+    timings retain host-to-device tensor preparation as a separate series.
+    Common-objective scoring is never included in either interval.
     """
     if isinstance(warmup, bool) or warmup < 0:
         raise ValueError("warmup must be a non-negative integer")
@@ -844,23 +1316,37 @@ def evaluate_pr_history_v3(
     timing_records: list[dict[str, object]] = []
     with torch.no_grad():
         for sample in dataset.samples:
+            _synchronize(device)
+            preparation_start = time.perf_counter()
+            resident_inputs = _prepare_resident_prediction_input(solvers, dataset.static, sample, device)
+            _synchronize(device)
+            preparation_seconds = time.perf_counter() - preparation_start
             for _ in range(warmup):
-                _grouped_prediction(predictor, solvers, dataset.static, [sample], device)
+                _resident_prediction(predictor, resident_inputs)
             _synchronize(device)
 
             durations: list[float] = []
+            adapter_call_durations: list[float] = []
             repeat_positions: list[np.ndarray] = []
+            adapter_positions: list[np.ndarray] = []
             for _ in range(repeats):
                 _synchronize(device)
                 start = time.perf_counter()
-                candidate = _grouped_prediction(predictor, solvers, dataset.static, [sample], device)[0]
+                candidate = _resident_prediction(predictor, resident_inputs)
                 _synchronize(device)
                 durations.append(time.perf_counter() - start)
                 # Device-to-host transfer is deliberately outside the solver
                 # interval.  It provides an independent repeat comparison and
                 # the representative array consumed by the CPU evaluator.
                 repeat_positions.append(candidate.detach().cpu().numpy())
-            if not repeat_positions:
+            for _ in range(repeats):
+                _synchronize(device)
+                adapter_start = time.perf_counter()
+                adapter_candidate = _grouped_prediction(predictor, solvers, dataset.static, [sample], device)[0]
+                _synchronize(device)
+                adapter_call_durations.append(time.perf_counter() - adapter_start)
+                adapter_positions.append(adapter_candidate.detach().cpu().numpy())
+            if not repeat_positions or not adapter_positions:
                 raise RuntimeError("evaluation produced no prediction")
             prediction = repeat_positions[0]
             repeat_max_discrepancy_m = max(
@@ -870,6 +1356,15 @@ def evaluate_pr_history_v3(
                 raise RuntimeError(
                     "repeat inference outputs exceeded the device-aware discrepancy tolerance: "
                     f"observed={repeat_max_discrepancy_m:.3e} m, tolerance={repeat_tolerance_m:.3e} m"
+                )
+            adapter_resident_max_discrepancy_m = max(
+                float(np.max(np.abs(candidate - prediction))) for candidate in adapter_positions
+            )
+            if adapter_resident_max_discrepancy_m > repeat_tolerance_m:
+                raise RuntimeError(
+                    "adapter and resident inference outputs exceeded the device-aware discrepancy tolerance: "
+                    f"observed={adapter_resident_max_discrepancy_m:.3e} m, "
+                    f"tolerance={repeat_tolerance_m:.3e} m"
                 )
 
             # The common evaluator intentionally differentiates its scalar
@@ -905,10 +1400,24 @@ def evaluate_pr_history_v3(
                     "repeat_seconds": durations,
                     "median_inference_seconds": statistics.median(durations),
                     "minimum_inference_seconds": min(durations),
+                    "input_preparation_seconds": preparation_seconds,
+                    "adapter_call_repeat_seconds": adapter_call_durations,
+                    "median_adapter_call_seconds": statistics.median(adapter_call_durations),
+                    "minimum_adapter_call_seconds": min(adapter_call_durations),
+                    "adapter_resident_max_discrepancy_m": adapter_resident_max_discrepancy_m,
                     "repeat_max_discrepancy_m": repeat_max_discrepancy_m,
                     "repeat_discrepancy_tolerance_m": repeat_tolerance_m,
                     "common_evaluator_seconds": metric_seconds,
-                    "inference_scope": "one predictor pass plus one dense global projection",
+                    "timing_temperature": "warmed" if warmup > 0 else "unwarmed first resident repeat",
+                    "inference_scope": (
+                        "device-resident predictor pass plus one dense global projection; "
+                        + ("explicit warmup completed" if warmup > 0 else "no explicit warmup requested")
+                    ),
+                    "adapter_call_scope": (
+                        "per-call NumPy stacking, tensor upload, predictor pass, and one dense global projection; "
+                        "excludes model/factor setup, common-objective scoring, and device-to-host result transfer"
+                    ),
+                    "adapter_timing_temperature": "runs after the resident timing loop has exercised the model",
                 }
             )
 
@@ -918,9 +1427,18 @@ def evaluate_pr_history_v3(
         "schema_version": _SCHEMA_VERSION,
         "contract": _EVALUATION_CONTRACT,
         "checkpoint_payload_sha256": checkpoint["checkpoint_payload_sha256"],
+        "checkpoint_identity": {
+            "schema_version": checkpoint["schema_version"],
+            "contract": checkpoint["contract"],
+        },
+        "checkpoint_training_selection_sha256": checkpoint["metadata"]["transition_selection"].get("selection_sha256"),
         "history_manifest_sha256": history.manifest.manifest_sha256,
         "static_sha256": dataset.static.static_sha256,
         "evaluation_selection": dataset.selection_record,
+        "training_evaluation_selection_match": (
+            checkpoint["metadata"]["transition_selection"].get("selection_sha256")
+            == dataset.selection_record["selection_sha256"]
+        ),
         "predictor_config": checkpoint["predictor_config"],
         "training_realized_hierarchy_levels": checkpoint["training_realized_hierarchy_levels"],
         "decoder_work": checkpoint["decoder_work"],
