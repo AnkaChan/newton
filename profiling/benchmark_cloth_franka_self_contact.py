@@ -306,14 +306,16 @@ def main() -> None:
 
     collision_detector = example.cloth_solver.trimesh_collision_detector
     if args.collision_detection_block_size is not None:
-        collision_detector.collision_detection_block_size = args.collision_detection_block_size
-    default_collision_detection_block_size = collision_detector.collision_detection_block_size
-    vertex_triangle_collision_detection_block_size = (
-        args.vertex_triangle_collision_detection_block_size or default_collision_detection_block_size
-    )
-    edge_edge_collision_detection_block_size = (
-        args.edge_edge_collision_detection_block_size or default_collision_detection_block_size
-    )
+        vertex_triangle_collision_detection_block_size = args.collision_detection_block_size
+        edge_edge_collision_detection_block_size = args.collision_detection_block_size
+    else:
+        vertex_triangle_collision_detection_block_size = (
+            args.vertex_triangle_collision_detection_block_size
+            or collision_detector.vertex_triangle_collision_detection_block_size
+        )
+        edge_edge_collision_detection_block_size = (
+            args.edge_edge_collision_detection_block_size or collision_detector.edge_edge_collision_detection_block_size
+        )
 
     if defer_capture:
         if collision_detection_launch_override:

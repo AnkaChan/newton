@@ -20,8 +20,11 @@ from ...geometry.kernels import (
 from ...sim import Model
 from ...utils.mesh import MeshAdjacency
 
-_VERSION = "self_contact_block_size_v1"
+_VERSION = "self_contact_adaptive_block_size_v2"
 print(f"[tri_mesh_collision] version: {_VERSION}")
+
+_DEFAULT_COLLISION_DETECTION_BLOCK_SIZE = 8
+_MIN_COLLISION_DETECTION_BLOCKS_PER_SM = 8
 
 
 @wp.struct
@@ -99,6 +102,40 @@ def get_edge_collision_buffer_edge_index(col_info: TriMeshCollisionInfo, e: int,
 def _as_numpy(arr) -> np.ndarray:
     """Return ``arr`` as NumPy, accepting either a NumPy or a Warp int array."""
     return arr if isinstance(arr, np.ndarray) else arr.numpy()
+
+
+def _adaptive_collision_detection_block_size(primitive_count: int, sm_count: int) -> int:
+    """Choose the largest default block size that supplies enough CUDA blocks."""
+    block_size = _DEFAULT_COLLISION_DETECTION_BLOCK_SIZE
+    minimum_grid_size = _MIN_COLLISION_DETECTION_BLOCKS_PER_SM * sm_count
+    # Scalar BVH walks need enough independent warps to hide latency on small meshes.
+    while block_size > 1 and (primitive_count + block_size - 1) // block_size < minimum_grid_size:
+        block_size //= 2
+    return block_size
+
+
+def _resolve_collision_detection_block_sizes(
+    collision_detection_block_size: int | None,
+    *,
+    is_cuda: bool,
+    sm_count: int,
+    particle_count: int,
+    edge_count: int,
+) -> tuple[int, int, int]:
+    """Resolve the compatibility, vertex-triangle, and edge-edge block sizes."""
+    configured_block_size = (
+        _DEFAULT_COLLISION_DETECTION_BLOCK_SIZE
+        if collision_detection_block_size is None
+        else collision_detection_block_size
+    )
+    if collision_detection_block_size is not None or not is_cuda:
+        return configured_block_size, configured_block_size, configured_block_size
+
+    return (
+        configured_block_size,
+        _adaptive_collision_detection_block_size(particle_count, sm_count),
+        _adaptive_collision_detection_block_size(edge_count, sm_count),
+    )
 
 
 def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
@@ -257,7 +294,7 @@ class TriMeshCollisionDetector:
         triangle_triangle_collision_buffer_pre_alloc=8,
         triangle_triangle_collision_buffer_max_alloc=256,
         edge_edge_parallel_epsilon=1e-5,
-        collision_detection_block_size=8,
+        collision_detection_block_size: int | None = None,
     ):
         self.model = model
         self.record_triangle_contacting_vertices = record_triangle_contacting_vertices
@@ -286,7 +323,17 @@ class TriMeshCollisionDetector:
             raise ValueError("model.soft_mesh_adjacency is missing; finalize the model with ModelBuilder.")
         self.mesh_adjacency = model.soft_mesh_adjacency.init_vertex_adjacency(model.particle_count)
 
-        self.collision_detection_block_size = collision_detection_block_size
+        (
+            self.collision_detection_block_size,
+            self.vertex_triangle_collision_detection_block_size,
+            self.edge_edge_collision_detection_block_size,
+        ) = _resolve_collision_detection_block_sizes(
+            collision_detection_block_size,
+            is_cuda=self.device.is_cuda,
+            sm_count=self.device.sm_count if self.device.is_cuda else 0,
+            particle_count=model.particle_count,
+            edge_count=model.edge_count,
+        )
 
         # Build each filter family independently: generate a side only when the caller did not
         # provide it explicitly and a threshold/external source requests it (so providing one
@@ -696,7 +743,7 @@ class TriMeshCollisionDetector:
             ],
             dim=self.model.particle_count,
             device=self.model.device,
-            block_dim=self.collision_detection_block_size,
+            block_dim=self.vertex_triangle_collision_detection_block_size,
         )
 
     def edge_edge_collision_detection(
@@ -728,7 +775,7 @@ class TriMeshCollisionDetector:
             ],
             dim=self.model.edge_count,
             device=self.model.device,
-            block_dim=self.collision_detection_block_size,
+            block_dim=self.edge_edge_collision_detection_block_size,
         )
 
     def triangle_triangle_intersection_detection(self):
