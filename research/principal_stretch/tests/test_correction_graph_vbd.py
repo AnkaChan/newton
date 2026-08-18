@@ -13,9 +13,9 @@ import numpy as np
 import warp as wp
 
 from .. import correction_graph_vbd as graph_vbd
-from ..correction_mg_vbd import _thaw_json
+from ..correction_mg_vbd import _sparse_newton_reference_evidence, _thaw_json
 from ..correction_multigrid import apply_v_cycle, assemble_current_stable_nh_block_matrix
-from ..solver_benchmark import build_common_problem
+from ..solver_benchmark import build_common_problem, run_sparse_newton
 from ..solver_scenes import (
     build_compression_scene,
     build_extension_scene,
@@ -446,7 +446,7 @@ class TestDirectGraphVBD(unittest.TestCase):
         rebuilt = dataclasses.replace(quality, reference=quality.reference)
         self.assertEqual(rebuilt.quality_sha256, quality.quality_sha256)
         forged_provenance = dataclasses.replace(quality.reference, provenance="forged")
-        with self.assertRaisesRegex(ValueError, "fresh dense Newton"):
+        with self.assertRaisesRegex(ValueError, "provenance is not allowed"):
             dataclasses.replace(quality, reference=forged_provenance)
         original = _thaw_json(quality.reference.source_record)
 
@@ -503,6 +503,41 @@ class TestDirectGraphVBD(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, message):
                     dataclasses.replace(quality, reference=forged_reference)
+
+    def test_sparse_exact_supplied_reference_bypasses_dense_run_and_passes_allowlist(self):
+        problem = build_common_problem(self.stretch_scene)
+        sparse_run = run_sparse_newton(
+            self.stretch_scene,
+            problem,
+            warmup=False,
+            repeats=2,
+        )
+        evidence = _sparse_newton_reference_evidence(
+            sparse_run,
+            sparse_run.result.positions,
+        )
+        with mock.patch.object(graph_vbd, "run_newton") as dense_newton:
+            supplied = graph_vbd.run_direct_graph_vbd(
+                self.stretch_scene,
+                reference_positions=sparse_run.result.positions,
+                reference_record=_thaw_json(evidence.source_record),
+                expected_reference_record_sha256=evidence.source_record_sha256,
+            )
+        dense_newton.assert_not_called()
+        quality = supplied.quality
+        self.assertEqual(
+            quality.reference.provenance,
+            "externally-pinned-supplied-reference:sparse-exact-cpu-newton-float64",
+        )
+        self.assertTrue(quality.gate.passed)
+        self.assertEqual(supplied.timing.reference_run_sha256, evidence.source_record_sha256)
+
+        dense_only_provenance = dataclasses.replace(
+            quality.reference,
+            provenance="fresh-dense-newton",
+        )
+        with self.assertRaisesRegex(ValueError, "provenance is not allowed"):
+            dataclasses.replace(quality, reference=dense_only_provenance)
 
     def test_independent_reference_acceptance_rejects_inversion(self):
         quality = self.stretch.quality

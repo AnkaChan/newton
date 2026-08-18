@@ -73,16 +73,37 @@ _SCENE_FACTORIES: dict[str, Callable[[], TetBenchmarkScene]] = {
 # These explicit tuples are the complete reviewed source allowlists.  A suite
 # records exactly the reviewed content it ran; membership never permits an
 # arbitrary hash and current-source verification still detects version drift.
+_PRE_SPARSE_CORRECTION_MG_SHA256 = (
+    "ff4ea309392577a68061b8ef0972425755b80d36b66db3bcaad98d5f20aa87f8",
+    "4871d747f1bc5d3d0605c51a856742fc131a8fa9e2397e93858ebbb02998d662",
+)
+_SPARSE_CORRECTION_MG_SHA256 = ("b25f8aaac78319d91fdfe35d7f772384b1db1c9cca09d6635cbc9ee23baa0486",)
+_PRE_SPARSE_SOLVER_BENCHMARK_SHA256 = ("0ca95df0c511c716aa9b05969bb700cd50ed75c00cc1e37dbe97c7b4498fc877",)
+_SPARSE_SOLVER_BENCHMARK_SHA256 = ("6357b2d950eb123af33266fd6a60c7962a62f3beff72073e80ea095869ad145e",)
 _REVIEWED_SOURCE_SHA256 = {
-    "correction_mg_vbd.py": (
-        "ff4ea309392577a68061b8ef0972425755b80d36b66db3bcaad98d5f20aa87f8",
-        "4871d747f1bc5d3d0605c51a856742fc131a8fa9e2397e93858ebbb02998d662",
-    ),
+    "correction_mg_vbd.py": _PRE_SPARSE_CORRECTION_MG_SHA256 + _SPARSE_CORRECTION_MG_SHA256,
     "correction_gpu.py": ("a80e12ab04306c7d5d964902d9e23d30d23b89076af5d090630e64d69110e53f",),
-    "correction_multigrid.py": ("b0d6eee9cc150b5f691950a9f1afaebd8a5ed0b21a7acbe017e534ddf9f3a8a9",),
-    "solver_benchmark.py": ("0ca95df0c511c716aa9b05969bb700cd50ed75c00cc1e37dbe97c7b4498fc877",),
+    "correction_multigrid.py": (
+        "b0d6eee9cc150b5f691950a9f1afaebd8a5ed0b21a7acbe017e534ddf9f3a8a9",
+        "318281593f7fd54d1c7a25d91fa81164d124d290ec810ca03cd04925449a3577",
+    ),
+    "solver_benchmark.py": _PRE_SPARSE_SOLVER_BENCHMARK_SHA256 + _SPARSE_SOLVER_BENCHMARK_SHA256,
     "solver_scenes.py": ("aedd680a31e0ed6126ce803bfcf91d47321144639a4b78eba078ef8ae4342c92",),
+    "sparse_newton_reference.py": ("ee29e0f1b1315825b03b3c75dc6b368802007e376528d1e4d4636d850c2b62db",),
 }
+_SOURCE_CLOSURE_IDENTITY_FILES = ("correction_mg_vbd.py", "solver_benchmark.py")
+_PRE_SPARSE_SOURCE_IDENTITIES = frozenset(
+    (correction_sha256, solver_sha256)
+    for correction_sha256 in _PRE_SPARSE_CORRECTION_MG_SHA256
+    for solver_sha256 in _PRE_SPARSE_SOLVER_BENCHMARK_SHA256
+)
+_SPARSE_SOURCE_IDENTITIES = frozenset(
+    (correction_sha256, solver_sha256)
+    for correction_sha256 in _SPARSE_CORRECTION_MG_SHA256
+    for solver_sha256 in _SPARSE_SOLVER_BENCHMARK_SHA256
+)
+_PRE_SPARSE_SOURCE_FILENAMES = frozenset(_REVIEWED_SOURCE_SHA256) - {"sparse_newton_reference.py"}
+_SPARSE_SOURCE_FILENAMES = frozenset(_REVIEWED_SOURCE_SHA256)
 
 _METRIC_FIELDS = (
     "objective",
@@ -249,7 +270,30 @@ def _source_manifest() -> dict[str, object]:
         "files": records,
     }
     payload["source_manifest_sha256"] = _canonical_sha256(payload)
+    _verify_source_manifest(payload, verify_current_sources=False)
     return payload
+
+
+def _reviewed_source_closure_filenames(files: Mapping[str, object]) -> frozenset[str]:
+    identity = []
+    for filename in _SOURCE_CLOSURE_IDENTITY_FILES:
+        item = files.get(filename)
+        if not isinstance(item, Mapping):
+            raise ValueError(f"source manifest is missing {filename}")
+        actual = item.get("sha256")
+        if (
+            actual != item.get("pinned_sha256")
+            or actual not in _REVIEWED_SOURCE_SHA256[filename]
+            or item.get("reviewed") is not True
+        ):
+            raise ValueError(f"source manifest does not bind reviewed {filename}")
+        identity.append(actual)
+    source_identity = tuple(identity)
+    if source_identity in _PRE_SPARSE_SOURCE_IDENTITIES:
+        return _PRE_SPARSE_SOURCE_FILENAMES
+    if source_identity in _SPARSE_SOURCE_IDENTITIES:
+        return _SPARSE_SOURCE_FILENAMES
+    raise ValueError("source manifest combines incompatible reviewed source generations")
 
 
 def _verify_source_manifest(record: Mapping[str, object], *, verify_current_sources: bool) -> None:
@@ -257,14 +301,25 @@ def _verify_source_manifest(record: Mapping[str, object], *, verify_current_sour
     files = record.get("files")
     if not isinstance(files, Mapping):
         raise ValueError("source manifest files must be a mapping")
-    for filename, reviewed_hashes in _REVIEWED_SOURCE_SHA256.items():
+    required_filenames = _reviewed_source_closure_filenames(files)
+    benchmark_filename = pathlib.Path(__file__).name
+    expected_filenames = required_filenames | {benchmark_filename}
+    actual_filenames = frozenset(files)
+    missing = expected_filenames - actual_filenames
+    if missing:
+        raise ValueError(f"source manifest is missing {sorted(missing)[0]}")
+    unexpected = actual_filenames - expected_filenames
+    if unexpected:
+        raise ValueError(f"source manifest has unexpected source {sorted(unexpected)[0]}")
+    for filename in sorted(required_filenames):
+        reviewed_hashes = _REVIEWED_SOURCE_SHA256[filename]
         item = files.get(filename)
         if not isinstance(item, Mapping):
             raise ValueError(f"source manifest is missing {filename}")
         actual = item.get("sha256")
         if actual != item.get("pinned_sha256") or actual not in reviewed_hashes or item.get("reviewed") is not True:
             raise ValueError(f"source manifest does not bind reviewed {filename}")
-    benchmark_item = files.get(pathlib.Path(__file__).name)
+    benchmark_item = files.get(benchmark_filename)
     if not isinstance(benchmark_item, Mapping):
         raise ValueError("source manifest does not bind the benchmark driver")
     _validate_sha256(benchmark_item.get("sha256"), "benchmark driver source SHA-256")

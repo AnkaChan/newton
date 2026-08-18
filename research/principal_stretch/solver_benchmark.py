@@ -49,6 +49,16 @@ from .newton_baseline import (
     solve_newton_residual_polish,
 )
 from .potentials import incremental_potential_stable_neo_hookean
+from .sparse_newton_reference import (
+    SPARSE_FACTOR_PIVOT_RELATIVE_MARGIN,
+    SPARSE_FACTOR_RELATION_RELATIVE_LIMIT,
+    SPARSE_FACTOR_UNIT_DIAGONAL_LIMIT,
+    SPARSE_FACTORIZATION_RELATIVE_RESIDUAL_LIMIT,
+    SPARSE_LINEAR_RESIDUAL_LIMIT,
+    SPARSE_MAX_REFINEMENT_STEPS,
+    SparseNewtonResult,
+    solve_sparse_newton,
+)
 from .torch_solver import compute_F
 
 _SCHEMA_VERSION = 2
@@ -1173,6 +1183,396 @@ def run_newton(
         run_sha256="",
     )
     return dataclasses.replace(run, run_sha256=_newton_run_digest(run))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class SparseNewtonRunResult:
+    """Repeated exact sparse Newton solve with authenticated CPU evidence."""
+
+    result: SparseNewtonResult
+    verification_result: SparseNewtonResult = dataclasses.field(repr=False, compare=False)
+    alternate_start_result: SparseNewtonResult = dataclasses.field(repr=False, compare=False)
+    config: NewtonConfig
+    warmup_seconds: float
+    repeat_seconds: tuple[float, ...]
+    repeat_deterministic_sha256: tuple[str, ...]
+    scene_sha256: str
+    objective_instance_sha256: str
+    physical_state_sha256: str
+    iterate_zero_sha256: str
+    result_state_sha256: str
+    verification_displacement_relative: float
+    verification_converged: bool
+    verification_reason: str
+    alternate_start_displacement_relative: float
+    alternate_start_converged: bool
+    alternate_start_reason: str
+    alternate_start_gradient_norm: float
+    alternate_start_relative_residual: float
+    reference_accepted: bool
+    reference_failures: tuple[str, ...]
+    run_sha256: str
+
+    def __post_init__(self) -> None:
+        self.config.validate()
+        for name in ("result", "verification_result", "alternate_start_result"):
+            result = getattr(self, name)
+            if type(result) is not SparseNewtonResult:
+                raise TypeError(f"{name} must be an exact SparseNewtonResult")
+            object.__setattr__(self, name, dataclasses.replace(result, positions=result.positions))
+        object.__setattr__(self, "repeat_seconds", tuple(self.repeat_seconds))
+        object.__setattr__(self, "repeat_deterministic_sha256", tuple(self.repeat_deterministic_sha256))
+        object.__setattr__(self, "reference_failures", tuple(self.reference_failures))
+        if not math.isfinite(self.warmup_seconds) or self.warmup_seconds < 0.0:
+            raise ValueError("sparse Newton warmup time must be finite and non-negative")
+        if not self.repeat_seconds or any(not math.isfinite(value) or value < 0.0 for value in self.repeat_seconds):
+            raise ValueError("sparse Newton repeat times must be finite and non-negative")
+        if len(self.repeat_deterministic_sha256) != len(self.repeat_seconds):
+            raise ValueError("sparse Newton deterministic repeat evidence has the wrong length")
+        expected_repeat_sha256 = _canonical_digest(self.result.deterministic_record())
+        for value in self.repeat_deterministic_sha256:
+            if (
+                type(value) is not str
+                or len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise ValueError("sparse Newton deterministic repeat identity must be a SHA-256")
+            if value != expected_repeat_sha256:
+                raise ValueError("sparse Newton repeats changed deterministic evidence")
+        evidence_scalars = (
+            self.verification_displacement_relative,
+            self.alternate_start_displacement_relative,
+            self.alternate_start_gradient_norm,
+            self.alternate_start_relative_residual,
+        )
+        if any(not math.isfinite(value) or value < 0.0 for value in evidence_scalars):
+            raise ValueError("sparse Newton verification evidence must be finite and non-negative")
+        if self.reference_accepted != (not self.reference_failures):
+            raise ValueError("sparse Newton acceptance must agree with its failures")
+        if (
+            self.verification_converged != self.verification_result.converged
+            or self.verification_reason != self.verification_result.reason
+        ):
+            raise ValueError("sparse Newton verification summary changed its result")
+        if (
+            self.alternate_start_converged != self.alternate_start_result.converged
+            or self.alternate_start_reason != self.alternate_start_result.reason
+        ):
+            raise ValueError("sparse Newton alternate-start summary changed its result")
+        for name in (
+            "scene_sha256",
+            "objective_instance_sha256",
+            "physical_state_sha256",
+            "iterate_zero_sha256",
+            "result_state_sha256",
+        ):
+            value = getattr(self, name)
+            if (
+                type(value) is not str
+                or len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+        if self.result_state_sha256 != _array_digest(self.result.positions):
+            raise ValueError("sparse Newton result-state hash is invalid")
+        if self.run_sha256 and self.run_sha256 != _sparse_newton_run_digest(self):
+            raise ValueError("sparse Newton run digest is invalid")
+
+    @property
+    def median_solve_seconds(self) -> float:
+        """Median sparse solve time [s], excluding warmup and problem setup."""
+        return statistics.median(self.repeat_seconds)
+
+
+def _sparse_newton_run_digest(run: SparseNewtonRunResult) -> str:
+    payload = {
+        "result": run.result.deterministic_record(),
+        "result_timing": run.result.timing_record(),
+        "verification_result": run.verification_result.deterministic_record(),
+        "verification_result_timing": run.verification_result.timing_record(),
+        "alternate_start_result": run.alternate_start_result.deterministic_record(),
+        "alternate_start_result_timing": run.alternate_start_result.timing_record(),
+        "config": dataclasses.asdict(run.config),
+        "warmup_seconds": run.warmup_seconds,
+        "repeat_seconds": list(run.repeat_seconds),
+        "repeat_deterministic_sha256": list(run.repeat_deterministic_sha256),
+        "scene_sha256": run.scene_sha256,
+        "objective_instance_sha256": run.objective_instance_sha256,
+        "physical_state_sha256": run.physical_state_sha256,
+        "iterate_zero_sha256": run.iterate_zero_sha256,
+        "bound_result_state_sha256": run.result_state_sha256,
+        "verification_displacement_relative": run.verification_displacement_relative,
+        "verification_converged": run.verification_converged,
+        "verification_reason": run.verification_reason,
+        "alternate_start_displacement_relative": run.alternate_start_displacement_relative,
+        "alternate_start_converged": run.alternate_start_converged,
+        "alternate_start_reason": run.alternate_start_reason,
+        "alternate_start_gradient_norm": run.alternate_start_gradient_norm,
+        "alternate_start_relative_residual": run.alternate_start_relative_residual,
+        "reference_accepted": run.reference_accepted,
+        "reference_failures": list(run.reference_failures),
+    }
+    return _canonical_digest(payload)
+
+
+def _sparse_newton_trace_failures(
+    result: SparseNewtonResult,
+    config: NewtonConfig,
+    role: str,
+) -> list[str]:
+    """Authenticate sparse heuristic, factor certificate, solve, and Armijo evidence."""
+    failures: list[str] = []
+    if result.residual_scale <= 0.0:
+        failures.append(f"{role} residual scale is invalid")
+    for item_index, item in enumerate(result.trace):
+        if not item.has_accepted_outgoing_step:
+            continue
+        required = (
+            item.minimum_eigenvalue,
+            item.eigenpair_residual,
+            item.diagonal_scale,
+            item.ritz_regularization,
+            item.regularization,
+            item.last_attempted_regularization,
+            item.factor_nnz,
+            item.factor_l_unit_diagonal_error,
+            item.factor_minimum_diagonal,
+            item.factor_maximum_diagonal_magnitude,
+            item.factor_minimum_diagonal_relative,
+            item.factor_relation_relative_residual,
+            item.factorization_relative_residual,
+            item.linear_relative_residual,
+            item.directional_derivative,
+        )
+        if any(value is None for value in required):
+            failures.append(f"{role} iteration {item.iteration} lacks linear-solve evidence")
+            continue
+        if item.eigenpair_residual < 0.0 or item.diagonal_scale < 1.0 or item.regularization < 0.0:
+            failures.append(f"{role} iteration {item.iteration} has invalid Ritz heuristic evidence")
+        expected_ritz_regularization = max(
+            0.0,
+            config.minimum_eigenvalue_relative * item.diagonal_scale - item.minimum_eigenvalue,
+        )
+        shift_roundoff = 32.0 * np.finfo(np.float64).eps * max(1.0, abs(expected_ritz_regularization))
+        if abs(item.ritz_regularization - expected_ritz_regularization) > shift_roundoff:
+            failures.append(f"{role} iteration {item.iteration} changed its Ritz shift heuristic")
+        if item.regularization + shift_roundoff < item.ritz_regularization:
+            failures.append(f"{role} iteration {item.iteration} used less than its Ritz heuristic shift")
+        if item.last_attempted_regularization != item.regularization:
+            failures.append(f"{role} iteration {item.iteration} changed its last attempted regularization")
+        if item.gershgorin_rescue_used:
+            if item.gershgorin_lower_bound is None or item.gershgorin_rescue_regularization is None:
+                failures.append(f"{role} iteration {item.iteration} lacks Gershgorin rescue evidence")
+            else:
+                expected_rescue = max(
+                    0.0,
+                    config.minimum_eigenvalue_relative * item.diagonal_scale - item.gershgorin_lower_bound,
+                )
+                rescue_roundoff = 32.0 * np.finfo(np.float64).eps * max(1.0, abs(expected_rescue))
+                if abs(item.gershgorin_rescue_regularization - expected_rescue) > rescue_roundoff:
+                    failures.append(f"{role} iteration {item.iteration} changed its Gershgorin rescue seed")
+                if item.regularization + rescue_roundoff < item.gershgorin_rescue_regularization:
+                    failures.append(f"{role} iteration {item.iteration} did not attempt its Gershgorin rescue")
+        elif item.gershgorin_lower_bound is not None or item.gershgorin_rescue_regularization is not None:
+            failures.append(f"{role} iteration {item.iteration} has unrequested Gershgorin evidence")
+        if (
+            item.factor_nnz <= 0
+            or item.factorization_attempts < 1
+            or item.factor_certificate_attempts < 1
+            or item.factor_certificate_attempts > item.factorization_attempts
+            or item.linear_solve_attempts < 1
+            or item.linear_solve_attempts > item.factor_certificate_attempts
+        ):
+            failures.append(f"{role} iteration {item.iteration} has invalid factorization evidence")
+        pivot_scale = max(item.diagonal_scale, item.factor_maximum_diagonal_magnitude, 1.0)
+        expected_pivot_relative = item.factor_minimum_diagonal / pivot_scale
+        pivot_roundoff = 32.0 * np.finfo(np.float64).eps * max(1.0, abs(expected_pivot_relative))
+        if (
+            item.factor_certificate_passed is not True
+            or item.factor_permutations_match is not True
+            or item.factor_l_unit_diagonal_error < 0.0
+            or item.factor_l_unit_diagonal_error > SPARSE_FACTOR_UNIT_DIAGONAL_LIMIT
+            or item.factor_maximum_diagonal_magnitude < 0.0
+            or item.factor_minimum_diagonal <= 0.0
+            or abs(item.factor_minimum_diagonal_relative - expected_pivot_relative) > pivot_roundoff
+            or item.factor_minimum_diagonal_relative <= SPARSE_FACTOR_PIVOT_RELATIVE_MARGIN
+            or item.factor_relation_relative_residual < 0.0
+            or item.factor_relation_relative_residual > SPARSE_FACTOR_RELATION_RELATIVE_LIMIT
+            or item.factorization_relative_residual < 0.0
+            or item.factorization_relative_residual > SPARSE_FACTORIZATION_RELATIVE_RESIDUAL_LIMIT
+        ):
+            failures.append(f"{role} iteration {item.iteration} failed its symmetric factor certificate")
+        if (
+            item.linear_relative_residual < 0.0
+            or item.linear_relative_residual > SPARSE_LINEAR_RESIDUAL_LIMIT
+            or item.linear_refinement_steps > SPARSE_MAX_REFINEMENT_STEPS
+        ):
+            failures.append(f"{role} iteration {item.iteration} failed the linear residual gate")
+
+        expected_step = 1.0
+        expected_trials = None
+        for trial in range(1, config.max_line_search_steps + 1):
+            if item.accepted_step_size == expected_step:
+                expected_trials = trial
+                break
+            expected_step *= config.backtrack
+        if expected_trials is None or item.line_search_trials != expected_trials:
+            failures.append(f"{role} iteration {item.iteration} has invalid backtracking evidence")
+        if item_index + 1 >= len(result.trace):
+            failures.append(f"{role} iteration {item.iteration} lacks its accepted endpoint")
+            continue
+        next_objective = result.trace[item_index + 1].objective
+        armijo_limit = item.objective + config.armijo * item.accepted_step_size * item.directional_derivative
+        armijo_roundoff = (
+            16.0
+            * np.finfo(np.float64).eps
+            * max(
+                1.0,
+                abs(next_objective),
+                abs(armijo_limit),
+            )
+        )
+        if next_objective > armijo_limit + armijo_roundoff:
+            failures.append(f"{role} iteration {item.iteration} violates Armijo")
+    return failures
+
+
+def run_sparse_newton(
+    scene: TetBenchmarkScene,
+    problem: NewtonProblem | None = None,
+    *,
+    config: NewtonConfig | None = None,
+    warmup: bool = True,
+    repeats: int = 5,
+) -> SparseNewtonRunResult:
+    """Run and independently authenticate repeated exact sparse CPU Newton.
+
+    SciPy is imported lazily by :func:`solve_sparse_newton`. The adapter uses
+    the same iterate zero, convergence thresholds, alternate start, and
+    independent common-objective checks as :func:`run_newton`.
+    """
+    if not isinstance(repeats, int) or isinstance(repeats, bool) or repeats < 1:
+        raise ValueError("repeats must be a positive integer")
+    common_problem = build_common_problem(scene) if problem is None else problem
+    expected_objective = common_objective_manifest(scene, build_common_problem(scene))
+    actual_objective = common_objective_manifest(scene, common_problem)
+    if actual_objective["objective_instance_sha256"] != expected_objective["objective_instance_sha256"]:
+        raise ValueError("sparse Newton problem does not match the supplied scene")
+
+    cfg = config or NewtonConfig(
+        max_iterations=50,
+        gradient_absolute_tolerance=1.0e-10,
+        gradient_relative_tolerance=1.0e-10,
+        step_relative_tolerance=1.0e-14,
+    )
+    cfg.validate()
+    iterate_zero = (
+        common_problem.inertial_target.index_copy(0, common_problem.pinned, common_problem.pin_targets).detach().numpy()
+    )
+
+    warmup_seconds = 0.0
+    if warmup:
+        warmup_result = solve_sparse_newton(common_problem, iterate_zero, cfg)
+        warmup_seconds = warmup_result.total_seconds
+
+    representative = None
+    representative_record = None
+    repeat_seconds: list[float] = []
+    repeat_deterministic_sha256: list[str] = []
+    for _ in range(repeats):
+        current = solve_sparse_newton(common_problem, iterate_zero, cfg)
+        repeat_seconds.append(current.total_seconds)
+        current_record = current.deterministic_record()
+        repeat_deterministic_sha256.append(_canonical_digest(current_record))
+        if representative is None:
+            representative = current
+            representative_record = current_record
+        else:
+            np.testing.assert_array_equal(current.positions, representative.positions)
+            if current_record != representative_record:
+                raise RuntimeError("repeated sparse Newton solves returned inconsistent deterministic evidence")
+
+    verification = solve_sparse_newton(common_problem, representative.positions, cfg)
+    alternate = solve_sparse_newton(common_problem, scene.x_current, cfg)
+    free_count = int(common_problem.free.numel())
+    bbox_diagonal = float(np.linalg.norm(scene.rest_q.max(axis=0) - scene.rest_q.min(axis=0)))
+    displacement_scale = max(math.sqrt(free_count) * bbox_diagonal, 1.0e-30)
+    verification_relative = (
+        float(np.linalg.norm(verification.positions - representative.positions)) / displacement_scale
+    )
+    alternate_relative = float(np.linalg.norm(alternate.positions - representative.positions)) / displacement_scale
+    metrics = evaluate_common_state(common_problem, representative.positions)
+    verification_metrics = evaluate_common_state(common_problem, verification.positions)
+    alternate_metrics = evaluate_common_state(common_problem, alternate.positions)
+
+    failures = []
+    residual_limit = max(1.0e-10, 1.0e-10 * common_problem.residual_scale)
+    for role, result in (
+        ("native", representative),
+        ("verification", verification),
+        ("alternate-start", alternate),
+    ):
+        failures.extend(_sparse_newton_trace_failures(result, cfg, role))
+        if result.residual_scale != common_problem.residual_scale:
+            failures.append(f"{role} residual scale changed")
+    if not representative.converged:
+        failures.append(f"native termination: {representative.reason}")
+    if metrics.gradient_norm > residual_limit:
+        failures.append(f"independent gradient {metrics.gradient_norm:.3e} N exceeds {residual_limit:.3e} N")
+    if not verification.converged:
+        failures.append(f"verification termination: {verification.reason}")
+    if verification_metrics.gradient_norm > residual_limit:
+        failures.append(
+            f"verification gradient {verification_metrics.gradient_norm:.3e} N exceeds {residual_limit:.3e} N"
+        )
+    if verification_relative > 1.0e-12:
+        failures.append(f"verification displacement {verification_relative:.3e} exceeds 1e-12")
+    if not alternate.converged:
+        failures.append(f"alternate-start termination: {alternate.reason}")
+    if alternate_relative > 1.0e-9:
+        failures.append(f"alternate-start displacement {alternate_relative:.3e} exceeds 1e-9")
+    if alternate_metrics.gradient_norm > residual_limit:
+        failures.append(
+            f"alternate-start gradient {alternate_metrics.gradient_norm:.3e} N exceeds {residual_limit:.3e} N"
+        )
+    for role, state_metrics in (
+        ("reference", metrics),
+        ("verification", verification_metrics),
+        ("alternate-start", alternate_metrics),
+    ):
+        if state_metrics.inverted_tet_fraction != 0.0:
+            failures.append(f"{role} contains inverted tetrahedra")
+        if state_metrics.max_pin_error_m != 0.0:
+            failures.append(f"{role} violates exact pins")
+
+    scene_sha256 = str(scene.manifest()["scene_sha256"])
+    objective_instance_sha256 = str(actual_objective["objective_instance_sha256"])
+    run = SparseNewtonRunResult(
+        result=representative,
+        verification_result=verification,
+        alternate_start_result=alternate,
+        config=cfg,
+        warmup_seconds=warmup_seconds,
+        repeat_seconds=tuple(repeat_seconds),
+        repeat_deterministic_sha256=tuple(repeat_deterministic_sha256),
+        scene_sha256=scene_sha256,
+        objective_instance_sha256=objective_instance_sha256,
+        physical_state_sha256=_array_digest(scene.x_current),
+        iterate_zero_sha256=_array_digest(iterate_zero),
+        result_state_sha256=_array_digest(representative.positions),
+        verification_displacement_relative=verification_relative,
+        verification_converged=verification.converged,
+        verification_reason=verification.reason,
+        alternate_start_displacement_relative=alternate_relative,
+        alternate_start_converged=alternate.converged,
+        alternate_start_reason=alternate.reason,
+        alternate_start_gradient_norm=alternate_metrics.gradient_norm,
+        alternate_start_relative_residual=alternate_metrics.relative_residual,
+        reference_accepted=not failures,
+        reference_failures=tuple(failures),
+        run_sha256="",
+    )
+    return dataclasses.replace(run, run_sha256=_sparse_newton_run_digest(run))
 
 
 def _newton_result_deterministic_record(result: NewtonResult) -> dict[str, object]:

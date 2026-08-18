@@ -27,6 +27,7 @@ import dataclasses
 import math
 import numbers
 import time
+from collections.abc import Mapping
 
 import numpy as np
 
@@ -46,6 +47,7 @@ from .correction_mg_vbd import (
     _require_finite_metrics,
     _same_float64_measurement,
     _supplied_reference_evidence,
+    _validate_reference_provenance,
     _validate_sha256,
     _validate_vbd_run,
 )
@@ -974,8 +976,7 @@ class DirectGraphVBDQualityResult:
             or self.reference.objective_instance_sha256 != self.objective_instance_sha256
         ):
             raise ValueError("reference evidence belongs to another scene/objective")
-        if self.reference.provenance != "fresh-dense-newton":
-            raise ValueError("reference evidence must come from the fresh dense Newton run")
+        _validate_reference_provenance(self.reference)
         if (
             self.reference.source_record.get("native_converged") is not True
             or self.reference.source_record.get("native_reason") != "gradient"
@@ -1220,13 +1221,35 @@ def _build_hierarchy(
 def run_direct_graph_vbd(
     scene: TetBenchmarkScene,
     *,
+    reference_positions: np.ndarray | None = None,
+    reference_record: Mapping[str, object] | None = None,
+    expected_reference_record_sha256: str | None = None,
     config: DirectGraphVBDConfig | None = None,
     vbd_warmup: bool = False,
     vbd_repeats: int = 1,
     newton_warmup: bool = False,
     newton_repeats: int = 1,
 ) -> DirectGraphVBDRunResult:
-    """Run fresh K1, the fixed direct graph solver, fresh K4, and Newton."""
+    """Run fresh K1, the fixed direct graph solver, fresh K4, and a reference.
+
+    Args:
+        scene: Exact common-objective tetrahedral benchmark scene.
+        reference_positions: Accepted dense or exact-sparse Newton reference
+            positions [m]. When omitted, the existing fresh dense-Newton path
+            is used.
+        reference_record: Content-addressed accepted-reference record for
+            supplied positions.
+        expected_reference_record_sha256: Externally pinned digest of
+            ``reference_record``.
+        config: Fixed direct graph solver and hierarchy policy.
+        vbd_warmup: Run one untimed VBD warmup per fresh K1/K4 call.
+        vbd_repeats: Diagnostic timing repeats per fresh VBD call.
+        newton_warmup: Run one untimed dense-Newton reference warmup.
+        newton_repeats: Diagnostic repeats for a generated reference.
+
+    Returns:
+        Timing-free quality evidence plus a separate CPU diagnostic record.
+    """
     if type(scene) is not TetBenchmarkScene:
         raise TypeError("scene must be an exact TetBenchmarkScene")
     cfg = DirectGraphVBDConfig() if config is None else config
@@ -1249,12 +1272,24 @@ def run_direct_graph_vbd(
     iterate_zero_sha256 = _array_digest(iterate_zero)
 
     start = time.perf_counter()
-    newton_run = run_newton(scene, problem, warmup=newton_warmup, repeats=int(newton_repeats))
+    if reference_positions is None:
+        if reference_record is not None or expected_reference_record_sha256 is not None:
+            raise ValueError("reference record inputs require reference_positions")
+        newton_run = run_newton(scene, problem, warmup=newton_warmup, repeats=int(newton_repeats))
+        if newton_run.scene_sha256 != scene_sha256 or newton_run.objective_instance_sha256 != objective_sha256:
+            raise ValueError("fresh Newton reference belongs to another scene/objective")
+        reference_positions = _readonly_positions(newton_run.result.x, "reference_positions")
+        reference_evidence = _newton_reference_evidence(newton_run, reference_positions)
+        reference_source_sha256 = newton_run.run_sha256
+    else:
+        if reference_record is None or expected_reference_record_sha256 is None:
+            raise ValueError("supplied reference positions require a verified record and expected digest")
+        reference_positions = _readonly_positions(reference_positions, "supplied accepted reference")
+        reference_evidence = None
+        reference_source_sha256 = expected_reference_record_sha256
     reference_seconds = time.perf_counter() - start
-    if newton_run.scene_sha256 != scene_sha256 or newton_run.objective_instance_sha256 != objective_sha256:
-        raise ValueError("fresh Newton reference belongs to another scene/objective")
-    reference_positions = _readonly_positions(newton_run.result.x, "reference_positions")
-    reference_evidence = _newton_reference_evidence(newton_run, reference_positions)
+    if reference_positions.shape != scene.rest_q.shape:
+        raise ValueError("reference_positions do not match the scene")
 
     start = time.perf_counter()
     k1_run = run_vbd(
@@ -1307,6 +1342,23 @@ def run_direct_graph_vbd(
     k4_metrics = evaluate_common_state(problem, k4_run.positions, reference_positions=reference_positions)
     for metrics in (reference_metrics, k1_metrics, k4_metrics):
         _require_finite_metrics(metrics, require_reference_errors=True)
+    if (
+        reference_metrics.max_pin_error_m != 0.0
+        or reference_metrics.inverted_tet_fraction != 0.0
+        or reference_metrics.determinant_min <= 0.0
+    ):
+        raise ValueError("accepted reference must be exactly pinned and inversion-free")
+    if reference_evidence is None:
+        assert reference_record is not None and expected_reference_record_sha256 is not None
+        reference_evidence = _supplied_reference_evidence(
+            reference_positions,
+            reference_record,
+            expected_reference_record_sha256,
+            scene_sha256=scene_sha256,
+            objective_instance_sha256=objective_sha256,
+            metrics=reference_metrics,
+            residual_scale=problem.residual_scale,
+        )
 
     initial_operator = MatrixFreeStableNHOperator.from_problem(problem, k1_run.positions)
     start = time.perf_counter()
@@ -1388,7 +1440,7 @@ def run_direct_graph_vbd(
     timing = DirectGraphVBDDiagnosticTiming(
         quality_sha256=quality.quality_sha256,
         problem_build_seconds=problem_seconds,
-        reference_run_sha256=newton_run.run_sha256,
+        reference_run_sha256=reference_source_sha256,
         reference_seconds=reference_seconds,
         vbd_k1_run_sha256=k1_run.run_sha256,
         vbd_k4_run_sha256=k4_run.run_sha256,

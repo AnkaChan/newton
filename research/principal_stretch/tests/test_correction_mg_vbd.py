@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import unittest
 from unittest import mock
@@ -14,7 +15,7 @@ import warp as wp
 from .. import correction_mg_vbd as integration
 from ..correction_gpu import MatrixFreeCorrectionConfig, MatrixFreeStableNHOperator, solve_matrix_free_correction
 from ..correction_multigrid import assemble_current_stable_nh_block_matrix
-from ..solver_benchmark import build_common_problem, evaluate_common_state
+from ..solver_benchmark import build_common_problem, evaluate_common_state, run_sparse_newton
 from ..solver_scenes import build_sliver_scene, build_stretch_scene
 
 
@@ -48,6 +49,12 @@ class TestMultiplicativeMGVBD(unittest.TestCase):
         cls.newton_call_count = newton_mock.call_count
         cls.k1_run, cls.k4_run = cls.captured_vbd
         (cls.newton_run,) = cls.captured_newton
+        cls.problem = build_common_problem(cls.scene)
+        cls.sparse_run = run_sparse_newton(cls.scene, cls.problem, warmup=False, repeats=2)
+        cls.sparse_evidence = integration._sparse_newton_reference_evidence(
+            cls.sparse_run,
+            cls.sparse_run.result.positions,
+        )
 
     def test_fresh_runs_identity_and_tiny_gate_arithmetic(self):
         quality = self.result.quality
@@ -287,6 +294,103 @@ class TestMultiplicativeMGVBD(unittest.TestCase):
                     expected_reference_record_sha256=integration._canonical_digest(forged),
                     config=self.config,
                 )
+
+    def test_sparse_exact_supplied_reference_passes_and_rejects_rehashed_evidence(self):
+        evidence = self.sparse_evidence
+        positions = self.sparse_run.result.positions
+        record = integration._thaw_json(evidence.source_record)
+        with (
+            mock.patch.object(integration, "run_newton") as newton_mock,
+            mock.patch.object(integration, "run_vbd", side_effect=(self.k1_run, self.k4_run)),
+        ):
+            supplied = integration.run_multiplicative_mg_vbd(
+                self.scene,
+                reference_positions=positions,
+                reference_record=record,
+                expected_reference_record_sha256=evidence.source_record_sha256,
+                config=self.config,
+            ).quality
+        newton_mock.assert_not_called()
+        self.assertEqual(
+            supplied.reference.provenance,
+            "externally-pinned-supplied-reference:sparse-exact-cpu-newton-float64",
+        )
+        self.assertTrue(supplied.gate.passed)
+
+        metrics = evaluate_common_state(self.problem, positions, reference_positions=positions)
+
+        def change_hessian_contract(value):
+            value["native_result"]["hessian_contract"] = "forged-hessian"
+
+        def restore_retired_sparse_contract(value):
+            value["contract"] = "fresh-sparse-exact-newton-accepted-reference-v1"
+
+        def change_factor_contract(value):
+            value["native_result"]["factor_certificate"] = "forged-factor-certificate"
+
+        def enable_factor_equilibration(value):
+            value["native_result"]["factor_equilibration"] = True
+
+        def exceed_linear_residual(value):
+            value["native_result"]["trace"][0]["linear_relative_residual"] = 1.0e-6
+
+        def change_ritz_shift_heuristic(value):
+            value["native_result"]["trace"][0]["minimum_eigenvalue"] = -1.0e6
+
+        def forge_factor_relation(value):
+            value["native_result"]["trace"][0]["factor_relation_relative_residual"] = 1.0e-6
+
+        def forge_factor_residual(value):
+            value["native_result"]["trace"][0]["factorization_relative_residual"] = 1.0e-6
+
+        def forge_factor_permutation(value):
+            value["native_result"]["trace"][0]["factor_permutations_match"] = False
+
+        def forge_tiny_factor_pivot(value):
+            value["native_result"]["trace"][0]["factor_minimum_diagonal_relative"] = 0.0
+
+        def change_last_attempt(value):
+            value["native_result"]["trace"][0]["last_attempted_regularization"] = 1.0
+
+        def invent_gershgorin_rescue(value):
+            value["native_result"]["trace"][0]["gershgorin_rescue_used"] = True
+
+        def change_repeat_identity(value):
+            value["repeat_deterministic_sha256"][0] = "0" * 64
+
+        def reject_alternate_convergence(value):
+            value["alternate_start_converged"] = False
+
+        attacks = (
+            ("retired sparse contract", restore_retired_sparse_contract, "changed its contract"),
+            ("exact Hessian", change_hessian_contract, "hessian_contract"),
+            ("factor contract", change_factor_contract, "factor_certificate"),
+            ("factor equilibration", enable_factor_equilibration, "factor_equilibration"),
+            ("linear residual", exceed_linear_residual, "linear-solve evidence"),
+            ("Ritz shift", change_ritz_shift_heuristic, "Ritz shift heuristic"),
+            ("factor relation", forge_factor_relation, "factor-certificate"),
+            ("factor residual", forge_factor_residual, "factor-certificate"),
+            ("factor permutation", forge_factor_permutation, "factor-certificate"),
+            ("tiny factor pivot", forge_tiny_factor_pivot, "factor-certificate"),
+            ("last attempted regularization", change_last_attempt, "factor-certificate"),
+            ("invented Gershgorin rescue", invent_gershgorin_rescue, "gershgorin_lower_bound"),
+            ("deterministic repeat", change_repeat_identity, "repeats changed"),
+            ("alternate start", reject_alternate_convergence, "alternate-start evidence"),
+        )
+        for name, mutate, message in attacks:
+            with self.subTest(attack=name):
+                forged = copy.deepcopy(record)
+                mutate(forged)
+                with self.assertRaisesRegex(ValueError, message):
+                    integration._supplied_reference_evidence(
+                        positions,
+                        forged,
+                        integration._canonical_digest(forged),
+                        scene_sha256=self.sparse_run.scene_sha256,
+                        objective_instance_sha256=self.sparse_run.objective_instance_sha256,
+                        metrics=metrics,
+                        residual_scale=self.problem.residual_scale,
+                    )
 
     def test_quality_container_recomputes_chain_gate_hierarchy_and_velocity(self):
         quality = self.result.quality

@@ -17,7 +17,12 @@ from .. import bench_mg_vbd as benchmark
 from ..solver_scenes import build_sliver_scene, build_stretch_scene
 
 _OLD_CORRECTION_SHA256 = "ff4ea309392577a68061b8ef0972425755b80d36b66db3bcaad98d5f20aa87f8"
-_NEW_CORRECTION_SHA256 = "4871d747f1bc5d3d0605c51a856742fc131a8fa9e2397e93858ebbb02998d662"
+_PRE_SPARSE_CORRECTION_SHA256 = "4871d747f1bc5d3d0605c51a856742fc131a8fa9e2397e93858ebbb02998d662"
+_PRE_SPARSE_MULTIGRID_SHA256 = "b0d6eee9cc150b5f691950a9f1afaebd8a5ed0b21a7acbe017e534ddf9f3a8a9"
+_PRE_SPARSE_SOLVER_BENCHMARK_SHA256 = "0ca95df0c511c716aa9b05969bb700cd50ed75c00cc1e37dbe97c7b4498fc877"
+_CURRENT_CORRECTION_SHA256 = "b25f8aaac78319d91fdfe35d7f772384b1db1c9cca09d6635cbc9ee23baa0486"
+_CURRENT_SOLVER_BENCHMARK_SHA256 = "6357b2d950eb123af33266fd6a60c7962a62f3beff72073e80ea095869ad145e"
+_CURRENT_SPARSE_NEWTON_SHA256 = "ee29e0f1b1315825b03b3c75dc6b368802007e376528d1e4d4636d850c2b62db"
 
 
 def _coordinated_rehash(payload):
@@ -276,25 +281,84 @@ class TestMGVBDSceneSuite(unittest.TestCase):
             self.assertIn(actual, reviewed_hashes)
             self.assertEqual(sources[filename]["pinned_sha256"], actual)
             self.assertTrue(sources[filename]["reviewed"])
-        self.assertEqual(sources["correction_mg_vbd.py"]["sha256"], _NEW_CORRECTION_SHA256)
+        self.assertEqual(sources["correction_mg_vbd.py"]["sha256"], _CURRENT_CORRECTION_SHA256)
+        self.assertEqual(sources["solver_benchmark.py"]["sha256"], _CURRENT_SOLVER_BENCHMARK_SHA256)
+        self.assertEqual(sources["sparse_newton_reference.py"]["sha256"], _CURRENT_SPARSE_NEWTON_SHA256)
 
     def test_historical_reviewed_source_fixture_verifies_but_current_source_check_rejects(self):
-        payload = copy.deepcopy(self.payload)
-        source_manifest = payload["source_manifest"]
-        correction_source = source_manifest["files"]["correction_mg_vbd.py"]
-        correction_source["sha256"] = _OLD_CORRECTION_SHA256
-        correction_source["pinned_sha256"] = _OLD_CORRECTION_SHA256
-        source_manifest.pop("source_manifest_sha256")
-        source_manifest["source_manifest_sha256"] = benchmark._canonical_sha256(source_manifest)
-        payload = benchmark._seal_suite(payload)
+        for correction_sha256 in (_OLD_CORRECTION_SHA256, _PRE_SPARSE_CORRECTION_SHA256):
+            with self.subTest(correction_sha256=correction_sha256):
+                payload = copy.deepcopy(self.payload)
+                source_manifest = payload["source_manifest"]
+                files = source_manifest["files"]
+                for filename, sha256 in (
+                    ("correction_mg_vbd.py", correction_sha256),
+                    ("correction_multigrid.py", _PRE_SPARSE_MULTIGRID_SHA256),
+                    ("solver_benchmark.py", _PRE_SPARSE_SOLVER_BENCHMARK_SHA256),
+                ):
+                    files[filename]["sha256"] = sha256
+                    files[filename]["pinned_sha256"] = sha256
+                files.pop("sparse_newton_reference.py")
+                source_manifest.pop("source_manifest_sha256")
+                source_manifest["source_manifest_sha256"] = benchmark._canonical_sha256(source_manifest)
+                payload = benchmark._seal_suite(payload)
 
-        verified = benchmark.verify_suite_payload(payload, verify_current_sources=False)
-        self.assertEqual(
-            verified["source_manifest"]["files"]["correction_mg_vbd.py"]["sha256"],
-            _OLD_CORRECTION_SHA256,
+                verified = benchmark.verify_suite_payload(payload, verify_current_sources=False)
+                verified_files = verified["source_manifest"]["files"]
+                self.assertEqual(verified_files["correction_mg_vbd.py"]["sha256"], correction_sha256)
+                self.assertNotIn("sparse_newton_reference.py", verified_files)
+                with self.assertRaisesRegex(ValueError, "does not match current source files"):
+                    benchmark.verify_suite_payload(payload, verify_current_sources=True)
+
+    def test_source_closure_generation_rejects_missing_extra_and_mixed_sources(self):
+        def omit_sparse(files):
+            files.pop("sparse_newton_reference.py")
+
+        def mix_generations(files):
+            correction = files["correction_mg_vbd.py"]
+            correction["sha256"] = _PRE_SPARSE_CORRECTION_SHA256
+            correction["pinned_sha256"] = _PRE_SPARSE_CORRECTION_SHA256
+
+        def retain_sparse_in_legacy(files):
+            mix_generations(files)
+            solver = files["solver_benchmark.py"]
+            solver["sha256"] = _PRE_SPARSE_SOLVER_BENCHMARK_SHA256
+            solver["pinned_sha256"] = _PRE_SPARSE_SOLVER_BENCHMARK_SHA256
+
+        cases = (
+            ("current missing sparse", omit_sparse, "missing sparse_newton_reference.py"),
+            ("mixed generations", mix_generations, "incompatible reviewed source generations"),
+            ("legacy retaining sparse", retain_sparse_in_legacy, "unexpected source sparse_newton_reference.py"),
         )
-        with self.assertRaisesRegex(ValueError, "does not match current source files"):
-            benchmark.verify_suite_payload(payload, verify_current_sources=True)
+        for name, mutate, message in cases:
+            with self.subTest(name=name):
+                payload = copy.deepcopy(self.payload)
+                source_manifest = payload["source_manifest"]
+                mutate(source_manifest["files"])
+                source_manifest.pop("source_manifest_sha256")
+                source_manifest["source_manifest_sha256"] = benchmark._canonical_sha256(source_manifest)
+                payload = benchmark._seal_suite(payload)
+                with self.assertRaisesRegex(ValueError, message):
+                    benchmark.verify_suite_payload(payload, verify_current_sources=False)
+
+    def test_source_manifest_writer_rejects_mixed_reviewed_generation(self):
+        original_file_sha256 = benchmark._file_sha256
+        mixed_hashes = {
+            "correction_mg_vbd.py": _PRE_SPARSE_CORRECTION_SHA256,
+            "solver_benchmark.py": _CURRENT_SOLVER_BENCHMARK_SHA256,
+        }
+
+        def replace_identity_hashes(path):
+            filename = pathlib.Path(path).name
+            if filename in mixed_hashes:
+                return mixed_hashes[filename]
+            return original_file_sha256(path)
+
+        with (
+            mock.patch.object(benchmark, "_file_sha256", side_effect=replace_identity_hashes),
+            self.assertRaisesRegex(ValueError, "incompatible reviewed source generations"),
+        ):
+            benchmark._source_manifest()
 
     def test_unreviewed_source_hash_is_rejected_by_writer_and_verifier(self):
         unreviewed = "0" * 64

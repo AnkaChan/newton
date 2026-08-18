@@ -11,11 +11,11 @@ weakening their contracts:
   stable-Neo-Hookean Gauss--Newton operator.
 
 Fresh VBD K4 is a comparator, never a continuation of K1.  An accepted dense
-reference may be supplied by an authenticated history transition; standalone
-scenes instead run and validate a fresh dense Newton reference.  All states
-are scored independently with the common float64 evaluator.  Timings are
-returned in a separate diagnostic-only record and are not performance
-evidence for the eventual captured GPU solver.
+or exact-sparse Newton reference may be supplied with authenticated evidence;
+standalone scenes instead run and validate a fresh dense Newton reference.
+All states are scored independently with the common float64 evaluator.
+Timings are returned in a separate diagnostic-only record and are not
+performance evidence for the eventual captured GPU solver.
 """
 
 from __future__ import annotations
@@ -47,8 +47,11 @@ from .correction_multigrid import (
 from .solver_benchmark import (
     CommonStateMetrics,
     NewtonRunResult,
+    SparseNewtonRunResult,
     TetBenchmarkScene,
     VBDRunResult,
+    _sparse_newton_run_digest,
+    _sparse_newton_trace_failures,
     _vbd_run_digest,
     build_common_problem,
     common_objective_manifest,
@@ -56,10 +59,31 @@ from .solver_benchmark import (
     run_newton,
     run_vbd,
 )
+from .sparse_newton_reference import (
+    SPARSE_EIGEN_POLICY,
+    SPARSE_FACTOR_CERTIFICATE,
+    SPARSE_FACTOR_EQUILIBRATION,
+    SPARSE_FACTOR_PIVOT_RELATIVE_MARGIN,
+    SPARSE_FACTOR_RELATION_RELATIVE_LIMIT,
+    SPARSE_FACTOR_UNIT_DIAGONAL_LIMIT,
+    SPARSE_FACTORIZATION_RELATIVE_RESIDUAL_LIMIT,
+    SPARSE_HESSIAN_CONTRACT,
+    SPARSE_LINEAR_RESIDUAL_LIMIT,
+    SPARSE_LINEAR_SOLVER,
+    SPARSE_MAX_REFINEMENT_STEPS,
+    SPARSE_NEWTON_CONTRACT,
+)
 
 _QUALITY_CONTRACT = "pss-multiplicative-mg-vbd-cpu-quality-v1"
 _TIMING_CONTRACT = "pss-multiplicative-mg-vbd-cpu-diagnostic-timing-v1"
 _OBJECTIVE_ROUNDOFF_FACTOR = 8.0
+_SPARSE_REFERENCE_METHOD = "sparse-exact-cpu-newton-float64"
+_REFERENCE_METHODS = {
+    "dense-cpu-newton-float64",
+    "dense-cpu-newton-float64-with-strict-residual-polish",
+    "dense-cpu-newton-float64-with-alternate-residual-verification",
+    _SPARSE_REFERENCE_METHOD,
+}
 
 
 def _canonical_digest(value: object) -> str:
@@ -333,12 +357,7 @@ class ReferenceEvidence:
         for name, expected in required.items():
             if record.get(name) != expected:
                 raise ValueError(f"reference source record does not bind {name}")
-        allowed_methods = {
-            "dense-cpu-newton-float64",
-            "dense-cpu-newton-float64-with-strict-residual-polish",
-            "dense-cpu-newton-float64-with-alternate-residual-verification",
-        }
-        if record.get("method") not in allowed_methods:
+        if record.get("method") not in _REFERENCE_METHODS:
             raise ValueError("reference source record has an unsupported method")
         if record.get("failures") not in (None, ()):
             raise ValueError("accepted reference source record contains failures")
@@ -678,6 +697,7 @@ class MGVBDQualityResult:
             or self.reference.objective_instance_sha256 != self.objective_instance_sha256
         ):
             raise ValueError("reference evidence belongs to another scene/objective")
+        _validate_reference_provenance(self.reference)
         validated_reference = _supplied_reference_evidence(
             arrays["reference_positions"],
             self.reference.source_record,
@@ -964,6 +984,445 @@ def _newton_reference_evidence(run: NewtonRunResult, positions: np.ndarray) -> R
     )
 
 
+def _sparse_newton_reference_evidence(
+    run: SparseNewtonRunResult,
+    positions: np.ndarray,
+) -> ReferenceEvidence:
+    """Build timing-free accepted-reference evidence from one sparse run."""
+    if type(run) is not SparseNewtonRunResult:
+        raise TypeError("run must be an exact SparseNewtonRunResult")
+    if run.run_sha256 != _sparse_newton_run_digest(run):
+        raise ValueError("fresh sparse Newton run digest is invalid")
+    if not run.reference_accepted:
+        raise ValueError(f"fresh sparse Newton candidate failed reference gates: {run.reference_failures}")
+    if run.result_state_sha256 != _array_digest(positions):
+        raise ValueError("fresh sparse Newton result does not bind reference positions")
+    for role, result in (
+        ("native", run.result),
+        ("verification", run.verification_result),
+        ("alternate-start", run.alternate_start_result),
+    ):
+        failures = _sparse_newton_trace_failures(result, run.config, role)
+        if failures:
+            raise ValueError(f"fresh sparse Newton {role} evidence failed: {failures}")
+    native_record = run.result.deterministic_record()
+    verification_record = run.verification_result.deterministic_record()
+    alternate_record = run.alternate_start_result.deterministic_record()
+    record = {
+        "contract": "fresh-sparse-exact-newton-accepted-reference-v2",
+        "method": _SPARSE_REFERENCE_METHOD,
+        "config": dataclasses.asdict(run.config),
+        "scene_sha256": run.scene_sha256,
+        "objective_instance_sha256": run.objective_instance_sha256,
+        "accepted": run.reference_accepted,
+        "failures": list(run.reference_failures),
+        "native_converged": run.result.converged,
+        "native_reason": run.result.reason,
+        "accepted_iterations": run.result.accepted_iterations,
+        "final_objective": run.result.final_objective,
+        "final_gradient_norm": run.result.final_gradient_norm,
+        "final_relative_residual": run.result.final_relative_residual,
+        "verification_converged": run.verification_converged,
+        "verification_reason": run.verification_reason,
+        "verification_displacement_relative": run.verification_displacement_relative,
+        "alternate_start_converged": run.alternate_start_converged,
+        "alternate_start_reason": run.alternate_start_reason,
+        "alternate_start_displacement_relative": run.alternate_start_displacement_relative,
+        "alternate_start_gradient_norm": run.alternate_start_gradient_norm,
+        "alternate_start_relative_residual": run.alternate_start_relative_residual,
+        "position_sha256": _array_digest(positions),
+        "repeat_count": len(run.repeat_seconds),
+        "repeat_deterministic_sha256": list(run.repeat_deterministic_sha256),
+        "native_result": native_record,
+        "verification_result": verification_record,
+        "alternate_start_result": alternate_record,
+    }
+    return ReferenceEvidence(
+        provenance="fresh-sparse-exact-newton",
+        scene_sha256=run.scene_sha256,
+        objective_instance_sha256=run.objective_instance_sha256,
+        position_sha256=record["position_sha256"],
+        source_record_sha256=_canonical_digest(record),
+        source_record=record,
+    )
+
+
+def _sparse_record_integer(record: Mapping[str, object], name: str) -> int:
+    value = record.get(name)
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 0:
+        raise ValueError(f"sparse reference result has an invalid {name}")
+    return int(value)
+
+
+def _sparse_record_real(record: Mapping[str, object], name: str) -> float:
+    value = record.get(name)
+    if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(float(value)):
+        raise ValueError(f"sparse reference result has an invalid {name}")
+    return float(value)
+
+
+def _validate_sparse_result_record(
+    record: Mapping[str, object],
+    config: Mapping[str, object],
+    *,
+    role: str,
+    residual_scale: float,
+) -> None:
+    """Revalidate one timing-free exact-sparse Newton result record."""
+    expected_policy = {
+        "contract": SPARSE_NEWTON_CONTRACT,
+        "hessian_contract": SPARSE_HESSIAN_CONTRACT,
+        "linear_solver": SPARSE_LINEAR_SOLVER,
+        "eigen_policy": SPARSE_EIGEN_POLICY,
+        "factor_certificate": SPARSE_FACTOR_CERTIFICATE,
+        "factor_equilibration": SPARSE_FACTOR_EQUILIBRATION,
+        "factor_unit_diagonal_limit": SPARSE_FACTOR_UNIT_DIAGONAL_LIMIT,
+        "factor_pivot_relative_margin": SPARSE_FACTOR_PIVOT_RELATIVE_MARGIN,
+        "factor_relation_relative_limit": SPARSE_FACTOR_RELATION_RELATIVE_LIMIT,
+        "factorization_relative_residual_limit": SPARSE_FACTORIZATION_RELATIVE_RESIDUAL_LIMIT,
+        "linear_residual_limit": SPARSE_LINEAR_RESIDUAL_LIMIT,
+        "maximum_refinement_steps": SPARSE_MAX_REFINEMENT_STEPS,
+    }
+    for name, expected in expected_policy.items():
+        if record.get(name) != expected:
+            raise ValueError(f"sparse reference {role} changed {name}")
+    if record.get("converged") is not True or record.get("reason") != "gradient":
+        raise ValueError(f"sparse reference {role} lacks converged Newton evidence")
+    if record.get("residual_scale") != residual_scale:
+        raise ValueError(f"sparse reference {role} changed residual_scale")
+    scipy_version = record.get("scipy_version")
+    if type(scipy_version) is not str or not scipy_version:
+        raise ValueError(f"sparse reference {role} lacks a SciPy version")
+    position_sha256 = record.get("positions_sha256")
+    _validate_sha256(position_sha256, f"sparse reference {role} positions_sha256")
+
+    accepted_iterations = _sparse_record_integer(record, "accepted_iterations")
+    final_objective = _sparse_record_real(record, "final_objective")
+    final_gradient = _sparse_record_real(record, "final_gradient_norm")
+    final_relative = _sparse_record_real(record, "final_relative_residual")
+    expected_relative = final_gradient / residual_scale
+    if not _same_float64_measurement(final_relative, expected_relative):
+        raise ValueError(f"sparse reference {role} final residual is inconsistent")
+
+    work = record.get("work")
+    if not isinstance(work, Mapping):
+        raise ValueError(f"sparse reference {role} lacks work evidence")
+    work_names = (
+        "objective_evaluations",
+        "gradient_evaluations",
+        "hessian_evaluations",
+        "eigenvalue_evaluations",
+        "factorization_attempts",
+        "factor_certificate_attempts",
+        "linear_solve_attempts",
+        "line_search_trials",
+    )
+    work_counts = {name: _sparse_record_integer(work, name) for name in work_names}
+    trace = record.get("trace")
+    if not isinstance(trace, tuple) or len(trace) != accepted_iterations + 1:
+        raise ValueError(f"sparse reference {role} trace has an invalid length")
+
+    factorization_attempts = 0
+    factor_certificate_attempts = 0
+    linear_solve_attempts = 0
+    line_search_trials = 0
+    outgoing_count = 0
+    for index, item in enumerate(trace):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"sparse reference {role} trace item is invalid")
+        if _sparse_record_integer(item, "iteration") != index:
+            raise ValueError(f"sparse reference {role} trace indices are not contiguous")
+        objective = _sparse_record_real(item, "objective")
+        gradient = _sparse_record_real(item, "gradient_norm")
+        relative = _sparse_record_real(item, "relative_residual")
+        _sparse_record_real(item, "minimum_determinant")
+        if gradient < 0.0 or relative < 0.0 or not _same_float64_measurement(relative, gradient / residual_scale):
+            raise ValueError(f"sparse reference {role} trace residual is invalid")
+        if _sparse_record_integer(item, "hessian_nnz") < 1:
+            raise ValueError(f"sparse reference {role} trace lacks an exact sparse Hessian")
+        item_factorizations = _sparse_record_integer(item, "factorization_attempts")
+        item_certificates = _sparse_record_integer(item, "factor_certificate_attempts")
+        item_linear_solves = _sparse_record_integer(item, "linear_solve_attempts")
+        item_refinements = _sparse_record_integer(item, "linear_refinement_steps")
+        item_trials = _sparse_record_integer(item, "line_search_trials")
+        factorization_attempts += item_factorizations
+        factor_certificate_attempts += item_certificates
+        linear_solve_attempts += item_linear_solves
+        line_search_trials += item_trials
+
+        step_size = item.get("accepted_step_size")
+        step_norm = item.get("accepted_step_norm")
+        if step_size is None and step_norm is None:
+            if index != len(trace) - 1:
+                raise ValueError(f"sparse reference {role} has a nonterminal missing step")
+            terminal_optional = (
+                "minimum_eigenvalue",
+                "eigenpair_residual",
+                "diagonal_scale",
+                "ritz_regularization",
+                "gershgorin_lower_bound",
+                "gershgorin_rescue_regularization",
+                "regularization",
+                "last_attempted_regularization",
+                "factor_nnz",
+                "factor_permutations_match",
+                "factor_l_unit_diagonal_error",
+                "factor_minimum_diagonal",
+                "factor_maximum_diagonal_magnitude",
+                "factor_minimum_diagonal_relative",
+                "factor_relation_relative_residual",
+                "factorization_relative_residual",
+                "factor_certificate_passed",
+                "linear_relative_residual",
+                "directional_derivative",
+            )
+            if any(item.get(name) is not None for name in terminal_optional):
+                raise ValueError(f"sparse reference {role} terminal trace has direction evidence")
+            if item.get("gershgorin_rescue_used") is not False:
+                raise ValueError(f"sparse reference {role} terminal trace has Gershgorin evidence")
+            if any((item_factorizations, item_certificates, item_linear_solves, item_refinements, item_trials)):
+                raise ValueError(f"sparse reference {role} terminal trace has linear work")
+            continue
+        if step_size is None or step_norm is None or index + 1 >= len(trace):
+            raise ValueError(f"sparse reference {role} has incomplete accepted-step evidence")
+        outgoing_count += 1
+        step_size_value = _sparse_record_real(item, "accepted_step_size")
+        step_norm_value = _sparse_record_real(item, "accepted_step_norm")
+        minimum_eigenvalue = _sparse_record_real(item, "minimum_eigenvalue")
+        eigenpair_residual = _sparse_record_real(item, "eigenpair_residual")
+        diagonal_scale = _sparse_record_real(item, "diagonal_scale")
+        ritz_regularization = _sparse_record_real(item, "ritz_regularization")
+        regularization = _sparse_record_real(item, "regularization")
+        last_attempted_regularization = _sparse_record_real(item, "last_attempted_regularization")
+        factor_nnz = _sparse_record_integer(item, "factor_nnz")
+        factor_l_error = _sparse_record_real(item, "factor_l_unit_diagonal_error")
+        factor_minimum_diagonal = _sparse_record_real(item, "factor_minimum_diagonal")
+        factor_maximum_diagonal = _sparse_record_real(item, "factor_maximum_diagonal_magnitude")
+        factor_minimum_diagonal_relative = _sparse_record_real(item, "factor_minimum_diagonal_relative")
+        factor_relation_residual = _sparse_record_real(item, "factor_relation_relative_residual")
+        factorization_residual = _sparse_record_real(item, "factorization_relative_residual")
+        linear_relative_residual = _sparse_record_real(item, "linear_relative_residual")
+        directional_derivative = _sparse_record_real(item, "directional_derivative")
+        if (
+            step_norm_value < 0.0
+            or not 0.0 < step_size_value <= 1.0
+            or eigenpair_residual < 0.0
+            or diagonal_scale < 1.0
+            or ritz_regularization < 0.0
+            or regularization < 0.0
+            or last_attempted_regularization != regularization
+            or factor_nnz < 1
+            or item_factorizations < 1
+            or item_certificates < 1
+            or item_certificates > item_factorizations
+            or item_linear_solves < 1
+            or item_linear_solves > item_certificates
+            or item_refinements > SPARSE_MAX_REFINEMENT_STEPS
+            or item.get("factor_certificate_passed") is not True
+            or item.get("factor_permutations_match") is not True
+            or not 0.0 <= factor_l_error <= SPARSE_FACTOR_UNIT_DIAGONAL_LIMIT
+            or factor_maximum_diagonal < 0.0
+            or factor_minimum_diagonal <= 0.0
+            or factor_minimum_diagonal_relative <= SPARSE_FACTOR_PIVOT_RELATIVE_MARGIN
+            or not 0.0 <= factor_relation_residual <= SPARSE_FACTOR_RELATION_RELATIVE_LIMIT
+            or not 0.0 <= factorization_residual <= SPARSE_FACTORIZATION_RELATIVE_RESIDUAL_LIMIT
+            or not 0.0 <= linear_relative_residual <= SPARSE_LINEAR_RESIDUAL_LIMIT
+            or directional_derivative >= 0.0
+        ):
+            raise ValueError(f"sparse reference {role} has invalid factor-certificate or linear-solve evidence")
+        expected_ritz_regularization = max(
+            0.0,
+            float(config["minimum_eigenvalue_relative"]) * diagonal_scale - minimum_eigenvalue,
+        )
+        if not _same_float64_measurement(ritz_regularization, expected_ritz_regularization):
+            raise ValueError(f"sparse reference {role} changed its Ritz shift heuristic")
+        if regularization < ritz_regularization and not _same_float64_measurement(
+            regularization,
+            ritz_regularization,
+        ):
+            raise ValueError(f"sparse reference {role} used less than its Ritz heuristic shift")
+        pivot_scale = max(diagonal_scale, factor_maximum_diagonal, 1.0)
+        if not _same_float64_measurement(
+            factor_minimum_diagonal_relative,
+            factor_minimum_diagonal / pivot_scale,
+        ):
+            raise ValueError(f"sparse reference {role} changed its factor pivot margin")
+        gershgorin_rescue_used = item.get("gershgorin_rescue_used")
+        if type(gershgorin_rescue_used) is not bool:
+            raise ValueError(f"sparse reference {role} has invalid Gershgorin rescue evidence")
+        if gershgorin_rescue_used:
+            gershgorin_lower_bound = _sparse_record_real(item, "gershgorin_lower_bound")
+            gershgorin_rescue = _sparse_record_real(item, "gershgorin_rescue_regularization")
+            expected_rescue = max(
+                0.0,
+                float(config["minimum_eigenvalue_relative"]) * diagonal_scale - gershgorin_lower_bound,
+            )
+            if not _same_float64_measurement(gershgorin_rescue, expected_rescue):
+                raise ValueError(f"sparse reference {role} changed its Gershgorin rescue seed")
+            if regularization < gershgorin_rescue and not _same_float64_measurement(
+                regularization,
+                gershgorin_rescue,
+            ):
+                raise ValueError(f"sparse reference {role} did not attempt its Gershgorin rescue")
+        elif item.get("gershgorin_lower_bound") is not None or item.get("gershgorin_rescue_regularization") is not None:
+            raise ValueError(f"sparse reference {role} retained unused Gershgorin evidence")
+        expected_step = 1.0
+        expected_trials = None
+        for trial in range(1, int(config["max_line_search_steps"]) + 1):
+            if step_size_value == expected_step:
+                expected_trials = trial
+                break
+            expected_step *= float(config["backtrack"])
+        if expected_trials is None or item_trials != expected_trials:
+            raise ValueError(f"sparse reference {role} changed deterministic backtracking")
+        next_item = trace[index + 1]
+        if not isinstance(next_item, Mapping):
+            raise ValueError(f"sparse reference {role} accepted endpoint is invalid")
+        next_objective = _sparse_record_real(next_item, "objective")
+        armijo_limit = objective + float(config["armijo"]) * step_size_value * directional_derivative
+        armijo_roundoff = (
+            16.0
+            * np.finfo(np.float64).eps
+            * max(
+                1.0,
+                abs(next_objective),
+                abs(armijo_limit),
+            )
+        )
+        if next_objective > armijo_limit + armijo_roundoff:
+            raise ValueError(f"sparse reference {role} accepted step violates Armijo")
+
+    terminal = trace[-1]
+    if not isinstance(terminal, Mapping):
+        raise ValueError(f"sparse reference {role} terminal trace is invalid")
+    for name, expected in (
+        ("final_objective", final_objective),
+        ("final_gradient_norm", final_gradient),
+        ("final_relative_residual", final_relative),
+    ):
+        trace_name = {
+            "final_objective": "objective",
+            "final_gradient_norm": "gradient_norm",
+            "final_relative_residual": "relative_residual",
+        }[name]
+        if not _same_float64_measurement(_sparse_record_real(terminal, trace_name), expected):
+            raise ValueError(f"sparse reference {role} {name} changed its terminal trace")
+    if outgoing_count != accepted_iterations:
+        raise ValueError(f"sparse reference {role} accepted-step count is invalid")
+    expected_work = {
+        "objective_evaluations": len(trace) + line_search_trials,
+        "gradient_evaluations": len(trace),
+        "hessian_evaluations": len(trace),
+        "eigenvalue_evaluations": outgoing_count,
+        "factorization_attempts": factorization_attempts,
+        "factor_certificate_attempts": factor_certificate_attempts,
+        "linear_solve_attempts": linear_solve_attempts,
+        "line_search_trials": line_search_trials,
+    }
+    if work_counts != expected_work:
+        raise ValueError(f"sparse reference {role} work accounting is invalid")
+    absolute_tolerance = float(config["gradient_absolute_tolerance"])
+    relative_tolerance = float(config["gradient_relative_tolerance"])
+    if final_gradient > absolute_tolerance and final_relative > relative_tolerance:
+        raise ValueError(f"sparse reference {role} falsely claims gradient convergence")
+
+
+def _validate_sparse_reference_record(
+    record: Mapping[str, object],
+    positions: np.ndarray,
+    metrics: CommonStateMetrics,
+    residual_scale: float,
+) -> None:
+    if record.get("contract") != "fresh-sparse-exact-newton-accepted-reference-v2":
+        raise ValueError("supplied sparse reference changed its contract")
+    config = record.get("config")
+    if not isinstance(config, Mapping):
+        raise ValueError("supplied sparse reference is missing its Newton config")
+    result_records = {}
+    for name in ("native_result", "verification_result", "alternate_start_result"):
+        value = record.get(name)
+        if not isinstance(value, Mapping):
+            raise ValueError(f"supplied sparse reference is missing {name}")
+        result_records[name] = value
+        _validate_sparse_result_record(
+            value,
+            config,
+            role=name.removesuffix("_result").replace("_", "-"),
+            residual_scale=residual_scale,
+        )
+
+    native = result_records["native_result"]
+    verification = result_records["verification_result"]
+    alternate = result_records["alternate_start_result"]
+    position_sha256 = _array_digest(positions)
+    if native.get("positions_sha256") != position_sha256:
+        raise ValueError("supplied sparse reference native result changed positions")
+    if verification.get("positions_sha256") != position_sha256:
+        raise ValueError("supplied sparse reference verification changed the converged endpoint")
+    if record.get("native_converged") is not True or record.get("native_reason") != "gradient":
+        raise ValueError("supplied sparse reference lacks converged native Newton evidence")
+    if record.get("verification_converged") is not True or record.get("verification_reason") != "gradient":
+        raise ValueError("supplied sparse reference lacks converged verification evidence")
+    if record.get("alternate_start_converged") is not True or record.get("alternate_start_reason") != "gradient":
+        raise ValueError("supplied sparse reference lacks converged alternate-start evidence")
+    summary_pairs = (
+        ("accepted_iterations", native.get("accepted_iterations")),
+        ("final_objective", native.get("final_objective")),
+        ("final_gradient_norm", native.get("final_gradient_norm")),
+        ("final_relative_residual", native.get("final_relative_residual")),
+    )
+    for name, expected in summary_pairs:
+        if record.get(name) != expected:
+            raise ValueError(f"supplied sparse reference changed {name}")
+    if not _same_cross_backend_gradient_measurement(
+        _sparse_record_real(alternate, "final_gradient_norm"),
+        _sparse_record_real(record, "alternate_start_gradient_norm"),
+    ):
+        raise ValueError("supplied sparse reference changed alternate-start gradient")
+    if not _same_float64_measurement(
+        _sparse_record_real(alternate, "final_relative_residual"),
+        _sparse_record_real(record, "alternate_start_relative_residual"),
+    ):
+        raise ValueError("supplied sparse reference changed alternate-start residual")
+    if not _same_cross_backend_gradient_measurement(
+        _sparse_record_real(native, "final_gradient_norm"),
+        metrics.gradient_norm,
+    ):
+        raise ValueError("supplied sparse reference native gradient changed independent evaluation")
+
+    repeat_count = _sparse_record_integer(record, "repeat_count")
+    repeat_sha256 = record.get("repeat_deterministic_sha256")
+    if repeat_count < 1 or not isinstance(repeat_sha256, tuple) or len(repeat_sha256) != repeat_count:
+        raise ValueError("supplied sparse reference lacks deterministic repeat evidence")
+    native_sha256 = _canonical_digest(_thaw_json(native))
+    for value in repeat_sha256:
+        _validate_sha256(value, "sparse repeat deterministic SHA-256")
+        if value != native_sha256:
+            raise ValueError("supplied sparse reference repeats changed deterministic evidence")
+
+
+def _validate_reference_provenance(reference: ReferenceEvidence) -> None:
+    method = reference.source_record.get("method")
+    expected = {
+        "dense-cpu-newton-float64": {
+            "fresh-dense-newton",
+            "externally-pinned-supplied-reference:dense-cpu-newton-float64",
+        },
+        "dense-cpu-newton-float64-with-strict-residual-polish": {
+            "externally-pinned-supplied-reference:dense-cpu-newton-float64-with-strict-residual-polish"
+        },
+        "dense-cpu-newton-float64-with-alternate-residual-verification": {
+            "externally-pinned-supplied-reference:dense-cpu-newton-float64-with-alternate-residual-verification"
+        },
+        _SPARSE_REFERENCE_METHOD: {
+            "fresh-sparse-exact-newton",
+            f"externally-pinned-supplied-reference:{_SPARSE_REFERENCE_METHOD}",
+        },
+    }.get(method, set())
+    if reference.provenance not in expected:
+        raise ValueError("reference provenance is not allowed for its authenticated method")
+
+
 def _supplied_reference_evidence(
     positions: np.ndarray,
     source_record: Mapping[str, object],
@@ -989,12 +1448,7 @@ def _supplied_reference_evidence(
         if record.get(name) != expected:
             raise ValueError(f"supplied reference record changed {name}")
     method = record.get("method")
-    allowed_methods = {
-        "dense-cpu-newton-float64",
-        "dense-cpu-newton-float64-with-strict-residual-polish",
-        "dense-cpu-newton-float64-with-alternate-residual-verification",
-    }
-    if method not in allowed_methods:
+    if method not in _REFERENCE_METHODS:
         raise ValueError("supplied reference record has an unsupported method")
     method_policy = {
         "dense-cpu-newton-float64-with-strict-residual-polish": (
@@ -1040,6 +1494,8 @@ def _supplied_reference_evidence(
             raise ValueError(f"supplied reference record changed Newton config {name}")
     if config.get("step_relative_tolerance") not in (0.0, 1.0e-14):
         raise ValueError("supplied reference record changed Newton step tolerance")
+    if method == _SPARSE_REFERENCE_METHOD:
+        _validate_sparse_reference_record(record, positions, metrics, residual_scale)
     residual_limit = max(1.0e-10, 1.0e-10 * residual_scale)
     if metrics.gradient_norm > residual_limit:
         raise ValueError("supplied reference exceeds the independent gradient gate")
@@ -1182,12 +1638,12 @@ def run_multiplicative_mg_vbd(
 
     Args:
         scene: Exact common-objective tetrahedral benchmark scene.
-        reference_positions: Optional accepted dense reference positions [m].
-            When omitted, a fresh independently verified dense Newton reference
-            is run. Supplying positions is intended for verified PR history
-            transitions whose accepted reference was built upstream;
-            ``reference_record`` and its externally pinned digest are then
-            mandatory and its numerical acceptance gates are re-evaluated.
+        reference_positions: Accepted dense or exact-sparse Newton reference
+            positions [m]. When omitted, a fresh independently verified dense
+            Newton reference is run. Supplying positions is intended for
+            authenticated reference generation performed upstream;
+            ``reference_record`` and its externally pinned digest are mandatory,
+            and its numerical acceptance gates are re-evaluated.
         reference_record: Upstream accepted-reference record bound to the
             scene, objective, position hash, method, and accepted status.
         expected_reference_record_sha256: Externally pinned digest of
