@@ -9,6 +9,8 @@ import dataclasses
 import inspect
 import json
 import os
+import subprocess
+import sys
 import unittest
 import weakref
 from types import SimpleNamespace
@@ -20,6 +22,11 @@ import warp as wp
 
 from research.principal_stretch.captured_graph_vbd import (
     CONTRACT_ID,
+    FINALIZE_GATE_BLOCK_DIM,
+    FINALIZE_GATE_COLLECTIVE_VERSION,
+    FINALIZE_GATE_OWNER_ROLES,
+    FINALIZE_GATE_OWNER_THREADS,
+    FINALIZE_GATE_ROUTE,
     FIRST_CYCLE_PUBLICATION_ROLE,
     FUSED_GATHER_KERNEL_VERSION,
     OUTER_CORRECTIONS,
@@ -146,6 +153,227 @@ def _oracle_build_candidate(
             )
     candidate[vertex] = value
     proposal_finite[vertex] = int(valid)
+
+
+@wp.kernel(enable_backward=False)
+def _serial_finalize_gate_oracle(
+    outer_index: int,
+    current_inertia: wp.array[wp.float64],
+    candidate_inertia: wp.array[wp.float64],
+    current_elastic: wp.array[wp.float64],
+    candidate_elastic: wp.array[wp.float64],
+    directional_terms: wp.array[wp.float64],
+    candidate_determinants: wp.array[wp.float64],
+    segment_minima: wp.array[wp.float64],
+    proposal_finite: wp.array[int],
+    vertex_finite: wp.array[int],
+    tet_finite: wp.array[int],
+    minimum_determinant: wp.float64,
+    armijo: wp.float64,
+    active: wp.array[int],
+    accepted: wp.array[int],
+    reasons: wp.array[int],
+    initial_objective: wp.array[wp.float64],
+    candidate_objective: wp.array[wp.float64],
+    directional_derivative: wp.array[wp.float64],
+    minimum_segment_determinant: wp.array[wp.float64],
+):
+    """Frozen f502169 serial gate used only as an independent CUDA oracle."""
+    if wp.tid() != 0:
+        return
+    accepted[outer_index] = 0
+    initial_objective[outer_index] = wp.float64(0.0)
+    candidate_objective[outer_index] = wp.float64(0.0)
+    directional_derivative[outer_index] = wp.float64(0.0)
+    minimum_segment_determinant[outer_index] = wp.float64(0.0)
+    if active[0] == 0:
+        reasons[outer_index] = 2
+        return
+
+    start_objective = wp.float64(0.0)
+    end_objective = wp.float64(0.0)
+    derivative = wp.float64(0.0)
+    all_finite = bool(True)
+    for vertex in range(current_inertia.shape[0]):
+        start_objective += current_inertia[vertex]
+        end_objective += candidate_inertia[vertex]
+        all_finite = all_finite and proposal_finite[vertex] != 0 and vertex_finite[vertex] != 0
+    for index in range(directional_terms.shape[0]):
+        derivative += directional_terms[index]
+    minimum_segment = wp.float64(1.0e300)
+    minimum_candidate = wp.float64(1.0e300)
+    for tet in range(current_elastic.shape[0]):
+        start_objective += current_elastic[tet]
+        end_objective += candidate_elastic[tet]
+        minimum_segment = wp.min(minimum_segment, segment_minima[tet])
+        minimum_candidate = wp.min(minimum_candidate, candidate_determinants[tet])
+        all_finite = all_finite and tet_finite[tet] != 0
+
+    if (
+        not all_finite
+        or not wp.isfinite(start_objective)
+        or not wp.isfinite(end_objective)
+        or not wp.isfinite(derivative)
+        or not wp.isfinite(minimum_segment)
+    ):
+        reasons[outer_index] = 3
+        active[0] = 0
+        return
+
+    initial_objective[outer_index] = start_objective
+    candidate_objective[outer_index] = end_objective
+    directional_derivative[outer_index] = derivative
+    minimum_segment_determinant[outer_index] = minimum_segment
+    if derivative >= wp.float64(0.0):
+        reasons[outer_index] = 4
+        active[0] = 0
+    elif minimum_candidate <= minimum_determinant or minimum_segment <= minimum_determinant:
+        reasons[outer_index] = 5
+        active[0] = 0
+    elif not (end_objective < start_objective and end_objective <= start_objective + armijo * derivative):
+        reasons[outer_index] = 6
+        active[0] = 0
+    else:
+        accepted[outer_index] = 1
+        reasons[outer_index] = 1
+
+
+def _cpu_ordered_gate_reference(
+    current_inertia: np.ndarray,
+    candidate_inertia: np.ndarray,
+    current_elastic: np.ndarray,
+    candidate_elastic: np.ndarray,
+    directional_terms: np.ndarray,
+    candidate_determinants: np.ndarray,
+    segment_minima: np.ndarray,
+    proposal_finite: np.ndarray,
+    vertex_finite: np.ndarray,
+    tet_finite: np.ndarray,
+    *,
+    minimum_determinant: float,
+    armijo: float,
+    active: int,
+) -> tuple[int, int, int, np.float64, np.float64, np.float64, np.float64]:
+    """Replay the committed scalar recurrence without vectorized reductions."""
+    if active == 0:
+        return 0, 0, 2, np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0)
+
+    start_objective = np.float64(0.0)
+    end_objective = np.float64(0.0)
+    all_finite = True
+    for vertex in range(current_inertia.shape[0]):
+        start_objective = np.float64(start_objective + current_inertia[vertex])
+        end_objective = np.float64(end_objective + candidate_inertia[vertex])
+        all_finite = all_finite and proposal_finite[vertex] != 0 and vertex_finite[vertex] != 0
+    derivative = np.float64(0.0)
+    for value in directional_terms:
+        derivative = np.float64(derivative + value)
+    minimum_segment = np.float64(1.0e300)
+    minimum_candidate = np.float64(1.0e300)
+    for tet in range(current_elastic.shape[0]):
+        start_objective = np.float64(start_objective + current_elastic[tet])
+        end_objective = np.float64(end_objective + candidate_elastic[tet])
+        minimum_segment = np.float64(min(minimum_segment, segment_minima[tet]))
+        minimum_candidate = np.float64(min(minimum_candidate, candidate_determinants[tet]))
+        all_finite = all_finite and tet_finite[tet] != 0
+    if not all_finite or not all(
+        np.isfinite(value) for value in (start_objective, end_objective, derivative, minimum_segment)
+    ):
+        return 0, 0, 3, np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0)
+    if derivative >= np.float64(0.0):
+        reason = 4
+    elif minimum_candidate <= minimum_determinant or minimum_segment <= minimum_determinant:
+        reason = 5
+    elif not (end_objective < start_objective and end_objective <= start_objective + np.float64(armijo) * derivative):
+        reason = 6
+    else:
+        return 1, 1, 1, start_objective, end_objective, derivative, minimum_segment
+    return 0, 0, reason, start_objective, end_objective, derivative, minimum_segment
+
+
+def _gate_case_arrays(
+    case: dict[str, object], device: wp.context.Device
+) -> tuple[list[object], dict[str, wp.array[Any]]]:
+    """Allocate one gate case with poisoned non-target output slots."""
+    f64_names = (
+        "current_inertia",
+        "candidate_inertia",
+        "current_elastic",
+        "candidate_elastic",
+        "directional_terms",
+        "candidate_determinants",
+        "segment_minima",
+    )
+    i32_names = ("proposal_finite", "vertex_finite", "tet_finite")
+    inputs: dict[str, wp.array[Any]] = {
+        name: wp.array(np.asarray(case[name], dtype=np.float64), dtype=wp.float64, device=device) for name in f64_names
+    }
+    inputs.update(
+        {name: wp.array(np.asarray(case[name], dtype=np.int32), dtype=wp.int32, device=device) for name in i32_names}
+    )
+    outputs = {
+        "active": wp.array(np.array([case.get("active", 1)], dtype=np.int32), dtype=wp.int32, device=device),
+        "accepted": wp.array(np.array([71, 72, 73, 74], dtype=np.int32), dtype=wp.int32, device=device),
+        "reasons": wp.array(np.array([81, 82, 83, 84], dtype=np.int32), dtype=wp.int32, device=device),
+        "initial_objective": wp.array(
+            np.array([11.0, -0.0, 13.0, 14.0], dtype=np.float64), dtype=wp.float64, device=device
+        ),
+        "candidate_objective": wp.array(
+            np.array([21.0, -0.0, 23.0, 24.0], dtype=np.float64), dtype=wp.float64, device=device
+        ),
+        "directional_derivative": wp.array(
+            np.array([31.0, -0.0, 33.0, 34.0], dtype=np.float64), dtype=wp.float64, device=device
+        ),
+        "minimum_segment_determinant": wp.array(
+            np.array([41.0, -0.0, 43.0, 44.0], dtype=np.float64), dtype=wp.float64, device=device
+        ),
+    }
+    launch_inputs: list[object] = [
+        1,
+        inputs["current_inertia"],
+        inputs["candidate_inertia"],
+        inputs["current_elastic"],
+        inputs["candidate_elastic"],
+        inputs["directional_terms"],
+        inputs["candidate_determinants"],
+        inputs["segment_minima"],
+        inputs["proposal_finite"],
+        inputs["vertex_finite"],
+        inputs["tet_finite"],
+        float(case.get("minimum_determinant", 0.0)),
+        float(case.get("armijo", 1.0e-4)),
+        outputs["active"],
+        outputs["accepted"],
+        outputs["reasons"],
+        outputs["initial_objective"],
+        outputs["candidate_objective"],
+        outputs["directional_derivative"],
+        outputs["minimum_segment_determinant"],
+    ]
+    return launch_inputs, outputs
+
+
+def _run_gate_case(
+    kernel: wp.context.Kernel,
+    case: dict[str, object],
+    device: wp.context.Device,
+    *,
+    collective: bool,
+) -> tuple[dict[str, tuple[str, tuple[int, ...], bytes]], dict[str, np.ndarray]]:
+    launch_inputs, outputs = _gate_case_arrays(case, device)
+    if collective:
+        wp.launch(
+            kernel,
+            dim=FINALIZE_GATE_BLOCK_DIM,
+            inputs=launch_inputs,
+            block_dim=FINALIZE_GATE_BLOCK_DIM,
+            device=device,
+        )
+    else:
+        wp.launch(kernel, dim=1, inputs=launch_inputs, device=device)
+    patterns = {name: _device_bit_pattern(value) for name, value in outputs.items()}
+    host = {name: np.asarray(value.numpy()) for name, value in outputs.items()}
+    return patterns, host
 
 
 def _tiny_scene():
@@ -298,7 +526,7 @@ def _enqueue_unfused_outer_oracle(solver: CapturedDirectGraphVBD):
         )
         wp.launch(
             _finalize_gate,
-            dim=1,
+            dim=FINALIZE_GATE_BLOCK_DIM,
             inputs=[
                 outer_index,
                 direct.current_inertia,
@@ -321,6 +549,7 @@ def _enqueue_unfused_outer_oracle(solver: CapturedDirectGraphVBD):
                 direct.directional_derivatives,
                 direct.minimum_segment_determinants,
             ],
+            block_dim=FINALIZE_GATE_BLOCK_DIM,
             device=solver.device,
         )
         wp.launch(
@@ -512,7 +741,119 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
         self.assertEqual(source.count("operator.launch_gradient_masked("), 1)
         self.assertEqual(source.count("operator.launch_apply_residual("), 0)
         self.assertEqual(source.count("operator.launch_apply_residual_scalar_direction("), 1)
-        self.assertIn('"captured-direct-graph-vbd-graph-identity-v6"', source)
+        self.assertIn('"captured-direct-graph-vbd-graph-identity-v7"', source)
+
+    def test_four_warp_gate_contract_and_cpu_ordered_reference_are_frozen(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        gate_source = inspect.getsource(_finalize_gate.func)
+        enqueue_source = inspect.getsource(CapturedDirectGraphVBD._enqueue_integrated)
+        self.assertEqual(FINALIZE_GATE_ROUTE, "cuda-one-block-four-warp-ordered-fp64-v1")
+        self.assertEqual(FINALIZE_GATE_BLOCK_DIM, 128)
+        self.assertEqual(FINALIZE_GATE_OWNER_THREADS, (0, 32, 64, 96))
+        self.assertEqual(
+            FINALIZE_GATE_OWNER_ROLES,
+            (
+                "ordered-objective-pair",
+                "ordered-directional-derivative",
+                "ordered-determinant-minima-pair",
+                "ordered-finite-flags",
+            ),
+        )
+        self.assertEqual(
+            FINALIZE_GATE_COLLECTIVE_VERSION,
+            "shared-tile-vec2d-float64-vec2d-int32-broadcasts-v1",
+        )
+        self.assertEqual(OUTER_SCHEDULE_SHA256, "9cbe82532dc76e292d0b34df0ba483c53b4eac4ba82fb7536f272dfbc753e8d3")
+        self.assertEqual(gate_source.count("wp.tile_from_thread("), 4)
+        self.assertEqual(gate_source.count('storage="shared"'), 4)
+        self.assertEqual(gate_source.count("wp.tile_extract("), 4)
+        self.assertLess(gate_source.rindex("wp.tile_extract("), gate_source.index("if lane != 0:"))
+        self.assertNotIn("tile_sum", gate_source)
+        self.assertNotIn("atomic_", gate_source)
+        self.assertNotIn("_FINALIZE_", gate_source)
+        for owner in (0, 32, 64, 96):
+            self.assertIn(f"if lane == {owner}:", gate_source)
+            self.assertIn(f"thread_idx={owner}", gate_source)
+        for name in (
+            "_FINALIZE_OBJECTIVE_THREAD",
+            "_FINALIZE_DERIVATIVE_THREAD",
+            "_FINALIZE_MINIMA_THREAD",
+            "_FINALIZE_FINITE_THREAD",
+        ):
+            self.assertNotIn(name, vars(module))
+        self.assertIn("dim=FINALIZE_GATE_BLOCK_DIM", enqueue_source)
+        self.assertIn("block_dim=FINALIZE_GATE_BLOCK_DIM", enqueue_source)
+        self.assertFalse(
+            any("finalize" in name or "gate" in name for name in module._DirectCorrectionOwnerBinding._fields)
+        )
+
+        case = {
+            "current_inertia": np.array([1.0e16]),
+            "candidate_inertia": np.array([0.0]),
+            "current_elastic": np.array([-1.0e16, 1.0]),
+            "candidate_elastic": np.array([0.0, 0.0]),
+            "directional_terms": np.array([1.0e16, -1.0e16, -1.0]),
+            "candidate_determinants": np.array([1.0, 2.0]),
+            "segment_minima": np.array([3.0, 1.0]),
+            "proposal_finite": np.array([1]),
+            "vertex_finite": np.array([1]),
+            "tet_finite": np.array([1, 1]),
+        }
+        result = _cpu_ordered_gate_reference(**case, minimum_determinant=0.0, armijo=1.0e-4, active=1)
+        self.assertEqual(result[:3], (1, 1, 1))
+        self.assertEqual(result[3:], (1.0, 0.0, -1.0, 1.0))
+        split_start = np.float64(np.sum(case["current_inertia"], dtype=np.float64)) + np.float64(
+            np.sum(case["current_elastic"], dtype=np.float64)
+        )
+        self.assertNotEqual(split_start.view(np.uint64), result[3].view(np.uint64))
+
+        masked = _cpu_ordered_gate_reference(
+            **{
+                name: np.full_like(value, np.nan, dtype=np.float64) if value.dtype.kind == "f" else value
+                for name, value in case.items()
+            },
+            minimum_determinant=0.0,
+            armijo=1.0e-4,
+            active=0,
+        )
+        self.assertEqual(masked[:3], (0, 0, 2))
+        self.assertEqual(np.asarray(masked[3:]).view(np.uint64).tolist(), [0, 0, 0, 0])
+
+    def test_fresh_process_private_owner_injection_cannot_change_prejit_module_hash(self):
+        private_names = (
+            "_FINALIZE_OBJECTIVE_THREAD",
+            "_FINALIZE_DERIVATIVE_THREAD",
+            "_FINALIZE_MINIMA_THREAD",
+            "_FINALIZE_FINITE_THREAD",
+        )
+        script_prefix = f"""
+import importlib
+module = importlib.import_module("research.principal_stretch.captured_graph_vbd")
+private_names = {private_names!r}
+assert not any(name in vars(module) for name in private_names)
+"""
+        hashes = []
+        for inject in (False, True):
+            injection = "\nfor name in private_names:\n    setattr(module, name, 0)\n" if inject else "\n"
+            script = (
+                script_prefix
+                + injection
+                + 'print("FINALIZE_GATE_MODULE_SHA256=" + module._finalize_gate.module.get_module_hash().hex())\n'
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=os.getcwd(),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            marker = "FINALIZE_GATE_MODULE_SHA256="
+            matches = [line.removeprefix(marker) for line in completed.stdout.splitlines() if line.startswith(marker)]
+            self.assertEqual(len(matches), 1, completed.stdout + completed.stderr)
+            hashes.append(matches[0])
+        self.assertEqual(hashes[0], hashes[1])
 
     def test_contract_rejects_cpu_and_nondefault_coarse_bound(self):
         with self.assertRaisesRegex(RuntimeError, "requires CUDA"):
@@ -555,6 +896,11 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
             "outer_kernel_version": OUTER_KERNEL_VERSION,
             "outer_schedule_version": OUTER_SCHEDULE_VERSION,
             "outer_schedule_sha256": OUTER_SCHEDULE_SHA256,
+            "finalize_gate_route": FINALIZE_GATE_ROUTE,
+            "finalize_gate_block_dim": FINALIZE_GATE_BLOCK_DIM,
+            "finalize_gate_owner_threads": FINALIZE_GATE_OWNER_THREADS,
+            "finalize_gate_owner_roles": FINALIZE_GATE_OWNER_ROLES,
+            "finalize_gate_collective_version": FINALIZE_GATE_COLLECTIVE_VERSION,
             "correction_kernel_launches": 186,
         }
         with self.assertRaisesRegex(ValueError, "equal AB and BA"):
@@ -584,6 +930,17 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
             ({"v_cycle_publication_version": V_CYCLE_PUBLICATION_VERSION + "-forged"}, "kernel and publication"),
             ({"first_cycle_publication_role": FIRST_CYCLE_PUBLICATION_ROLE + "-forged"}, "kernel and publication"),
             ({"second_cycle_publication_role": SECOND_CYCLE_PUBLICATION_ROLE + "-forged"}, "kernel and publication"),
+            ({"finalize_gate_route": FINALIZE_GATE_ROUTE + "-forged"}, "finalize gate route"),
+            ({"finalize_gate_block_dim": 96}, "finalize gate block dimension"),
+            ({"finalize_gate_owner_threads": (0, 1, 2, 3)}, "finalize gate owner threads"),
+            (
+                {"finalize_gate_owner_roles": (*FINALIZE_GATE_OWNER_ROLES[:-1], "forged")},
+                "finalize gate owner roles",
+            ),
+            (
+                {"finalize_gate_collective_version": FINALIZE_GATE_COLLECTIVE_VERSION + "-forged"},
+                "finalize gate collective version",
+            ),
             ({"correction_kernel_launches": 194}, "dual-core captured schedule"),
             ({"graph_identity_sha256": "forged"}, "lowercase SHA-256"),
             ({"graph_seconds": (-1.0e-3, 1.1e-3)}, "finite and positive"),
@@ -607,6 +964,11 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
             canonical = timing.deterministic_record()
             self.assertEqual(canonical["pair_orders"], ["AB", "BA"])
             self.assertEqual(canonical["graph_seconds"], [1.0e-3, 1.1e-3])
+            self.assertEqual(canonical["finalize_gate_route"], FINALIZE_GATE_ROUTE)
+            self.assertEqual(canonical["finalize_gate_block_dim"], FINALIZE_GATE_BLOCK_DIM)
+            self.assertEqual(canonical["finalize_gate_owner_threads"], list(FINALIZE_GATE_OWNER_THREADS))
+            self.assertEqual(canonical["finalize_gate_owner_roles"], list(FINALIZE_GATE_OWNER_ROLES))
+            self.assertEqual(canonical["finalize_gate_collective_version"], FINALIZE_GATE_COLLECTIVE_VERSION)
             self.assertEqual(
                 canonical["measurement_authentication"],
                 "schema-validated-not-content-authenticated-v1",
@@ -667,6 +1029,11 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
                 outer_kernel_version=OUTER_KERNEL_VERSION,
                 outer_schedule_version=OUTER_SCHEDULE_VERSION,
                 outer_schedule_sha256=OUTER_SCHEDULE_SHA256,
+                finalize_gate_route=FINALIZE_GATE_ROUTE,
+                finalize_gate_block_dim=FINALIZE_GATE_BLOCK_DIM,
+                finalize_gate_owner_threads=FINALIZE_GATE_OWNER_THREADS,
+                finalize_gate_owner_roles=FINALIZE_GATE_OWNER_ROLES,
+                finalize_gate_collective_version=FINALIZE_GATE_COLLECTIVE_VERSION,
                 armijo=1.0e-4,
                 minimum_determinant=0.0,
                 free_vertices=np.array([0]),
@@ -683,6 +1050,223 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
                 outer_work=(),
                 graph_replay=True,
             )
+
+
+@unittest.skipUnless(os.environ.get("MG_VBD_TEST_CUDA") == "1", "set MG_VBD_TEST_CUDA=1 after claiming a GPU")
+class TestFinalizeGateFourWarpCuda(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        if wp.get_cuda_device_count() < 1:
+            raise unittest.SkipTest("no claimed CUDA device is visible")
+        cls.device = wp.get_device("cuda:0")
+
+    @staticmethod
+    def _base_case(n_vertices: int = 3, n_tets: int = 3, n_directional: int = 3) -> dict[str, object]:
+        return {
+            "current_inertia": np.full(n_vertices, 2.0, dtype=np.float64),
+            "candidate_inertia": np.full(n_vertices, 0.5, dtype=np.float64),
+            "current_elastic": np.full(n_tets, 3.0, dtype=np.float64),
+            "candidate_elastic": np.full(n_tets, 1.0, dtype=np.float64),
+            "directional_terms": np.full(n_directional, -1.0, dtype=np.float64),
+            "candidate_determinants": np.full(n_tets, 2.0, dtype=np.float64),
+            "segment_minima": np.full(n_tets, 1.0, dtype=np.float64),
+            "proposal_finite": np.ones(n_vertices, dtype=np.int32),
+            "vertex_finite": np.ones(n_vertices, dtype=np.int32),
+            "tet_finite": np.ones(n_tets, dtype=np.int32),
+            "minimum_determinant": 0.0,
+            "armijo": 1.0e-4,
+            "active": 1,
+        }
+
+    def _assert_serial_bitwise_equal(self, case: dict[str, object]) -> dict[str, np.ndarray]:
+        serial_patterns, serial_host = _run_gate_case(
+            _serial_finalize_gate_oracle,
+            case,
+            self.device,
+            collective=False,
+        )
+        collective_patterns, collective_host = _run_gate_case(
+            _finalize_gate,
+            case,
+            self.device,
+            collective=True,
+        )
+        self.assertEqual(serial_patterns.keys(), collective_patterns.keys())
+        for name in serial_patterns:
+            with self.subTest(output=name):
+                self.assertEqual(serial_patterns[name], collective_patterns[name])
+                np.testing.assert_array_equal(serial_host[name], collective_host[name])
+        return collective_host
+
+    def test_exact_recurrences_and_all_gate_decisions_match_frozen_serial(self):
+        ordered = self._base_case(n_vertices=1, n_tets=2, n_directional=3)
+        ordered.update(
+            {
+                "current_inertia": np.array([1.0e16]),
+                "candidate_inertia": np.array([0.0]),
+                "current_elastic": np.array([-1.0e16, 1.0]),
+                "candidate_elastic": np.array([0.0, 0.0]),
+                "directional_terms": np.array([1.0e16, -1.0e16, -1.0]),
+                "candidate_determinants": np.array([2.0, 1.0]),
+                "segment_minima": np.array([3.0, 1.0]),
+            }
+        )
+        decision_cases: list[tuple[str, dict[str, object], int]] = [("accepted-ordered", ordered, 1)]
+
+        nonfinite = self._base_case()
+        nonfinite["vertex_finite"] = np.array([1, 0, 1], dtype=np.int32)
+        decision_cases.append(("nonfinite", nonfinite, 3))
+
+        non_descent = self._base_case(n_directional=1)
+        non_descent["directional_terms"] = np.array([-0.0])
+        decision_cases.append(("non-descent-signed-zero", non_descent, 4))
+
+        segment = self._base_case(n_tets=1)
+        segment["segment_minima"] = np.array([-0.0])
+        segment["candidate_determinants"] = np.array([1.0])
+        decision_cases.append(("segment-signed-zero", segment, 5))
+
+        candidate_minimum = self._base_case(n_tets=1)
+        candidate_minimum["segment_minima"] = np.array([1.0])
+        candidate_minimum["candidate_determinants"] = np.array([-0.0])
+        decision_cases.append(("candidate-minimum-signed-zero", candidate_minimum, 5))
+
+        threshold = self._base_case(n_tets=1)
+        threshold["candidate_determinants"] = np.array([0.25])
+        threshold["segment_minima"] = np.array([0.5])
+        threshold["minimum_determinant"] = 0.25
+        decision_cases.append(("candidate-threshold-equality", threshold, 5))
+
+        objective = self._base_case()
+        objective["candidate_inertia"] = np.array(objective["current_inertia"], copy=True)
+        objective["candidate_elastic"] = np.array(objective["current_elastic"], copy=True)
+        decision_cases.append(("objective-equality", objective, 6))
+
+        masked = self._base_case()
+        for array_name in (
+            "current_inertia",
+            "candidate_inertia",
+            "current_elastic",
+            "candidate_elastic",
+            "directional_terms",
+            "candidate_determinants",
+            "segment_minima",
+        ):
+            masked[array_name] = np.full_like(masked[array_name], np.nan)
+        masked["proposal_finite"] = np.zeros(3, dtype=np.int32)
+        masked["vertex_finite"] = np.zeros(3, dtype=np.int32)
+        masked["tet_finite"] = np.zeros(3, dtype=np.int32)
+        masked["active"] = 0
+        decision_cases.append(("masked-neutral-collectives", masked, 2))
+
+        for name, case, expected_reason in decision_cases:
+            with self.subTest(case=name):
+                result = self._assert_serial_bitwise_equal(case)
+                self.assertEqual(int(result["reasons"][1]), expected_reason)
+                if expected_reason == 2:
+                    for output_name in (
+                        "initial_objective",
+                        "candidate_objective",
+                        "directional_derivative",
+                        "minimum_segment_determinant",
+                    ):
+                        self.assertEqual(result[output_name][1].view(np.uint64), 0)
+
+    def test_nan_infinity_flags_and_minimum_order_match_frozen_serial_bitwise(self):
+        adversarial: list[tuple[str, dict[str, object]]] = []
+        numeric_names = (
+            "current_inertia",
+            "candidate_inertia",
+            "current_elastic",
+            "candidate_elastic",
+            "directional_terms",
+            "candidate_determinants",
+            "segment_minima",
+        )
+        for array_name in numeric_names:
+            for label, value in (("nan", np.nan), ("positive-inf", np.inf), ("negative-inf", -np.inf)):
+                case = self._base_case()
+                values = np.array(case[array_name], copy=True)
+                values[1] = value
+                case[array_name] = values
+                adversarial.append((f"{array_name}-{label}", case))
+        for array_name in ("proposal_finite", "vertex_finite", "tet_finite"):
+            for index in (0, 1, 2):
+                case = self._base_case()
+                values = np.array(case[array_name], copy=True)
+                values[index] = 0
+                case[array_name] = values
+                adversarial.append((f"{array_name}-zero-{index}", case))
+        for array_name in ("candidate_determinants", "segment_minima"):
+            for index in (0, 1, 2):
+                case = self._base_case()
+                values = np.array([0.75, 0.5, 0.25], dtype=np.float64)
+                values[index] = np.nan
+                case[array_name] = values
+                adversarial.append((f"{array_name}-nan-order-{index}", case))
+
+        for name, case in adversarial:
+            with self.subTest(case=name):
+                self._assert_serial_bitwise_equal(case)
+
+    def test_armijo_and_both_minimum_thresholds_match_at_adjacent_float64_values(self):
+        armijo_bound = np.float64(1.75)
+        armijo_values = (
+            ("below", np.nextafter(armijo_bound, -np.inf), 1),
+            ("equal", armijo_bound, 1),
+            ("above", np.nextafter(armijo_bound, np.inf), 6),
+        )
+        for label, end_objective, expected_reason in armijo_values:
+            case = self._base_case(n_vertices=1, n_tets=1, n_directional=1)
+            case.update(
+                {
+                    "current_inertia": np.array([2.0]),
+                    "current_elastic": np.array([0.0]),
+                    "candidate_inertia": np.array([end_objective]),
+                    "candidate_elastic": np.array([0.0]),
+                    "directional_terms": np.array([-1.0]),
+                    "armijo": 0.25,
+                }
+            )
+            with self.subTest(armijo=label):
+                result = self._assert_serial_bitwise_equal(case)
+                self.assertEqual(int(result["reasons"][1]), expected_reason)
+                self.assertEqual(result["candidate_objective"][1].view(np.uint64), end_objective.view(np.uint64))
+
+        threshold = np.float64(0.25)
+        minimum_values = (
+            ("below", np.nextafter(threshold, -np.inf), 5),
+            ("equal", threshold, 5),
+            ("above", np.nextafter(threshold, np.inf), 1),
+        )
+        for array_name in ("candidate_determinants", "segment_minima"):
+            for label, value, expected_reason in minimum_values:
+                case = self._base_case(n_vertices=1, n_tets=1, n_directional=1)
+                case["minimum_determinant"] = threshold
+                case[array_name] = np.array([value])
+                with self.subTest(minimum=array_name, relation=label):
+                    result = self._assert_serial_bitwise_equal(case)
+                    self.assertEqual(int(result["reasons"][1]), expected_reason)
+                    if array_name == "segment_minima":
+                        self.assertEqual(
+                            result["minimum_segment_determinant"][1].view(np.uint64),
+                            value.view(np.uint64),
+                        )
+
+    def test_arbitrary_unbalanced_domain_sizes_match_frozen_serial_bitwise(self):
+        sizes = (
+            (0, 0, 0),
+            (1, 97, 33),
+            (31, 1, 96),
+            (32, 33, 95),
+            (33, 32, 97),
+            (95, 96, 31),
+            (96, 95, 32),
+            (97, 31, 95),
+        )
+        for n_vertices, n_tets, n_directional in sizes:
+            with self.subTest(vertices=n_vertices, tets=n_tets, directional=n_directional):
+                self._assert_serial_bitwise_equal(self._base_case(n_vertices, n_tets, n_directional))
 
 
 @unittest.skipUnless(os.environ.get("MG_VBD_TEST_CUDA") == "1", "set MG_VBD_TEST_CUDA=1 after claiming a GPU")
@@ -756,9 +1340,10 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], expected_linear - 1)
         self.assertEqual(schedule["fused_gather_kernel_launches_per_outer"], 2)
         self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
+        self.assertEqual(schedule["finalize_gate_kernel_launches_per_outer"], 1)
         self.assertEqual(schedule["outer_kernel_launches_per_outer"], expected_outer)
         self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], expected_total)
-        self.assertEqual(schedule["graph_identity_schema"], "captured-direct-graph-vbd-graph-identity-v6")
+        self.assertEqual(schedule["graph_identity_schema"], "captured-direct-graph-vbd-graph-identity-v7")
         self.assertEqual(schedule["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(
             schedule["scalar_direction_apply_kernel_version"],
@@ -773,6 +1358,11 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
+        self.assertEqual(schedule["finalize_gate_route"], FINALIZE_GATE_ROUTE)
+        self.assertEqual(schedule["finalize_gate_block_dim"], FINALIZE_GATE_BLOCK_DIM)
+        self.assertEqual(schedule["finalize_gate_owner_threads"], list(FINALIZE_GATE_OWNER_THREADS))
+        self.assertEqual(schedule["finalize_gate_owner_roles"], list(FINALIZE_GATE_OWNER_ROLES))
+        self.assertEqual(schedule["finalize_gate_collective_version"], FINALIZE_GATE_COLLECTIVE_VERSION)
         self.assertEqual(schedule["v_cycle_schedule_version"], V_CYCLE_SCHEDULE_VERSION)
         self.assertEqual(schedule["v_cycle_publication_version"], V_CYCLE_PUBLICATION_VERSION)
         self.assertEqual(schedule["v_cycle_standalone_publication_route"], V_CYCLE_STANDALONE_PUBLICATION_ROUTE)
@@ -796,6 +1386,11 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(endpoint_record["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(endpoint_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(endpoint_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
+        self.assertEqual(endpoint_record["finalize_gate_route"], FINALIZE_GATE_ROUTE)
+        self.assertEqual(endpoint_record["finalize_gate_block_dim"], FINALIZE_GATE_BLOCK_DIM)
+        self.assertEqual(endpoint_record["finalize_gate_owner_threads"], list(FINALIZE_GATE_OWNER_THREADS))
+        self.assertEqual(endpoint_record["finalize_gate_owner_roles"], list(FINALIZE_GATE_OWNER_ROLES))
+        self.assertEqual(endpoint_record["finalize_gate_collective_version"], FINALIZE_GATE_COLLECTIVE_VERSION)
         for outer_record in endpoint_record["outer_work"]:
             self.assertEqual(outer_record["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
             self.assertEqual(
@@ -808,6 +1403,11 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             self.assertEqual(outer_record["outer_kernel_version"], OUTER_KERNEL_VERSION)
             self.assertEqual(outer_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
             self.assertEqual(outer_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
+            self.assertEqual(outer_record["finalize_gate_route"], FINALIZE_GATE_ROUTE)
+            self.assertEqual(outer_record["finalize_gate_block_dim"], FINALIZE_GATE_BLOCK_DIM)
+            self.assertEqual(outer_record["finalize_gate_owner_threads"], list(FINALIZE_GATE_OWNER_THREADS))
+            self.assertEqual(outer_record["finalize_gate_owner_roles"], list(FINALIZE_GATE_OWNER_ROLES))
+            self.assertEqual(outer_record["finalize_gate_collective_version"], FINALIZE_GATE_COLLECTIVE_VERSION)
         json.dumps(endpoint_record, allow_nan=False)
 
     def test_fused_integrated_schedule_is_bitwise_equal_to_unfused_oracle(self):
@@ -1048,6 +1648,11 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             module.OUTER_KERNEL_VERSION,
             module.OUTER_SCHEDULE_VERSION,
             module.OUTER_SCHEDULE_SHA256,
+            module.FINALIZE_GATE_ROUTE,
+            module.FINALIZE_GATE_BLOCK_DIM,
+            module.FINALIZE_GATE_OWNER_THREADS,
+            module.FINALIZE_GATE_OWNER_ROLES,
+            module.FINALIZE_GATE_COLLECTIVE_VERSION,
         )
         original_facades = (
             self.solver._fused_gather_kernel_version_bound,
@@ -1057,6 +1662,11 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             self.solver._outer_kernel_version_bound,
             self.solver._outer_schedule_version_bound,
             self.solver._outer_schedule_sha256_bound,
+            self.solver._finalize_gate_route_bound,
+            self.solver._finalize_gate_block_dim_bound,
+            self.solver._finalize_gate_owner_threads_bound,
+            self.solver._finalize_gate_owner_roles_bound,
+            self.solver._finalize_gate_collective_version_bound,
         )
         marker = np.asarray(self.solver.final_positions.numpy(), dtype=np.float32).copy()
         for boundary_name, operation in self._owner_boundaries(self.solver):
@@ -1068,6 +1678,11 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                     module.SECOND_CYCLE_PUBLICATION_ROLE = original_globals[3] + "-forged"
                     module.OUTER_KERNEL_VERSION = original_globals[4] + "-forged"
                     module.OUTER_SCHEDULE_VERSION = original_globals[5] + "-forged"
+                    module.FINALIZE_GATE_ROUTE = original_globals[7] + "-forged"
+                    module.FINALIZE_GATE_BLOCK_DIM = 96
+                    module.FINALIZE_GATE_OWNER_THREADS = (0, 1, 2, 3)
+                    module.FINALIZE_GATE_OWNER_ROLES = tuple(role + "-forged" for role in original_globals[10])
+                    module.FINALIZE_GATE_COLLECTIVE_VERSION = original_globals[11] + "-forged"
                     forged_sha256 = module._derive_outer_schedule_sha256(
                         module.OUTER_KERNEL_VERSION,
                         module.FUSED_GATHER_KERNEL_VERSION,
@@ -1077,6 +1692,11 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                         module.V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
                         module.FIRST_CYCLE_PUBLICATION_ROLE,
                         module.SECOND_CYCLE_PUBLICATION_ROLE,
+                        module.FINALIZE_GATE_ROUTE,
+                        module.FINALIZE_GATE_BLOCK_DIM,
+                        module.FINALIZE_GATE_OWNER_THREADS,
+                        module.FINALIZE_GATE_OWNER_ROLES,
+                        module.FINALIZE_GATE_COLLECTIVE_VERSION,
                         module.OUTER_SCHEDULE_VERSION,
                     )
                     module.OUTER_SCHEDULE_SHA256 = forged_sha256
@@ -1089,7 +1709,15 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                     self.solver._outer_kernel_version_bound = module.OUTER_KERNEL_VERSION
                     self.solver._outer_schedule_version_bound = module.OUTER_SCHEDULE_VERSION
                     self.solver._outer_schedule_sha256_bound = forged_sha256
-                    with self.assertRaisesRegex(RuntimeError, "outer kernel or schedule construction claim"):
+                    self.solver._finalize_gate_route_bound = module.FINALIZE_GATE_ROUTE
+                    self.solver._finalize_gate_block_dim_bound = module.FINALIZE_GATE_BLOCK_DIM
+                    self.solver._finalize_gate_owner_threads_bound = module.FINALIZE_GATE_OWNER_THREADS
+                    self.solver._finalize_gate_owner_roles_bound = module.FINALIZE_GATE_OWNER_ROLES
+                    self.solver._finalize_gate_collective_version_bound = module.FINALIZE_GATE_COLLECTIVE_VERSION
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "finalize gate construction claims|outer kernel or schedule construction claim",
+                    ):
                         operation()
                     np.testing.assert_array_equal(
                         np.asarray(self.solver.final_positions.numpy(), dtype=np.float32),
@@ -1104,6 +1732,11 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                         module.OUTER_KERNEL_VERSION,
                         module.OUTER_SCHEDULE_VERSION,
                         module.OUTER_SCHEDULE_SHA256,
+                        module.FINALIZE_GATE_ROUTE,
+                        module.FINALIZE_GATE_BLOCK_DIM,
+                        module.FINALIZE_GATE_OWNER_THREADS,
+                        module.FINALIZE_GATE_OWNER_ROLES,
+                        module.FINALIZE_GATE_COLLECTIVE_VERSION,
                     ) = original_globals
                     (
                         self.solver._fused_gather_kernel_version_bound,
@@ -1113,7 +1746,93 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                         self.solver._outer_kernel_version_bound,
                         self.solver._outer_schedule_version_bound,
                         self.solver._outer_schedule_sha256_bound,
+                        self.solver._finalize_gate_route_bound,
+                        self.solver._finalize_gate_block_dim_bound,
+                        self.solver._finalize_gate_owner_threads_bound,
+                        self.solver._finalize_gate_owner_roles_bound,
+                        self.solver._finalize_gate_collective_version_bound,
                     ) = original_facades
+
+    def test_finalize_gate_claims_owner_context_and_scratch_free_bindings_fail_closed(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        binding = module._lookup_workspace_owners(self.solver)
+        gate_array_names = {
+            "active",
+            "accepted",
+            "reasons",
+            "current_inertia",
+            "candidate_inertia",
+            "vertex_finite",
+            "current_elastic",
+            "candidate_elastic",
+            "candidate_determinants",
+            "segment_minima",
+            "tet_finite",
+            "directional_terms",
+            "initial_objectives",
+            "candidate_objectives",
+            "directional_derivatives",
+            "minimum_segment_determinants",
+        }
+        self.assertTrue(gate_array_names.issubset(binding.direct._fields))
+        self.assertFalse(any("finalize_gate" in name for name, _array in self.solver._persistent_input_arrays(binding)))
+        for name in gate_array_names:
+            with self.subTest(pointer=name):
+                self.assertIs(getattr(self.solver, name), getattr(binding.direct, name))
+                self.assertEqual(int(getattr(self.solver, name).ptr), int(getattr(binding.direct, name).ptr))
+
+        claim_attacks = (
+            ("finalize_gate_route", FINALIZE_GATE_ROUTE + "-forged"),
+            ("finalize_gate_block_dim", 96),
+            ("finalize_gate_owner_threads", (0, 32, 64, 95)),
+            ("finalize_gate_owner_roles", (*FINALIZE_GATE_OWNER_ROLES[:-1], "forged")),
+            ("finalize_gate_collective_version", FINALIZE_GATE_COLLECTIVE_VERSION + "-forged"),
+            ("finalize_gate_owner_threads", (*FINALIZE_GATE_OWNER_THREADS,)),
+            ("finalize_gate_owner_roles", (*FINALIZE_GATE_OWNER_ROLES,)),
+        )
+        for field_name, value in claim_attacks:
+            with self.subTest(claim=field_name, value=value):
+                forged = binding._replace(claims=binding.claims._replace(**{field_name: value}))
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "finalize gate construction claims|outer kernel or schedule construction claim",
+                ):
+                    self.solver._validate_workspace_owner_bindings(forged)
+
+        for field_name in ("_finalize_gate_owner_threads_bound", "_finalize_gate_owner_roles_bound"):
+            original = getattr(self.solver, field_name)
+            try:
+                setattr(self.solver, field_name, (*original,))
+                with self.assertRaisesRegex(RuntimeError, "outer kernel or schedule construction claim"):
+                    self.solver.deterministic_record()
+            finally:
+                setattr(self.solver, field_name, original)
+
+        context = self.endpoint._validation_context
+        context_attacks = (
+            ("finalize_gate_route", FINALIZE_GATE_ROUTE + "-forged"),
+            ("finalize_gate_block_dim", 96),
+            ("finalize_gate_owner_threads", (0, 32, 64, 95)),
+            (
+                "finalize_gate_owner_roles",
+                (*FINALIZE_GATE_OWNER_ROLES[:-1], "forged"),
+            ),
+            (
+                "finalize_gate_collective_version",
+                FINALIZE_GATE_COLLECTIVE_VERSION + "-forged",
+            ),
+        )
+        for field_name, value in context_attacks:
+            original = getattr(context, field_name)
+            with self.subTest(context=field_name):
+                try:
+                    object.__setattr__(context, field_name, value)
+                    with self.assertRaisesRegex(ValueError, "validation context fields"):
+                        self.endpoint.deterministic_record()
+                    with self.assertRaisesRegex(ValueError, "validation context fields"):
+                        self.endpoint.outer_work[0].deterministic_record()
+                finally:
+                    object.__setattr__(context, field_name, original)
 
     def test_endpoint_and_outer_serializers_revalidate_context_and_content_hashes(self):
         context = self.endpoint._validation_context
@@ -1148,6 +1867,11 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             forged_external_route,
             forged_first_role,
             forged_second_role,
+            context.finalize_gate_route,
+            context.finalize_gate_block_dim,
+            context.finalize_gate_owner_threads,
+            context.finalize_gate_owner_roles,
+            context.finalize_gate_collective_version,
             forged_schedule_version,
         )
         serializers = (
@@ -2717,6 +3441,7 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
         self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 42)
         self.assertEqual(schedule["fused_gather_kernel_launches_per_outer"], 2)
         self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
+        self.assertEqual(schedule["finalize_gate_kernel_launches_per_outer"], 1)
         self.assertEqual(schedule["linear_kernel_launches_per_outer"], 43)
         self.assertEqual(schedule["outer_kernel_launches_per_outer"], 46)
         self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 186)
@@ -2730,6 +3455,11 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
         self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
+        self.assertEqual(schedule["finalize_gate_route"], FINALIZE_GATE_ROUTE)
+        self.assertEqual(schedule["finalize_gate_block_dim"], FINALIZE_GATE_BLOCK_DIM)
+        self.assertEqual(schedule["finalize_gate_owner_threads"], list(FINALIZE_GATE_OWNER_THREADS))
+        self.assertEqual(schedule["finalize_gate_owner_roles"], list(FINALIZE_GATE_OWNER_ROLES))
+        self.assertEqual(schedule["finalize_gate_collective_version"], FINALIZE_GATE_COLLECTIVE_VERSION)
         self.assertEqual(schedule["v_cycle_schedule_version"], V_CYCLE_SCHEDULE_VERSION)
         self.assertEqual(schedule["v_cycle_publication_version"], V_CYCLE_PUBLICATION_VERSION)
         self.assertEqual(schedule["v_cycle_canonical_matrix_block_products"], 5058)
@@ -2769,6 +3499,11 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
         self.assertEqual(record["first_cycle_publication_role"], FIRST_CYCLE_PUBLICATION_ROLE)
         self.assertEqual(record["second_cycle_publication_role"], SECOND_CYCLE_PUBLICATION_ROLE)
         self.assertEqual(record["v_cycle_publication_version"], V_CYCLE_PUBLICATION_VERSION)
+        self.assertEqual(record["finalize_gate_route"], FINALIZE_GATE_ROUTE)
+        self.assertEqual(record["finalize_gate_block_dim"], FINALIZE_GATE_BLOCK_DIM)
+        self.assertEqual(record["finalize_gate_owner_threads"], list(FINALIZE_GATE_OWNER_THREADS))
+        self.assertEqual(record["finalize_gate_owner_roles"], list(FINALIZE_GATE_OWNER_ROLES))
+        self.assertEqual(record["finalize_gate_collective_version"], FINALIZE_GATE_COLLECTIVE_VERSION)
         self.assertEqual(record["correction_kernel_launches"], 186)
         print("CAPTURED_DIRECT_GRAPH_VBD_TIMING=" + json.dumps(record, sort_keys=True))
 

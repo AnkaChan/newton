@@ -112,10 +112,20 @@ from .solver_benchmark import TetBenchmarkScene, build_common_problem, common_ob
 CONTRACT_ID = "captured-direct-multiplicative-graph-vbd-v1"
 OUTER_CORRECTIONS = 4
 V_CYCLES_PER_OUTER = 2
-OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-shared-scalar-publication-outer-v4"
-OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v5"
+OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-four-warp-exact-finalize-outer-v5"
+OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v6"
 FIRST_CYCLE_PUBLICATION_ROLE = "current-a-apply-free-row-owner-scalar-to-vec3"
 SECOND_CYCLE_PUBLICATION_ROLE = "vertex-owner-scalar-to-vec3"
+FINALIZE_GATE_ROUTE = "cuda-one-block-four-warp-ordered-fp64-v1"
+FINALIZE_GATE_BLOCK_DIM = 128
+FINALIZE_GATE_OWNER_THREADS = (0, 32, 64, 96)
+FINALIZE_GATE_OWNER_ROLES = (
+    "ordered-objective-pair",
+    "ordered-directional-derivative",
+    "ordered-determinant-minima-pair",
+    "ordered-finite-flags",
+)
+FINALIZE_GATE_COLLECTIVE_VERSION = "shared-tile-vec2d-float64-vec2d-int32-broadcasts-v1"
 
 _REASON_PENDING = 0
 _REASON_ACCEPTED = 1
@@ -216,12 +226,17 @@ def _derive_outer_schedule_sha256(
     v_cycle_external_shared_publication_route: str,
     first_cycle_publication_role: str,
     second_cycle_publication_role: str,
+    finalize_gate_route: str,
+    finalize_gate_block_dim: int,
+    finalize_gate_owner_threads: tuple[int, int, int, int],
+    finalize_gate_owner_roles: tuple[str, str, str, str],
+    finalize_gate_collective_version: str,
     schedule_version: str,
 ) -> str:
-    """Bind fused gather/vertex formulas and the serial gate order."""
+    """Bind fused formulas and the exact ordered four-warp gate."""
     return _canonical_digest(
         {
-            "contract": "captured-direct-graph-vbd-outer-schedule-v5",
+            "contract": "captured-direct-graph-vbd-outer-schedule-v6",
             "kernel_version": kernel_version,
             "fused_gather_kernel_version": fused_gather_kernel_version,
             "scalar_direction_apply_kernel_version": scalar_direction_apply_kernel_version,
@@ -230,6 +245,26 @@ def _derive_outer_schedule_sha256(
             "v_cycle_external_shared_publication_route": v_cycle_external_shared_publication_route,
             "first_cycle_publication_role": first_cycle_publication_role,
             "second_cycle_publication_role": second_cycle_publication_role,
+            "finalize_gate_route": finalize_gate_route,
+            "finalize_gate_block_dim": finalize_gate_block_dim,
+            "finalize_gate_owner_threads": list(finalize_gate_owner_threads),
+            "finalize_gate_owner_roles": list(finalize_gate_owner_roles),
+            "finalize_gate_collective_version": finalize_gate_collective_version,
+            "finalize_gate_recurrences": [
+                "owner-0-interleaved-start-end-current-inertia-then-current-elastic",
+                "owner-32-directional-terms",
+                "owner-64-interleaved-segment-and-candidate-minima",
+                "owner-96-proposal-and-vertex-finite-then-tet-finite",
+            ],
+            "finalize_gate_collective_layout": [
+                "vec2d-objectives",
+                "float64-derivative",
+                "vec2d-minima",
+                "int32-finite",
+            ],
+            "finalize_gate_synchronization": "four-unconditional-shared-tile-from-thread-block-broadcasts",
+            "finalize_gate_reduction_policy": "no-domain-partials-no-tree-no-atomic",
+            "finalize_gate_owner_executable_binding": "literal-thread-ids-0-32-64-96-no-mutable-duplicate-globals",
             "schedule_version": schedule_version,
             "fused_gather_operations": [
                 "gradient-and-final-store-active-mask",
@@ -250,14 +285,43 @@ def _derive_outer_schedule_sha256(
                 "directional[free]=-dot(rhs[free],candidate-current)",
             ],
             "candidate_policy": "pinned-or-inactive-or-nonfinite-proposal-keeps-current",
-            "post_fusion_order": ["tet-gate-terms", "serial-finalize-gate", "commit-candidate"],
+            "post_fusion_order": ["tet-gate-terms", "four-warp-exact-finalize-gate", "commit-candidate"],
             "linear_prefix_kernel_launches_per_outer": "4+2*core_v_cycle_launches",
             "fused_gather_kernel_launches_per_outer": 2,
             "fused_vertex_kernel_launches_per_outer": 1,
+            "finalize_gate_kernel_launches_per_outer": 1,
             "retained_linear_work_launches_per_outer": "5+2*core_v_cycle_launches",
             "remaining_gate_commit_launches_per_outer": 3,
         }
     )
+
+
+def _require_finalize_gate_evidence(
+    route: object,
+    block_dim: object,
+    owner_threads: object,
+    owner_roles: object,
+    collective_version: object,
+) -> None:
+    """Require the exact built-in four-warp gate schedule values."""
+    if type(route) is not str or route != FINALIZE_GATE_ROUTE:
+        raise ValueError("finalize gate route is not canonical")
+    if type(block_dim) is not int or block_dim != FINALIZE_GATE_BLOCK_DIM:
+        raise ValueError("finalize gate block dimension is not canonical")
+    if (
+        type(owner_threads) is not tuple
+        or owner_threads != FINALIZE_GATE_OWNER_THREADS
+        or any(type(value) is not int for value in owner_threads)
+    ):
+        raise ValueError("finalize gate owner threads are not canonical")
+    if (
+        type(owner_roles) is not tuple
+        or owner_roles != FINALIZE_GATE_OWNER_ROLES
+        or any(type(value) is not str for value in owner_roles)
+    ):
+        raise ValueError("finalize gate owner roles are not canonical")
+    if type(collective_version) is not str or collective_version != FINALIZE_GATE_COLLECTIVE_VERSION:
+        raise ValueError("finalize gate collective version is not canonical")
 
 
 OUTER_SCHEDULE_SHA256 = _derive_outer_schedule_sha256(
@@ -269,6 +333,11 @@ OUTER_SCHEDULE_SHA256 = _derive_outer_schedule_sha256(
     V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
     FIRST_CYCLE_PUBLICATION_ROLE,
     SECOND_CYCLE_PUBLICATION_ROLE,
+    FINALIZE_GATE_ROUTE,
+    FINALIZE_GATE_BLOCK_DIM,
+    FINALIZE_GATE_OWNER_THREADS,
+    FINALIZE_GATE_OWNER_ROLES,
+    FINALIZE_GATE_COLLECTIVE_VERSION,
     OUTER_SCHEDULE_VERSION,
 )
 print(f"[kernels] captured graph VBD outer version: {OUTER_KERNEL_VERSION}")
@@ -829,6 +898,11 @@ class _EndpointValidationContext:
     outer_kernel_version: str
     outer_schedule_version: str
     outer_schedule_sha256: str
+    finalize_gate_route: str
+    finalize_gate_block_dim: int
+    finalize_gate_owner_threads: tuple[int, int, int, int]
+    finalize_gate_owner_roles: tuple[str, str, str, str]
+    finalize_gate_collective_version: str
     capture_binding: _CaptureGraphOwnerBinding | None = dataclasses.field(repr=False, compare=False)
     v_cycle_kernel_launches: int
     v_cycle_core_kernel_launches: int
@@ -863,6 +937,13 @@ class _EndpointValidationContext:
             "outer_schedule_sha256",
         ):
             _require_sha256(getattr(self, name), name=name)
+        _require_finalize_gate_evidence(
+            self.finalize_gate_route,
+            self.finalize_gate_block_dim,
+            self.finalize_gate_owner_threads,
+            self.finalize_gate_owner_roles,
+            self.finalize_gate_collective_version,
+        )
         if (
             type(self.fused_gather_kernel_version) is not str
             or self.fused_gather_kernel_version != FUSED_GATHER_KERNEL_VERSION
@@ -880,6 +961,11 @@ class _EndpointValidationContext:
             or self.second_cycle_publication_role != SECOND_CYCLE_PUBLICATION_ROLE
             or type(self.outer_kernel_version) is not str
             or type(self.outer_schedule_version) is not str
+            or self.finalize_gate_route != FINALIZE_GATE_ROUTE
+            or self.finalize_gate_block_dim != FINALIZE_GATE_BLOCK_DIM
+            or self.finalize_gate_owner_threads != FINALIZE_GATE_OWNER_THREADS
+            or self.finalize_gate_owner_roles != FINALIZE_GATE_OWNER_ROLES
+            or self.finalize_gate_collective_version != FINALIZE_GATE_COLLECTIVE_VERSION
             or self.outer_schedule_sha256
             != _derive_outer_schedule_sha256(
                 self.outer_kernel_version,
@@ -890,6 +976,11 @@ class _EndpointValidationContext:
                 self.v_cycle_external_shared_publication_route,
                 self.first_cycle_publication_role,
                 self.second_cycle_publication_role,
+                self.finalize_gate_route,
+                self.finalize_gate_block_dim,
+                self.finalize_gate_owner_threads,
+                self.finalize_gate_owner_roles,
+                self.finalize_gate_collective_version,
                 self.outer_schedule_version,
             )
         ):
@@ -1070,35 +1161,85 @@ def _finalize_gate(
     directional_derivative: wp.array[wp.float64],
     minimum_segment_determinant: wp.array[wp.float64],
 ):
-    if wp.tid() != 0:
-        return
-    accepted[outer_index] = 0
-    initial_objective[outer_index] = wp.float64(0.0)
-    candidate_objective[outer_index] = wp.float64(0.0)
-    directional_derivative[outer_index] = wp.float64(0.0)
-    minimum_segment_determinant[outer_index] = wp.float64(0.0)
-    if active[0] == 0:
-        reasons[outer_index] = _REASON_MASKED
-        return
+    lane = wp.tid()
+    if lane == 0:
+        accepted[outer_index] = 0
+        initial_objective[outer_index] = wp.float64(0.0)
+        candidate_objective[outer_index] = wp.float64(0.0)
+        directional_derivative[outer_index] = wp.float64(0.0)
+        minimum_segment_determinant[outer_index] = wp.float64(0.0)
 
+    gate_active = active[0]
     start_objective = wp.float64(0.0)
     end_objective = wp.float64(0.0)
     derivative = wp.float64(0.0)
-    all_finite = bool(True)
-    for vertex in range(current_inertia.shape[0]):
-        start_objective += current_inertia[vertex]
-        end_objective += candidate_inertia[vertex]
-        all_finite = all_finite and proposal_finite[vertex] != 0 and vertex_finite[vertex] != 0
-    for index in range(directional_terms.shape[0]):
-        derivative += directional_terms[index]
     minimum_segment = wp.float64(1.0e300)
     minimum_candidate = wp.float64(1.0e300)
-    for tet in range(current_elastic.shape[0]):
-        start_objective += current_elastic[tet]
-        end_objective += candidate_elastic[tet]
-        minimum_segment = wp.min(minimum_segment, segment_minima[tet])
-        minimum_candidate = wp.min(minimum_candidate, candidate_determinants[tet])
-        all_finite = all_finite and tet_finite[tet] != 0
+    finite_value = int(1)
+
+    if gate_active != 0:
+        if lane == 0:
+            for vertex in range(current_inertia.shape[0]):
+                start_objective += current_inertia[vertex]
+                end_objective += candidate_inertia[vertex]
+            for tet in range(current_elastic.shape[0]):
+                start_objective += current_elastic[tet]
+                end_objective += candidate_elastic[tet]
+        if lane == 32:
+            for index in range(directional_terms.shape[0]):
+                derivative += directional_terms[index]
+        if lane == 64:
+            for tet in range(current_elastic.shape[0]):
+                minimum_segment = wp.min(minimum_segment, segment_minima[tet])
+                minimum_candidate = wp.min(minimum_candidate, candidate_determinants[tet])
+        if lane == 96:
+            all_finite = bool(True)
+            for vertex in range(current_inertia.shape[0]):
+                all_finite = all_finite and proposal_finite[vertex] != 0 and vertex_finite[vertex] != 0
+            for tet in range(current_elastic.shape[0]):
+                all_finite = all_finite and tet_finite[tet] != 0
+            finite_value = int(all_finite)
+
+    objective_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=wp.vec2d(start_objective, end_objective),
+        thread_idx=0,
+        storage="shared",
+    )
+    derivative_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=derivative,
+        thread_idx=32,
+        storage="shared",
+    )
+    minima_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=wp.vec2d(minimum_segment, minimum_candidate),
+        thread_idx=64,
+        storage="shared",
+    )
+    finite_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=finite_value,
+        thread_idx=96,
+        storage="shared",
+    )
+    objective_pair = wp.tile_extract(objective_tile, 0)
+    derivative = wp.tile_extract(derivative_tile, 0)
+    minima = wp.tile_extract(minima_tile, 0)
+    finite_value = wp.tile_extract(finite_tile, 0)
+
+    if lane != 0:
+        return
+    if gate_active == 0:
+        reasons[outer_index] = _REASON_MASKED
+        return
+
+    start_objective = objective_pair[0]
+    end_objective = objective_pair[1]
+    minimum_segment = minima[0]
+    minimum_candidate = minima[1]
+    all_finite = finite_value != 0
 
     if (
         not all_finite
@@ -1155,6 +1296,11 @@ class CapturedGraphVBDOuterWork:
     outer_kernel_version: str
     outer_schedule_version: str
     outer_schedule_sha256: str
+    finalize_gate_route: str
+    finalize_gate_block_dim: int
+    finalize_gate_owner_threads: tuple[int, int, int, int]
+    finalize_gate_owner_roles: tuple[str, str, str, str]
+    finalize_gate_collective_version: str
     accepted: bool
     reason: str
     _validation_context: _EndpointValidationContext = dataclasses.field(repr=False, compare=False)
@@ -1191,6 +1337,13 @@ class CapturedGraphVBDOuterWork:
             raise ValueError("outer work hierarchy identity is not canonical")
         if persistent_device_sha256 != self._validation_context.persistent_device_sha256:
             raise ValueError("outer work persistent device identity is stale")
+        _require_finalize_gate_evidence(
+            self.finalize_gate_route,
+            self.finalize_gate_block_dim,
+            self.finalize_gate_owner_threads,
+            self.finalize_gate_owner_roles,
+            self.finalize_gate_collective_version,
+        )
         if (
             type(self.fused_gather_kernel_version) is not str
             or self.fused_gather_kernel_version != self._validation_context.fused_gather_kernel_version
@@ -1208,6 +1361,11 @@ class CapturedGraphVBDOuterWork:
             or type(self.outer_schedule_version) is not str
             or self.outer_schedule_version != self._validation_context.outer_schedule_version
             or self.outer_schedule_sha256 != self._validation_context.outer_schedule_sha256
+            or self.finalize_gate_route != self._validation_context.finalize_gate_route
+            or self.finalize_gate_block_dim != self._validation_context.finalize_gate_block_dim
+            or self.finalize_gate_owner_threads != self._validation_context.finalize_gate_owner_threads
+            or self.finalize_gate_owner_roles != self._validation_context.finalize_gate_owner_roles
+            or self.finalize_gate_collective_version != self._validation_context.finalize_gate_collective_version
             or self.outer_schedule_sha256
             != _derive_outer_schedule_sha256(
                 self.outer_kernel_version,
@@ -1218,6 +1376,11 @@ class CapturedGraphVBDOuterWork:
                 self._validation_context.v_cycle_external_shared_publication_route,
                 self.first_cycle_publication_route,
                 self.second_cycle_publication_route,
+                self.finalize_gate_route,
+                self.finalize_gate_block_dim,
+                self.finalize_gate_owner_threads,
+                self.finalize_gate_owner_roles,
+                self.finalize_gate_collective_version,
                 self.outer_schedule_version,
             )
         ):
@@ -1352,6 +1515,11 @@ class CapturedGraphVBDOuterWork:
             "outer_kernel_version": self.outer_kernel_version,
             "outer_schedule_version": self.outer_schedule_version,
             "outer_schedule_sha256": self.outer_schedule_sha256,
+            "finalize_gate_route": self.finalize_gate_route,
+            "finalize_gate_block_dim": self.finalize_gate_block_dim,
+            "finalize_gate_owner_threads": list(self.finalize_gate_owner_threads),
+            "finalize_gate_owner_roles": list(self.finalize_gate_owner_roles),
+            "finalize_gate_collective_version": self.finalize_gate_collective_version,
             "v_cycle_content_sha256s": [record.content_sha256 for record in self.v_cycles],
             "linear_kernel_launches": self.linear_kernel_launches,
             "capture_replay": self.capture_replay,
@@ -1396,6 +1564,11 @@ class CapturedGraphVBDOuterWork:
             "outer_kernel_version": self.outer_kernel_version,
             "outer_schedule_version": self.outer_schedule_version,
             "outer_schedule_sha256": self.outer_schedule_sha256,
+            "finalize_gate_route": self.finalize_gate_route,
+            "finalize_gate_block_dim": self.finalize_gate_block_dim,
+            "finalize_gate_owner_threads": list(self.finalize_gate_owner_threads),
+            "finalize_gate_owner_roles": list(self.finalize_gate_owner_roles),
+            "finalize_gate_collective_version": self.finalize_gate_collective_version,
             "v_cycles": [record.deterministic_record() for record in self.v_cycles],
             "linear_kernel_launches": self.linear_kernel_launches,
             "exact_work_completed": self.exact_work_completed,
@@ -1430,6 +1603,11 @@ class CapturedGraphVBDEndpoint:
     outer_kernel_version: str
     outer_schedule_version: str
     outer_schedule_sha256: str
+    finalize_gate_route: str
+    finalize_gate_block_dim: int
+    finalize_gate_owner_threads: tuple[int, int, int, int]
+    finalize_gate_owner_roles: tuple[str, str, str, str]
+    finalize_gate_collective_version: str
     armijo: float
     minimum_determinant: float
     free_vertices: np.ndarray
@@ -1501,6 +1679,13 @@ class CapturedGraphVBDEndpoint:
             raise ValueError("endpoint persistent device identity is stale")
         if graph_identity_sha256 != context.graph_identity_sha256:
             raise ValueError("endpoint graph identity is stale")
+        _require_finalize_gate_evidence(
+            self.finalize_gate_route,
+            self.finalize_gate_block_dim,
+            self.finalize_gate_owner_threads,
+            self.finalize_gate_owner_roles,
+            self.finalize_gate_collective_version,
+        )
         if (
             type(self.fused_gather_kernel_version) is not str
             or self.fused_gather_kernel_version != context.fused_gather_kernel_version
@@ -1521,6 +1706,11 @@ class CapturedGraphVBDEndpoint:
             or type(self.outer_schedule_version) is not str
             or self.outer_schedule_version != context.outer_schedule_version
             or self.outer_schedule_sha256 != context.outer_schedule_sha256
+            or self.finalize_gate_route != context.finalize_gate_route
+            or self.finalize_gate_block_dim != context.finalize_gate_block_dim
+            or self.finalize_gate_owner_threads != context.finalize_gate_owner_threads
+            or self.finalize_gate_owner_roles != context.finalize_gate_owner_roles
+            or self.finalize_gate_collective_version != context.finalize_gate_collective_version
             or self.outer_schedule_sha256
             != _derive_outer_schedule_sha256(
                 self.outer_kernel_version,
@@ -1531,6 +1721,11 @@ class CapturedGraphVBDEndpoint:
                 self.v_cycle_external_shared_publication_route,
                 self.first_cycle_publication_role,
                 self.second_cycle_publication_role,
+                self.finalize_gate_route,
+                self.finalize_gate_block_dim,
+                self.finalize_gate_owner_threads,
+                self.finalize_gate_owner_roles,
+                self.finalize_gate_collective_version,
                 self.outer_schedule_version,
             )
         ):
@@ -1818,6 +2013,11 @@ class CapturedGraphVBDEndpoint:
                     "outer_kernel_version": self.outer_kernel_version,
                     "outer_schedule_version": self.outer_schedule_version,
                     "outer_schedule_sha256": self.outer_schedule_sha256,
+                    "finalize_gate_route": self.finalize_gate_route,
+                    "finalize_gate_block_dim": self.finalize_gate_block_dim,
+                    "finalize_gate_owner_threads": list(self.finalize_gate_owner_threads),
+                    "finalize_gate_owner_roles": list(self.finalize_gate_owner_roles),
+                    "finalize_gate_collective_version": self.finalize_gate_collective_version,
                     "armijo": self.armijo,
                     "minimum_determinant": self.minimum_determinant,
                     "free_vertices_sha256": _array_digest(free),
@@ -1887,6 +2087,11 @@ class CapturedGraphVBDEndpoint:
             "outer_kernel_version": self.outer_kernel_version,
             "outer_schedule_version": self.outer_schedule_version,
             "outer_schedule_sha256": self.outer_schedule_sha256,
+            "finalize_gate_route": self.finalize_gate_route,
+            "finalize_gate_block_dim": self.finalize_gate_block_dim,
+            "finalize_gate_owner_threads": list(self.finalize_gate_owner_threads),
+            "finalize_gate_owner_roles": list(self.finalize_gate_owner_roles),
+            "finalize_gate_collective_version": self.finalize_gate_collective_version,
             "armijo": self.armijo,
             "minimum_determinant": self.minimum_determinant,
             "free_vertices_sha256": _array_digest(self.free_vertices),
@@ -1949,6 +2154,11 @@ class CapturedGraphVBDTiming:
     outer_kernel_version: str
     outer_schedule_version: str
     outer_schedule_sha256: str
+    finalize_gate_route: str
+    finalize_gate_block_dim: int
+    finalize_gate_owner_threads: tuple[int, int, int, int]
+    finalize_gate_owner_roles: tuple[str, str, str, str]
+    finalize_gate_collective_version: str
     correction_kernel_launches: int
     setup_included: bool = False
     transfers_included: bool = False
@@ -1976,6 +2186,13 @@ class CapturedGraphVBDTiming:
             raise ValueError("device must be a non-empty built-in string")
         if self.contract_id != CONTRACT_ID or self.comparator_contract_id != VBD_BASELINE_CONTRACT_ID:
             raise ValueError("timing contract identities are invalid")
+        _require_finalize_gate_evidence(
+            self.finalize_gate_route,
+            self.finalize_gate_block_dim,
+            self.finalize_gate_owner_threads,
+            self.finalize_gate_owner_roles,
+            self.finalize_gate_collective_version,
+        )
         if (
             type(self.fused_gather_kernel_version) is not str
             or self.fused_gather_kernel_version != FUSED_GATHER_KERNEL_VERSION
@@ -1999,6 +2216,11 @@ class CapturedGraphVBDTiming:
             or self.outer_kernel_version != OUTER_KERNEL_VERSION
             or type(self.outer_schedule_version) is not str
             or self.outer_schedule_version != OUTER_SCHEDULE_VERSION
+            or self.finalize_gate_route != FINALIZE_GATE_ROUTE
+            or self.finalize_gate_block_dim != FINALIZE_GATE_BLOCK_DIM
+            or self.finalize_gate_owner_threads != FINALIZE_GATE_OWNER_THREADS
+            or self.finalize_gate_owner_roles != FINALIZE_GATE_OWNER_ROLES
+            or self.finalize_gate_collective_version != FINALIZE_GATE_COLLECTIVE_VERSION
             or self.outer_schedule_sha256
             != _derive_outer_schedule_sha256(
                 self.outer_kernel_version,
@@ -2009,6 +2231,11 @@ class CapturedGraphVBDTiming:
                 self.v_cycle_external_shared_publication_route,
                 self.first_cycle_publication_role,
                 self.second_cycle_publication_role,
+                self.finalize_gate_route,
+                self.finalize_gate_block_dim,
+                self.finalize_gate_owner_threads,
+                self.finalize_gate_owner_roles,
+                self.finalize_gate_collective_version,
                 self.outer_schedule_version,
             )
         ):
@@ -2090,6 +2317,11 @@ class CapturedGraphVBDTiming:
             "outer_kernel_version": validated.outer_kernel_version,
             "outer_schedule_version": validated.outer_schedule_version,
             "outer_schedule_sha256": validated.outer_schedule_sha256,
+            "finalize_gate_route": validated.finalize_gate_route,
+            "finalize_gate_block_dim": validated.finalize_gate_block_dim,
+            "finalize_gate_owner_threads": list(validated.finalize_gate_owner_threads),
+            "finalize_gate_owner_roles": list(validated.finalize_gate_owner_roles),
+            "finalize_gate_collective_version": validated.finalize_gate_collective_version,
             "correction_kernel_launches": validated.correction_kernel_launches,
             "pair_orders": list(validated.pair_orders),
             "graph_seconds": list(validated.graph_seconds),
@@ -2819,6 +3051,11 @@ class _ConstructionClaimsOwnerBinding(NamedTuple):
     outer_kernel_version: str
     outer_schedule_version: str
     outer_schedule_sha256: str
+    finalize_gate_route: str
+    finalize_gate_block_dim: int
+    finalize_gate_owner_threads: tuple[int, int, int, int]
+    finalize_gate_owner_roles: tuple[str, str, str, str]
+    finalize_gate_collective_version: str
     solver_lane_contract_sha256: str
     hierarchy_owner_identity: tuple[int, int]
     solver_graph_owner_identity: tuple[tuple[str, int], ...]
@@ -2930,6 +3167,11 @@ class CapturedDirectGraphVBD:
         self._outer_kernel_version_bound = OUTER_KERNEL_VERSION
         self._outer_schedule_version_bound = OUTER_SCHEDULE_VERSION
         self._outer_schedule_sha256_bound = OUTER_SCHEDULE_SHA256
+        self._finalize_gate_route_bound = FINALIZE_GATE_ROUTE
+        self._finalize_gate_block_dim_bound = FINALIZE_GATE_BLOCK_DIM
+        self._finalize_gate_owner_threads_bound = FINALIZE_GATE_OWNER_THREADS
+        self._finalize_gate_owner_roles_bound = FINALIZE_GATE_OWNER_ROLES
+        self._finalize_gate_collective_version_bound = FINALIZE_GATE_COLLECTIVE_VERSION
         self._solver_lane_contract_sha256_bound = self._validate_solver_lane_contract()
 
         # This eager construction endpoint is used only to bind static arrays;
@@ -3088,7 +3330,7 @@ class CapturedDirectGraphVBD:
 
     @property
     def outer_kernel_launches_per_outer(self) -> int:
-        """Exact linear, fused vertex, tet gate, serial gate, and commit launches."""
+        """Exact linear, fused vertex, tet, four-warp gate, and commit launches."""
         return self.linear_kernel_launches_per_outer + 3
 
     def _register_construction_owner_binding(self, binding: _WorkspaceOwnerBinding) -> None:
@@ -3230,6 +3472,11 @@ class CapturedDirectGraphVBD:
             self._outer_kernel_version_bound,
             self._outer_schedule_version_bound,
             self._outer_schedule_sha256_bound,
+            self._finalize_gate_route_bound,
+            self._finalize_gate_block_dim_bound,
+            self._finalize_gate_owner_threads_bound,
+            self._finalize_gate_owner_roles_bound,
+            self._finalize_gate_collective_version_bound,
         )
 
     def _capture_construction_claims(self) -> _ConstructionClaimsOwnerBinding:
@@ -3245,6 +3492,11 @@ class CapturedDirectGraphVBD:
             outer_kernel_version=self._outer_kernel_version_bound,
             outer_schedule_version=self._outer_schedule_version_bound,
             outer_schedule_sha256=self._outer_schedule_sha256_bound,
+            finalize_gate_route=self._finalize_gate_route_bound,
+            finalize_gate_block_dim=self._finalize_gate_block_dim_bound,
+            finalize_gate_owner_threads=self._finalize_gate_owner_threads_bound,
+            finalize_gate_owner_roles=self._finalize_gate_owner_roles_bound,
+            finalize_gate_collective_version=self._finalize_gate_collective_version_bound,
             solver_lane_contract_sha256=self._solver_lane_contract_sha256_bound,
             hierarchy_owner_identity=(id(self.source_device_hierarchy), id(self.device_hierarchy)),
             solver_graph_owner_identity=self._solver_graph_owner_identity(),
@@ -3598,6 +3850,16 @@ class CapturedDirectGraphVBD:
         claims = binding.claims
         if type(claims) is not _ConstructionClaimsOwnerBinding:
             raise RuntimeError("persistent construction claims owner binding changed")
+        try:
+            _require_finalize_gate_evidence(
+                claims.finalize_gate_route,
+                claims.finalize_gate_block_dim,
+                claims.finalize_gate_owner_threads,
+                claims.finalize_gate_owner_roles,
+                claims.finalize_gate_collective_version,
+            )
+        except ValueError as exc:
+            raise RuntimeError("finalize gate construction claims changed") from exc
         if (
             self.problem is not binding.problem
             or self._construction_operator is not binding.construction_operator
@@ -3633,6 +3895,11 @@ class CapturedDirectGraphVBD:
             or type(claims.outer_schedule_version) is not str
             or claims.outer_schedule_version != OUTER_SCHEDULE_VERSION
             or claims.outer_schedule_sha256 != OUTER_SCHEDULE_SHA256
+            or claims.finalize_gate_route != FINALIZE_GATE_ROUTE
+            or claims.finalize_gate_block_dim != FINALIZE_GATE_BLOCK_DIM
+            or claims.finalize_gate_owner_threads != FINALIZE_GATE_OWNER_THREADS
+            or claims.finalize_gate_owner_roles != FINALIZE_GATE_OWNER_ROLES
+            or claims.finalize_gate_collective_version != FINALIZE_GATE_COLLECTIVE_VERSION
             or claims.outer_schedule_sha256
             != _derive_outer_schedule_sha256(
                 claims.outer_kernel_version,
@@ -3643,11 +3910,21 @@ class CapturedDirectGraphVBD:
                 claims.scalar_fused_evidence.external_shared_publication_route,
                 claims.first_cycle_publication_role,
                 claims.second_cycle_publication_role,
+                claims.finalize_gate_route,
+                claims.finalize_gate_block_dim,
+                claims.finalize_gate_owner_threads,
+                claims.finalize_gate_owner_roles,
+                claims.finalize_gate_collective_version,
                 claims.outer_schedule_version,
             )
             or self._outer_kernel_version_bound != claims.outer_kernel_version
             or self._outer_schedule_version_bound != claims.outer_schedule_version
             or self._outer_schedule_sha256_bound != claims.outer_schedule_sha256
+            or self._finalize_gate_route_bound != claims.finalize_gate_route
+            or self._finalize_gate_block_dim_bound != claims.finalize_gate_block_dim
+            or self._finalize_gate_owner_threads_bound is not claims.finalize_gate_owner_threads
+            or self._finalize_gate_owner_roles_bound is not claims.finalize_gate_owner_roles
+            or self._finalize_gate_collective_version_bound != claims.finalize_gate_collective_version
         ):
             raise RuntimeError("outer kernel or schedule construction claim changed")
         _require_sha256(claims.outer_schedule_sha256, name="construction claims outer_schedule_sha256")
@@ -4051,7 +4328,7 @@ class CapturedDirectGraphVBD:
 
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v5",
+                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v6",
                 "scene_object": id(binding.scene),
                 "config_object": id(binding.config),
                 "warp_device_object": id(binding.warp_device),
@@ -4104,6 +4381,11 @@ class CapturedDirectGraphVBD:
                 "outer_kernel_version": binding.claims.outer_kernel_version,
                 "outer_schedule_version": binding.claims.outer_schedule_version,
                 "outer_schedule_sha256": binding.claims.outer_schedule_sha256,
+                "finalize_gate_route": binding.claims.finalize_gate_route,
+                "finalize_gate_block_dim": binding.claims.finalize_gate_block_dim,
+                "finalize_gate_owner_threads": list(binding.claims.finalize_gate_owner_threads),
+                "finalize_gate_owner_roles": list(binding.claims.finalize_gate_owner_roles),
+                "finalize_gate_collective_version": binding.claims.finalize_gate_collective_version,
                 "solver_lane_contract_sha256": binding.claims.solver_lane_contract_sha256,
                 "hierarchy_owner_identity": list(binding.claims.hierarchy_owner_identity),
                 "solver_graph_owner_identity": [list(item) for item in binding.claims.solver_graph_owner_identity],
@@ -4152,7 +4434,7 @@ class CapturedDirectGraphVBD:
         correction_kernel_launches = 2 + OUTER_CORRECTIONS * outer_kernel_launches
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-graph-identity-v6",
+                "contract": "captured-direct-graph-vbd-graph-identity-v7",
                 "solver_contract": CONTRACT_ID,
                 "comparator_contract": VBD_BASELINE_CONTRACT_ID if comparator else None,
                 "scene_sha256": scene_sha256,
@@ -4171,6 +4453,11 @@ class CapturedDirectGraphVBD:
                 "outer_kernel_version": claims.outer_kernel_version,
                 "outer_schedule_version": claims.outer_schedule_version,
                 "outer_schedule_sha256": claims.outer_schedule_sha256,
+                "finalize_gate_route": claims.finalize_gate_route,
+                "finalize_gate_block_dim": claims.finalize_gate_block_dim,
+                "finalize_gate_owner_threads": list(claims.finalize_gate_owner_threads),
+                "finalize_gate_owner_roles": list(claims.finalize_gate_owner_roles),
+                "finalize_gate_collective_version": claims.finalize_gate_collective_version,
                 "v_cycle_kernel_version": V_CYCLE_KERNEL_VERSION,
                 "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
                 "v_cycle_schedule_sha256": scalar_evidence.schedule_sha256,
@@ -4292,6 +4579,11 @@ class CapturedDirectGraphVBD:
             or context.outer_kernel_version != owner_binding.claims.outer_kernel_version
             or context.outer_schedule_version != owner_binding.claims.outer_schedule_version
             or context.outer_schedule_sha256 != owner_binding.claims.outer_schedule_sha256
+            or context.finalize_gate_route != owner_binding.claims.finalize_gate_route
+            or context.finalize_gate_block_dim != owner_binding.claims.finalize_gate_block_dim
+            or context.finalize_gate_owner_threads != owner_binding.claims.finalize_gate_owner_threads
+            or context.finalize_gate_owner_roles != owner_binding.claims.finalize_gate_owner_roles
+            or context.finalize_gate_collective_version != owner_binding.claims.finalize_gate_collective_version
             or context.capture_binding is not capture_binding
             or context.device != str(self.device)
             or context.outer_slots is not outer_slots
@@ -4969,7 +5261,7 @@ class CapturedDirectGraphVBD:
         if scalar_evidence != claims.scalar_fused_evidence:
             raise RuntimeError("captured scalar-fused construction evidence changed")
         persistent_sha256 = _hash_parts(
-            "captured-direct-graph-vbd-persistent-inputs-v4",
+            "captured-direct-graph-vbd-persistent-inputs-v5",
             (
                 ("scene_sha256", scene_sha256),
                 ("objective_instance_sha256", objective_sha256),
@@ -4988,6 +5280,17 @@ class CapturedDirectGraphVBD:
                 ("outer_kernel_version", claims.outer_kernel_version),
                 ("outer_schedule_version", claims.outer_schedule_version),
                 ("outer_schedule_sha256", claims.outer_schedule_sha256),
+                ("finalize_gate_route", claims.finalize_gate_route),
+                ("finalize_gate_block_dim", claims.finalize_gate_block_dim),
+                *(
+                    (f"finalize_gate_owner_thread_{index}", value)
+                    for index, value in enumerate(claims.finalize_gate_owner_threads)
+                ),
+                *(
+                    (f"finalize_gate_owner_role_{index}", value)
+                    for index, value in enumerate(claims.finalize_gate_owner_roles)
+                ),
+                ("finalize_gate_collective_version", claims.finalize_gate_collective_version),
                 ("workspace_owner_identity_sha256", workspace_owner_identity_sha256),
                 ("construction_operator_sha256", _operator_sha256(canonical_operator)),
                 ("operator_inputs_sha256", operator_inputs_sha256),
@@ -5128,7 +5431,7 @@ class CapturedDirectGraphVBD:
             )
             wp.launch(
                 _finalize_gate,
-                dim=1,
+                dim=FINALIZE_GATE_BLOCK_DIM,
                 inputs=[
                     outer_index,
                     direct.current_inertia,
@@ -5151,6 +5454,7 @@ class CapturedDirectGraphVBD:
                     direct.directional_derivatives,
                     direct.minimum_segment_determinants,
                 ],
+                block_dim=FINALIZE_GATE_BLOCK_DIM,
                 device=self.device,
             )
             wp.launch(
@@ -5424,6 +5728,11 @@ class CapturedDirectGraphVBD:
             outer_kernel_version=owner_binding.claims.outer_kernel_version,
             outer_schedule_version=owner_binding.claims.outer_schedule_version,
             outer_schedule_sha256=owner_binding.claims.outer_schedule_sha256,
+            finalize_gate_route=owner_binding.claims.finalize_gate_route,
+            finalize_gate_block_dim=owner_binding.claims.finalize_gate_block_dim,
+            finalize_gate_owner_threads=owner_binding.claims.finalize_gate_owner_threads,
+            finalize_gate_owner_roles=owner_binding.claims.finalize_gate_owner_roles,
+            finalize_gate_collective_version=owner_binding.claims.finalize_gate_collective_version,
             correction_kernel_launches=self.correction_kernel_launches,
         )
 
@@ -5517,6 +5826,11 @@ class CapturedDirectGraphVBD:
             outer_kernel_version=owner_binding.claims.outer_kernel_version,
             outer_schedule_version=owner_binding.claims.outer_schedule_version,
             outer_schedule_sha256=owner_binding.claims.outer_schedule_sha256,
+            finalize_gate_route=owner_binding.claims.finalize_gate_route,
+            finalize_gate_block_dim=owner_binding.claims.finalize_gate_block_dim,
+            finalize_gate_owner_threads=owner_binding.claims.finalize_gate_owner_threads,
+            finalize_gate_owner_roles=owner_binding.claims.finalize_gate_owner_roles,
+            finalize_gate_collective_version=owner_binding.claims.finalize_gate_collective_version,
             capture_binding=receipt.capture_binding,
             v_cycle_kernel_launches=scalar_evidence.scheduled_kernel_launches,
             v_cycle_core_kernel_launches=scalar_evidence.core_kernel_launches,
@@ -5587,6 +5901,11 @@ class CapturedDirectGraphVBD:
                     outer_kernel_version=owner_binding.claims.outer_kernel_version,
                     outer_schedule_version=owner_binding.claims.outer_schedule_version,
                     outer_schedule_sha256=owner_binding.claims.outer_schedule_sha256,
+                    finalize_gate_route=owner_binding.claims.finalize_gate_route,
+                    finalize_gate_block_dim=owner_binding.claims.finalize_gate_block_dim,
+                    finalize_gate_owner_threads=owner_binding.claims.finalize_gate_owner_threads,
+                    finalize_gate_owner_roles=owner_binding.claims.finalize_gate_owner_roles,
+                    finalize_gate_collective_version=owner_binding.claims.finalize_gate_collective_version,
                     accepted=accepted[outer_index],
                     reason=reasons[outer_index],
                     _validation_context=context,
@@ -5615,6 +5934,11 @@ class CapturedDirectGraphVBD:
             outer_kernel_version=owner_binding.claims.outer_kernel_version,
             outer_schedule_version=owner_binding.claims.outer_schedule_version,
             outer_schedule_sha256=owner_binding.claims.outer_schedule_sha256,
+            finalize_gate_route=owner_binding.claims.finalize_gate_route,
+            finalize_gate_block_dim=owner_binding.claims.finalize_gate_block_dim,
+            finalize_gate_owner_threads=owner_binding.claims.finalize_gate_owner_threads,
+            finalize_gate_owner_roles=owner_binding.claims.finalize_gate_owner_roles,
+            finalize_gate_collective_version=owner_binding.claims.finalize_gate_collective_version,
             armijo=float(owner_binding.config.armijo),
             minimum_determinant=float(owner_binding.config.minimum_determinant),
             free_vertices=np.asarray(owner_binding.operator.free_host, dtype=np.int64),
@@ -5766,7 +6090,7 @@ class CapturedDirectGraphVBD:
             "solver_static_array_sha256": self._solver_static_array_sha256_bound,
             "workspace_owner_identity_sha256": self._workspace_owner_identity_sha256(owner_binding),
             "persistent_device_sha256": persistent_device_sha256,
-            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v6",
+            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v7",
             "graph_identity_sha256": graph_identity_sha256,
             "k4_graph_identity_sha256": k4_graph_identity_sha256,
             "fused_gather_kernel_version": owner_binding.claims.fused_gather_kernel_version,
@@ -5776,6 +6100,11 @@ class CapturedDirectGraphVBD:
             "outer_kernel_version": owner_binding.claims.outer_kernel_version,
             "outer_schedule_version": owner_binding.claims.outer_schedule_version,
             "outer_schedule_sha256": owner_binding.claims.outer_schedule_sha256,
+            "finalize_gate_route": owner_binding.claims.finalize_gate_route,
+            "finalize_gate_block_dim": owner_binding.claims.finalize_gate_block_dim,
+            "finalize_gate_owner_threads": list(owner_binding.claims.finalize_gate_owner_threads),
+            "finalize_gate_owner_roles": list(owner_binding.claims.finalize_gate_owner_roles),
+            "finalize_gate_collective_version": owner_binding.claims.finalize_gate_collective_version,
             "device": str(self.device),
             "vbd_iterations": 1,
             "outer_corrections": OUTER_CORRECTIONS,
@@ -5816,6 +6145,7 @@ class CapturedDirectGraphVBD:
             "linear_prefix_kernel_launches_per_outer": linear_prefix_kernel_launches,
             "fused_gather_kernel_launches_per_outer": 2,
             "fused_vertex_kernel_launches_per_outer": 1,
+            "finalize_gate_kernel_launches_per_outer": 1,
             "linear_kernel_launches_per_outer": linear_kernel_launches,
             "outer_kernel_launches_per_outer": outer_kernel_launches,
             "correction_kernel_launches_excluding_public_k1": correction_kernel_launches,
