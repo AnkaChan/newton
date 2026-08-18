@@ -37,10 +37,7 @@ from newton.solvers import SolverVBD
 
 from .captured_mg_vbd import (
     _commit_candidate,
-    _copy_positions,
-    _directional_terms,
     _tet_gate_terms,
-    _vertex_gate_terms,
     _write_endpoint,
 )
 from .captured_vbd_baseline import (
@@ -100,6 +97,8 @@ from .solver_benchmark import TetBenchmarkScene, build_common_problem, common_ob
 CONTRACT_ID = "captured-direct-multiplicative-graph-vbd-v1"
 OUTER_CORRECTIONS = 4
 V_CYCLES_PER_OUTER = 2
+OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-vertex-owned-outer-fused-v1"
+OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v2"
 
 _REASON_PENDING = 0
 _REASON_ACCEPTED = 1
@@ -189,6 +188,36 @@ def _canonical_digest(value: object) -> str:
     """Hash finite canonical JSON."""
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _derive_outer_schedule_sha256(kernel_version: str, schedule_version: str) -> str:
+    """Bind the vertex-owned fusion formulas and serial gate order."""
+    return _canonical_digest(
+        {
+            "contract": "captured-direct-graph-vbd-outer-schedule-v2",
+            "kernel_version": kernel_version,
+            "schedule_version": schedule_version,
+            "ownership": "one-thread-per-scene-vertex-with-unique-free-index-owner",
+            "fused_vertex_operations": [
+                "outer_start=current",
+                "direction[free]=first_correction[free]+second_correction[free]",
+                "candidate=current-or-fp32(current+direction)-published-as-fp64",
+                "outer_candidate=candidate",
+                "current_candidate_inertia-and-vertex-finite",
+                "directional[free]=-dot(rhs[free],candidate-current)",
+            ],
+            "candidate_policy": "pinned-or-inactive-or-nonfinite-proposal-keeps-current",
+            "post_fusion_order": ["tet-gate-terms", "serial-finalize-gate", "commit-candidate"],
+            "linear_prefix_kernel_launches_per_outer": "6+2*v_cycle_kernel_launches",
+            "fused_vertex_kernel_launches_per_outer": 1,
+            "retained_linear_work_launches_per_outer": "7+2*v_cycle_kernel_launches",
+            "remaining_gate_commit_launches_per_outer": 3,
+        }
+    )
+
+
+OUTER_SCHEDULE_SHA256 = _derive_outer_schedule_sha256(OUTER_KERNEL_VERSION, OUTER_SCHEDULE_VERSION)
+print(f"[kernels] captured graph VBD outer version: {OUTER_KERNEL_VERSION}")
 
 
 def _require_sha256(value: object, *, name: str) -> str:
@@ -708,6 +737,9 @@ class _EndpointValidationContext:
     v_cycle_static_device_content_sha256: str
     v_cycle_device_snapshot_sha256: str
     graph_identity_sha256: str
+    outer_kernel_version: str
+    outer_schedule_version: str
+    outer_schedule_sha256: str
     capture_binding: _CaptureGraphOwnerBinding | None = dataclasses.field(repr=False, compare=False)
     v_cycle_kernel_launches: int
     device: str
@@ -735,8 +767,16 @@ class _EndpointValidationContext:
             "v_cycle_static_device_content_sha256",
             "v_cycle_device_snapshot_sha256",
             "graph_identity_sha256",
+            "outer_schedule_sha256",
         ):
             _require_sha256(getattr(self, name), name=name)
+        if (
+            type(self.outer_kernel_version) is not str
+            or type(self.outer_schedule_version) is not str
+            or self.outer_schedule_sha256
+            != _derive_outer_schedule_sha256(self.outer_kernel_version, self.outer_schedule_version)
+        ):
+            raise ValueError("endpoint validation outer kernel schedule is not canonical")
         if type(self.v_cycle_kernel_launches) is not int or self.v_cycle_kernel_launches < 1:
             raise ValueError("v_cycle_kernel_launches must be a positive built-in int")
         if (
@@ -820,44 +860,73 @@ def _subtract_vectors(
 
 
 @wp.kernel(enable_backward=False)
-def _add_vectors(
-    left: wp.array[wp.vec3d],
-    right: wp.array[wp.vec3d],
-    output: wp.array[wp.vec3d],
-):
-    index = wp.tid()
-    output[index] = left[index] + right[index]
-
-
-@wp.kernel(enable_backward=False)
-def _build_candidate(
+def _fused_vertex_outer_terms(
     current: wp.array[wp.vec3d],
     vertex_to_free: wp.array[int],
+    first_correction: wp.array[wp.vec3d],
+    second_correction: wp.array[wp.vec3d],
+    rhs: wp.array[wp.vec3d],
     direction: wp.array[wp.vec3d],
     active: wp.array[int],
+    inertial_target: wp.array[wp.vec3d],
+    mass: wp.array[wp.float64],
+    inverse_dt_squared: wp.float64,
+    outer_start: wp.array[wp.vec3d],
     candidate: wp.array[wp.vec3d],
+    outer_candidate: wp.array[wp.vec3d],
     proposal_finite: wp.array[int],
+    current_inertia: wp.array[wp.float64],
+    candidate_inertia: wp.array[wp.float64],
+    vertex_finite: wp.array[int],
+    directional_terms: wp.array[wp.float64],
 ):
     vertex = wp.tid()
     value = current[vertex]
+    outer_start[vertex] = value
     valid = bool(True)
     free_index = vertex_to_free[vertex]
-    if active[0] != 0 and free_index >= 0:
-        proposed = value + direction[free_index]
-        valid = _finite_vec(proposed)
-        if valid:
-            publishable = wp.vec3(
-                wp.float32(proposed[0]),
-                wp.float32(proposed[1]),
-                wp.float32(proposed[2]),
-            )
-            value = wp.vec3d(
-                wp.float64(publishable[0]),
-                wp.float64(publishable[1]),
-                wp.float64(publishable[2]),
-            )
+    if free_index >= 0:
+        direction_value = first_correction[free_index] + second_correction[free_index]
+        direction[free_index] = direction_value
+        if active[0] != 0:
+            proposed = value + direction_value
+            valid = _finite_vec(proposed)
+            if valid:
+                publishable = wp.vec3(
+                    wp.float32(proposed[0]),
+                    wp.float32(proposed[1]),
+                    wp.float32(proposed[2]),
+                )
+                value = wp.vec3d(
+                    wp.float64(publishable[0]),
+                    wp.float64(publishable[1]),
+                    wp.float64(publishable[2]),
+                )
+        directional_terms[free_index] = -wp.dot(rhs[free_index], value - current[vertex])
     candidate[vertex] = value
+    outer_candidate[vertex] = value
     proposal_finite[vertex] = int(valid)
+    start_delta = current[vertex] - inertial_target[vertex]
+    end_delta = value - inertial_target[vertex]
+    current_inertia[vertex] = (
+        wp.float64(0.5)
+        * inverse_dt_squared
+        * mass[vertex]
+        * wp.dot(
+            start_delta,
+            start_delta,
+        )
+    )
+    candidate_inertia[vertex] = (
+        wp.float64(0.5)
+        * inverse_dt_squared
+        * mass[vertex]
+        * wp.dot(
+            end_delta,
+            end_delta,
+        )
+    )
+    vertex_finite[vertex] = int(_finite_vec(current[vertex]) and _finite_vec(value))
 
 
 @wp.kernel(enable_backward=False)
@@ -960,6 +1029,9 @@ class CapturedGraphVBDOuterWork:
     capture_replay: bool
     linear_kernel_launches: int
     persistent_device_sha256: str
+    outer_kernel_version: str
+    outer_schedule_version: str
+    outer_schedule_sha256: str
     accepted: bool
     reason: str
     _validation_context: _EndpointValidationContext = dataclasses.field(repr=False, compare=False)
@@ -996,6 +1068,17 @@ class CapturedGraphVBDOuterWork:
             raise ValueError("outer work hierarchy identity is not canonical")
         if persistent_device_sha256 != self._validation_context.persistent_device_sha256:
             raise ValueError("outer work persistent device identity is stale")
+        if (
+            type(self.outer_kernel_version) is not str
+            or self.outer_kernel_version != self._validation_context.outer_kernel_version
+            or type(self.outer_schedule_version) is not str
+            or self.outer_schedule_version != self._validation_context.outer_schedule_version
+            or self.outer_schedule_sha256 != self._validation_context.outer_schedule_sha256
+            or self.outer_schedule_sha256
+            != _derive_outer_schedule_sha256(self.outer_kernel_version, self.outer_schedule_version)
+        ):
+            raise ValueError("outer work kernel schedule identity is not canonical")
+        _require_sha256(self.outer_schedule_sha256, name="outer_schedule_sha256")
         if type(self.v_cycles) is not tuple or len(self.v_cycles) != V_CYCLES_PER_OUTER:
             raise ValueError("outer work must retain exactly two V-cycle records")
         if any(type(record) is not WarpScalarFusedVCycleRecord for record in self.v_cycles):
@@ -1097,6 +1180,9 @@ class CapturedGraphVBDOuterWork:
             "second_correction_sha256": _array_digest(arrays["second_correction"]),
             "direction_sha256": _array_digest(arrays["direction"]),
             "persistent_device_sha256": persistent_device_sha256,
+            "outer_kernel_version": self.outer_kernel_version,
+            "outer_schedule_version": self.outer_schedule_version,
+            "outer_schedule_sha256": self.outer_schedule_sha256,
             "v_cycle_content_sha256s": [record.content_sha256 for record in self.v_cycles],
             "linear_kernel_launches": self.linear_kernel_launches,
             "capture_replay": self.capture_replay,
@@ -1115,6 +1201,11 @@ class CapturedGraphVBDOuterWork:
 
     def deterministic_record(self) -> dict[str, object]:
         """Serialize hashes and exact work without duplicating raw vectors."""
+        _require_issued_validation_context(self._validation_context, validate_raw_sources=False)
+        _require_issued_outer_slot(self._validation_context, self._validation_slot)
+        validated = dataclasses.replace(self)
+        if validated.content_sha256 != self.content_sha256:
+            raise ValueError("outer work content hash is not canonical at serialization")
         return {
             "contract": "captured-direct-graph-vbd-outer-work-v1",
             "outer_index": self.outer_index,
@@ -1128,6 +1219,9 @@ class CapturedGraphVBDOuterWork:
             "second_correction_sha256": _array_digest(self.second_correction),
             "direction_sha256": _array_digest(self.direction),
             "persistent_device_sha256": self.persistent_device_sha256,
+            "outer_kernel_version": self.outer_kernel_version,
+            "outer_schedule_version": self.outer_schedule_version,
+            "outer_schedule_sha256": self.outer_schedule_sha256,
             "v_cycles": [record.deterministic_record() for record in self.v_cycles],
             "linear_kernel_launches": self.linear_kernel_launches,
             "exact_work_completed": self.exact_work_completed,
@@ -1152,6 +1246,9 @@ class CapturedGraphVBDEndpoint:
     k1_pristine_state_sha256: str
     persistent_device_sha256: str
     graph_identity_sha256: str
+    outer_kernel_version: str
+    outer_schedule_version: str
+    outer_schedule_sha256: str
     armijo: float
     minimum_determinant: float
     free_vertices: np.ndarray
@@ -1223,6 +1320,17 @@ class CapturedGraphVBDEndpoint:
             raise ValueError("endpoint persistent device identity is stale")
         if graph_identity_sha256 != context.graph_identity_sha256:
             raise ValueError("endpoint graph identity is stale")
+        if (
+            type(self.outer_kernel_version) is not str
+            or self.outer_kernel_version != context.outer_kernel_version
+            or type(self.outer_schedule_version) is not str
+            or self.outer_schedule_version != context.outer_schedule_version
+            or self.outer_schedule_sha256 != context.outer_schedule_sha256
+            or self.outer_schedule_sha256
+            != _derive_outer_schedule_sha256(self.outer_kernel_version, self.outer_schedule_version)
+        ):
+            raise ValueError("endpoint outer kernel schedule identity is not canonical")
+        _require_sha256(self.outer_schedule_sha256, name="outer_schedule_sha256")
         if type(self.armijo) is not float or not math.isfinite(self.armijo) or not 0.0 < self.armijo < 1.0:
             raise ValueError("armijo must be a built-in float in (0, 1)")
         if (
@@ -1468,7 +1576,7 @@ class CapturedGraphVBDEndpoint:
         position_sha256 = _array_digest(positions)
         velocity_sha256 = _array_digest(velocities)
         candidate_hashes = tuple(_array_digest(value) for value in candidates)
-        correction_launches = 2 + sum(work.linear_kernel_launches + 8 for work in self.outer_work)
+        correction_launches = 2 + sum(work.linear_kernel_launches + 3 for work in self.outer_work)
         object.__setattr__(self, "position_sha256", position_sha256)
         object.__setattr__(self, "velocity_sha256", velocity_sha256)
         object.__setattr__(self, "outer_start_position_sha256s", start_hashes)
@@ -1491,6 +1599,9 @@ class CapturedGraphVBDEndpoint:
                     "k1_pristine_state_sha256": k1_pristine_sha256,
                     "persistent_device_sha256": persistent_device_sha256,
                     "graph_identity_sha256": graph_identity_sha256,
+                    "outer_kernel_version": self.outer_kernel_version,
+                    "outer_schedule_version": self.outer_schedule_version,
+                    "outer_schedule_sha256": self.outer_schedule_sha256,
                     "armijo": self.armijo,
                     "minimum_determinant": self.minimum_determinant,
                     "free_vertices_sha256": _array_digest(free),
@@ -1527,6 +1638,10 @@ class CapturedGraphVBDEndpoint:
 
     def deterministic_record(self) -> dict[str, object]:
         """Serialize content identities, exact work, and gate evidence."""
+        _require_issued_validation_context(self._validation_context, validate_raw_sources=True)
+        validated = dataclasses.replace(self)
+        if validated.endpoint_sha256 != self.endpoint_sha256:
+            raise ValueError("endpoint content hash is not canonical at serialization")
         return {
             "contract": CONTRACT_ID,
             "scene_sha256": self.scene_sha256,
@@ -1539,6 +1654,9 @@ class CapturedGraphVBDEndpoint:
             "k1_pristine_state_sha256": self.k1_pristine_state_sha256,
             "persistent_device_sha256": self.persistent_device_sha256,
             "graph_identity_sha256": self.graph_identity_sha256,
+            "outer_kernel_version": self.outer_kernel_version,
+            "outer_schedule_version": self.outer_schedule_version,
+            "outer_schedule_sha256": self.outer_schedule_sha256,
             "armijo": self.armijo,
             "minimum_determinant": self.minimum_determinant,
             "free_vertices_sha256": _array_digest(self.free_vertices),
@@ -1564,7 +1682,11 @@ class CapturedGraphVBDEndpoint:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class CapturedGraphVBDTiming:
-    """Paired CUDA-event timings for direct graph VBD versus pristine K4."""
+    """Schema-validated paired CUDA-event diagnostics versus pristine K4.
+
+    Timing samples are intentionally not solver-issued or content-authenticated
+    execution evidence. They remain diagnostic-only even after schema validation.
+    """
 
     pair_orders: tuple[str, ...]
     graph_seconds: tuple[float, ...]
@@ -1631,35 +1753,40 @@ class CapturedGraphVBDTiming:
     @property
     def graph_median_seconds(self) -> float:
         """Median captured direct graph VBD time [s]."""
-        return statistics.median(self.graph_seconds)
+        validated = dataclasses.replace(self)
+        return statistics.median(validated.graph_seconds)
 
     @property
     def k4_median_seconds(self) -> float:
         """Median captured pristine K4 time [s]."""
-        return statistics.median(self.k4_seconds)
+        validated = dataclasses.replace(self)
+        return statistics.median(validated.k4_seconds)
 
     def deterministic_record(self) -> dict[str, object]:
-        """Serialize the paired diagnostic timing result."""
+        """Serialize schema-validated, unauthenticated diagnostic timing."""
+        validated = dataclasses.replace(self)
         return {
-            "contract_id": self.contract_id,
-            "scene_sha256": self.scene_sha256,
-            "objective_instance_sha256": self.objective_instance_sha256,
-            "config_sha256": self.config_sha256,
-            "static_hierarchy_sha256": self.static_hierarchy_sha256,
-            "persistent_device_sha256": self.persistent_device_sha256,
-            "graph_identity_sha256": self.graph_identity_sha256,
-            "k4_graph_identity_sha256": self.k4_graph_identity_sha256,
-            "comparator_contract_id": self.comparator_contract_id,
-            "pair_orders": list(self.pair_orders),
-            "graph_seconds": list(self.graph_seconds),
-            "k4_seconds": list(self.k4_seconds),
-            "warmup_replays": self.warmup_replays,
-            "random_seed": self.random_seed,
-            "device": self.device,
-            "setup_included": self.setup_included,
-            "transfers_included": self.transfers_included,
-            "integrated_direct_graph": self.integrated_direct_graph,
-            "performance_evidence": self.performance_evidence,
+            "contract_id": validated.contract_id,
+            "scene_sha256": validated.scene_sha256,
+            "objective_instance_sha256": validated.objective_instance_sha256,
+            "config_sha256": validated.config_sha256,
+            "static_hierarchy_sha256": validated.static_hierarchy_sha256,
+            "persistent_device_sha256": validated.persistent_device_sha256,
+            "graph_identity_sha256": validated.graph_identity_sha256,
+            "k4_graph_identity_sha256": validated.k4_graph_identity_sha256,
+            "comparator_contract_id": validated.comparator_contract_id,
+            "pair_orders": list(validated.pair_orders),
+            "graph_seconds": list(validated.graph_seconds),
+            "k4_seconds": list(validated.k4_seconds),
+            "warmup_replays": validated.warmup_replays,
+            "random_seed": validated.random_seed,
+            "device": validated.device,
+            "setup_included": validated.setup_included,
+            "transfers_included": validated.transfers_included,
+            "integrated_direct_graph": validated.integrated_direct_graph,
+            "performance_evidence": validated.performance_evidence,
+            "measurement_authentication": "schema-validated-not-content-authenticated-v1",
+            "solver_issued_authentication": False,
         }
 
 
@@ -2314,6 +2441,9 @@ class _ConstructionClaimsOwnerBinding(NamedTuple):
 
     array_descriptor_type: object
     array_descriptor_fields: tuple[object, ...]
+    outer_kernel_version: str
+    outer_schedule_version: str
+    outer_schedule_sha256: str
     solver_lane_contract_sha256: str
     hierarchy_owner_identity: tuple[int, int]
     solver_graph_owner_identity: tuple[tuple[str, int], ...]
@@ -2418,6 +2548,9 @@ class CapturedDirectGraphVBD:
         reference_adjacency_fields = dict(getattr(type(reference_adjacency._ctype), "_fields_", ()))
         self._array_descriptor_type_bound = reference_adjacency_fields["v_adj_tets"]
         self._array_descriptor_fields_bound = tuple(getattr(self._array_descriptor_type_bound, "_fields_", ()))
+        self._outer_kernel_version_bound = OUTER_KERNEL_VERSION
+        self._outer_schedule_version_bound = OUTER_SCHEDULE_VERSION
+        self._outer_schedule_sha256_bound = OUTER_SCHEDULE_SHA256
         self._solver_lane_contract_sha256_bound = self._validate_solver_lane_contract()
 
         # This eager construction endpoint is used only to bind static arrays;
@@ -2561,13 +2694,23 @@ class CapturedDirectGraphVBD:
 
     @property
     def linear_kernel_launches_per_outer(self) -> int:
-        """Exact direct linear-solver launches in each fixed outer slot."""
-        return 7 + 2 * self.device_hierarchy.scheduled_kernel_launches
+        """Retained linear work launches, including the fused direction owner."""
+        return self.linear_prefix_kernel_launches_per_outer + 1
+
+    @property
+    def linear_prefix_kernel_launches_per_outer(self) -> int:
+        """Pure current-operator and two-V-cycle launches before vertex fusion."""
+        return 6 + 2 * self.device_hierarchy.scheduled_kernel_launches
 
     @property
     def correction_kernel_launches(self) -> int:
         """Exact correction launches, excluding the public K1 graph prefix."""
-        return 2 + OUTER_CORRECTIONS * (self.linear_kernel_launches_per_outer + 8)
+        return 2 + OUTER_CORRECTIONS * self.outer_kernel_launches_per_outer
+
+    @property
+    def outer_kernel_launches_per_outer(self) -> int:
+        """Exact linear, fused vertex, tet gate, serial gate, and commit launches."""
+        return self.linear_kernel_launches_per_outer + 3
 
     def _register_construction_owner_binding(self, binding: _WorkspaceOwnerBinding) -> None:
         """Register one exact construction binding before any public boundary."""
@@ -2696,6 +2839,9 @@ class CapturedDirectGraphVBD:
             self._construction_k4.endpoint_sha256,
             self._construction_k4.position_sha256,
             self._construction_k4.velocity_sha256,
+            self._outer_kernel_version_bound,
+            self._outer_schedule_version_bound,
+            self._outer_schedule_sha256_bound,
         )
 
     def _capture_construction_claims(self) -> _ConstructionClaimsOwnerBinding:
@@ -2703,6 +2849,9 @@ class CapturedDirectGraphVBD:
         return _ConstructionClaimsOwnerBinding(
             array_descriptor_type=self._array_descriptor_type_bound,
             array_descriptor_fields=self._array_descriptor_fields_bound,
+            outer_kernel_version=self._outer_kernel_version_bound,
+            outer_schedule_version=self._outer_schedule_version_bound,
+            outer_schedule_sha256=self._outer_schedule_sha256_bound,
             solver_lane_contract_sha256=self._solver_lane_contract_sha256_bound,
             hierarchy_owner_identity=(id(self.source_device_hierarchy), id(self.device_hierarchy)),
             solver_graph_owner_identity=self._solver_graph_owner_identity(),
@@ -3009,6 +3158,20 @@ class CapturedDirectGraphVBD:
             or self._array_descriptor_fields_bound is not claims.array_descriptor_fields
         ):
             raise RuntimeError("persistent array descriptor construction claim changed")
+        if (
+            type(claims.outer_kernel_version) is not str
+            or claims.outer_kernel_version != OUTER_KERNEL_VERSION
+            or type(claims.outer_schedule_version) is not str
+            or claims.outer_schedule_version != OUTER_SCHEDULE_VERSION
+            or claims.outer_schedule_sha256 != OUTER_SCHEDULE_SHA256
+            or claims.outer_schedule_sha256
+            != _derive_outer_schedule_sha256(claims.outer_kernel_version, claims.outer_schedule_version)
+            or self._outer_kernel_version_bound != claims.outer_kernel_version
+            or self._outer_schedule_version_bound != claims.outer_schedule_version
+            or self._outer_schedule_sha256_bound != claims.outer_schedule_sha256
+        ):
+            raise RuntimeError("outer kernel or schedule construction claim changed")
+        _require_sha256(claims.outer_schedule_sha256, name="construction claims outer_schedule_sha256")
         if (
             type(claims.hierarchy_owner_identity) is not tuple
             or len(claims.hierarchy_owner_identity) != 2
@@ -3448,6 +3611,9 @@ class CapturedDirectGraphVBD:
                 "array_descriptor_fields": [
                     [name, id(field_type)] for name, field_type in binding.claims.array_descriptor_fields
                 ],
+                "outer_kernel_version": binding.claims.outer_kernel_version,
+                "outer_schedule_version": binding.claims.outer_schedule_version,
+                "outer_schedule_sha256": binding.claims.outer_schedule_sha256,
                 "solver_lane_contract_sha256": binding.claims.solver_lane_contract_sha256,
                 "hierarchy_owner_identity": list(binding.claims.hierarchy_owner_identity),
                 "solver_graph_owner_identity": [list(item) for item in binding.claims.solver_graph_owner_identity],
@@ -3491,10 +3657,13 @@ class CapturedDirectGraphVBD:
         v_cycle_kernel_launches = 3 + noncoarse_level_count * (
             2 + 2 * owner_binding.hierarchy.pre_smooth_steps + 2 * owner_binding.hierarchy.post_smooth_steps
         )
-        correction_kernel_launches = 2 + OUTER_CORRECTIONS * (7 + 2 * v_cycle_kernel_launches + 8)
+        linear_prefix_kernel_launches = 6 + 2 * v_cycle_kernel_launches
+        retained_linear_work_launches = linear_prefix_kernel_launches + 1
+        outer_kernel_launches = retained_linear_work_launches + 3
+        correction_kernel_launches = 2 + OUTER_CORRECTIONS * outer_kernel_launches
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-graph-identity-v1",
+                "contract": "captured-direct-graph-vbd-graph-identity-v2",
                 "solver_contract": CONTRACT_ID,
                 "comparator_contract": VBD_BASELINE_CONTRACT_ID if comparator else None,
                 "scene_sha256": scene_sha256,
@@ -3506,6 +3675,12 @@ class CapturedDirectGraphVBD:
                 "capture_generation": generation if captured else 0,
                 "graph_object_identity": id(graph) if captured and graph is not None else None,
                 "lane": "public-k4" if comparator else "public-k1-plus-direct-four-by-two",
+                "outer_kernel_version": claims.outer_kernel_version,
+                "outer_schedule_version": claims.outer_schedule_version,
+                "outer_schedule_sha256": claims.outer_schedule_sha256,
+                "linear_prefix_kernel_launches_per_outer": 0 if comparator else linear_prefix_kernel_launches,
+                "fused_vertex_kernel_launches_per_outer": 0 if comparator else 1,
+                "outer_kernel_launches_per_outer": 0 if comparator else outer_kernel_launches,
                 "correction_kernel_launches": 0 if comparator else correction_kernel_launches,
             }
         )
@@ -3601,6 +3776,9 @@ class CapturedDirectGraphVBD:
             or context.hierarchy is not self.hierarchy
             or context.persistent_device_sha256 != persistent_device_sha256
             or context.graph_identity_sha256 != graph_identity_sha256
+            or context.outer_kernel_version != owner_binding.claims.outer_kernel_version
+            or context.outer_schedule_version != owner_binding.claims.outer_schedule_version
+            or context.outer_schedule_sha256 != owner_binding.claims.outer_schedule_sha256
             or context.capture_binding is not capture_binding
             or context.device != str(self.device)
             or context.outer_slots is not outer_slots
@@ -4274,6 +4452,9 @@ class CapturedDirectGraphVBD:
                 ("solver_lane_contract_sha256", lane_contract_sha256),
                 ("solver_scalar_sha256", solver_scalar_sha256),
                 ("solver_static_array_sha256", solver_static_array_sha256),
+                ("outer_kernel_version", claims.outer_kernel_version),
+                ("outer_schedule_version", claims.outer_schedule_version),
+                ("outer_schedule_sha256", claims.outer_schedule_sha256),
                 ("workspace_owner_identity_sha256", workspace_owner_identity_sha256),
                 ("construction_operator_sha256", _operator_sha256(canonical_operator)),
                 ("operator_inputs_sha256", operator_inputs_sha256),
@@ -4338,12 +4519,6 @@ class CapturedDirectGraphVBD:
             device=self.device,
         )
         for outer_index, workspace in enumerate(owner_binding.outer):
-            wp.launch(
-                _copy_positions,
-                dim=scene.n_vertices,
-                inputs=[operator.positions, direct.outer_start_positions[outer_index]],
-                device=self.device,
-            )
             operator.launch_refresh_geometry()
             operator.launch_gradient(workspace.rhs, scale=-1.0)
             wp.launch(_mask_rhs, dim=operator.n_free, inputs=[direct.active, workspace.rhs], device=self.device)
@@ -4369,53 +4544,26 @@ class CapturedDirectGraphVBD:
                 workspace.second_cycle.workspace,
             )
             wp.launch(
-                _add_vectors,
-                dim=operator.n_free,
-                inputs=[workspace.first_correction, workspace.second_correction, workspace.direction],
-                device=self.device,
-            )
-            wp.launch(
-                _build_candidate,
+                _fused_vertex_outer_terms,
                 dim=scene.n_vertices,
                 inputs=[
                     operator.positions,
                     operator.vertex_to_free,
+                    workspace.first_correction,
+                    workspace.second_correction,
+                    workspace.rhs,
                     workspace.direction,
                     direct.active,
-                    direct.candidate,
-                    direct.proposal_finite,
-                ],
-                device=self.device,
-            )
-            wp.launch(
-                _copy_positions,
-                dim=scene.n_vertices,
-                inputs=[direct.candidate, direct.outer_candidate_positions[outer_index]],
-                device=self.device,
-            )
-            wp.launch(
-                _vertex_gate_terms,
-                dim=scene.n_vertices,
-                inputs=[
-                    operator.positions,
-                    direct.candidate,
                     operator.inertial_target,
                     operator.mass,
                     operator.inverse_dt_squared,
+                    direct.outer_start_positions[outer_index],
+                    direct.candidate,
+                    direct.outer_candidate_positions[outer_index],
+                    direct.proposal_finite,
                     direct.current_inertia,
                     direct.candidate_inertia,
                     direct.vertex_finite,
-                ],
-                device=self.device,
-            )
-            wp.launch(
-                _directional_terms,
-                dim=operator.n_free,
-                inputs=[
-                    workspace.rhs,
-                    operator.free,
-                    operator.positions,
-                    direct.candidate,
                     direct.directional_terms,
                 ],
                 device=self.device,
@@ -4802,6 +4950,9 @@ class CapturedDirectGraphVBD:
             v_cycle_static_device_content_sha256=scalar_evidence.static_device_content_sha256,
             v_cycle_device_snapshot_sha256=scalar_evidence.device_snapshot_sha256,
             graph_identity_sha256=graph_identity_sha256,
+            outer_kernel_version=owner_binding.claims.outer_kernel_version,
+            outer_schedule_version=owner_binding.claims.outer_schedule_version,
+            outer_schedule_sha256=owner_binding.claims.outer_schedule_sha256,
             capture_binding=receipt.capture_binding,
             v_cycle_kernel_launches=scalar_evidence.scheduled_kernel_launches,
             device=str(self.device),
@@ -4856,6 +5007,9 @@ class CapturedDirectGraphVBD:
                     capture_replay=graph_replay,
                     linear_kernel_launches=7 + 2 * owner_binding.device.scalar.scheduled_kernel_launches,
                     persistent_device_sha256=persistent_device_sha256,
+                    outer_kernel_version=owner_binding.claims.outer_kernel_version,
+                    outer_schedule_version=owner_binding.claims.outer_schedule_version,
+                    outer_schedule_sha256=owner_binding.claims.outer_schedule_sha256,
                     accepted=accepted[outer_index],
                     reason=reasons[outer_index],
                     _validation_context=context,
@@ -4874,6 +5028,9 @@ class CapturedDirectGraphVBD:
             k1_pristine_state_sha256=execution_k1.pristine_state_sha256,
             persistent_device_sha256=persistent_device_sha256,
             graph_identity_sha256=graph_identity_sha256,
+            outer_kernel_version=owner_binding.claims.outer_kernel_version,
+            outer_schedule_version=owner_binding.claims.outer_schedule_version,
+            outer_schedule_sha256=owner_binding.claims.outer_schedule_sha256,
             armijo=float(owner_binding.config.armijo),
             minimum_determinant=float(owner_binding.config.minimum_determinant),
             free_vertices=np.asarray(owner_binding.operator.free_host, dtype=np.int64),
@@ -5003,8 +5160,10 @@ class CapturedDirectGraphVBD:
         elided_matrix_products = sum(level.matrix.stored_block_count for level in noncoarse_levels)
         zero_start_solves = sum(level.matrix.block_row_count for level in noncoarse_levels)
         matrix_launches = len(noncoarse_levels) * (hierarchy.pre_smooth_steps + hierarchy.post_smooth_steps)
-        linear_kernel_launches = 7 + 2 * scalar_evidence.scheduled_kernel_launches
-        correction_kernel_launches = 2 + OUTER_CORRECTIONS * (linear_kernel_launches + 8)
+        linear_prefix_kernel_launches = 6 + 2 * scalar_evidence.scheduled_kernel_launches
+        linear_kernel_launches = linear_prefix_kernel_launches + 1
+        outer_kernel_launches = linear_kernel_launches + 3
+        correction_kernel_launches = 2 + OUTER_CORRECTIONS * outer_kernel_launches
         return {
             "contract_id": CONTRACT_ID,
             "scene_sha256": self.scene_sha256,
@@ -5025,6 +5184,9 @@ class CapturedDirectGraphVBD:
             "persistent_device_sha256": persistent_device_sha256,
             "graph_identity_sha256": graph_identity_sha256,
             "k4_graph_identity_sha256": k4_graph_identity_sha256,
+            "outer_kernel_version": owner_binding.claims.outer_kernel_version,
+            "outer_schedule_version": owner_binding.claims.outer_schedule_version,
+            "outer_schedule_sha256": owner_binding.claims.outer_schedule_sha256,
             "device": str(self.device),
             "vbd_iterations": 1,
             "outer_corrections": OUTER_CORRECTIONS,
@@ -5051,7 +5213,10 @@ class CapturedDirectGraphVBD:
             "v_cycle_out_of_place_jacobi_block_solves": smoother_solves - zero_start_solves,
             "v_cycle_matrix_kernel_launches": matrix_launches,
             "v_cycle_jacobi_kernel_launches": matrix_launches,
+            "linear_prefix_kernel_launches_per_outer": linear_prefix_kernel_launches,
+            "fused_vertex_kernel_launches_per_outer": 1,
             "linear_kernel_launches_per_outer": linear_kernel_launches,
+            "outer_kernel_launches_per_outer": outer_kernel_launches,
             "correction_kernel_launches_excluding_public_k1": correction_kernel_launches,
             "alpha": config.alpha,
             "armijo": config.armijo,

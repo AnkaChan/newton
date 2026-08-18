@@ -12,6 +12,7 @@ import os
 import unittest
 import weakref
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -19,11 +20,27 @@ import warp as wp
 from research.principal_stretch.captured_graph_vbd import (
     CONTRACT_ID,
     OUTER_CORRECTIONS,
+    OUTER_KERNEL_VERSION,
+    OUTER_SCHEDULE_SHA256,
+    OUTER_SCHEDULE_VERSION,
     V_CYCLES_PER_OUTER,
     CapturedDirectGraphVBD,
     CapturedGraphVBDEndpoint,
     CapturedGraphVBDTiming,
+    _finalize_gate,
+    _fused_vertex_outer_terms,
     _hash_parts,
+    _initialize_from_k1,
+    _mask_rhs,
+    _subtract_vectors,
+)
+from research.principal_stretch.captured_mg_vbd import (
+    _commit_candidate,
+    _copy_positions,
+    _directional_terms,
+    _tet_gate_terms,
+    _vertex_gate_terms,
+    _write_endpoint,
 )
 from research.principal_stretch.captured_vbd_baseline import CONTRACT_ID as VBD_BASELINE_CONTRACT_ID
 from research.principal_stretch.correction_gpu import (
@@ -47,6 +64,52 @@ from research.principal_stretch.solver_benchmark import (
 from research.principal_stretch.solver_scenes import build_stretch_scene
 
 
+@wp.func
+def _oracle_finite_vec(value: wp.vec3d) -> bool:
+    return wp.isfinite(value[0]) and wp.isfinite(value[1]) and wp.isfinite(value[2])
+
+
+@wp.kernel(enable_backward=False)
+def _oracle_add_vectors(
+    left: wp.array[wp.vec3d],
+    right: wp.array[wp.vec3d],
+    output: wp.array[wp.vec3d],
+):
+    index = wp.tid()
+    output[index] = left[index] + right[index]
+
+
+@wp.kernel(enable_backward=False)
+def _oracle_build_candidate(
+    current: wp.array[wp.vec3d],
+    vertex_to_free: wp.array[int],
+    direction: wp.array[wp.vec3d],
+    active: wp.array[int],
+    candidate: wp.array[wp.vec3d],
+    proposal_finite: wp.array[int],
+):
+    vertex = wp.tid()
+    value = current[vertex]
+    valid = bool(True)
+    free_index = vertex_to_free[vertex]
+    if active[0] != 0 and free_index >= 0:
+        proposed = value + direction[free_index]
+        valid = _oracle_finite_vec(proposed)
+        if valid:
+            publishable = wp.vec3(
+                wp.float32(proposed[0]),
+                wp.float32(proposed[1]),
+                wp.float32(proposed[2]),
+            )
+            value = wp.vec3d(
+                wp.float64(publishable[0]),
+                wp.float64(publishable[1]),
+                wp.float64(publishable[2]),
+            )
+    candidate[vertex] = value
+    proposal_finite[vertex] = int(valid)
+
+
 def _tiny_scene():
     return build_structured_cantilever_scene(
         dimensions=(2, 2, 1),
@@ -56,6 +119,224 @@ def _tiny_scene():
         initial_velocity=(0.03, -0.02, 0.01),
         name="captured-direct-graph-vbd-tiny",
     )
+
+
+def _enqueue_unfused_outer_oracle(solver: CapturedDirectGraphVBD):
+    """Enqueue the exact pre-fusion six-launch outer schedule for comparison."""
+    module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+    binding = module._lookup_workspace_owners(solver)
+    solver._validate_workspace_owner_bindings(binding)
+    public = binding.public_vbd
+    direct = binding.direct
+    scene = binding.scene
+    operator = binding.operator
+    device_hierarchy = binding.device.scalar
+    lane = public.k1_lane
+    public.baseline._enqueue_reset_and_step(lane)
+    wp.launch(
+        _initialize_from_k1,
+        dim=scene.n_vertices,
+        inputs=[
+            lane.state_out.particle_q,
+            direct.canonical_positions,
+            operator.vertex_to_free,
+            operator.positions,
+            direct.candidate,
+            direct.proposal_finite,
+            direct.active,
+            direct.accepted,
+            direct.reasons,
+        ],
+        device=solver.device,
+    )
+    for outer_index, workspace in enumerate(binding.outer):
+        wp.launch(
+            _copy_positions,
+            dim=scene.n_vertices,
+            inputs=[operator.positions, direct.outer_start_positions[outer_index]],
+            device=solver.device,
+        )
+        operator.launch_refresh_geometry()
+        operator.launch_gradient(workspace.rhs, scale=-1.0)
+        wp.launch(_mask_rhs, dim=operator.n_free, inputs=[direct.active, workspace.rhs], device=solver.device)
+        device_hierarchy.launch_apply(
+            workspace.rhs,
+            workspace.first_correction,
+            workspace.first_cycle.workspace,
+        )
+        operator.launch_apply(
+            workspace.first_correction,
+            workspace.operator_product_after_first,
+            workspace.operator_apply,
+        )
+        wp.launch(
+            _subtract_vectors,
+            dim=operator.n_free,
+            inputs=[workspace.rhs, workspace.operator_product_after_first, workspace.residual_after_first],
+            device=solver.device,
+        )
+        device_hierarchy.launch_apply(
+            workspace.residual_after_first,
+            workspace.second_correction,
+            workspace.second_cycle.workspace,
+        )
+        wp.launch(
+            _oracle_add_vectors,
+            dim=operator.n_free,
+            inputs=[workspace.first_correction, workspace.second_correction, workspace.direction],
+            device=solver.device,
+        )
+        wp.launch(
+            _oracle_build_candidate,
+            dim=scene.n_vertices,
+            inputs=[
+                operator.positions,
+                operator.vertex_to_free,
+                workspace.direction,
+                direct.active,
+                direct.candidate,
+                direct.proposal_finite,
+            ],
+            device=solver.device,
+        )
+        wp.launch(
+            _copy_positions,
+            dim=scene.n_vertices,
+            inputs=[direct.candidate, direct.outer_candidate_positions[outer_index]],
+            device=solver.device,
+        )
+        wp.launch(
+            _vertex_gate_terms,
+            dim=scene.n_vertices,
+            inputs=[
+                operator.positions,
+                direct.candidate,
+                operator.inertial_target,
+                operator.mass,
+                operator.inverse_dt_squared,
+                direct.current_inertia,
+                direct.candidate_inertia,
+                direct.vertex_finite,
+            ],
+            device=solver.device,
+        )
+        wp.launch(
+            _directional_terms,
+            dim=operator.n_free,
+            inputs=[
+                workspace.rhs,
+                operator.free,
+                operator.positions,
+                direct.candidate,
+                direct.directional_terms,
+            ],
+            device=solver.device,
+        )
+        wp.launch(
+            _tet_gate_terms,
+            dim=scene.n_tets,
+            inputs=[
+                operator.deformation_gradients,
+                operator.cofactors,
+                operator.determinants,
+                direct.candidate,
+                operator.tets,
+                operator.shape_gradients,
+                operator.volumes,
+                operator.mu,
+                operator.lam,
+                direct.current_elastic,
+                direct.candidate_elastic,
+                direct.candidate_determinants,
+                direct.segment_minima,
+                direct.tet_finite,
+            ],
+            device=solver.device,
+        )
+        wp.launch(
+            _finalize_gate,
+            dim=1,
+            inputs=[
+                outer_index,
+                direct.current_inertia,
+                direct.candidate_inertia,
+                direct.current_elastic,
+                direct.candidate_elastic,
+                direct.directional_terms,
+                direct.candidate_determinants,
+                direct.segment_minima,
+                direct.proposal_finite,
+                direct.vertex_finite,
+                direct.tet_finite,
+                binding.config.minimum_determinant,
+                binding.config.armijo,
+                direct.active,
+                direct.accepted,
+                direct.reasons,
+                direct.initial_objectives,
+                direct.candidate_objectives,
+                direct.directional_derivatives,
+                direct.minimum_segment_determinants,
+            ],
+            device=solver.device,
+        )
+        wp.launch(
+            _commit_candidate,
+            dim=scene.n_vertices,
+            inputs=[outer_index, direct.candidate, direct.accepted, operator.positions],
+            device=solver.device,
+        )
+    wp.launch(
+        _write_endpoint,
+        dim=scene.n_vertices,
+        inputs=[
+            operator.positions,
+            direct.x_current,
+            operator.vertex_to_free,
+            1.0 / scene.dt,
+            direct.final_positions,
+            direct.final_velocities,
+        ],
+        device=solver.device,
+    )
+    return binding
+
+
+def _device_bit_pattern(array: wp.array[Any]) -> tuple[str, tuple[int, ...], bytes]:
+    host = np.ascontiguousarray(array.numpy())
+    return host.dtype.str, host.shape, host.tobytes()
+
+
+def _integrated_bit_patterns(binding) -> dict[str, tuple[str, tuple[int, ...], bytes]]:
+    direct = binding.direct
+    arrays = {
+        "operator.positions": binding.operator.positions,
+        "candidate": direct.candidate,
+        "proposal_finite": direct.proposal_finite,
+        "final_positions": direct.final_positions,
+        "final_velocities": direct.final_velocities,
+        "active": direct.active,
+        "accepted": direct.accepted,
+        "reasons": direct.reasons,
+        "current_inertia": direct.current_inertia,
+        "candidate_inertia": direct.candidate_inertia,
+        "vertex_finite": direct.vertex_finite,
+        "current_elastic": direct.current_elastic,
+        "candidate_elastic": direct.candidate_elastic,
+        "candidate_determinants": direct.candidate_determinants,
+        "segment_minima": direct.segment_minima,
+        "tet_finite": direct.tet_finite,
+        "directional_terms": direct.directional_terms,
+        "initial_objectives": direct.initial_objectives,
+        "candidate_objectives": direct.candidate_objectives,
+        "directional_derivatives": direct.directional_derivatives,
+        "minimum_segment_determinants": direct.minimum_segment_determinants,
+    }
+    for outer_index, workspace in enumerate(binding.outer):
+        arrays[f"outer_{outer_index}.start"] = direct.outer_start_positions[outer_index]
+        arrays[f"outer_{outer_index}.candidate"] = direct.outer_candidate_positions[outer_index]
+        arrays[f"outer_{outer_index}.direction"] = workspace.direction
+    return {name: _device_bit_pattern(array) for name, array in arrays.items()}
 
 
 def _assert_float32_device_reconstruction(
@@ -171,6 +452,73 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
                 **common,
             )
 
+        timing = CapturedGraphVBDTiming(pair_orders=("AB", "BA"), warmup_replays=1, **common)
+        attacks = (
+            (
+                {
+                    "performance_evidence": True,
+                    "graph_identity_sha256": "f" * 64,
+                },
+                "diagnostic-only",
+            ),
+            ({"graph_identity_sha256": "forged"}, "lowercase SHA-256"),
+            ({"graph_seconds": (-1.0e-3, 1.1e-3)}, "finite and positive"),
+            ({"pair_orders": ["AB"]}, "same positive even length"),
+        )
+        for mutations, message in attacks:
+            with self.subTest(mutations=mutations):
+                originals = {name: getattr(timing, name) for name in mutations}
+                try:
+                    for name, value in mutations.items():
+                        object.__setattr__(timing, name, value)
+                    with self.assertRaisesRegex(ValueError, message):
+                        timing.deterministic_record()
+                finally:
+                    for name, value in originals.items():
+                        object.__setattr__(timing, name, value)
+
+        object.__setattr__(timing, "pair_orders", ["AB", "BA"])
+        object.__setattr__(timing, "graph_seconds", [1.0e-3, 1.1e-3])
+        try:
+            canonical = timing.deterministic_record()
+            self.assertEqual(canonical["pair_orders"], ["AB", "BA"])
+            self.assertEqual(canonical["graph_seconds"], [1.0e-3, 1.1e-3])
+            self.assertEqual(
+                canonical["measurement_authentication"],
+                "schema-validated-not-content-authenticated-v1",
+            )
+            self.assertFalse(canonical["solver_issued_authentication"])
+        finally:
+            object.__setattr__(timing, "pair_orders", ("AB", "BA"))
+            object.__setattr__(timing, "graph_seconds", (1.0e-3, 1.1e-3))
+
+        object.__setattr__(timing, "graph_identity_sha256", "f" * 64)
+        object.__setattr__(timing, "graph_seconds", (2.0e-3, 2.1e-3))
+        try:
+            coherent_diagnostic = timing.deterministic_record()
+            self.assertEqual(coherent_diagnostic["graph_identity_sha256"], "f" * 64)
+            self.assertEqual(coherent_diagnostic["graph_seconds"], [2.0e-3, 2.1e-3])
+            self.assertFalse(coherent_diagnostic["performance_evidence"])
+            self.assertFalse(coherent_diagnostic["solver_issued_authentication"])
+            self.assertAlmostEqual(timing.graph_median_seconds, 2.05e-3)
+        finally:
+            object.__setattr__(timing, "graph_identity_sha256", "5" * 64)
+            object.__setattr__(timing, "graph_seconds", (1.0e-3, 1.1e-3))
+
+        object.__setattr__(timing, "graph_seconds", (-1.0e-3, 1.1e-3))
+        try:
+            with self.assertRaisesRegex(ValueError, "finite and positive"):
+                _ = timing.graph_median_seconds
+        finally:
+            object.__setattr__(timing, "graph_seconds", (1.0e-3, 1.1e-3))
+
+        object.__setattr__(timing, "k4_seconds", (2.0e-4, float("nan")))
+        try:
+            with self.assertRaisesRegex(ValueError, "finite and positive"):
+                _ = timing.k4_median_seconds
+        finally:
+            object.__setattr__(timing, "k4_seconds", (2.0e-4, 2.1e-4))
+
     def test_public_endpoint_constructor_cannot_mint_unvalidated_evidence(self):
         fake_positions = tuple(np.full((1, 3), float(index), dtype=np.float64) for index in range(4))
         with self.assertRaisesRegex(TypeError, "_validation_context"):
@@ -185,6 +533,9 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
                 k1_pristine_state_sha256="7" * 64,
                 persistent_device_sha256="8" * 64,
                 graph_identity_sha256="9" * 64,
+                outer_kernel_version=OUTER_KERNEL_VERSION,
+                outer_schedule_version=OUTER_SCHEDULE_VERSION,
+                outer_schedule_sha256=OUTER_SCHEDULE_SHA256,
                 armijo=1.0e-4,
                 minimum_determinant=0.0,
                 free_vertices=np.array([0]),
@@ -232,7 +583,8 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         endpoint = self.endpoint
         cycle_launches = self.solver.device_hierarchy.scheduled_kernel_launches
         expected_linear = 7 + 2 * cycle_launches
-        expected_total = 2 + OUTER_CORRECTIONS * (expected_linear + 8)
+        expected_outer = expected_linear + 3
+        expected_total = 2 + OUTER_CORRECTIONS * expected_outer
         self.assertEqual(endpoint.total_v_cycle_count, OUTER_CORRECTIONS * V_CYCLES_PER_OUTER)
         self.assertEqual(endpoint.correction_kernel_launches, expected_total)
         self.assertEqual(self.solver.correction_kernel_launches, expected_total)
@@ -261,11 +613,283 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(schedule["contract_id"], CONTRACT_ID)
         self.assertEqual(schedule["krylov_iterations"], 0)
         self.assertEqual(schedule["v_cycles"], 8)
+        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], expected_linear - 1)
+        self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
+        self.assertEqual(schedule["outer_kernel_launches_per_outer"], expected_outer)
         self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], expected_total)
+        self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
+        self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
+        self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
         self.assertEqual(schedule["workspace_owner_identity_sha256"], self.solver._workspace_owner_identity_sha256())
         self.assertFalse(schedule["performance_evidence"])
         json.dumps(schedule, allow_nan=False)
-        json.dumps(endpoint.deterministic_record(), allow_nan=False)
+        endpoint_record = endpoint.deterministic_record()
+        self.assertEqual(endpoint_record["outer_kernel_version"], OUTER_KERNEL_VERSION)
+        self.assertEqual(endpoint_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
+        self.assertEqual(endpoint_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
+        for outer_record in endpoint_record["outer_work"]:
+            self.assertEqual(outer_record["outer_kernel_version"], OUTER_KERNEL_VERSION)
+            self.assertEqual(outer_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
+            self.assertEqual(outer_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
+        json.dumps(endpoint_record, allow_nan=False)
+
+    def test_fused_integrated_schedule_is_bitwise_equal_to_unfused_oracle(self):
+        fused = CapturedDirectGraphVBD(self.scene, device="cuda:0")
+        oracle = CapturedDirectGraphVBD(self.scene, device="cuda:0")
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        fused_binding = module._lookup_workspace_owners(fused)
+        fused._enqueue_integrated(fused_binding)
+        oracle_binding = _enqueue_unfused_outer_oracle(oracle)
+        fused_patterns = _integrated_bit_patterns(fused_binding)
+        oracle_patterns = _integrated_bit_patterns(oracle_binding)
+        self.assertEqual(fused_patterns.keys(), oracle_patterns.keys())
+        for name in fused_patterns:
+            with self.subTest(array=name):
+                self.assertEqual(fused_patterns[name], oracle_patterns[name])
+
+    def test_fused_vertex_kernel_matches_unfused_edge_semantics_bitwise(self):
+        device = self.solver.device
+        current_host = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, -2.0, 3.0],
+                [2.0, 0.25, -0.5],
+                [np.nan, 1.0, 2.0],
+                [4.0, 5.0, 6.0],
+                [7.0, 8.0, 9.0],
+            ],
+            dtype=np.float64,
+        )
+        vertex_to_free_host = np.array([-1, 0, 1, -1, 2, 3], dtype=np.int32)
+        first_host = np.array(
+            [
+                [2.0**-24, 0.0, 0.0],
+                [1.0e100, 0.0, 0.0],
+                [np.inf, 0.0, 0.0],
+                [np.nan, 0.0, 0.0],
+            ],
+            dtype=np.float64,
+        )
+        second_host = np.zeros_like(first_host)
+        rhs_host = np.array(
+            [[1.0, -2.0, 3.0], [-1.0, 0.5, 2.0], [3.0, 4.0, 5.0], [2.0, -1.0, 0.25]],
+            dtype=np.float64,
+        )
+        inertial_target_host = np.zeros_like(current_host)
+        mass_host = np.arange(1, current_host.shape[0] + 1, dtype=np.float64)
+        current = wp.array(current_host, dtype=wp.vec3d, device=device)
+        vertex_to_free = wp.array(vertex_to_free_host, dtype=wp.int32, device=device)
+        first = wp.array(first_host, dtype=wp.vec3d, device=device)
+        second = wp.array(second_host, dtype=wp.vec3d, device=device)
+        rhs = wp.array(rhs_host, dtype=wp.vec3d, device=device)
+        inertial_target = wp.array(inertial_target_host, dtype=wp.vec3d, device=device)
+        mass = wp.array(mass_host, dtype=wp.float64, device=device)
+        free_vertices = wp.array(np.array([1, 2, 4, 5]), dtype=wp.int32, device=device)
+        n_vertices = current_host.shape[0]
+        n_free = first_host.shape[0]
+
+        def outputs():
+            return {
+                "direction": wp.empty(n_free, dtype=wp.vec3d, device=device),
+                "outer_start": wp.empty(n_vertices, dtype=wp.vec3d, device=device),
+                "candidate": wp.empty(n_vertices, dtype=wp.vec3d, device=device),
+                "outer_candidate": wp.empty(n_vertices, dtype=wp.vec3d, device=device),
+                "proposal_finite": wp.empty(n_vertices, dtype=wp.int32, device=device),
+                "current_inertia": wp.empty(n_vertices, dtype=wp.float64, device=device),
+                "candidate_inertia": wp.empty(n_vertices, dtype=wp.float64, device=device),
+                "vertex_finite": wp.empty(n_vertices, dtype=wp.int32, device=device),
+                "directional_terms": wp.empty(n_free, dtype=wp.float64, device=device),
+            }
+
+        for active_value in (1, 0):
+            with self.subTest(active=active_value):
+                active = wp.array([active_value], dtype=wp.int32, device=device)
+                fused = outputs()
+                oracle = outputs()
+                wp.launch(
+                    _copy_positions,
+                    dim=n_vertices,
+                    inputs=[current, oracle["outer_start"]],
+                    device=device,
+                )
+                wp.launch(
+                    _oracle_add_vectors,
+                    dim=n_free,
+                    inputs=[first, second, oracle["direction"]],
+                    device=device,
+                )
+                wp.launch(
+                    _oracle_build_candidate,
+                    dim=n_vertices,
+                    inputs=[
+                        current,
+                        vertex_to_free,
+                        oracle["direction"],
+                        active,
+                        oracle["candidate"],
+                        oracle["proposal_finite"],
+                    ],
+                    device=device,
+                )
+                wp.launch(
+                    _copy_positions,
+                    dim=n_vertices,
+                    inputs=[oracle["candidate"], oracle["outer_candidate"]],
+                    device=device,
+                )
+                wp.launch(
+                    _vertex_gate_terms,
+                    dim=n_vertices,
+                    inputs=[
+                        current,
+                        oracle["candidate"],
+                        inertial_target,
+                        mass,
+                        9.0,
+                        oracle["current_inertia"],
+                        oracle["candidate_inertia"],
+                        oracle["vertex_finite"],
+                    ],
+                    device=device,
+                )
+                wp.launch(
+                    _directional_terms,
+                    dim=n_free,
+                    inputs=[rhs, free_vertices, current, oracle["candidate"], oracle["directional_terms"]],
+                    device=device,
+                )
+                wp.launch(
+                    _fused_vertex_outer_terms,
+                    dim=n_vertices,
+                    inputs=[
+                        current,
+                        vertex_to_free,
+                        first,
+                        second,
+                        rhs,
+                        fused["direction"],
+                        active,
+                        inertial_target,
+                        mass,
+                        9.0,
+                        fused["outer_start"],
+                        fused["candidate"],
+                        fused["outer_candidate"],
+                        fused["proposal_finite"],
+                        fused["current_inertia"],
+                        fused["candidate_inertia"],
+                        fused["vertex_finite"],
+                        fused["directional_terms"],
+                    ],
+                    device=device,
+                )
+                for name in fused:
+                    with self.subTest(active=active_value, array=name):
+                        self.assertEqual(_device_bit_pattern(fused[name]), _device_bit_pattern(oracle[name]))
+
+                candidate = np.asarray(fused["candidate"].numpy(), dtype=np.float64)
+                proposal_finite = np.asarray(fused["proposal_finite"].numpy(), dtype=np.int32)
+                vertex_finite = np.asarray(fused["vertex_finite"].numpy(), dtype=np.int32)
+                np.testing.assert_array_equal(candidate[[0, 3]], current_host[[0, 3]])
+                if active_value:
+                    self.assertEqual(candidate[1, 0], 1.0)
+                    self.assertTrue(np.isinf(candidate[2, 0]))
+                    np.testing.assert_array_equal(candidate[[4, 5]], current_host[[4, 5]])
+                    np.testing.assert_array_equal(proposal_finite, np.array([1, 1, 1, 1, 0, 0]))
+                    np.testing.assert_array_equal(vertex_finite, np.array([1, 1, 0, 0, 1, 1]))
+                else:
+                    self.assertEqual(candidate.view(np.uint64).tobytes(), current_host.view(np.uint64).tobytes())
+                    np.testing.assert_array_equal(proposal_finite, np.ones(n_vertices, dtype=np.int32))
+                    np.testing.assert_array_equal(vertex_finite, np.array([1, 1, 1, 0, 1, 1]))
+
+    def test_coordinated_outer_schedule_version_and_hash_tamper_fails_closed(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        original_globals = (
+            module.OUTER_KERNEL_VERSION,
+            module.OUTER_SCHEDULE_VERSION,
+            module.OUTER_SCHEDULE_SHA256,
+        )
+        original_facades = (
+            self.solver._outer_kernel_version_bound,
+            self.solver._outer_schedule_version_bound,
+            self.solver._outer_schedule_sha256_bound,
+        )
+        marker = np.asarray(self.solver.final_positions.numpy(), dtype=np.float32).copy()
+        for boundary_name, operation in self._owner_boundaries(self.solver):
+            with self.subTest(boundary=boundary_name):
+                try:
+                    module.OUTER_KERNEL_VERSION = original_globals[0] + "-forged"
+                    module.OUTER_SCHEDULE_VERSION = original_globals[1] + "-forged"
+                    forged_sha256 = module._derive_outer_schedule_sha256(
+                        module.OUTER_KERNEL_VERSION,
+                        module.OUTER_SCHEDULE_VERSION,
+                    )
+                    module.OUTER_SCHEDULE_SHA256 = forged_sha256
+                    self.solver._outer_kernel_version_bound = module.OUTER_KERNEL_VERSION
+                    self.solver._outer_schedule_version_bound = module.OUTER_SCHEDULE_VERSION
+                    self.solver._outer_schedule_sha256_bound = forged_sha256
+                    with self.assertRaisesRegex(RuntimeError, "outer kernel or schedule construction claim"):
+                        operation()
+                    np.testing.assert_array_equal(
+                        np.asarray(self.solver.final_positions.numpy(), dtype=np.float32),
+                        marker,
+                    )
+                finally:
+                    (
+                        module.OUTER_KERNEL_VERSION,
+                        module.OUTER_SCHEDULE_VERSION,
+                        module.OUTER_SCHEDULE_SHA256,
+                    ) = original_globals
+                    (
+                        self.solver._outer_kernel_version_bound,
+                        self.solver._outer_schedule_version_bound,
+                        self.solver._outer_schedule_sha256_bound,
+                    ) = original_facades
+
+    def test_endpoint_and_outer_serializers_revalidate_context_and_content_hashes(self):
+        context = self.endpoint._validation_context
+        original_context_schedule = (
+            context.outer_kernel_version,
+            context.outer_schedule_version,
+            context.outer_schedule_sha256,
+        )
+        forged_kernel_version = original_context_schedule[0] + "-forged"
+        forged_schedule_version = original_context_schedule[1] + "-forged"
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        forged_sha256 = module._derive_outer_schedule_sha256(forged_kernel_version, forged_schedule_version)
+        serializers = (
+            ("endpoint", self.endpoint.deterministic_record),
+            ("outer-work", self.endpoint.outer_work[0].deterministic_record),
+        )
+        for name, serializer in serializers:
+            with self.subTest(context=name):
+                try:
+                    object.__setattr__(context, "outer_kernel_version", forged_kernel_version)
+                    object.__setattr__(context, "outer_schedule_version", forged_schedule_version)
+                    object.__setattr__(context, "outer_schedule_sha256", forged_sha256)
+                    with self.assertRaisesRegex(ValueError, "validation context fields"):
+                        serializer()
+                finally:
+                    object.__setattr__(context, "outer_kernel_version", original_context_schedule[0])
+                    object.__setattr__(context, "outer_schedule_version", original_context_schedule[1])
+                    object.__setattr__(context, "outer_schedule_sha256", original_context_schedule[2])
+
+        outer = self.endpoint.outer_work[0]
+        original_outer_hash = outer.content_sha256
+        try:
+            object.__setattr__(outer, "content_sha256", "a" * 64)
+            with self.assertRaisesRegex(ValueError, "outer work content hash is not canonical"):
+                outer.deterministic_record()
+        finally:
+            object.__setattr__(outer, "content_sha256", original_outer_hash)
+
+        original_endpoint_hash = self.endpoint.endpoint_sha256
+        try:
+            object.__setattr__(self.endpoint, "endpoint_sha256", "b" * 64)
+            with self.assertRaisesRegex(ValueError, "endpoint content hash is not canonical"):
+                self.endpoint.deterministic_record()
+        finally:
+            object.__setattr__(self.endpoint, "endpoint_sha256", original_endpoint_hash)
 
     def test_changed_poison_replay_restores_endpoint_and_all_linear_evidence(self):
         expected = self.endpoint
@@ -1527,8 +2151,10 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
 
     def test_real_default_stretch_scalar_fused_schedule_and_physical_work_are_exact(self):
         self.assertEqual(self.solver.device_hierarchy.scheduled_kernel_launches, 21)
+        self.assertEqual(self.solver.linear_prefix_kernel_launches_per_outer, 48)
         self.assertEqual(self.solver.linear_kernel_launches_per_outer, 49)
-        self.assertEqual(self.solver.correction_kernel_launches, 230)
+        self.assertEqual(self.solver.outer_kernel_launches_per_outer, 52)
+        self.assertEqual(self.solver.correction_kernel_launches, 210)
         for outer in self.endpoint.outer_work:
             self.assertEqual(outer.linear_kernel_launches, 49)
             for record in outer.v_cycles:
@@ -1543,8 +2169,14 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
                 self.assertFalse(record.performance_evidence)
         schedule = self.solver.deterministic_record()
         self.assertEqual(schedule["v_cycle_kernel_launches"], 21)
+        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 48)
+        self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
         self.assertEqual(schedule["linear_kernel_launches_per_outer"], 49)
-        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 230)
+        self.assertEqual(schedule["outer_kernel_launches_per_outer"], 52)
+        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 210)
+        self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
+        self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
+        self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
         self.assertEqual(schedule["v_cycle_canonical_matrix_block_products"], 5058)
         self.assertEqual(schedule["v_cycle_matrix_block_products_executed"], 3372)
         self.assertEqual(schedule["v_cycle_matrix_block_products_elided_zero_start"], 1686)
