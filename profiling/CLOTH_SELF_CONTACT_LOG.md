@@ -470,3 +470,189 @@ sweep supplies the live-output CUDA check.
 Raw `.nsys-rep`, SQLite, frozen-state, and process JSON artifacts remain
 uncommitted under `/tmp/cloth-franka-block-followup`. Only the concise,
 credential-safe aggregates above are retained in the repository.
+
+## 2026-08-18: sphere/capsule broad-phase follow-up
+
+Pinned the user-requested Warp branch at
+`7c66e2f604248ce7bc32ebd9b6c77c05f09550d2`, rebuilt its native libraries,
+and created a clean AABB-control Newton worktree. Both sides of every direct
+comparison use the same Warp build so branch-wide BVH changes are not credited
+to the Newton query conversion.
+
+Newton commit `b963b1b1` changes VT broad phase to `bvh_query_sphere` and EE
+broad phase to `bvh_query_capsule`, the branch's radius segment query. EE uses
+the unnormalized end-minus-start direction with `max_dist=1`; a degenerate edge
+uses a unit direction with `max_dist=0`. Commit `2feb9748` changes dispatch
+from a version check to public Warp radius-query capability types, so Warp 1.16
+remains on the established AABB path. Public types prove API availability only;
+the exact final Warp pin below provides the separate traversal-safety
+guarantee.
+
+Focused query/root/endpoint/degenerate tests failed first against the untouched
+AABB control, then passed on CPU with both the Warp 1.16 fallback and radius
+path. Fresh-cache L40 validation passed VT and EE brute-force comparisons,
+rest/filter behavior, detector graph replay, segmented buffers on CPU/CUDA/
+graph, damping, deterministic VBD rollout, and VBD cloth collision.
+
+### Candidate reduction and initial requested-merge regression
+
+Exact candidate accounting on the frozen cloth state was captured at Newton
+`b963b1b1` and the requested Warp merge `7c66e2f6`. It found:
+
+| Query | Padded AABB | Radius query | Reduction |
+|---|---:|---:|---:|
+| VT | 54,718 | 50,724 | 3,994 (7.2992%) |
+| EE | 344,838 | 302,261 | 42,577 (12.3470%) |
+
+Both new candidate sets are strict subsets of their AABB controls and contain
+no new-only candidate. These counts are query-volume semantic evidence; final
+timing and live-output equivalence were rerun on measured Warp `4491567b`,
+which maps to tree-equivalent final commit `67621f80`. Despite the pruning, the
+requested merge's stackless EE capsule iterator was initially much slower. A
+fail-closed high-warmup frozen sweep measured AABB at 175.0496 us at block 12
+and capsule at 415.9061 us at block 2. A sphere VT query improved 54.7194 to
+52.9374 us at block 4, but could not offset the EE regression. An initial BCCB
+workload check consequently measured 0.881350643x as much throughput,
+corresponding to 13.462% higher latency. This implementation was rejected.
+
+A build at the merge's first parent isolated the cause: its shared-stack
+capsule took 183.8194 us at block 8, while the merged skip-link capsule took
+415.9061 us at its optimum and 2.557x as much time at common block 8. The
+two-thread optimum manufactured more under-filled CTAs to hide dependent
+escape loads and divergent robust slab tests. It was a traversal-latency
+symptom, not evidence that two threads are intrinsically appropriate for EE.
+
+Iterated through generic payload-stack, test-on-pop, branch-classified slab,
+and compact capsule-only traversals. The generic stack reached 221.1534 us but
+did not preserve decreasing-`max_dist` semantics. Left- and right-first
+test-on-pop versions took 394.3195 and 389.3042 us; parallel-axis
+classification improved that to 323.4500 us. The retained compact
+right-first, test-on-pop query removes unrelated ray state while preserving
+finite bounds, roots, packed leaves, and exact-once enumeration. Before the
+release-safety correction, it reached 164.6599 us at block 8 and reversed the
+EE regression.
+
+The provenance-checked diagnostic committed at Newton `02d5c217` independently
+enumerates native-order candidates, replays narrow phase, and verifies accepted
+contacts before timing. It confirms that capsule removes exactly 42,577
+closest-point evaluations. Those avoided evaluations save roughly 10-13 us per
+launch; the original merge's 31-150 us traversal penalty explains why tighter
+pruning alone was insufficient.
+
+### Maximum-depth and high-block release safety
+
+A separate audit found that the first compact iterator's 32-entry stack was not
+safe for every host-constructible BVH. A 33-deep host SAH adversary crashed the
+CPU query with exit 139 before any assertion. Warp `a748ff75` increased only
+the capsule stack to 64 entries and passed the depth adversaries, but then a
+block-256 CUDA module failed to load: 66,560 bytes of static shared memory
+exceeded the L40 toolchain's 49,152-byte limit. Both were fail-first results;
+neither build was accepted as releasable.
+
+Warp `91a49d1a` next made capsule block 256 safe by selecting a smaller stack
+with skip-link overflow continuation. A generic-query audit then showed that
+volume queries still allocated 32 slots per thread at blocks 512 and 1024,
+requiring 65,536 and 131,072 bytes before other shared state. This intermediate
+commit is diagnostic evidence only, not the final build.
+
+Measured Warp `4491567b`, final equivalent `67621f80`, bounds both volume and
+capsule stack storage. CPU and CUDA blocks up to 64 use 64 slots. Blocks 128,
+256, 512, and 1024 use 32, 16, 8, and 4 slots per query, switching overflowing
+subtrees to skip-link continuation. Each query type consumes at most 16 KiB of
+shared stack, and a sequential mixed volume/capsule kernel uses at most 36 KiB
+including other static state.
+
+The focused Warp suite passes 12/12 public type, sphere, capsule, depth,
+grouped-depth, packed-leaf, decreasing-distance, and high-block checks. Generic
+volume, capsule, and mixed query kernels compile, load, and produce guarded
+exact-once results through block 1024. The production cloth kernels themselves
+cannot launch at block 1024 because their roughly 100 registers per thread hit
+a separate per-block register limit; their frozen sweep is exact through the
+highest launchable size, block 512.
+
+The final fixed-tree Newton regressions pass collision 4/4, segmented buffers
+3/3, relative-gap damping, deterministic rollout, and VBD cloth collision.
+The Warp 1.16 CPU fallback query test also passes, independently of the 12/12
+final-Warp query suite.
+
+Final Warp provenance:
+
+- measured commit `4491567b4fa0d59e3d2578dbfb8a0849e1c67fc2`;
+- final commit after message-only history rewrite
+  `67621f8074b045673c2b72db5f2c8ce5e9b2cbc6`;
+- tree `4dcf21d7714f3fd481d4eb0fd3eb3f4565e408c6`;
+- source SHA-256
+  `5a91716353e5814287d7ae5908dae0768aff75632a0dc5f7a894b13db15772de`
+  over 598 files and 13,936,215 bytes;
+- `warp.so` SHA-256
+  `d071cd89a45f66bb2784dcd0e942852211fde3f6ec68fcffdf131d48e211ca43`;
+- `warp-clang.so` SHA-256
+  `5a4366461d9acf30d598354448b5894f88d2c30ddb1a9c76155034cb869fe691`.
+
+### Final frozen block sweep
+
+Repeated the authoritative sweep against that exact fixed Warp build: 2,000
+warmups per graph, 1,000 launches per sample, nine samples, and blocks 1, 2, 4,
+8, 12, 16, 24, 32, 48, 64, 96, 128, 256, and 512. Clean Newton control
+`7134ddfa` and candidate `2feb9748` used the same frozen state, final native
+libraries, and harness.
+
+| Scope | AABB | Sphere/capsule | Speedup |
+|---|---:|---:|---:|
+| VT independent optimum | 55.644257 us, block 4 | 55.431679 us, block 4 | **1.003835x** |
+| EE independent optimum | 178.495941 us, block 8 | 165.102463 us, block 8 | **1.081122x** |
+| Each variant's best same-block VT+EE policy | 248.563911 us, block 8 | 229.901154 us, block 8 | **1.081177x** |
+| Production VT4 + EE8 | 234.140198 us | 220.534142 us | **1.061696x** |
+
+The production split saves 13.606056 us per collision substep, or 0.136061 ms
+for ten substeps. All 14 AABB/radius block pairs produced bitwise-identical
+counts, canonical active pairs, owner minimum distances, and resize flags:
+1,739 VT and 10,652 EE contacts, with no overflow. The final block sweep
+therefore confirms both the requested launch re-profile and live detector
+equivalence through block 512.
+
+### Final end-to-end and trace measurements
+
+The release-safe end-to-end suite used one excluded warm process per variant,
+then 32 included fresh 30-frame processes in eight alternating BCCB/CBBC
+blocks. Both clean Newton trees used measured Warp `4491567b`, tree-equivalent
+to final `67621f80`, separate caches, and the no-override production VT4/EE8
+policy.
+
+| Variant | Processes | Median ms/frame | Mean ms/frame | CV |
+|---|---:|---:|---:|---:|
+| AABB control | 16 | 14.505825 | 14.519181 | 0.673% |
+| Sphere/capsule | 16 | 14.423435 | 14.437344 | 0.450% |
+
+The balanced-block geometric speedup is **1.005657x**. Its 200,000-resample
+whole-block 95% confidence interval is **[1.002605x, 1.008975x]**, and seven of
+eight blocks favored radius queries. This is 0.5657% higher throughput,
+corresponding to about 0.5625% lower latency. It is an incremental comparison
+and does not revise the original `2ba7ffd6`-to-`a4c6a1a2` 1.135169x
+end-to-end gain. All 32 processes completed, the analyzer emitted no warnings,
+and no contact row overflowed.
+
+Final source-isolated Nsight traces reported:
+
+| Component | AABB ms | Sphere/capsule ms | Speedup |
+|---|---:|---:|---:|
+| VT traversal | 13.145353 | 13.105166 | **1.003067x** |
+| EE traversal | 39.118766 | 36.442143 | **1.073449x** |
+| Full detector | 72.515473 | 69.744900 | **1.039724x** |
+| Force/Hessian | 53.561322 | 53.617444 | 0.998953x |
+| Full detector + force/Hessian | 126.076795 | 123.362344 | **1.022004x** |
+| Extended self-contact pipeline | 183.707334 | 181.713332 | **1.010973x** |
+| All captured graph kernels | 353.940709 | 351.709760 | **1.006343x** |
+
+Each trace contains the exact expected graph-node counts. Fresh processes do
+not share bitwise-identical cloth trajectories or contact histories because
+the existing CUDA solver uses unordered floating-point atomics; the force and
+truncation shifts are therefore not attributable to the query in isolation.
+The traces localize the detector gain, while their profiler-instrumented wall
+times are invalid for end-to-end comparison. The 32-process balanced suite is
+authoritative for the workload-level result.
+
+Raw frozen arrays, process records, `.nsys-rep`, and SQLite files remain
+untracked under `/tmp/cloth-franka-minkowski`. They can contain full process
+environment metadata. The sanitized aggregate is committed as
+`profiling/cloth_franka_radius_query_results.json`.

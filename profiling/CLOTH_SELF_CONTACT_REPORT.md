@@ -1,16 +1,20 @@
 # Cloth Franka self-contact performance report
 
-- Date: 2026-08-17
+- Dates: 2026-08-17 through 2026-08-18
 - Baseline: `2ba7ffd608648b485ce145173985e9556523af4c`
 - Profiled candidate: `c84f62fb00d71ee000faf06476610d37bbd7751c`
 - Final equivalent source commit: `a4c6a1a2`
 - Detector block-size follow-up: `647a1f1a`
+- Radius-query AABB control: `7134ddfa`
+- Radius-query candidate: `2feb9748`
+- Radius-query Warp: measured `4491567b`, final equivalent `67621f80`
 - Branch: `ankac/cloth-franka-perf`
-- Device: NVIDIA L40, CUDA device 2 (isolated by the Newton GPU claim)
+- Device: NVIDIA L40 (isolated by the Newton GPU claim for each suite)
 
 ## Result
 
-Both predeclared completion gates were exceeded.
+The original `2ba7ffd6` baseline-to-`a4c6a1a2` optimization exceeded both
+predeclared completion gates.
 
 | Metric | Baseline | Candidate | Result | Target |
 |---|---:|---:|---:|---:|
@@ -21,6 +25,14 @@ The component trace is 28.51% lower in summed CUDA-kernel time. The primary
 end-to-end estimator is 13.52% higher throughput, corresponding to 11.91%
 lower frame time. All eight counterbalanced blocks favored the candidate; the
 95% block-bootstrap confidence interval is **[1.132x, 1.138x]**.
+
+The later radius-query follow-up is a separate incremental comparison on top
+of that optimized implementation. It holds the final Warp build constant and
+compares padded AABB queries with VT sphere and EE capsule queries. That
+follow-up improves the frozen production traversal pair by **1.061696x**, the
+traced detector by **1.039724x**, and end-to-end throughput by **1.005657x**,
+95% CI **[1.002605x, 1.008975x]**. It does not replace or compound the
+original baseline-to-candidate result.
 
 ## Workload and measurement
 
@@ -75,7 +87,7 @@ end-to-end evidence. Each trace is one fresh process and inherits the solver's
 normal atomic-order trajectory variation, so the kernel totals localize the
 gain while the 32-process ABBA suite supports the workload-level claim.
 
-## Detector block-size follow-up
+## Adaptive AABB detector block-size follow-up
 
 After completing the baseline-to-candidate comparison above, a frozen-state
 follow-up swept independent VT and EE launch sizes. The native cloth state was
@@ -102,13 +114,13 @@ within their world, and no row overflowed. Triangle-owned reverse VT buffers
 were not included in the snapshot because `record_triangle_contacting_vertices`
 is disabled for this workload; they are not live solver outputs here.
 
-Warp's BVH query is a scalar per-thread traversal with no warp vote, shuffle,
-or barrier. Its 32-entry stack is laid out per CUDA thread in shared memory, so
-sub-warp blocks are correct but still consume a physical warp. The native L40
-trace reported 106 VT registers/thread and reduced static shared memory from
-1,056 bytes at block 8 to 528 bytes at block 4. VT block 4 launches 1,609 CTAs
-instead of 805, giving the irregular traversal more independent work; EE
-already launches 2,397 CTAs at block 8.
+The then-profiled AABB BVH query is a scalar per-thread traversal with no warp
+vote, shuffle, or barrier. Its 32-entry stack is laid out per CUDA thread in
+shared memory, so sub-warp blocks are correct but still consume a physical
+warp. The native L40 trace reported 106 VT registers/thread and reduced static
+shared memory from 1,056 bytes at block 8 to 528 bytes at block 4. VT block 4
+launches 1,609 CTAs instead of 805, giving the irregular traversal more
+independent work; EE already launches 2,397 CTAs at block 8.
 
 Correct CUDA graph-node captures contained 300 VT calls per variant. VT time
 fell from 17.855490 ms at block 8 to 14.583589 ms at block 4 over 30 frames,
@@ -147,6 +159,144 @@ The added `unittest` covers every halving boundary, the L40 cloth resolution,
 the CPU default, and explicit-setting preservation; the frozen graph sweep
 provides live CUDA output-equivalence coverage.
 
+## Sphere/capsule radius-query follow-up
+
+The follow-up replaces the padded point AABB VT query with
+`bvh_query_sphere`, and the padded segment AABB EE query with
+`bvh_query_capsule`. The EE query passes its unnormalized end-minus-start
+direction with `max_dist=1`; a degenerate edge uses a unit direction with
+`max_dist=0`, reducing it to a radius point query. Newton enables this path
+only when Warp publicly exposes the radius-query types, so the supported Warp
+1.16 configuration retains the AABB implementation. The public types prove API
+availability, not the presence of later traversal safety fixes; final evidence
+therefore pins the exact Warp commit and native-library hashes below.
+
+This experiment compares clean Newton AABB control `7134ddfa` with clean
+radius-query candidate `2feb9748`. Both use the exact same measured fixed Warp
+build, launch policy, assets, harness, and frozen cloth state; the only
+production difference is AABB versus sphere/capsule broad phase.
+
+Exact query-volume accounting was captured earlier on Newton `b963b1b1` and
+the requested Warp merge `7c66e2f6`, using the same frozen cloth state. It
+shows that the radius volumes are strict subsets of the padded AABBs:
+
+| Query | AABB candidates | Radius candidates | Reduction |
+|---|---:|---:|---:|
+| Vertex-triangle | 54,718 | 50,724 | 3,994 (7.2992%) |
+| Edge-edge | 344,838 | 302,261 | 42,577 (12.3470%) |
+
+Neither radius query introduced an extra candidate. These counts document the
+geometric pruning; all timing and live-output claims below come from fresh
+reruns on measured Warp `4491567b`. Commit-message hygiene later rewrote that
+commit to final `67621f80` without changing its tree, source, or binaries.
+
+The authoritative frozen sweep used 2,000 graph warmups, 1,000 launches per
+sample, nine samples, and blocks 1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128,
+256, and 512. The independently tuned and production-policy results were:
+
+| Scope | AABB | Sphere/capsule | Speedup |
+|---|---:|---:|---:|
+| VT independent optimum | 55.644257 us, block 4 | 55.431679 us, block 4 | **1.003835x** |
+| EE independent optimum | 178.495941 us, block 8 | 165.102463 us, block 8 | **1.081122x** |
+| Each variant's best same-block VT+EE policy | 248.563911 us, block 8 | 229.901154 us, block 8 | **1.081177x** |
+| Production VT4 + EE8 | 234.140198 us | 220.534142 us | **1.061696x** |
+
+The production split saves 13.606056 us per collision substep, or 0.136061 ms
+over the ten substeps in one frame. Every AABB and radius specialization at all
+14 block sizes produced bitwise-identical final counts, canonical active
+pairs, owner minimum distances, and resize flags: 1,739 VT and 10,652 EE
+contacts, with no overflow. The sweep therefore both re-profiles the launch
+sizes through block 512 and verifies the complete live detector outputs.
+
+The final end-to-end suite used one excluded warm process per variant followed
+by 32 included fresh processes in eight alternating BCCB/CBBC blocks. It used
+the production VT4/EE8 policy without a launch override:
+
+| Variant | Processes | Median ms/frame | Mean ms/frame | CV |
+|---|---:|---:|---:|---:|
+| AABB control | 16 | 14.505825 | 14.519181 | 0.673% |
+| Sphere/capsule | 16 | 14.423435 | 14.437344 | 0.450% |
+
+The balanced-block geometric speedup is **1.005657x**, with a 200,000-resample
+whole-block 95% interval of **[1.002605x, 1.008975x]**. Seven of eight blocks
+favored the radius queries. This is 0.5657% higher throughput, corresponding to
+about 0.5625% lower latency: small, but statistically resolved by the declared
+estimator. All 32 measured processes completed, the analyzer emitted no
+warnings, and no contact row overflowed.
+
+One source-isolated Nsight trace per variant localizes the detector effect.
+Each trace contains the expected 30 frame graphs and identical kernel counts:
+
+| Component | AABB ms | Sphere/capsule ms | Speedup |
+|---|---:|---:|---:|
+| Vertex-triangle traversal | 13.145353 | 13.105166 | **1.003067x** |
+| Edge-edge traversal | 39.118766 | 36.442143 | **1.073449x** |
+| Full detector | 72.515473 | 69.744900 | **1.039724x** |
+| Force/Hessian accumulation | 53.561322 | 53.617444 | 0.998953x |
+| Full detector + force/Hessian | 126.076795 | 123.362344 | **1.022004x** |
+| Extended self-contact pipeline | 183.707334 | 181.713332 | **1.010973x** |
+| All captured graph kernels | 353.940709 | 351.709760 | **1.006343x** |
+
+The full detector subtotal includes the traversals, AABB updates, refits,
+rebuild support, group-root updates, and buffer initialization. The EE gain is
+consistent with the frozen sweep; the unrelated force and truncation shifts
+reflect that fresh CUDA processes do not follow bitwise-identical cloth
+trajectories or contact histories because of unordered floating-point atomics.
+The traces are therefore localization evidence only. Their
+profiler-instrumented wall times are invalid for end-to-end comparison; the
+32-process balanced suite above is authoritative for that scope.
+
+### Radius-query release safety
+
+The requested Warp merge initially made EE capsule traversal a large
+regression. Its stackless skip-link implementation took 415.9061 us at its
+block-2 optimum versus 175.0496 us for AABB at block 12. The unusual two-thread
+optimum was a latency-hiding symptom of the dependent skip-link traversal, not
+a correctness requirement. A compact right-first, test-on-pop capsule stack
+recovered the performance, then two fail-first release checks exposed separate
+safety defects:
+
+- a 33-deep host SAH adversary crashed the original 32-entry capsule stack;
+- a direct 64-entry per-thread stack fixed the depth case but made the default
+  block-256 CUDA module require 66,560 bytes of static shared memory, above the
+  L40 toolchain's 49,152-byte limit.
+
+Intermediate Warp `91a49d1a` made capsule block 256 safe, but generic volume
+queries still allocated 32 slots per thread at blocks 512 and 1024 and could
+again exceed static shared-memory limits. It is historical diagnostic evidence,
+not the final build.
+
+Measured Warp `4491567b`, final equivalent `67621f80`, bounds both volume and
+capsule stacks. CPU and CUDA blocks up to 64 retain 64 slots. Blocks 128, 256,
+512, and 1024 use 32, 16, 8, and 4 slots per query respectively, switching an
+overflowing subtree to skip-link continuation. Each query type consumes at
+most 16 KiB of shared stack, and a mixed volume/capsule kernel uses at most
+36 KiB including other static state.
+
+The focused Warp suite passes sphere/capsule semantics, maximum-depth SAH and
+grouped LBVH cases, packed leaves, decreasing `max_dist`, exact-once
+enumeration, canaries, and sequential mixed query types through block 1024.
+The cloth detector kernels themselves cannot launch at block 1024 because
+their roughly 100 registers per thread exceed a separate per-block register
+limit; the production kernels are output-exact through the highest launchable
+sweep size, block 512. Final Newton tests pass collision 4/4, segmented buffers
+3/3, damping, deterministic rollout, cloth collision, and the Warp 1.16 CPU
+fallback.
+
+The final fixed Warp provenance is:
+
+- measured commit `4491567b4fa0d59e3d2578dbfb8a0849e1c67fc2`;
+- final commit after message-only history rewrite
+  `67621f8074b045673c2b72db5f2c8ce5e9b2cbc6`;
+- tree `4dcf21d7714f3fd481d4eb0fd3eb3f4565e408c6`;
+- source SHA-256
+  `5a91716353e5814287d7ae5908dae0768aff75632a0dc5f7a894b13db15772de`
+  over 598 files and 13,936,215 bytes;
+- `warp.so` SHA-256
+  `d071cd89a45f66bb2784dcd0e942852211fde3f6ec68fcffdf131d48e211ca43`;
+- `warp-clang.so` SHA-256
+  `5a4366461d9acf30d598354448b5894f88d2c30ddb1a9c76155034cb869fe691`.
+
 ## Retained changes
 
 1. `b3d4b82b` — bound all segmented-buffer consumers by each row's clamped
@@ -169,6 +319,12 @@ provides live CUDA output-equivalence coverage.
    end-to-end cloth Franka benchmark.
 9. `647a1f1a` — resolve default CUDA VT and EE block sizes independently from
    the primitive count and SM count while preserving explicit and CPU sizes.
+10. `b963b1b1` — use sphere and capsule BVH queries for VT and EE broad phase
+    when the installed Warp supports them.
+11. `02d5c217` — add a provenance-checked diagnostic that separates capsule
+    traversal cost from avoided EE narrow-phase work.
+12. `2feb9748` — gate radius-query dispatch on public Warp API availability;
+    the exact fixed Warp pin above supplies the separate safety provenance.
 
 Three measured force experiments were rejected and fully reverted: repeated
 single-output stencil evaluation (about 5.6% slower end to end), predicate-local
@@ -191,6 +347,14 @@ The final candidate passed:
 - the CUDA VBD deterministic rollout; and
 - the VBD cloth-collision rollout.
 
+The subsequent radius-query candidate passed the same Newton detector,
+segmented-buffer, damping, deterministic-rollout, and cloth-collision coverage
+against the final Warp build. Warp's focused CPU and CUDA query suites also
+cover finite and decreasing distance bounds, degenerate and boundary capsules,
+grouped roots, packed leaves, and adversarial maximum-depth trees through
+generic block 1024. The frozen 14-block comparison adds bitwise live-output
+equivalence against the AABB control through launchable production block 512.
+
 After the final formatter and commit-message hygiene pass, the exact working
 tree was retested with a new Warp cache: all 13 focused CPU/CUDA/graph tests
 passed in 185.242 seconds and all required source-version markers appeared. A
@@ -211,15 +375,22 @@ state, contact, timing, and launch provenance. The companion analyzer validates
 frozen tool hashes, live source hashes and git trees, every run's configuration,
 alternating block structure, result checksums, and trace kernel counts before
 computing results. Sanitized per-process timings and trace component totals are
-committed under `profiling/cloth_self_contact_results/`.
+committed under `profiling/cloth_self_contact_results/`. The credential-safe
+radius-query aggregate is
+`profiling/cloth_franka_radius_query_results.json`; it records the final source,
+native-library, frozen-sweep, ABBA, and trace metrics without the raw process
+environment.
 
 Raw `.nsys-rep` and SQLite exports are intentionally not committed: Nsight's
 metadata includes the complete launch environment and can contain session
 credentials. The analyzer allowlists only CUDA, Python, UV, Newton, and Warp
 provenance before producing the sanitized totals in this report. The raw trace
-SHA-256 values are `5b6d6331e8fe2c447113287f33b688f8b916c84a2bb68c0a5bb027988e58bca2`
-for the baseline and `3790ce83dbdf36949fb7ad27858d526953e72a1dcc54272ec721f61c6ad3ddf2`
-for the candidate.
+SHA-256 values for the original baseline-to-candidate pair are
+`5b6d6331e8fe2c447113287f33b688f8b916c84a2bb68c0a5bb027988e58bca2`
+and `3790ce83dbdf36949fb7ad27858d526953e72a1dcc54272ec721f61c6ad3ddf2`.
+The corresponding values for the later AABB and radius-query traces are
+`ca39f75f814b57c0e85f21997c3096db75df1c252d3c908cad9accc26c84def6`
+and `8b9603d1980f0514f4b0e1f6f1bbb615df442055e80a6f13a6582689680cc59d`.
 
 The final hygiene pass reworded the six local commit messages to the required
 72-column format after measurement. Profiled commit `c84f62fb` and final source

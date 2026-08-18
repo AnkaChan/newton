@@ -1,0 +1,289 @@
+{
+  "schema_version": "cloth-franka-radius-query-results-v1",
+  "date_utc": "2026-08-18",
+  "scope": {
+    "original_baseline_to_optimized_candidate": {
+      "baseline_newton_git_head": "2ba7ffd608648b485ce145173985e9556523af4c",
+      "candidate_equivalent_newton_git_head": "a4c6a1a2",
+      "detector_plus_force_speedup": 1.3988284463429195,
+      "end_to_end_speedup": 1.135169
+    },
+    "radius_query_followup": {
+      "definition": "Incremental AABB-versus-sphere/capsule comparison on top of the optimized candidate with an identical Warp build",
+      "must_not_be_compounded_with_original_speedup": true
+    }
+  },
+  "final_provenance": {
+    "newton_aabb_control": {
+      "git_head": "7134ddfa9ee40f15eba2eaad1df7dd14ff45d2e6",
+      "git_tree": "111a4157c00be3eab6d87f13ba6fdf1728367ad5",
+      "source_sha256": "13ed4cca72610dd3123051ad459ee48cb9c6d3e1770b27784525410bff6968db",
+      "source_file_count": 718,
+      "source_byte_count": 20543233,
+      "tracked_tree_clean": true
+    },
+    "newton_radius_candidate": {
+      "git_head": "2feb9748dbd65299a1928d63659a24d3f0028e05",
+      "git_tree": "a76e357ae4cb7b20adbe18bc2a558c7d163ccda5",
+      "source_sha256": "a47822d50a0cab3a8057914c3b505d3713aefe61276cba7b15f846cfee65bb04",
+      "source_file_count": 718,
+      "source_byte_count": 20550231,
+      "tracked_tree_clean": true
+    },
+    "warp": {
+      "version": "1.17.0.dev4",
+      "measured_git_head": "4491567b4fa0d59e3d2578dbfb8a0849e1c67fc2",
+      "final_rewritten_git_head": "67621f8074b045673c2b72db5f2c8ce5e9b2cbc6",
+      "history_rewrite_tree_equivalent": true,
+      "history_rewrite_source_diff_empty": true,
+      "history_rewrite_native_binaries_unchanged": true,
+      "git_tree": "4dcf21d7714f3fd481d4eb0fd3eb3f4565e408c6",
+      "source_sha256": "5a91716353e5814287d7ae5908dae0768aff75632a0dc5f7a894b13db15772de",
+      "source_file_count": 598,
+      "source_byte_count": 13936215,
+      "identity_sha256": "7d07477fa6a238e94725ff2082c818e4e3a4060f340ae252d08f12b9d09d0d14",
+      "tracked_tree_clean": true,
+      "native_libraries": {
+        "warp.so": {
+          "size_bytes": 229825568,
+          "sha256": "d071cd89a45f66bb2784dcd0e942852211fde3f6ec68fcffdf131d48e211ca43"
+        },
+        "warp-clang.so": {
+          "size_bytes": 69010368,
+          "sha256": "5a4366461d9acf30d598354448b5894f88d2c30ddb1a9c76155034cb869fe691"
+        }
+      }
+    },
+    "device": {
+      "name": "NVIDIA L40",
+      "sm_count": 142,
+      "compute_capability": "8.9"
+    }
+  },
+  "query_volume_accounting": {
+    "provenance_note": "Semantic candidate enumeration predates the final traversal fix; final timing and output-equivalence evidence is recorded separately below",
+    "newton_git_head": "b963b1b1381beee9a705d01c06428c057363a0b6",
+    "warp_git_head": "7c66e2f604248ce7bc32ebd9b6c77c05f09550d2",
+    "state_sha256": "5d62b8b589a696a8c800295ea9a13b16005dcd28ba82e9b2367f03dce0982137",
+    "vertex_triangle": {
+      "aabb_candidates": 54718,
+      "sphere_candidates": 50724,
+      "reduction_count": 3994,
+      "reduction_fraction": 0.07299243393398881,
+      "radius_set_is_subset": true,
+      "radius_only_candidates": 0
+    },
+    "edge_edge": {
+      "aabb_candidates": 344838,
+      "capsule_candidates": 302261,
+      "reduction_count": 42577,
+      "reduction_fraction": 0.12346957121894919,
+      "radius_set_is_subset": true,
+      "radius_only_candidates": 0
+    }
+  },
+  "final_frozen_sweep": {
+    "state_sha256": "5d62b8b589a696a8c800295ea9a13b16005dcd28ba82e9b2367f03dce0982137",
+    "particle_positions_sha256": "39d4595bcd07fe537029f60dffac7688f0c9ce4e4c1f86fec21f7387693b294d",
+    "workload_sha256": "6dc9ad1538567c4478e5e80aaac50b903825de9a0df81097fbe7b65aa3297254",
+    "particle_count": 6436,
+    "triangle_count": 12736,
+    "edge_count": 19174,
+    "warmups_per_graph": 2000,
+    "launches_per_sample": 1000,
+    "samples": 9,
+    "block_sizes": [
+      1,
+      2,
+      4,
+      8,
+      12,
+      16,
+      24,
+      32,
+      48,
+      64,
+      96,
+      128,
+      256,
+      512
+    ],
+    "independent_optima": {
+      "vertex_triangle": {
+        "aabb_block": 4,
+        "aabb_median_microseconds": 55.644256591796875,
+        "sphere_block": 4,
+        "sphere_median_microseconds": 55.431678771972656,
+        "speedup": 1.0038349518638736
+      },
+      "edge_edge": {
+        "aabb_block": 8,
+        "aabb_median_microseconds": 178.49594116210938,
+        "capsule_block": 8,
+        "capsule_median_microseconds": 165.1024627685547,
+        "speedup": 1.081122220522719
+      },
+      "each_variants_best_same_block_vt_plus_ee_policy": {
+        "aabb_block": 8,
+        "aabb_median_microseconds": 248.56391143798828,
+        "radius_block": 8,
+        "radius_median_microseconds": 229.90115356445312,
+        "speedup": 1.0811773128763489
+      }
+    },
+    "production_split_vt4_ee8": {
+      "aabb_vertex_triangle_microseconds": 55.644256591796875,
+      "aabb_edge_edge_microseconds": 178.49594116210938,
+      "aabb_combined_microseconds": 234.14019775390625,
+      "radius_vertex_triangle_microseconds": 55.431678771972656,
+      "radius_edge_edge_microseconds": 165.1024627685547,
+      "radius_combined_microseconds": 220.53414154052734,
+      "saved_microseconds_per_substep": 13.606056213378906,
+      "saved_milliseconds_per_ten_substep_frame": 0.13606056213378906,
+      "speedup": 1.061695917549703
+    },
+    "output_equivalence": {
+      "all_14_common_blocks_exact": true,
+      "fields": [
+        "counts",
+        "canonical active pairs",
+        "owner minimum distances",
+        "resize flags"
+      ],
+      "vertex_triangle_contacts": 1739,
+      "edge_edge_contacts": 10652,
+      "overflow_rows": 0,
+      "highest_tested_block": 512
+    }
+  },
+  "final_end_to_end_abba": {
+    "frames_per_process": 30,
+    "included_processes_per_variant": 16,
+    "completed_processes": 32,
+    "warnings": 0,
+    "contact_overflow_rows": 0,
+    "balanced_blocks": 8,
+    "alternating_orders": [
+      "BCCB",
+      "CBBC"
+    ],
+    "excluded_warm_processes_per_variant": 1,
+    "aabb": {
+      "median_milliseconds_per_frame": 14.505825378000736,
+      "mean_milliseconds_per_frame": 14.519181476983553,
+      "coefficient_of_variation": 0.006729939616701626
+    },
+    "radius": {
+      "median_milliseconds_per_frame": 14.423434964070717,
+      "mean_milliseconds_per_frame": 14.437344142546257,
+      "coefficient_of_variation": 0.004496654796052504
+    },
+    "balanced_block_geometric_speedup": 1.0056566892101542,
+    "throughput_improvement_fraction": 0.005656689210154164,
+    "latency_reduction_fraction": 0.005624871062705261,
+    "bootstrap_95_ci": [
+      1.0026051434602126,
+      1.0089751740989468
+    ],
+    "bootstrap_samples": 200000,
+    "bootstrap_seed": 20260818,
+    "positive_blocks": 7,
+    "block_count": 8,
+    "interpretation": "small statistically resolved improvement; confidence interval excludes 1"
+  },
+  "final_nsight_trace_localization": {
+    "frames": 30,
+    "all_expected_kernel_counts_exact": true,
+    "warnings": 0,
+    "profiler_wall_time_valid_for_end_to_end": false,
+    "trajectory_caveat": "Fresh CUDA processes use unordered floating-point atomics and need not have identical trajectories or contact histories",
+    "components": {
+      "vertex_triangle_traversal": {
+        "aabb_milliseconds": 13.145353,
+        "radius_milliseconds": 13.105166,
+        "speedup": 1.0030665006456232
+      },
+      "edge_edge_traversal": {
+        "aabb_milliseconds": 39.118766,
+        "radius_milliseconds": 36.442143,
+        "speedup": 1.0734485620123932
+      },
+      "detector": {
+        "aabb_milliseconds": 72.515473,
+        "radius_milliseconds": 69.7449,
+        "speedup": 1.0397243812809251
+      },
+      "force_hessian": {
+        "aabb_milliseconds": 53.561322,
+        "radius_milliseconds": 53.617444,
+        "speedup": 0.9989532884111373
+      },
+      "detector_plus_force_hessian": {
+        "aabb_milliseconds": 126.076795,
+        "radius_milliseconds": 123.362344,
+        "speedup": 1.0220038863723278
+      },
+      "extended_self_contact_pipeline": {
+        "aabb_milliseconds": 183.707334,
+        "radius_milliseconds": 181.713332,
+        "speedup": 1.0109733390393172
+      },
+      "all_captured_graph_kernels": {
+        "aabb_milliseconds": 353.940709,
+        "radius_milliseconds": 351.70976,
+        "speedup": 1.0063431535138518
+      }
+    }
+  },
+  "release_safety": {
+    "capability_gate_note": "Public Warp query types prove API availability only; safety evidence pins measured Warp 4491567b, tree-equivalent final Warp 67621f80, and native hashes",
+    "fail_first": {
+      "stack_depth": "A 33-deep host SAH adversary crashed the original 32-entry capsule traversal",
+      "block_256": "A direct 64-entry CUDA stack required 66560 static shared-memory bytes, exceeding the 49152-byte module limit",
+      "intermediate_91a49_high_blocks": "Capsule block 256 passed, but generic volume queries still exceeded static shared memory at blocks 512 and 1024"
+    },
+    "final_adaptive_storage": {
+      "cpu_and_cuda_block_at_most_64_slots": 64,
+      "cuda_block_to_slots": {
+        "128": 32,
+        "256": 16,
+        "512": 8,
+        "1024": 4
+      },
+      "overflow_strategy": "skip-link subtree continuation",
+      "maximum_shared_stack_bytes_per_query_type": 16384,
+      "maximum_mixed_query_static_shared_memory_bytes": 36864
+    },
+    "production_block_1024_note": "Generic mixed Warp queries pass at block 1024; the cloth detector kernels cannot launch there because roughly 100 registers per thread exceed a separate per-block register limit",
+    "passed": [
+      "Warp public type, sphere, capsule, depth, grouped-depth, packed-leaf, decreasing-distance, and high-block tests 12/12",
+      "generic volume, capsule, and mixed queries through block 1024",
+      "frozen production live outputs through block 512",
+      "Newton collision tests 4/4",
+      "Newton segmented-buffer tests 3/3",
+      "Newton damping, deterministic rollout, and cloth-collision tests",
+      "Warp 1.16 CPU fallback test"
+    ]
+  },
+  "evidence_sha256": {
+    "query_volume_accounting_json": "cbad7e6e1a066efd4a55fa133f976c4d18b6e0a843e95477e5aa6a29a7fd84eb",
+    "final_frozen_aabb_json": "0c0896ce9c8a00c2e698fdd20b916b51176a4c1f5355947b35e608bb1cb0ca51",
+    "final_frozen_radius_json": "7a936f88a932b436ec7395505d44da04515ade8a03a0414edb891f68f18ea546",
+    "final_frozen_comparison_json": "2c2810ddf2305d4a09572b787ab044af68a2bd79a8172fa55bb6fc696b8a133c",
+    "final_abba_runner": "36bfdef147afe6010bb6d5b1de580d03772ca4e9739ef52b9cc025c7fbb600d0",
+    "final_abba_manifest_json": "4c9010ae04388b698d2149d03cb4b72e696885e12c23702d1f66f9ad1ea6233c",
+    "final_abba_analysis_json": "7a1dd584226e80460bd30fa3e82c7db63af3153254125a25f4a77bc86758e4ce",
+    "final_abba_summary_json": "93d9bc05d61d22f2f65c5d0b2ac9f095f4ae8d5ece1eb33520fab5b6b44d048d",
+    "final_trace_analysis_json": "5d1c7c7f9ff8169e0bf25994c87fa2f32a42af476cedd3edc7e970bdd73dbd67",
+    "final_raw_aabb_nsys_report": "ca39f75f814b57c0e85f21997c3096db75df1c252d3c908cad9accc26c84def6",
+    "final_raw_radius_nsys_report": "8b9603d1980f0514f4b0e1f6f1bbb615df442055e80a6f13a6582689680cc59d",
+    "final_newton_collision_log": "2f05295de64391ef595453d18a1bb54fa5f5cc1e1dad359333be6510ac1fb637",
+    "final_newton_buffers_log": "c682ff8472fddcef83399a215ac0cee8456f9ab8a2f249e3e09b01254615edeb",
+    "final_newton_damping_log": "76194a076f5027fbef7dd1ef93ac2ffbc73e25847103e8c62421d08135647542",
+    "final_newton_determinism_log": "d5cc83aa31befce707b444b538e86178697b282f86e73f5b4e9cd8799b51ab3e",
+    "final_newton_cloth_log": "999d9e9a73579cc2c21ba90b487274bbb33a6da6467349ea19528a5521d49a17",
+    "final_warp116_fallback_log": "0fd78a08710c0bfea3479c00ca010694ca0965a5cc776bccebc621f5fca904c2",
+    "final_warp_bvh_focused_log": "1caafe2b66d72b7a0a7d4322d7af7a8be7151f5781f27b8335ca307ec188f22f"
+  },
+  "raw_artifact_policy": "Raw Nsight reports, SQLite exports, process logs, and frozen arrays remain untracked because they can contain environment metadata; only this sanitized aggregate is committed"
+}
