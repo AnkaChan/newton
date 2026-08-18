@@ -13,6 +13,7 @@ import unittest
 import weakref
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -50,13 +51,26 @@ from research.principal_stretch.correction_gpu_warp import WarpMatrixFreeWorkspa
 from research.principal_stretch.correction_graph_vbd import DirectGraphVBDConfig
 from research.principal_stretch.correction_multigrid import apply_v_cycle
 from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
+    EXTERNAL_SHARED_PUBLICATION_ROUTE as V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
+)
+from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
+    KERNEL_VERSION as V_CYCLE_KERNEL_VERSION,
+)
+from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
+    PUBLICATION_VERSION as V_CYCLE_PUBLICATION_VERSION,
+)
+from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     SCHEDULE_VERSION as V_CYCLE_SCHEDULE_VERSION,
+)
+from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
+    STANDALONE_PUBLICATION_ROUTE as V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
 )
 from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     WarpScalarFusedStaticMultigridHierarchy,
     WarpScalarFusedVCyclePhysicalWork,
     WarpScalarFusedVCycleRecord,
     WarpScalarFusedVCycleWorkspace,
+    _copy_scalar_to_vec3,
 )
 from research.principal_stretch.solver_benchmark import (
     build_common_problem,
@@ -79,6 +93,60 @@ def _oracle_add_vectors(
 ):
     index = wp.tid()
     output[index] = left[index] + right[index]
+
+
+@wp.kernel(enable_backward=False)
+def _oracle_committed_194_vertex_outer_terms(
+    current: wp.array[wp.vec3d],
+    vertex_to_free: wp.array[int],
+    first_correction: wp.array[wp.vec3d],
+    second_correction: wp.array[wp.vec3d],
+    rhs: wp.array[wp.vec3d],
+    direction: wp.array[wp.vec3d],
+    active: wp.array[int],
+    inertial_target: wp.array[wp.vec3d],
+    mass: wp.array[wp.float64],
+    inverse_dt_squared: wp.float64,
+    outer_start: wp.array[wp.vec3d],
+    candidate: wp.array[wp.vec3d],
+    outer_candidate: wp.array[wp.vec3d],
+    proposal_finite: wp.array[int],
+    current_inertia: wp.array[wp.float64],
+    candidate_inertia: wp.array[wp.float64],
+    vertex_finite: wp.array[int],
+    directional_terms: wp.array[wp.float64],
+):
+    vertex = wp.tid()
+    value = current[vertex]
+    outer_start[vertex] = value
+    valid = bool(True)
+    free_index = vertex_to_free[vertex]
+    if free_index >= 0:
+        direction_value = first_correction[free_index] + second_correction[free_index]
+        direction[free_index] = direction_value
+        if active[0] != 0:
+            proposed = value + direction_value
+            valid = _oracle_finite_vec(proposed)
+            if valid:
+                publishable = wp.vec3(
+                    wp.float32(proposed[0]),
+                    wp.float32(proposed[1]),
+                    wp.float32(proposed[2]),
+                )
+                value = wp.vec3d(
+                    wp.float64(publishable[0]),
+                    wp.float64(publishable[1]),
+                    wp.float64(publishable[2]),
+                )
+        directional_terms[free_index] = -wp.dot(rhs[free_index], value - current[vertex])
+    candidate[vertex] = value
+    outer_candidate[vertex] = value
+    proposal_finite[vertex] = int(valid)
+    start_delta = current[vertex] - inertial_target[vertex]
+    end_delta = value - inertial_target[vertex]
+    current_inertia[vertex] = wp.float64(0.5) * inverse_dt_squared * mass[vertex] * wp.dot(start_delta, start_delta)
+    candidate_inertia[vertex] = wp.float64(0.5) * inverse_dt_squared * mass[vertex] * wp.dot(end_delta, end_delta)
+    vertex_finite[vertex] = int(_oracle_finite_vec(current[vertex]) and _oracle_finite_vec(value))
 
 
 @wp.kernel(enable_backward=False)
@@ -194,10 +262,15 @@ def _enqueue_unfused_outer_oracle(solver: CapturedDirectGraphVBD):
             inputs=[workspace.rhs, workspace.operator_product_after_first, workspace.residual_after_first],
             device=solver.device,
         )
-        device_hierarchy.launch_apply(
+        device_hierarchy.launch_apply_core(
             workspace.residual_after_first,
-            workspace.second_correction,
             workspace.second_cycle.workspace,
+        )
+        wp.launch(
+            _copy_scalar_to_vec3,
+            dim=operator.n_free,
+            inputs=[workspace.second_cycle.final_scalar_correction, workspace.second_correction],
+            device=solver.device,
         )
         wp.launch(
             _oracle_add_vectors,
@@ -318,6 +391,45 @@ def _enqueue_unfused_outer_oracle(solver: CapturedDirectGraphVBD):
         ],
         device=solver.device,
     )
+    return binding
+
+
+def _enqueue_committed_194_route(solver: CapturedDirectGraphVBD):
+    """Enqueue the exact committed 194-node route as a test-only oracle."""
+    module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+    binding = module._lookup_workspace_owners(solver)
+    second_outputs = {id(outer.second_cycle.workspace): outer.second_correction for outer in binding.outer}
+
+    def launch_full_second(hierarchy, rhs, workspace):
+        output = second_outputs.get(id(workspace))
+        if output is None:
+            raise RuntimeError("the committed-194 oracle received an unknown V2 workspace")
+        hierarchy.launch_apply(rhs, output, workspace)
+
+    warp_launch = wp.launch
+
+    def launch_committed_signature(kernel, *args, **kwargs):
+        if kernel is _oracle_committed_194_vertex_outer_terms:
+            kwargs = dict(kwargs)
+            inputs = list(kwargs["inputs"])
+            del inputs[3]
+            kwargs["inputs"] = inputs
+        return warp_launch(kernel, *args, **kwargs)
+
+    with (
+        mock.patch.object(
+            WarpScalarFusedStaticMultigridHierarchy,
+            "launch_apply_core",
+            launch_full_second,
+        ),
+        mock.patch.object(
+            module,
+            "_fused_vertex_outer_terms",
+            _oracle_committed_194_vertex_outer_terms,
+        ),
+        mock.patch.object(module.wp, "launch", launch_committed_signature),
+    ):
+        solver._enqueue_integrated(binding)
     return binding
 
 
@@ -446,7 +558,7 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
         self.assertNotIn("def _subtract_vectors", source)
         self.assertEqual(source.count("operator.launch_gradient_masked("), 1)
         self.assertEqual(source.count("operator.launch_apply_residual("), 1)
-        self.assertIn('"captured-direct-graph-vbd-graph-identity-v4"', source)
+        self.assertIn('"captured-direct-graph-vbd-graph-identity-v5"', source)
 
     def test_contract_rejects_cpu_and_nondefault_coarse_bound(self):
         with self.assertRaisesRegex(RuntimeError, "requires CUDA"):
@@ -474,6 +586,19 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
             "k4_graph_identity_sha256": "6" * 64,
             "comparator_contract_id": VBD_BASELINE_CONTRACT_ID,
             "fused_gather_kernel_version": FUSED_GATHER_KERNEL_VERSION,
+            "v_cycle_kernel_version": V_CYCLE_KERNEL_VERSION,
+            "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
+            "v_cycle_schedule_sha256": "7" * 64,
+            "v_cycle_core_schedule_sha256": "8" * 64,
+            "v_cycle_publication_version": V_CYCLE_PUBLICATION_VERSION,
+            "v_cycle_standalone_publication_route": V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
+            "v_cycle_external_shared_publication_route": V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
+            "v_cycle_kernel_launches": 20,
+            "v_cycle_core_kernel_launches": 19,
+            "outer_kernel_version": OUTER_KERNEL_VERSION,
+            "outer_schedule_version": OUTER_SCHEDULE_VERSION,
+            "outer_schedule_sha256": OUTER_SCHEDULE_SHA256,
+            "correction_kernel_launches": 190,
         }
         with self.assertRaisesRegex(ValueError, "equal AB and BA"):
             CapturedGraphVBDTiming(pair_orders=("AB", "AB"), warmup_replays=1, **common)
@@ -494,7 +619,9 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
                 },
                 "diagnostic-only",
             ),
-            ({"fused_gather_kernel_version": FUSED_GATHER_KERNEL_VERSION + "-forged"}, "fused gather kernel"),
+            ({"fused_gather_kernel_version": FUSED_GATHER_KERNEL_VERSION + "-forged"}, "kernel and publication"),
+            ({"v_cycle_publication_version": V_CYCLE_PUBLICATION_VERSION + "-forged"}, "kernel and publication"),
+            ({"correction_kernel_launches": 194}, "asymmetric captured schedule"),
             ({"graph_identity_sha256": "forged"}, "lowercase SHA-256"),
             ({"graph_seconds": (-1.0e-3, 1.1e-3)}, "finite and positive"),
             ({"pair_orders": ["AB"]}, "same positive even length"),
@@ -568,6 +695,9 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
                 persistent_device_sha256="8" * 64,
                 graph_identity_sha256="9" * 64,
                 fused_gather_kernel_version=FUSED_GATHER_KERNEL_VERSION,
+                v_cycle_publication_version=V_CYCLE_PUBLICATION_VERSION,
+                v_cycle_standalone_publication_route=V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
+                v_cycle_external_shared_publication_route=V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
                 outer_kernel_version=OUTER_KERNEL_VERSION,
                 outer_schedule_version=OUTER_SCHEDULE_VERSION,
                 outer_schedule_sha256=OUTER_SCHEDULE_SHA256,
@@ -617,7 +747,8 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
     def test_exact_two_cycle_work_and_launch_count_are_retained(self):
         endpoint = self.endpoint
         cycle_launches = self.solver.device_hierarchy.scheduled_kernel_launches
-        expected_linear = 5 + 2 * cycle_launches
+        core_launches = self.solver.device_hierarchy.core_kernel_launches
+        expected_linear = 5 + cycle_launches + core_launches
         expected_outer = expected_linear + 3
         expected_total = 2 + OUTER_CORRECTIONS * expected_outer
         self.assertEqual(endpoint.total_v_cycle_count, OUTER_CORRECTIONS * V_CYCLES_PER_OUTER)
@@ -630,10 +761,21 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 self.assertEqual(work.linear_kernel_launches, expected_linear)
                 self.assertTrue(work.exact_work_completed)
                 self.assertEqual(len(work.v_cycles), 2)
-                for record in work.v_cycles:
+                for cycle_index, record in enumerate(work.v_cycles):
                     self.assertIs(type(record), WarpScalarFusedVCycleRecord)
                     self.assertIs(type(record.physical_work), WarpScalarFusedVCyclePhysicalWork)
-                    self.assertEqual(record.scheduled_kernel_launches, cycle_launches)
+                    expected_cycle_launches = cycle_launches if cycle_index == 0 else core_launches
+                    expected_route = (
+                        V_CYCLE_STANDALONE_PUBLICATION_ROUTE
+                        if cycle_index == 0
+                        else V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE
+                    )
+                    expected_schedule = (
+                        self.solver.device_hierarchy.schedule_sha256
+                        if cycle_index == 0
+                        else self.solver.device_hierarchy.core_schedule_sha256
+                    )
+                    self.assertEqual(record.scheduled_kernel_launches, expected_cycle_launches)
                     self.assertEqual(record.schedule_version, V_CYCLE_SCHEDULE_VERSION)
                     self.assertEqual(record.work.hierarchy_sha256, endpoint.static_hierarchy_sha256)
                     self.assertEqual(record.work.rhs_count, 1)
@@ -643,9 +785,13 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                         physical.matrix_block_products_executed + physical.matrix_block_products_elided_zero_start,
                         record.work.matrix_block_products,
                     )
-                    self.assertEqual(physical.scheduled_kernel_launches, cycle_launches)
+                    self.assertEqual(physical.scheduled_kernel_launches, expected_cycle_launches)
+                    self.assertEqual(physical.core_kernel_launches, core_launches)
+                    self.assertEqual(physical.publication_kernel_launches, int(cycle_index == 0))
+                    self.assertEqual(physical.publication_version, V_CYCLE_PUBLICATION_VERSION)
+                    self.assertEqual(physical.publication_route, expected_route)
                     self.assertEqual(physical.root_ingress_zero_start_fusions, 1)
-                    self.assertEqual(physical.schedule_sha256, self.solver.device_hierarchy.schedule_sha256)
+                    self.assertEqual(physical.schedule_sha256, expected_schedule)
         schedule = self.solver.deterministic_record()
         self.assertEqual(schedule["contract_id"], CONTRACT_ID)
         self.assertEqual(schedule["krylov_iterations"], 0)
@@ -655,23 +801,36 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
         self.assertEqual(schedule["outer_kernel_launches_per_outer"], expected_outer)
         self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], expected_total)
-        self.assertEqual(schedule["graph_identity_schema"], "captured-direct-graph-vbd-graph-identity-v4")
+        self.assertEqual(schedule["graph_identity_schema"], "captured-direct-graph-vbd-graph-identity-v5")
         self.assertEqual(schedule["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
         self.assertEqual(schedule["v_cycle_schedule_version"], V_CYCLE_SCHEDULE_VERSION)
+        self.assertEqual(schedule["v_cycle_publication_version"], V_CYCLE_PUBLICATION_VERSION)
+        self.assertEqual(schedule["v_cycle_standalone_publication_route"], V_CYCLE_STANDALONE_PUBLICATION_ROUTE)
+        self.assertEqual(
+            schedule["v_cycle_external_shared_publication_route"],
+            V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
+        )
         self.assertEqual(schedule["v_cycle_root_ingress_zero_start_fusions"], 1)
         self.assertEqual(schedule["workspace_owner_identity_sha256"], self.solver._workspace_owner_identity_sha256())
         self.assertFalse(schedule["performance_evidence"])
         json.dumps(schedule, allow_nan=False)
         endpoint_record = endpoint.deterministic_record()
         self.assertEqual(endpoint_record["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
+        self.assertEqual(endpoint_record["v_cycle_publication_version"], V_CYCLE_PUBLICATION_VERSION)
         self.assertEqual(endpoint_record["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(endpoint_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(endpoint_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
         for outer_record in endpoint_record["outer_work"]:
             self.assertEqual(outer_record["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
+            self.assertEqual(outer_record["v_cycle_publication_version"], V_CYCLE_PUBLICATION_VERSION)
+            self.assertEqual(outer_record["first_cycle_publication_route"], V_CYCLE_STANDALONE_PUBLICATION_ROUTE)
+            self.assertEqual(
+                outer_record["second_cycle_publication_route"],
+                V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
+            )
             self.assertEqual(outer_record["outer_kernel_version"], OUTER_KERNEL_VERSION)
             self.assertEqual(outer_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
             self.assertEqual(outer_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
@@ -723,6 +882,25 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 bit_pattern = _device_bit_pattern(getattr(workspace, field_name))[2]
                 self.assertEqual(bit_pattern, bytes(len(bit_pattern)))
 
+    def test_190_route_is_bitwise_equal_to_exact_committed_194_route(self):
+        for label, config in (
+            ("accepted", None),
+            ("sticky-rejection", DirectGraphVBDConfig(minimum_determinant=2.0)),
+        ):
+            with self.subTest(route=label):
+                fused = CapturedDirectGraphVBD(self.scene, device="cuda:0", config=config)
+                committed = CapturedDirectGraphVBD(self.scene, device="cuda:0", config=config)
+                module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+                fused_binding = module._lookup_workspace_owners(fused)
+                fused._enqueue_integrated(fused_binding)
+                committed_binding = _enqueue_committed_194_route(committed)
+                fused_patterns = _integrated_bit_patterns(fused_binding)
+                committed_patterns = _integrated_bit_patterns(committed_binding)
+                self.assertEqual(fused_patterns.keys(), committed_patterns.keys())
+                for name in fused_patterns:
+                    with self.subTest(route=label, array=name):
+                        self.assertEqual(fused_patterns[name], committed_patterns[name])
+
     def test_fused_vertex_kernel_matches_unfused_edge_semantics_bitwise(self):
         device = self.solver.device
         current_host = np.array(
@@ -756,7 +934,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         current = wp.array(current_host, dtype=wp.vec3d, device=device)
         vertex_to_free = wp.array(vertex_to_free_host, dtype=wp.int32, device=device)
         first = wp.array(first_host, dtype=wp.vec3d, device=device)
-        second = wp.array(second_host, dtype=wp.vec3d, device=device)
+        second_scalar = wp.array(second_host.reshape(-1), dtype=wp.float64, device=device)
         rhs = wp.array(rhs_host, dtype=wp.vec3d, device=device)
         inertial_target = wp.array(inertial_target_host, dtype=wp.vec3d, device=device)
         mass = wp.array(mass_host, dtype=wp.float64, device=device)
@@ -766,6 +944,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
 
         def outputs():
             return {
+                "second_correction": wp.empty(n_free, dtype=wp.vec3d, device=device),
                 "direction": wp.empty(n_free, dtype=wp.vec3d, device=device),
                 "outer_start": wp.empty(n_vertices, dtype=wp.vec3d, device=device),
                 "candidate": wp.empty(n_vertices, dtype=wp.vec3d, device=device),
@@ -789,9 +968,15 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                     device=device,
                 )
                 wp.launch(
+                    _copy_scalar_to_vec3,
+                    dim=n_free,
+                    inputs=[second_scalar, oracle["second_correction"]],
+                    device=device,
+                )
+                wp.launch(
                     _oracle_add_vectors,
                     dim=n_free,
-                    inputs=[first, second, oracle["direction"]],
+                    inputs=[first, oracle["second_correction"], oracle["direction"]],
                     device=device,
                 )
                 wp.launch(
@@ -841,7 +1026,8 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                         current,
                         vertex_to_free,
                         first,
-                        second,
+                        second_scalar,
+                        fused["second_correction"],
                         rhs,
                         fused["direction"],
                         active,
@@ -902,6 +1088,9 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                     forged_sha256 = module._derive_outer_schedule_sha256(
                         module.OUTER_KERNEL_VERSION,
                         module.FUSED_GATHER_KERNEL_VERSION,
+                        module.V_CYCLE_PUBLICATION_VERSION,
+                        module.V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
+                        module.V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
                         module.OUTER_SCHEDULE_VERSION,
                     )
                     module.OUTER_SCHEDULE_SHA256 = forged_sha256
@@ -933,17 +1122,26 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         context = self.endpoint._validation_context
         original_context_schedule = (
             context.fused_gather_kernel_version,
+            context.v_cycle_publication_version,
+            context.v_cycle_standalone_publication_route,
+            context.v_cycle_external_shared_publication_route,
             context.outer_kernel_version,
             context.outer_schedule_version,
             context.outer_schedule_sha256,
         )
         forged_gather_version = original_context_schedule[0] + "-forged"
-        forged_kernel_version = original_context_schedule[1] + "-forged"
-        forged_schedule_version = original_context_schedule[2] + "-forged"
+        forged_publication_version = original_context_schedule[1] + "-forged"
+        forged_standalone_route = original_context_schedule[2] + "-forged"
+        forged_external_route = original_context_schedule[3] + "-forged"
+        forged_kernel_version = original_context_schedule[4] + "-forged"
+        forged_schedule_version = original_context_schedule[5] + "-forged"
         module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
         forged_sha256 = module._derive_outer_schedule_sha256(
             forged_kernel_version,
             forged_gather_version,
+            forged_publication_version,
+            forged_standalone_route,
+            forged_external_route,
             forged_schedule_version,
         )
         serializers = (
@@ -954,6 +1152,9 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             with self.subTest(context=name):
                 try:
                     object.__setattr__(context, "fused_gather_kernel_version", forged_gather_version)
+                    object.__setattr__(context, "v_cycle_publication_version", forged_publication_version)
+                    object.__setattr__(context, "v_cycle_standalone_publication_route", forged_standalone_route)
+                    object.__setattr__(context, "v_cycle_external_shared_publication_route", forged_external_route)
                     object.__setattr__(context, "outer_kernel_version", forged_kernel_version)
                     object.__setattr__(context, "outer_schedule_version", forged_schedule_version)
                     object.__setattr__(context, "outer_schedule_sha256", forged_sha256)
@@ -961,9 +1162,14 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                         serializer()
                 finally:
                     object.__setattr__(context, "fused_gather_kernel_version", original_context_schedule[0])
-                    object.__setattr__(context, "outer_kernel_version", original_context_schedule[1])
-                    object.__setattr__(context, "outer_schedule_version", original_context_schedule[2])
-                    object.__setattr__(context, "outer_schedule_sha256", original_context_schedule[3])
+                    object.__setattr__(context, "v_cycle_publication_version", original_context_schedule[1])
+                    object.__setattr__(context, "v_cycle_standalone_publication_route", original_context_schedule[2])
+                    object.__setattr__(
+                        context, "v_cycle_external_shared_publication_route", original_context_schedule[3]
+                    )
+                    object.__setattr__(context, "outer_kernel_version", original_context_schedule[4])
+                    object.__setattr__(context, "outer_schedule_version", original_context_schedule[5])
+                    object.__setattr__(context, "outer_schedule_sha256", original_context_schedule[6])
 
         outer = self.endpoint.outer_work[0]
         original_outer_hash = outer.content_sha256
@@ -1031,7 +1237,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         )
         bad_work = dataclasses.replace(bad_work, content_sha256=work_sha256)
         record_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v2",
+            "warp-scalar-fused-v-cycle-result-v3",
             (
                 ("device_snapshot_sha256", record.device_snapshot_sha256),
                 ("static_device_content_sha256", record.static_device_content_sha256),
@@ -1050,7 +1256,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         bad_executed = physical.matrix_block_products_executed + 1
         bad_elided = physical.matrix_block_products_elided_zero_start - 1
         physical_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v2",
+            "warp-scalar-fused-v-cycle-physical-work-v3",
             (
                 ("hierarchy_sha256", physical.hierarchy_sha256),
                 ("schedule_sha256", physical.schedule_sha256),
@@ -1066,6 +1272,10 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 ("out_of_place_jacobi_block_solves", physical.out_of_place_jacobi_block_solves),
                 ("matrix_kernel_launches", physical.matrix_kernel_launches),
                 ("jacobi_kernel_launches", physical.jacobi_kernel_launches),
+                ("core_kernel_launches", physical.core_kernel_launches),
+                ("publication_kernel_launches", physical.publication_kernel_launches),
+                ("publication_version", physical.publication_version),
+                ("publication_route", physical.publication_route),
                 ("scheduled_kernel_launches", physical.scheduled_kernel_launches),
             ),
         )
@@ -1076,7 +1286,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             content_sha256=physical_sha256,
         )
         physical_record_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v2",
+            "warp-scalar-fused-v-cycle-result-v3",
             (
                 ("device_snapshot_sha256", record.device_snapshot_sha256),
                 ("static_device_content_sha256", record.static_device_content_sha256),
@@ -1100,7 +1310,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         original_record_sha256 = record.content_sha256
         forged_root_fusions = 0
         forged_physical_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v2",
+            "warp-scalar-fused-v-cycle-physical-work-v3",
             (
                 ("hierarchy_sha256", physical.hierarchy_sha256),
                 ("schedule_sha256", physical.schedule_sha256),
@@ -1116,11 +1326,15 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 ("out_of_place_jacobi_block_solves", physical.out_of_place_jacobi_block_solves),
                 ("matrix_kernel_launches", physical.matrix_kernel_launches),
                 ("jacobi_kernel_launches", physical.jacobi_kernel_launches),
+                ("core_kernel_launches", physical.core_kernel_launches),
+                ("publication_kernel_launches", physical.publication_kernel_launches),
+                ("publication_version", physical.publication_version),
+                ("publication_route", physical.publication_route),
                 ("scheduled_kernel_launches", physical.scheduled_kernel_launches),
             ),
         )
         forged_record_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v2",
+            "warp-scalar-fused-v-cycle-result-v3",
             (
                 ("device_snapshot_sha256", record.device_snapshot_sha256),
                 ("static_device_content_sha256", record.static_device_content_sha256),
@@ -1187,9 +1401,13 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
 
         context = self.endpoint._validation_context
         original_schedule = context.v_cycle_schedule_sha256
+        original_core_schedule = context.v_cycle_core_schedule_sha256
         original_static = context.v_cycle_static_device_content_sha256
         original_snapshot = context.v_cycle_device_snapshot_sha256
+        original_core_snapshot = context.v_cycle_core_device_snapshot_sha256
         original_launches = context.v_cycle_kernel_launches
+        original_core_launches = context.v_cycle_core_kernel_launches
+        original_publication_version = context.v_cycle_publication_version
         original_root_fusions = context.v_cycle_root_ingress_zero_start_fusions
         original_capture_binding = context.capture_binding
         try:
@@ -1197,6 +1415,10 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "scalar-fused schedule identity"):
                 dataclasses.replace(self.endpoint)
             object.__setattr__(context, "v_cycle_schedule_sha256", original_schedule)
+            object.__setattr__(context, "v_cycle_core_schedule_sha256", "f" * 64)
+            with self.assertRaisesRegex(ValueError, "core schedule identity"):
+                dataclasses.replace(self.endpoint)
+            object.__setattr__(context, "v_cycle_core_schedule_sha256", original_core_schedule)
             object.__setattr__(context, "v_cycle_static_device_content_sha256", "d" * 64)
             with self.assertRaisesRegex(ValueError, "scalar-fused static content identity"):
                 dataclasses.replace(self.endpoint)
@@ -1205,10 +1427,22 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "scalar-fused device snapshot identity"):
                 dataclasses.replace(self.endpoint)
             object.__setattr__(context, "v_cycle_device_snapshot_sha256", original_snapshot)
+            object.__setattr__(context, "v_cycle_core_device_snapshot_sha256", "a" * 64)
+            with self.assertRaisesRegex(ValueError, "core device snapshot identity"):
+                dataclasses.replace(self.endpoint)
+            object.__setattr__(context, "v_cycle_core_device_snapshot_sha256", original_core_snapshot)
             object.__setattr__(context, "v_cycle_kernel_launches", original_launches + 1)
             with self.assertRaisesRegex(ValueError, "V-cycle launch count"):
                 dataclasses.replace(self.endpoint)
             object.__setattr__(context, "v_cycle_kernel_launches", original_launches)
+            object.__setattr__(context, "v_cycle_core_kernel_launches", original_core_launches + 1)
+            with self.assertRaisesRegex(ValueError, "full/core launch counts|core launch count"):
+                dataclasses.replace(self.endpoint)
+            object.__setattr__(context, "v_cycle_core_kernel_launches", original_core_launches)
+            object.__setattr__(context, "v_cycle_publication_version", original_publication_version + "-forged")
+            with self.assertRaisesRegex(ValueError, "outer kernel schedule|publication provenance"):
+                dataclasses.replace(self.endpoint)
+            object.__setattr__(context, "v_cycle_publication_version", original_publication_version)
             object.__setattr__(context, "v_cycle_root_ingress_zero_start_fusions", 0)
             with self.assertRaisesRegex(ValueError, "root ingress fusion count"):
                 dataclasses.replace(self.endpoint)
@@ -1218,11 +1452,43 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 dataclasses.replace(self.endpoint)
         finally:
             object.__setattr__(context, "v_cycle_schedule_sha256", original_schedule)
+            object.__setattr__(context, "v_cycle_core_schedule_sha256", original_core_schedule)
             object.__setattr__(context, "v_cycle_static_device_content_sha256", original_static)
             object.__setattr__(context, "v_cycle_device_snapshot_sha256", original_snapshot)
+            object.__setattr__(context, "v_cycle_core_device_snapshot_sha256", original_core_snapshot)
             object.__setattr__(context, "v_cycle_kernel_launches", original_launches)
+            object.__setattr__(context, "v_cycle_core_kernel_launches", original_core_launches)
+            object.__setattr__(context, "v_cycle_publication_version", original_publication_version)
             object.__setattr__(context, "v_cycle_root_ingress_zero_start_fusions", original_root_fusions)
             object.__setattr__(context, "capture_binding", original_capture_binding)
+
+    def test_nested_vcycle_signed_zero_correction_tamper_is_rejected(self):
+        solver = CapturedDirectGraphVBD(
+            self.scene,
+            device="cuda:0",
+            config=DirectGraphVBDConfig(minimum_determinant=2.0),
+        )
+        solver.capture_graphs(warmup_replays=1)
+        endpoint = solver.run(graph_replay=True)
+        outer = endpoint.outer_work[1]
+
+        for cycle_index, record in enumerate(outer.v_cycles):
+            with self.subTest(cycle=cycle_index):
+                correction = np.array(record.correction, copy=True)
+                flat = correction.reshape(-1)
+                zero_indices = np.flatnonzero(flat == 0.0)
+                self.assertGreater(zero_indices.size, 0)
+                index = int(zero_indices[0])
+                flat[index] = np.copysign(0.0, 1.0 if np.signbit(flat[index]) else -1.0)
+                self.assertTrue(np.array_equal(correction, record.correction))
+                self.assertNotEqual(correction.tobytes(), record.correction.tobytes())
+
+                forged_record = dataclasses.replace(record)
+                object.__setattr__(forged_record, "correction", correction)
+                forged_cycles = list(outer.v_cycles)
+                forged_cycles[cycle_index] = forged_record
+                with self.assertRaisesRegex(ValueError, "retained correction bytes"):
+                    dataclasses.replace(outer, v_cycles=tuple(forged_cycles))
 
     def test_pristine_k1_reset_source_tamper_fails_before_execution(self):
         source = self.solver.baseline.pristine_input.particle_qd
@@ -1297,11 +1563,33 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             cycle.level_correction_alt = (replacement, *original[1:])
             with self.assertRaisesRegex(
                 RuntimeError,
-                "workspace persistent array pointers|allocation or pointer|level_correction_alt container",
+                "workspace persistent array pointers|allocation or pointer|level_correction_alt container|final_scalar_correction owner",
             ):
                 self.solver.deterministic_record()
         finally:
             cycle.level_correction_alt = original
+
+    def test_shared_publication_rejects_partial_alias_and_cycle_role_swap(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        binding = module._lookup_workspace_owners(self.solver)
+        outer_binding = binding.outer[0]
+        final_scalar = outer_binding.second_cycle.final_scalar_correction
+        aliased_output = wp.array(
+            ptr=int(final_scalar.ptr) + 8,
+            dtype=wp.vec3d,
+            shape=(self.solver.operator.n_free,),
+            device=self.solver.device,
+            copy=False,
+        )
+        with self.assertRaisesRegex(RuntimeError, "second_correction aliases second_cycle"):
+            self.solver._validate_shared_publication_aliases(
+                outer_binding._replace(second_correction=aliased_output),
+                name="forged outer",
+            )
+
+        outer = self.endpoint.outer_work[0]
+        with self.assertRaisesRegex(ValueError, "scheduled launch count|schedule or static snapshot"):
+            dataclasses.replace(outer, v_cycles=(outer.v_cycles[1], outer.v_cycles[0]))
 
     def test_workspace_container_swap_fails_at_every_public_boundary(self):
         original = self.solver.workspaces
@@ -2272,6 +2560,8 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(timing.k4_graph_identity_sha256, self.solver.k4_graph_identity_sha256)
         record = timing.deterministic_record()
         self.assertEqual(record["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
+        self.assertEqual(record["v_cycle_publication_version"], V_CYCLE_PUBLICATION_VERSION)
+        self.assertEqual(record["correction_kernel_launches"], self.solver.correction_kernel_launches)
         json.dumps(record, allow_nan=False)
 
     def test_endpoint_evidence_is_bytes_backed_and_immutable(self):
@@ -2313,13 +2603,14 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
 
     def test_real_default_stretch_scalar_fused_schedule_and_physical_work_are_exact(self):
         self.assertEqual(self.solver.device_hierarchy.scheduled_kernel_launches, 20)
-        self.assertEqual(self.solver.linear_prefix_kernel_launches_per_outer, 44)
-        self.assertEqual(self.solver.linear_kernel_launches_per_outer, 45)
-        self.assertEqual(self.solver.outer_kernel_launches_per_outer, 48)
-        self.assertEqual(self.solver.correction_kernel_launches, 194)
+        self.assertEqual(self.solver.device_hierarchy.core_kernel_launches, 19)
+        self.assertEqual(self.solver.linear_prefix_kernel_launches_per_outer, 43)
+        self.assertEqual(self.solver.linear_kernel_launches_per_outer, 44)
+        self.assertEqual(self.solver.outer_kernel_launches_per_outer, 47)
+        self.assertEqual(self.solver.correction_kernel_launches, 190)
         for outer in self.endpoint.outer_work:
-            self.assertEqual(outer.linear_kernel_launches, 45)
-            for record in outer.v_cycles:
+            self.assertEqual(outer.linear_kernel_launches, 44)
+            for cycle_index, record in enumerate(outer.v_cycles):
                 self.assertEqual(record.work.matrix_block_products, 5058)
                 self.assertEqual(record.physical_work.matrix_block_products_executed, 3372)
                 self.assertEqual(record.physical_work.matrix_block_products_elided_zero_start, 1686)
@@ -2328,23 +2619,33 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
                 self.assertEqual(record.physical_work.matrix_kernel_launches, 6)
                 self.assertEqual(record.physical_work.jacobi_kernel_launches, 6)
                 self.assertEqual(record.physical_work.root_ingress_zero_start_fusions, 1)
-                self.assertEqual(record.physical_work.scheduled_kernel_launches, 20)
+                self.assertEqual(record.physical_work.scheduled_kernel_launches, 20 - cycle_index)
+                self.assertEqual(record.physical_work.core_kernel_launches, 19)
+                self.assertEqual(record.physical_work.publication_kernel_launches, int(cycle_index == 0))
+                self.assertEqual(
+                    record.physical_work.publication_route,
+                    V_CYCLE_STANDALONE_PUBLICATION_ROUTE
+                    if cycle_index == 0
+                    else V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
+                )
                 self.assertEqual(record.schedule_version, V_CYCLE_SCHEDULE_VERSION)
                 self.assertFalse(record.performance_evidence)
         schedule = self.solver.deterministic_record()
         self.assertEqual(schedule["v_cycle_kernel_launches"], 20)
+        self.assertEqual(schedule["v_cycle_core_kernel_launches"], 19)
         self.assertEqual(schedule["v_cycle_root_ingress_zero_start_fusions"], 1)
-        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 44)
+        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 43)
         self.assertEqual(schedule["fused_gather_kernel_launches_per_outer"], 2)
         self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
-        self.assertEqual(schedule["linear_kernel_launches_per_outer"], 45)
-        self.assertEqual(schedule["outer_kernel_launches_per_outer"], 48)
-        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 194)
+        self.assertEqual(schedule["linear_kernel_launches_per_outer"], 44)
+        self.assertEqual(schedule["outer_kernel_launches_per_outer"], 47)
+        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 190)
         self.assertEqual(schedule["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
         self.assertEqual(schedule["v_cycle_schedule_version"], V_CYCLE_SCHEDULE_VERSION)
+        self.assertEqual(schedule["v_cycle_publication_version"], V_CYCLE_PUBLICATION_VERSION)
         self.assertEqual(schedule["v_cycle_canonical_matrix_block_products"], 5058)
         self.assertEqual(schedule["v_cycle_matrix_block_products_executed"], 3372)
         self.assertEqual(schedule["v_cycle_matrix_block_products_elided_zero_start"], 1686)
@@ -2378,6 +2679,8 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
         self.assertGreater(timing.k4_median_seconds, 0.0)
         self.assertFalse(timing.performance_evidence)
         self.assertEqual(record["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
+        self.assertEqual(record["v_cycle_publication_version"], V_CYCLE_PUBLICATION_VERSION)
+        self.assertEqual(record["correction_kernel_launches"], 190)
         print("CAPTURED_DIRECT_GRAPH_VBD_TIMING=" + json.dumps(record, sort_keys=True))
 
 

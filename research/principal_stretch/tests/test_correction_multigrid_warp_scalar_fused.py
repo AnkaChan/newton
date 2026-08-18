@@ -26,8 +26,11 @@ from research.principal_stretch.correction_multigrid import (
 from research.principal_stretch.correction_multigrid_warp import WarpStaticMultigridHierarchy
 from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     CONTRACT_ID,
+    EXTERNAL_SHARED_PUBLICATION_ROUTE,
     KERNEL_VERSION,
+    PUBLICATION_VERSION,
     SCHEDULE_VERSION,
+    STANDALONE_PUBLICATION_ROUTE,
     WarpScalarFusedStaticMultigridHierarchy,
     WarpScalarFusedStaticMultigridPreconditioner,
 )
@@ -216,18 +219,22 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
 
     def test_contract_scalar_owners_source_sharing_and_launch_path(self):
         hierarchy = self.device_hierarchy
-        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v2")
+        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v3")
         self.assertEqual(CONTRACT_ID, "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1")
         self.assertEqual(
             SCHEDULE_VERSION,
-            "scalar-root-ingress-zero-start-jacobi-restrict-recurse-prolong-ping-pong-v2",
+            "scalar-core-and-versioned-publication-routes-v3",
         )
+        self.assertEqual(PUBLICATION_VERSION, "scalar-fused-v-cycle-publication-routes-v1")
         self.assertIs(hierarchy.source_hierarchy, self.source)
         self.assertIs(hierarchy.levels, self.source.levels)
         self.assertEqual(int(hierarchy.coarse_cholesky.ptr), int(self.source.coarse_cholesky.ptr))
         self.assertEqual(len(hierarchy.schedule_sha256), 64)
         self.assertNotEqual(hierarchy.device_snapshot_sha256, hierarchy.source_device_snapshot_sha256)
         self.assertEqual(hierarchy.scheduled_kernel_launches, 22)
+        self.assertEqual(hierarchy.core_kernel_launches, 21)
+        self.assertNotEqual(hierarchy.schedule_sha256, hierarchy.core_schedule_sha256)
+        self.assertNotEqual(hierarchy.device_snapshot_sha256, hierarchy.core_device_snapshot_sha256)
         self.assertEqual(self.source.scheduled_kernel_launches, 37)
 
         source = inspect.getsource(scalar_fused_module)
@@ -305,6 +312,10 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                     np.testing.assert_allclose(actual.correction, expected.correction, rtol=4.0e-14, atol=4.0e-14)
                     _assert_canonical_work_matches(self, actual.work, expected.work)
                     self.assertEqual(actual.scheduled_kernel_launches, expected_launches)
+                    self.assertEqual(actual.physical_work.core_kernel_launches, expected_launches - 1)
+                    self.assertEqual(actual.physical_work.publication_kernel_launches, 1)
+                    self.assertEqual(actual.physical_work.publication_version, PUBLICATION_VERSION)
+                    self.assertEqual(actual.physical_work.publication_route, STANDALONE_PUBLICATION_ROUTE)
                     self.assertEqual(actual.physical_work.matrix_kernel_launches, expected_matrix_launches)
                     self.assertEqual(actual.physical_work.jacobi_kernel_launches, expected_matrix_launches)
                     stored_blocks = sum(level.matrix.stored_block_count for level in hierarchy.levels[:-1])
@@ -334,6 +345,32 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                     json.dumps(actual.deterministic_record(), allow_nan=False)
                     with self.assertRaises(ValueError):
                         actual.correction.setflags(write=True)
+
+                    _poison_workspace(workspace)
+                    workspace.set_rhs(rhs)
+                    with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as core_launch:
+                        workspace.launch_core()
+                    self.assertEqual(core_launch.call_count, expected_launches - 1)
+                    self.assertFalse(
+                        any(
+                            call.args[0] is scalar_fused_module._copy_scalar_to_vec3
+                            for call in core_launch.call_args_list
+                        )
+                    )
+                    with self.assertRaisesRegex(ValueError, "solver-private"):
+                        workspace.record_core_application(token=object())
+                    core_record = workspace.record_core_application(token=scalar_fused_module._CORE_RECORD_TOKEN)
+                    np.testing.assert_array_equal(
+                        core_record.correction.view(np.uint64),
+                        actual.correction.view(np.uint64),
+                    )
+                    self.assertEqual(core_record.scheduled_kernel_launches, expected_launches - 1)
+                    self.assertEqual(core_record.physical_work.core_kernel_launches, expected_launches - 1)
+                    self.assertEqual(core_record.physical_work.publication_kernel_launches, 0)
+                    self.assertEqual(core_record.physical_work.publication_version, PUBLICATION_VERSION)
+                    self.assertEqual(core_record.physical_work.publication_route, EXTERNAL_SHARED_PUBLICATION_ROUTE)
+                    self.assertEqual(core_record.schedule_sha256, device_hierarchy.core_schedule_sha256)
+                    self.assertEqual(core_record.device_snapshot_sha256, device_hierarchy.core_device_snapshot_sha256)
                 for level_index in range(len(hierarchy.levels) - 1):
                     self.assertEqual(
                         int(workspace._final_level_correction(level_index).ptr),
@@ -406,11 +443,15 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         )
         rhs = _rhs_set(hierarchy.n_free_dofs)[0]
 
-        for internal_name in ("level_rhs", "level_correction"):
+        for internal_name, get_internal in (
+            ("level_rhs", lambda workspace: workspace.level_rhs[0]),
+            ("level_correction", lambda workspace: workspace.level_correction[0]),
+            ("final_correction", lambda workspace: workspace.final_scalar_correction),
+        ):
             for byte_offset in (0, 8):
                 with self.subTest(internal_name=internal_name, byte_offset=byte_offset):
                     workspace = hierarchy.create_workspace()
-                    internal = getattr(workspace, internal_name)[0]
+                    internal = get_internal(workspace)
                     aliased_rhs = wp.array(
                         ptr=int(internal.ptr) + byte_offset,
                         dtype=wp.vec3d,
@@ -436,8 +477,10 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                     device=hierarchy.device,
                     copy=False,
                 )
-                with self.assertRaisesRegex(ValueError, "output and root"):
-                    hierarchy.launch_apply(workspace.rhs, aliased_output, workspace)
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    with self.assertRaisesRegex(ValueError, "output and root"):
+                        hierarchy.launch_apply(workspace.rhs, aliased_output, workspace)
+                self.assertEqual(launch.call_count, 0)
 
         workspace = hierarchy.create_workspace()
         shifted_primary = wp.array(
@@ -465,6 +508,36 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         np.testing.assert_array_equal(workspace.level_rhs[0].numpy(), rhs)
         np.testing.assert_allclose(internal_record.correction, expected.correction, rtol=4.0e-14, atol=4.0e-14)
         self.assertEqual(_pointer_tuple(hierarchy, workspace), pointers)
+
+    def test_core_and_full_publication_are_bitwise_for_signed_zero_and_nonfinite(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cpu",
+        )
+        generator = np.random.default_rng(180819)
+        random_rhs = generator.normal(size=(hierarchy.n_free, 3))
+        signed_zero_rhs = np.zeros((hierarchy.n_free, 3), dtype=np.float64)
+        signed_zero_rhs.reshape(-1)[::2] = -0.0
+        nonfinite_rhs = generator.normal(size=(hierarchy.n_free, 3))
+        nonfinite_rhs.reshape(-1)[:4] = (np.inf, -np.inf, np.nan, -0.0)
+        for name, rhs in (
+            ("random", random_rhs),
+            ("signed_zero", signed_zero_rhs),
+            ("nonfinite", nonfinite_rhs),
+        ):
+            with self.subTest(name=name):
+                full = hierarchy.create_workspace()
+                core = hierarchy.create_workspace()
+                _poison_workspace(full)
+                _poison_workspace(core)
+                full.rhs.assign(rhs)
+                core.rhs.assign(rhs)
+                full.launch()
+                core.launch_core()
+                np.testing.assert_array_equal(
+                    full.correction.numpy().reshape(-1).view(np.uint64),
+                    core.final_scalar_correction.numpy().view(np.uint64),
+                )
 
     def test_symmetric_positive_poison_independence_and_no_in_place_jacobi(self):
         x, y, rhs, *_ = _rhs_set(self.hierarchy.levels[0].matrix.scalar_size)
@@ -535,6 +608,10 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             ("root_ingress_zero_start_fusions", 0),
             ("zero_start_block_solves", record.physical_work.zero_start_block_solves + 1),
             ("matrix_kernel_launches", record.physical_work.matrix_kernel_launches + 1),
+            ("core_kernel_launches", record.physical_work.core_kernel_launches + 1),
+            ("publication_kernel_launches", 0),
+            ("publication_version", PUBLICATION_VERSION + "-forged"),
+            ("publication_route", EXTERNAL_SHARED_PUBLICATION_ROUTE),
             ("schedule_sha256", "0" * 64),
             ("content_sha256", "0" * 64),
         ):
@@ -569,6 +646,11 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "schedule binding"):
             workspace.launch()
         workspace._schedule_sha256 = original_schedule
+        original_core_schedule = workspace._core_schedule_sha256
+        workspace._core_schedule_sha256 = "1" * 64
+        with self.assertRaisesRegex(RuntimeError, "schedule binding"):
+            workspace.launch_core()
+        workspace._core_schedule_sha256 = original_core_schedule
 
         original_residuals = workspace.level_residual
         workspace.level_residual = (
@@ -644,6 +726,7 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             1,
         )
         self.assertEqual(coarse_device.scheduled_kernel_launches, 3)
+        self.assertEqual(coarse_device.core_kernel_launches, 2)
         coarse_record = coarse_workspace.record()
         self.assertEqual(coarse_record.physical_work.root_ingress_zero_start_fusions, 0)
         np.testing.assert_allclose(
@@ -652,6 +735,14 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             rtol=3.0e-14,
             atol=3.0e-14,
         )
+        coarse_workspace.set_rhs(coarse_rhs)
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as core_launch:
+            coarse_workspace.launch_core()
+        self.assertEqual(core_launch.call_count, 2)
+        core_record = coarse_workspace.record_core_application(token=scalar_fused_module._CORE_RECORD_TOKEN)
+        self.assertEqual(core_record.scheduled_kernel_launches, 2)
+        self.assertEqual(core_record.physical_work.publication_kernel_launches, 0)
+        np.testing.assert_array_equal(core_record.correction.view(np.uint64), coarse_record.correction.view(np.uint64))
 
     def test_257_scalar_row_boundary_and_translation_transfer(self):
         hierarchy = _translation_hierarchy(257)
@@ -692,6 +783,7 @@ class TestWarpScalarFusedDefaultStretchCpu(unittest.TestCase):
             self.hierarchy.content_sha256, "2e08bcce552d135e3ec8010c6100ee6b18e6157e0c4e7013c2894280a1e9d493"
         )
         self.assertEqual(self.device_hierarchy.scheduled_kernel_launches, 20)
+        self.assertEqual(self.device_hierarchy.core_kernel_launches, 19)
         self.assertEqual(self.device_hierarchy.source_hierarchy.scheduled_kernel_launches, 36)
 
         rhs = np.random.default_rng(230818).normal(size=self.hierarchy.levels[0].matrix.scalar_size)
@@ -712,9 +804,9 @@ class TestWarpScalarFusedDefaultStretchCpu(unittest.TestCase):
         self.assertEqual(actual.physical_work.out_of_place_jacobi_block_solves, 184)
         self.assertEqual(actual.physical_work.matrix_kernel_launches, 6)
         self.assertEqual(actual.physical_work.jacobi_kernel_launches, 6)
-        linear_prefix_launches = 4 + 2 * actual.scheduled_kernel_launches
+        linear_prefix_launches = 4 + actual.scheduled_kernel_launches + actual.physical_work.core_kernel_launches
         predicted_captured_launches = 2 + 4 * ((linear_prefix_launches + 1) + 3)
-        self.assertEqual(predicted_captured_launches, 194)
+        self.assertEqual(predicted_captured_launches, 190)
         self.assertFalse(actual.performance_evidence)
 
 

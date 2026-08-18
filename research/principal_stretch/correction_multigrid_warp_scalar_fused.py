@@ -11,10 +11,11 @@ every later sweep uses a scalar-row CSR residual followed by an out-of-place
 scalar-row Jacobi update.  Corrections ping-pong between fixed A/B buffers so
 no sweep reads values that another thread is overwriting.
 
-For ``n`` noncoarsest levels, ``p`` pre-sweeps, and ``q`` post-sweeps, one
-application schedules exactly
-``3 + n * (2 + 2*p + 2*q) - int(n > 0)`` kernels.  A coarsest-only hierarchy
-retains its three-launch ingress/solve/egress route.  With the required
+For ``n`` noncoarsest levels, ``p`` pre-sweeps, and ``q`` post-sweeps, the
+scalar core schedules exactly
+``2 + n * (2 + 2*p + 2*q) - int(n > 0)`` kernels.  The standalone public
+adapter adds one scalar-to-vec3 publication kernel.  A coarsest-only hierarchy
+therefore retains its two-launch core and three-launch public route.  With the required
 symmetric ``p == q >= 1``, every noncoarsest result finishes in B and the
 coarsest result finishes in A.  The launch path allocates no device arrays,
 performs no synchronization or device readback, and is CUDA-graph capturable
@@ -44,9 +45,13 @@ from .correction_multigrid_warp import (
     _solve_coarsest_cholesky,
 )
 
-KERNEL_VERSION = "mg-vbd-warp-static-v-cycle-scalar-fused-v2"
+KERNEL_VERSION = "mg-vbd-warp-static-v-cycle-scalar-fused-v3"
 CONTRACT_ID = "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1"
-SCHEDULE_VERSION = "scalar-root-ingress-zero-start-jacobi-restrict-recurse-prolong-ping-pong-v2"
+SCHEDULE_VERSION = "scalar-core-and-versioned-publication-routes-v3"
+PUBLICATION_VERSION = "scalar-fused-v-cycle-publication-routes-v1"
+STANDALONE_PUBLICATION_ROUTE = "standalone-scalar-to-vec3-kernel"
+EXTERNAL_SHARED_PUBLICATION_ROUTE = "external-shared-vertex-owner-scalar-to-vec3"
+_CORE_RECORD_TOKEN = object()
 SUPPORTED_BLOCK_SIZES = (3, 6)
 
 # Keep a visible marker so CUDA test output identifies the exact compiled path.
@@ -176,6 +181,10 @@ class WarpScalarFusedVCyclePhysicalWork:
     out_of_place_jacobi_block_solves: int
     matrix_kernel_launches: int
     jacobi_kernel_launches: int
+    core_kernel_launches: int
+    publication_kernel_launches: int
+    publication_version: str
+    publication_route: str
     scheduled_kernel_launches: int
     content_sha256: str
 
@@ -190,16 +199,33 @@ class WarpScalarFusedVCyclePhysicalWork:
             "out_of_place_jacobi_block_solves",
             "matrix_kernel_launches",
             "jacobi_kernel_launches",
+            "core_kernel_launches",
+            "publication_kernel_launches",
             "scheduled_kernel_launches",
         )
         if any(type(getattr(self, name)) is not int or getattr(self, name) < 0 for name in integer_fields):
             raise ValueError("physical-work counts must be non-negative built-in integers")
-        if self.scheduled_kernel_launches < 3:
-            raise ValueError("a scalar-fused V-cycle must schedule at least input, coarse, and output kernels")
+        if self.core_kernel_launches < 2 or self.scheduled_kernel_launches < 2:
+            raise ValueError("a scalar-fused V-cycle core must schedule at least input and coarse kernels")
         if self.root_ingress_zero_start_fusions not in (0, 1):
             raise ValueError("root_ingress_zero_start_fusions must be zero or one")
+        if type(self.publication_version) is not str or self.publication_version != PUBLICATION_VERSION:
+            raise ValueError("publication_version is stale")
+        if type(self.publication_route) is not str:
+            raise TypeError("publication_route must be a built-in string")
+        if self.publication_route == STANDALONE_PUBLICATION_ROUTE:
+            expected_publication_launches = 1
+        elif self.publication_route == EXTERNAL_SHARED_PUBLICATION_ROUTE:
+            expected_publication_launches = 0
+        else:
+            raise ValueError("publication_route is outside the fixed physical schedule")
+        if (
+            self.publication_kernel_launches != expected_publication_launches
+            or self.scheduled_kernel_launches != self.core_kernel_launches + expected_publication_launches
+        ):
+            raise ValueError("physical publication route and launch counts disagree")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v2",
+            "warp-scalar-fused-v-cycle-physical-work-v3",
             tuple(
                 (field.name, getattr(self, field.name))
                 for field in dataclasses.fields(self)
@@ -245,8 +271,8 @@ class WarpScalarFusedVCycleRecord:
             "content_sha256",
         ):
             _require_sha256(getattr(self, name), name=name)
-        if type(self.scheduled_kernel_launches) is not int or self.scheduled_kernel_launches < 3:
-            raise ValueError("scheduled_kernel_launches must be a built-in integer of at least three")
+        if type(self.scheduled_kernel_launches) is not int or self.scheduled_kernel_launches < 2:
+            raise ValueError("scheduled_kernel_launches must be a built-in integer of at least two")
         if type(self.capture_replay) is not bool:
             raise TypeError("capture_replay must be a bool")
         if (
@@ -277,7 +303,7 @@ class WarpScalarFusedVCycleRecord:
         if physical.root_ingress_zero_start_fusions != int(len(self.work.level_visits) > 1):
             raise ValueError("physical work has the wrong root ingress fusion count")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v2",
+            "warp-scalar-fused-v-cycle-result-v3",
             (
                 ("device_snapshot_sha256", self.device_snapshot_sha256),
                 ("static_device_content_sha256", self.static_device_content_sha256),
@@ -322,6 +348,10 @@ class WarpScalarFusedVCycleRecord:
             "out_of_place_jacobi_block_solves": physical.out_of_place_jacobi_block_solves,
             "matrix_kernel_launches": physical.matrix_kernel_launches,
             "jacobi_kernel_launches": physical.jacobi_kernel_launches,
+            "core_kernel_launches": physical.core_kernel_launches,
+            "publication_kernel_launches": physical.publication_kernel_launches,
+            "publication_version": physical.publication_version,
+            "publication_route": physical.publication_route,
             "scheduled_kernel_launches": record.scheduled_kernel_launches,
             "work_sha256": record.work.content_sha256,
             "physical_work_sha256": physical.content_sha256,
@@ -334,6 +364,8 @@ class WarpScalarFusedStaticMultigridHierarchy:
 
     __slots__ = (
         "_coarse_cholesky",
+        "_core_device_snapshot_sha256",
+        "_core_schedule_sha256",
         "_device",
         "_device_snapshot_sha256",
         "_free_vertices_host",
@@ -405,29 +437,53 @@ class WarpScalarFusedStaticMultigridHierarchy:
         self._static_level_signature = self._current_level_signature()
         self._static_device_content_sha256 = self._read_static_device_content_sha256()
         root_ingress_fused = int(len(hierarchy.levels) > 1)
-        self._schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-schedule-v2",
+        common_schedule_parts = (
+            ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
+            ("kernel_version", KERNEL_VERSION),
+            ("schedule_version", SCHEDULE_VERSION),
+            ("owner_parallelism", "one-owner-per-scalar-row"),
+            ("pre_smooth_steps", hierarchy.pre_smooth_steps),
+            ("post_smooth_steps", hierarchy.post_smooth_steps),
+            ("level_shapes", _immutable_array(shape_rows, np.int64)),
+            ("transfer_block_paths", _immutable_array(transfer_paths, np.int64)),
             (
-                ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
-                ("kernel_version", KERNEL_VERSION),
-                ("schedule_version", SCHEDULE_VERSION),
-                ("owner_parallelism", "one-owner-per-scalar-row"),
-                ("pre_smooth_steps", hierarchy.pre_smooth_steps),
-                ("post_smooth_steps", hierarchy.post_smooth_steps),
-                ("level_shapes", _immutable_array(shape_rows, np.int64)),
-                ("transfer_block_paths", _immutable_array(transfer_paths, np.int64)),
-                (
-                    "root_ingress_route",
-                    "fused-vec3d-scalar-zero-start" if root_ingress_fused else "standalone-vec3d-scalar",
-                ),
-                ("root_ingress_zero_start_fusions", root_ingress_fused),
-                ("noncoarse_result_buffer", "B"),
-                ("coarsest_result_buffer", "A"),
+                "root_ingress_route",
+                "fused-vec3d-scalar-zero-start" if root_ingress_fused else "standalone-vec3d-scalar",
+            ),
+            ("root_ingress_zero_start_fusions", root_ingress_fused),
+            ("noncoarse_result_buffer", "B"),
+            ("coarsest_result_buffer", "A"),
+            ("core_kernel_launches", self.core_kernel_launches),
+            ("publication_version", PUBLICATION_VERSION),
+        )
+        self._core_schedule_sha256 = _hash_parts(
+            "warp-scalar-fused-v-cycle-core-schedule-v1",
+            (
+                *common_schedule_parts,
+                ("publication_route", EXTERNAL_SHARED_PUBLICATION_ROUTE),
+                ("publication_kernel_launches", 0),
+                ("scheduled_kernel_launches", self.core_kernel_launches),
+            ),
+        )
+        self._schedule_sha256 = _hash_parts(
+            "warp-scalar-fused-v-cycle-schedule-v3",
+            (
+                *common_schedule_parts,
+                ("publication_route", STANDALONE_PUBLICATION_ROUTE),
+                ("publication_kernel_launches", 1),
                 ("scheduled_kernel_launches", self.scheduled_kernel_launches),
             ),
         )
+        self._core_device_snapshot_sha256 = _hash_parts(
+            "warp-scalar-fused-static-multigrid-core-snapshot-v1",
+            (
+                ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
+                ("static_device_content_sha256", self._static_device_content_sha256),
+                ("core_schedule_sha256", self._core_schedule_sha256),
+            ),
+        )
         self._device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-snapshot-v2",
+            "warp-scalar-fused-static-multigrid-snapshot-v3",
             (
                 ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                 ("static_device_content_sha256", self._static_device_content_sha256),
@@ -512,8 +568,16 @@ class WarpScalarFusedStaticMultigridHierarchy:
         return self._schedule_sha256
 
     @property
+    def core_schedule_sha256(self) -> str:
+        return self._core_schedule_sha256
+
+    @property
     def device_snapshot_sha256(self) -> str:
         return self._device_snapshot_sha256
+
+    @property
+    def core_device_snapshot_sha256(self) -> str:
+        return self._core_device_snapshot_sha256
 
     @property
     def static_device_content_sha256(self) -> str:
@@ -522,9 +586,14 @@ class WarpScalarFusedStaticMultigridHierarchy:
 
     @property
     def scheduled_kernel_launches(self) -> int:
-        """Exact fixed launch count for one scalar-fused V-cycle."""
+        """Exact fixed launch count for one standalone scalar-fused V-cycle."""
+        return self.core_kernel_launches + 1
+
+    @property
+    def core_kernel_launches(self) -> int:
+        """Exact fixed launch count before scalar-to-vec3 publication."""
         noncoarse = len(self.levels) - 1
-        return 3 + noncoarse * (2 + 2 * self.pre_smooth_steps + 2 * self.post_smooth_steps) - int(noncoarse > 0)
+        return 2 + noncoarse * (2 + 2 * self.pre_smooth_steps + 2 * self.post_smooth_steps) - int(noncoarse > 0)
 
     def _current_static_arrays(self) -> tuple[wp.array, ...]:
         arrays = [self._source_hierarchy.coarse_cholesky]
@@ -629,10 +698,9 @@ class WarpScalarFusedStaticMultigridHierarchy:
     def _arrays_overlap(cls, left: wp.array, right: wp.array) -> bool:
         return cls._memory_spans_overlap(cls._array_memory_span(left), cls._array_memory_span(right))
 
-    def _validate_launch_aliases(
+    def _validate_core_launch_aliases(
         self,
         rhs: wp.array[wp.vec3d],
-        output: wp.array[wp.vec3d],
         workspace: WarpScalarFusedVCycleWorkspace,
     ) -> None:
         root_rhs = workspace.level_rhs[0]
@@ -643,16 +711,32 @@ class WarpScalarFusedStaticMultigridHierarchy:
             root_outputs.append(("root final correction", root_final))
         if self._arrays_overlap(rhs, root_rhs):
             raise ValueError("rhs and root level_rhs must not alias")
-        if self._arrays_overlap(rhs, root_primary):
-            raise ValueError("rhs and root primary correction must not alias")
-        for internal_name, internal in (("root level_rhs", root_rhs), *root_outputs):
-            if self._arrays_overlap(output, internal):
-                raise ValueError(f"output and {internal_name} must not alias")
+        for internal_name, internal in root_outputs:
+            if self._arrays_overlap(rhs, internal):
+                raise ValueError(f"rhs and {internal_name} must not alias")
         named_root_buffers = (("root level_rhs", root_rhs), *root_outputs)
         for left_index, (left_name, left) in enumerate(named_root_buffers):
             for right_name, right in named_root_buffers[left_index + 1 :]:
                 if self._arrays_overlap(left, right):
                     raise ValueError(f"{left_name} and {right_name} must not alias")
+
+    def _validate_publication_aliases(
+        self,
+        output: wp.array[wp.vec3d],
+        workspace: WarpScalarFusedVCycleWorkspace,
+    ) -> None:
+        root_rhs = workspace.level_rhs[0]
+        root_primary = workspace.level_correction[0]
+        root_final = workspace._final_level_correction(0)
+        root_outputs = [root_primary]
+        if root_final is not root_primary:
+            root_outputs.append(root_final)
+        for internal_name, internal in (
+            ("root level_rhs", root_rhs),
+            *(("root correction", value) for value in root_outputs),
+        ):
+            if self._arrays_overlap(output, internal):
+                raise ValueError(f"output and {internal_name} must not alias")
 
     def _validate_workspace(self, workspace: WarpScalarFusedVCycleWorkspace) -> None:
         if type(workspace) is not WarpScalarFusedVCycleWorkspace or workspace.hierarchy is not self:
@@ -661,7 +745,9 @@ class WarpScalarFusedStaticMultigridHierarchy:
             workspace._hierarchy_identity != id(self)
             or workspace._hierarchy_sha256 != self.hierarchy_sha256
             or workspace._schedule_sha256 != self.schedule_sha256
+            or workspace._core_schedule_sha256 != self.core_schedule_sha256
             or workspace._device_snapshot_sha256 != self.device_snapshot_sha256
+            or workspace._core_device_snapshot_sha256 != self.core_device_snapshot_sha256
         ):
             raise RuntimeError("workspace identity or schedule binding changed")
         workspace._validate_persistent_arrays()
@@ -681,7 +767,34 @@ class WarpScalarFusedStaticMultigridHierarchy:
         self._validate_fine_vector(rhs, name="rhs")
         self._validate_fine_vector(output, name="output")
         self._validate_workspace(workspace)
-        self._validate_launch_aliases(rhs, output, workspace)
+        self._validate_core_launch_aliases(rhs, workspace)
+        self._validate_publication_aliases(output, workspace)
+        self._launch_apply_core(rhs, workspace)
+        wp.launch(
+            _copy_scalar_to_vec3,
+            dim=self.n_free,
+            inputs=[workspace._final_level_correction(0), output],
+            device=self.device,
+        )
+
+    def launch_apply_core(
+        self,
+        rhs: wp.array[wp.vec3d],
+        workspace: WarpScalarFusedVCycleWorkspace,
+    ) -> None:
+        """Launch the fixed scalar core without a vec3 publication adapter."""
+        self._validate_source()
+        self._validate_fine_vector(rhs, name="rhs")
+        self._validate_workspace(workspace)
+        self._validate_core_launch_aliases(rhs, workspace)
+        self._launch_apply_core(rhs, workspace)
+
+    def _launch_apply_core(
+        self,
+        rhs: wp.array[wp.vec3d],
+        workspace: WarpScalarFusedVCycleWorkspace,
+    ) -> None:
+        """Enqueue the already-validated fixed scalar core."""
         root = self.levels[0]
         if len(self.levels) > 1:
             if root.inverse_diagonal is None or root.omega is None:
@@ -702,12 +815,6 @@ class WarpScalarFusedStaticMultigridHierarchy:
         else:
             wp.launch(_copy_vec3_to_scalar, dim=self.n_free, inputs=[rhs, workspace.level_rhs[0]], device=self.device)
             self._launch_level(0, workspace)
-        wp.launch(
-            _copy_scalar_to_vec3,
-            dim=self.n_free,
-            inputs=[workspace._final_level_correction(0), output],
-            device=self.device,
-        )
 
     def _launch_residual(
         self,
@@ -849,6 +956,8 @@ class WarpScalarFusedVCycleWorkspace:
     """Persistent buffers for one scalar-row fused V-cycle application."""
 
     __slots__ = (
+        "_core_device_snapshot_sha256",
+        "_core_schedule_sha256",
         "_device_snapshot_sha256",
         "_hierarchy_identity",
         "_hierarchy_sha256",
@@ -872,7 +981,9 @@ class WarpScalarFusedVCycleWorkspace:
         self._hierarchy_identity = id(hierarchy)
         self._hierarchy_sha256 = hierarchy.hierarchy_sha256
         self._schedule_sha256 = hierarchy.schedule_sha256
+        self._core_schedule_sha256 = hierarchy.core_schedule_sha256
         self._device_snapshot_sha256 = hierarchy.device_snapshot_sha256
+        self._core_device_snapshot_sha256 = hierarchy.core_device_snapshot_sha256
         self.rhs = wp.empty(hierarchy.n_free, dtype=wp.vec3d, device=hierarchy.device)
         self.correction = wp.empty(hierarchy.n_free, dtype=wp.vec3d, device=hierarchy.device)
         self.level_rhs = tuple(
@@ -930,8 +1041,18 @@ class WarpScalarFusedVCycleWorkspace:
 
     @property
     def scheduled_kernel_launches(self) -> int:
-        """Exact launch count for one fixed scalar-fused V-cycle."""
+        """Exact launch count for one standalone scalar-fused V-cycle."""
         return self.hierarchy.scheduled_kernel_launches
+
+    @property
+    def core_kernel_launches(self) -> int:
+        """Exact launch count before scalar-to-vec3 publication."""
+        return self.hierarchy.core_kernel_launches
+
+    @property
+    def final_scalar_correction(self) -> wp.array[wp.float64]:
+        """Persistent root scalar result used by either publication route."""
+        return self._final_level_correction(0)
 
     def set_rhs(self, rhs: np.ndarray | Sequence[float]) -> None:
         """Copy one finite host RHS into the persistent fine input buffer."""
@@ -950,21 +1071,59 @@ class WarpScalarFusedVCycleWorkspace:
         """Launch the complete allocation-free scalar-fused schedule."""
         self.hierarchy.launch_apply(self.rhs, self.correction, self)
 
+    def launch_core(self) -> None:
+        """Launch only the scalar core, leaving vec3 publication external."""
+        self.hierarchy.launch_apply_core(self.rhs, self)
+
     def record(self, *, capture_replay: bool = False) -> WarpScalarFusedVCycleRecord:
         """Synchronously materialize immutable result and work evidence."""
         if type(capture_replay) is not bool:
             raise TypeError("capture_replay must be a bool")
         rhs = np.asarray(self.rhs.numpy(), dtype=np.float64).reshape(-1)
         correction = np.asarray(self.correction.numpy(), dtype=np.float64).reshape(-1)
-        return self._record_host_vectors(rhs, correction, capture_replay=capture_replay)
+        return self._record_host_vectors(
+            rhs,
+            correction,
+            capture_replay=capture_replay,
+            publication_route=STANDALONE_PUBLICATION_ROUTE,
+        )
 
-    def record_internal_application(self, *, capture_replay: bool = False) -> WarpScalarFusedVCycleRecord:
-        """Record an external-array apply retained in this workspace's levels."""
+    def record_internal_application(
+        self,
+        *,
+        capture_replay: bool = False,
+    ) -> WarpScalarFusedVCycleRecord:
+        """Record a full standalone apply retained in this workspace's levels."""
         if type(capture_replay) is not bool:
             raise TypeError("capture_replay must be a bool")
         rhs = np.asarray(self.level_rhs[0].numpy(), dtype=np.float64).reshape(-1)
         correction = np.asarray(self._final_level_correction(0).numpy(), dtype=np.float64).reshape(-1)
-        return self._record_host_vectors(rhs, correction, capture_replay=capture_replay)
+        return self._record_host_vectors(
+            rhs,
+            correction,
+            capture_replay=capture_replay,
+            publication_route=STANDALONE_PUBLICATION_ROUTE,
+        )
+
+    def record_core_application(
+        self,
+        *,
+        token: object,
+        capture_replay: bool = False,
+    ) -> WarpScalarFusedVCycleRecord:
+        """Record the exact core with publication delegated to a shared owner."""
+        if token is not _CORE_RECORD_TOKEN:
+            raise ValueError("core physical-work recording is solver-private")
+        if type(capture_replay) is not bool:
+            raise TypeError("capture_replay must be a bool")
+        rhs = np.asarray(self.level_rhs[0].numpy(), dtype=np.float64).reshape(-1)
+        correction = np.asarray(self._final_level_correction(0).numpy(), dtype=np.float64).reshape(-1)
+        return self._record_host_vectors(
+            rhs,
+            correction,
+            capture_replay=capture_replay,
+            publication_route=EXTERNAL_SHARED_PUBLICATION_ROUTE,
+        )
 
     def _record_host_vectors(
         self,
@@ -972,6 +1131,7 @@ class WarpScalarFusedVCycleWorkspace:
         correction: np.ndarray,
         *,
         capture_replay: bool,
+        publication_route: str,
     ) -> WarpScalarFusedVCycleRecord:
         """Build one fail-closed immutable record after synchronization."""
         self.hierarchy._validate_source()
@@ -1027,9 +1187,22 @@ class WarpScalarFusedVCycleWorkspace:
         matrix_kernel_launches = (len(self.hierarchy.levels) - 1) * (
             self.hierarchy.pre_smooth_steps + self.hierarchy.post_smooth_steps
         )
+        if type(publication_route) is not str:
+            raise TypeError("publication_route must be a built-in string")
+        if publication_route == STANDALONE_PUBLICATION_ROUTE:
+            publication_kernel_launches = 1
+            schedule_sha256 = self.hierarchy.schedule_sha256
+            device_snapshot_sha256 = self.hierarchy.device_snapshot_sha256
+        elif publication_route == EXTERNAL_SHARED_PUBLICATION_ROUTE:
+            publication_kernel_launches = 0
+            schedule_sha256 = self.hierarchy.core_schedule_sha256
+            device_snapshot_sha256 = self.hierarchy.core_device_snapshot_sha256
+        else:
+            raise ValueError("publication_route is outside the fixed physical schedule")
+        scheduled_kernel_launches = self.core_kernel_launches + publication_kernel_launches
         physical_parts = (
             ("hierarchy_sha256", self.hierarchy.hierarchy_sha256),
-            ("schedule_sha256", self.hierarchy.schedule_sha256),
+            ("schedule_sha256", schedule_sha256),
             ("rhs_sha256", rhs_sha256),
             ("result_sha256", result_sha256),
             ("matrix_block_products_executed", matrix_products - elided_matrix_products),
@@ -1039,12 +1212,16 @@ class WarpScalarFusedVCycleWorkspace:
             ("out_of_place_jacobi_block_solves", smoother_solves - zero_start_solves),
             ("matrix_kernel_launches", matrix_kernel_launches),
             ("jacobi_kernel_launches", matrix_kernel_launches),
-            ("scheduled_kernel_launches", self.scheduled_kernel_launches),
+            ("core_kernel_launches", self.core_kernel_launches),
+            ("publication_kernel_launches", publication_kernel_launches),
+            ("publication_version", PUBLICATION_VERSION),
+            ("publication_route", publication_route),
+            ("scheduled_kernel_launches", scheduled_kernel_launches),
         )
-        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v2", physical_parts)
+        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v3", physical_parts)
         physical_work = WarpScalarFusedVCyclePhysicalWork(
             hierarchy_sha256=self.hierarchy.hierarchy_sha256,
-            schedule_sha256=self.hierarchy.schedule_sha256,
+            schedule_sha256=schedule_sha256,
             rhs_sha256=rhs_sha256,
             result_sha256=result_sha256,
             matrix_block_products_executed=matrix_products - elided_matrix_products,
@@ -1054,18 +1231,22 @@ class WarpScalarFusedVCycleWorkspace:
             out_of_place_jacobi_block_solves=smoother_solves - zero_start_solves,
             matrix_kernel_launches=matrix_kernel_launches,
             jacobi_kernel_launches=matrix_kernel_launches,
-            scheduled_kernel_launches=self.scheduled_kernel_launches,
+            core_kernel_launches=self.core_kernel_launches,
+            publication_kernel_launches=publication_kernel_launches,
+            publication_version=PUBLICATION_VERSION,
+            publication_route=publication_route,
+            scheduled_kernel_launches=scheduled_kernel_launches,
             content_sha256=physical_sha256,
         )
         content_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v2",
+            "warp-scalar-fused-v-cycle-result-v3",
             (
-                ("device_snapshot_sha256", self.hierarchy.device_snapshot_sha256),
+                ("device_snapshot_sha256", device_snapshot_sha256),
                 ("static_device_content_sha256", self.hierarchy.static_device_content_sha256),
-                ("schedule_sha256", self.hierarchy.schedule_sha256),
+                ("schedule_sha256", schedule_sha256),
                 ("work_sha256", work_sha256),
                 ("physical_work_sha256", physical_sha256),
-                ("scheduled_kernel_launches", self.scheduled_kernel_launches),
+                ("scheduled_kernel_launches", scheduled_kernel_launches),
                 ("capture_replay", capture_replay),
             ),
         )
@@ -1073,11 +1254,11 @@ class WarpScalarFusedVCycleWorkspace:
             correction=correction_frozen,
             work=work,
             physical_work=physical_work,
-            scheduled_kernel_launches=self.scheduled_kernel_launches,
+            scheduled_kernel_launches=scheduled_kernel_launches,
             capture_replay=capture_replay,
-            schedule_sha256=self.hierarchy.schedule_sha256,
+            schedule_sha256=schedule_sha256,
             static_device_content_sha256=self.hierarchy.static_device_content_sha256,
-            device_snapshot_sha256=self.hierarchy.device_snapshot_sha256,
+            device_snapshot_sha256=device_snapshot_sha256,
             content_sha256=content_sha256,
         )
 
