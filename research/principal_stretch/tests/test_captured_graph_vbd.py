@@ -10,6 +10,8 @@ import inspect
 import json
 import os
 import unittest
+import weakref
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -28,8 +30,15 @@ from research.principal_stretch.correction_gpu import (
     MatrixFreeStableNHOperator,
     minimum_determinant_on_segment,
 )
+from research.principal_stretch.correction_gpu_warp import WarpMatrixFreeWorkspace
 from research.principal_stretch.correction_graph_vbd import DirectGraphVBDConfig
 from research.principal_stretch.correction_multigrid import apply_v_cycle
+from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
+    WarpScalarFusedStaticMultigridHierarchy,
+    WarpScalarFusedVCyclePhysicalWork,
+    WarpScalarFusedVCycleRecord,
+    WarpScalarFusedVCycleWorkspace,
+)
 from research.principal_stretch.solver_benchmark import (
     build_common_problem,
     build_structured_cantilever_scene,
@@ -123,6 +132,8 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
         self.assertIn("b - A(x) B b", source)
         self.assertIn("end_objective < start_objective", source)
         self.assertIn("minimum_segment <= minimum_determinant", source)
+        self.assertIn("WarpScalarFusedStaticMultigridHierarchy", source)
+        self.assertNotIn("level_product", source)
 
     def test_contract_rejects_cpu_and_nondefault_coarse_bound(self):
         with self.assertRaisesRegex(RuntimeError, "requires CUDA"):
@@ -203,6 +214,17 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         cls.solver.capture_graphs(warmup_replays=1)
         cls.endpoint = cls.solver.run(graph_replay=True)
 
+    @staticmethod
+    def _owner_boundaries(solver: CapturedDirectGraphVBD):
+        return (
+            ("run", lambda: solver.run(graph_replay=True)),
+            ("run_k4", lambda: solver.run_k4(graph_replay=True)),
+            ("timing", lambda: solver.benchmark_paired(pair_count=2, warmup_replays=1)),
+            ("serialization", solver.deterministic_record),
+            ("recapture", lambda: solver.capture_graphs(warmup_replays=1)),
+            ("poison", lambda: solver.poison(seed=4817)),
+        )
+
     def test_float32_device_semantics_match_independent_cpu_reconstruction(self):
         _assert_float32_device_reconstruction(self, self.solver, self.endpoint)
 
@@ -222,15 +244,25 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 self.assertTrue(work.exact_work_completed)
                 self.assertEqual(len(work.v_cycles), 2)
                 for record in work.v_cycles:
+                    self.assertIs(type(record), WarpScalarFusedVCycleRecord)
+                    self.assertIs(type(record.physical_work), WarpScalarFusedVCyclePhysicalWork)
                     self.assertEqual(record.scheduled_kernel_launches, cycle_launches)
                     self.assertEqual(record.work.hierarchy_sha256, endpoint.static_hierarchy_sha256)
                     self.assertEqual(record.work.rhs_count, 1)
                     self.assertEqual(record.work.coarsest_factor_solves, 1)
+                    physical = record.physical_work
+                    self.assertEqual(
+                        physical.matrix_block_products_executed + physical.matrix_block_products_elided_zero_start,
+                        record.work.matrix_block_products,
+                    )
+                    self.assertEqual(physical.scheduled_kernel_launches, cycle_launches)
+                    self.assertEqual(physical.schedule_sha256, self.solver.device_hierarchy.schedule_sha256)
         schedule = self.solver.deterministic_record()
         self.assertEqual(schedule["contract_id"], CONTRACT_ID)
         self.assertEqual(schedule["krylov_iterations"], 0)
         self.assertEqual(schedule["v_cycles"], 8)
         self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], expected_total)
+        self.assertEqual(schedule["workspace_owner_identity_sha256"], self.solver._workspace_owner_identity_sha256())
         self.assertFalse(schedule["performance_evidence"])
         json.dumps(schedule, allow_nan=False)
         json.dumps(endpoint.deterministic_record(), allow_nan=False)
@@ -262,7 +294,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
 
         outer = self.endpoint.outer_work[0]
         record = outer.v_cycles[0]
-        bad_work = dataclasses.replace(record.work, matrix_block_products=-7)
+        bad_work = dataclasses.replace(record.work, restriction_block_products=-7)
         work_sha256 = _hash_parts(
             "v-cycle-work-record-v1",
             (
@@ -280,10 +312,13 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         )
         bad_work = dataclasses.replace(bad_work, content_sha256=work_sha256)
         record_sha256 = _hash_parts(
-            "warp-v-cycle-result-v1",
+            "warp-scalar-fused-v-cycle-result-v1",
             (
-                ("snapshot_sha256", self.solver.device_hierarchy.device_snapshot_sha256),
+                ("device_snapshot_sha256", record.device_snapshot_sha256),
+                ("static_device_content_sha256", record.static_device_content_sha256),
+                ("schedule_sha256", record.schedule_sha256),
                 ("work_sha256", work_sha256),
+                ("physical_work_sha256", record.physical_work.content_sha256),
                 ("scheduled_kernel_launches", record.scheduled_kernel_launches),
                 ("capture_replay", record.capture_replay),
             ),
@@ -291,6 +326,57 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         bad_record = dataclasses.replace(record, work=bad_work, content_sha256=record_sha256)
         with self.assertRaisesRegex(ValueError, "canonical fixed work|non-negative"):
             dataclasses.replace(outer, v_cycles=(bad_record, outer.v_cycles[1]))
+
+        physical = record.physical_work
+        bad_executed = physical.matrix_block_products_executed + 1
+        bad_elided = physical.matrix_block_products_elided_zero_start - 1
+        physical_sha256 = _hash_parts(
+            "warp-scalar-fused-v-cycle-physical-work-v1",
+            (
+                ("hierarchy_sha256", physical.hierarchy_sha256),
+                ("schedule_sha256", physical.schedule_sha256),
+                ("rhs_sha256", physical.rhs_sha256),
+                ("result_sha256", physical.result_sha256),
+                ("matrix_block_products_executed", bad_executed),
+                ("matrix_block_products_elided_zero_start", bad_elided),
+                ("zero_start_block_solves", physical.zero_start_block_solves),
+                ("out_of_place_jacobi_block_solves", physical.out_of_place_jacobi_block_solves),
+                ("matrix_kernel_launches", physical.matrix_kernel_launches),
+                ("jacobi_kernel_launches", physical.jacobi_kernel_launches),
+                ("scheduled_kernel_launches", physical.scheduled_kernel_launches),
+            ),
+        )
+        bad_physical = dataclasses.replace(
+            physical,
+            matrix_block_products_executed=bad_executed,
+            matrix_block_products_elided_zero_start=bad_elided,
+            content_sha256=physical_sha256,
+        )
+        physical_record_sha256 = _hash_parts(
+            "warp-scalar-fused-v-cycle-result-v1",
+            (
+                ("device_snapshot_sha256", record.device_snapshot_sha256),
+                ("static_device_content_sha256", record.static_device_content_sha256),
+                ("schedule_sha256", record.schedule_sha256),
+                ("work_sha256", record.work.content_sha256),
+                ("physical_work_sha256", physical_sha256),
+                ("scheduled_kernel_launches", record.scheduled_kernel_launches),
+                ("capture_replay", record.capture_replay),
+            ),
+        )
+        bad_physical_record = dataclasses.replace(
+            record,
+            physical_work=bad_physical,
+            content_sha256=physical_record_sha256,
+        )
+        with self.assertRaisesRegex(ValueError, "physical matrix_block_products_executed"):
+            dataclasses.replace(outer, v_cycles=(bad_physical_record, outer.v_cycles[1]))
+
+        for field_name, value in (("research_only", 1), ("performance_evidence", 0)):
+            with self.subTest(policy_field=field_name):
+                bad_policy_record = dataclasses.replace(record, **{field_name: value})
+                with self.assertRaisesRegex(ValueError, "invalid V-cycle policy provenance"):
+                    dataclasses.replace(outer, v_cycles=(bad_policy_record, outer.v_cycles[1]))
 
         provenance_forgeries = (
             ({"scene_sha256": "a" * 64}, "canonical retained scene"),
@@ -322,19 +408,37 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             )
 
         context = self.endpoint._validation_context
-        original_snapshot = context.warp_snapshot_sha256
+        original_schedule = context.v_cycle_schedule_sha256
+        original_static = context.v_cycle_static_device_content_sha256
+        original_snapshot = context.v_cycle_device_snapshot_sha256
         original_launches = context.v_cycle_kernel_launches
+        original_capture_binding = context.capture_binding
         try:
-            object.__setattr__(context, "warp_snapshot_sha256", "c" * 64)
-            with self.assertRaisesRegex(ValueError, "Warp snapshot identity"):
+            object.__setattr__(context, "v_cycle_schedule_sha256", "c" * 64)
+            with self.assertRaisesRegex(ValueError, "scalar-fused schedule identity"):
                 dataclasses.replace(self.endpoint)
-            object.__setattr__(context, "warp_snapshot_sha256", original_snapshot)
+            object.__setattr__(context, "v_cycle_schedule_sha256", original_schedule)
+            object.__setattr__(context, "v_cycle_static_device_content_sha256", "d" * 64)
+            with self.assertRaisesRegex(ValueError, "scalar-fused static content identity"):
+                dataclasses.replace(self.endpoint)
+            object.__setattr__(context, "v_cycle_static_device_content_sha256", original_static)
+            object.__setattr__(context, "v_cycle_device_snapshot_sha256", "e" * 64)
+            with self.assertRaisesRegex(ValueError, "scalar-fused device snapshot identity"):
+                dataclasses.replace(self.endpoint)
+            object.__setattr__(context, "v_cycle_device_snapshot_sha256", original_snapshot)
             object.__setattr__(context, "v_cycle_kernel_launches", original_launches + 1)
             with self.assertRaisesRegex(ValueError, "V-cycle launch count"):
                 dataclasses.replace(self.endpoint)
-        finally:
-            object.__setattr__(context, "warp_snapshot_sha256", original_snapshot)
             object.__setattr__(context, "v_cycle_kernel_launches", original_launches)
+            object.__setattr__(context, "capture_binding", None)
+            with self.assertRaisesRegex(ValueError, "fields do not match their solver-issued receipt"):
+                dataclasses.replace(self.endpoint)
+        finally:
+            object.__setattr__(context, "v_cycle_schedule_sha256", original_schedule)
+            object.__setattr__(context, "v_cycle_static_device_content_sha256", original_static)
+            object.__setattr__(context, "v_cycle_device_snapshot_sha256", original_snapshot)
+            object.__setattr__(context, "v_cycle_kernel_launches", original_launches)
+            object.__setattr__(context, "capture_binding", original_capture_binding)
 
     def test_pristine_k1_reset_source_tamper_fails_before_execution(self):
         source = self.solver.baseline.pristine_input.particle_qd
@@ -358,6 +462,431 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             values.assign(pristine)
         self.assertEqual(self.solver.run(graph_replay=True).endpoint_sha256, self.endpoint.endpoint_sha256)
 
+    def test_scalar_fused_owner_and_identity_labels_fail_closed(self):
+        self.assertIs(type(self.solver.device_hierarchy), WarpScalarFusedStaticMultigridHierarchy)
+        self.assertIs(self.solver.device_hierarchy.source_hierarchy, self.solver.source_device_hierarchy)
+        fields = (
+            "_schedule_sha256",
+            "_static_device_content_sha256",
+            "_device_snapshot_sha256",
+        )
+        for field in fields:
+            with self.subTest(field=field):
+                original = getattr(self.solver.device_hierarchy, field)
+                try:
+                    setattr(self.solver.device_hierarchy, field, "a" * 64)
+                    with self.assertRaisesRegex(RuntimeError, "workspace identity|scalar-fused hierarchy"):
+                        self.solver.deterministic_record()
+                finally:
+                    setattr(self.solver.device_hierarchy, field, original)
+
+        original_source_snapshot = self.solver.source_device_hierarchy.device_snapshot_sha256
+        try:
+            self.solver.source_device_hierarchy.device_snapshot_sha256 = "b" * 64
+            with self.assertRaisesRegex(RuntimeError, "hierarchy metadata|scalar-fused hierarchy"):
+                self.solver.deterministic_record()
+        finally:
+            self.solver.source_device_hierarchy.device_snapshot_sha256 = original_source_snapshot
+
+        original_wrapper = self.solver.device_hierarchy
+        replacement = WarpScalarFusedStaticMultigridHierarchy.from_device_hierarchy(self.solver.source_device_hierarchy)
+        try:
+            self.solver.device_hierarchy = replacement
+            with self.assertRaisesRegex(RuntimeError, "hierarchy owner object|workspace owner object"):
+                self.solver.run(graph_replay=True)
+        finally:
+            self.solver.device_hierarchy = original_wrapper
+
+    def test_scalar_fused_alt_buffers_are_pointer_bound_and_named(self):
+        signatures = dict(self.solver._persistent_array_signatures())
+        self.assertTrue(any("level_correction_alt" in name for name in signatures))
+        self.assertFalse(any("level_product" in name for name in signatures))
+        cycle = self.solver.workspaces[0].first_cycle
+        self.assertIs(type(cycle), WarpScalarFusedVCycleWorkspace)
+        original = cycle.level_correction_alt
+        replacement = wp.empty(
+            original[0].shape,
+            dtype=wp.float64,
+            device=self.solver.device,
+        )
+        try:
+            cycle.level_correction_alt = (replacement, *original[1:])
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "workspace persistent array pointers|allocation or pointer|level_correction_alt container",
+            ):
+                self.solver.deterministic_record()
+        finally:
+            cycle.level_correction_alt = original
+
+    def test_workspace_container_swap_fails_at_every_public_boundary(self):
+        original = self.solver.workspaces
+        for name, operation in self._owner_boundaries(self.solver):
+            with self.subTest(boundary=name):
+                try:
+                    self.solver.workspaces = list(original)
+                    with self.assertRaisesRegex(RuntimeError, "workspace tuple container"):
+                        operation()
+                finally:
+                    self.solver.workspaces = original
+
+    def test_outer_position_container_attacks_fail_at_every_public_boundary(self):
+        class StatefulPositionSequence:
+            def __init__(self, canonical, redirected):
+                self.canonical = canonical
+                self.redirected = redirected
+                self.reads = 0
+
+            def __len__(self):
+                self.reads += 1
+                return len(self.canonical)
+
+            def __iter__(self):
+                self.reads += 1
+                return iter(self.canonical if self.reads < 4 else self.redirected)
+
+            def __getitem__(self, index):
+                self.reads += 1
+                values = self.canonical if self.reads < 4 else self.redirected
+                return values[index]
+
+        for field_name in ("outer_start_positions", "outer_candidate_positions"):
+            original = getattr(self.solver, field_name)
+            alternate = wp.empty(original[0].shape, dtype=wp.vec3d, device=self.solver.device)
+            redirected = (alternate, *original[1:])
+            attacks = (
+                ("list", lambda values=original: list(values)),
+                ("shallow-tuple", lambda values=original: tuple(iter(values))),
+                (
+                    "stateful",
+                    lambda canonical=original, alternate_values=redirected: StatefulPositionSequence(
+                        canonical,
+                        alternate_values,
+                    ),
+                ),
+            )
+            for attack_name, make_attack in attacks:
+                for boundary_name, operation in self._owner_boundaries(self.solver):
+                    with self.subTest(field=field_name, attack=attack_name, boundary=boundary_name):
+                        attack = make_attack()
+                        try:
+                            setattr(self.solver, field_name, attack)
+                            with self.assertRaisesRegex(RuntimeError, f"{field_name} tuple container or order"):
+                                operation()
+                            if isinstance(attack, StatefulPositionSequence):
+                                self.assertEqual(attack.reads, 0)
+                        finally:
+                            setattr(self.solver, field_name, original)
+
+    def test_particle_color_group_container_attacks_fail_for_k1_k4_and_all_boundaries(self):
+        class StatefulColorGroups(list):
+            def __init__(self, canonical, redirected):
+                super().__init__(canonical)
+                self.canonical = canonical
+                self.redirected = redirected
+                self.reads = 0
+
+            def __len__(self):
+                self.reads += 1
+                return super().__len__()
+
+            def __iter__(self):
+                self.reads += 1
+                return iter(self.canonical if self.reads < 4 else self.redirected)
+
+            def __getitem__(self, index):
+                self.reads += 1
+                values = self.canonical if self.reads < 4 else self.redirected
+                return values[index]
+
+        model = self.solver.baseline.model
+        original = model.particle_color_groups
+        alternate = wp.array(
+            np.asarray(original[0].numpy(), dtype=np.int32)[::-1].copy(),
+            dtype=wp.int32,
+            device=self.solver.device,
+        )
+        redirected = [alternate, *original[1:]]
+        attacks = (
+            ("shallow-list", lambda: list(original)),
+            ("stateful-list", lambda: StatefulColorGroups(original, redirected)),
+        )
+        for attack_name, make_attack in attacks:
+            for boundary_name, operation in self._owner_boundaries(self.solver):
+                with self.subTest(attack=attack_name, boundary=boundary_name):
+                    attack = make_attack()
+                    try:
+                        model.particle_color_groups = attack
+                        with self.assertRaisesRegex(RuntimeError, "particle color-group list or order"):
+                            operation()
+                        if isinstance(attack, StatefulColorGroups):
+                            self.assertEqual(attack.reads, 0)
+                    finally:
+                        model.particle_color_groups = original
+
+    def test_coordinated_hierarchy_level_container_attacks_fail_at_all_boundaries(self):
+        class StatefulLevels:
+            def __init__(self, canonical, redirected):
+                self.canonical = canonical
+                self.redirected = redirected
+                self.reads = 0
+
+            def __len__(self):
+                self.reads += 1
+                return len(self.canonical)
+
+            def __iter__(self):
+                self.reads += 1
+                return iter(self.canonical if self.reads < 5 else self.redirected)
+
+            def __getitem__(self, index):
+                self.reads += 1
+                values = self.canonical if self.reads < 5 else self.redirected
+                return values[index]
+
+        source = self.solver.source_device_hierarchy
+        scalar = self.solver.device_hierarchy
+        original = source.levels
+        alternate_values = wp.empty(
+            original[0].matrix_values.shape,
+            dtype=wp.float64,
+            device=self.solver.device,
+        )
+        redirected_level = dataclasses.replace(original[0], matrix_values=alternate_values)
+        redirected = (redirected_level, *original[1:])
+        attacks = (
+            ("list", lambda: list(original)),
+            ("shallow-tuple", lambda: tuple(iter(original))),
+            ("stateful", lambda: StatefulLevels(original, redirected)),
+        )
+        for attack_name, make_attack in attacks:
+            for boundary_name, operation in self._owner_boundaries(self.solver):
+                with self.subTest(attack=attack_name, boundary=boundary_name):
+                    attack = make_attack()
+                    try:
+                        source.levels = attack
+                        scalar._levels = attack
+                        with self.assertRaisesRegex(RuntimeError, "hierarchy levels tuple container"):
+                            operation()
+                        if isinstance(attack, StatefulLevels):
+                            self.assertEqual(attack.reads, 0)
+                    finally:
+                        source.levels = original
+                        scalar._levels = original
+
+    def test_each_hierarchy_level_array_owner_is_construction_bound(self):
+        fields = (
+            "row_offsets",
+            "column_indices",
+            "matrix_values",
+            "inverse_diagonal",
+            "aggregate",
+            "prolongation_blocks",
+            "member_offsets",
+            "member_fine_nodes",
+        )
+        for level_index, level in enumerate(self.solver.source_device_hierarchy.levels):
+            for field_name in fields:
+                original = getattr(level, field_name)
+                if original is None:
+                    continue
+                with self.subTest(level=level_index, field=field_name):
+                    replacement = wp.empty(
+                        original.shape,
+                        dtype=original.dtype,
+                        device=self.solver.device,
+                    )
+                    try:
+                        object.__setattr__(level, field_name, replacement)
+                        with self.assertRaisesRegex(RuntimeError, f"level {level_index} {field_name} owner"):
+                            self.solver.deterministic_record()
+                    finally:
+                        object.__setattr__(level, field_name, original)
+
+    def test_outer_proxy_and_shallow_clone_cannot_redirect_recapture(self):
+        original_container = self.solver.workspaces
+        original = original_container[0]
+        alternate = wp.empty(
+            original.first_correction.shape,
+            dtype=wp.vec3d,
+            device=self.solver.device,
+        )
+
+        class StatefulOuterProxy:
+            def __init__(self, canonical, redirected):
+                self.canonical = canonical
+                self.redirected = redirected
+                self.first_correction_reads = 0
+
+            def __getattr__(self, name):
+                if name == "first_correction":
+                    self.first_correction_reads += 1
+                    if self.first_correction_reads > 2:
+                        return self.redirected
+                return getattr(self.canonical, name)
+
+        proxy = StatefulOuterProxy(original, alternate)
+        graph = self.solver.graph
+        k4_graph = self.solver.k4_graph
+        try:
+            self.solver.workspaces = (proxy, *original_container[1:])
+            with self.assertRaisesRegex(RuntimeError, "workspace tuple container"):
+                self.solver.capture_graphs(warmup_replays=1)
+            self.assertEqual(proxy.first_correction_reads, 0)
+            self.assertIs(self.solver.graph, graph)
+            self.assertIs(self.solver.k4_graph, k4_graph)
+        finally:
+            self.solver.workspaces = original_container
+
+        shallow_outer = dataclasses.replace(original)
+        try:
+            self.solver.workspaces = (shallow_outer, *original_container[1:])
+            with self.assertRaisesRegex(RuntimeError, "workspace tuple container"):
+                self.solver.deterministic_record()
+        finally:
+            self.solver.workspaces = original_container
+
+    def test_stateful_registry_dispatch_cannot_redirect_any_public_boundary(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        solver = CapturedDirectGraphVBD(self.scene, device="cuda:0")
+        solver.capture_graphs(warmup_replays=1)
+        expected_positions = solver.run(graph_replay=True).positions
+        original_lookup = module._lookup_workspace_owners
+        canonical = original_lookup(solver)
+        alternate = wp.empty(
+            canonical.outer[0].first_correction.shape,
+            dtype=wp.vec3d,
+            device=solver.device,
+        )
+        sentinel = np.full((alternate.shape[0], 3), 734.25, dtype=np.float64)
+        alternate.assign(sentinel)
+        registry = next(
+            cell.cell_contents
+            for cell in original_lookup.__closure__ or ()
+            if isinstance(cell.cell_contents, weakref.WeakKeyDictionary)
+        )
+
+        for dispatch_kind in ("module-global", "closure-registry-get"):
+            for boundary_name, operation in self._owner_boundaries(solver):
+                with self.subTest(dispatch=dispatch_kind, boundary=boundary_name):
+                    canonical = original_lookup(solver)
+                    forged_outer = canonical.outer[0]._replace(first_correction=alternate)
+                    forged = canonical._replace(outer=(forged_outer, *canonical.outer[1:]))
+                    calls = 0
+
+                    def stateful_lookup(
+                        owner,
+                        default=None,
+                        canonical_binding=canonical,
+                        forged_binding=forged,
+                    ):
+                        nonlocal calls
+                        calls += 1
+                        if owner is not solver:
+                            return original_lookup(owner)
+                        return canonical_binding if calls == 1 else forged_binding
+
+                    alternate.assign(sentinel)
+                    try:
+                        if dispatch_kind == "module-global":
+                            module._lookup_workspace_owners = stateful_lookup
+                        else:
+                            registry.get = stateful_lookup
+                        operation()
+                        self.assertEqual(calls, 1)
+                        np.testing.assert_array_equal(np.asarray(alternate.numpy(), dtype=np.float64), sentinel)
+                    finally:
+                        if dispatch_kind == "module-global":
+                            module._lookup_workspace_owners = original_lookup
+                        elif "get" in vars(registry):
+                            del registry.get
+                    if boundary_name == "recapture":
+                        published = original_lookup(solver)
+                        self.assertIsNot(published, canonical)
+                        self.assertIs(published.persistent, canonical.persistent)
+                        self.assertIs(published.claims, canonical.claims)
+                        self.assertEqual(published.capture.generation, canonical.capture.generation + 1)
+        np.testing.assert_array_equal(solver.run(graph_replay=True).positions, expected_positions)
+
+    def test_cycle_owner_and_all_tuple_container_clones_fail_closed(self):
+        cycles = tuple(
+            cycle for workspace in self.solver.workspaces for cycle in (workspace.first_cycle, workspace.second_cycle)
+        )
+        for cycle_index, cycle in enumerate(cycles):
+            for field_name in (
+                "level_rhs",
+                "level_correction",
+                "level_correction_alt",
+                "level_residual",
+                "_persistent_arrays",
+                "_persistent_pointers",
+            ):
+                with self.subTest(cycle=cycle_index, container=field_name):
+                    original = getattr(cycle, field_name)
+                    try:
+                        setattr(cycle, field_name, list(original))
+                        with self.assertRaisesRegex(RuntimeError, f"{field_name} container"):
+                            self.solver.deterministic_record()
+                    finally:
+                        setattr(cycle, field_name, original)
+
+        original_cycle = self.solver.workspaces[0].first_cycle
+        shallow_cycle = object.__new__(WarpScalarFusedVCycleWorkspace)
+        for slot in WarpScalarFusedVCycleWorkspace.__slots__:
+            setattr(shallow_cycle, slot, getattr(original_cycle, slot))
+        try:
+            self.solver.workspaces[0].first_cycle = shallow_cycle
+            with self.assertRaisesRegex(RuntimeError, "scalar-fused workspace owner object"):
+                self.solver.run(graph_replay=True)
+        finally:
+            self.solver.workspaces[0].first_cycle = original_cycle
+
+        foreign_cycle = SimpleNamespace(
+            **{slot: getattr(original_cycle, slot) for slot in WarpScalarFusedVCycleWorkspace.__slots__}
+        )
+        try:
+            self.solver.workspaces[0].first_cycle = foreign_cycle
+            with self.assertRaisesRegex(RuntimeError, "scalar-fused workspace owner object"):
+                self.solver.run_k4(graph_replay=True)
+        finally:
+            self.solver.workspaces[0].first_cycle = original_cycle
+
+    def test_cycle_arrays_and_operator_apply_owner_clones_fail_closed(self):
+        workspace = self.solver.workspaces[0]
+        cycle = workspace.first_cycle
+        for field_name in ("rhs", "correction", "coarse_intermediate"):
+            with self.subTest(cycle_array=field_name):
+                original = getattr(cycle, field_name)
+                replacement = wp.empty(
+                    original.shape,
+                    dtype=original.dtype,
+                    device=self.solver.device,
+                )
+                try:
+                    setattr(cycle, field_name, replacement)
+                    with self.assertRaisesRegex(RuntimeError, f"{field_name} owner"):
+                        self.solver.deterministic_record()
+                finally:
+                    setattr(cycle, field_name, original)
+
+        original_apply = workspace.operator_apply
+        shallow_apply = object.__new__(WarpMatrixFreeWorkspace)
+        shallow_apply.__dict__.update(original_apply.__dict__)
+        try:
+            workspace.operator_apply = shallow_apply
+            with self.assertRaisesRegex(RuntimeError, "matrix-free apply workspace owner"):
+                self.solver.benchmark_paired(pair_count=2, warmup_replays=1)
+        finally:
+            workspace.operator_apply = original_apply
+
+        foreign_apply = SimpleNamespace(**original_apply.__dict__)
+        try:
+            workspace.operator_apply = foreign_apply
+            with self.assertRaisesRegex(RuntimeError, "matrix-free apply workspace owner"):
+                self.solver.capture_graphs(warmup_replays=1)
+        finally:
+            workspace.operator_apply = original_apply
+
     def test_operator_and_endpoint_source_tamper_fail_before_execution(self):
         cases = (
             ("mass", self.solver.operator.mass, "operator.mass"),
@@ -373,6 +902,22 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                         self.solver.run(graph_replay=True)
                 finally:
                     array.assign(pristine)
+
+    def test_every_direct_correction_array_owner_is_construction_bound(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        binding = module._lookup_workspace_owners(self.solver).direct
+        for field_name in binding._fields:
+            if field_name in ("outer_start_positions", "outer_candidate_positions"):
+                continue
+            with self.subTest(field=field_name):
+                original = getattr(self.solver, field_name)
+                replacement = wp.empty(original.shape, dtype=original.dtype, device=self.solver.device)
+                try:
+                    setattr(self.solver, field_name, replacement)
+                    with self.assertRaisesRegex(RuntimeError, f"direct correction {field_name} owner"):
+                        self.solver.deterministic_record()
+                finally:
+                    setattr(self.solver, field_name, original)
 
     def test_public_model_and_config_tamper_fail_before_execution(self):
         model_mass = self.solver.baseline.model.particle_mass
@@ -405,6 +950,42 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 self.solver.run(graph_replay=True)
         finally:
             self.solver.operator.mass = pristine_array
+
+    def test_complete_persistent_array_binding_defeats_recomputed_cache_at_all_boundaries(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        binding = module._lookup_workspace_owners(self.solver)
+        persistent = binding.persistent
+        self.assertIsNotNone(persistent)
+        self.assertEqual(len(persistent.arrays), 384)
+        self.assertEqual(len(persistent.signatures), 384)
+        self.assertIs(self.solver._persistent_array_identity, persistent.signatures)
+        for (array_name, array), (signature_name, _signature) in zip(
+            persistent.arrays,
+            persistent.signatures,
+            strict=True,
+        ):
+            self.assertEqual(array_name, signature_name)
+            self.assertIs(dict(self.solver._persistent_input_arrays(binding))[array_name], array)
+
+        original_identity = self.solver._persistent_array_identity
+        for iterations in (1, 4):
+            lane_solver = self.solver.baseline._lane(iterations).solver
+            original = lane_solver.particle_displacements
+            alternate = wp.empty(original.shape, dtype=original.dtype, device=self.solver.device)
+            for boundary_name, operation in self._owner_boundaries(self.solver):
+                with self.subTest(iterations=iterations, boundary=boundary_name):
+                    try:
+                        lane_solver.particle_displacements = alternate
+                        self.solver._persistent_array_identity = self.solver._persistent_array_signatures(binding)
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            rf"persistent array owner lane_{iterations}\.solver\.particle_displacements",
+                        ):
+                            operation()
+                    finally:
+                        lane_solver.particle_displacements = original
+                        self.solver._persistent_array_identity = original_identity
+        self.assertEqual(self.solver.run(graph_replay=True).endpoint_sha256, self.endpoint.endpoint_sha256)
 
     def test_each_lane_adjacency_content_tamper_fails_before_execution(self):
         for iterations in (1, 4):
@@ -616,6 +1197,226 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 finally:
                     setattr(self.solver, field, original)
 
+    def test_graph_pair_generation_and_recomputed_facades_fail_at_all_execution_boundaries(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        binding = module._lookup_workspace_owners(self.solver)
+        capture_binding = binding.capture
+        self.assertIsNotNone(capture_binding)
+        with wp.ScopedCapture(device=self.solver.device) as clone_capture:
+            self.solver._enqueue_integrated(binding)
+        graph_clone = clone_capture.graph
+        self.assertIsNot(graph_clone, capture_binding.graph)
+
+        original_facade = (
+            self.solver.graph,
+            self.solver.k4_graph,
+            self.solver._captured_graph_object_identity,
+            self.solver._capture_generation,
+            self.solver.graph_identity_sha256,
+            self.solver.k4_graph_identity_sha256,
+        )
+
+        def install_forged_facade(graph, k4_graph, generation):
+            self.solver.graph = graph
+            self.solver.k4_graph = k4_graph
+            self.solver._captured_graph_object_identity = (id(graph), id(k4_graph))
+            self.solver._capture_generation = generation
+            self.solver.graph_identity_sha256 = self.solver._derive_graph_identity(
+                captured=True,
+                comparator=False,
+                owner_binding=binding,
+                graph=graph,
+                generation=generation,
+            )
+            self.solver.k4_graph_identity_sha256 = self.solver._derive_graph_identity(
+                captured=True,
+                comparator=True,
+                owner_binding=binding,
+                graph=k4_graph,
+                generation=generation,
+            )
+
+        def install_fresh_equal_object_identity():
+            install_forged_facade(
+                capture_binding.graph,
+                capture_binding.k4_graph,
+                capture_binding.generation,
+            )
+            self.solver._captured_graph_object_identity = (
+                capture_binding.object_identity[0],
+                capture_binding.object_identity[1],
+            )
+
+        attacks = (
+            (
+                "integrated-to-k4",
+                lambda: install_forged_facade(
+                    capture_binding.k4_graph,
+                    capture_binding.k4_graph,
+                    capture_binding.generation,
+                ),
+            ),
+            (
+                "swap-integrated-k4",
+                lambda: install_forged_facade(
+                    capture_binding.k4_graph,
+                    capture_binding.graph,
+                    capture_binding.generation,
+                ),
+            ),
+            (
+                "integrated-clone",
+                lambda: install_forged_facade(
+                    graph_clone,
+                    capture_binding.k4_graph,
+                    capture_binding.generation,
+                ),
+            ),
+            (
+                "generation-and-labels",
+                lambda: install_forged_facade(
+                    capture_binding.graph,
+                    capture_binding.k4_graph,
+                    capture_binding.generation + 1,
+                ),
+            ),
+            ("fresh-equal-object-identity", install_fresh_equal_object_identity),
+        )
+        boundaries = (
+            ("run", lambda: self.solver.run(graph_replay=True)),
+            ("run_k4", lambda: self.solver.run_k4(graph_replay=True)),
+            ("timing", lambda: self.solver.benchmark_paired(pair_count=2, warmup_replays=1)),
+            ("serialization", self.solver.deterministic_record),
+        )
+        for attack_name, install_attack in attacks:
+            for boundary_name, operation in boundaries:
+                with self.subTest(attack=attack_name, boundary=boundary_name):
+                    try:
+                        install_attack()
+                        with self.assertRaisesRegex(RuntimeError, "captured graph object facade or generation"):
+                            operation()
+                    finally:
+                        (
+                            self.solver.graph,
+                            self.solver.k4_graph,
+                            self.solver._captured_graph_object_identity,
+                            self.solver._capture_generation,
+                            self.solver.graph_identity_sha256,
+                            self.solver.k4_graph_identity_sha256,
+                        ) = original_facade
+        self.assertIs(module._lookup_workspace_owners(self.solver), binding)
+        self.assertEqual(self.solver.run(graph_replay=True).endpoint_sha256, self.endpoint.endpoint_sha256)
+
+    def test_native_graph_exec_swaps_fail_at_all_launch_and_evidence_boundaries(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        binding = module._lookup_workspace_owners(self.solver)
+        capture_binding = binding.capture
+        self.assertIsNotNone(capture_binding)
+        graph = capture_binding.graph
+        k4_graph = capture_binding.k4_graph
+        graph_exec = capture_binding.graph_native.graph_exec
+        k4_graph_exec = capture_binding.k4_graph_native.graph_exec
+        self.assertIs(graph.graph_exec, graph_exec)
+        self.assertIs(k4_graph.graph_exec, k4_graph_exec)
+        self.assertNotEqual(graph_exec.value, k4_graph_exec.value)
+
+        attacks = (
+            ("integrated-to-k4-exec", lambda: setattr(graph, "graph_exec", k4_graph_exec)),
+            ("k4-to-integrated-exec", lambda: setattr(k4_graph, "graph_exec", graph_exec)),
+            (
+                "swap-both-execs",
+                lambda: (
+                    setattr(graph, "graph_exec", k4_graph_exec),
+                    setattr(k4_graph, "graph_exec", graph_exec),
+                ),
+            ),
+        )
+        boundaries = (
+            ("run", lambda: self.solver.run(graph_replay=True)),
+            ("run_k4", lambda: self.solver.run_k4(graph_replay=True)),
+            ("timing", lambda: self.solver.benchmark_paired(pair_count=2, warmup_replays=1)),
+            ("serialization", self.solver.deterministic_record),
+            ("record", lambda: dataclasses.replace(self.endpoint)),
+            ("recapture", lambda: self.solver.capture_graphs(warmup_replays=1)),
+        )
+        marker = np.asarray(self.solver.final_positions.numpy(), dtype=np.float32).copy()
+        for attack_name, install_attack in attacks:
+            for boundary_name, operation in boundaries:
+                with self.subTest(attack=attack_name, boundary=boundary_name):
+                    try:
+                        install_attack()
+                        self.solver.graph_identity_sha256 = self.solver._graph_identity(
+                            captured=True,
+                            comparator=False,
+                            owner_binding=binding,
+                        )
+                        self.solver.k4_graph_identity_sha256 = self.solver._graph_identity(
+                            captured=True,
+                            comparator=True,
+                            owner_binding=binding,
+                        )
+                        with self.assertRaisesRegex(RuntimeError, "native graph_exec owner or handle value"):
+                            operation()
+                        np.testing.assert_array_equal(
+                            np.asarray(self.solver.final_positions.numpy(), dtype=np.float32),
+                            marker,
+                        )
+                    finally:
+                        graph.graph_exec = graph_exec
+                        k4_graph.graph_exec = k4_graph_exec
+
+    def test_all_native_graph_and_replay_stream_fields_are_bound(self):
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        binding = module._lookup_workspace_owners(self.solver)
+        capture_binding = binding.capture
+        self.assertIsNotNone(capture_binding)
+        graph_native = capture_binding.graph_native
+        graph = capture_binding.graph
+        replay = binding.replay_stream
+        cases = (
+            (
+                "graph-handle-object",
+                graph,
+                "graph",
+                capture_binding.k4_graph_native.graph_handle,
+                "native graph owner or handle value",
+            ),
+            ("capture-id", graph, "capture_id", graph.capture_id + 1, "capture ID"),
+            ("module-execs", graph, "module_execs", set(graph.module_execs), "module-exec set"),
+            (
+                "stream-handle",
+                replay.stream,
+                "cuda_stream",
+                int(self.solver.device.stream.cuda_stream),
+                "replay stream owner or native handle",
+            ),
+        )
+        for name, owner, field_name, replacement, message in cases:
+            with self.subTest(field=name):
+                original = getattr(owner, field_name)
+                try:
+                    setattr(owner, field_name, replacement)
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        self.solver.deterministic_record()
+                finally:
+                    setattr(owner, field_name, original)
+
+        original_exec_value = graph_native.graph_exec.value
+        try:
+            graph_native.graph_exec.value = capture_binding.k4_graph_native.graph_exec_value
+            with self.assertRaisesRegex(RuntimeError, "native graph_exec owner or handle value"):
+                self.solver.run(graph_replay=True)
+        finally:
+            graph_native.graph_exec.value = original_exec_value
+
+        original_context = self.solver.device._context
+        try:
+            self.solver.device._context = original_context + 1
+            with self.assertRaisesRegex(RuntimeError, "replay device or context owner"):
+                self.solver.deterministic_record()
+        finally:
+            self.solver.device._context = original_context
+
     def test_segment_rejection_is_sticky_fail_closed_but_keeps_fixed_work(self):
         solver = CapturedDirectGraphVBD(
             self.scene,
@@ -723,6 +1524,34 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
                 + self.solver.config.armijo * endpoint.directional_derivatives[index],
             )
             self.assertGreater(endpoint.segment_minimum_determinants[index], 0.0)
+
+    def test_real_default_stretch_scalar_fused_schedule_and_physical_work_are_exact(self):
+        self.assertEqual(self.solver.device_hierarchy.scheduled_kernel_launches, 21)
+        self.assertEqual(self.solver.linear_kernel_launches_per_outer, 49)
+        self.assertEqual(self.solver.correction_kernel_launches, 230)
+        for outer in self.endpoint.outer_work:
+            self.assertEqual(outer.linear_kernel_launches, 49)
+            for record in outer.v_cycles:
+                self.assertEqual(record.work.matrix_block_products, 5058)
+                self.assertEqual(record.physical_work.matrix_block_products_executed, 3372)
+                self.assertEqual(record.physical_work.matrix_block_products_elided_zero_start, 1686)
+                self.assertEqual(record.physical_work.zero_start_block_solves, 184)
+                self.assertEqual(record.physical_work.out_of_place_jacobi_block_solves, 184)
+                self.assertEqual(record.physical_work.matrix_kernel_launches, 6)
+                self.assertEqual(record.physical_work.jacobi_kernel_launches, 6)
+                self.assertEqual(record.physical_work.scheduled_kernel_launches, 21)
+                self.assertFalse(record.performance_evidence)
+        schedule = self.solver.deterministic_record()
+        self.assertEqual(schedule["v_cycle_kernel_launches"], 21)
+        self.assertEqual(schedule["linear_kernel_launches_per_outer"], 49)
+        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 230)
+        self.assertEqual(schedule["v_cycle_canonical_matrix_block_products"], 5058)
+        self.assertEqual(schedule["v_cycle_matrix_block_products_executed"], 3372)
+        self.assertEqual(schedule["v_cycle_matrix_block_products_elided_zero_start"], 1686)
+        self.assertEqual(schedule["v_cycle_zero_start_block_solves"], 184)
+        self.assertEqual(schedule["v_cycle_out_of_place_jacobi_block_solves"], 184)
+        self.assertEqual(schedule["v_cycle_matrix_kernel_launches"], 6)
+        self.assertEqual(schedule["v_cycle_jacobi_kernel_launches"], 6)
 
     def test_real_default_stretch_is_safe_exactly_pinned_and_better_than_k4(self):
         endpoint = self.endpoint
