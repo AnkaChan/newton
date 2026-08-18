@@ -39,6 +39,9 @@ from .correction_gpu import MatrixFreeStableNHOperator
 SPECTRAL_FREE_CONTRACT = "spectral-free-multiplicative-graph-vbd-static-v1"
 """Content-record contract for the static MG-VBD research hierarchy."""
 
+_REST_DEFORMATION_IDENTITY_ATOL = 2.0e-5
+"""Absolute rest-F tolerance for public float32 common-objective inputs."""
+
 
 def _frozen_array(value: np.ndarray | Iterable[float], dtype: np.dtype | type) -> np.ndarray:
     """Return a C-contiguous array backed by immutable ``bytes``."""
@@ -713,7 +716,7 @@ def assemble_stable_nh_rest_block_matrix(
     # Scene rest data can originate in float32 before the research snapshot;
     # this tolerance accepts that representation noise while rejecting a
     # materially inconsistent rest/J pair.
-    if not np.allclose(deformation_gradients, identity, rtol=0.0, atol=5.0e-7):
+    if not np.allclose(deformation_gradients, identity, rtol=0.0, atol=_REST_DEFORMATION_IDENTITY_ATOL):
         error = float(np.max(np.abs(deformation_gradients - identity)))
         raise ValueError(f"rest_positions and shape_gradients must produce F=I (max error {error:.3e})")
     return _assemble_stable_nh_blocks(operator, identity)

@@ -24,6 +24,7 @@ from ..correction_multigrid import (
     solve_pcg,
     stable_nh_static_model_digest,
 )
+from ..newton_baseline import build_newton_problem
 from ..solver_benchmark import build_common_problem
 from ..solver_scenes import build_stretch_scene
 
@@ -428,6 +429,54 @@ class TestCorrectionMultigrid(unittest.TestCase):
         invalid_rest[0, 0] += 0.01
         with self.assertRaisesRegex(ValueError, "F=I"):
             assemble_stable_nh_rest_block_matrix(current_operator, invalid_rest)
+
+    def test_float32_conditioned_rest_geometry_uses_common_objective_tolerance(self):
+        rest = np.asarray(
+            (
+                (2.0, -3.0, 5.0),
+                (0.2, -1.2, 4.3),
+                (0.8, -2.0, 3.1),
+                (2.0, -3.3, 3.1),
+            ),
+            dtype=np.float32,
+        )
+        tets = np.asarray(((0, 1, 2, 3),), dtype=np.int64)
+        corners = rest[tets]
+        rest_edges = np.stack(
+            (corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0], corners[:, 3] - corners[:, 0]),
+            axis=-1,
+        )
+        inverse_rest = np.linalg.inv(rest_edges).astype(np.float32)
+        problem = build_newton_problem(rest, tets, inverse_rest, np.ones(4), 2.0, 4.0, 0.1)
+        operator = MatrixFreeStableNHOperator.from_problem(problem, rest)
+
+        rest64 = rest.astype(np.float64)
+        deformation_gradients = np.einsum(
+            "tac,tad->tdc",
+            operator.shape_gradients,
+            rest64[tets],
+            optimize=False,
+        )
+        max_error = float(np.max(np.abs(deformation_gradients - np.eye(3))))
+        self.assertGreater(max_error, 5.0e-7)
+        self.assertLessEqual(max_error, 2.0e-5)
+
+        matrix = assemble_stable_nh_rest_block_matrix(operator, rest)
+        self.assertEqual(matrix.block_row_count, operator.free.size)
+        self.assertEqual(correction_multigrid_module._REST_DEFORMATION_IDENTITY_ATOL, 2.0e-5)
+
+        invalid_rest = rest64.copy()
+        invalid_rest[1, 0] += 1.0e-5
+        invalid_deformation_gradients = np.einsum(
+            "tac,tad->tdc",
+            operator.shape_gradients,
+            invalid_rest[tets],
+            optimize=False,
+        )
+        invalid_max_error = float(np.max(np.abs(invalid_deformation_gradients - np.eye(3))))
+        self.assertGreater(invalid_max_error, correction_multigrid_module._REST_DEFORMATION_IDENTITY_ATOL)
+        with self.assertRaisesRegex(ValueError, "F=I"):
+            assemble_stable_nh_rest_block_matrix(operator, invalid_rest)
 
     def test_sparse_storage_scales_with_graph_and_stores_no_dense_matrices(self):
         _small_matrix, small, _small_rest = _build(8)
