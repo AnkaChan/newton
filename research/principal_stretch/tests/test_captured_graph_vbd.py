@@ -19,6 +19,7 @@ import warp as wp
 
 from research.principal_stretch.captured_graph_vbd import (
     CONTRACT_ID,
+    FUSED_GATHER_KERNEL_VERSION,
     OUTER_CORRECTIONS,
     OUTER_KERNEL_VERSION,
     OUTER_SCHEDULE_SHA256,
@@ -31,8 +32,6 @@ from research.principal_stretch.captured_graph_vbd import (
     _fused_vertex_outer_terms,
     _hash_parts,
     _initialize_from_k1,
-    _mask_rhs,
-    _subtract_vectors,
 )
 from research.principal_stretch.captured_mg_vbd import (
     _commit_candidate,
@@ -77,6 +76,23 @@ def _oracle_add_vectors(
 ):
     index = wp.tid()
     output[index] = left[index] + right[index]
+
+
+@wp.kernel(enable_backward=False)
+def _oracle_mask_rhs(active: wp.array[int], rhs: wp.array[wp.vec3d]):
+    index = wp.tid()
+    if active[0] == 0:
+        rhs[index] = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+
+
+@wp.kernel(enable_backward=False)
+def _oracle_subtract_vectors(
+    left: wp.array[wp.vec3d],
+    right: wp.array[wp.vec3d],
+    output: wp.array[wp.vec3d],
+):
+    index = wp.tid()
+    output[index] = left[index] - right[index]
 
 
 @wp.kernel(enable_backward=False)
@@ -158,7 +174,7 @@ def _enqueue_unfused_outer_oracle(solver: CapturedDirectGraphVBD):
         )
         operator.launch_refresh_geometry()
         operator.launch_gradient(workspace.rhs, scale=-1.0)
-        wp.launch(_mask_rhs, dim=operator.n_free, inputs=[direct.active, workspace.rhs], device=solver.device)
+        wp.launch(_oracle_mask_rhs, dim=operator.n_free, inputs=[direct.active, workspace.rhs], device=solver.device)
         device_hierarchy.launch_apply(
             workspace.rhs,
             workspace.first_correction,
@@ -170,7 +186,7 @@ def _enqueue_unfused_outer_oracle(solver: CapturedDirectGraphVBD):
             workspace.operator_apply,
         )
         wp.launch(
-            _subtract_vectors,
+            _oracle_subtract_vectors,
             dim=operator.n_free,
             inputs=[workspace.rhs, workspace.operator_product_after_first, workspace.residual_after_first],
             device=solver.device,
@@ -335,7 +351,15 @@ def _integrated_bit_patterns(binding) -> dict[str, tuple[str, tuple[int, ...], b
     for outer_index, workspace in enumerate(binding.outer):
         arrays[f"outer_{outer_index}.start"] = direct.outer_start_positions[outer_index]
         arrays[f"outer_{outer_index}.candidate"] = direct.outer_candidate_positions[outer_index]
-        arrays[f"outer_{outer_index}.direction"] = workspace.direction
+        for field_name in (
+            "rhs",
+            "first_correction",
+            "operator_product_after_first",
+            "residual_after_first",
+            "second_correction",
+            "direction",
+        ):
+            arrays[f"outer_{outer_index}.{field_name}"] = getattr(workspace, field_name)
     return {name: _device_bit_pattern(array) for name, array in arrays.items()}
 
 
@@ -415,6 +439,11 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
         self.assertIn("minimum_segment <= minimum_determinant", source)
         self.assertIn("WarpScalarFusedStaticMultigridHierarchy", source)
         self.assertNotIn("level_product", source)
+        self.assertNotIn("def _mask_rhs", source)
+        self.assertNotIn("def _subtract_vectors", source)
+        self.assertEqual(source.count("operator.launch_gradient_masked("), 1)
+        self.assertEqual(source.count("operator.launch_apply_residual("), 1)
+        self.assertIn('"captured-direct-graph-vbd-graph-identity-v3"', source)
 
     def test_contract_rejects_cpu_and_nondefault_coarse_bound(self):
         with self.assertRaisesRegex(RuntimeError, "requires CUDA"):
@@ -441,6 +470,7 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
             "graph_identity_sha256": "5" * 64,
             "k4_graph_identity_sha256": "6" * 64,
             "comparator_contract_id": VBD_BASELINE_CONTRACT_ID,
+            "fused_gather_kernel_version": FUSED_GATHER_KERNEL_VERSION,
         }
         with self.assertRaisesRegex(ValueError, "equal AB and BA"):
             CapturedGraphVBDTiming(pair_orders=("AB", "AB"), warmup_replays=1, **common)
@@ -461,6 +491,7 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
                 },
                 "diagnostic-only",
             ),
+            ({"fused_gather_kernel_version": FUSED_GATHER_KERNEL_VERSION + "-forged"}, "fused gather kernel"),
             ({"graph_identity_sha256": "forged"}, "lowercase SHA-256"),
             ({"graph_seconds": (-1.0e-3, 1.1e-3)}, "finite and positive"),
             ({"pair_orders": ["AB"]}, "same positive even length"),
@@ -533,6 +564,7 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
                 k1_pristine_state_sha256="7" * 64,
                 persistent_device_sha256="8" * 64,
                 graph_identity_sha256="9" * 64,
+                fused_gather_kernel_version=FUSED_GATHER_KERNEL_VERSION,
                 outer_kernel_version=OUTER_KERNEL_VERSION,
                 outer_schedule_version=OUTER_SCHEDULE_VERSION,
                 outer_schedule_sha256=OUTER_SCHEDULE_SHA256,
@@ -582,7 +614,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
     def test_exact_two_cycle_work_and_launch_count_are_retained(self):
         endpoint = self.endpoint
         cycle_launches = self.solver.device_hierarchy.scheduled_kernel_launches
-        expected_linear = 7 + 2 * cycle_launches
+        expected_linear = 5 + 2 * cycle_launches
         expected_outer = expected_linear + 3
         expected_total = 2 + OUTER_CORRECTIONS * expected_outer
         self.assertEqual(endpoint.total_v_cycle_count, OUTER_CORRECTIONS * V_CYCLES_PER_OUTER)
@@ -614,9 +646,12 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(schedule["krylov_iterations"], 0)
         self.assertEqual(schedule["v_cycles"], 8)
         self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], expected_linear - 1)
+        self.assertEqual(schedule["fused_gather_kernel_launches_per_outer"], 2)
         self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
         self.assertEqual(schedule["outer_kernel_launches_per_outer"], expected_outer)
         self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], expected_total)
+        self.assertEqual(schedule["graph_identity_schema"], "captured-direct-graph-vbd-graph-identity-v3")
+        self.assertEqual(schedule["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
@@ -624,10 +659,12 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertFalse(schedule["performance_evidence"])
         json.dumps(schedule, allow_nan=False)
         endpoint_record = endpoint.deterministic_record()
+        self.assertEqual(endpoint_record["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(endpoint_record["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(endpoint_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(endpoint_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
         for outer_record in endpoint_record["outer_work"]:
+            self.assertEqual(outer_record["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
             self.assertEqual(outer_record["outer_kernel_version"], OUTER_KERNEL_VERSION)
             self.assertEqual(outer_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
             self.assertEqual(outer_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
@@ -646,6 +683,38 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         for name in fused_patterns:
             with self.subTest(array=name):
                 self.assertEqual(fused_patterns[name], oracle_patterns[name])
+
+    def test_fused_gathers_match_legacy_oracle_after_sticky_rejection(self):
+        config = DirectGraphVBDConfig(minimum_determinant=2.0)
+        fused = CapturedDirectGraphVBD(self.scene, device="cuda:0", config=config)
+        oracle = CapturedDirectGraphVBD(self.scene, device="cuda:0", config=config)
+        module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
+        fused_binding = module._lookup_workspace_owners(fused)
+        fused._enqueue_integrated(fused_binding)
+        oracle_binding = _enqueue_unfused_outer_oracle(oracle)
+        fused_patterns = _integrated_bit_patterns(fused_binding)
+        oracle_patterns = _integrated_bit_patterns(oracle_binding)
+        self.assertEqual(fused_patterns.keys(), oracle_patterns.keys())
+        for name in fused_patterns:
+            with self.subTest(array=name):
+                self.assertEqual(fused_patterns[name], oracle_patterns[name])
+
+        np.testing.assert_array_equal(fused_binding.direct.accepted.numpy(), 0)
+        np.testing.assert_array_equal(
+            fused_binding.direct.reasons.numpy(),
+            np.array([5, 2, 2, 2], dtype=np.int32),
+        )
+        for workspace in fused_binding.outer[1:]:
+            for field_name in (
+                "rhs",
+                "first_correction",
+                "operator_product_after_first",
+                "residual_after_first",
+                "second_correction",
+                "direction",
+            ):
+                bit_pattern = _device_bit_pattern(getattr(workspace, field_name))[2]
+                self.assertEqual(bit_pattern, bytes(len(bit_pattern)))
 
     def test_fused_vertex_kernel_matches_unfused_edge_semantics_bitwise(self):
         device = self.solver.device
@@ -805,11 +874,13 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
     def test_coordinated_outer_schedule_version_and_hash_tamper_fails_closed(self):
         module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
         original_globals = (
+            module.FUSED_GATHER_KERNEL_VERSION,
             module.OUTER_KERNEL_VERSION,
             module.OUTER_SCHEDULE_VERSION,
             module.OUTER_SCHEDULE_SHA256,
         )
         original_facades = (
+            self.solver._fused_gather_kernel_version_bound,
             self.solver._outer_kernel_version_bound,
             self.solver._outer_schedule_version_bound,
             self.solver._outer_schedule_sha256_bound,
@@ -818,13 +889,16 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         for boundary_name, operation in self._owner_boundaries(self.solver):
             with self.subTest(boundary=boundary_name):
                 try:
-                    module.OUTER_KERNEL_VERSION = original_globals[0] + "-forged"
-                    module.OUTER_SCHEDULE_VERSION = original_globals[1] + "-forged"
+                    module.FUSED_GATHER_KERNEL_VERSION = original_globals[0] + "-forged"
+                    module.OUTER_KERNEL_VERSION = original_globals[1] + "-forged"
+                    module.OUTER_SCHEDULE_VERSION = original_globals[2] + "-forged"
                     forged_sha256 = module._derive_outer_schedule_sha256(
                         module.OUTER_KERNEL_VERSION,
+                        module.FUSED_GATHER_KERNEL_VERSION,
                         module.OUTER_SCHEDULE_VERSION,
                     )
                     module.OUTER_SCHEDULE_SHA256 = forged_sha256
+                    self.solver._fused_gather_kernel_version_bound = module.FUSED_GATHER_KERNEL_VERSION
                     self.solver._outer_kernel_version_bound = module.OUTER_KERNEL_VERSION
                     self.solver._outer_schedule_version_bound = module.OUTER_SCHEDULE_VERSION
                     self.solver._outer_schedule_sha256_bound = forged_sha256
@@ -836,11 +910,13 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                     )
                 finally:
                     (
+                        module.FUSED_GATHER_KERNEL_VERSION,
                         module.OUTER_KERNEL_VERSION,
                         module.OUTER_SCHEDULE_VERSION,
                         module.OUTER_SCHEDULE_SHA256,
                     ) = original_globals
                     (
+                        self.solver._fused_gather_kernel_version_bound,
                         self.solver._outer_kernel_version_bound,
                         self.solver._outer_schedule_version_bound,
                         self.solver._outer_schedule_sha256_bound,
@@ -849,14 +925,20 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
     def test_endpoint_and_outer_serializers_revalidate_context_and_content_hashes(self):
         context = self.endpoint._validation_context
         original_context_schedule = (
+            context.fused_gather_kernel_version,
             context.outer_kernel_version,
             context.outer_schedule_version,
             context.outer_schedule_sha256,
         )
-        forged_kernel_version = original_context_schedule[0] + "-forged"
-        forged_schedule_version = original_context_schedule[1] + "-forged"
+        forged_gather_version = original_context_schedule[0] + "-forged"
+        forged_kernel_version = original_context_schedule[1] + "-forged"
+        forged_schedule_version = original_context_schedule[2] + "-forged"
         module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
-        forged_sha256 = module._derive_outer_schedule_sha256(forged_kernel_version, forged_schedule_version)
+        forged_sha256 = module._derive_outer_schedule_sha256(
+            forged_kernel_version,
+            forged_gather_version,
+            forged_schedule_version,
+        )
         serializers = (
             ("endpoint", self.endpoint.deterministic_record),
             ("outer-work", self.endpoint.outer_work[0].deterministic_record),
@@ -864,15 +946,17 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         for name, serializer in serializers:
             with self.subTest(context=name):
                 try:
+                    object.__setattr__(context, "fused_gather_kernel_version", forged_gather_version)
                     object.__setattr__(context, "outer_kernel_version", forged_kernel_version)
                     object.__setattr__(context, "outer_schedule_version", forged_schedule_version)
                     object.__setattr__(context, "outer_schedule_sha256", forged_sha256)
                     with self.assertRaisesRegex(ValueError, "validation context fields"):
                         serializer()
                 finally:
-                    object.__setattr__(context, "outer_kernel_version", original_context_schedule[0])
-                    object.__setattr__(context, "outer_schedule_version", original_context_schedule[1])
-                    object.__setattr__(context, "outer_schedule_sha256", original_context_schedule[2])
+                    object.__setattr__(context, "fused_gather_kernel_version", original_context_schedule[0])
+                    object.__setattr__(context, "outer_kernel_version", original_context_schedule[1])
+                    object.__setattr__(context, "outer_schedule_version", original_context_schedule[2])
+                    object.__setattr__(context, "outer_schedule_sha256", original_context_schedule[3])
 
         outer = self.endpoint.outer_work[0]
         original_outer_hash = outer.content_sha256
@@ -906,6 +990,10 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                     self.assertEqual(actual_work.content_sha256, expected_work.content_sha256)
                     np.testing.assert_array_equal(actual_work.rhs, expected_work.rhs)
                     np.testing.assert_array_equal(actual_work.first_correction, expected_work.first_correction)
+                    np.testing.assert_array_equal(
+                        actual_work.operator_product_after_first,
+                        expected_work.operator_product_after_first,
+                    )
                     np.testing.assert_array_equal(actual_work.residual_after_first, expected_work.residual_after_first)
                     np.testing.assert_array_equal(actual_work.second_correction, expected_work.second_correction)
                     np.testing.assert_array_equal(actual_work.direction, expected_work.direction)
@@ -2110,7 +2198,9 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(timing.persistent_device_sha256, self.solver._persistent_device_sha256)
         self.assertEqual(timing.graph_identity_sha256, self.solver.graph_identity_sha256)
         self.assertEqual(timing.k4_graph_identity_sha256, self.solver.k4_graph_identity_sha256)
-        json.dumps(timing.deterministic_record(), allow_nan=False)
+        record = timing.deterministic_record()
+        self.assertEqual(record["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
+        json.dumps(record, allow_nan=False)
 
     def test_endpoint_evidence_is_bytes_backed_and_immutable(self):
         with self.assertRaises(ValueError):
@@ -2151,12 +2241,12 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
 
     def test_real_default_stretch_scalar_fused_schedule_and_physical_work_are_exact(self):
         self.assertEqual(self.solver.device_hierarchy.scheduled_kernel_launches, 21)
-        self.assertEqual(self.solver.linear_prefix_kernel_launches_per_outer, 48)
-        self.assertEqual(self.solver.linear_kernel_launches_per_outer, 49)
-        self.assertEqual(self.solver.outer_kernel_launches_per_outer, 52)
-        self.assertEqual(self.solver.correction_kernel_launches, 210)
+        self.assertEqual(self.solver.linear_prefix_kernel_launches_per_outer, 46)
+        self.assertEqual(self.solver.linear_kernel_launches_per_outer, 47)
+        self.assertEqual(self.solver.outer_kernel_launches_per_outer, 50)
+        self.assertEqual(self.solver.correction_kernel_launches, 202)
         for outer in self.endpoint.outer_work:
-            self.assertEqual(outer.linear_kernel_launches, 49)
+            self.assertEqual(outer.linear_kernel_launches, 47)
             for record in outer.v_cycles:
                 self.assertEqual(record.work.matrix_block_products, 5058)
                 self.assertEqual(record.physical_work.matrix_block_products_executed, 3372)
@@ -2169,11 +2259,13 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
                 self.assertFalse(record.performance_evidence)
         schedule = self.solver.deterministic_record()
         self.assertEqual(schedule["v_cycle_kernel_launches"], 21)
-        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 48)
+        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 46)
+        self.assertEqual(schedule["fused_gather_kernel_launches_per_outer"], 2)
         self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
-        self.assertEqual(schedule["linear_kernel_launches_per_outer"], 49)
-        self.assertEqual(schedule["outer_kernel_launches_per_outer"], 52)
-        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 210)
+        self.assertEqual(schedule["linear_kernel_launches_per_outer"], 47)
+        self.assertEqual(schedule["outer_kernel_launches_per_outer"], 50)
+        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 202)
+        self.assertEqual(schedule["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
@@ -2209,6 +2301,7 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
         self.assertGreater(timing.graph_median_seconds, 0.0)
         self.assertGreater(timing.k4_median_seconds, 0.0)
         self.assertFalse(timing.performance_evidence)
+        self.assertEqual(record["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         print("CAPTURED_DIRECT_GRAPH_VBD_TIMING=" + json.dumps(record, sort_keys=True))
 
 
