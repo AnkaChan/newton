@@ -34,6 +34,8 @@ import warp as wp
 from .correction_gpu import MatrixFreeStableNHOperator
 
 KERNEL_VERSION = "mg-vbd-warp-operator-v2-tiled-pcg"
+FUSED_GATHER_KERNEL_VERSION = "mg-vbd-warp-fused-gather-v1"
+print(f"[kernels] fused gather version: {FUSED_GATHER_KERNEL_VERSION}")
 CONTRACT_ID = "mg-vbd-warp-fixed-pcg-research-v2"
 _PCG_REDUCTION_BLOCK_SIZE = 256
 _PCG_REDUCTION_STAGES = 2
@@ -334,6 +336,38 @@ def _gather_gradient(
 
 
 @wp.kernel(enable_backward=False)
+def _gather_gradient_masked(
+    positions: wp.array[wp.vec3d],
+    inertial_target: wp.array[wp.vec3d],
+    mass: wp.array[wp.float64],
+    free: wp.array[int],
+    incidence_offsets: wp.array[int],
+    incidence_tets: wp.array[int],
+    incidence_corners: wp.array[int],
+    shape_gradients: wp.array[wp.vec3d],
+    volumes: wp.array[wp.float64],
+    first_piola: wp.array[wp.mat33d],
+    inverse_dt_squared: wp.float64,
+    scale: wp.float64,
+    active: wp.array[int],
+    output: wp.array[wp.vec3d],
+):
+    free_index = wp.tid()
+    vertex = free[free_index]
+    value = mass[vertex] * inverse_dt_squared * (positions[vertex] - inertial_target[vertex])
+    start = incidence_offsets[free_index]
+    end = incidence_offsets[free_index + 1]
+    for cursor in range(start, end):
+        tet = incidence_tets[cursor]
+        corner = incidence_corners[cursor]
+        value += volumes[tet] * (first_piola[tet] * shape_gradients[4 * tet + corner])
+    value = scale * value
+    if active[0] == 0:
+        value = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    output[free_index] = value
+
+
+@wp.kernel(enable_backward=False)
 def _apply_tet_operator(
     direction: wp.array[wp.vec3d],
     tets: wp.array[int],
@@ -379,6 +413,35 @@ def _gather_operator_product(
         corner = incidence_corners[cursor]
         value += volumes[tet] * (delta_piola[tet] * shape_gradients[4 * tet + corner])
     output[free_index] = value
+
+
+@wp.kernel(enable_backward=False)
+def _gather_operator_product_residual(
+    direction: wp.array[wp.vec3d],
+    rhs: wp.array[wp.vec3d],
+    mass: wp.array[wp.float64],
+    free: wp.array[int],
+    incidence_offsets: wp.array[int],
+    incidence_tets: wp.array[int],
+    incidence_corners: wp.array[int],
+    shape_gradients: wp.array[wp.vec3d],
+    volumes: wp.array[wp.float64],
+    delta_piola: wp.array[wp.mat33d],
+    inverse_dt_squared: wp.float64,
+    product: wp.array[wp.vec3d],
+    residual: wp.array[wp.vec3d],
+):
+    free_index = wp.tid()
+    vertex = free[free_index]
+    value = mass[vertex] * inverse_dt_squared * direction[free_index]
+    start = incidence_offsets[free_index]
+    end = incidence_offsets[free_index + 1]
+    for cursor in range(start, end):
+        tet = incidence_tets[cursor]
+        corner = incidence_corners[cursor]
+        value += volumes[tet] * (delta_piola[tet] * shape_gradients[4 * tet + corner])
+    product[free_index] = value
+    residual[free_index] = rhs[free_index] - value
 
 
 @wp.kernel(enable_backward=False)
@@ -1235,6 +1298,41 @@ class WarpMatrixFreeStableNHOperator:
         if vector.device != self.device or vector.dtype != wp.vec3d or vector.shape != (self.n_free,):
             raise ValueError(f"{name} must be a vec3d array of shape ({self.n_free},) on {self.device}")
 
+    def _validate_active(self, active: wp.array[int]) -> None:
+        if (
+            type(active) is not wp.array
+            or active.device != self.device
+            or active.dtype != wp.int32
+            or active.ndim != 1
+            or active.shape != (1,)
+        ):
+            raise ValueError(f"active must be an int32 array of shape (1,) on {self.device}")
+
+    @staticmethod
+    def _array_memory_span(array: wp.array, element_size: int) -> tuple[int, int]:
+        """Return a conservative byte interval for one validated 1-D array."""
+        if array.size == 0:
+            return (int(array.ptr), int(array.ptr))
+        final_offset = (array.size - 1) * int(array.strides[0])
+        start = int(array.ptr) + min(0, final_offset)
+        return (start, int(array.ptr) + max(0, final_offset) + element_size)
+
+    @classmethod
+    def _vector_memory_span(cls, vector: wp.array[wp.vec3d]) -> tuple[int, int]:
+        return cls._array_memory_span(vector, wp.types.type_size_in_bytes(vector.dtype))
+
+    @staticmethod
+    def _memory_spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+        return left[0] < right[1] and right[0] < left[1]
+
+    @classmethod
+    def _vectors_overlap(cls, left: wp.array[wp.vec3d], right: wp.array[wp.vec3d]) -> bool:
+        return cls._memory_spans_overlap(cls._vector_memory_span(left), cls._vector_memory_span(right))
+
+    @staticmethod
+    def _same_vector_view(left: wp.array[wp.vec3d], right: wp.array[wp.vec3d]) -> bool:
+        return int(left.ptr) == int(right.ptr) and left.shape == right.shape and left.strides == right.strides
+
     def launch_refresh_geometry(self) -> None:
         """Refresh deformation, cofactor, determinant, and exact Piola buffers."""
         wp.launch(
@@ -1275,6 +1373,48 @@ class WarpMatrixFreeStableNHOperator:
                 self.first_piola,
                 self.inverse_dt_squared,
                 float(scale),
+                output,
+            ],
+            device=self.device,
+        )
+
+    def launch_gradient_masked(
+        self,
+        output: wp.array[wp.vec3d],
+        active: wp.array[int],
+        *,
+        scale: float = 1.0,
+    ) -> None:
+        """Launch the exact free gradient gather with one final-store mask.
+
+        The full deterministic sorted gather is evaluated for every row.  An
+        inactive scalar writes exact positive zero only at the final store, so
+        the fixed device schedule is independent of ``active[0]``.
+        """
+        self._validate_vector(output, "output")
+        self._validate_active(active)
+        if not math.isfinite(scale):
+            raise ValueError("scale must be finite")
+        active_span = self._array_memory_span(active, wp.types.type_size_in_bytes(active.dtype))
+        if self._memory_spans_overlap(active_span, self._vector_memory_span(output)):
+            raise ValueError("active and output must not alias")
+        wp.launch(
+            _gather_gradient_masked,
+            dim=self.n_free,
+            inputs=[
+                self.positions,
+                self.inertial_target,
+                self.mass,
+                self.free,
+                self.incidence_offsets,
+                self.incidence_tets,
+                self.incidence_corners,
+                self.shape_gradients,
+                self.volumes,
+                self.first_piola,
+                self.inverse_dt_squared,
+                float(scale),
+                active,
                 output,
             ],
             device=self.device,
@@ -1321,6 +1461,86 @@ class WarpMatrixFreeStableNHOperator:
                 workspace.delta_piola,
                 self.inverse_dt_squared,
                 output,
+            ],
+            device=self.device,
+        )
+
+    def launch_apply_residual(
+        self,
+        direction: wp.array[wp.vec3d],
+        rhs: wp.array[wp.vec3d],
+        product: wp.array[wp.vec3d],
+        residual: wp.array[wp.vec3d],
+        workspace: WarpMatrixFreeWorkspace,
+    ) -> None:
+        """Launch one matrix-free product and fused ``rhs - product`` gather.
+
+        ``rhs``, ``product``, and ``residual`` must occupy disjoint storage.
+        Direction may be the exact same view as any one of them: the tet launch
+        completes before the gather, and each gather thread consumes its own
+        direction entry before either output is stored. Partially overlapping
+        direction/output views are rejected because they create cross-row
+        read/write hazards.
+        """
+        self._validate_vector(direction, "direction")
+        self._validate_vector(rhs, "rhs")
+        self._validate_vector(product, "product")
+        self._validate_vector(residual, "residual")
+        if not isinstance(workspace, WarpMatrixFreeWorkspace) or workspace._operator_identity != id(self):
+            raise ValueError("workspace belongs to a different operator")
+        delta_piola = workspace.delta_piola
+        if (
+            type(delta_piola) is not wp.array
+            or delta_piola.device != self.device
+            or delta_piola.dtype != wp.mat33d
+            or delta_piola.ndim != 1
+            or delta_piola.shape != (self.n_tets,)
+        ):
+            raise ValueError(f"workspace delta_piola must be a mat33d array of shape ({self.n_tets},) on {self.device}")
+        named_vectors = (("rhs", rhs), ("product", product), ("residual", residual))
+        for left_index, (left_name, left) in enumerate(named_vectors):
+            for right_name, right in named_vectors[left_index + 1 :]:
+                if self._vectors_overlap(left, right):
+                    raise ValueError(f"{left_name} and {right_name} must not alias")
+        for output_name, output in (("product", product), ("residual", residual)):
+            if self._vectors_overlap(direction, output) and not self._same_vector_view(direction, output):
+                raise ValueError(f"direction and {output_name} must not partially alias")
+        delta_piola_span = self._array_memory_span(delta_piola, wp.types.type_size_in_bytes(delta_piola.dtype))
+        for vector_name, vector in (("direction", direction), *named_vectors):
+            if self._memory_spans_overlap(delta_piola_span, self._vector_memory_span(vector)):
+                raise ValueError(f"{vector_name} must not alias workspace delta_piola")
+        wp.launch(
+            _apply_tet_operator,
+            dim=self.n_tets,
+            inputs=[
+                direction,
+                self.tets,
+                self.vertex_to_free,
+                self.shape_gradients,
+                self.cofactors,
+                self.mu,
+                self.lam,
+                workspace.delta_piola,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            _gather_operator_product_residual,
+            dim=self.n_free,
+            inputs=[
+                direction,
+                rhs,
+                self.mass,
+                self.free,
+                self.incidence_offsets,
+                self.incidence_tets,
+                self.incidence_corners,
+                self.shape_gradients,
+                self.volumes,
+                workspace.delta_piola,
+                self.inverse_dt_squared,
+                product,
+                residual,
             ],
             device=self.device,
         )

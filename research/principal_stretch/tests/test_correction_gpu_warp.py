@@ -8,19 +8,41 @@ import inspect
 import json
 import os
 import unittest
+from unittest import mock
 
 import numpy as np
 import torch
 import warp as wp
 
+from research.principal_stretch import correction_gpu_warp as warp_operator_module
 from research.principal_stretch.correction_gpu import MatrixFreeStableNHOperator, solve_fixed_pcg
 from research.principal_stretch.correction_gpu_warp import (
     CONTRACT_ID,
+    FUSED_GATHER_KERNEL_VERSION,
     KERNEL_VERSION,
     WarpFixedPCGWorkspace,
     WarpMatrixFreeStableNHOperator,
 )
 from research.principal_stretch.newton_baseline import NewtonProblem, build_newton_problem
+from research.principal_stretch.solver_benchmark import build_common_problem
+from research.principal_stretch.solver_scenes import build_stretch_scene
+
+
+@wp.kernel(enable_backward=False)
+def _mask_vector(active: wp.array[int], vector: wp.array[wp.vec3d]):
+    index = wp.tid()
+    if active[0] == 0:
+        vector[index] = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+
+
+@wp.kernel(enable_backward=False)
+def _subtract_vectors(
+    left: wp.array[wp.vec3d],
+    right: wp.array[wp.vec3d],
+    output: wp.array[wp.vec3d],
+):
+    index = wp.tid()
+    output[index] = left[index] - right[index]
 
 
 def _shared_vertex_problem() -> NewtonProblem:
@@ -116,8 +138,27 @@ def _diagonal_oracle_and_device(
     return oracle, WarpMatrixFreeStableNHOperator.from_oracle(oracle, device=device)
 
 
+def _default_stretch_oracle_and_device(
+    device: str,
+) -> tuple[MatrixFreeStableNHOperator, WarpMatrixFreeStableNHOperator]:
+    scene = build_stretch_scene()
+    problem = build_common_problem(scene)
+    positions = np.array(scene.x_current, dtype=np.float64, copy=True)
+    positions[scene.pinned_indices] = scene.pin_targets
+    oracle = MatrixFreeStableNHOperator.from_problem(problem, positions)
+    return oracle, WarpMatrixFreeStableNHOperator.from_oracle(oracle, device=device)
+
+
 def _identity_block_preconditioner(vector_count: int) -> np.ndarray:
     return np.repeat(np.eye(3, dtype=np.float64)[None], vector_count, axis=0)
+
+
+def _assert_bitwise_equal(test: unittest.TestCase, actual: np.ndarray, expected: np.ndarray) -> None:
+    actual_array = np.ascontiguousarray(actual)
+    expected_array = np.ascontiguousarray(expected)
+    test.assertEqual(actual_array.dtype, expected_array.dtype)
+    test.assertEqual(actual_array.shape, expected_array.shape)
+    np.testing.assert_array_equal(actual_array.view(np.uint8), expected_array.view(np.uint8))
 
 
 class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
@@ -128,7 +169,14 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
 
     def test_kernel_version_is_explicit(self):
         self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-operator-v2-tiled-pcg")
+        self.assertEqual(FUSED_GATHER_KERNEL_VERSION, "mg-vbd-warp-fused-gather-v1")
         self.assertEqual(CONTRACT_ID, "mg-vbd-warp-fixed-pcg-research-v2")
+
+        gradient_source = inspect.getsource(warp_operator_module._gather_gradient_masked)
+        apply_source = inspect.getsource(warp_operator_module._gather_operator_product_residual)
+        self.assertLess(gradient_source.index("for cursor in range"), gradient_source.index("if active[0] == 0"))
+        self.assertNotIn("atomic", gradient_source)
+        self.assertNotIn("atomic", apply_source)
 
     def test_sorted_gather_and_exact_free_elimination(self):
         operator = self.operator
@@ -209,6 +257,307 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
         for current in snapshots[1:]:
             for expected, actual in zip(snapshots[0], current, strict=True):
                 np.testing.assert_array_equal(actual, expected)
+
+    def test_fused_gathers_match_unfused_random_inputs_bitwise(self):
+        cases = (
+            ("shared_vertex", *_oracle_and_device("cpu")),
+            ("default_stretch", *_default_stretch_oracle_and_device("cpu")),
+        )
+        for case_index, (name, _oracle, operator) in enumerate(cases):
+            with self.subTest(name=name):
+                generator = np.random.default_rng(1800 + case_index)
+                direction_host = generator.normal(size=(operator.n_free, 3))
+                rhs_host = generator.normal(size=(operator.n_free, 3))
+                direction = wp.array(direction_host, dtype=wp.vec3d, device=operator.device)
+                rhs = wp.array(rhs_host, dtype=wp.vec3d, device=operator.device)
+                active = wp.array([1], dtype=wp.int32, device=operator.device)
+                legacy_gradient = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                fused_gradient = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                legacy_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                legacy_residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                fused_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                fused_residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                legacy_workspace = operator.create_apply_workspace()
+                fused_workspace = operator.create_apply_workspace()
+                pointers = tuple(
+                    int(array.ptr)
+                    for array in (
+                        direction,
+                        rhs,
+                        active,
+                        legacy_gradient,
+                        fused_gradient,
+                        legacy_product,
+                        legacy_residual,
+                        fused_product,
+                        fused_residual,
+                        legacy_workspace.delta_piola,
+                        fused_workspace.delta_piola,
+                    )
+                )
+
+                for scale in (-1.0, 0.375):
+                    for active_value in (1, 0):
+                        with self.subTest(name=name, scale=scale, active=active_value):
+                            active.assign(np.array([active_value], dtype=np.int32))
+                            fused_gradient.assign(np.full((operator.n_free, 3), np.nan, dtype=np.float64))
+                            operator.launch_gradient(legacy_gradient, scale=scale)
+                            wp.launch(
+                                _mask_vector,
+                                dim=operator.n_free,
+                                inputs=[active, legacy_gradient],
+                                device=operator.device,
+                            )
+                            operator.launch_gradient_masked(fused_gradient, active, scale=scale)
+                            actual = fused_gradient.numpy()
+                            expected = legacy_gradient.numpy()
+                            _assert_bitwise_equal(self, actual, expected)
+                            if active_value == 0:
+                                np.testing.assert_array_equal(actual.view(np.uint64), 0)
+
+                fused_product.assign(np.full((operator.n_free, 3), np.nan, dtype=np.float64))
+                fused_residual.assign(np.full((operator.n_free, 3), np.nan, dtype=np.float64))
+                operator.launch_apply(direction, legacy_product, legacy_workspace)
+                wp.launch(
+                    _subtract_vectors,
+                    dim=operator.n_free,
+                    inputs=[rhs, legacy_product, legacy_residual],
+                    device=operator.device,
+                )
+                operator.launch_apply_residual(direction, rhs, fused_product, fused_residual, fused_workspace)
+                _assert_bitwise_equal(self, fused_product.numpy(), legacy_product.numpy())
+                _assert_bitwise_equal(self, fused_residual.numpy(), legacy_residual.numpy())
+                self.assertEqual(
+                    pointers,
+                    tuple(
+                        int(array.ptr)
+                        for array in (
+                            direction,
+                            rhs,
+                            active,
+                            legacy_gradient,
+                            fused_gradient,
+                            legacy_product,
+                            legacy_residual,
+                            fused_product,
+                            fused_residual,
+                            legacy_workspace.delta_piola,
+                            fused_workspace.delta_piola,
+                        )
+                    ),
+                )
+
+    def test_fused_gathers_preserve_nonfinite_edge_semantics(self):
+        _oracle, operator = _oracle_and_device("cpu")
+        first_piola = operator.first_piola.numpy()
+        first_piola[0, 0, 0] = np.nan
+        operator.first_piola.assign(first_piola)
+        active = wp.array([1], dtype=wp.int32, device=operator.device)
+        legacy_gradient = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        fused_gradient = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        operator.launch_gradient(legacy_gradient, scale=-1.0)
+        operator.launch_gradient_masked(fused_gradient, active, scale=-1.0)
+        expected_gradient = legacy_gradient.numpy()
+        actual_gradient = fused_gradient.numpy()
+        self.assertFalse(np.isfinite(expected_gradient).all())
+        _assert_bitwise_equal(self, actual_gradient, expected_gradient)
+
+        active.assign(np.array([0], dtype=np.int32))
+        fused_gradient.assign(np.full((operator.n_free, 3), np.nan, dtype=np.float64))
+        operator.launch_gradient_masked(fused_gradient, active, scale=-1.0)
+        np.testing.assert_array_equal(fused_gradient.numpy().view(np.uint64), 0)
+
+        direction_host = np.random.default_rng(1811).normal(size=(operator.n_free, 3))
+        rhs_host = np.random.default_rng(1817).normal(size=(operator.n_free, 3))
+        direction_host[0, 1] = np.nan
+        rhs_host[-1, 2] = np.inf
+        direction = wp.array(direction_host, dtype=wp.vec3d, device=operator.device)
+        rhs = wp.array(rhs_host, dtype=wp.vec3d, device=operator.device)
+        legacy_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        legacy_residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        fused_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        fused_residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        operator.launch_apply(direction, legacy_product, operator.create_apply_workspace())
+        wp.launch(
+            _subtract_vectors,
+            dim=operator.n_free,
+            inputs=[rhs, legacy_product, legacy_residual],
+            device=operator.device,
+        )
+        operator.launch_apply_residual(
+            direction,
+            rhs,
+            fused_product,
+            fused_residual,
+            operator.create_apply_workspace(),
+        )
+        self.assertFalse(np.isfinite(legacy_product.numpy()).all())
+        self.assertFalse(np.isfinite(legacy_residual.numpy()).all())
+        _assert_bitwise_equal(self, fused_product.numpy(), legacy_product.numpy())
+        _assert_bitwise_equal(self, fused_residual.numpy(), legacy_residual.numpy())
+
+    def test_fused_gather_validation_rejects_invalid_arrays_and_output_aliases(self):
+        operator = self.operator
+        n_free = operator.n_free
+        direction = wp.zeros(n_free, dtype=wp.vec3d, device=operator.device)
+        rhs = wp.zeros(n_free, dtype=wp.vec3d, device=operator.device)
+        product = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+        residual = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+        workspace = operator.create_apply_workspace()
+        output = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+
+        for invalid_active in (
+            wp.zeros(1, dtype=wp.int64, device=operator.device),
+            wp.zeros(1, dtype=wp.float32, device=operator.device),
+            wp.zeros(2, dtype=wp.int32, device=operator.device),
+        ):
+            with self.subTest(dtype=invalid_active.dtype, shape=invalid_active.shape):
+                with self.assertRaisesRegex(ValueError, "active must be an int32 array"):
+                    operator.launch_gradient_masked(output, invalid_active)
+        with self.assertRaisesRegex(ValueError, "active must be an int32 array"):
+            operator.launch_gradient_masked(output, [1])
+        aliased_active = wp.array(
+            ptr=output.ptr,
+            dtype=wp.int32,
+            shape=(1,),
+            device=operator.device,
+            copy=False,
+        )
+        with self.assertRaisesRegex(ValueError, "active and output must not alias"):
+            operator.launch_gradient_masked(output, aliased_active)
+        for scale in (np.nan, np.inf, -np.inf):
+            with self.assertRaisesRegex(ValueError, "scale must be finite"):
+                operator.launch_gradient_masked(output, wp.ones(1, dtype=wp.int32, device=operator.device), scale=scale)
+
+        wrong_type = wp.empty(n_free, dtype=wp.vec3f, device=operator.device)
+        wrong_shape = wp.empty(n_free + 1, dtype=wp.vec3d, device=operator.device)
+        for name, arguments in (
+            ("direction", (wrong_type, rhs, product, residual, workspace)),
+            ("rhs", (direction, wrong_shape, product, residual, workspace)),
+            ("product", (direction, rhs, wrong_shape, residual, workspace)),
+            ("residual", (direction, rhs, product, wrong_shape, workspace)),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, f"{name} must be a vec3d array"):
+                    operator.launch_apply_residual(*arguments)
+
+        _other_oracle, other_operator = _oracle_and_device("cpu")
+        with self.assertRaisesRegex(ValueError, "workspace belongs to a different operator"):
+            operator.launch_apply_residual(direction, rhs, product, residual, other_operator.create_apply_workspace())
+
+        for left_name, right_name in (("rhs", "product"), ("rhs", "residual"), ("product", "residual")):
+            arrays = {"rhs": rhs, "product": product, "residual": residual}
+            arrays[right_name] = arrays[left_name]
+            with self.subTest(alias=f"{left_name}-{right_name}"):
+                with self.assertRaisesRegex(ValueError, f"{left_name} and {right_name} must not alias"):
+                    operator.launch_apply_residual(
+                        direction,
+                        arrays["rhs"],
+                        arrays["product"],
+                        arrays["residual"],
+                        workspace,
+                    )
+
+        overlap_storage = wp.empty(n_free + 1, dtype=wp.vec3d, device=operator.device)
+        overlapping_rhs = overlap_storage[:n_free]
+        overlapping_product = overlap_storage[1:]
+        with self.assertRaisesRegex(ValueError, "rhs and product must not alias"):
+            operator.launch_apply_residual(direction, overlapping_rhs, overlapping_product, residual, workspace)
+
+        for output_name in ("product", "residual"):
+            overlap_storage = wp.empty(n_free + 1, dtype=wp.vec3d, device=operator.device)
+            overlapping_direction = overlap_storage[:n_free]
+            overlapping_output = overlap_storage[1:]
+            output_arrays = {"product": product, "residual": residual}
+            output_arrays[output_name] = overlapping_output
+            with self.subTest(partial_direction_alias=output_name):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"direction and {output_name} must not partially alias",
+                ):
+                    operator.launch_apply_residual(
+                        overlapping_direction,
+                        rhs,
+                        output_arrays["product"],
+                        output_arrays["residual"],
+                        workspace,
+                    )
+
+        invalid_workspace = operator.create_apply_workspace()
+        invalid_workspace.delta_piola = wp.empty(operator.n_tets, dtype=wp.vec3d, device=operator.device)
+        with self.assertRaisesRegex(ValueError, "workspace delta_piola must be a mat33d array"):
+            operator.launch_apply_residual(direction, rhs, product, residual, invalid_workspace)
+
+        for vector_name, vector in (
+            ("direction", direction),
+            ("rhs", rhs),
+            ("product", product),
+            ("residual", residual),
+        ):
+            aliased_workspace = operator.create_apply_workspace()
+            aliased_workspace.delta_piola = wp.array(
+                ptr=vector.ptr,
+                dtype=wp.mat33d,
+                shape=(operator.n_tets,),
+                device=operator.device,
+                copy=False,
+            )
+            with self.subTest(workspace_alias=vector_name):
+                with self.assertRaisesRegex(ValueError, f"{vector_name} must not alias workspace delta_piola"):
+                    operator.launch_apply_residual(direction, rhs, product, residual, aliased_workspace)
+
+    def test_direction_aliases_are_safe_for_fused_apply(self):
+        operator = self.operator
+        n_free = operator.n_free
+        direction_host = np.random.default_rng(1823).normal(size=(n_free, 3))
+        rhs_host = np.random.default_rng(1831).normal(size=(n_free, 3))
+        for alias in ("rhs", "product", "residual"):
+            with self.subTest(alias=alias):
+                effective_rhs = direction_host if alias == "rhs" else rhs_host
+                expected_product = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+                expected_residual = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+                reference_direction = wp.array(direction_host, dtype=wp.vec3d, device=operator.device)
+                reference_rhs = wp.array(effective_rhs, dtype=wp.vec3d, device=operator.device)
+                operator.launch_apply(reference_direction, expected_product, operator.create_apply_workspace())
+                wp.launch(
+                    _subtract_vectors,
+                    dim=n_free,
+                    inputs=[reference_rhs, expected_product, expected_residual],
+                    device=operator.device,
+                )
+
+                direction = wp.array(direction_host, dtype=wp.vec3d, device=operator.device)
+                rhs = direction if alias == "rhs" else wp.array(rhs_host, dtype=wp.vec3d, device=operator.device)
+                product = direction if alias == "product" else wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+                residual = (
+                    direction if alias == "residual" else wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+                )
+                operator.launch_apply_residual(direction, rhs, product, residual, operator.create_apply_workspace())
+                _assert_bitwise_equal(self, product.numpy(), expected_product.numpy())
+                _assert_bitwise_equal(self, residual.numpy(), expected_residual.numpy())
+
+    def test_fused_methods_have_exact_kernel_launch_counts(self):
+        operator = self.operator
+        direction = wp.zeros(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        rhs = wp.zeros(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        output = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        active = wp.ones(1, dtype=wp.int32, device=operator.device)
+        workspace = operator.create_apply_workspace()
+        operator.launch_gradient_masked(output, active)
+        operator.launch_apply_residual(direction, rhs, product, residual, workspace)
+
+        with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+            operator.launch_gradient_masked(output, active)
+        self.assertEqual(launch.call_count, 1)
+        self.assertIs(launch.call_args.args[0], warp_operator_module._gather_gradient_masked)
+
+        with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+            operator.launch_apply_residual(direction, rhs, product, residual, workspace)
+        self.assertEqual(launch.call_count, 2)
+        self.assertIs(launch.call_args_list[0].args[0], warp_operator_module._apply_tet_operator)
+        self.assertIs(launch.call_args_list[1].args[0], warp_operator_module._gather_operator_product_residual)
 
 
 class TestWarpFixedPCG(unittest.TestCase):
@@ -496,6 +845,107 @@ class TestWarpFixedPCG(unittest.TestCase):
         np.testing.assert_array_equal(solutions[2], solutions[0])
         self.assertEqual(records[1], records[0])
         self.assertEqual(records[2], records[0])
+
+
+@unittest.skipUnless(os.environ.get("MG_VBD_TEST_CUDA") == "1", "set MG_VBD_TEST_CUDA=1 after claiming a GPU")
+class TestWarpFusedGatherCudaCapture(unittest.TestCase):
+    def test_capture_replays_changed_inputs_after_output_poisoning(self):
+        if wp.get_cuda_device_count() < 1:
+            self.skipTest("no claimed CUDA device is visible")
+        torch.set_default_dtype(torch.float64)
+        _oracle, operator = _oracle_and_device("cuda:0")
+        generator = np.random.default_rng(1847)
+        direction = wp.array(generator.normal(size=(operator.n_free, 3)), dtype=wp.vec3d, device=operator.device)
+        rhs = wp.array(generator.normal(size=(operator.n_free, 3)), dtype=wp.vec3d, device=operator.device)
+        active = wp.ones(1, dtype=wp.int32, device=operator.device)
+        gradient = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        workspace = operator.create_apply_workspace()
+
+        operator.launch_gradient_masked(gradient, active, scale=-1.0)
+        operator.launch_apply_residual(direction, rhs, product, residual, workspace)
+        pointers = tuple(
+            int(array.ptr) for array in (direction, rhs, active, gradient, product, residual, workspace.delta_piola)
+        )
+        with wp.ScopedCapture(device=operator.device) as capture:
+            operator.launch_gradient_masked(gradient, active, scale=-1.0)
+            operator.launch_apply_residual(direction, rhs, product, residual, workspace)
+
+        snapshots: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        for replay_index, active_value in enumerate((0, 1, 1)):
+            direction_host = generator.normal(size=(operator.n_free, 3)) * (replay_index + 1.5)
+            rhs_host = generator.normal(size=(operator.n_free, 3)) - replay_index * 0.25
+            direction.assign(direction_host)
+            rhs.assign(rhs_host)
+            active.assign(np.array([active_value], dtype=np.int32))
+            poison = np.full((operator.n_free, 3), np.nan, dtype=np.float64)
+            gradient.assign(poison)
+            product.assign(poison)
+            residual.assign(poison)
+            wp.capture_launch(capture.graph)
+            captured = (gradient.numpy(), product.numpy(), residual.numpy())
+
+            expected_gradient = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+            expected_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+            expected_residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+            operator.launch_gradient(expected_gradient, scale=-1.0)
+            wp.launch(
+                _mask_vector,
+                dim=operator.n_free,
+                inputs=[active, expected_gradient],
+                device=operator.device,
+            )
+            operator.launch_apply(direction, expected_product, operator.create_apply_workspace())
+            wp.launch(
+                _subtract_vectors,
+                dim=operator.n_free,
+                inputs=[rhs, expected_product, expected_residual],
+                device=operator.device,
+            )
+            _assert_bitwise_equal(self, captured[0], expected_gradient.numpy())
+            _assert_bitwise_equal(self, captured[1], expected_product.numpy())
+            _assert_bitwise_equal(self, captured[2], expected_residual.numpy())
+            if active_value == 0:
+                np.testing.assert_array_equal(captured[0].view(np.uint64), 0)
+            snapshots.append(captured)
+
+        self.assertNotEqual(snapshots[0][1].tobytes(), snapshots[1][1].tobytes())
+        self.assertNotEqual(snapshots[1][1].tobytes(), snapshots[2][1].tobytes())
+        self.assertEqual(
+            pointers,
+            tuple(
+                int(array.ptr) for array in (direction, rhs, active, gradient, product, residual, workspace.delta_piola)
+            ),
+        )
+
+    def test_device_validation_rejects_cpu_arrays_for_cuda_operator(self):
+        if wp.get_cuda_device_count() < 1:
+            self.skipTest("no claimed CUDA device is visible")
+        _oracle, operator = _oracle_and_device("cuda:0")
+        cuda_output = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        cuda_active = wp.ones(1, dtype=wp.int32, device=operator.device)
+        cuda_direction = wp.zeros(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        cuda_rhs = wp.zeros(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        cuda_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        cuda_residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        workspace = operator.create_apply_workspace()
+        cpu_vector = wp.empty(operator.n_free, dtype=wp.vec3d, device="cpu")
+        cpu_active = wp.ones(1, dtype=wp.int32, device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "output must be a vec3d array"):
+            operator.launch_gradient_masked(cpu_vector, cuda_active)
+        with self.assertRaisesRegex(ValueError, "active must be an int32 array"):
+            operator.launch_gradient_masked(cuda_output, cpu_active)
+        for name, arguments in (
+            ("direction", (cpu_vector, cuda_rhs, cuda_product, cuda_residual, workspace)),
+            ("rhs", (cuda_direction, cpu_vector, cuda_product, cuda_residual, workspace)),
+            ("product", (cuda_direction, cuda_rhs, cpu_vector, cuda_residual, workspace)),
+            ("residual", (cuda_direction, cuda_rhs, cuda_product, cpu_vector, workspace)),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, f"{name} must be a vec3d array"):
+                    operator.launch_apply_residual(*arguments)
 
 
 @unittest.skipUnless(os.environ.get("MG_VBD_TEST_CUDA") == "1", "set MG_VBD_TEST_CUDA=1 after claiming a GPU")
