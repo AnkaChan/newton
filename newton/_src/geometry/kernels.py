@@ -11,10 +11,10 @@ from .types import (
     GeoType,
 )
 
-_VERSION = "self_contact_minkowski_broad_phase_v1"
+_VERSION = "self_contact_minkowski_broad_phase_v2"
 print(f"[geometry.kernels] version: {_VERSION}")
 
-_USE_BVH_RADIUS_QUERIES = tuple(int(component) for component in wp.config.version.split(".")[:2]) >= (1, 17)
+_USE_BVH_RADIUS_QUERIES = hasattr(wp, "BvhQuerySphere") and hasattr(wp, "BvhQueryCapsule")
 
 
 @wp.func
@@ -1302,8 +1302,8 @@ def _resolve_edge_query_segment(start: wp.vec3, end: wp.vec3):
     return direction, max_dist
 
 
-# Sphere and capsule BVH queries first appear in Warp 1.17. Keep the AABB
-# constructors so Newton's Warp 1.16 minimum retains its existing broad phase.
+# The public query types signal a Warp build with the completed sphere/capsule
+# API. Keep AABB constructors for Newton's supported earlier Warp versions.
 if _USE_BVH_RADIUS_QUERIES:
 
     @wp.func

@@ -49,6 +49,7 @@
 ### Changed
 
 - Filter shared full-surface soft contacts per `SolverCoupled` entry, preserving them for capable solvers and dropping them for particle-only solvers or records spanning entries.
+- Accelerate `SolverVBD` cloth self-contact with tighter sphere and capsule BVH queries when supported by Warp. Upgrade Warp to a release that exposes these query types to enable the acceleration; older supported Warp versions retain the existing broad phase.
 - Accelerate `SolverVBD` soft-contact processing and cloth elasticity without changing solver settings or contact capacity.
 - Follow USD viewport `purpose` and visibility for imported visual geometry and colliders rather than inferring visibility from a bound render material. Visual shapes and Gaussian splats are drawn only for `default` and `proxy`; a collider whose `purpose` resolves to `default` is drawn, while `guide` identifies collision-only geometry. `force_show_colliders` and `hide_collision_shapes` are unchanged. (#3404, #3712)
 - Require `warp-lang>=1.16.0`; upgrade Warp to version 1.16.0 or later. (#3780)

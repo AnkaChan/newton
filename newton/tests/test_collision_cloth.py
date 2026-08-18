@@ -31,7 +31,7 @@ from newton.tests.unittest_utils import (
     get_test_devices,
 )
 
-_VERSION = "self_contact_minkowski_broad_phase_test_v1"
+_VERSION = "self_contact_minkowski_broad_phase_test_v2"
 print(f"[test_collision_cloth] version: {_VERSION}")
 
 
