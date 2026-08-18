@@ -50,6 +50,9 @@ from research.principal_stretch.correction_gpu_warp import WarpMatrixFreeWorkspa
 from research.principal_stretch.correction_graph_vbd import DirectGraphVBDConfig
 from research.principal_stretch.correction_multigrid import apply_v_cycle
 from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
+    SCHEDULE_VERSION as V_CYCLE_SCHEDULE_VERSION,
+)
+from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     WarpScalarFusedStaticMultigridHierarchy,
     WarpScalarFusedVCyclePhysicalWork,
     WarpScalarFusedVCycleRecord,
@@ -443,7 +446,7 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
         self.assertNotIn("def _subtract_vectors", source)
         self.assertEqual(source.count("operator.launch_gradient_masked("), 1)
         self.assertEqual(source.count("operator.launch_apply_residual("), 1)
-        self.assertIn('"captured-direct-graph-vbd-graph-identity-v3"', source)
+        self.assertIn('"captured-direct-graph-vbd-graph-identity-v4"', source)
 
     def test_contract_rejects_cpu_and_nondefault_coarse_bound(self):
         with self.assertRaisesRegex(RuntimeError, "requires CUDA"):
@@ -631,6 +634,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                     self.assertIs(type(record), WarpScalarFusedVCycleRecord)
                     self.assertIs(type(record.physical_work), WarpScalarFusedVCyclePhysicalWork)
                     self.assertEqual(record.scheduled_kernel_launches, cycle_launches)
+                    self.assertEqual(record.schedule_version, V_CYCLE_SCHEDULE_VERSION)
                     self.assertEqual(record.work.hierarchy_sha256, endpoint.static_hierarchy_sha256)
                     self.assertEqual(record.work.rhs_count, 1)
                     self.assertEqual(record.work.coarsest_factor_solves, 1)
@@ -640,6 +644,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                         record.work.matrix_block_products,
                     )
                     self.assertEqual(physical.scheduled_kernel_launches, cycle_launches)
+                    self.assertEqual(physical.root_ingress_zero_start_fusions, 1)
                     self.assertEqual(physical.schedule_sha256, self.solver.device_hierarchy.schedule_sha256)
         schedule = self.solver.deterministic_record()
         self.assertEqual(schedule["contract_id"], CONTRACT_ID)
@@ -650,11 +655,13 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
         self.assertEqual(schedule["outer_kernel_launches_per_outer"], expected_outer)
         self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], expected_total)
-        self.assertEqual(schedule["graph_identity_schema"], "captured-direct-graph-vbd-graph-identity-v3")
+        self.assertEqual(schedule["graph_identity_schema"], "captured-direct-graph-vbd-graph-identity-v4")
         self.assertEqual(schedule["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
+        self.assertEqual(schedule["v_cycle_schedule_version"], V_CYCLE_SCHEDULE_VERSION)
+        self.assertEqual(schedule["v_cycle_root_ingress_zero_start_fusions"], 1)
         self.assertEqual(schedule["workspace_owner_identity_sha256"], self.solver._workspace_owner_identity_sha256())
         self.assertFalse(schedule["performance_evidence"])
         json.dumps(schedule, allow_nan=False)
@@ -1024,7 +1031,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         )
         bad_work = dataclasses.replace(bad_work, content_sha256=work_sha256)
         record_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v1",
+            "warp-scalar-fused-v-cycle-result-v2",
             (
                 ("device_snapshot_sha256", record.device_snapshot_sha256),
                 ("static_device_content_sha256", record.static_device_content_sha256),
@@ -1043,7 +1050,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         bad_executed = physical.matrix_block_products_executed + 1
         bad_elided = physical.matrix_block_products_elided_zero_start - 1
         physical_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v1",
+            "warp-scalar-fused-v-cycle-physical-work-v2",
             (
                 ("hierarchy_sha256", physical.hierarchy_sha256),
                 ("schedule_sha256", physical.schedule_sha256),
@@ -1052,6 +1059,10 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 ("matrix_block_products_executed", bad_executed),
                 ("matrix_block_products_elided_zero_start", bad_elided),
                 ("zero_start_block_solves", physical.zero_start_block_solves),
+                (
+                    "root_ingress_zero_start_fusions",
+                    physical.root_ingress_zero_start_fusions,
+                ),
                 ("out_of_place_jacobi_block_solves", physical.out_of_place_jacobi_block_solves),
                 ("matrix_kernel_launches", physical.matrix_kernel_launches),
                 ("jacobi_kernel_launches", physical.jacobi_kernel_launches),
@@ -1065,7 +1076,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             content_sha256=physical_sha256,
         )
         physical_record_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v1",
+            "warp-scalar-fused-v-cycle-result-v2",
             (
                 ("device_snapshot_sha256", record.device_snapshot_sha256),
                 ("static_device_content_sha256", record.static_device_content_sha256),
@@ -1083,6 +1094,61 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "physical matrix_block_products_executed"):
             dataclasses.replace(outer, v_cycles=(bad_physical_record, outer.v_cycles[1]))
+
+        original_root_fusions = physical.root_ingress_zero_start_fusions
+        original_physical_sha256 = physical.content_sha256
+        original_record_sha256 = record.content_sha256
+        forged_root_fusions = 0
+        forged_physical_sha256 = _hash_parts(
+            "warp-scalar-fused-v-cycle-physical-work-v2",
+            (
+                ("hierarchy_sha256", physical.hierarchy_sha256),
+                ("schedule_sha256", physical.schedule_sha256),
+                ("rhs_sha256", physical.rhs_sha256),
+                ("result_sha256", physical.result_sha256),
+                ("matrix_block_products_executed", physical.matrix_block_products_executed),
+                (
+                    "matrix_block_products_elided_zero_start",
+                    physical.matrix_block_products_elided_zero_start,
+                ),
+                ("zero_start_block_solves", physical.zero_start_block_solves),
+                ("root_ingress_zero_start_fusions", forged_root_fusions),
+                ("out_of_place_jacobi_block_solves", physical.out_of_place_jacobi_block_solves),
+                ("matrix_kernel_launches", physical.matrix_kernel_launches),
+                ("jacobi_kernel_launches", physical.jacobi_kernel_launches),
+                ("scheduled_kernel_launches", physical.scheduled_kernel_launches),
+            ),
+        )
+        forged_record_sha256 = _hash_parts(
+            "warp-scalar-fused-v-cycle-result-v2",
+            (
+                ("device_snapshot_sha256", record.device_snapshot_sha256),
+                ("static_device_content_sha256", record.static_device_content_sha256),
+                ("schedule_sha256", record.schedule_sha256),
+                ("work_sha256", record.work.content_sha256),
+                ("physical_work_sha256", forged_physical_sha256),
+                ("scheduled_kernel_launches", record.scheduled_kernel_launches),
+                ("capture_replay", record.capture_replay),
+            ),
+        )
+        try:
+            object.__setattr__(physical, "root_ingress_zero_start_fusions", forged_root_fusions)
+            object.__setattr__(physical, "content_sha256", forged_physical_sha256)
+            object.__setattr__(record, "content_sha256", forged_record_sha256)
+            with self.assertRaisesRegex(ValueError, "physical root_ingress_zero_start_fusions"):
+                dataclasses.replace(outer)
+        finally:
+            object.__setattr__(physical, "root_ingress_zero_start_fusions", original_root_fusions)
+            object.__setattr__(physical, "content_sha256", original_physical_sha256)
+            object.__setattr__(record, "content_sha256", original_record_sha256)
+
+        original_schedule_version = record.schedule_version
+        try:
+            object.__setattr__(record, "schedule_version", original_schedule_version + "-forged")
+            with self.assertRaisesRegex(ValueError, "invalid V-cycle policy provenance"):
+                dataclasses.replace(outer)
+        finally:
+            object.__setattr__(record, "schedule_version", original_schedule_version)
 
         for field_name, value in (("research_only", 1), ("performance_evidence", 0)):
             with self.subTest(policy_field=field_name):
@@ -1124,6 +1190,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         original_static = context.v_cycle_static_device_content_sha256
         original_snapshot = context.v_cycle_device_snapshot_sha256
         original_launches = context.v_cycle_kernel_launches
+        original_root_fusions = context.v_cycle_root_ingress_zero_start_fusions
         original_capture_binding = context.capture_binding
         try:
             object.__setattr__(context, "v_cycle_schedule_sha256", "c" * 64)
@@ -1142,6 +1209,10 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "V-cycle launch count"):
                 dataclasses.replace(self.endpoint)
             object.__setattr__(context, "v_cycle_kernel_launches", original_launches)
+            object.__setattr__(context, "v_cycle_root_ingress_zero_start_fusions", 0)
+            with self.assertRaisesRegex(ValueError, "root ingress fusion count"):
+                dataclasses.replace(self.endpoint)
+            object.__setattr__(context, "v_cycle_root_ingress_zero_start_fusions", original_root_fusions)
             object.__setattr__(context, "capture_binding", None)
             with self.assertRaisesRegex(ValueError, "fields do not match their solver-issued receipt"):
                 dataclasses.replace(self.endpoint)
@@ -1150,6 +1221,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             object.__setattr__(context, "v_cycle_static_device_content_sha256", original_static)
             object.__setattr__(context, "v_cycle_device_snapshot_sha256", original_snapshot)
             object.__setattr__(context, "v_cycle_kernel_launches", original_launches)
+            object.__setattr__(context, "v_cycle_root_ingress_zero_start_fusions", original_root_fusions)
             object.__setattr__(context, "capture_binding", original_capture_binding)
 
     def test_pristine_k1_reset_source_tamper_fails_before_execution(self):
@@ -2240,13 +2312,13 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
             self.assertGreater(endpoint.segment_minimum_determinants[index], 0.0)
 
     def test_real_default_stretch_scalar_fused_schedule_and_physical_work_are_exact(self):
-        self.assertEqual(self.solver.device_hierarchy.scheduled_kernel_launches, 21)
-        self.assertEqual(self.solver.linear_prefix_kernel_launches_per_outer, 46)
-        self.assertEqual(self.solver.linear_kernel_launches_per_outer, 47)
-        self.assertEqual(self.solver.outer_kernel_launches_per_outer, 50)
-        self.assertEqual(self.solver.correction_kernel_launches, 202)
+        self.assertEqual(self.solver.device_hierarchy.scheduled_kernel_launches, 20)
+        self.assertEqual(self.solver.linear_prefix_kernel_launches_per_outer, 44)
+        self.assertEqual(self.solver.linear_kernel_launches_per_outer, 45)
+        self.assertEqual(self.solver.outer_kernel_launches_per_outer, 48)
+        self.assertEqual(self.solver.correction_kernel_launches, 194)
         for outer in self.endpoint.outer_work:
-            self.assertEqual(outer.linear_kernel_launches, 47)
+            self.assertEqual(outer.linear_kernel_launches, 45)
             for record in outer.v_cycles:
                 self.assertEqual(record.work.matrix_block_products, 5058)
                 self.assertEqual(record.physical_work.matrix_block_products_executed, 3372)
@@ -2255,20 +2327,24 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
                 self.assertEqual(record.physical_work.out_of_place_jacobi_block_solves, 184)
                 self.assertEqual(record.physical_work.matrix_kernel_launches, 6)
                 self.assertEqual(record.physical_work.jacobi_kernel_launches, 6)
-                self.assertEqual(record.physical_work.scheduled_kernel_launches, 21)
+                self.assertEqual(record.physical_work.root_ingress_zero_start_fusions, 1)
+                self.assertEqual(record.physical_work.scheduled_kernel_launches, 20)
+                self.assertEqual(record.schedule_version, V_CYCLE_SCHEDULE_VERSION)
                 self.assertFalse(record.performance_evidence)
         schedule = self.solver.deterministic_record()
-        self.assertEqual(schedule["v_cycle_kernel_launches"], 21)
-        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 46)
+        self.assertEqual(schedule["v_cycle_kernel_launches"], 20)
+        self.assertEqual(schedule["v_cycle_root_ingress_zero_start_fusions"], 1)
+        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 44)
         self.assertEqual(schedule["fused_gather_kernel_launches_per_outer"], 2)
         self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
-        self.assertEqual(schedule["linear_kernel_launches_per_outer"], 47)
-        self.assertEqual(schedule["outer_kernel_launches_per_outer"], 50)
-        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 202)
+        self.assertEqual(schedule["linear_kernel_launches_per_outer"], 45)
+        self.assertEqual(schedule["outer_kernel_launches_per_outer"], 48)
+        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 194)
         self.assertEqual(schedule["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_kernel_version"], OUTER_KERNEL_VERSION)
         self.assertEqual(schedule["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(schedule["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
+        self.assertEqual(schedule["v_cycle_schedule_version"], V_CYCLE_SCHEDULE_VERSION)
         self.assertEqual(schedule["v_cycle_canonical_matrix_block_products"], 5058)
         self.assertEqual(schedule["v_cycle_matrix_block_products_executed"], 3372)
         self.assertEqual(schedule["v_cycle_matrix_block_products_elided_zero_start"], 1686)

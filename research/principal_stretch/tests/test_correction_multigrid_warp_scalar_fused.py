@@ -216,15 +216,18 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
 
     def test_contract_scalar_owners_source_sharing_and_launch_path(self):
         hierarchy = self.device_hierarchy
-        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v1")
+        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v2")
         self.assertEqual(CONTRACT_ID, "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1")
-        self.assertEqual(SCHEDULE_VERSION, "scalar-zero-residual-jacobi-restrict-recurse-prolong-ping-pong-v1")
+        self.assertEqual(
+            SCHEDULE_VERSION,
+            "scalar-root-ingress-zero-start-jacobi-restrict-recurse-prolong-ping-pong-v2",
+        )
         self.assertIs(hierarchy.source_hierarchy, self.source)
         self.assertIs(hierarchy.levels, self.source.levels)
         self.assertEqual(int(hierarchy.coarse_cholesky.ptr), int(self.source.coarse_cholesky.ptr))
         self.assertEqual(len(hierarchy.schedule_sha256), 64)
         self.assertNotEqual(hierarchy.device_snapshot_sha256, hierarchy.source_device_snapshot_sha256)
-        self.assertEqual(hierarchy.scheduled_kernel_launches, 23)
+        self.assertEqual(hierarchy.scheduled_kernel_launches, 22)
         self.assertEqual(self.source.scheduled_kernel_launches, 37)
 
         source = inspect.getsource(scalar_fused_module)
@@ -232,6 +235,7 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         self.assertNotIn("np.linalg.eig", source)
         self.assertNotIn("np.linalg.svd", source)
         for kernel in (
+            "_fused_root_ingress_zero_start_scalar_jacobi",
             "_zero_start_scalar_jacobi",
             "_scalar_csr_residual",
             "_out_of_place_scalar_jacobi",
@@ -250,7 +254,7 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             self.assertNotIn("synchronize", launch_source)
 
     def test_cpu_oracle_p1_p2_exact_launches_work_and_fixed_b_result(self):
-        for steps, expected_launches, expected_matrix_launches in ((1, 15, 4), (2, 23, 8)):
+        for steps, expected_launches, expected_matrix_launches in ((1, 14, 4), (2, 22, 8)):
             with self.subTest(steps=steps):
                 hierarchy = _mixed_hierarchy(smooth_steps=steps)
                 device_hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(hierarchy, device="cpu")
@@ -270,7 +274,16 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                     noncoarse_sizes = [level.matrix.scalar_size for level in hierarchy.levels[:-1]]
                     self.assertCountEqual(
                         launch_dims(scalar_fused_module._zero_start_scalar_jacobi),
-                        noncoarse_sizes,
+                        noncoarse_sizes[1:],
+                    )
+                    self.assertEqual(
+                        launch_dims(scalar_fused_module._fused_root_ingress_zero_start_scalar_jacobi),
+                        noncoarse_sizes[:1],
+                    )
+                    self.assertEqual(launch_dims(scalar_fused_module._copy_vec3_to_scalar), [])
+                    self.assertEqual(
+                        launch_dims(scalar_fused_module._copy_scalar_to_vec3),
+                        [hierarchy.levels[0].matrix.block_row_count],
                     )
                     self.assertCountEqual(
                         launch_dims(scalar_fused_module._scalar_csr_residual),
@@ -305,6 +318,7 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                         stored_blocks,
                     )
                     self.assertEqual(actual.physical_work.zero_start_block_solves, block_rows)
+                    self.assertEqual(actual.physical_work.root_ingress_zero_start_fusions, 1)
                     self.assertEqual(
                         actual.physical_work.out_of_place_jacobi_block_solves,
                         block_rows * (2 * steps - 1),
@@ -326,6 +340,131 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                         int(workspace.level_correction_alt[level_index].ptr),
                     )
                 self.assertEqual(_pointer_tuple(device_hierarchy, workspace), pointers)
+
+    def test_fused_root_ingress_is_bitwise_legacy_for_random_signed_zero_and_nonfinite(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cpu",
+        )
+        root = hierarchy.levels[0]
+        self.assertEqual(root.block_size, 3)
+        self.assertIsNotNone(root.inverse_diagonal)
+        self.assertIsNotNone(root.omega)
+        generator = np.random.default_rng(180818)
+        random_rhs = generator.normal(size=(hierarchy.n_free, 3))
+        signed_zero_rhs = np.zeros((hierarchy.n_free, 3), dtype=np.float64)
+        signed_zero_rhs.reshape(-1)[::2] = -0.0
+        nonfinite_rhs = generator.normal(size=(hierarchy.n_free, 3))
+        nonfinite_rhs.reshape(-1)[:4] = (np.inf, -np.inf, np.nan, -0.0)
+
+        for name, host_rhs in (
+            ("random", random_rhs),
+            ("signed_zero", signed_zero_rhs),
+            ("nonfinite", nonfinite_rhs),
+        ):
+            with self.subTest(name=name):
+                external_rhs = wp.array(host_rhs, dtype=wp.vec3d, device="cpu")
+                legacy_rhs = wp.empty(root.scalar_size, dtype=wp.float64, device="cpu")
+                legacy_correction = wp.empty(root.scalar_size, dtype=wp.float64, device="cpu")
+                fused_rhs = wp.empty(root.scalar_size, dtype=wp.float64, device="cpu")
+                fused_correction = wp.empty(root.scalar_size, dtype=wp.float64, device="cpu")
+                wp.launch(
+                    scalar_fused_module._copy_vec3_to_scalar,
+                    dim=hierarchy.n_free,
+                    inputs=[external_rhs, legacy_rhs],
+                    device="cpu",
+                )
+                wp.launch(
+                    scalar_fused_module._zero_start_scalar_jacobi,
+                    dim=root.scalar_size,
+                    inputs=[legacy_rhs, root.inverse_diagonal, root.block_size, root.omega, legacy_correction],
+                    device="cpu",
+                )
+                wp.launch(
+                    scalar_fused_module._fused_root_ingress_zero_start_scalar_jacobi,
+                    dim=root.scalar_size,
+                    inputs=[external_rhs, root.inverse_diagonal, root.omega, fused_rhs, fused_correction],
+                    device="cpu",
+                )
+                np.testing.assert_array_equal(
+                    fused_rhs.numpy().view(np.uint64),
+                    legacy_rhs.numpy().view(np.uint64),
+                )
+                np.testing.assert_array_equal(
+                    fused_correction.numpy().view(np.uint64),
+                    legacy_correction.numpy().view(np.uint64),
+                )
+                np.testing.assert_array_equal(
+                    fused_rhs.numpy().view(np.uint64),
+                    host_rhs.reshape(-1).view(np.uint64),
+                )
+
+    def test_alias_spans_reject_fused_buffer_hazards_and_allow_rhs_output_identity(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cpu",
+        )
+        rhs = _rhs_set(hierarchy.n_free_dofs)[0]
+
+        for internal_name in ("level_rhs", "level_correction"):
+            for byte_offset in (0, 8):
+                with self.subTest(internal_name=internal_name, byte_offset=byte_offset):
+                    workspace = hierarchy.create_workspace()
+                    internal = getattr(workspace, internal_name)[0]
+                    aliased_rhs = wp.array(
+                        ptr=int(internal.ptr) + byte_offset,
+                        dtype=wp.vec3d,
+                        shape=(hierarchy.n_free,),
+                        device=hierarchy.device,
+                        copy=False,
+                    )
+                    with self.assertRaisesRegex(ValueError, "rhs and root"):
+                        hierarchy.launch_apply(aliased_rhs, workspace.correction, workspace)
+
+        for internal_name, get_internal in (
+            ("level_rhs", lambda workspace: workspace.level_rhs[0]),
+            ("level_correction", lambda workspace: workspace.level_correction[0]),
+            ("final_correction", lambda workspace: workspace._final_level_correction(0)),
+        ):
+            with self.subTest(output_internal_name=internal_name):
+                workspace = hierarchy.create_workspace()
+                internal = get_internal(workspace)
+                aliased_output = wp.array(
+                    ptr=int(internal.ptr) + 8,
+                    dtype=wp.vec3d,
+                    shape=(hierarchy.n_free,),
+                    device=hierarchy.device,
+                    copy=False,
+                )
+                with self.assertRaisesRegex(ValueError, "output and root"):
+                    hierarchy.launch_apply(workspace.rhs, aliased_output, workspace)
+
+        workspace = hierarchy.create_workspace()
+        shifted_primary = wp.array(
+            ptr=int(workspace.level_rhs[0].ptr) + 8,
+            dtype=wp.float64,
+            shape=(hierarchy.n_free_dofs,),
+            device=hierarchy.device,
+            copy=False,
+        )
+        workspace.level_correction = (shifted_primary, *workspace.level_correction[1:])
+        workspace._persistent_arrays = workspace._current_arrays()
+        workspace._persistent_pointers = tuple(int(array.ptr) for array in workspace._persistent_arrays)
+        with self.assertRaisesRegex(ValueError, "level_rhs.*primary correction"):
+            hierarchy.launch_apply(workspace.rhs, workspace.correction, workspace)
+
+        shared = wp.array(rhs.reshape(-1, 3), dtype=wp.vec3d, device="cpu")
+        workspace = hierarchy.create_workspace()
+        pointers = _pointer_tuple(hierarchy, workspace)
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            hierarchy.launch_apply(shared, shared, workspace)
+        self.assertEqual(launch.call_count, hierarchy.scheduled_kernel_launches)
+        expected = apply_v_cycle(_mixed_hierarchy(smooth_steps=1), rhs)
+        np.testing.assert_allclose(shared.numpy().reshape(-1), expected.correction, rtol=4.0e-14, atol=4.0e-14)
+        internal_record = workspace.record_internal_application()
+        np.testing.assert_array_equal(workspace.level_rhs[0].numpy(), rhs)
+        np.testing.assert_allclose(internal_record.correction, expected.correction, rtol=4.0e-14, atol=4.0e-14)
+        self.assertEqual(_pointer_tuple(hierarchy, workspace), pointers)
 
     def test_symmetric_positive_poison_independence_and_no_in_place_jacobi(self):
         x, y, rhs, *_ = _rhs_set(self.hierarchy.levels[0].matrix.scalar_size)
@@ -368,6 +507,10 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         bad_rhs[0] = np.inf
         with self.assertRaisesRegex(ValueError, "only finite"):
             workspace.set_rhs(bad_rhs)
+        workspace.rhs.assign(bad_rhs.reshape(-1, 3))
+        workspace.launch()
+        with self.assertRaisesRegex(FloatingPointError, "must remain finite"):
+            workspace.record()
 
         rhs = _rhs_set(hierarchy.n_free_dofs)[0]
         workspace.set_rhs(rhs)
@@ -387,6 +530,36 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "complete scalar-fused V-cycle record"):
             dataclasses.replace(record, capture_replay=True)
+
+        for field_name, forged_value in (
+            ("root_ingress_zero_start_fusions", 0),
+            ("zero_start_block_solves", record.physical_work.zero_start_block_solves + 1),
+            ("matrix_kernel_launches", record.physical_work.matrix_kernel_launches + 1),
+            ("schedule_sha256", "0" * 64),
+            ("content_sha256", "0" * 64),
+        ):
+            with self.subTest(forged_physical_field=field_name):
+                forged_physical = dataclasses.replace(record.physical_work)
+                object.__setattr__(forged_physical, field_name, forged_value)
+                forged_record = dataclasses.replace(record)
+                object.__setattr__(forged_record, "physical_work", forged_physical)
+                with self.assertRaises(ValueError):
+                    forged_record.deterministic_record()
+
+        for field_name, forged_value in (
+            ("kernel_version", "forged-kernel-version"),
+            ("schedule_version", "forged-schedule-version"),
+            ("schedule_sha256", "0" * 64),
+            ("content_sha256", "0" * 64),
+        ):
+            with self.subTest(forged_record_field=field_name):
+                forged_record = dataclasses.replace(record)
+                object.__setattr__(forged_record, field_name, forged_value)
+                with self.assertRaises(ValueError):
+                    forged_record.deterministic_record()
+        with mock.patch.object(scalar_fused_module, "SCHEDULE_VERSION", "forged-schedule-version"):
+            with self.assertRaises(ValueError):
+                record.deterministic_record()
 
         workspace.correction.fill_(wp.vec3d(np.nan, np.nan, np.nan))
         with self.assertRaisesRegex(FloatingPointError, "must remain finite"):
@@ -430,6 +603,14 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "static device hierarchy content changed"):
             static_workspace.record()
 
+        bad_root_source = WarpStaticMultigridHierarchy.from_hierarchy(self.hierarchy, device="cpu")
+        bad_root = bad_root_source.levels[0]
+        original_block_size = bad_root.block_size
+        object.__setattr__(bad_root, "block_size", 6)
+        with self.assertRaisesRegex(ValueError, "one 3-vector block per free vertex"):
+            WarpScalarFusedStaticMultigridHierarchy.from_device_hierarchy(bad_root_source)
+        object.__setattr__(bad_root, "block_size", original_block_size)
+
     def test_preconditioner_boundary_and_coarsest_only_schedule(self):
         preconditioner = WarpScalarFusedStaticMultigridPreconditioner(self.device_hierarchy)
         workspace = preconditioner.create_application_workspace()
@@ -437,8 +618,8 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         workspace.set_rhs(rhs)
         preconditioner.launch_apply(workspace.rhs, workspace.correction, workspace)
         application = preconditioner.record_application(0, workspace, capture_replay=False)
-        self.assertEqual(preconditioner.application_kernel_launches, 23)
-        self.assertEqual(application.scheduled_kernel_launches, 23)
+        self.assertEqual(preconditioner.application_kernel_launches, 22)
+        self.assertEqual(application.scheduled_kernel_launches, 22)
         self.assertEqual(application.static_preconditioner_sha256, self.hierarchy.content_sha256)
         self.assertTrue(application.output_finite)
         self.assertFalse(application.capture_replay)
@@ -451,9 +632,22 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
             coarse_workspace.launch()
         self.assertEqual(launch.call_count, 3)
+        self.assertEqual(
+            sum(
+                call.args[0] is scalar_fused_module._fused_root_ingress_zero_start_scalar_jacobi
+                for call in launch.call_args_list
+            ),
+            0,
+        )
+        self.assertEqual(
+            sum(call.args[0] is scalar_fused_module._copy_vec3_to_scalar for call in launch.call_args_list),
+            1,
+        )
         self.assertEqual(coarse_device.scheduled_kernel_launches, 3)
+        coarse_record = coarse_workspace.record()
+        self.assertEqual(coarse_record.physical_work.root_ingress_zero_start_fusions, 0)
         np.testing.assert_allclose(
-            coarse_workspace.record().correction,
+            coarse_record.correction,
             apply_v_cycle(coarse, coarse_rhs).correction,
             rtol=3.0e-14,
             atol=3.0e-14,
@@ -472,7 +666,7 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         workspace.set_rhs(rhs)
         workspace.launch()
         actual = workspace.record()
-        self.assertEqual(actual.scheduled_kernel_launches, 9)
+        self.assertEqual(actual.scheduled_kernel_launches, 8)
         np.testing.assert_allclose(
             actual.correction,
             apply_v_cycle(hierarchy, rhs).correction,
@@ -488,7 +682,7 @@ class TestWarpScalarFusedDefaultStretchCpu(unittest.TestCase):
         cls.hierarchy = _default_stretch_hierarchy()
         cls.device_hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(cls.hierarchy, device="cpu")
 
-    def test_real_default_hierarchy_oracle_and_21_launch_schedule(self):
+    def test_real_default_hierarchy_oracle_and_20_launch_schedule(self):
         shapes = [
             (level.matrix.block_row_count, level.matrix.block_size, level.matrix.stored_block_count)
             for level in self.hierarchy.levels
@@ -497,7 +691,7 @@ class TestWarpScalarFusedDefaultStretchCpu(unittest.TestCase):
         self.assertEqual(
             self.hierarchy.content_sha256, "2e08bcce552d135e3ec8010c6100ee6b18e6157e0c4e7013c2894280a1e9d493"
         )
-        self.assertEqual(self.device_hierarchy.scheduled_kernel_launches, 21)
+        self.assertEqual(self.device_hierarchy.scheduled_kernel_launches, 20)
         self.assertEqual(self.device_hierarchy.source_hierarchy.scheduled_kernel_launches, 36)
 
         rhs = np.random.default_rng(230818).normal(size=self.hierarchy.levels[0].matrix.scalar_size)
@@ -506,7 +700,7 @@ class TestWarpScalarFusedDefaultStretchCpu(unittest.TestCase):
         workspace.set_rhs(rhs)
         with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
             workspace.launch()
-        self.assertEqual(launch.call_count, 21)
+        self.assertEqual(launch.call_count, 20)
         actual = workspace.record()
         np.testing.assert_allclose(actual.correction, expected.correction, rtol=7.0e-14, atol=7.0e-14)
         _assert_canonical_work_matches(self, actual.work, expected.work)
@@ -514,9 +708,13 @@ class TestWarpScalarFusedDefaultStretchCpu(unittest.TestCase):
         self.assertEqual(actual.physical_work.matrix_block_products_executed, 3372)
         self.assertEqual(actual.physical_work.matrix_block_products_elided_zero_start, 1686)
         self.assertEqual(actual.physical_work.zero_start_block_solves, 184)
+        self.assertEqual(actual.physical_work.root_ingress_zero_start_fusions, 1)
         self.assertEqual(actual.physical_work.out_of_place_jacobi_block_solves, 184)
         self.assertEqual(actual.physical_work.matrix_kernel_launches, 6)
         self.assertEqual(actual.physical_work.jacobi_kernel_launches, 6)
+        linear_prefix_launches = 4 + 2 * actual.scheduled_kernel_launches
+        predicted_captured_launches = 2 + 4 * ((linear_prefix_launches + 1) + 3)
+        self.assertEqual(predicted_captured_launches, 194)
         self.assertFalse(actual.performance_evidence)
 
 
@@ -556,6 +754,40 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
         for snapshot in snapshots[1:]:
             np.testing.assert_array_equal(snapshot, snapshots[0])
         self.assertEqual(_pointer_tuple(self.device_hierarchy, workspace), pointers)
+
+    def test_cuda_fused_root_ingress_is_bitwise_legacy_for_signed_zero(self):
+        root = self.device_hierarchy.levels[0]
+        host_rhs = np.zeros((self.device_hierarchy.n_free, 3), dtype=np.float64)
+        host_rhs.reshape(-1)[::2] = -0.0
+        host_rhs[1::5] = (0.25, -0.5, 1.0)
+        external_rhs = wp.array(host_rhs, dtype=wp.vec3d, device=self.device_hierarchy.device)
+        legacy_rhs = wp.empty(root.scalar_size, dtype=wp.float64, device=self.device_hierarchy.device)
+        legacy_correction = wp.empty(root.scalar_size, dtype=wp.float64, device=self.device_hierarchy.device)
+        fused_rhs = wp.empty(root.scalar_size, dtype=wp.float64, device=self.device_hierarchy.device)
+        fused_correction = wp.empty(root.scalar_size, dtype=wp.float64, device=self.device_hierarchy.device)
+        wp.launch(
+            scalar_fused_module._copy_vec3_to_scalar,
+            dim=self.device_hierarchy.n_free,
+            inputs=[external_rhs, legacy_rhs],
+            device=self.device_hierarchy.device,
+        )
+        wp.launch(
+            scalar_fused_module._zero_start_scalar_jacobi,
+            dim=root.scalar_size,
+            inputs=[legacy_rhs, root.inverse_diagonal, root.block_size, root.omega, legacy_correction],
+            device=self.device_hierarchy.device,
+        )
+        wp.launch(
+            scalar_fused_module._fused_root_ingress_zero_start_scalar_jacobi,
+            dim=root.scalar_size,
+            inputs=[external_rhs, root.inverse_diagonal, root.omega, fused_rhs, fused_correction],
+            device=self.device_hierarchy.device,
+        )
+        np.testing.assert_array_equal(fused_rhs.numpy().view(np.uint64), legacy_rhs.numpy().view(np.uint64))
+        np.testing.assert_array_equal(
+            fused_correction.numpy().view(np.uint64),
+            legacy_correction.numpy().view(np.uint64),
+        )
 
     def test_capture_replay_changed_rhs_overwrites_poison_and_repeats_hash(self):
         rhs_values = _rhs_set(self.hierarchy.levels[0].matrix.scalar_size)
@@ -598,7 +830,7 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
         self.assertNotEqual(recovered.work.rhs_sha256, changed.work.rhs_sha256)
         self.assertEqual(_pointer_tuple(self.device_hierarchy, workspace), pointers)
 
-    def test_real_default_stretch_cuda_oracle_uses_21_launches(self):
+    def test_real_default_stretch_cuda_oracle_uses_20_launches(self):
         hierarchy = _default_stretch_hierarchy()
         device_hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(hierarchy, device="cuda:0")
         workspace = device_hierarchy.create_workspace()
@@ -606,7 +838,7 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
         workspace.set_rhs(rhs)
         workspace.launch()
         actual = workspace.record()
-        self.assertEqual(actual.scheduled_kernel_launches, 21)
+        self.assertEqual(actual.scheduled_kernel_launches, 20)
         np.testing.assert_allclose(
             actual.correction,
             apply_v_cycle(hierarchy, rhs).correction,

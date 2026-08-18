@@ -539,6 +539,7 @@ def _validate_v_cycle_record(
     static_device_content_sha256: str,
     device_snapshot_sha256: str,
     scheduled_kernel_launches: int,
+    root_ingress_zero_start_fusions: int,
     hierarchy: StaticMultigridHierarchy,
     capture_replay: bool,
     name: str,
@@ -555,6 +556,8 @@ def _validate_v_cycle_record(
         or record.contract_id != V_CYCLE_CONTRACT_ID
         or type(record.kernel_version) is not str
         or record.kernel_version != V_CYCLE_KERNEL_VERSION
+        or type(record.schedule_version) is not str
+        or record.schedule_version != V_CYCLE_SCHEDULE_VERSION
         or record.research_only is not True
         or record.performance_evidence is not False
     ):
@@ -633,6 +636,9 @@ def _validate_v_cycle_record(
     expected_elided_products = sum(level.matrix.stored_block_count for level in noncoarse_levels)
     expected_zero_start_solves = sum(level.matrix.block_row_count for level in noncoarse_levels)
     expected_matrix_launches = len(noncoarse_levels) * (hierarchy.pre_smooth_steps + hierarchy.post_smooth_steps)
+    expected_root_fusions = int(bool(noncoarse_levels))
+    if type(root_ingress_zero_start_fusions) is not int or root_ingress_zero_start_fusions != expected_root_fusions:
+        raise ValueError(f"{name} root ingress fusion count is stale")
     physical = record.physical_work
     expected_physical = {
         "hierarchy_sha256": hierarchy_sha256,
@@ -642,6 +648,7 @@ def _validate_v_cycle_record(
         "matrix_block_products_executed": canonical_work.matrix_block_products - expected_elided_products,
         "matrix_block_products_elided_zero_start": expected_elided_products,
         "zero_start_block_solves": expected_zero_start_solves,
+        "root_ingress_zero_start_fusions": root_ingress_zero_start_fusions,
         "out_of_place_jacobi_block_solves": canonical_work.smoother_block_solves - expected_zero_start_solves,
         "matrix_kernel_launches": expected_matrix_launches,
         "jacobi_kernel_launches": expected_matrix_launches,
@@ -655,6 +662,7 @@ def _validate_v_cycle_record(
         "matrix_block_products_executed",
         "matrix_block_products_elided_zero_start",
         "zero_start_block_solves",
+        "root_ingress_zero_start_fusions",
         "out_of_place_jacobi_block_solves",
         "matrix_kernel_launches",
         "jacobi_kernel_launches",
@@ -668,13 +676,13 @@ def _validate_v_cycle_record(
     ):
         raise ValueError(f"{name} physical executed and elided work does not recover canonical matrix work")
     physical_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-physical-work-v1",
+        "warp-scalar-fused-v-cycle-physical-work-v2",
         tuple(expected_physical.items()),
     )
     if physical.content_sha256 != physical_sha256:
         raise ValueError(f"{name} physical work hash is stale")
     record_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-result-v1",
+        "warp-scalar-fused-v-cycle-result-v2",
         (
             ("device_snapshot_sha256", device_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
@@ -761,6 +769,7 @@ class _EndpointValidationContext:
     outer_schedule_sha256: str
     capture_binding: _CaptureGraphOwnerBinding | None = dataclasses.field(repr=False, compare=False)
     v_cycle_kernel_launches: int
+    v_cycle_root_ingress_zero_start_fusions: int
     device: str
     outer_slots: tuple[_OuterSlotBinding, ...]
 
@@ -804,6 +813,10 @@ class _EndpointValidationContext:
             raise ValueError("endpoint validation outer kernel schedule is not canonical")
         if type(self.v_cycle_kernel_launches) is not int or self.v_cycle_kernel_launches < 1:
             raise ValueError("v_cycle_kernel_launches must be a positive built-in int")
+        if type(
+            self.v_cycle_root_ingress_zero_start_fusions
+        ) is not int or self.v_cycle_root_ingress_zero_start_fusions not in (0, 1):
+            raise ValueError("v_cycle_root_ingress_zero_start_fusions must be zero or one")
         if (
             type(self.outer_slots) is not tuple
             or len(self.outer_slots) != OUTER_CORRECTIONS
@@ -1174,6 +1187,7 @@ class CapturedGraphVBDOuterWork:
                 static_device_content_sha256=self._validation_context.v_cycle_static_device_content_sha256,
                 device_snapshot_sha256=self._validation_context.v_cycle_device_snapshot_sha256,
                 scheduled_kernel_launches=self._validation_context.v_cycle_kernel_launches,
+                root_ingress_zero_start_fusions=(self._validation_context.v_cycle_root_ingress_zero_start_fusions),
                 hierarchy=self._validation_context.hierarchy,
                 capture_replay=self.capture_replay,
                 name=f"V-cycle {cycle_index}",
@@ -1930,6 +1944,7 @@ class _ScalarFusedHierarchyEvidence:
     static_device_content_sha256: str
     device_snapshot_sha256: str
     scheduled_kernel_launches: int
+    root_ingress_zero_start_fusions: int
 
 
 def _canonical_scalar_static_arrays(hierarchy: StaticMultigridHierarchy) -> tuple[np.ndarray, ...]:
@@ -2017,9 +2032,14 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
                 raise RuntimeError("canonical noncoarse hierarchy level is missing prolongation")
             transfer_paths.extend((level.matrix.block_size, level.prolongation.coarse_block_size))
     noncoarse = len(hierarchy.levels) - 1
-    scheduled_kernel_launches = 3 + noncoarse * (2 + 2 * hierarchy.pre_smooth_steps + 2 * hierarchy.post_smooth_steps)
+    root_ingress_zero_start_fusions = int(noncoarse > 0)
+    scheduled_kernel_launches = (
+        3
+        + noncoarse * (2 + 2 * hierarchy.pre_smooth_steps + 2 * hierarchy.post_smooth_steps)
+        - root_ingress_zero_start_fusions
+    )
     schedule_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-schedule-v1",
+        "warp-scalar-fused-v-cycle-schedule-v2",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("kernel_version", V_CYCLE_KERNEL_VERSION),
@@ -2029,13 +2049,18 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             ("post_smooth_steps", hierarchy.post_smooth_steps),
             ("level_shapes", np.asarray(level_shapes, dtype=np.int64)),
             ("transfer_block_paths", np.asarray(transfer_paths, dtype=np.int64)),
+            (
+                "root_ingress_route",
+                "fused-vec3d-scalar-zero-start" if root_ingress_zero_start_fusions else "standalone-vec3d-scalar",
+            ),
+            ("root_ingress_zero_start_fusions", root_ingress_zero_start_fusions),
             ("noncoarse_result_buffer", "B"),
             ("coarsest_result_buffer", "A"),
             ("scheduled_kernel_launches", scheduled_kernel_launches),
         ),
     )
     device_snapshot_sha256 = _hash_parts(
-        "warp-scalar-fused-static-multigrid-snapshot-v1",
+        "warp-scalar-fused-static-multigrid-snapshot-v2",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
@@ -2048,6 +2073,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         static_device_content_sha256=static_device_content_sha256,
         device_snapshot_sha256=device_snapshot_sha256,
         scheduled_kernel_launches=scheduled_kernel_launches,
+        root_ingress_zero_start_fusions=root_ingress_zero_start_fusions,
     )
 
 
@@ -3698,17 +3724,15 @@ class CapturedDirectGraphVBD:
         if claims.persistent_device_sha256 is None or len(claims.content_identity) < 4:
             raise RuntimeError("graph identity requires finalized construction claims")
         scene_sha256, objective_sha256, config_sha256, hierarchy_sha256 = claims.content_identity[:4]
-        noncoarse_level_count = len(owner_binding.device.levels) - 1
-        v_cycle_kernel_launches = 3 + noncoarse_level_count * (
-            2 + 2 * owner_binding.hierarchy.pre_smooth_steps + 2 * owner_binding.hierarchy.post_smooth_steps
-        )
+        scalar_evidence = _canonical_scalar_fused_evidence(owner_binding.hierarchy)
+        v_cycle_kernel_launches = scalar_evidence.scheduled_kernel_launches
         linear_prefix_kernel_launches = 4 + 2 * v_cycle_kernel_launches
         retained_linear_work_launches = linear_prefix_kernel_launches + 1
         outer_kernel_launches = retained_linear_work_launches + 3
         correction_kernel_launches = 2 + OUTER_CORRECTIONS * outer_kernel_launches
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-graph-identity-v3",
+                "contract": "captured-direct-graph-vbd-graph-identity-v4",
                 "solver_contract": CONTRACT_ID,
                 "comparator_contract": VBD_BASELINE_CONTRACT_ID if comparator else None,
                 "scene_sha256": scene_sha256,
@@ -3724,6 +3748,11 @@ class CapturedDirectGraphVBD:
                 "outer_kernel_version": claims.outer_kernel_version,
                 "outer_schedule_version": claims.outer_schedule_version,
                 "outer_schedule_sha256": claims.outer_schedule_sha256,
+                "v_cycle_kernel_version": V_CYCLE_KERNEL_VERSION,
+                "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
+                "v_cycle_schedule_sha256": scalar_evidence.schedule_sha256,
+                "v_cycle_root_ingress_zero_start_fusions": (scalar_evidence.root_ingress_zero_start_fusions),
+                "v_cycle_kernel_launches": v_cycle_kernel_launches,
                 "linear_prefix_kernel_launches_per_outer": 0 if comparator else linear_prefix_kernel_launches,
                 "fused_gather_kernel_launches_per_outer": 0 if comparator else 2,
                 "fused_vertex_kernel_launches_per_outer": 0 if comparator else 1,
@@ -3868,6 +3897,8 @@ class CapturedDirectGraphVBD:
             raise ValueError("validation context scalar-fused device snapshot identity is not canonical")
         if context.v_cycle_kernel_launches != scalar_evidence.scheduled_kernel_launches:
             raise ValueError("validation context V-cycle launch count is not canonical")
+        if context.v_cycle_root_ingress_zero_start_fusions != scalar_evidence.root_ingress_zero_start_fusions:
+            raise ValueError("validation context V-cycle root ingress fusion count is not canonical")
         if validate_raw_sources:
             if type(owner_binding) is not _WorkspaceOwnerBinding:
                 raise ValueError("validation context lost its exact construction owner binding")
@@ -5001,6 +5032,7 @@ class CapturedDirectGraphVBD:
             outer_schedule_sha256=owner_binding.claims.outer_schedule_sha256,
             capture_binding=receipt.capture_binding,
             v_cycle_kernel_launches=scalar_evidence.scheduled_kernel_launches,
+            v_cycle_root_ingress_zero_start_fusions=(scalar_evidence.root_ingress_zero_start_fusions),
             device=str(self.device),
             outer_slots=outer_slots,
         )
@@ -5230,7 +5262,7 @@ class CapturedDirectGraphVBD:
             "solver_static_array_sha256": self._solver_static_array_sha256_bound,
             "workspace_owner_identity_sha256": self._workspace_owner_identity_sha256(owner_binding),
             "persistent_device_sha256": persistent_device_sha256,
-            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v3",
+            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v4",
             "graph_identity_sha256": graph_identity_sha256,
             "k4_graph_identity_sha256": k4_graph_identity_sha256,
             "fused_gather_kernel_version": owner_binding.claims.fused_gather_kernel_version,
@@ -5256,6 +5288,7 @@ class CapturedDirectGraphVBD:
             "v_cycle_static_device_content_sha256": scalar_evidence.static_device_content_sha256,
             "v_cycle_device_snapshot_sha256": scalar_evidence.device_snapshot_sha256,
             "v_cycle_kernel_launches": owner_binding.device.scalar.scheduled_kernel_launches,
+            "v_cycle_root_ingress_zero_start_fusions": (scalar_evidence.root_ingress_zero_start_fusions),
             "v_cycle_canonical_matrix_block_products": canonical_matrix_products,
             "v_cycle_matrix_block_products_executed": canonical_matrix_products - elided_matrix_products,
             "v_cycle_matrix_block_products_elided_zero_start": elided_matrix_products,
