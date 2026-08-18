@@ -22,6 +22,7 @@ evidence until an integrated, captured benchmark establishes that separately.
 
 from __future__ import annotations
 
+import ctypes
 import dataclasses
 import hashlib
 import math
@@ -37,8 +38,10 @@ from .correction_gpu import MatrixFreeStableNHOperator
 KERNEL_VERSION = "mg-vbd-warp-operator-v2-tiled-pcg"
 FUSED_GATHER_KERNEL_VERSION = "mg-vbd-warp-fused-gather-v1"
 SCALAR_DIRECTION_APPLY_KERNEL_VERSION = "mg-vbd-warp-scalar-direction-apply-residual-v1"
+ROOT_SEEDED_GATHER_KERNEL_VERSION = "mg-vbd-warp-root-seeded-gather-v1"
 print(f"[kernels] fused gather version: {FUSED_GATHER_KERNEL_VERSION}")
 print(f"[kernels] scalar-direction apply version: {SCALAR_DIRECTION_APPLY_KERNEL_VERSION}")
+print(f"[kernels] root-seeded gather version: {ROOT_SEEDED_GATHER_KERNEL_VERSION}")
 CONTRACT_ID = "mg-vbd-warp-fixed-pcg-research-v2"
 _PCG_REDUCTION_BLOCK_SIZE = 256
 _PCG_REDUCTION_STAGES = 2
@@ -371,6 +374,53 @@ def _gather_gradient_masked(
 
 
 @wp.kernel(enable_backward=False)
+def _gather_gradient_masked_seed_root_zero_start(
+    positions: wp.array[wp.vec3d],
+    inertial_target: wp.array[wp.vec3d],
+    mass: wp.array[wp.float64],
+    free: wp.array[int],
+    incidence_offsets: wp.array[int],
+    incidence_tets: wp.array[int],
+    incidence_corners: wp.array[int],
+    shape_gradients: wp.array[wp.vec3d],
+    volumes: wp.array[wp.float64],
+    first_piola: wp.array[wp.mat33d],
+    inverse_dt_squared: wp.float64,
+    scale: wp.float64,
+    active: wp.array[int],
+    external_rhs: wp.array[wp.vec3d],
+    root_inverse_diagonal: wp.array[wp.float64],
+    root_omega: wp.float64,
+    scalar_rhs: wp.array[wp.float64],
+    root_primary_correction: wp.array[wp.float64],
+):
+    free_index = wp.tid()
+    vertex = free[free_index]
+    value = mass[vertex] * inverse_dt_squared * (positions[vertex] - inertial_target[vertex])
+    start = incidence_offsets[free_index]
+    end = incidence_offsets[free_index + 1]
+    for cursor in range(start, end):
+        tet = incidence_tets[cursor]
+        corner = incidence_corners[cursor]
+        value += volumes[tet] * (first_piola[tet] * shape_gradients[4 * tet + corner])
+    value = scale * value
+    if active[0] == 0:
+        value = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    external_rhs[free_index] = value
+
+    scalar_base = 3 * free_index
+    scalar_rhs[scalar_base] = value[0]
+    scalar_rhs[scalar_base + 1] = value[1]
+    scalar_rhs[scalar_base + 2] = value[2]
+    for local_row in range(3):
+        block_base = free_index * 9 + local_row * 3
+        transformed = wp.float64(0.0)
+        for local_column in range(3):
+            transformed += root_inverse_diagonal[block_base + local_column] * value[local_column]
+        root_primary_correction[scalar_base + local_row] = root_omega * transformed
+
+
+@wp.kernel(enable_backward=False)
 def _apply_tet_operator(
     direction: wp.array[wp.vec3d],
     tets: wp.array[int],
@@ -485,6 +535,51 @@ def _gather_operator_product_residual(
         value += volumes[tet] * (delta_piola[tet] * shape_gradients[4 * tet + corner])
     product[free_index] = value
     residual[free_index] = rhs[free_index] - value
+
+
+@wp.kernel(enable_backward=False)
+def _gather_operator_product_residual_seed_root_zero_start(
+    direction: wp.array[wp.vec3d],
+    rhs: wp.array[wp.vec3d],
+    mass: wp.array[wp.float64],
+    free: wp.array[int],
+    incidence_offsets: wp.array[int],
+    incidence_tets: wp.array[int],
+    incidence_corners: wp.array[int],
+    shape_gradients: wp.array[wp.vec3d],
+    volumes: wp.array[wp.float64],
+    delta_piola: wp.array[wp.mat33d],
+    inverse_dt_squared: wp.float64,
+    product: wp.array[wp.vec3d],
+    external_rhs: wp.array[wp.vec3d],
+    root_inverse_diagonal: wp.array[wp.float64],
+    root_omega: wp.float64,
+    scalar_rhs: wp.array[wp.float64],
+    root_primary_correction: wp.array[wp.float64],
+):
+    free_index = wp.tid()
+    vertex = free[free_index]
+    value = mass[vertex] * inverse_dt_squared * direction[free_index]
+    start = incidence_offsets[free_index]
+    end = incidence_offsets[free_index + 1]
+    for cursor in range(start, end):
+        tet = incidence_tets[cursor]
+        corner = incidence_corners[cursor]
+        value += volumes[tet] * (delta_piola[tet] * shape_gradients[4 * tet + corner])
+    product[free_index] = value
+    residual_value = rhs[free_index] - value
+    external_rhs[free_index] = residual_value
+
+    scalar_base = 3 * free_index
+    scalar_rhs[scalar_base] = residual_value[0]
+    scalar_rhs[scalar_base + 1] = residual_value[1]
+    scalar_rhs[scalar_base + 2] = residual_value[2]
+    for local_row in range(3):
+        block_base = free_index * 9 + local_row * 3
+        transformed = wp.float64(0.0)
+        for local_column in range(3):
+            transformed += root_inverse_diagonal[block_base + local_column] * residual_value[local_column]
+        root_primary_correction[scalar_base + local_row] = root_omega * transformed
 
 
 @wp.kernel(enable_backward=False)
@@ -1263,6 +1358,26 @@ class WarpMatrixFreeStableNHOperator:
     capture.  All Krylov-facing arrays have exactly ``n_free`` entries.
     """
 
+    _OWNED_DEVICE_ARRAY_NAMES = (
+        "positions",
+        "tets",
+        "shape_gradients",
+        "volumes",
+        "mass",
+        "mu",
+        "lam",
+        "inertial_target",
+        "free",
+        "vertex_to_free",
+        "incidence_offsets",
+        "incidence_tets",
+        "incidence_corners",
+        "deformation_gradients",
+        "cofactors",
+        "determinants",
+        "first_piola",
+    )
+
     def __init__(self, oracle: MatrixFreeStableNHOperator, *, device: str = "cpu"):
         if not isinstance(oracle, MatrixFreeStableNHOperator):
             raise TypeError("oracle must be a MatrixFreeStableNHOperator")
@@ -1361,6 +1476,52 @@ class WarpMatrixFreeStableNHOperator:
         ):
             raise ValueError(f"active must be an int32 array of shape (1,) on {self.device}")
 
+    def _validate_root_zero_start_seed_buffers(
+        self,
+        external_rhs: wp.array[wp.vec3d],
+        root_inverse_diagonal: wp.array[wp.float64],
+        root_omega: float,
+        scalar_rhs: wp.array[wp.float64],
+        root_primary_correction: wp.array[wp.float64],
+    ) -> None:
+        """Validate the exact disjoint root buffers written by a producer."""
+        self._validate_vector(external_rhs, "external_rhs")
+        self._validate_scalar_direction(scalar_rhs, "scalar_rhs")
+        self._validate_scalar_direction(root_primary_correction, "root_primary_correction")
+        if (
+            type(root_inverse_diagonal) is not wp.array
+            or root_inverse_diagonal.device != self.device
+            or root_inverse_diagonal.dtype != wp.float64
+            or root_inverse_diagonal.ndim != 1
+            or root_inverse_diagonal.shape != (9 * self.n_free,)
+        ):
+            raise ValueError(
+                f"root_inverse_diagonal must be a float64 array of shape ({9 * self.n_free},) on {self.device}"
+            )
+        self._validate_readable_1d_layout(root_inverse_diagonal, "root_inverse_diagonal")
+        if isinstance(root_omega, bool) or not isinstance(root_omega, numbers.Real) or not math.isfinite(root_omega):
+            raise ValueError("root_omega must be a finite real scalar")
+        named_outputs = (
+            ("external_rhs", external_rhs),
+            ("scalar_rhs", scalar_rhs),
+            ("root_primary_correction", root_primary_correction),
+        )
+        for name, output in named_outputs:
+            self._validate_writable_1d_layout(output, name)
+        for left_index, (left_name, left) in enumerate(named_outputs):
+            for right_name, right in named_outputs[left_index + 1 :]:
+                if self._arrays_overlap(left, right):
+                    raise ValueError(f"{left_name} and {right_name} must not alias")
+        inverse_span = self._array_memory_span(
+            root_inverse_diagonal,
+            wp.types.type_size_in_bytes(root_inverse_diagonal.dtype),
+        )
+        for output_name, output in named_outputs:
+            if self._memory_spans_overlap(
+                inverse_span, self._array_memory_span(output, wp.types.type_size_in_bytes(output.dtype))
+            ):
+                raise ValueError(f"root_inverse_diagonal and {output_name} must not alias")
+
     @staticmethod
     def _array_memory_span(array: wp.array, element_size: int) -> tuple[int, int]:
         """Return a conservative byte interval for one validated 1-D array."""
@@ -1376,9 +1537,15 @@ class WarpMatrixFreeStableNHOperator:
 
     @staticmethod
     def _validate_writable_1d_layout(array: wp.array[Any], name: str) -> None:
-        """Reject a writable 1-D view whose logical elements overlap."""
+        """Require a disjoint, naturally aligned writable 1-D view."""
         strides = array.strides
         element_size = wp.types.type_size_in_bytes(array.dtype)
+        scalar_ctype = getattr(array.dtype, "_type_", None)
+        if scalar_ctype is None:
+            raise ValueError(f"{name} has no canonical dtype alignment")
+        natural_alignment = ctypes.alignment(scalar_ctype)
+        if int(array.ptr) == 0:
+            raise ValueError(f"{name} must have a non-null data pointer")
         if (
             type(strides) is not tuple
             or len(strides) != 1
@@ -1386,6 +1553,45 @@ class WarpMatrixFreeStableNHOperator:
             or (array.size > 1 and abs(strides[0]) < element_size)
         ):
             raise ValueError(f"{name} must have a non-overlapping writable 1-D layout")
+        if int(array.ptr) % natural_alignment != 0 or strides[0] % natural_alignment != 0:
+            raise ValueError(f"{name} must have a naturally aligned pointer and stride for its dtype")
+
+    @staticmethod
+    def _validate_readable_1d_layout(array: wp.array[Any], name: str) -> None:
+        """Require a non-null, naturally aligned readable 1-D view."""
+        strides = array.strides
+        scalar_ctype = getattr(array.dtype, "_type_", None)
+        if scalar_ctype is None:
+            raise ValueError(f"{name} has no canonical dtype alignment")
+        natural_alignment = ctypes.alignment(scalar_ctype)
+        if int(array.ptr) == 0:
+            raise ValueError(f"{name} must have a non-null data pointer")
+        if type(strides) is not tuple or len(strides) != 1 or type(strides[0]) is not int:
+            raise ValueError(f"{name} must have a readable 1-D layout")
+        if int(array.ptr) % natural_alignment != 0 or strides[0] % natural_alignment != 0:
+            raise ValueError(f"{name} must have a naturally aligned pointer and stride for its dtype")
+
+    def _owned_device_arrays(self) -> tuple[tuple[str, wp.array], ...]:
+        """Enumerate the exact device arrays whose storage this operator owns."""
+        return tuple((name, getattr(self, name)) for name in self._OWNED_DEVICE_ARRAY_NAMES)
+
+    def _validate_mutable_targets_outside_owned_storage(
+        self,
+        named_targets: tuple[tuple[str, wp.array], ...],
+    ) -> None:
+        """Reject a mutable target whose conservative span touches owned storage."""
+        owned_spans = tuple(
+            (
+                owned_name,
+                self._array_memory_span(owned_array, wp.types.type_size_in_bytes(owned_array.dtype)),
+            )
+            for owned_name, owned_array in self._owned_device_arrays()
+        )
+        for target_name, target in named_targets:
+            target_span = self._array_memory_span(target, wp.types.type_size_in_bytes(target.dtype))
+            for owned_name, owned_span in owned_spans:
+                if self._memory_spans_overlap(target_span, owned_span):
+                    raise ValueError(f"{target_name} must not overlap operator-owned {owned_name}")
 
     @staticmethod
     def _memory_spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
@@ -1394,6 +1600,13 @@ class WarpMatrixFreeStableNHOperator:
     @classmethod
     def _vectors_overlap(cls, left: wp.array[wp.vec3d], right: wp.array[wp.vec3d]) -> bool:
         return cls._memory_spans_overlap(cls._vector_memory_span(left), cls._vector_memory_span(right))
+
+    @classmethod
+    def _arrays_overlap(cls, left: wp.array, right: wp.array) -> bool:
+        return cls._memory_spans_overlap(
+            cls._array_memory_span(left, wp.types.type_size_in_bytes(left.dtype)),
+            cls._array_memory_span(right, wp.types.type_size_in_bytes(right.dtype)),
+        )
 
     @staticmethod
     def _same_vector_view(left: wp.array[wp.vec3d], right: wp.array[wp.vec3d]) -> bool:
@@ -1482,6 +1695,76 @@ class WarpMatrixFreeStableNHOperator:
                 float(scale),
                 active,
                 output,
+            ],
+            device=self.device,
+        )
+
+    def launch_gradient_masked_seed_root_zero_start(
+        self,
+        external_rhs: wp.array[wp.vec3d],
+        active: wp.array[int],
+        root_inverse_diagonal: wp.array[wp.float64],
+        root_omega: float,
+        scalar_rhs: wp.array[wp.float64],
+        root_primary_correction: wp.array[wp.float64],
+        *,
+        scale: float = 1.0,
+    ) -> None:
+        """Gather a masked gradient and seed one 3x3 root zero-start sweep.
+
+        Each free-row owner retains ``external_rhs`` and ``scalar_rhs`` before
+        evaluating the three inverse-diagonal rows in their original column
+        order.  No observable producer or root-workspace store is elided.
+        """
+        self._validate_active(active)
+        self._validate_readable_1d_layout(active, "active")
+        self._validate_root_zero_start_seed_buffers(
+            external_rhs,
+            root_inverse_diagonal,
+            root_omega,
+            scalar_rhs,
+            root_primary_correction,
+        )
+        if not math.isfinite(scale):
+            raise ValueError("scale must be finite")
+        active_span = self._array_memory_span(active, wp.types.type_size_in_bytes(active.dtype))
+        for output_name, output in (
+            ("external_rhs", external_rhs),
+            ("scalar_rhs", scalar_rhs),
+            ("root_primary_correction", root_primary_correction),
+        ):
+            output_span = self._array_memory_span(output, wp.types.type_size_in_bytes(output.dtype))
+            if self._memory_spans_overlap(active_span, output_span):
+                raise ValueError(f"active and {output_name} must not alias")
+        self._validate_mutable_targets_outside_owned_storage(
+            (
+                ("external_rhs", external_rhs),
+                ("scalar_rhs", scalar_rhs),
+                ("root_primary_correction", root_primary_correction),
+            )
+        )
+        wp.launch(
+            _gather_gradient_masked_seed_root_zero_start,
+            dim=self.n_free,
+            inputs=[
+                self.positions,
+                self.inertial_target,
+                self.mass,
+                self.free,
+                self.incidence_offsets,
+                self.incidence_tets,
+                self.incidence_corners,
+                self.shape_gradients,
+                self.volumes,
+                self.first_piola,
+                self.inverse_dt_squared,
+                float(scale),
+                active,
+                external_rhs,
+                root_inverse_diagonal,
+                float(root_omega),
+                scalar_rhs,
+                root_primary_correction,
             ],
             device=self.device,
         )
@@ -1708,6 +1991,154 @@ class WarpMatrixFreeStableNHOperator:
                 self.inverse_dt_squared,
                 product,
                 residual,
+            ],
+            device=self.device,
+        )
+
+    def launch_apply_residual_scalar_direction_seed_root_zero_start(
+        self,
+        direction_scalar: wp.array[wp.float64],
+        published_direction: wp.array[wp.vec3d],
+        rhs: wp.array[wp.vec3d],
+        product: wp.array[wp.vec3d],
+        external_rhs: wp.array[wp.vec3d],
+        workspace: WarpMatrixFreeWorkspace,
+        root_inverse_diagonal: wp.array[wp.float64],
+        root_omega: float,
+        scalar_rhs: wp.array[wp.float64],
+        root_primary_correction: wp.array[wp.float64],
+    ) -> None:
+        """Apply from scalar direction, retain residual, and seed the root.
+
+        The tet/free publication launch is unchanged.  Its following gather
+        preserves ``product`` and the external vec3d residual, publishes the
+        scalar residual, and evaluates the three ordered root rows in the one
+        free-row-owner thread.
+        """
+        self._validate_scalar_direction(direction_scalar, "direction_scalar")
+        self._validate_readable_1d_layout(direction_scalar, "direction_scalar")
+        self._validate_vector(published_direction, "published_direction")
+        self._validate_vector(rhs, "rhs")
+        self._validate_readable_1d_layout(rhs, "rhs")
+        self._validate_vector(product, "product")
+        self._validate_root_zero_start_seed_buffers(
+            external_rhs,
+            root_inverse_diagonal,
+            root_omega,
+            scalar_rhs,
+            root_primary_correction,
+        )
+        if not isinstance(workspace, WarpMatrixFreeWorkspace) or workspace._operator_identity != id(self):
+            raise ValueError("workspace belongs to a different operator")
+        delta_piola = workspace.delta_piola
+        if (
+            type(delta_piola) is not wp.array
+            or delta_piola.device != self.device
+            or delta_piola.dtype != wp.mat33d
+            or delta_piola.ndim != 1
+            or delta_piola.shape != (self.n_tets,)
+        ):
+            raise ValueError(f"workspace delta_piola must be a mat33d array of shape ({self.n_tets},) on {self.device}")
+        named_vectors = (
+            ("published_direction", published_direction),
+            ("rhs", rhs),
+            ("product", product),
+            ("external_rhs", external_rhs),
+        )
+        named_mutable_targets = (
+            ("published_direction", published_direction),
+            ("product", product),
+            ("external_rhs", external_rhs),
+            ("workspace delta_piola", delta_piola),
+            ("scalar_rhs", scalar_rhs),
+            ("root_primary_correction", root_primary_correction),
+        )
+        for output_name, output in named_mutable_targets:
+            self._validate_writable_1d_layout(output, output_name)
+        for left_index, (left_name, left) in enumerate(named_vectors):
+            for right_name, right in named_vectors[left_index + 1 :]:
+                if self._vectors_overlap(left, right):
+                    raise ValueError(f"{left_name} and {right_name} must not alias")
+        scalar_span = self._array_memory_span(
+            direction_scalar,
+            wp.types.type_size_in_bytes(direction_scalar.dtype),
+        )
+        delta_piola_span = self._array_memory_span(delta_piola, wp.types.type_size_in_bytes(delta_piola.dtype))
+        for vector_name, vector in named_vectors:
+            vector_span = self._vector_memory_span(vector)
+            if self._memory_spans_overlap(scalar_span, vector_span):
+                raise ValueError(f"direction_scalar and {vector_name} must not alias")
+            if self._memory_spans_overlap(delta_piola_span, vector_span):
+                raise ValueError(f"{vector_name} must not alias workspace delta_piola")
+        if self._memory_spans_overlap(delta_piola_span, scalar_span):
+            raise ValueError("direction_scalar must not alias workspace delta_piola")
+
+        named_root_outputs = (
+            ("scalar_rhs", scalar_rhs),
+            ("root_primary_correction", root_primary_correction),
+        )
+        for root_name, root_output in named_root_outputs:
+            root_span = self._array_memory_span(root_output, wp.types.type_size_in_bytes(root_output.dtype))
+            if self._memory_spans_overlap(root_span, scalar_span):
+                raise ValueError(f"direction_scalar and {root_name} must not alias")
+            if self._memory_spans_overlap(root_span, delta_piola_span):
+                raise ValueError(f"{root_name} must not alias workspace delta_piola")
+            for vector_name, vector in named_vectors:
+                if self._memory_spans_overlap(root_span, self._vector_memory_span(vector)):
+                    raise ValueError(f"{vector_name} and {root_name} must not alias")
+        inverse_span = self._array_memory_span(
+            root_inverse_diagonal,
+            wp.types.type_size_in_bytes(root_inverse_diagonal.dtype),
+        )
+        for output_name, output in (
+            ("published_direction", published_direction),
+            ("product", product),
+            ("workspace delta_piola", delta_piola),
+        ):
+            output_span = self._array_memory_span(output, wp.types.type_size_in_bytes(output.dtype))
+            if self._memory_spans_overlap(inverse_span, output_span):
+                raise ValueError(f"root_inverse_diagonal and {output_name} must not alias")
+
+        self._validate_mutable_targets_outside_owned_storage(named_mutable_targets)
+
+        wp.launch(
+            _apply_tet_operator_publish_scalar_direction,
+            dim=self.n_tets + self.n_free,
+            inputs=[
+                direction_scalar,
+                self.tets,
+                self.vertex_to_free,
+                self.shape_gradients,
+                self.cofactors,
+                self.mu,
+                self.lam,
+                delta_piola,
+                published_direction,
+                self.n_tets,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            _gather_operator_product_residual_seed_root_zero_start,
+            dim=self.n_free,
+            inputs=[
+                published_direction,
+                rhs,
+                self.mass,
+                self.free,
+                self.incidence_offsets,
+                self.incidence_tets,
+                self.incidence_corners,
+                self.shape_gradients,
+                self.volumes,
+                delta_piola,
+                self.inverse_dt_squared,
+                product,
+                external_rhs,
+                root_inverse_diagonal,
+                float(root_omega),
+                scalar_rhs,
+                root_primary_correction,
             ],
             device=self.device,
         )

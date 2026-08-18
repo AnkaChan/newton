@@ -15,6 +15,9 @@ step, objective, strict Armijo condition, and exact cubic segment determinant
 are evaluated.  The first rejected proposal disables every later proposal,
 while all fixed graph work still executes.  This module is deliberately a
 contact-free research harness and its paired CUDA timing is diagnostic only.
+Graph route labels, native owner checks, and one-shot receipt sequencing are
+schema and integrity fields only; they do not authenticate launch occurrence
+or freshness.
 """
 
 from __future__ import annotations
@@ -60,6 +63,7 @@ from .captured_vbd_baseline import (
 from .correction_gpu import MatrixFreeStableNHOperator, minimum_determinant_on_segment
 from .correction_gpu_warp import (
     FUSED_GATHER_KERNEL_VERSION,
+    ROOT_SEEDED_GATHER_KERNEL_VERSION,
     SCALAR_DIRECTION_APPLY_KERNEL_VERSION,
     WarpMatrixFreeStableNHOperator,
     WarpMatrixFreeWorkspace,
@@ -83,13 +87,6 @@ from .correction_multigrid_warp import (
     WarpStaticMultigridHierarchy,
 )
 from .correction_multigrid_warp_scalar_fused import (
-    _CORE_RECORD_TOKEN,
-    WarpScalarFusedStaticMultigridHierarchy,
-    WarpScalarFusedVCyclePhysicalWork,
-    WarpScalarFusedVCycleRecord,
-    WarpScalarFusedVCycleWorkspace,
-)
-from .correction_multigrid_warp_scalar_fused import (
     CONTRACT_ID as V_CYCLE_CONTRACT_ID,
 )
 from .correction_multigrid_warp_scalar_fused import (
@@ -99,7 +96,19 @@ from .correction_multigrid_warp_scalar_fused import (
     KERNEL_VERSION as V_CYCLE_KERNEL_VERSION,
 )
 from .correction_multigrid_warp_scalar_fused import (
+    PHYSICAL_EXECUTION_AUTHENTICATION as V_CYCLE_PHYSICAL_EXECUTION_AUTHENTICATION,
+)
+from .correction_multigrid_warp_scalar_fused import (
     PUBLICATION_VERSION as V_CYCLE_PUBLICATION_VERSION,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    ROOT_INGRESS_COARSE_COPY_ROUTE as V_CYCLE_ROOT_INGRESS_COARSE_COPY_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    ROOT_INGRESS_EXTERNAL_SHARED_ROUTE as V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    ROOT_INGRESS_INTERNAL_ROUTE as V_CYCLE_ROOT_INGRESS_INTERNAL_ROUTE,
 )
 from .correction_multigrid_warp_scalar_fused import (
     SCHEDULE_VERSION as V_CYCLE_SCHEDULE_VERSION,
@@ -107,13 +116,19 @@ from .correction_multigrid_warp_scalar_fused import (
 from .correction_multigrid_warp_scalar_fused import (
     STANDALONE_PUBLICATION_ROUTE as V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
 )
+from .correction_multigrid_warp_scalar_fused import (
+    WarpScalarFusedStaticMultigridHierarchy,
+    WarpScalarFusedVCyclePhysicalWork,
+    WarpScalarFusedVCycleRecord,
+    WarpScalarFusedVCycleWorkspace,
+)
 from .solver_benchmark import TetBenchmarkScene, build_common_problem, common_objective_manifest
 
 CONTRACT_ID = "captured-direct-multiplicative-graph-vbd-v1"
 OUTER_CORRECTIONS = 4
 V_CYCLES_PER_OUTER = 2
-OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-four-warp-exact-finalize-outer-v5"
-OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v6"
+OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-four-warp-exact-finalize-outer-v6"
+OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v7"
 FIRST_CYCLE_PUBLICATION_ROLE = "current-a-apply-free-row-owner-scalar-to-vec3"
 SECOND_CYCLE_PUBLICATION_ROLE = "vertex-owner-scalar-to-vec3"
 FINALIZE_GATE_ROUTE = "cuda-one-block-four-warp-ordered-fp64-v1"
@@ -126,6 +141,15 @@ FINALIZE_GATE_OWNER_ROLES = (
     "ordered-finite-flags",
 )
 FINALIZE_GATE_COLLECTIVE_VERSION = "shared-tile-vec2d-float64-vec2d-int32-broadcasts-v1"
+EXECUTION_AUTHENTICATION = "schema-and-canonical-output-validated-not-launch-authenticated-v1"
+
+
+def _execution_authentication_policy(graph_replay: bool) -> tuple[str, bool, bool]:
+    """Return the same unauthenticated evidence policy for either route."""
+    if type(graph_replay) is not bool:
+        raise TypeError("execution authentication requires exact bool graph provenance")
+    return (EXECUTION_AUTHENTICATION, False, False)
+
 
 _REASON_PENDING = 0
 _REASON_ACCEPTED = 1
@@ -220,10 +244,12 @@ def _canonical_digest(value: object) -> str:
 def _derive_outer_schedule_sha256(
     kernel_version: str,
     fused_gather_kernel_version: str,
+    root_seeded_gather_kernel_version: str,
     scalar_direction_apply_kernel_version: str,
     v_cycle_publication_version: str,
     v_cycle_standalone_publication_route: str,
     v_cycle_external_shared_publication_route: str,
+    v_cycle_seeded_root_ingress_route: str,
     first_cycle_publication_role: str,
     second_cycle_publication_role: str,
     finalize_gate_route: str,
@@ -236,13 +262,15 @@ def _derive_outer_schedule_sha256(
     """Bind fused formulas and the exact ordered four-warp gate."""
     return _canonical_digest(
         {
-            "contract": "captured-direct-graph-vbd-outer-schedule-v6",
+            "contract": "captured-direct-graph-vbd-outer-schedule-v7",
             "kernel_version": kernel_version,
             "fused_gather_kernel_version": fused_gather_kernel_version,
+            "root_seeded_gather_kernel_version": root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": scalar_direction_apply_kernel_version,
             "v_cycle_publication_version": v_cycle_publication_version,
             "v_cycle_standalone_publication_route": v_cycle_standalone_publication_route,
             "v_cycle_external_shared_publication_route": v_cycle_external_shared_publication_route,
+            "v_cycle_seeded_root_ingress_route": v_cycle_seeded_root_ingress_route,
             "first_cycle_publication_role": first_cycle_publication_role,
             "second_cycle_publication_role": second_cycle_publication_role,
             "finalize_gate_route": finalize_gate_route,
@@ -267,8 +295,8 @@ def _derive_outer_schedule_sha256(
             "finalize_gate_owner_executable_binding": "literal-thread-ids-0-32-64-96-no-mutable-duplicate-globals",
             "schedule_version": schedule_version,
             "fused_gather_operations": [
-                "gradient-and-final-store-active-mask",
-                "matrix-free-product-and-rhs-minus-product",
+                "gradient-final-store-active-mask-scalar-rhs-root-zero-start",
+                "matrix-free-product-rhs-minus-product-scalar-rhs-root-zero-start",
             ],
             "ownership": "one-thread-per-scene-vertex-with-unique-free-index-owner",
             "first_cycle_publication_operations": [
@@ -286,11 +314,13 @@ def _derive_outer_schedule_sha256(
             ],
             "candidate_policy": "pinned-or-inactive-or-nonfinite-proposal-keeps-current",
             "post_fusion_order": ["tet-gate-terms", "four-warp-exact-finalize-gate", "commit-candidate"],
-            "linear_prefix_kernel_launches_per_outer": "4+2*core_v_cycle_launches",
+            "linear_prefix_kernel_launches_per_outer": "4+2*seeded_core_v_cycle_launches",
             "fused_gather_kernel_launches_per_outer": 2,
+            "shared_root_ingress_kernel_launches_per_outer": 2,
+            "separate_root_ingress_kernel_launches_per_outer": 0,
             "fused_vertex_kernel_launches_per_outer": 1,
             "finalize_gate_kernel_launches_per_outer": 1,
-            "retained_linear_work_launches_per_outer": "5+2*core_v_cycle_launches",
+            "retained_linear_work_launches_per_outer": "5+2*seeded_core_v_cycle_launches",
             "remaining_gate_commit_launches_per_outer": 3,
         }
     )
@@ -327,10 +357,12 @@ def _require_finalize_gate_evidence(
 OUTER_SCHEDULE_SHA256 = _derive_outer_schedule_sha256(
     OUTER_KERNEL_VERSION,
     FUSED_GATHER_KERNEL_VERSION,
+    ROOT_SEEDED_GATHER_KERNEL_VERSION,
     SCALAR_DIRECTION_APPLY_KERNEL_VERSION,
     V_CYCLE_PUBLICATION_VERSION,
     V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
     V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
+    V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE,
     FIRST_CYCLE_PUBLICATION_ROLE,
     SECOND_CYCLE_PUBLICATION_ROLE,
     FINALIZE_GATE_ROUTE,
@@ -635,20 +667,29 @@ def _validate_k4_endpoint(
 def _validate_v_cycle_record(
     record: WarpScalarFusedVCycleRecord,
     *,
+    expected_workspace: WarpScalarFusedVCycleWorkspace,
     rhs: np.ndarray,
     output: np.ndarray,
     canonical_output: np.ndarray,
     canonical_work: VCycleWorkRecord,
     hierarchy_sha256: str,
     schedule_sha256: str,
+    standalone_schedule_sha256: str,
+    core_schedule_sha256: str,
+    seeded_core_schedule_sha256: str,
     static_device_content_sha256: str,
     device_snapshot_sha256: str,
+    standalone_device_snapshot_sha256: str,
+    core_device_snapshot_sha256: str,
+    seeded_core_device_snapshot_sha256: str,
     scheduled_kernel_launches: int,
     core_kernel_launches: int,
     publication_kernel_launches: int,
     publication_version: str,
     publication_route: str,
     root_ingress_zero_start_fusions: int,
+    root_ingress_route: str,
+    root_ingress_kernel_launches: int,
     hierarchy: StaticMultigridHierarchy,
     capture_replay: bool,
     name: str,
@@ -656,6 +697,11 @@ def _validate_v_cycle_record(
     """Recompute one scalar-fused V-cycle's algebraic and physical evidence."""
     if type(record) is not WarpScalarFusedVCycleRecord:
         raise TypeError(f"{name} must be an exact WarpScalarFusedVCycleRecord")
+    if type(expected_workspace) is not WarpScalarFusedVCycleWorkspace:
+        raise TypeError(f"{name} expected workspace must be exact")
+    expected_workspace.hierarchy._validate_workspace(expected_workspace)
+    if expected_workspace.hierarchy.hierarchy_sha256 != hierarchy_sha256:
+        raise ValueError(f"{name} exact workspace hierarchy identity is stale")
     if type(record.work) is not VCycleWorkRecord:
         raise TypeError(f"{name} work must be an exact VCycleWorkRecord")
     if type(record.physical_work) is not WarpScalarFusedVCyclePhysicalWork:
@@ -668,7 +714,12 @@ def _validate_v_cycle_record(
         or type(record.schedule_version) is not str
         or record.schedule_version != V_CYCLE_SCHEDULE_VERSION
         or record.research_only is not True
+        or record.physical_execution_authentication != V_CYCLE_PHYSICAL_EXECUTION_AUTHENTICATION
+        or record.solver_issued_authentication is not False
         or record.performance_evidence is not False
+        or record.physical_work.physical_execution_authentication != V_CYCLE_PHYSICAL_EXECUTION_AUTHENTICATION
+        or record.physical_work.solver_issued_authentication is not False
+        or record.physical_work.performance_evidence is not False
     ):
         raise ValueError(f"{name} has invalid V-cycle policy provenance")
     if type(record.capture_replay) is not bool:
@@ -681,8 +732,14 @@ def _validate_v_cycle_record(
         raise ValueError(f"{name} scheduled launch count is stale")
     if (
         record.schedule_sha256 != schedule_sha256
+        or record.standalone_schedule_sha256 != standalone_schedule_sha256
+        or record.core_schedule_sha256 != core_schedule_sha256
+        or record.seeded_core_schedule_sha256 != seeded_core_schedule_sha256
         or record.static_device_content_sha256 != static_device_content_sha256
         or record.device_snapshot_sha256 != device_snapshot_sha256
+        or record.standalone_device_snapshot_sha256 != standalone_device_snapshot_sha256
+        or record.core_device_snapshot_sha256 != core_device_snapshot_sha256
+        or record.seeded_core_device_snapshot_sha256 != seeded_core_device_snapshot_sha256
     ):
         raise ValueError(f"{name} scalar-fused schedule or static snapshot identity is stale")
     if not np.array_equal(record.correction.reshape(output.shape), output):
@@ -719,6 +776,14 @@ def _validate_v_cycle_record(
         raise ValueError(f"{name} level_visits must contain non-negative built-in integers")
     expected_rhs_sha256 = _v_cycle_rhs_sha256(rhs)
     expected_result_sha256 = _v_cycle_result_sha256(output)
+    workspace_rhs = np.asarray(expected_workspace.level_rhs[0].numpy(), dtype=np.float64).reshape(rhs.shape)
+    workspace_output = np.asarray(expected_workspace.final_scalar_correction.numpy(), dtype=np.float64).reshape(
+        output.shape
+    )
+    if _v_cycle_rhs_sha256(workspace_rhs) != expected_rhs_sha256:
+        raise ValueError(f"{name} exact workspace root RHS does not bind the retained outer input")
+    if _v_cycle_result_sha256(workspace_output) != expected_result_sha256:
+        raise ValueError(f"{name} exact workspace final correction does not bind the retained outer output")
     if _v_cycle_result_sha256(record.correction) != expected_result_sha256:
         raise ValueError(f"{name} retained correction bytes do not exactly bind its output vector")
     for field_name in ("hierarchy_sha256", "rhs_sha256", "result_sha256", "content_sha256"):
@@ -759,7 +824,10 @@ def _validate_v_cycle_record(
         "matrix_block_products_executed": canonical_work.matrix_block_products - expected_elided_products,
         "matrix_block_products_elided_zero_start": expected_elided_products,
         "zero_start_block_solves": expected_zero_start_solves,
+        "noncoarse_level_count": len(noncoarse_levels),
         "root_ingress_zero_start_fusions": root_ingress_zero_start_fusions,
+        "root_ingress_route": root_ingress_route,
+        "root_ingress_kernel_launches": root_ingress_kernel_launches,
         "out_of_place_jacobi_block_solves": canonical_work.smoother_block_solves - expected_zero_start_solves,
         "matrix_kernel_launches": expected_matrix_launches,
         "jacobi_kernel_launches": expected_matrix_launches,
@@ -768,6 +836,9 @@ def _validate_v_cycle_record(
         "publication_version": publication_version,
         "publication_route": publication_route,
         "scheduled_kernel_launches": scheduled_kernel_launches,
+        "physical_execution_authentication": V_CYCLE_PHYSICAL_EXECUTION_AUTHENTICATION,
+        "solver_issued_authentication": False,
+        "performance_evidence": False,
     }
     for field_name, expected in expected_physical.items():
         actual = getattr(physical, field_name)
@@ -777,7 +848,9 @@ def _validate_v_cycle_record(
         "matrix_block_products_executed",
         "matrix_block_products_elided_zero_start",
         "zero_start_block_solves",
+        "noncoarse_level_count",
         "root_ingress_zero_start_fusions",
+        "root_ingress_kernel_launches",
         "out_of_place_jacobi_block_solves",
         "matrix_kernel_launches",
         "jacobi_kernel_launches",
@@ -795,25 +868,39 @@ def _validate_v_cycle_record(
     if (
         type(physical.publication_version) is not str
         or type(physical.publication_route) is not str
+        or type(physical.root_ingress_route) is not str
         or physical.scheduled_kernel_launches != physical.core_kernel_launches + physical.publication_kernel_launches
     ):
         raise ValueError(f"{name} physical publication route or launch accounting is invalid")
     physical_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-physical-work-v4",
+        "warp-scalar-fused-v-cycle-physical-work-v7",
         tuple(expected_physical.items()),
     )
     if physical.content_sha256 != physical_sha256:
         raise ValueError(f"{name} physical work hash is stale")
     record_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-result-v4",
+        "warp-scalar-fused-v-cycle-result-v7",
         (
+            ("contract_id", V_CYCLE_CONTRACT_ID),
+            ("kernel_version", V_CYCLE_KERNEL_VERSION),
+            ("schedule_version", V_CYCLE_SCHEDULE_VERSION),
             ("device_snapshot_sha256", device_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
             ("schedule_sha256", schedule_sha256),
+            ("standalone_schedule_sha256", standalone_schedule_sha256),
+            ("core_schedule_sha256", core_schedule_sha256),
+            ("seeded_core_schedule_sha256", seeded_core_schedule_sha256),
+            ("standalone_device_snapshot_sha256", standalone_device_snapshot_sha256),
+            ("core_device_snapshot_sha256", core_device_snapshot_sha256),
+            ("seeded_core_device_snapshot_sha256", seeded_core_device_snapshot_sha256),
             ("work_sha256", work_sha256),
             ("physical_work_sha256", physical_sha256),
             ("scheduled_kernel_launches", scheduled_kernel_launches),
             ("capture_replay", capture_replay),
+            ("research_only", True),
+            ("physical_execution_authentication", V_CYCLE_PHYSICAL_EXECUTION_AUTHENTICATION),
+            ("solver_issued_authentication", False),
+            ("performance_evidence", False),
         ),
     )
     if record.content_sha256 != record_sha256:
@@ -822,7 +909,7 @@ def _validate_v_cycle_record(
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class _ExecutionReceipt:
-    """One solver-issued, registered, single-consumption launch receipt."""
+    """One private token for single-use, monotonic record sequencing."""
 
     issuer: object = dataclasses.field(repr=False, compare=False)
     serial: int
@@ -852,6 +939,10 @@ class _OuterSlotBinding:
     rhs_sha256: str
     accepted: bool
     reason: str
+    v_cycle_workspaces: tuple[WarpScalarFusedVCycleWorkspace, WarpScalarFusedVCycleWorkspace] = dataclasses.field(
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if self.token is not _VALIDATION_TOKEN:
@@ -866,6 +957,13 @@ class _OuterSlotBinding:
             raise ValueError("outer slot binding reason is outside the fixed vocabulary")
         if self.accepted != (self.reason == "accepted"):
             raise ValueError("outer slot binding status is inconsistent")
+        if (
+            type(self.v_cycle_workspaces) is not tuple
+            or len(self.v_cycle_workspaces) != V_CYCLES_PER_OUTER
+            or any(type(workspace) is not WarpScalarFusedVCycleWorkspace for workspace in self.v_cycle_workspaces)
+            or self.v_cycle_workspaces[0] is self.v_cycle_workspaces[1]
+        ):
+            raise ValueError("outer slot binding requires two exact scalar-fused workspace owners")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -884,15 +982,19 @@ class _EndpointValidationContext:
     persistent_device_sha256: str
     v_cycle_schedule_sha256: str
     v_cycle_core_schedule_sha256: str
+    v_cycle_seeded_core_schedule_sha256: str
     v_cycle_static_device_content_sha256: str
     v_cycle_device_snapshot_sha256: str
     v_cycle_core_device_snapshot_sha256: str
+    v_cycle_seeded_core_device_snapshot_sha256: str
     graph_identity_sha256: str
     fused_gather_kernel_version: str
+    root_seeded_gather_kernel_version: str
     scalar_direction_apply_kernel_version: str
     v_cycle_publication_version: str
     v_cycle_standalone_publication_route: str
     v_cycle_external_shared_publication_route: str
+    v_cycle_seeded_root_ingress_route: str
     first_cycle_publication_role: str
     second_cycle_publication_role: str
     outer_kernel_version: str
@@ -906,6 +1008,7 @@ class _EndpointValidationContext:
     capture_binding: _CaptureGraphOwnerBinding | None = dataclasses.field(repr=False, compare=False)
     v_cycle_kernel_launches: int
     v_cycle_core_kernel_launches: int
+    v_cycle_seeded_core_kernel_launches: int
     v_cycle_root_ingress_zero_start_fusions: int
     device: str
     outer_slots: tuple[_OuterSlotBinding, ...]
@@ -930,9 +1033,11 @@ class _EndpointValidationContext:
             "persistent_device_sha256",
             "v_cycle_schedule_sha256",
             "v_cycle_core_schedule_sha256",
+            "v_cycle_seeded_core_schedule_sha256",
             "v_cycle_static_device_content_sha256",
             "v_cycle_device_snapshot_sha256",
             "v_cycle_core_device_snapshot_sha256",
+            "v_cycle_seeded_core_device_snapshot_sha256",
             "graph_identity_sha256",
             "outer_schedule_sha256",
         ):
@@ -947,6 +1052,8 @@ class _EndpointValidationContext:
         if (
             type(self.fused_gather_kernel_version) is not str
             or self.fused_gather_kernel_version != FUSED_GATHER_KERNEL_VERSION
+            or type(self.root_seeded_gather_kernel_version) is not str
+            or self.root_seeded_gather_kernel_version != ROOT_SEEDED_GATHER_KERNEL_VERSION
             or type(self.scalar_direction_apply_kernel_version) is not str
             or self.scalar_direction_apply_kernel_version != SCALAR_DIRECTION_APPLY_KERNEL_VERSION
             or type(self.v_cycle_publication_version) is not str
@@ -955,6 +1062,8 @@ class _EndpointValidationContext:
             or self.v_cycle_standalone_publication_route != V_CYCLE_STANDALONE_PUBLICATION_ROUTE
             or type(self.v_cycle_external_shared_publication_route) is not str
             or self.v_cycle_external_shared_publication_route != V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE
+            or type(self.v_cycle_seeded_root_ingress_route) is not str
+            or self.v_cycle_seeded_root_ingress_route != V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE
             or type(self.first_cycle_publication_role) is not str
             or self.first_cycle_publication_role != FIRST_CYCLE_PUBLICATION_ROLE
             or type(self.second_cycle_publication_role) is not str
@@ -970,10 +1079,12 @@ class _EndpointValidationContext:
             != _derive_outer_schedule_sha256(
                 self.outer_kernel_version,
                 self.fused_gather_kernel_version,
+                self.root_seeded_gather_kernel_version,
                 self.scalar_direction_apply_kernel_version,
                 self.v_cycle_publication_version,
                 self.v_cycle_standalone_publication_route,
                 self.v_cycle_external_shared_publication_route,
+                self.v_cycle_seeded_root_ingress_route,
                 self.first_cycle_publication_role,
                 self.second_cycle_publication_role,
                 self.finalize_gate_route,
@@ -997,6 +1108,19 @@ class _EndpointValidationContext:
             self.v_cycle_root_ingress_zero_start_fusions
         ) is not int or self.v_cycle_root_ingress_zero_start_fusions not in (0, 1):
             raise ValueError("v_cycle_root_ingress_zero_start_fusions must be zero or one")
+        if (
+            type(self.v_cycle_seeded_root_ingress_route) is not str
+            or self.v_cycle_seeded_root_ingress_route != V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE
+            or self.v_cycle_root_ingress_zero_start_fusions != 1
+        ):
+            raise ValueError("captured V-cycles require one externally shared root zero-start ingress")
+        if (
+            type(self.v_cycle_seeded_core_kernel_launches) is not int
+            or self.v_cycle_seeded_core_kernel_launches < 1
+            or self.v_cycle_seeded_core_kernel_launches
+            != self.v_cycle_core_kernel_launches - self.v_cycle_root_ingress_zero_start_fusions
+        ):
+            raise ValueError("seeded V-cycle core launch count does not match its shared root ingress")
         if (
             type(self.outer_slots) is not tuple
             or len(self.outer_slots) != OUTER_CORRECTIONS
@@ -1289,6 +1413,7 @@ class CapturedGraphVBDOuterWork:
     linear_kernel_launches: int
     persistent_device_sha256: str
     fused_gather_kernel_version: str
+    root_seeded_gather_kernel_version: str
     scalar_direction_apply_kernel_version: str
     v_cycle_publication_version: str
     first_cycle_publication_route: str
@@ -1306,11 +1431,20 @@ class CapturedGraphVBDOuterWork:
     _validation_context: _EndpointValidationContext = dataclasses.field(repr=False, compare=False)
     _validation_slot: _OuterSlotBinding = dataclasses.field(repr=False, compare=False)
     _validation_operator: MatrixFreeStableNHOperator = dataclasses.field(repr=False, compare=False)
+    execution_authentication: str = dataclasses.field(init=False)
+    solver_issued_authentication: bool = dataclasses.field(init=False)
+    performance_evidence: bool = dataclasses.field(init=False)
     content_sha256: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         _require_issued_validation_context(self._validation_context, validate_raw_sources=False)
         _require_issued_outer_slot(self._validation_context, self._validation_slot)
+        execution_authentication, solver_issued_authentication, performance_evidence = _execution_authentication_policy(
+            self._validation_context.graph_replay
+        )
+        object.__setattr__(self, "execution_authentication", execution_authentication)
+        object.__setattr__(self, "solver_issued_authentication", solver_issued_authentication)
+        object.__setattr__(self, "performance_evidence", performance_evidence)
         if type(self._validation_operator) is not MatrixFreeStableNHOperator:
             raise TypeError("outer work requires an exact canonical current operator")
         if type(self.outer_index) is not int or not 0 <= self.outer_index < OUTER_CORRECTIONS:
@@ -1347,6 +1481,8 @@ class CapturedGraphVBDOuterWork:
         if (
             type(self.fused_gather_kernel_version) is not str
             or self.fused_gather_kernel_version != self._validation_context.fused_gather_kernel_version
+            or type(self.root_seeded_gather_kernel_version) is not str
+            or self.root_seeded_gather_kernel_version != self._validation_context.root_seeded_gather_kernel_version
             or type(self.scalar_direction_apply_kernel_version) is not str
             or self.scalar_direction_apply_kernel_version
             != self._validation_context.scalar_direction_apply_kernel_version
@@ -1370,10 +1506,12 @@ class CapturedGraphVBDOuterWork:
             != _derive_outer_schedule_sha256(
                 self.outer_kernel_version,
                 self.fused_gather_kernel_version,
+                self.root_seeded_gather_kernel_version,
                 self.scalar_direction_apply_kernel_version,
                 self.v_cycle_publication_version,
                 self._validation_context.v_cycle_standalone_publication_route,
                 self._validation_context.v_cycle_external_shared_publication_route,
+                self._validation_context.v_cycle_seeded_root_ingress_route,
                 self.first_cycle_publication_route,
                 self.second_cycle_publication_route,
                 self.finalize_gate_route,
@@ -1462,9 +1600,9 @@ class CapturedGraphVBDOuterWork:
                 (arrays["rhs"], arrays["residual_after_first"]),
                 (arrays["first_correction"], arrays["second_correction"]),
                 (first, second),
-                (self._validation_context.v_cycle_core_schedule_sha256,) * V_CYCLES_PER_OUTER,
-                (self._validation_context.v_cycle_core_device_snapshot_sha256,) * V_CYCLES_PER_OUTER,
-                (self._validation_context.v_cycle_core_kernel_launches,) * V_CYCLES_PER_OUTER,
+                (self._validation_context.v_cycle_seeded_core_schedule_sha256,) * V_CYCLES_PER_OUTER,
+                (self._validation_context.v_cycle_seeded_core_device_snapshot_sha256,) * V_CYCLES_PER_OUTER,
+                (self._validation_context.v_cycle_seeded_core_kernel_launches,) * V_CYCLES_PER_OUTER,
                 (0,) * V_CYCLES_PER_OUTER,
                 (self._validation_context.v_cycle_external_shared_publication_route,) * V_CYCLES_PER_OUTER,
                 strict=True,
@@ -1472,20 +1610,31 @@ class CapturedGraphVBDOuterWork:
         ):
             _validate_v_cycle_record(
                 record,
+                expected_workspace=slot.v_cycle_workspaces[cycle_index],
                 rhs=rhs,
                 output=output,
                 canonical_output=canonical.correction,
                 canonical_work=canonical.work,
                 hierarchy_sha256=hierarchy_sha256,
                 schedule_sha256=schedule_sha256,
+                standalone_schedule_sha256=self._validation_context.v_cycle_schedule_sha256,
+                core_schedule_sha256=self._validation_context.v_cycle_core_schedule_sha256,
+                seeded_core_schedule_sha256=self._validation_context.v_cycle_seeded_core_schedule_sha256,
                 static_device_content_sha256=self._validation_context.v_cycle_static_device_content_sha256,
                 device_snapshot_sha256=device_snapshot_sha256,
+                standalone_device_snapshot_sha256=self._validation_context.v_cycle_device_snapshot_sha256,
+                core_device_snapshot_sha256=self._validation_context.v_cycle_core_device_snapshot_sha256,
+                seeded_core_device_snapshot_sha256=(
+                    self._validation_context.v_cycle_seeded_core_device_snapshot_sha256
+                ),
                 scheduled_kernel_launches=scheduled_kernel_launches,
-                core_kernel_launches=self._validation_context.v_cycle_core_kernel_launches,
+                core_kernel_launches=self._validation_context.v_cycle_seeded_core_kernel_launches,
                 publication_kernel_launches=publication_kernel_launches,
                 publication_version=self.v_cycle_publication_version,
                 publication_route=publication_route,
                 root_ingress_zero_start_fusions=(self._validation_context.v_cycle_root_ingress_zero_start_fusions),
+                root_ingress_route=self._validation_context.v_cycle_seeded_root_ingress_route,
+                root_ingress_kernel_launches=0,
                 hierarchy=self._validation_context.hierarchy,
                 capture_replay=self.capture_replay,
                 name=f"V-cycle {cycle_index}",
@@ -1495,7 +1644,7 @@ class CapturedGraphVBDOuterWork:
         if type(self.linear_kernel_launches) is not int or self.linear_kernel_launches != expected_launches:
             raise ValueError("linear_kernel_launches does not match the fixed direct schedule")
         payload = {
-            "contract": "captured-direct-graph-vbd-outer-work-v4",
+            "contract": "captured-direct-graph-vbd-outer-work-v6",
             "outer_index": self.outer_index,
             "start_position_sha256": start_position_sha256,
             "current_operator_sha256": operator_sha256,
@@ -1508,6 +1657,7 @@ class CapturedGraphVBDOuterWork:
             "direction_sha256": _array_digest(arrays["direction"]),
             "persistent_device_sha256": persistent_device_sha256,
             "fused_gather_kernel_version": self.fused_gather_kernel_version,
+            "root_seeded_gather_kernel_version": self.root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": self.scalar_direction_apply_kernel_version,
             "v_cycle_publication_version": self.v_cycle_publication_version,
             "first_cycle_publication_route": self.first_cycle_publication_route,
@@ -1525,6 +1675,9 @@ class CapturedGraphVBDOuterWork:
             "capture_replay": self.capture_replay,
             "accepted": self.accepted,
             "reason": self.reason,
+            "execution_authentication": self.execution_authentication,
+            "solver_issued_authentication": self.solver_issued_authentication,
+            "performance_evidence": self.performance_evidence,
         }
         object.__setattr__(self, "content_sha256", _canonical_digest(payload))
 
@@ -1541,10 +1694,15 @@ class CapturedGraphVBDOuterWork:
         _require_issued_validation_context(self._validation_context, validate_raw_sources=False)
         _require_issued_outer_slot(self._validation_context, self._validation_slot)
         validated = dataclasses.replace(self)
-        if validated.content_sha256 != self.content_sha256:
+        if (
+            validated.content_sha256 != self.content_sha256
+            or validated.execution_authentication != self.execution_authentication
+            or validated.solver_issued_authentication is not self.solver_issued_authentication
+            or validated.performance_evidence is not self.performance_evidence
+        ):
             raise ValueError("outer work content hash is not canonical at serialization")
         return {
-            "contract": "captured-direct-graph-vbd-outer-work-v4",
+            "contract": "captured-direct-graph-vbd-outer-work-v6",
             "outer_index": self.outer_index,
             "start_position_sha256": self.start_position_sha256,
             "current_operator_sha256": self.current_operator_sha256,
@@ -1557,6 +1715,7 @@ class CapturedGraphVBDOuterWork:
             "direction_sha256": _array_digest(self.direction),
             "persistent_device_sha256": self.persistent_device_sha256,
             "fused_gather_kernel_version": self.fused_gather_kernel_version,
+            "root_seeded_gather_kernel_version": self.root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": self.scalar_direction_apply_kernel_version,
             "v_cycle_publication_version": self.v_cycle_publication_version,
             "first_cycle_publication_route": self.first_cycle_publication_route,
@@ -1575,7 +1734,10 @@ class CapturedGraphVBDOuterWork:
             "capture_replay": self.capture_replay,
             "accepted": self.accepted,
             "reason": self.reason,
-            "content_sha256": self.content_sha256,
+            "execution_authentication": validated.execution_authentication,
+            "solver_issued_authentication": validated.solver_issued_authentication,
+            "performance_evidence": validated.performance_evidence,
+            "content_sha256": validated.content_sha256,
         }
 
 
@@ -1594,6 +1756,7 @@ class CapturedGraphVBDEndpoint:
     persistent_device_sha256: str
     graph_identity_sha256: str
     fused_gather_kernel_version: str
+    root_seeded_gather_kernel_version: str
     scalar_direction_apply_kernel_version: str
     v_cycle_publication_version: str
     v_cycle_standalone_publication_route: str
@@ -1624,6 +1787,9 @@ class CapturedGraphVBDEndpoint:
     outer_work: tuple[CapturedGraphVBDOuterWork, ...]
     graph_replay: bool
     _validation_context: _EndpointValidationContext = dataclasses.field(repr=False, compare=False)
+    execution_authentication: str = dataclasses.field(init=False)
+    solver_issued_authentication: bool = dataclasses.field(init=False)
+    performance_evidence: bool = dataclasses.field(init=False)
     position_sha256: str = dataclasses.field(init=False)
     velocity_sha256: str = dataclasses.field(init=False)
     outer_start_position_sha256s: tuple[str, ...] = dataclasses.field(init=False)
@@ -1635,6 +1801,12 @@ class CapturedGraphVBDEndpoint:
     def __post_init__(self) -> None:
         context = self._validation_context
         _require_issued_validation_context(context, validate_raw_sources=True)
+        execution_authentication, solver_issued_authentication, performance_evidence = _execution_authentication_policy(
+            context.graph_replay
+        )
+        object.__setattr__(self, "execution_authentication", execution_authentication)
+        object.__setattr__(self, "solver_issued_authentication", solver_issued_authentication)
+        object.__setattr__(self, "performance_evidence", performance_evidence)
         sequence_fields = (
             "accepted",
             "reasons",
@@ -1689,6 +1861,8 @@ class CapturedGraphVBDEndpoint:
         if (
             type(self.fused_gather_kernel_version) is not str
             or self.fused_gather_kernel_version != context.fused_gather_kernel_version
+            or type(self.root_seeded_gather_kernel_version) is not str
+            or self.root_seeded_gather_kernel_version != context.root_seeded_gather_kernel_version
             or type(self.scalar_direction_apply_kernel_version) is not str
             or self.scalar_direction_apply_kernel_version != context.scalar_direction_apply_kernel_version
             or type(self.v_cycle_publication_version) is not str
@@ -1715,10 +1889,12 @@ class CapturedGraphVBDEndpoint:
             != _derive_outer_schedule_sha256(
                 self.outer_kernel_version,
                 self.fused_gather_kernel_version,
+                self.root_seeded_gather_kernel_version,
                 self.scalar_direction_apply_kernel_version,
                 self.v_cycle_publication_version,
                 self.v_cycle_standalone_publication_route,
                 self.v_cycle_external_shared_publication_route,
+                context.v_cycle_seeded_root_ingress_route,
                 self.first_cycle_publication_role,
                 self.second_cycle_publication_role,
                 self.finalize_gate_route,
@@ -1851,6 +2027,12 @@ class CapturedGraphVBDEndpoint:
                 raise ValueError("outer work belongs to another endpoint validation context")
             if work._validation_slot is not context.outer_slots[index]:
                 raise ValueError("outer work does not retain its exact solver-issued schedule slot")
+            if (
+                work.execution_authentication != self.execution_authentication
+                or work.solver_issued_authentication is not self.solver_issued_authentication
+                or work.performance_evidence is not self.performance_evidence
+            ):
+                raise ValueError("outer work execution authentication does not match its exact endpoint context")
             if work.start_position_sha256 != start_hashes[index]:
                 raise ValueError("outer work does not bind its current start position")
             if work.accepted != self.accepted[index] or work.reason != self.reasons[index]:
@@ -2007,6 +2189,7 @@ class CapturedGraphVBDEndpoint:
                     "persistent_device_sha256": persistent_device_sha256,
                     "graph_identity_sha256": graph_identity_sha256,
                     "fused_gather_kernel_version": self.fused_gather_kernel_version,
+                    "root_seeded_gather_kernel_version": self.root_seeded_gather_kernel_version,
                     "v_cycle_publication_version": self.v_cycle_publication_version,
                     "v_cycle_standalone_publication_route": self.v_cycle_standalone_publication_route,
                     "v_cycle_external_shared_publication_route": self.v_cycle_external_shared_publication_route,
@@ -2037,6 +2220,9 @@ class CapturedGraphVBDEndpoint:
                     "second_cycle_publication_role": self.second_cycle_publication_role,
                     "correction_kernel_launches": correction_launches,
                     "graph_replay": self.graph_replay,
+                    "execution_authentication": self.execution_authentication,
+                    "solver_issued_authentication": self.solver_issued_authentication,
+                    "performance_evidence": self.performance_evidence,
                 }
             ),
         )
@@ -2059,7 +2245,12 @@ class CapturedGraphVBDEndpoint:
         """Serialize content identities, exact work, and gate evidence."""
         _require_issued_validation_context(self._validation_context, validate_raw_sources=True)
         validated = dataclasses.replace(self)
-        if validated.endpoint_sha256 != self.endpoint_sha256:
+        if (
+            validated.endpoint_sha256 != self.endpoint_sha256
+            or validated.execution_authentication != self.execution_authentication
+            or validated.solver_issued_authentication is not self.solver_issued_authentication
+            or validated.performance_evidence is not self.performance_evidence
+        ):
             raise ValueError("endpoint content hash is not canonical at serialization")
         return {
             "contract": CONTRACT_ID,
@@ -2074,14 +2265,28 @@ class CapturedGraphVBDEndpoint:
             "persistent_device_sha256": self.persistent_device_sha256,
             "graph_identity_sha256": self.graph_identity_sha256,
             "fused_gather_kernel_version": self.fused_gather_kernel_version,
+            "root_seeded_gather_kernel_version": self.root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": self.scalar_direction_apply_kernel_version,
             "v_cycle_publication_version": self.v_cycle_publication_version,
             "v_cycle_standalone_publication_route": self.v_cycle_standalone_publication_route,
             "v_cycle_external_shared_publication_route": self.v_cycle_external_shared_publication_route,
             "first_cycle_publication_role": self.first_cycle_publication_role,
             "second_cycle_publication_role": self.second_cycle_publication_role,
-            "first_cycle_kernel_launches": self._validation_context.v_cycle_core_kernel_launches,
-            "second_cycle_kernel_launches": self._validation_context.v_cycle_core_kernel_launches,
+            "v_cycle_kernel_launches": self._validation_context.v_cycle_kernel_launches,
+            "v_cycle_core_kernel_launches": self._validation_context.v_cycle_core_kernel_launches,
+            "v_cycle_seeded_core_kernel_launches": self._validation_context.v_cycle_seeded_core_kernel_launches,
+            "v_cycle_seeded_core_schedule_sha256": self._validation_context.v_cycle_seeded_core_schedule_sha256,
+            "v_cycle_seeded_core_device_snapshot_sha256": (
+                self._validation_context.v_cycle_seeded_core_device_snapshot_sha256
+            ),
+            "v_cycle_root_ingress_zero_start_fusions": (
+                self._validation_context.v_cycle_root_ingress_zero_start_fusions
+            ),
+            "v_cycle_seeded_root_ingress_route": self._validation_context.v_cycle_seeded_root_ingress_route,
+            "first_cycle_kernel_launches": self._validation_context.v_cycle_seeded_core_kernel_launches,
+            "second_cycle_kernel_launches": self._validation_context.v_cycle_seeded_core_kernel_launches,
+            "shared_root_ingress_kernel_launches_per_outer": 2,
+            "separate_root_ingress_kernel_launches_per_outer": 0,
             "first_cycle_publication_kernel_launches": 0,
             "second_cycle_publication_kernel_launches": 0,
             "outer_kernel_version": self.outer_kernel_version,
@@ -2111,7 +2316,10 @@ class CapturedGraphVBDEndpoint:
             "correction_kernel_launches": self.correction_kernel_launches,
             "exact_work_completed": self.exact_work_completed,
             "graph_replay": self.graph_replay,
-            "endpoint_sha256": self.endpoint_sha256,
+            "execution_authentication": validated.execution_authentication,
+            "solver_issued_authentication": validated.solver_issued_authentication,
+            "performance_evidence": validated.performance_evidence,
+            "endpoint_sha256": validated.endpoint_sha256,
         }
 
 
@@ -2139,11 +2347,13 @@ class CapturedGraphVBDTiming:
     k4_graph_identity_sha256: str
     comparator_contract_id: str
     fused_gather_kernel_version: str
+    root_seeded_gather_kernel_version: str
     scalar_direction_apply_kernel_version: str
     v_cycle_kernel_version: str
     v_cycle_schedule_version: str
     v_cycle_schedule_sha256: str
     v_cycle_core_schedule_sha256: str
+    v_cycle_seeded_core_schedule_sha256: str
     v_cycle_publication_version: str
     v_cycle_standalone_publication_route: str
     v_cycle_external_shared_publication_route: str
@@ -2151,6 +2361,8 @@ class CapturedGraphVBDTiming:
     second_cycle_publication_role: str
     v_cycle_kernel_launches: int
     v_cycle_core_kernel_launches: int
+    v_cycle_seeded_core_kernel_launches: int
+    v_cycle_seeded_root_ingress_route: str
     outer_kernel_version: str
     outer_schedule_version: str
     outer_schedule_sha256: str
@@ -2196,6 +2408,8 @@ class CapturedGraphVBDTiming:
         if (
             type(self.fused_gather_kernel_version) is not str
             or self.fused_gather_kernel_version != FUSED_GATHER_KERNEL_VERSION
+            or type(self.root_seeded_gather_kernel_version) is not str
+            or self.root_seeded_gather_kernel_version != ROOT_SEEDED_GATHER_KERNEL_VERSION
             or type(self.scalar_direction_apply_kernel_version) is not str
             or self.scalar_direction_apply_kernel_version != SCALAR_DIRECTION_APPLY_KERNEL_VERSION
             or type(self.v_cycle_kernel_version) is not str
@@ -2208,6 +2422,7 @@ class CapturedGraphVBDTiming:
             or self.v_cycle_standalone_publication_route != V_CYCLE_STANDALONE_PUBLICATION_ROUTE
             or type(self.v_cycle_external_shared_publication_route) is not str
             or self.v_cycle_external_shared_publication_route != V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE
+            or self.v_cycle_seeded_root_ingress_route != V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE
             or type(self.first_cycle_publication_role) is not str
             or self.first_cycle_publication_role != FIRST_CYCLE_PUBLICATION_ROLE
             or type(self.second_cycle_publication_role) is not str
@@ -2225,10 +2440,12 @@ class CapturedGraphVBDTiming:
             != _derive_outer_schedule_sha256(
                 self.outer_kernel_version,
                 self.fused_gather_kernel_version,
+                self.root_seeded_gather_kernel_version,
                 self.scalar_direction_apply_kernel_version,
                 self.v_cycle_publication_version,
                 self.v_cycle_standalone_publication_route,
                 self.v_cycle_external_shared_publication_route,
+                self.v_cycle_seeded_root_ingress_route,
                 self.first_cycle_publication_role,
                 self.second_cycle_publication_role,
                 self.finalize_gate_route,
@@ -2250,6 +2467,7 @@ class CapturedGraphVBDTiming:
             "k4_graph_identity_sha256",
             "v_cycle_schedule_sha256",
             "v_cycle_core_schedule_sha256",
+            "v_cycle_seeded_core_schedule_sha256",
             "outer_schedule_sha256",
         ):
             _require_sha256(getattr(self, name), name=name)
@@ -2257,8 +2475,11 @@ class CapturedGraphVBDTiming:
             type(self.v_cycle_kernel_launches) is not int
             or type(self.v_cycle_core_kernel_launches) is not int
             or self.v_cycle_kernel_launches != self.v_cycle_core_kernel_launches + 1
+            or type(self.v_cycle_seeded_core_kernel_launches) is not int
+            or self.v_cycle_seeded_core_kernel_launches != self.v_cycle_core_kernel_launches - 1
             or type(self.correction_kernel_launches) is not int
-            or self.correction_kernel_launches != 2 + OUTER_CORRECTIONS * (8 + 2 * self.v_cycle_core_kernel_launches)
+            or self.correction_kernel_launches
+            != 2 + OUTER_CORRECTIONS * (8 + 2 * self.v_cycle_seeded_core_kernel_launches)
         ):
             raise ValueError("timing launch counts do not match the fixed dual-core captured schedule")
         policy = (self.setup_included, self.transfers_included, self.integrated_direct_graph, self.performance_evidence)
@@ -2298,20 +2519,25 @@ class CapturedGraphVBDTiming:
             "k4_graph_identity_sha256": validated.k4_graph_identity_sha256,
             "comparator_contract_id": validated.comparator_contract_id,
             "fused_gather_kernel_version": validated.fused_gather_kernel_version,
+            "root_seeded_gather_kernel_version": validated.root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": validated.scalar_direction_apply_kernel_version,
             "v_cycle_kernel_version": validated.v_cycle_kernel_version,
             "v_cycle_schedule_version": validated.v_cycle_schedule_version,
             "v_cycle_schedule_sha256": validated.v_cycle_schedule_sha256,
             "v_cycle_core_schedule_sha256": validated.v_cycle_core_schedule_sha256,
+            "v_cycle_seeded_core_schedule_sha256": validated.v_cycle_seeded_core_schedule_sha256,
             "v_cycle_publication_version": validated.v_cycle_publication_version,
             "v_cycle_standalone_publication_route": validated.v_cycle_standalone_publication_route,
             "v_cycle_external_shared_publication_route": validated.v_cycle_external_shared_publication_route,
+            "v_cycle_seeded_root_ingress_route": validated.v_cycle_seeded_root_ingress_route,
             "first_cycle_publication_role": validated.first_cycle_publication_role,
             "second_cycle_publication_role": validated.second_cycle_publication_role,
             "v_cycle_kernel_launches": validated.v_cycle_kernel_launches,
             "v_cycle_core_kernel_launches": validated.v_cycle_core_kernel_launches,
-            "first_cycle_kernel_launches": validated.v_cycle_core_kernel_launches,
-            "second_cycle_kernel_launches": validated.v_cycle_core_kernel_launches,
+            "v_cycle_seeded_core_kernel_launches": validated.v_cycle_seeded_core_kernel_launches,
+            "first_cycle_kernel_launches": validated.v_cycle_seeded_core_kernel_launches,
+            "second_cycle_kernel_launches": validated.v_cycle_seeded_core_kernel_launches,
+            "shared_root_ingress_kernel_launches_per_outer": 2,
             "first_cycle_publication_kernel_launches": 0,
             "second_cycle_publication_kernel_launches": 0,
             "outer_kernel_version": validated.outer_kernel_version,
@@ -2443,15 +2669,19 @@ class _ScalarFusedHierarchyEvidence:
     source_device_snapshot_sha256: str
     schedule_sha256: str
     core_schedule_sha256: str
+    seeded_core_schedule_sha256: str
     static_device_content_sha256: str
     device_snapshot_sha256: str
     core_device_snapshot_sha256: str
+    seeded_core_device_snapshot_sha256: str
     scheduled_kernel_launches: int
     core_kernel_launches: int
+    seeded_core_kernel_launches: int
     publication_version: str
     standalone_publication_route: str
     external_shared_publication_route: str
     root_ingress_zero_start_fusions: int
+    seeded_root_ingress_route: str
 
 
 def _canonical_scalar_static_arrays(hierarchy: StaticMultigridHierarchy) -> tuple[np.ndarray, ...]:
@@ -2540,6 +2770,11 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             transfer_paths.extend((level.matrix.block_size, level.prolongation.coarse_block_size))
     noncoarse = len(hierarchy.levels) - 1
     root_ingress_zero_start_fusions = int(noncoarse > 0)
+    root_ingress_route = (
+        V_CYCLE_ROOT_INGRESS_INTERNAL_ROUTE
+        if root_ingress_zero_start_fusions
+        else V_CYCLE_ROOT_INGRESS_COARSE_COPY_ROUTE
+    )
     core_kernel_launches = (
         2
         + noncoarse * (2 + 2 * hierarchy.pre_smooth_steps + 2 * hierarchy.post_smooth_steps)
@@ -2555,18 +2790,16 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ("post_smooth_steps", hierarchy.post_smooth_steps),
         ("level_shapes", np.asarray(level_shapes, dtype=np.int64)),
         ("transfer_block_paths", np.asarray(transfer_paths, dtype=np.int64)),
-        (
-            "root_ingress_route",
-            "fused-vec3d-scalar-zero-start" if root_ingress_zero_start_fusions else "standalone-vec3d-scalar",
-        ),
+        ("root_ingress_route", root_ingress_route),
         ("root_ingress_zero_start_fusions", root_ingress_zero_start_fusions),
+        ("root_ingress_kernel_launches", 1),
         ("noncoarse_result_buffer", "B"),
         ("coarsest_result_buffer", "A"),
         ("core_kernel_launches", core_kernel_launches),
         ("publication_version", V_CYCLE_PUBLICATION_VERSION),
     )
     core_schedule_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-core-schedule-v2",
+        "warp-scalar-fused-v-cycle-core-schedule-v3",
         (
             *common_schedule_parts,
             ("publication_route", V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -2575,7 +2808,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     schedule_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-schedule-v4",
+        "warp-scalar-fused-v-cycle-schedule-v5",
         (
             *common_schedule_parts,
             ("publication_route", V_CYCLE_STANDALONE_PUBLICATION_ROUTE),
@@ -2584,7 +2817,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     core_device_snapshot_sha256 = _hash_parts(
-        "warp-scalar-fused-static-multigrid-core-snapshot-v2",
+        "warp-scalar-fused-static-multigrid-core-snapshot-v3",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
@@ -2592,26 +2825,65 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     device_snapshot_sha256 = _hash_parts(
-        "warp-scalar-fused-static-multigrid-snapshot-v4",
+        "warp-scalar-fused-static-multigrid-snapshot-v5",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
             ("schedule_sha256", schedule_sha256),
         ),
     )
+    if root_ingress_zero_start_fusions:
+        seeded_core_kernel_launches = core_kernel_launches - 1
+        seeded_common_schedule_parts = tuple(
+            (name, value)
+            for name, value in common_schedule_parts
+            if name not in ("root_ingress_route", "root_ingress_kernel_launches", "core_kernel_launches")
+        )
+        seeded_common_schedule_parts += (
+            ("root_ingress_route", V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE),
+            ("root_ingress_kernel_launches", 0),
+            ("core_kernel_launches", seeded_core_kernel_launches),
+        )
+        seeded_core_schedule_sha256 = _hash_parts(
+            "warp-scalar-fused-v-cycle-seeded-core-schedule-v1",
+            (
+                *seeded_common_schedule_parts,
+                ("publication_route", V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE),
+                ("publication_kernel_launches", 0),
+                ("scheduled_kernel_launches", seeded_core_kernel_launches),
+            ),
+        )
+        seeded_core_device_snapshot_sha256 = _hash_parts(
+            "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v1",
+            (
+                ("source_device_snapshot_sha256", source_snapshot_sha256),
+                ("static_device_content_sha256", static_device_content_sha256),
+                ("seeded_core_schedule_sha256", seeded_core_schedule_sha256),
+            ),
+        )
+        seeded_root_ingress_route = V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE
+    else:
+        seeded_core_kernel_launches = core_kernel_launches
+        seeded_core_schedule_sha256 = core_schedule_sha256
+        seeded_core_device_snapshot_sha256 = core_device_snapshot_sha256
+        seeded_root_ingress_route = V_CYCLE_ROOT_INGRESS_COARSE_COPY_ROUTE
     return _ScalarFusedHierarchyEvidence(
         source_device_snapshot_sha256=source_snapshot_sha256,
         schedule_sha256=schedule_sha256,
         core_schedule_sha256=core_schedule_sha256,
+        seeded_core_schedule_sha256=seeded_core_schedule_sha256,
         static_device_content_sha256=static_device_content_sha256,
         device_snapshot_sha256=device_snapshot_sha256,
         core_device_snapshot_sha256=core_device_snapshot_sha256,
+        seeded_core_device_snapshot_sha256=seeded_core_device_snapshot_sha256,
         scheduled_kernel_launches=scheduled_kernel_launches,
         core_kernel_launches=core_kernel_launches,
+        seeded_core_kernel_launches=seeded_core_kernel_launches,
         publication_version=V_CYCLE_PUBLICATION_VERSION,
         standalone_publication_route=V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
         external_shared_publication_route=V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
         root_ingress_zero_start_fusions=root_ingress_zero_start_fusions,
+        seeded_root_ingress_route=seeded_root_ingress_route,
     )
 
 
@@ -2688,11 +2960,14 @@ def _validate_scalar_fused_hierarchy_inputs(
         or scalar_hierarchy.source_device_snapshot_sha256 != expected.source_device_snapshot_sha256
         or scalar_hierarchy.schedule_sha256 != expected.schedule_sha256
         or scalar_hierarchy.core_schedule_sha256 != expected.core_schedule_sha256
+        or scalar_hierarchy.seeded_core_schedule_sha256 != expected.seeded_core_schedule_sha256
         or scalar_hierarchy.static_device_content_sha256 != expected.static_device_content_sha256
         or scalar_hierarchy.device_snapshot_sha256 != expected.device_snapshot_sha256
         or scalar_hierarchy.core_device_snapshot_sha256 != expected.core_device_snapshot_sha256
+        or scalar_hierarchy.seeded_core_device_snapshot_sha256 != expected.seeded_core_device_snapshot_sha256
         or scalar_hierarchy.scheduled_kernel_launches != expected.scheduled_kernel_launches
         or scalar_hierarchy.core_kernel_launches != expected.core_kernel_launches
+        or scalar_hierarchy.seeded_core_kernel_launches != expected.seeded_core_kernel_launches
         or scalar_hierarchy._static_level_signature != tuple(expected_level_signature)
         or len(scalar_hierarchy._static_array_objects) != len(source_arrays)
         or any(
@@ -3044,6 +3319,7 @@ class _ConstructionClaimsOwnerBinding(NamedTuple):
     array_descriptor_type: object
     array_descriptor_fields: tuple[object, ...]
     fused_gather_kernel_version: str
+    root_seeded_gather_kernel_version: str
     scalar_direction_apply_kernel_version: str
     scalar_fused_evidence: _ScalarFusedHierarchyEvidence
     first_cycle_publication_role: str
@@ -3161,6 +3437,7 @@ class CapturedDirectGraphVBD:
         self._array_descriptor_type_bound = reference_adjacency_fields["v_adj_tets"]
         self._array_descriptor_fields_bound = tuple(getattr(self._array_descriptor_type_bound, "_fields_", ()))
         self._fused_gather_kernel_version_bound = FUSED_GATHER_KERNEL_VERSION
+        self._root_seeded_gather_kernel_version_bound = ROOT_SEEDED_GATHER_KERNEL_VERSION
         self._scalar_direction_apply_kernel_version_bound = SCALAR_DIRECTION_APPLY_KERNEL_VERSION
         self._first_cycle_publication_role_bound = FIRST_CYCLE_PUBLICATION_ROLE
         self._second_cycle_publication_role_bound = SECOND_CYCLE_PUBLICATION_ROLE
@@ -3258,7 +3535,10 @@ class CapturedDirectGraphVBD:
         self.graph: object | None = None
         self.k4_graph: object | None = None
         self._execution_serial = 0
-        self._issued_execution_receipts: dict[int, _ExecutionReceipt] = {}
+        self._issued_execution_receipts: dict[
+            int,
+            tuple[_ExecutionReceipt, object, int, bool, _CaptureGraphOwnerBinding | None],
+        ] = {}
         self._issued_validation_contexts: dict[int, tuple[object, ...]] = {}
         self._capture_generation = 0
         self._captured_graph_object_identity: tuple[int, int] | None = None
@@ -3321,7 +3601,7 @@ class CapturedDirectGraphVBD:
     @property
     def linear_prefix_kernel_launches_per_outer(self) -> int:
         """Pure current-operator and two-V-cycle launches before vertex fusion."""
-        return 4 + 2 * self.device_hierarchy.core_kernel_launches
+        return 4 + 2 * self.device_hierarchy.seeded_core_kernel_launches
 
     @property
     def correction_kernel_launches(self) -> int:
@@ -3461,12 +3741,14 @@ class CapturedDirectGraphVBD:
             self._construction_k4.position_sha256,
             self._construction_k4.velocity_sha256,
             self._fused_gather_kernel_version_bound,
+            self._root_seeded_gather_kernel_version_bound,
             self._scalar_direction_apply_kernel_version_bound,
             V_CYCLE_KERNEL_VERSION,
             V_CYCLE_SCHEDULE_VERSION,
             V_CYCLE_PUBLICATION_VERSION,
             V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
             V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
+            V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE,
             self._first_cycle_publication_role_bound,
             self._second_cycle_publication_role_bound,
             self._outer_kernel_version_bound,
@@ -3485,6 +3767,7 @@ class CapturedDirectGraphVBD:
             array_descriptor_type=self._array_descriptor_type_bound,
             array_descriptor_fields=self._array_descriptor_fields_bound,
             fused_gather_kernel_version=self._fused_gather_kernel_version_bound,
+            root_seeded_gather_kernel_version=self._root_seeded_gather_kernel_version_bound,
             scalar_direction_apply_kernel_version=self._scalar_direction_apply_kernel_version_bound,
             scalar_fused_evidence=_canonical_scalar_fused_evidence(self.hierarchy),
             first_cycle_publication_role=self._first_cycle_publication_role_bound,
@@ -3881,6 +4164,9 @@ class CapturedDirectGraphVBD:
             type(claims.fused_gather_kernel_version) is not str
             or claims.fused_gather_kernel_version != FUSED_GATHER_KERNEL_VERSION
             or self._fused_gather_kernel_version_bound != claims.fused_gather_kernel_version
+            or type(claims.root_seeded_gather_kernel_version) is not str
+            or claims.root_seeded_gather_kernel_version != ROOT_SEEDED_GATHER_KERNEL_VERSION
+            or self._root_seeded_gather_kernel_version_bound != claims.root_seeded_gather_kernel_version
             or type(claims.scalar_direction_apply_kernel_version) is not str
             or claims.scalar_direction_apply_kernel_version != SCALAR_DIRECTION_APPLY_KERNEL_VERSION
             or self._scalar_direction_apply_kernel_version_bound != claims.scalar_direction_apply_kernel_version
@@ -3904,10 +4190,12 @@ class CapturedDirectGraphVBD:
             != _derive_outer_schedule_sha256(
                 claims.outer_kernel_version,
                 claims.fused_gather_kernel_version,
+                claims.root_seeded_gather_kernel_version,
                 claims.scalar_direction_apply_kernel_version,
                 claims.scalar_fused_evidence.publication_version,
                 claims.scalar_fused_evidence.standalone_publication_route,
                 claims.scalar_fused_evidence.external_shared_publication_route,
+                claims.scalar_fused_evidence.seeded_root_ingress_route,
                 claims.first_cycle_publication_role,
                 claims.second_cycle_publication_role,
                 claims.finalize_gate_route,
@@ -4328,7 +4616,7 @@ class CapturedDirectGraphVBD:
 
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v6",
+                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v7",
                 "scene_object": id(binding.scene),
                 "config_object": id(binding.config),
                 "warp_device_object": id(binding.warp_device),
@@ -4371,6 +4659,7 @@ class CapturedDirectGraphVBD:
                     [name, id(field_type)] for name, field_type in binding.claims.array_descriptor_fields
                 ],
                 "fused_gather_kernel_version": binding.claims.fused_gather_kernel_version,
+                "root_seeded_gather_kernel_version": binding.claims.root_seeded_gather_kernel_version,
                 "scalar_direction_apply_kernel_version": (binding.claims.scalar_direction_apply_kernel_version),
                 "first_cycle_publication_role": binding.claims.first_cycle_publication_role,
                 "second_cycle_publication_role": binding.claims.second_cycle_publication_role,
@@ -4428,13 +4717,14 @@ class CapturedDirectGraphVBD:
         scalar_evidence = _canonical_scalar_fused_evidence(owner_binding.hierarchy)
         v_cycle_kernel_launches = scalar_evidence.scheduled_kernel_launches
         v_cycle_core_kernel_launches = scalar_evidence.core_kernel_launches
-        linear_prefix_kernel_launches = 4 + 2 * v_cycle_core_kernel_launches
+        v_cycle_seeded_core_kernel_launches = scalar_evidence.seeded_core_kernel_launches
+        linear_prefix_kernel_launches = 4 + 2 * v_cycle_seeded_core_kernel_launches
         retained_linear_work_launches = linear_prefix_kernel_launches + 1
         outer_kernel_launches = retained_linear_work_launches + 3
         correction_kernel_launches = 2 + OUTER_CORRECTIONS * outer_kernel_launches
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-graph-identity-v7",
+                "contract": "captured-direct-graph-vbd-graph-identity-v8",
                 "solver_contract": CONTRACT_ID,
                 "comparator_contract": VBD_BASELINE_CONTRACT_ID if comparator else None,
                 "scene_sha256": scene_sha256,
@@ -4447,6 +4737,7 @@ class CapturedDirectGraphVBD:
                 "graph_object_identity": id(graph) if captured and graph is not None else None,
                 "lane": "public-k4" if comparator else "public-k1-plus-direct-four-by-two",
                 "fused_gather_kernel_version": claims.fused_gather_kernel_version,
+                "root_seeded_gather_kernel_version": claims.root_seeded_gather_kernel_version,
                 "scalar_direction_apply_kernel_version": claims.scalar_direction_apply_kernel_version,
                 "first_cycle_publication_role": claims.first_cycle_publication_role,
                 "second_cycle_publication_role": claims.second_cycle_publication_role,
@@ -4462,14 +4753,19 @@ class CapturedDirectGraphVBD:
                 "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
                 "v_cycle_schedule_sha256": scalar_evidence.schedule_sha256,
                 "v_cycle_core_schedule_sha256": scalar_evidence.core_schedule_sha256,
+                "v_cycle_seeded_core_schedule_sha256": scalar_evidence.seeded_core_schedule_sha256,
                 "v_cycle_publication_version": scalar_evidence.publication_version,
                 "v_cycle_standalone_publication_route": scalar_evidence.standalone_publication_route,
                 "v_cycle_external_shared_publication_route": scalar_evidence.external_shared_publication_route,
                 "v_cycle_root_ingress_zero_start_fusions": (scalar_evidence.root_ingress_zero_start_fusions),
+                "v_cycle_seeded_root_ingress_route": scalar_evidence.seeded_root_ingress_route,
                 "v_cycle_kernel_launches": v_cycle_kernel_launches,
                 "v_cycle_core_kernel_launches": v_cycle_core_kernel_launches,
-                "first_cycle_kernel_launches": v_cycle_core_kernel_launches,
-                "second_cycle_kernel_launches": v_cycle_core_kernel_launches,
+                "v_cycle_seeded_core_kernel_launches": v_cycle_seeded_core_kernel_launches,
+                "first_cycle_kernel_launches": v_cycle_seeded_core_kernel_launches,
+                "second_cycle_kernel_launches": v_cycle_seeded_core_kernel_launches,
+                "shared_root_ingress_kernel_launches_per_outer": 0 if comparator else 2,
+                "separate_root_ingress_kernel_launches_per_outer": 0,
                 "first_cycle_publication_kernel_launches": 0,
                 "second_cycle_publication_kernel_launches": 0,
                 "linear_prefix_kernel_launches_per_outer": 0 if comparator else linear_prefix_kernel_launches,
@@ -4524,17 +4820,26 @@ class CapturedDirectGraphVBD:
         receipt: object,
         owner_binding: _WorkspaceOwnerBinding,
     ) -> _ExecutionReceipt:
-        """Consume exactly one registered receipt; copied or stale receipts fail closed."""
+        """Consume one registered sequencing token; copied or stale tokens fail closed."""
         if type(receipt) is not _ExecutionReceipt:
-            raise RuntimeError("recording requires an exact solver-issued execution receipt")
+            raise RuntimeError("recording requires an exact private sequencing receipt")
         registered = self._issued_execution_receipts.pop(id(receipt), None)
-        if registered is not receipt or receipt.issuer is not self:
+        if registered is None or registered[0] is not receipt:
             raise RuntimeError("execution receipt is forged, stale, or already consumed")
-        if receipt.serial != self._execution_serial:
-            raise RuntimeError("execution receipt is not the latest monotonic solver launch")
-        expected_capture = owner_binding.capture if receipt.graph_replay else None
-        if receipt.capture_binding is not expected_capture:
-            raise RuntimeError("execution receipt capture binding does not match the actual launch")
+        _registered_receipt, issued_by, issued_serial, issued_graph_replay, issued_capture_binding = registered
+        if (
+            issued_by is not self
+            or receipt.issuer is not issued_by
+            or receipt.serial != issued_serial
+            or receipt.graph_replay is not issued_graph_replay
+            or receipt.capture_binding is not issued_capture_binding
+        ):
+            raise RuntimeError("execution receipt fields do not match their sequencing registration")
+        if issued_serial != self._execution_serial:
+            raise RuntimeError("execution receipt is not the latest monotonic record sequence")
+        expected_capture = owner_binding.capture if issued_graph_replay else None
+        if issued_capture_binding is not expected_capture:
+            raise RuntimeError("execution receipt route binding does not match registered owner state")
         return receipt
 
     def _validate_issued_context(
@@ -4572,6 +4877,7 @@ class CapturedDirectGraphVBD:
             or context.persistent_device_sha256 != persistent_device_sha256
             or context.graph_identity_sha256 != graph_identity_sha256
             or context.fused_gather_kernel_version != owner_binding.claims.fused_gather_kernel_version
+            or context.root_seeded_gather_kernel_version != owner_binding.claims.root_seeded_gather_kernel_version
             or context.scalar_direction_apply_kernel_version
             != owner_binding.claims.scalar_direction_apply_kernel_version
             or context.first_cycle_publication_role != owner_binding.claims.first_cycle_publication_role
@@ -4595,10 +4901,16 @@ class CapturedDirectGraphVBD:
                     slot.rhs_sha256,
                     slot.accepted,
                     slot.reason,
+                    tuple(id(workspace) for workspace in slot.v_cycle_workspaces),
                 )
                 for slot in context.outer_slots
             )
             != outer_slot_records
+            or any(
+                slot.v_cycle_workspaces[0] is not owner_binding.outer[index].first_cycle.workspace
+                or slot.v_cycle_workspaces[1] is not owner_binding.outer[index].second_cycle.workspace
+                for index, slot in enumerate(context.outer_slots)
+            )
         ):
             raise ValueError("validation context fields do not match their solver-issued receipt")
         expected_capture = owner_binding.capture if graph_replay else None
@@ -4621,20 +4933,27 @@ class CapturedDirectGraphVBD:
             raise ValueError("validation context scalar-fused schedule identity is not canonical")
         if context.v_cycle_core_schedule_sha256 != scalar_evidence.core_schedule_sha256:
             raise ValueError("validation context scalar-fused core schedule identity is not canonical")
+        if context.v_cycle_seeded_core_schedule_sha256 != scalar_evidence.seeded_core_schedule_sha256:
+            raise ValueError("validation context scalar-fused seeded-core schedule identity is not canonical")
         if context.v_cycle_static_device_content_sha256 != scalar_evidence.static_device_content_sha256:
             raise ValueError("validation context scalar-fused static content identity is not canonical")
         if context.v_cycle_device_snapshot_sha256 != scalar_evidence.device_snapshot_sha256:
             raise ValueError("validation context scalar-fused device snapshot identity is not canonical")
         if context.v_cycle_core_device_snapshot_sha256 != scalar_evidence.core_device_snapshot_sha256:
             raise ValueError("validation context scalar-fused core device snapshot identity is not canonical")
+        if context.v_cycle_seeded_core_device_snapshot_sha256 != scalar_evidence.seeded_core_device_snapshot_sha256:
+            raise ValueError("validation context scalar-fused seeded-core device snapshot identity is not canonical")
         if context.v_cycle_kernel_launches != scalar_evidence.scheduled_kernel_launches:
             raise ValueError("validation context V-cycle launch count is not canonical")
         if context.v_cycle_core_kernel_launches != scalar_evidence.core_kernel_launches:
             raise ValueError("validation context V-cycle core launch count is not canonical")
+        if context.v_cycle_seeded_core_kernel_launches != scalar_evidence.seeded_core_kernel_launches:
+            raise ValueError("validation context seeded V-cycle core launch count is not canonical")
         if (
             context.v_cycle_publication_version != scalar_evidence.publication_version
             or context.v_cycle_standalone_publication_route != scalar_evidence.standalone_publication_route
             or context.v_cycle_external_shared_publication_route != scalar_evidence.external_shared_publication_route
+            or context.v_cycle_seeded_root_ingress_route != scalar_evidence.seeded_root_ingress_route
         ):
             raise ValueError("validation context V-cycle publication provenance is not canonical")
         if context.v_cycle_root_ingress_zero_start_fusions != scalar_evidence.root_ingress_zero_start_fusions:
@@ -5261,7 +5580,7 @@ class CapturedDirectGraphVBD:
         if scalar_evidence != claims.scalar_fused_evidence:
             raise RuntimeError("captured scalar-fused construction evidence changed")
         persistent_sha256 = _hash_parts(
-            "captured-direct-graph-vbd-persistent-inputs-v5",
+            "captured-direct-graph-vbd-persistent-inputs-v6",
             (
                 ("scene_sha256", scene_sha256),
                 ("objective_instance_sha256", objective_sha256),
@@ -5274,6 +5593,7 @@ class CapturedDirectGraphVBD:
                 ("solver_scalar_sha256", solver_scalar_sha256),
                 ("solver_static_array_sha256", solver_static_array_sha256),
                 ("fused_gather_kernel_version", claims.fused_gather_kernel_version),
+                ("root_seeded_gather_kernel_version", claims.root_seeded_gather_kernel_version),
                 ("scalar_direction_apply_kernel_version", claims.scalar_direction_apply_kernel_version),
                 ("first_cycle_publication_role", claims.first_cycle_publication_role),
                 ("second_cycle_publication_role", claims.second_cycle_publication_role),
@@ -5297,11 +5617,15 @@ class CapturedDirectGraphVBD:
                 ("hierarchy_inputs_sha256", hierarchy_inputs_sha256),
                 ("scalar_v_cycle_schedule_sha256", scalar_evidence.schedule_sha256),
                 ("scalar_v_cycle_core_schedule_sha256", scalar_evidence.core_schedule_sha256),
+                ("scalar_v_cycle_seeded_core_schedule_sha256", scalar_evidence.seeded_core_schedule_sha256),
                 ("scalar_static_device_content_sha256", scalar_evidence.static_device_content_sha256),
                 ("scalar_device_snapshot_sha256", scalar_evidence.device_snapshot_sha256),
                 ("scalar_core_device_snapshot_sha256", scalar_evidence.core_device_snapshot_sha256),
+                ("scalar_seeded_core_device_snapshot_sha256", scalar_evidence.seeded_core_device_snapshot_sha256),
                 ("scalar_v_cycle_kernel_launches", scalar_evidence.scheduled_kernel_launches),
                 ("scalar_v_cycle_core_kernel_launches", scalar_evidence.core_kernel_launches),
+                ("scalar_v_cycle_seeded_core_kernel_launches", scalar_evidence.seeded_core_kernel_launches),
+                ("scalar_v_cycle_seeded_root_ingress_route", scalar_evidence.seeded_root_ingress_route),
                 ("scalar_v_cycle_publication_version", scalar_evidence.publication_version),
                 ("scalar_v_cycle_standalone_publication_route", scalar_evidence.standalone_publication_route),
                 (
@@ -5365,20 +5689,47 @@ class CapturedDirectGraphVBD:
         )
         for outer_index, workspace in enumerate(owner_binding.outer):
             operator.launch_refresh_geometry()
-            operator.launch_gradient_masked(workspace.rhs, direct.active, scale=-1.0)
-            device_hierarchy.launch_apply_core(
+            first_seed = device_hierarchy.root_zero_start_seed_parameters(
                 workspace.rhs,
                 workspace.first_cycle.workspace,
             )
-            operator.launch_apply_residual_scalar_direction(
-                workspace.first_cycle.final_scalar_correction,
-                workspace.first_correction,
+            if first_seed is None:
+                operator.launch_gradient_masked(workspace.rhs, direct.active, scale=-1.0)
+            else:
+                operator.launch_gradient_masked_seed_root_zero_start(
+                    workspace.rhs,
+                    direct.active,
+                    *first_seed,
+                    scale=-1.0,
+                )
+            device_hierarchy.launch_apply_core_seeded_root(
                 workspace.rhs,
-                workspace.operator_product_after_first,
-                workspace.residual_after_first,
-                workspace.operator_apply,
+                workspace.first_cycle.workspace,
             )
-            device_hierarchy.launch_apply_core(
+            second_seed = device_hierarchy.root_zero_start_seed_parameters(
+                workspace.residual_after_first,
+                workspace.second_cycle.workspace,
+            )
+            if second_seed is None:
+                operator.launch_apply_residual_scalar_direction(
+                    workspace.first_cycle.final_scalar_correction,
+                    workspace.first_correction,
+                    workspace.rhs,
+                    workspace.operator_product_after_first,
+                    workspace.residual_after_first,
+                    workspace.operator_apply,
+                )
+            else:
+                operator.launch_apply_residual_scalar_direction_seed_root_zero_start(
+                    workspace.first_cycle.final_scalar_correction,
+                    workspace.first_correction,
+                    workspace.rhs,
+                    workspace.operator_product_after_first,
+                    workspace.residual_after_first,
+                    workspace.operator_apply,
+                    *second_seed,
+                )
+            device_hierarchy.launch_apply_core_seeded_root(
                 workspace.residual_after_first,
                 workspace.second_cycle.workspace,
             )
@@ -5586,7 +5937,13 @@ class CapturedDirectGraphVBD:
             graph_replay=graph_replay,
             capture_binding=capture_binding if graph_replay else None,
         )
-        self._issued_execution_receipts[id(receipt)] = receipt
+        self._issued_execution_receipts[id(receipt)] = (
+            receipt,
+            self,
+            receipt.serial,
+            receipt.graph_replay,
+            receipt.capture_binding,
+        )
         return self._record(execution_receipt=receipt, owner_binding=owner_binding)
 
     def run_k4(self, *, graph_replay: bool = True):
@@ -5713,11 +6070,13 @@ class CapturedDirectGraphVBD:
             k4_graph_identity_sha256=k4_graph_identity_sha256,
             comparator_contract_id=VBD_BASELINE_CONTRACT_ID,
             fused_gather_kernel_version=owner_binding.claims.fused_gather_kernel_version,
+            root_seeded_gather_kernel_version=owner_binding.claims.root_seeded_gather_kernel_version,
             scalar_direction_apply_kernel_version=owner_binding.claims.scalar_direction_apply_kernel_version,
             v_cycle_kernel_version=V_CYCLE_KERNEL_VERSION,
             v_cycle_schedule_version=V_CYCLE_SCHEDULE_VERSION,
             v_cycle_schedule_sha256=scalar_evidence.schedule_sha256,
             v_cycle_core_schedule_sha256=scalar_evidence.core_schedule_sha256,
+            v_cycle_seeded_core_schedule_sha256=scalar_evidence.seeded_core_schedule_sha256,
             v_cycle_publication_version=scalar_evidence.publication_version,
             v_cycle_standalone_publication_route=scalar_evidence.standalone_publication_route,
             v_cycle_external_shared_publication_route=scalar_evidence.external_shared_publication_route,
@@ -5725,6 +6084,8 @@ class CapturedDirectGraphVBD:
             second_cycle_publication_role=owner_binding.claims.second_cycle_publication_role,
             v_cycle_kernel_launches=scalar_evidence.scheduled_kernel_launches,
             v_cycle_core_kernel_launches=scalar_evidence.core_kernel_launches,
+            v_cycle_seeded_core_kernel_launches=scalar_evidence.seeded_core_kernel_launches,
+            v_cycle_seeded_root_ingress_route=scalar_evidence.seeded_root_ingress_route,
             outer_kernel_version=owner_binding.claims.outer_kernel_version,
             outer_schedule_version=owner_binding.claims.outer_schedule_version,
             outer_schedule_sha256=owner_binding.claims.outer_schedule_sha256,
@@ -5794,9 +6155,13 @@ class CapturedDirectGraphVBD:
                 rhs_sha256=_array_digest(rhs),
                 accepted=accepted[outer_index],
                 reason=reasons[outer_index],
+                v_cycle_workspaces=(
+                    outer_workspace.first_cycle.workspace,
+                    outer_workspace.second_cycle.workspace,
+                ),
             )
-            for outer_index, (start, operator, rhs) in enumerate(
-                zip(starts, canonical_operators, rhs_values, strict=True)
+            for outer_index, (start, operator, rhs, outer_workspace) in enumerate(
+                zip(starts, canonical_operators, rhs_values, owner_binding.outer, strict=True)
             )
         )
         context = _EndpointValidationContext(
@@ -5812,15 +6177,19 @@ class CapturedDirectGraphVBD:
             persistent_device_sha256=persistent_device_sha256,
             v_cycle_schedule_sha256=scalar_evidence.schedule_sha256,
             v_cycle_core_schedule_sha256=scalar_evidence.core_schedule_sha256,
+            v_cycle_seeded_core_schedule_sha256=scalar_evidence.seeded_core_schedule_sha256,
             v_cycle_static_device_content_sha256=scalar_evidence.static_device_content_sha256,
             v_cycle_device_snapshot_sha256=scalar_evidence.device_snapshot_sha256,
             v_cycle_core_device_snapshot_sha256=scalar_evidence.core_device_snapshot_sha256,
+            v_cycle_seeded_core_device_snapshot_sha256=(scalar_evidence.seeded_core_device_snapshot_sha256),
             graph_identity_sha256=graph_identity_sha256,
             fused_gather_kernel_version=owner_binding.claims.fused_gather_kernel_version,
+            root_seeded_gather_kernel_version=owner_binding.claims.root_seeded_gather_kernel_version,
             scalar_direction_apply_kernel_version=owner_binding.claims.scalar_direction_apply_kernel_version,
             v_cycle_publication_version=scalar_evidence.publication_version,
             v_cycle_standalone_publication_route=scalar_evidence.standalone_publication_route,
             v_cycle_external_shared_publication_route=scalar_evidence.external_shared_publication_route,
+            v_cycle_seeded_root_ingress_route=scalar_evidence.seeded_root_ingress_route,
             first_cycle_publication_role=owner_binding.claims.first_cycle_publication_role,
             second_cycle_publication_role=owner_binding.claims.second_cycle_publication_role,
             outer_kernel_version=owner_binding.claims.outer_kernel_version,
@@ -5834,6 +6203,7 @@ class CapturedDirectGraphVBD:
             capture_binding=receipt.capture_binding,
             v_cycle_kernel_launches=scalar_evidence.scheduled_kernel_launches,
             v_cycle_core_kernel_launches=scalar_evidence.core_kernel_launches,
+            v_cycle_seeded_core_kernel_launches=scalar_evidence.seeded_core_kernel_launches,
             v_cycle_root_ingress_zero_start_fusions=(scalar_evidence.root_ingress_zero_start_fusions),
             device=str(self.device),
             outer_slots=outer_slots,
@@ -5846,6 +6216,7 @@ class CapturedDirectGraphVBD:
                 slot.rhs_sha256,
                 slot.accepted,
                 slot.reason,
+                tuple(id(workspace) for workspace in slot.v_cycle_workspaces),
             )
             for slot in outer_slots
         )
@@ -5881,19 +6252,18 @@ class CapturedDirectGraphVBD:
                     second_correction=np.asarray(workspace.second_correction.numpy(), dtype=np.float64),
                     direction=np.asarray(workspace.direction.numpy(), dtype=np.float64),
                     v_cycles=(
-                        workspace.first_cycle.workspace.record_core_application(
-                            token=_CORE_RECORD_TOKEN,
+                        workspace.first_cycle.workspace.record_seeded_core_application(
                             capture_replay=graph_replay,
                         ),
-                        workspace.second_cycle.workspace.record_core_application(
-                            token=_CORE_RECORD_TOKEN,
+                        workspace.second_cycle.workspace.record_seeded_core_application(
                             capture_replay=graph_replay,
                         ),
                     ),
                     capture_replay=graph_replay,
-                    linear_kernel_launches=(5 + 2 * owner_binding.device.scalar.core_kernel_launches),
+                    linear_kernel_launches=(5 + 2 * owner_binding.device.scalar.seeded_core_kernel_launches),
                     persistent_device_sha256=persistent_device_sha256,
                     fused_gather_kernel_version=owner_binding.claims.fused_gather_kernel_version,
+                    root_seeded_gather_kernel_version=(owner_binding.claims.root_seeded_gather_kernel_version),
                     scalar_direction_apply_kernel_version=(owner_binding.claims.scalar_direction_apply_kernel_version),
                     v_cycle_publication_version=scalar_evidence.publication_version,
                     first_cycle_publication_route=owner_binding.claims.first_cycle_publication_role,
@@ -5925,6 +6295,7 @@ class CapturedDirectGraphVBD:
             persistent_device_sha256=persistent_device_sha256,
             graph_identity_sha256=graph_identity_sha256,
             fused_gather_kernel_version=owner_binding.claims.fused_gather_kernel_version,
+            root_seeded_gather_kernel_version=owner_binding.claims.root_seeded_gather_kernel_version,
             scalar_direction_apply_kernel_version=owner_binding.claims.scalar_direction_apply_kernel_version,
             v_cycle_publication_version=scalar_evidence.publication_version,
             v_cycle_standalone_publication_route=scalar_evidence.standalone_publication_route,
@@ -6068,7 +6439,7 @@ class CapturedDirectGraphVBD:
         elided_matrix_products = sum(level.matrix.stored_block_count for level in noncoarse_levels)
         zero_start_solves = sum(level.matrix.block_row_count for level in noncoarse_levels)
         matrix_launches = len(noncoarse_levels) * (hierarchy.pre_smooth_steps + hierarchy.post_smooth_steps)
-        linear_prefix_kernel_launches = 4 + 2 * scalar_evidence.core_kernel_launches
+        linear_prefix_kernel_launches = 4 + 2 * scalar_evidence.seeded_core_kernel_launches
         linear_kernel_launches = linear_prefix_kernel_launches + 1
         outer_kernel_launches = linear_kernel_launches + 3
         correction_kernel_launches = 2 + OUTER_CORRECTIONS * outer_kernel_launches
@@ -6090,10 +6461,11 @@ class CapturedDirectGraphVBD:
             "solver_static_array_sha256": self._solver_static_array_sha256_bound,
             "workspace_owner_identity_sha256": self._workspace_owner_identity_sha256(owner_binding),
             "persistent_device_sha256": persistent_device_sha256,
-            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v7",
+            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v8",
             "graph_identity_sha256": graph_identity_sha256,
             "k4_graph_identity_sha256": k4_graph_identity_sha256,
             "fused_gather_kernel_version": owner_binding.claims.fused_gather_kernel_version,
+            "root_seeded_gather_kernel_version": owner_binding.claims.root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": (owner_binding.claims.scalar_direction_apply_kernel_version),
             "first_cycle_publication_role": owner_binding.claims.first_cycle_publication_role,
             "second_cycle_publication_role": owner_binding.claims.second_cycle_publication_role,
@@ -6122,19 +6494,25 @@ class CapturedDirectGraphVBD:
             "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
             "v_cycle_schedule_sha256": scalar_evidence.schedule_sha256,
             "v_cycle_core_schedule_sha256": scalar_evidence.core_schedule_sha256,
+            "v_cycle_seeded_core_schedule_sha256": scalar_evidence.seeded_core_schedule_sha256,
             "v_cycle_publication_version": scalar_evidence.publication_version,
             "v_cycle_standalone_publication_route": scalar_evidence.standalone_publication_route,
             "v_cycle_external_shared_publication_route": scalar_evidence.external_shared_publication_route,
             "v_cycle_static_device_content_sha256": scalar_evidence.static_device_content_sha256,
             "v_cycle_device_snapshot_sha256": scalar_evidence.device_snapshot_sha256,
             "v_cycle_core_device_snapshot_sha256": scalar_evidence.core_device_snapshot_sha256,
+            "v_cycle_seeded_core_device_snapshot_sha256": scalar_evidence.seeded_core_device_snapshot_sha256,
             "v_cycle_kernel_launches": owner_binding.device.scalar.scheduled_kernel_launches,
             "v_cycle_core_kernel_launches": owner_binding.device.scalar.core_kernel_launches,
-            "first_cycle_kernel_launches": owner_binding.device.scalar.core_kernel_launches,
-            "second_cycle_kernel_launches": owner_binding.device.scalar.core_kernel_launches,
+            "v_cycle_seeded_core_kernel_launches": owner_binding.device.scalar.seeded_core_kernel_launches,
+            "first_cycle_kernel_launches": owner_binding.device.scalar.seeded_core_kernel_launches,
+            "second_cycle_kernel_launches": owner_binding.device.scalar.seeded_core_kernel_launches,
             "v_cycle_first_publication_kernel_launches": 0,
             "v_cycle_second_publication_kernel_launches": 0,
             "v_cycle_root_ingress_zero_start_fusions": (scalar_evidence.root_ingress_zero_start_fusions),
+            "v_cycle_seeded_root_ingress_route": scalar_evidence.seeded_root_ingress_route,
+            "shared_root_ingress_kernel_launches_per_outer": 2,
+            "separate_root_ingress_kernel_launches_per_outer": 0,
             "v_cycle_canonical_matrix_block_products": canonical_matrix_products,
             "v_cycle_matrix_block_products_executed": canonical_matrix_products - elided_matrix_products,
             "v_cycle_matrix_block_products_elided_zero_start": elided_matrix_products,

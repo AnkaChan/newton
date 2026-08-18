@@ -28,7 +28,11 @@ from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     CONTRACT_ID,
     EXTERNAL_SHARED_PUBLICATION_ROUTE,
     KERNEL_VERSION,
+    PHYSICAL_EXECUTION_AUTHENTICATION,
     PUBLICATION_VERSION,
+    ROOT_INGRESS_COARSE_COPY_ROUTE,
+    ROOT_INGRESS_EXTERNAL_SHARED_ROUTE,
+    ROOT_INGRESS_INTERNAL_ROUTE,
     SCHEDULE_VERSION,
     STANDALONE_PUBLICATION_ROUTE,
     WarpScalarFusedStaticMultigridHierarchy,
@@ -119,6 +123,74 @@ def _coarsest_only_hierarchy() -> StaticMultigridHierarchy:
         free_masses=np.ones(node_count, dtype=np.float64),
         content_sha256="c" * 64,
     )
+
+
+def _rehash_physical_work(physical_work) -> None:
+    object.__setattr__(
+        physical_work,
+        "content_sha256",
+        scalar_fused_module._hash_parts(
+            "warp-scalar-fused-v-cycle-physical-work-v7",
+            tuple(
+                (field.name, getattr(physical_work, field.name))
+                for field in dataclasses.fields(physical_work)
+                if field.name != "content_sha256"
+            ),
+        ),
+    )
+
+
+def _rehash_v_cycle_record(record) -> None:
+    physical_work = record.physical_work
+    object.__setattr__(
+        record,
+        "content_sha256",
+        scalar_fused_module._hash_parts(
+            "warp-scalar-fused-v-cycle-result-v7",
+            (
+                ("contract_id", record.contract_id),
+                ("kernel_version", record.kernel_version),
+                ("schedule_version", record.schedule_version),
+                ("device_snapshot_sha256", record.device_snapshot_sha256),
+                ("static_device_content_sha256", record.static_device_content_sha256),
+                ("schedule_sha256", record.schedule_sha256),
+                ("standalone_schedule_sha256", record.standalone_schedule_sha256),
+                ("core_schedule_sha256", record.core_schedule_sha256),
+                ("seeded_core_schedule_sha256", record.seeded_core_schedule_sha256),
+                ("standalone_device_snapshot_sha256", record.standalone_device_snapshot_sha256),
+                ("core_device_snapshot_sha256", record.core_device_snapshot_sha256),
+                ("seeded_core_device_snapshot_sha256", record.seeded_core_device_snapshot_sha256),
+                ("work_sha256", record.work.content_sha256),
+                ("physical_work_sha256", physical_work.content_sha256),
+                ("scheduled_kernel_launches", record.scheduled_kernel_launches),
+                ("capture_replay", record.capture_replay),
+                ("research_only", record.research_only),
+                ("physical_execution_authentication", record.physical_execution_authentication),
+                ("solver_issued_authentication", record.solver_issued_authentication),
+                ("performance_evidence", record.performance_evidence),
+            ),
+        ),
+    )
+
+
+def _unchecked_record_clone(record):
+    forged_record = object.__new__(type(record))
+    for field in dataclasses.fields(record):
+        object.__setattr__(forged_record, field.name, getattr(record, field.name))
+    return forged_record
+
+
+def _coordinated_rehash(record, *, physical_updates, record_updates=None):
+    forged_physical = dataclasses.replace(record.physical_work)
+    for field_name, value in physical_updates.items():
+        object.__setattr__(forged_physical, field_name, value)
+    _rehash_physical_work(forged_physical)
+    forged_record = _unchecked_record_clone(record)
+    object.__setattr__(forged_record, "physical_work", forged_physical)
+    for field_name, value in (record_updates or {}).items():
+        object.__setattr__(forged_record, field_name, value)
+    _rehash_v_cycle_record(forged_record)
+    return forged_record
 
 
 def _default_stretch_hierarchy() -> StaticMultigridHierarchy:
@@ -219,11 +291,11 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
 
     def test_contract_scalar_owners_source_sharing_and_launch_path(self):
         hierarchy = self.device_hierarchy
-        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v3")
+        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v4")
         self.assertEqual(CONTRACT_ID, "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1")
         self.assertEqual(
             SCHEDULE_VERSION,
-            "scalar-core-and-versioned-publication-routes-v4",
+            "scalar-core-seeded-root-and-versioned-publication-routes-v5",
         )
         self.assertEqual(PUBLICATION_VERSION, "scalar-fused-v-cycle-publication-routes-v2")
         self.assertEqual(EXTERNAL_SHARED_PUBLICATION_ROUTE, "external-shared-owner-scalar-to-vec3")
@@ -234,8 +306,12 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         self.assertNotEqual(hierarchy.device_snapshot_sha256, hierarchy.source_device_snapshot_sha256)
         self.assertEqual(hierarchy.scheduled_kernel_launches, 22)
         self.assertEqual(hierarchy.core_kernel_launches, 21)
+        self.assertEqual(hierarchy.seeded_core_kernel_launches, 20)
+        self.assertTrue(hierarchy.supports_seeded_root_zero_start)
         self.assertNotEqual(hierarchy.schedule_sha256, hierarchy.core_schedule_sha256)
+        self.assertNotEqual(hierarchy.core_schedule_sha256, hierarchy.seeded_core_schedule_sha256)
         self.assertNotEqual(hierarchy.device_snapshot_sha256, hierarchy.core_device_snapshot_sha256)
+        self.assertNotEqual(hierarchy.core_device_snapshot_sha256, hierarchy.seeded_core_device_snapshot_sha256)
         self.assertEqual(self.source.scheduled_kernel_launches, 37)
 
         source = inspect.getsource(scalar_fused_module)
@@ -331,6 +407,8 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                     )
                     self.assertEqual(actual.physical_work.zero_start_block_solves, block_rows)
                     self.assertEqual(actual.physical_work.root_ingress_zero_start_fusions, 1)
+                    self.assertEqual(actual.physical_work.root_ingress_route, ROOT_INGRESS_INTERNAL_ROUTE)
+                    self.assertEqual(actual.physical_work.root_ingress_kernel_launches, 1)
                     self.assertEqual(
                         actual.physical_work.out_of_place_jacobi_block_solves,
                         block_rows * (2 * steps - 1),
@@ -342,7 +420,18 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                     )
                     self.assertFalse(actual.capture_replay)
                     self.assertTrue(actual.research_only)
+                    self.assertEqual(
+                        actual.physical_execution_authentication,
+                        PHYSICAL_EXECUTION_AUTHENTICATION,
+                    )
+                    self.assertEqual(
+                        actual.physical_work.physical_execution_authentication,
+                        PHYSICAL_EXECUTION_AUTHENTICATION,
+                    )
+                    self.assertFalse(actual.solver_issued_authentication)
+                    self.assertFalse(actual.physical_work.solver_issued_authentication)
                     self.assertFalse(actual.performance_evidence)
+                    self.assertFalse(actual.physical_work.performance_evidence)
                     json.dumps(actual.deterministic_record(), allow_nan=False)
                     with self.assertRaises(ValueError):
                         actual.correction.setflags(write=True)
@@ -358,9 +447,7 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                             for call in core_launch.call_args_list
                         )
                     )
-                    with self.assertRaisesRegex(ValueError, "solver-private"):
-                        workspace.record_core_application(token=object())
-                    core_record = workspace.record_core_application(token=scalar_fused_module._CORE_RECORD_TOKEN)
+                    core_record = workspace.record_core_application()
                     np.testing.assert_array_equal(
                         core_record.correction.view(np.uint64),
                         actual.correction.view(np.uint64),
@@ -370,6 +457,8 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                     self.assertEqual(core_record.physical_work.publication_kernel_launches, 0)
                     self.assertEqual(core_record.physical_work.publication_version, PUBLICATION_VERSION)
                     self.assertEqual(core_record.physical_work.publication_route, EXTERNAL_SHARED_PUBLICATION_ROUTE)
+                    self.assertEqual(core_record.physical_work.root_ingress_route, ROOT_INGRESS_INTERNAL_ROUTE)
+                    self.assertEqual(core_record.physical_work.root_ingress_kernel_launches, 1)
                     self.assertEqual(core_record.schedule_sha256, device_hierarchy.core_schedule_sha256)
                     self.assertEqual(core_record.device_snapshot_sha256, device_hierarchy.core_device_snapshot_sha256)
                 for level_index in range(len(hierarchy.levels) - 1):
@@ -437,6 +526,226 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                     host_rhs.reshape(-1).view(np.uint64),
                 )
 
+    def test_seeded_root_tail_is_bitwise_old_core_for_p1_p2_and_records_physical_boundary(self):
+        for steps in (1, 2):
+            with self.subTest(steps=steps):
+                hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+                    _mixed_hierarchy(smooth_steps=steps),
+                    device="cpu",
+                )
+                rhs = np.random.default_rng(181001 + steps).normal(size=(hierarchy.n_free, 3))
+                old = hierarchy.create_workspace()
+                seeded = hierarchy.create_workspace()
+                old.rhs.assign(rhs)
+                seeded.rhs.assign(rhs)
+                _poison_workspace(old)
+                _poison_workspace(seeded)
+                old.rhs.assign(rhs)
+                seeded.rhs.assign(rhs)
+
+                old.launch_core()
+                seed = hierarchy.root_zero_start_seed_parameters(seeded.rhs, seeded)
+                self.assertIsNotNone(seed)
+                assert seed is not None
+                inverse_diagonal, omega, scalar_rhs, root_primary = seed
+                self.assertIs(scalar_rhs, seeded.level_rhs[0])
+                self.assertIs(root_primary, seeded.level_correction[0])
+                wp.launch(
+                    scalar_fused_module._fused_root_ingress_zero_start_scalar_jacobi,
+                    dim=hierarchy.levels[0].scalar_size,
+                    inputs=[seeded.rhs, inverse_diagonal, omega, scalar_rhs, root_primary],
+                    device=hierarchy.device,
+                )
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    seeded.launch_seeded_core()
+                self.assertEqual(launch.call_count, hierarchy.seeded_core_kernel_launches)
+                self.assertFalse(
+                    any(
+                        call.args[0] is scalar_fused_module._fused_root_ingress_zero_start_scalar_jacobi
+                        for call in launch.call_args_list
+                    )
+                )
+
+                for group_name in (
+                    "level_rhs",
+                    "level_correction",
+                    "level_correction_alt",
+                    "level_residual",
+                ):
+                    for level_index, (old_array, seeded_array) in enumerate(
+                        zip(getattr(old, group_name), getattr(seeded, group_name), strict=True)
+                    ):
+                        with self.subTest(steps=steps, group=group_name, level=level_index):
+                            np.testing.assert_array_equal(
+                                seeded_array.numpy().view(np.uint64),
+                                old_array.numpy().view(np.uint64),
+                            )
+                np.testing.assert_array_equal(
+                    seeded.coarse_intermediate.numpy().view(np.uint64),
+                    old.coarse_intermediate.numpy().view(np.uint64),
+                )
+                record = seeded.record_seeded_core_application()
+                self.assertEqual(record.scheduled_kernel_launches, hierarchy.seeded_core_kernel_launches)
+                self.assertEqual(record.schedule_sha256, hierarchy.seeded_core_schedule_sha256)
+                self.assertEqual(record.device_snapshot_sha256, hierarchy.seeded_core_device_snapshot_sha256)
+                self.assertEqual(record.physical_work.root_ingress_zero_start_fusions, 1)
+                self.assertEqual(record.physical_work.root_ingress_route, ROOT_INGRESS_EXTERNAL_SHARED_ROUTE)
+                self.assertEqual(record.physical_work.root_ingress_kernel_launches, 0)
+                self.assertEqual(record.physical_work.core_kernel_launches, hierarchy.seeded_core_kernel_launches)
+
+    def test_route_schema_rejects_partial_and_allows_coherent_rewrite(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cpu",
+        )
+        workspace = hierarchy.create_workspace()
+        rhs = _rhs_set(hierarchy.n_free_dofs)[0]
+
+        workspace.set_rhs(rhs)
+        workspace.launch()
+        standalone_record = workspace.record()
+        forged_standalone = _coordinated_rehash(
+            standalone_record,
+            physical_updates={
+                "root_ingress_route": ROOT_INGRESS_EXTERNAL_SHARED_ROUTE,
+                "root_ingress_kernel_launches": 0,
+            },
+        )
+        self.assertEqual(forged_standalone.schedule_sha256, hierarchy.schedule_sha256)
+        self.assertEqual(
+            forged_standalone.physical_work.core_kernel_launches,
+            hierarchy.core_kernel_launches,
+        )
+        with self.assertRaisesRegex(ValueError, "root ingress route"):
+            forged_standalone.deterministic_record()
+
+        workspace.set_rhs(rhs)
+        workspace.launch_core()
+        core_record = workspace.record_core_application()
+        forged_core_route = _coordinated_rehash(
+            core_record,
+            physical_updates={
+                "root_ingress_route": ROOT_INGRESS_EXTERNAL_SHARED_ROUTE,
+                "root_ingress_kernel_launches": 0,
+            },
+        )
+        self.assertEqual(forged_core_route.schedule_sha256, hierarchy.core_schedule_sha256)
+        self.assertEqual(forged_core_route.physical_work.core_kernel_launches, hierarchy.core_kernel_launches)
+        with self.assertRaisesRegex(ValueError, "root ingress route"):
+            forged_core_route.deterministic_record()
+
+        forged_core_schedule = _coordinated_rehash(
+            core_record,
+            physical_updates={"schedule_sha256": hierarchy.schedule_sha256},
+            record_updates={
+                "schedule_sha256": hierarchy.schedule_sha256,
+                "device_snapshot_sha256": hierarchy.device_snapshot_sha256,
+            },
+        )
+        self.assertEqual(forged_core_schedule.physical_work.core_kernel_launches, hierarchy.core_kernel_launches)
+        with self.assertRaisesRegex(ValueError, "selected schedule"):
+            forged_core_schedule.deterministic_record()
+
+        coherent_seeded = _coordinated_rehash(
+            core_record,
+            physical_updates={
+                "schedule_sha256": hierarchy.seeded_core_schedule_sha256,
+                "root_ingress_route": ROOT_INGRESS_EXTERNAL_SHARED_ROUTE,
+                "root_ingress_kernel_launches": 0,
+                "core_kernel_launches": hierarchy.seeded_core_kernel_launches,
+                "scheduled_kernel_launches": hierarchy.seeded_core_kernel_launches,
+            },
+            record_updates={
+                "schedule_sha256": hierarchy.seeded_core_schedule_sha256,
+                "device_snapshot_sha256": hierarchy.seeded_core_device_snapshot_sha256,
+                "scheduled_kernel_launches": hierarchy.seeded_core_kernel_launches,
+            },
+        )
+        coherent = coherent_seeded.deterministic_record()
+        self.assertEqual(coherent["root_ingress_route"], ROOT_INGRESS_EXTERNAL_SHARED_ROUTE)
+        self.assertEqual(coherent["scheduled_kernel_launches"], hierarchy.seeded_core_kernel_launches)
+        self.assertEqual(
+            coherent["physical_execution_authentication"],
+            PHYSICAL_EXECUTION_AUTHENTICATION,
+        )
+        self.assertFalse(coherent["solver_issued_authentication"])
+        self.assertFalse(coherent["performance_evidence"])
+
+    def test_schema_policy_reconstruction_and_tamper_fail_closed(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cpu",
+        )
+        workspace = hierarchy.create_workspace()
+        rhs = _rhs_set(hierarchy.n_free_dofs)[0]
+        for private_authority_name in (
+            "_bind_workspace_evidence",
+            "_invalidate_workspace_evidence",
+            "_register_workspace_execution",
+            "_current_workspace_execution",
+            "_prepare_workspace_record",
+            "_cancel_workspace_record",
+            "_consume_workspace_record",
+            "_validate_issued_record",
+            "_create_execution_evidence_authority",
+            "_with_execution_authority",
+            "_CORE_RECORD_TOKEN",
+        ):
+            with self.subTest(private_authority_name=private_authority_name):
+                self.assertNotIn(private_authority_name, vars(scalar_fused_module))
+        self.assertNotIn(
+            "_issuance_capability",
+            {field.name for field in dataclasses.fields(scalar_fused_module.WarpScalarFusedVCycleRecord)},
+        )
+        self.assertFalse(hasattr(scalar_fused_module.WarpScalarFusedVCycleRecord, "_require_issued"))
+
+        workspace.set_rhs(rhs)
+        workspace.launch_core()
+        record = workspace.record_core_application()
+        serialized = record.deterministic_record()
+        self.assertEqual(
+            serialized["physical_execution_authentication"],
+            PHYSICAL_EXECUTION_AUTHENTICATION,
+        )
+        self.assertFalse(serialized["solver_issued_authentication"])
+        self.assertFalse(serialized["performance_evidence"])
+        self.assertNotIn("execution_route", serialized)
+        self.assertNotIn("execution_generation", serialized)
+        self.assertNotIn("execution_context_sha256", serialized)
+
+        replacement = dataclasses.replace(record)
+        self.assertIsNot(replacement, record)
+        self.assertEqual(replacement.deterministic_record(), serialized)
+        constructor_fields = {field.name: getattr(record, field.name) for field in dataclasses.fields(record)}
+        reconstructed = type(record)(**constructor_fields)
+        self.assertEqual(reconstructed.deterministic_record(), serialized)
+
+        capture_rewrite = _unchecked_record_clone(record)
+        object.__setattr__(capture_rewrite, "capture_replay", True)
+        _rehash_v_cycle_record(capture_rewrite)
+        capture_serialized = capture_rewrite.deterministic_record()
+        self.assertTrue(capture_serialized["capture_replay"])
+        self.assertFalse(capture_serialized["solver_issued_authentication"])
+
+        for field_name, forged_value in (
+            ("physical_execution_authentication", "solver-launch-authenticated-v1"),
+            ("solver_issued_authentication", True),
+            ("performance_evidence", True),
+        ):
+            with self.subTest(physical_policy=field_name):
+                forged = _coordinated_rehash(
+                    record,
+                    physical_updates={field_name: forged_value},
+                )
+                with self.assertRaisesRegex(ValueError, "schema-validated and unauthenticated"):
+                    forged.deterministic_record()
+            with self.subTest(record_policy=field_name):
+                forged = _unchecked_record_clone(record)
+                object.__setattr__(forged, field_name, forged_value)
+                _rehash_v_cycle_record(forged)
+                with self.assertRaisesRegex(ValueError, "schema-validated and unauthenticated"):
+                    forged.deterministic_record()
+
     def test_alias_spans_reject_fused_buffer_hazards_and_allow_rhs_output_identity(self):
         hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
             _mixed_hierarchy(smooth_steps=1),
@@ -460,8 +769,10 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                         device=hierarchy.device,
                         copy=False,
                     )
-                    with self.assertRaisesRegex(ValueError, "rhs and root"):
-                        hierarchy.launch_apply(aliased_rhs, workspace.correction, workspace)
+                    with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                        with self.assertRaisesRegex(ValueError, "rhs and root"):
+                            hierarchy.launch_apply_core_seeded_root(aliased_rhs, workspace)
+                    self.assertEqual(launch.call_count, 0)
 
         for internal_name, get_internal in (
             ("level_rhs", lambda workspace: workspace.level_rhs[0]),
@@ -607,6 +918,8 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
 
         for field_name, forged_value in (
             ("root_ingress_zero_start_fusions", 0),
+            ("root_ingress_route", ROOT_INGRESS_EXTERNAL_SHARED_ROUTE),
+            ("root_ingress_kernel_launches", 0),
             ("zero_start_block_solves", record.physical_work.zero_start_block_solves + 1),
             ("matrix_kernel_launches", record.physical_work.matrix_kernel_launches + 1),
             ("core_kernel_launches", record.physical_work.core_kernel_launches + 1),
@@ -619,7 +932,7 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             with self.subTest(forged_physical_field=field_name):
                 forged_physical = dataclasses.replace(record.physical_work)
                 object.__setattr__(forged_physical, field_name, forged_value)
-                forged_record = dataclasses.replace(record)
+                forged_record = _unchecked_record_clone(record)
                 object.__setattr__(forged_record, "physical_work", forged_physical)
                 with self.assertRaises(ValueError):
                     forged_record.deterministic_record()
@@ -631,12 +944,12 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             ("content_sha256", "0" * 64),
         ):
             with self.subTest(forged_record_field=field_name):
-                forged_record = dataclasses.replace(record)
+                forged_record = _unchecked_record_clone(record)
                 object.__setattr__(forged_record, field_name, forged_value)
                 with self.assertRaises(ValueError):
                     forged_record.deterministic_record()
         with mock.patch.object(scalar_fused_module, "SCHEDULE_VERSION", "forged-schedule-version"):
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "schedule version"):
                 record.deterministic_record()
 
         workspace.correction.fill_(wp.vec3d(np.nan, np.nan, np.nan))
@@ -652,6 +965,13 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "schedule binding"):
             workspace.launch_core()
         workspace._core_schedule_sha256 = original_core_schedule
+        original_seeded_schedule = workspace._seeded_core_schedule_sha256
+        workspace._seeded_core_schedule_sha256 = "2" * 64
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(RuntimeError, "schedule binding"):
+                workspace.launch_seeded_core()
+        self.assertEqual(launch.call_count, 0)
+        workspace._seeded_core_schedule_sha256 = original_seeded_schedule
 
         original_residuals = workspace.level_residual
         workspace.level_residual = (
@@ -728,6 +1048,9 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         )
         self.assertEqual(coarse_device.scheduled_kernel_launches, 3)
         self.assertEqual(coarse_device.core_kernel_launches, 2)
+        self.assertEqual(coarse_device.seeded_core_kernel_launches, 2)
+        self.assertFalse(coarse_device.supports_seeded_root_zero_start)
+        self.assertEqual(coarse_device.seeded_core_schedule_sha256, coarse_device.core_schedule_sha256)
         coarse_record = coarse_workspace.record()
         self.assertEqual(coarse_record.physical_work.root_ingress_zero_start_fusions, 0)
         np.testing.assert_allclose(
@@ -740,10 +1063,25 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as core_launch:
             coarse_workspace.launch_core()
         self.assertEqual(core_launch.call_count, 2)
-        core_record = coarse_workspace.record_core_application(token=scalar_fused_module._CORE_RECORD_TOKEN)
+        core_record = coarse_workspace.record_core_application()
         self.assertEqual(core_record.scheduled_kernel_launches, 2)
         self.assertEqual(core_record.physical_work.publication_kernel_launches, 0)
+        self.assertEqual(core_record.physical_work.root_ingress_route, ROOT_INGRESS_COARSE_COPY_ROUTE)
+        self.assertEqual(core_record.physical_work.root_ingress_kernel_launches, 1)
         np.testing.assert_array_equal(core_record.correction.view(np.uint64), coarse_record.correction.view(np.uint64))
+
+        coarse_workspace.set_rhs(coarse_rhs)
+        self.assertIsNone(coarse_device.root_zero_start_seed_parameters(coarse_workspace.rhs, coarse_workspace))
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as seeded_launch:
+            coarse_workspace.launch_seeded_core()
+        self.assertEqual(seeded_launch.call_count, 2)
+        seeded_record = coarse_workspace.record_seeded_core_application()
+        self.assertEqual(seeded_record.schedule_sha256, coarse_device.core_schedule_sha256)
+        self.assertEqual(seeded_record.physical_work.root_ingress_route, ROOT_INGRESS_COARSE_COPY_ROUTE)
+        self.assertEqual(seeded_record.physical_work.root_ingress_kernel_launches, 1)
+        np.testing.assert_array_equal(
+            seeded_record.correction.view(np.uint64), coarse_record.correction.view(np.uint64)
+        )
 
     def test_257_scalar_row_boundary_and_translation_transfer(self):
         hierarchy = _translation_hierarchy(257)
@@ -904,6 +1242,8 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
             atol=3.0e-13,
         )
         self.assertTrue(changed.capture_replay)
+        self.assertEqual(changed.physical_execution_authentication, PHYSICAL_EXECUTION_AUTHENTICATION)
+        self.assertFalse(changed.solver_issued_authentication)
         self.assertFalse(changed.performance_evidence)
 
         _poison_workspace(workspace)

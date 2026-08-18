@@ -45,13 +45,19 @@ from .correction_multigrid_warp import (
     _solve_coarsest_cholesky,
 )
 
-KERNEL_VERSION = "mg-vbd-warp-static-v-cycle-scalar-fused-v3"
+KERNEL_VERSION = "mg-vbd-warp-static-v-cycle-scalar-fused-v4"
 CONTRACT_ID = "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1"
-SCHEDULE_VERSION = "scalar-core-and-versioned-publication-routes-v4"
+SCHEDULE_VERSION = "scalar-core-seeded-root-and-versioned-publication-routes-v5"
 PUBLICATION_VERSION = "scalar-fused-v-cycle-publication-routes-v2"
 STANDALONE_PUBLICATION_ROUTE = "standalone-scalar-to-vec3-kernel"
 EXTERNAL_SHARED_PUBLICATION_ROUTE = "external-shared-owner-scalar-to-vec3"
-_CORE_RECORD_TOKEN = object()
+ROOT_INGRESS_INTERNAL_ROUTE = "internal-fused-vec3d-scalar-zero-start"
+ROOT_INGRESS_EXTERNAL_SHARED_ROUTE = "external-shared-producer-scalar-zero-start"
+ROOT_INGRESS_COARSE_COPY_ROUTE = "coarsest-copy-vec3d-to-scalar"
+PHYSICAL_EXECUTION_AUTHENTICATION = "schema-validated-not-launch-authenticated-v1"
+_SCHEMA_ROUTE_STANDALONE = "standalone"
+_SCHEMA_ROUTE_CORE = "core"
+_SCHEMA_ROUTE_SEEDED_CORE = "seeded-core"
 SUPPORTED_BLOCK_SIZES = (3, 6)
 
 # Keep a visible marker so CUDA test output identifies the exact compiled path.
@@ -82,6 +88,49 @@ def _work_sha256(work: VCycleWorkRecord) -> str:
             ("coarsest_factor_solves", work.coarsest_factor_solves),
         ),
     )
+
+
+def _schema_route_claim(hierarchy: object, route: str) -> dict[str, object]:
+    """Derive one internally coherent route claim for diagnostic serialization."""
+    if route == _SCHEMA_ROUTE_STANDALONE:
+        schedule_sha256 = hierarchy.schedule_sha256
+        device_snapshot_sha256 = hierarchy.device_snapshot_sha256
+        core_kernel_launches = hierarchy.core_kernel_launches
+        publication_kernel_launches = 1
+        publication_route = STANDALONE_PUBLICATION_ROUTE
+        seeded_root = False
+    elif route == _SCHEMA_ROUTE_CORE:
+        schedule_sha256 = hierarchy.core_schedule_sha256
+        device_snapshot_sha256 = hierarchy.core_device_snapshot_sha256
+        core_kernel_launches = hierarchy.core_kernel_launches
+        publication_kernel_launches = 0
+        publication_route = EXTERNAL_SHARED_PUBLICATION_ROUTE
+        seeded_root = False
+    elif route == _SCHEMA_ROUTE_SEEDED_CORE:
+        schedule_sha256 = hierarchy.seeded_core_schedule_sha256
+        device_snapshot_sha256 = hierarchy.seeded_core_device_snapshot_sha256
+        core_kernel_launches = hierarchy.seeded_core_kernel_launches
+        publication_kernel_launches = 0
+        publication_route = EXTERNAL_SHARED_PUBLICATION_ROUTE
+        seeded_root = hierarchy.supports_seeded_root_zero_start
+    else:
+        raise ValueError("schema route is outside the fixed scalar-fused schedule")
+    if hierarchy.supports_seeded_root_zero_start:
+        root_ingress_route = ROOT_INGRESS_EXTERNAL_SHARED_ROUTE if seeded_root else ROOT_INGRESS_INTERNAL_ROUTE
+        root_ingress_kernel_launches = 0 if seeded_root else 1
+    else:
+        root_ingress_route = ROOT_INGRESS_COARSE_COPY_ROUTE
+        root_ingress_kernel_launches = 1
+    return {
+        "schedule_sha256": schedule_sha256,
+        "device_snapshot_sha256": device_snapshot_sha256,
+        "core_kernel_launches": core_kernel_launches,
+        "publication_kernel_launches": publication_kernel_launches,
+        "publication_route": publication_route,
+        "root_ingress_route": root_ingress_route,
+        "root_ingress_kernel_launches": root_ingress_kernel_launches,
+        "scheduled_kernel_launches": core_kernel_launches + publication_kernel_launches,
+    }
 
 
 @wp.kernel(enable_backward=False)
@@ -177,7 +226,10 @@ class WarpScalarFusedVCyclePhysicalWork:
     matrix_block_products_executed: int
     matrix_block_products_elided_zero_start: int
     zero_start_block_solves: int
+    noncoarse_level_count: int
     root_ingress_zero_start_fusions: int
+    root_ingress_route: str
+    root_ingress_kernel_launches: int
     out_of_place_jacobi_block_solves: int
     matrix_kernel_launches: int
     jacobi_kernel_launches: int
@@ -187,6 +239,9 @@ class WarpScalarFusedVCyclePhysicalWork:
     publication_route: str
     scheduled_kernel_launches: int
     content_sha256: str
+    physical_execution_authentication: str = PHYSICAL_EXECUTION_AUTHENTICATION
+    solver_issued_authentication: bool = False
+    performance_evidence: bool = False
 
     def __post_init__(self) -> None:
         for name in ("hierarchy_sha256", "schedule_sha256", "rhs_sha256", "result_sha256", "content_sha256"):
@@ -195,7 +250,9 @@ class WarpScalarFusedVCyclePhysicalWork:
             "matrix_block_products_executed",
             "matrix_block_products_elided_zero_start",
             "zero_start_block_solves",
+            "noncoarse_level_count",
             "root_ingress_zero_start_fusions",
+            "root_ingress_kernel_launches",
             "out_of_place_jacobi_block_solves",
             "matrix_kernel_launches",
             "jacobi_kernel_launches",
@@ -207,13 +264,48 @@ class WarpScalarFusedVCyclePhysicalWork:
             raise ValueError("physical-work counts must be non-negative built-in integers")
         if self.core_kernel_launches < 2 or self.scheduled_kernel_launches < 2:
             raise ValueError("a scalar-fused V-cycle core must schedule at least input and coarse kernels")
-        if self.root_ingress_zero_start_fusions not in (0, 1):
-            raise ValueError("root_ingress_zero_start_fusions must be zero or one")
+        noncoarse = self.noncoarse_level_count
+        expected_root_fusions = int(noncoarse > 0)
+        if self.root_ingress_zero_start_fusions != expected_root_fusions:
+            raise ValueError("root ingress fusion count does not match the retained topology")
+        if self.matrix_kernel_launches != self.jacobi_kernel_launches:
+            raise ValueError("matrix and logical Jacobi launch counts must match")
+        if noncoarse == 0:
+            if self.matrix_kernel_launches != 0:
+                raise ValueError("a coarsest-only topology cannot claim smoother launches")
+        elif self.matrix_kernel_launches < 2 * noncoarse or self.matrix_kernel_launches % (2 * noncoarse) != 0:
+            raise ValueError("symmetric positive smoothing counts do not match the retained topology")
+        if type(self.root_ingress_route) is not str:
+            raise TypeError("root_ingress_route must be a built-in string")
+        if self.root_ingress_route == ROOT_INGRESS_INTERNAL_ROUTE:
+            if noncoarse == 0:
+                raise ValueError("internal root ingress requires a noncoarsest root level")
+            expected_root_launches = 1
+            expected_core_launches = self.matrix_kernel_launches + self.jacobi_kernel_launches + 2 * noncoarse + 1
+        elif self.root_ingress_route == ROOT_INGRESS_EXTERNAL_SHARED_ROUTE:
+            if noncoarse == 0:
+                raise ValueError("external root ingress requires a noncoarsest root level")
+            expected_root_launches = 0
+            expected_core_launches = self.matrix_kernel_launches + self.jacobi_kernel_launches + 2 * noncoarse
+        elif self.root_ingress_route == ROOT_INGRESS_COARSE_COPY_ROUTE:
+            if noncoarse != 0:
+                raise ValueError("coarsest-copy root ingress requires a coarsest-only topology")
+            expected_root_launches = 1
+            expected_core_launches = 2
+        else:
+            raise ValueError("root_ingress_route is outside the fixed physical schedule")
+        if (
+            self.root_ingress_kernel_launches != expected_root_launches
+            or self.core_kernel_launches != expected_core_launches
+        ):
+            raise ValueError("root ingress route, topology, and physical core launch counts disagree")
         if type(self.publication_version) is not str or self.publication_version != PUBLICATION_VERSION:
             raise ValueError("publication_version is stale")
         if type(self.publication_route) is not str:
             raise TypeError("publication_route must be a built-in string")
         if self.publication_route == STANDALONE_PUBLICATION_ROUTE:
+            if self.root_ingress_route == ROOT_INGRESS_EXTERNAL_SHARED_ROUTE:
+                raise ValueError("standalone publication cannot claim an externally seeded root")
             expected_publication_launches = 1
         elif self.publication_route == EXTERNAL_SHARED_PUBLICATION_ROUTE:
             expected_publication_launches = 0
@@ -224,8 +316,14 @@ class WarpScalarFusedVCyclePhysicalWork:
             or self.scheduled_kernel_launches != self.core_kernel_launches + expected_publication_launches
         ):
             raise ValueError("physical publication route and launch counts disagree")
+        if (
+            self.physical_execution_authentication != PHYSICAL_EXECUTION_AUTHENTICATION
+            or self.solver_issued_authentication is not False
+            or self.performance_evidence is not False
+        ):
+            raise ValueError("physical-work evidence must remain schema-validated and unauthenticated")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v4",
+            "warp-scalar-fused-v-cycle-physical-work-v7",
             tuple(
                 (field.name, getattr(self, field.name))
                 for field in dataclasses.fields(self)
@@ -248,11 +346,19 @@ class WarpScalarFusedVCycleRecord:
     schedule_sha256: str
     static_device_content_sha256: str
     device_snapshot_sha256: str
+    standalone_schedule_sha256: str
+    core_schedule_sha256: str
+    seeded_core_schedule_sha256: str
+    standalone_device_snapshot_sha256: str
+    core_device_snapshot_sha256: str
+    seeded_core_device_snapshot_sha256: str
     content_sha256: str
     contract_id: str = CONTRACT_ID
     kernel_version: str = KERNEL_VERSION
     schedule_version: str = SCHEDULE_VERSION
     research_only: bool = True
+    physical_execution_authentication: str = PHYSICAL_EXECUTION_AUTHENTICATION
+    solver_issued_authentication: bool = False
     performance_evidence: bool = False
 
     def __post_init__(self) -> None:
@@ -268,6 +374,12 @@ class WarpScalarFusedVCycleRecord:
             "schedule_sha256",
             "static_device_content_sha256",
             "device_snapshot_sha256",
+            "standalone_schedule_sha256",
+            "core_schedule_sha256",
+            "seeded_core_schedule_sha256",
+            "standalone_device_snapshot_sha256",
+            "core_device_snapshot_sha256",
+            "seeded_core_device_snapshot_sha256",
             "content_sha256",
         ):
             _require_sha256(getattr(self, name), name=name)
@@ -281,8 +393,13 @@ class WarpScalarFusedVCycleRecord:
             or self.schedule_version != SCHEDULE_VERSION
         ):
             raise ValueError("record contract, kernel version, or schedule version is stale")
-        if not self.research_only or self.performance_evidence:
-            raise ValueError("this research primitive cannot claim performance evidence")
+        if (
+            self.research_only is not True
+            or self.physical_execution_authentication != PHYSICAL_EXECUTION_AUTHENTICATION
+            or self.solver_issued_authentication is not False
+            or self.performance_evidence is not False
+        ):
+            raise ValueError("this research primitive must remain schema-validated and unauthenticated")
         result_sha256 = _hash_parts("v-cycle-correction-v1", (("correction", correction),))
         if result_sha256 != self.work.result_sha256:
             raise ValueError("correction bytes do not match the retained result hash")
@@ -293,8 +410,11 @@ class WarpScalarFusedVCycleRecord:
             or physical.rhs_sha256 != self.work.rhs_sha256
             or physical.result_sha256 != self.work.result_sha256
             or physical.scheduled_kernel_launches != self.scheduled_kernel_launches
+            or physical.physical_execution_authentication != self.physical_execution_authentication
+            or physical.solver_issued_authentication is not self.solver_issued_authentication
+            or physical.performance_evidence is not self.performance_evidence
         ):
-            raise ValueError("physical work does not bind the same hierarchy, schedule, input, and output")
+            raise ValueError("physical work does not bind the same hierarchy, schedule, input, output, and policy")
         if (
             physical.matrix_block_products_executed + physical.matrix_block_products_elided_zero_start
             != self.work.matrix_block_products
@@ -302,23 +422,67 @@ class WarpScalarFusedVCycleRecord:
             raise ValueError("physical and elided matrix work do not recover the canonical V-cycle algebra")
         if physical.root_ingress_zero_start_fusions != int(len(self.work.level_visits) > 1):
             raise ValueError("physical work has the wrong root ingress fusion count")
+        noncoarse = len(self.work.level_visits) - 1
+        if physical.noncoarse_level_count != noncoarse:
+            raise ValueError("physical work topology does not match the canonical level visits")
+        if physical.publication_route == STANDALONE_PUBLICATION_ROUTE:
+            expected_schedule = self.standalone_schedule_sha256
+            expected_snapshot = self.standalone_device_snapshot_sha256
+        elif physical.root_ingress_route == ROOT_INGRESS_EXTERNAL_SHARED_ROUTE:
+            expected_schedule = self.seeded_core_schedule_sha256
+            expected_snapshot = self.seeded_core_device_snapshot_sha256
+        else:
+            expected_schedule = self.core_schedule_sha256
+            expected_snapshot = self.core_device_snapshot_sha256
+        if self.schedule_sha256 != expected_schedule or self.device_snapshot_sha256 != expected_snapshot:
+            raise ValueError("selected schedule and device snapshot do not match the physical route")
+        if self.standalone_schedule_sha256 == self.core_schedule_sha256:
+            raise ValueError("standalone and core schedule identities must remain distinct")
+        if self.standalone_device_snapshot_sha256 == self.core_device_snapshot_sha256:
+            raise ValueError("standalone and core device snapshot identities must remain distinct")
+        if noncoarse > 0:
+            if self.seeded_core_schedule_sha256 in (self.standalone_schedule_sha256, self.core_schedule_sha256):
+                raise ValueError("seeded-core schedule identity must remain route-specific")
+            if self.seeded_core_device_snapshot_sha256 in (
+                self.standalone_device_snapshot_sha256,
+                self.core_device_snapshot_sha256,
+            ):
+                raise ValueError("seeded-core device snapshot identity must remain route-specific")
+        elif (
+            self.seeded_core_schedule_sha256 != self.core_schedule_sha256
+            or self.seeded_core_device_snapshot_sha256 != self.core_device_snapshot_sha256
+        ):
+            raise ValueError("coarsest-only seeded-core bindings must equal the unchanged core fallback")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v4",
+            "warp-scalar-fused-v-cycle-result-v7",
             (
+                ("contract_id", self.contract_id),
+                ("kernel_version", self.kernel_version),
+                ("schedule_version", self.schedule_version),
                 ("device_snapshot_sha256", self.device_snapshot_sha256),
                 ("static_device_content_sha256", self.static_device_content_sha256),
                 ("schedule_sha256", self.schedule_sha256),
+                ("standalone_schedule_sha256", self.standalone_schedule_sha256),
+                ("core_schedule_sha256", self.core_schedule_sha256),
+                ("seeded_core_schedule_sha256", self.seeded_core_schedule_sha256),
+                ("standalone_device_snapshot_sha256", self.standalone_device_snapshot_sha256),
+                ("core_device_snapshot_sha256", self.core_device_snapshot_sha256),
+                ("seeded_core_device_snapshot_sha256", self.seeded_core_device_snapshot_sha256),
                 ("work_sha256", self.work.content_sha256),
                 ("physical_work_sha256", physical.content_sha256),
                 ("scheduled_kernel_launches", self.scheduled_kernel_launches),
                 ("capture_replay", self.capture_replay),
+                ("research_only", self.research_only),
+                ("physical_execution_authentication", self.physical_execution_authentication),
+                ("solver_issued_authentication", self.solver_issued_authentication),
+                ("performance_evidence", self.performance_evidence),
             ),
         )
         if self.content_sha256 != expected:
             raise ValueError("content_sha256 does not bind the complete scalar-fused V-cycle record")
 
     def deterministic_record(self) -> dict[str, object]:
-        """Return finite JSON-shaped identity and exact-work evidence."""
+        """Return finite JSON-shaped, schema-validated diagnostic evidence."""
         physical = dataclasses.replace(self.physical_work)
         record = dataclasses.replace(self, physical_work=physical)
         return {
@@ -328,7 +492,15 @@ class WarpScalarFusedVCycleRecord:
             "schedule_sha256": record.schedule_sha256,
             "static_device_content_sha256": record.static_device_content_sha256,
             "device_snapshot_sha256": record.device_snapshot_sha256,
+            "standalone_schedule_sha256": record.standalone_schedule_sha256,
+            "core_schedule_sha256": record.core_schedule_sha256,
+            "seeded_core_schedule_sha256": record.seeded_core_schedule_sha256,
+            "standalone_device_snapshot_sha256": record.standalone_device_snapshot_sha256,
+            "core_device_snapshot_sha256": record.core_device_snapshot_sha256,
+            "seeded_core_device_snapshot_sha256": record.seeded_core_device_snapshot_sha256,
             "research_only": record.research_only,
+            "physical_execution_authentication": record.physical_execution_authentication,
+            "solver_issued_authentication": record.solver_issued_authentication,
             "performance_evidence": record.performance_evidence,
             "capture_replay": record.capture_replay,
             "hierarchy_sha256": record.work.hierarchy_sha256,
@@ -344,7 +516,10 @@ class WarpScalarFusedVCycleRecord:
             "matrix_block_products_executed": physical.matrix_block_products_executed,
             "matrix_block_products_elided_zero_start": physical.matrix_block_products_elided_zero_start,
             "zero_start_block_solves": physical.zero_start_block_solves,
+            "noncoarse_level_count": physical.noncoarse_level_count,
             "root_ingress_zero_start_fusions": physical.root_ingress_zero_start_fusions,
+            "root_ingress_route": physical.root_ingress_route,
+            "root_ingress_kernel_launches": physical.root_ingress_kernel_launches,
             "out_of_place_jacobi_block_solves": physical.out_of_place_jacobi_block_solves,
             "matrix_kernel_launches": physical.matrix_kernel_launches,
             "jacobi_kernel_launches": physical.jacobi_kernel_launches,
@@ -376,6 +551,8 @@ class WarpScalarFusedStaticMultigridHierarchy:
         "_post_smooth_steps",
         "_pre_smooth_steps",
         "_schedule_sha256",
+        "_seeded_core_device_snapshot_sha256",
+        "_seeded_core_schedule_sha256",
         "_solver_contract",
         "_source_device_snapshot_sha256",
         "_source_hierarchy",
@@ -437,6 +614,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
         self._static_level_signature = self._current_level_signature()
         self._static_device_content_sha256 = self._read_static_device_content_sha256()
         root_ingress_fused = int(len(hierarchy.levels) > 1)
+        root_ingress_route = ROOT_INGRESS_INTERNAL_ROUTE if root_ingress_fused else ROOT_INGRESS_COARSE_COPY_ROUTE
         common_schedule_parts = (
             ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
             ("kernel_version", KERNEL_VERSION),
@@ -446,18 +624,16 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ("post_smooth_steps", hierarchy.post_smooth_steps),
             ("level_shapes", _immutable_array(shape_rows, np.int64)),
             ("transfer_block_paths", _immutable_array(transfer_paths, np.int64)),
-            (
-                "root_ingress_route",
-                "fused-vec3d-scalar-zero-start" if root_ingress_fused else "standalone-vec3d-scalar",
-            ),
+            ("root_ingress_route", root_ingress_route),
             ("root_ingress_zero_start_fusions", root_ingress_fused),
+            ("root_ingress_kernel_launches", 1),
             ("noncoarse_result_buffer", "B"),
             ("coarsest_result_buffer", "A"),
             ("core_kernel_launches", self.core_kernel_launches),
             ("publication_version", PUBLICATION_VERSION),
         )
         self._core_schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-core-schedule-v2",
+            "warp-scalar-fused-v-cycle-core-schedule-v3",
             (
                 *common_schedule_parts,
                 ("publication_route", EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -466,7 +642,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-schedule-v4",
+            "warp-scalar-fused-v-cycle-schedule-v5",
             (
                 *common_schedule_parts,
                 ("publication_route", STANDALONE_PUBLICATION_ROUTE),
@@ -475,7 +651,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._core_device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-core-snapshot-v2",
+            "warp-scalar-fused-static-multigrid-core-snapshot-v3",
             (
                 ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                 ("static_device_content_sha256", self._static_device_content_sha256),
@@ -483,13 +659,44 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-snapshot-v4",
+            "warp-scalar-fused-static-multigrid-snapshot-v5",
             (
                 ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                 ("static_device_content_sha256", self._static_device_content_sha256),
                 ("schedule_sha256", self._schedule_sha256),
             ),
         )
+        if self.supports_seeded_root_zero_start:
+            seeded_common_schedule_parts = tuple(
+                (name, value)
+                for name, value in common_schedule_parts
+                if name not in ("root_ingress_route", "root_ingress_kernel_launches", "core_kernel_launches")
+            )
+            seeded_common_schedule_parts += (
+                ("root_ingress_route", ROOT_INGRESS_EXTERNAL_SHARED_ROUTE),
+                ("root_ingress_kernel_launches", 0),
+                ("core_kernel_launches", self.seeded_core_kernel_launches),
+            )
+            self._seeded_core_schedule_sha256 = _hash_parts(
+                "warp-scalar-fused-v-cycle-seeded-core-schedule-v1",
+                (
+                    *seeded_common_schedule_parts,
+                    ("publication_route", EXTERNAL_SHARED_PUBLICATION_ROUTE),
+                    ("publication_kernel_launches", 0),
+                    ("scheduled_kernel_launches", self.seeded_core_kernel_launches),
+                ),
+            )
+            self._seeded_core_device_snapshot_sha256 = _hash_parts(
+                "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v1",
+                (
+                    ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
+                    ("static_device_content_sha256", self._static_device_content_sha256),
+                    ("seeded_core_schedule_sha256", self._seeded_core_schedule_sha256),
+                ),
+            )
+        else:
+            self._seeded_core_schedule_sha256 = self._core_schedule_sha256
+            self._seeded_core_device_snapshot_sha256 = self._core_device_snapshot_sha256
 
     @classmethod
     def from_hierarchy(
@@ -580,6 +787,16 @@ class WarpScalarFusedStaticMultigridHierarchy:
         return self._core_device_snapshot_sha256
 
     @property
+    def seeded_core_schedule_sha256(self) -> str:
+        """Schedule identity for the externally seeded root tail or fallback."""
+        return self._seeded_core_schedule_sha256
+
+    @property
+    def seeded_core_device_snapshot_sha256(self) -> str:
+        """Static snapshot bound to the externally seeded root tail."""
+        return self._seeded_core_device_snapshot_sha256
+
+    @property
     def static_device_content_sha256(self) -> str:
         """Construction-time digest of every shared static device array."""
         return self._static_device_content_sha256
@@ -594,6 +811,16 @@ class WarpScalarFusedStaticMultigridHierarchy:
         """Exact fixed launch count before scalar-to-vec3 publication."""
         noncoarse = len(self.levels) - 1
         return 2 + noncoarse * (2 + 2 * self.pre_smooth_steps + 2 * self.post_smooth_steps) - int(noncoarse > 0)
+
+    @property
+    def supports_seeded_root_zero_start(self) -> bool:
+        """Whether an external 3x3 producer can own the root zero-start sweep."""
+        return len(self.levels) > 1
+
+    @property
+    def seeded_core_kernel_launches(self) -> int:
+        """Physical tail launches after an external root seed, with fallback."""
+        return self.core_kernel_launches - int(self.supports_seeded_root_zero_start)
 
     def _current_static_arrays(self) -> tuple[wp.array, ...]:
         arrays = [self._source_hierarchy.coarse_cholesky]
@@ -746,8 +973,10 @@ class WarpScalarFusedStaticMultigridHierarchy:
             or workspace._hierarchy_sha256 != self.hierarchy_sha256
             or workspace._schedule_sha256 != self.schedule_sha256
             or workspace._core_schedule_sha256 != self.core_schedule_sha256
+            or workspace._seeded_core_schedule_sha256 != self.seeded_core_schedule_sha256
             or workspace._device_snapshot_sha256 != self.device_snapshot_sha256
             or workspace._core_device_snapshot_sha256 != self.core_device_snapshot_sha256
+            or workspace._seeded_core_device_snapshot_sha256 != self.seeded_core_device_snapshot_sha256
         ):
             raise RuntimeError("workspace identity or schedule binding changed")
         workspace._validate_persistent_arrays()
@@ -788,6 +1017,44 @@ class WarpScalarFusedStaticMultigridHierarchy:
         self._validate_workspace(workspace)
         self._validate_core_launch_aliases(rhs, workspace)
         self._launch_apply_core(rhs, workspace)
+
+    def root_zero_start_seed_parameters(
+        self,
+        rhs: wp.array[wp.vec3d],
+        workspace: WarpScalarFusedVCycleWorkspace,
+    ) -> tuple[wp.array[wp.float64], float, wp.array[wp.float64], wp.array[wp.float64]] | None:
+        """Validate one core and expose its exact external root-seed buffers.
+
+        A coarsest-only hierarchy returns ``None`` and must use the unchanged
+        vec3d-to-scalar copy plus coarse solve fallback.
+        """
+        self._validate_source()
+        self._validate_fine_vector(rhs, name="rhs")
+        self._validate_workspace(workspace)
+        self._validate_core_launch_aliases(rhs, workspace)
+        if not self.supports_seeded_root_zero_start:
+            return None
+        root = self.levels[0]
+        if root.inverse_diagonal is None or root.omega is None:
+            raise RuntimeError("device root level is missing its smoother")
+        return (
+            root.inverse_diagonal,
+            float(root.omega),
+            workspace.level_rhs[0],
+            workspace.level_correction[0],
+        )
+
+    def launch_apply_core_seeded_root(
+        self,
+        rhs: wp.array[wp.vec3d],
+        workspace: WarpScalarFusedVCycleWorkspace,
+    ) -> None:
+        """Launch the validated seeded-root tail or coarsest-only fallback."""
+        seed = self.root_zero_start_seed_parameters(rhs, workspace)
+        if seed is None:
+            self._launch_apply_core(rhs, workspace)
+        else:
+            self._launch_level(0, workspace, root_zero_start_complete=True)
 
     def _launch_apply_core(
         self,
@@ -964,6 +1231,8 @@ class WarpScalarFusedVCycleWorkspace:
         "_persistent_arrays",
         "_persistent_pointers",
         "_schedule_sha256",
+        "_seeded_core_device_snapshot_sha256",
+        "_seeded_core_schedule_sha256",
         "coarse_intermediate",
         "correction",
         "hierarchy",
@@ -982,8 +1251,10 @@ class WarpScalarFusedVCycleWorkspace:
         self._hierarchy_sha256 = hierarchy.hierarchy_sha256
         self._schedule_sha256 = hierarchy.schedule_sha256
         self._core_schedule_sha256 = hierarchy.core_schedule_sha256
+        self._seeded_core_schedule_sha256 = hierarchy.seeded_core_schedule_sha256
         self._device_snapshot_sha256 = hierarchy.device_snapshot_sha256
         self._core_device_snapshot_sha256 = hierarchy.core_device_snapshot_sha256
+        self._seeded_core_device_snapshot_sha256 = hierarchy.seeded_core_device_snapshot_sha256
         self.rhs = wp.empty(hierarchy.n_free, dtype=wp.vec3d, device=hierarchy.device)
         self.correction = wp.empty(hierarchy.n_free, dtype=wp.vec3d, device=hierarchy.device)
         self.level_rhs = tuple(
@@ -1050,6 +1321,11 @@ class WarpScalarFusedVCycleWorkspace:
         return self.hierarchy.core_kernel_launches
 
     @property
+    def seeded_core_kernel_launches(self) -> int:
+        """Exact root-seeded tail count, including coarsest fallback."""
+        return self.hierarchy.seeded_core_kernel_launches
+
+    @property
     def final_scalar_correction(self) -> wp.array[wp.float64]:
         """Persistent root scalar result used by either publication route."""
         return self._final_level_correction(0)
@@ -1075,7 +1351,15 @@ class WarpScalarFusedVCycleWorkspace:
         """Launch only the scalar core, leaving vec3 publication external."""
         self.hierarchy.launch_apply_core(self.rhs, self)
 
-    def record(self, *, capture_replay: bool = False) -> WarpScalarFusedVCycleRecord:
+    def launch_seeded_core(self) -> None:
+        """Launch the externally seeded tail or the coarsest-only fallback."""
+        self.hierarchy.launch_apply_core_seeded_root(self.rhs, self)
+
+    def record(
+        self,
+        *,
+        capture_replay: bool = False,
+    ) -> WarpScalarFusedVCycleRecord:
         """Synchronously materialize immutable result and work evidence."""
         if type(capture_replay) is not bool:
             raise TypeError("capture_replay must be a bool")
@@ -1085,7 +1369,7 @@ class WarpScalarFusedVCycleWorkspace:
             rhs,
             correction,
             capture_replay=capture_replay,
-            publication_route=STANDALONE_PUBLICATION_ROUTE,
+            schema_route=_SCHEMA_ROUTE_STANDALONE,
         )
 
     def record_internal_application(
@@ -1102,18 +1386,15 @@ class WarpScalarFusedVCycleWorkspace:
             rhs,
             correction,
             capture_replay=capture_replay,
-            publication_route=STANDALONE_PUBLICATION_ROUTE,
+            schema_route=_SCHEMA_ROUTE_STANDALONE,
         )
 
     def record_core_application(
         self,
         *,
-        token: object,
         capture_replay: bool = False,
     ) -> WarpScalarFusedVCycleRecord:
-        """Record the exact core with publication delegated to a shared owner."""
-        if token is not _CORE_RECORD_TOKEN:
-            raise ValueError("core physical-work recording is solver-private")
+        """Serialize a core-route schema claim for the retained level buffers."""
         if type(capture_replay) is not bool:
             raise TypeError("capture_replay must be a bool")
         rhs = np.asarray(self.level_rhs[0].numpy(), dtype=np.float64).reshape(-1)
@@ -1122,7 +1403,24 @@ class WarpScalarFusedVCycleWorkspace:
             rhs,
             correction,
             capture_replay=capture_replay,
-            publication_route=EXTERNAL_SHARED_PUBLICATION_ROUTE,
+            schema_route=_SCHEMA_ROUTE_CORE,
+        )
+
+    def record_seeded_core_application(
+        self,
+        *,
+        capture_replay: bool = False,
+    ) -> WarpScalarFusedVCycleRecord:
+        """Serialize a seeded-core schema claim for the retained buffers."""
+        if type(capture_replay) is not bool:
+            raise TypeError("capture_replay must be a bool")
+        rhs = np.asarray(self.level_rhs[0].numpy(), dtype=np.float64).reshape(-1)
+        correction = np.asarray(self._final_level_correction(0).numpy(), dtype=np.float64).reshape(-1)
+        return self._record_host_vectors(
+            rhs,
+            correction,
+            capture_replay=capture_replay,
+            schema_route=_SCHEMA_ROUTE_SEEDED_CORE,
         )
 
     def _record_host_vectors(
@@ -1131,9 +1429,9 @@ class WarpScalarFusedVCycleWorkspace:
         correction: np.ndarray,
         *,
         capture_replay: bool,
-        publication_route: str,
+        schema_route: str,
     ) -> WarpScalarFusedVCycleRecord:
-        """Build one fail-closed immutable record after synchronization."""
+        """Build one fail-closed immutable schema record after synchronization."""
         self.hierarchy._validate_source()
         self.hierarchy._validate_workspace(self)
         self.hierarchy._validate_static_device_content()
@@ -1183,23 +1481,20 @@ class WarpScalarFusedVCycleWorkspace:
         )
         elided_matrix_products = sum(level.stored_block_count for level in self.hierarchy.levels[:-1])
         zero_start_solves = sum(level.block_row_count for level in self.hierarchy.levels[:-1])
-        root_ingress_zero_start_fusions = int(len(self.hierarchy.levels) > 1)
-        matrix_kernel_launches = (len(self.hierarchy.levels) - 1) * (
+        noncoarse_level_count = len(self.hierarchy.levels) - 1
+        root_ingress_zero_start_fusions = int(noncoarse_level_count > 0)
+        matrix_kernel_launches = noncoarse_level_count * (
             self.hierarchy.pre_smooth_steps + self.hierarchy.post_smooth_steps
         )
-        if type(publication_route) is not str:
-            raise TypeError("publication_route must be a built-in string")
-        if publication_route == STANDALONE_PUBLICATION_ROUTE:
-            publication_kernel_launches = 1
-            schedule_sha256 = self.hierarchy.schedule_sha256
-            device_snapshot_sha256 = self.hierarchy.device_snapshot_sha256
-        elif publication_route == EXTERNAL_SHARED_PUBLICATION_ROUTE:
-            publication_kernel_launches = 0
-            schedule_sha256 = self.hierarchy.core_schedule_sha256
-            device_snapshot_sha256 = self.hierarchy.core_device_snapshot_sha256
-        else:
-            raise ValueError("publication_route is outside the fixed physical schedule")
-        scheduled_kernel_launches = self.core_kernel_launches + publication_kernel_launches
+        schema_claim = _schema_route_claim(self.hierarchy, schema_route)
+        publication_kernel_launches = schema_claim["publication_kernel_launches"]
+        publication_route = schema_claim["publication_route"]
+        schedule_sha256 = schema_claim["schedule_sha256"]
+        device_snapshot_sha256 = schema_claim["device_snapshot_sha256"]
+        core_kernel_launches = schema_claim["core_kernel_launches"]
+        root_ingress_route = schema_claim["root_ingress_route"]
+        root_ingress_kernel_launches = schema_claim["root_ingress_kernel_launches"]
+        scheduled_kernel_launches = schema_claim["scheduled_kernel_launches"]
         physical_parts = (
             ("hierarchy_sha256", self.hierarchy.hierarchy_sha256),
             ("schedule_sha256", schedule_sha256),
@@ -1208,17 +1503,23 @@ class WarpScalarFusedVCycleWorkspace:
             ("matrix_block_products_executed", matrix_products - elided_matrix_products),
             ("matrix_block_products_elided_zero_start", elided_matrix_products),
             ("zero_start_block_solves", zero_start_solves),
+            ("noncoarse_level_count", noncoarse_level_count),
             ("root_ingress_zero_start_fusions", root_ingress_zero_start_fusions),
+            ("root_ingress_route", root_ingress_route),
+            ("root_ingress_kernel_launches", root_ingress_kernel_launches),
             ("out_of_place_jacobi_block_solves", smoother_solves - zero_start_solves),
             ("matrix_kernel_launches", matrix_kernel_launches),
             ("jacobi_kernel_launches", matrix_kernel_launches),
-            ("core_kernel_launches", self.core_kernel_launches),
+            ("core_kernel_launches", core_kernel_launches),
             ("publication_kernel_launches", publication_kernel_launches),
             ("publication_version", PUBLICATION_VERSION),
             ("publication_route", publication_route),
             ("scheduled_kernel_launches", scheduled_kernel_launches),
+            ("physical_execution_authentication", PHYSICAL_EXECUTION_AUTHENTICATION),
+            ("solver_issued_authentication", False),
+            ("performance_evidence", False),
         )
-        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v4", physical_parts)
+        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v7", physical_parts)
         physical_work = WarpScalarFusedVCyclePhysicalWork(
             hierarchy_sha256=self.hierarchy.hierarchy_sha256,
             schedule_sha256=schedule_sha256,
@@ -1227,11 +1528,14 @@ class WarpScalarFusedVCycleWorkspace:
             matrix_block_products_executed=matrix_products - elided_matrix_products,
             matrix_block_products_elided_zero_start=elided_matrix_products,
             zero_start_block_solves=zero_start_solves,
+            noncoarse_level_count=noncoarse_level_count,
             root_ingress_zero_start_fusions=root_ingress_zero_start_fusions,
+            root_ingress_route=root_ingress_route,
+            root_ingress_kernel_launches=root_ingress_kernel_launches,
             out_of_place_jacobi_block_solves=smoother_solves - zero_start_solves,
             matrix_kernel_launches=matrix_kernel_launches,
             jacobi_kernel_launches=matrix_kernel_launches,
-            core_kernel_launches=self.core_kernel_launches,
+            core_kernel_launches=core_kernel_launches,
             publication_kernel_launches=publication_kernel_launches,
             publication_version=PUBLICATION_VERSION,
             publication_route=publication_route,
@@ -1239,15 +1543,28 @@ class WarpScalarFusedVCycleWorkspace:
             content_sha256=physical_sha256,
         )
         content_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v4",
+            "warp-scalar-fused-v-cycle-result-v7",
             (
+                ("contract_id", CONTRACT_ID),
+                ("kernel_version", KERNEL_VERSION),
+                ("schedule_version", SCHEDULE_VERSION),
                 ("device_snapshot_sha256", device_snapshot_sha256),
                 ("static_device_content_sha256", self.hierarchy.static_device_content_sha256),
                 ("schedule_sha256", schedule_sha256),
+                ("standalone_schedule_sha256", self.hierarchy.schedule_sha256),
+                ("core_schedule_sha256", self.hierarchy.core_schedule_sha256),
+                ("seeded_core_schedule_sha256", self.hierarchy.seeded_core_schedule_sha256),
+                ("standalone_device_snapshot_sha256", self.hierarchy.device_snapshot_sha256),
+                ("core_device_snapshot_sha256", self.hierarchy.core_device_snapshot_sha256),
+                ("seeded_core_device_snapshot_sha256", self.hierarchy.seeded_core_device_snapshot_sha256),
                 ("work_sha256", work_sha256),
                 ("physical_work_sha256", physical_sha256),
                 ("scheduled_kernel_launches", scheduled_kernel_launches),
                 ("capture_replay", capture_replay),
+                ("research_only", True),
+                ("physical_execution_authentication", PHYSICAL_EXECUTION_AUTHENTICATION),
+                ("solver_issued_authentication", False),
+                ("performance_evidence", False),
             ),
         )
         return WarpScalarFusedVCycleRecord(
@@ -1259,6 +1576,12 @@ class WarpScalarFusedVCycleWorkspace:
             schedule_sha256=schedule_sha256,
             static_device_content_sha256=self.hierarchy.static_device_content_sha256,
             device_snapshot_sha256=device_snapshot_sha256,
+            standalone_schedule_sha256=self.hierarchy.schedule_sha256,
+            core_schedule_sha256=self.hierarchy.core_schedule_sha256,
+            seeded_core_schedule_sha256=self.hierarchy.seeded_core_schedule_sha256,
+            standalone_device_snapshot_sha256=self.hierarchy.device_snapshot_sha256,
+            core_device_snapshot_sha256=self.hierarchy.core_device_snapshot_sha256,
+            seeded_core_device_snapshot_sha256=self.hierarchy.seeded_core_device_snapshot_sha256,
             content_sha256=content_sha256,
         )
 

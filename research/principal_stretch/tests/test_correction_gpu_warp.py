@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import inspect
 import json
 import os
@@ -15,11 +16,13 @@ import torch
 import warp as wp
 
 from research.principal_stretch import correction_gpu_warp as warp_operator_module
+from research.principal_stretch import correction_multigrid_warp_scalar_fused as scalar_fused_module
 from research.principal_stretch.correction_gpu import MatrixFreeStableNHOperator, solve_fixed_pcg
 from research.principal_stretch.correction_gpu_warp import (
     CONTRACT_ID,
     FUSED_GATHER_KERNEL_VERSION,
     KERNEL_VERSION,
+    ROOT_SEEDED_GATHER_KERNEL_VERSION,
     SCALAR_DIRECTION_APPLY_KERNEL_VERSION,
     WarpFixedPCGWorkspace,
     WarpMatrixFreeStableNHOperator,
@@ -168,6 +171,462 @@ def _assert_bitwise_equal(test: unittest.TestCase, actual: np.ndarray, expected:
     np.testing.assert_array_equal(actual_array.view(np.uint8), expected_array.view(np.uint8))
 
 
+def _writable_layout_view(device, dtype, length: int, layout: str) -> tuple[wp.array | None, wp.array]:
+    element_size = wp.types.type_size_in_bytes(dtype)
+    alignment = ctypes.alignment(dtype._type_)
+    if layout == "null-pointer":
+        return None, wp.array(
+            ptr=0,
+            dtype=dtype,
+            shape=(length,),
+            strides=(element_size,),
+            device=device,
+            copy=False,
+        )
+    if layout == "zero-stride":
+        raw = wp.zeros(element_size + 2 * alignment, dtype=wp.uint8, device=device)
+        pointer = int(raw.ptr) + (-int(raw.ptr) % alignment)
+        return raw, wp.array(
+            ptr=pointer,
+            dtype=dtype,
+            shape=(length,),
+            strides=(0,),
+            device=device,
+            copy=False,
+        )
+    if layout in ("misaligned-stride-positive", "misaligned-stride-negative"):
+        step = element_size + 1
+    elif layout in ("aligned-gapped-positive", "aligned-gapped-negative"):
+        step = element_size + alignment
+    elif layout in ("misaligned-pointer-positive", "misaligned-pointer-negative"):
+        step = element_size
+    else:
+        raise ValueError(f"unknown test layout: {layout}")
+
+    span = step * (length - 1)
+    anchor = ((span + alignment - 1) // alignment) * alignment
+    raw = wp.zeros(anchor + element_size + 2 * alignment, dtype=wp.uint8, device=device)
+    aligned_base = int(raw.ptr) + (-int(raw.ptr) % alignment)
+    if layout.endswith("positive"):
+        pointer = aligned_base
+        stride = step
+    else:
+        pointer = aligned_base + (anchor if "misaligned-stride" in layout else span)
+        stride = -step
+    if "misaligned-pointer" in layout:
+        pointer += 1
+    view = wp.array(
+        ptr=pointer,
+        dtype=dtype,
+        shape=(length,),
+        strides=(stride,),
+        device=device,
+        copy=False,
+    )
+    return raw, view
+
+
+def _seeded_output_arrays(operator: WarpMatrixFreeStableNHOperator):
+    return {
+        "external_rhs": wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device),
+        "scalar_rhs": wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device),
+        "root_primary_correction": wp.empty(
+            operator.n_free_dofs,
+            dtype=wp.float64,
+            device=operator.device,
+        ),
+    }
+
+
+def _assert_seeded_writable_layout_contract(
+    test: unittest.TestCase,
+    operator: WarpMatrixFreeStableNHOperator,
+) -> None:
+    active = wp.ones(1, dtype=wp.int32, device=operator.device)
+    inverse = wp.ones(9 * operator.n_free, dtype=wp.float64, device=operator.device)
+    direction = wp.array(
+        np.linspace(-0.5, 0.7, operator.n_free_dofs),
+        dtype=wp.float64,
+        device=operator.device,
+    )
+    rhs = wp.ones(operator.n_free, dtype=wp.vec3d, device=operator.device)
+    target_specs = {
+        "external_rhs": (wp.vec3d, operator.n_free),
+        "scalar_rhs": (wp.float64, operator.n_free_dofs),
+        "root_primary_correction": (wp.float64, operator.n_free_dofs),
+    }
+    apply_target_specs = {
+        "published_direction": (wp.vec3d, operator.n_free),
+        "product": (wp.vec3d, operator.n_free),
+        **target_specs,
+        "workspace_delta_piola": (wp.mat33d, operator.n_tets),
+    }
+    misaligned_layouts = (
+        "misaligned-stride-positive",
+        "misaligned-stride-negative",
+        "misaligned-pointer-positive",
+        "misaligned-pointer-negative",
+    )
+    rejected_layouts = (*misaligned_layouts, "null-pointer")
+    aligned_layouts = ("aligned-gapped-positive", "aligned-gapped-negative")
+
+    for target_name, (dtype, length) in target_specs.items():
+        for layout in (*rejected_layouts, *aligned_layouts):
+            with test.subTest(api="gradient", target=target_name, layout=layout):
+                raw, target = _writable_layout_view(operator.device, dtype, length, layout)
+                outputs = _seeded_output_arrays(operator)
+                outputs[target_name] = target
+                tracked = [
+                    *([] if raw is None else [raw]),
+                    *(array for name, array in outputs.items() if name != target_name),
+                ]
+                before = [array.numpy().tobytes() for array in tracked]
+                with mock.patch.object(warp_operator_module.wp, "launch") as launch:
+                    if layout in rejected_layouts:
+                        message = (
+                            "non-null data pointer"
+                            if layout == "null-pointer"
+                            else "naturally aligned pointer and stride"
+                        )
+                        with test.assertRaisesRegex(ValueError, message):
+                            operator.launch_gradient_masked_seed_root_zero_start(
+                                outputs["external_rhs"],
+                                active,
+                                inverse,
+                                0.5,
+                                outputs["scalar_rhs"],
+                                outputs["root_primary_correction"],
+                                scale=-1.0,
+                            )
+                        test.assertEqual(launch.call_count, 0)
+                    else:
+                        operator.launch_gradient_masked_seed_root_zero_start(
+                            outputs["external_rhs"],
+                            active,
+                            inverse,
+                            0.5,
+                            outputs["scalar_rhs"],
+                            outputs["root_primary_correction"],
+                            scale=-1.0,
+                        )
+                        test.assertEqual(launch.call_count, 1)
+                test.assertEqual([array.numpy().tobytes() for array in tracked], before)
+
+    for target_name, (dtype, length) in apply_target_specs.items():
+        for layout in (*rejected_layouts, *aligned_layouts):
+            with test.subTest(api="apply", target=target_name, layout=layout):
+                raw, target = _writable_layout_view(operator.device, dtype, length, layout)
+                outputs = _seeded_output_arrays(operator)
+                published = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                workspace = operator.create_apply_workspace()
+                if target_name in outputs:
+                    outputs[target_name] = target
+                elif target_name == "published_direction":
+                    published = target
+                elif target_name == "product":
+                    product = target
+                else:
+                    workspace.delta_piola = target
+                writable = {
+                    "published_direction": published,
+                    "product": product,
+                    **outputs,
+                    "workspace_delta_piola": workspace.delta_piola,
+                }
+                tracked = [
+                    *([] if raw is None else [raw]),
+                    *(array for name, array in writable.items() if name != target_name),
+                ]
+                before = [array.numpy().tobytes() for array in tracked]
+                with mock.patch.object(warp_operator_module.wp, "launch") as launch:
+                    if layout in rejected_layouts:
+                        message = (
+                            "non-null data pointer"
+                            if layout == "null-pointer"
+                            else "naturally aligned pointer and stride"
+                        )
+                        with test.assertRaisesRegex(ValueError, message):
+                            operator.launch_apply_residual_scalar_direction_seed_root_zero_start(
+                                direction,
+                                published,
+                                rhs,
+                                product,
+                                outputs["external_rhs"],
+                                workspace,
+                                inverse,
+                                0.5,
+                                outputs["scalar_rhs"],
+                                outputs["root_primary_correction"],
+                            )
+                        test.assertEqual(launch.call_count, 0)
+                    else:
+                        operator.launch_apply_residual_scalar_direction_seed_root_zero_start(
+                            direction,
+                            published,
+                            rhs,
+                            product,
+                            outputs["external_rhs"],
+                            workspace,
+                            inverse,
+                            0.5,
+                            outputs["scalar_rhs"],
+                            outputs["root_primary_correction"],
+                        )
+                        test.assertEqual(launch.call_count, 2)
+                test.assertEqual([array.numpy().tobytes() for array in tracked], before)
+
+
+def _assert_seeded_read_layout_contract(
+    test: unittest.TestCase,
+    operator: WarpMatrixFreeStableNHOperator,
+) -> None:
+    invalid_layouts = (
+        "misaligned-stride-positive",
+        "misaligned-stride-negative",
+        "misaligned-pointer-positive",
+        "misaligned-pointer-negative",
+        "null-pointer",
+    )
+    valid_layouts = (
+        "zero-stride",
+        "aligned-gapped-positive",
+        "aligned-gapped-negative",
+    )
+
+    for source_name, (dtype, length) in {
+        "active": (wp.int32, 1),
+        "root_inverse_diagonal": (wp.float64, 9 * operator.n_free),
+    }.items():
+        for layout in (*invalid_layouts, *valid_layouts):
+            with test.subTest(api="gradient", source=source_name, layout=layout):
+                _raw, source = _writable_layout_view(operator.device, dtype, length, layout)
+                active = wp.ones(1, dtype=wp.int32, device=operator.device)
+                inverse = wp.ones(9 * operator.n_free, dtype=wp.float64, device=operator.device)
+                if source_name == "active":
+                    active = source
+                else:
+                    inverse = source
+                outputs = _seeded_output_arrays(operator)
+                with mock.patch.object(warp_operator_module.wp, "launch") as launch:
+                    if layout in invalid_layouts:
+                        message = (
+                            "non-null data pointer"
+                            if layout == "null-pointer"
+                            else "naturally aligned pointer and stride"
+                        )
+                        with test.assertRaisesRegex(ValueError, message):
+                            operator.launch_gradient_masked_seed_root_zero_start(
+                                outputs["external_rhs"],
+                                active,
+                                inverse,
+                                0.5,
+                                outputs["scalar_rhs"],
+                                outputs["root_primary_correction"],
+                            )
+                        test.assertEqual(launch.call_count, 0)
+                    else:
+                        operator.launch_gradient_masked_seed_root_zero_start(
+                            outputs["external_rhs"],
+                            active,
+                            inverse,
+                            0.5,
+                            outputs["scalar_rhs"],
+                            outputs["root_primary_correction"],
+                        )
+                        test.assertEqual(launch.call_count, 1)
+
+    apply_source_specs = {
+        "direction_scalar": (wp.float64, operator.n_free_dofs),
+        "rhs": (wp.vec3d, operator.n_free),
+        "root_inverse_diagonal": (wp.float64, 9 * operator.n_free),
+    }
+    for source_name, (dtype, length) in apply_source_specs.items():
+        for layout in (*invalid_layouts, *valid_layouts):
+            with test.subTest(api="apply", source=source_name, layout=layout):
+                _raw, source = _writable_layout_view(operator.device, dtype, length, layout)
+                direction = wp.ones(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+                rhs = wp.ones(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                inverse = wp.ones(9 * operator.n_free, dtype=wp.float64, device=operator.device)
+                if source_name == "direction_scalar":
+                    direction = source
+                elif source_name == "rhs":
+                    rhs = source
+                else:
+                    inverse = source
+                outputs = _seeded_output_arrays(operator)
+                published = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                workspace = operator.create_apply_workspace()
+                with mock.patch.object(warp_operator_module.wp, "launch") as launch:
+                    if layout in invalid_layouts:
+                        message = (
+                            "non-null data pointer"
+                            if layout == "null-pointer"
+                            else "naturally aligned pointer and stride"
+                        )
+                        with test.assertRaisesRegex(ValueError, message):
+                            operator.launch_apply_residual_scalar_direction_seed_root_zero_start(
+                                direction,
+                                published,
+                                rhs,
+                                product,
+                                outputs["external_rhs"],
+                                workspace,
+                                inverse,
+                                0.5,
+                                outputs["scalar_rhs"],
+                                outputs["root_primary_correction"],
+                            )
+                        test.assertEqual(launch.call_count, 0)
+                    else:
+                        operator.launch_apply_residual_scalar_direction_seed_root_zero_start(
+                            direction,
+                            published,
+                            rhs,
+                            product,
+                            outputs["external_rhs"],
+                            workspace,
+                            inverse,
+                            0.5,
+                            outputs["scalar_rhs"],
+                            outputs["root_primary_correction"],
+                        )
+                        test.assertEqual(launch.call_count, 2)
+
+
+def _owned_overlap_target_view(
+    operator: WarpMatrixFreeStableNHOperator,
+    owned_array: wp.array,
+    target_dtype,
+    target_length: int,
+    overlap: str,
+) -> wp.array:
+    alignment = ctypes.alignment(target_dtype._type_)
+    pointer = int(owned_array.ptr)
+    if overlap == "partial":
+        pointer += alignment
+        owned_span = operator._array_memory_span(
+            owned_array,
+            wp.types.type_size_in_bytes(owned_array.dtype),
+        )
+        if pointer >= owned_span[1]:
+            raise AssertionError("owned test array is too small for an aligned partial-overlap view")
+    elif overlap != "exact":
+        raise ValueError(f"unknown overlap: {overlap}")
+    return wp.array(
+        ptr=pointer,
+        dtype=target_dtype,
+        shape=(target_length,),
+        strides=(wp.types.type_size_in_bytes(target_dtype),),
+        device=operator.device,
+        copy=False,
+    )
+
+
+def _assert_seeded_targets_reject_operator_owned_storage(
+    test: unittest.TestCase,
+    operator: WarpMatrixFreeStableNHOperator,
+) -> None:
+    expected_owned_names = (
+        "positions",
+        "tets",
+        "shape_gradients",
+        "volumes",
+        "mass",
+        "mu",
+        "lam",
+        "inertial_target",
+        "free",
+        "vertex_to_free",
+        "incidence_offsets",
+        "incidence_tets",
+        "incidence_corners",
+        "deformation_gradients",
+        "cofactors",
+        "determinants",
+        "first_piola",
+    )
+    owned_arrays = operator._owned_device_arrays()
+    test.assertEqual(tuple(name for name, _array in owned_arrays), expected_owned_names)
+    test.assertEqual(len(owned_arrays), 17)
+
+    active = wp.ones(1, dtype=wp.int32, device=operator.device)
+    inverse = wp.ones(9 * operator.n_free, dtype=wp.float64, device=operator.device)
+    gradient_target_specs = {
+        "external_rhs": ("external_rhs", wp.vec3d, operator.n_free),
+        "scalar_rhs": ("scalar_rhs", wp.float64, operator.n_free_dofs),
+        "root_primary_correction": ("root_primary_correction", wp.float64, operator.n_free_dofs),
+    }
+    for target_key, (target_name, dtype, length) in gradient_target_specs.items():
+        for owned_name, owned_array in owned_arrays:
+            for overlap in ("exact", "partial"):
+                with test.subTest(api="gradient", target=target_name, owned=owned_name, overlap=overlap):
+                    target = _owned_overlap_target_view(operator, owned_array, dtype, length, overlap)
+                    outputs = _seeded_output_arrays(operator)
+                    outputs[target_key] = target
+                    with mock.patch.object(warp_operator_module.wp, "launch") as launch:
+                        with test.assertRaisesRegex(
+                            ValueError,
+                            f"{target_name} must not overlap operator-owned {owned_name}",
+                        ):
+                            operator.launch_gradient_masked_seed_root_zero_start(
+                                outputs["external_rhs"],
+                                active,
+                                inverse,
+                                0.5,
+                                outputs["scalar_rhs"],
+                                outputs["root_primary_correction"],
+                            )
+                    test.assertEqual(launch.call_count, 0)
+
+    direction = wp.ones(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+    rhs = wp.ones(operator.n_free, dtype=wp.vec3d, device=operator.device)
+    apply_target_specs = {
+        "published_direction": ("published_direction", wp.vec3d, operator.n_free),
+        "product": ("product", wp.vec3d, operator.n_free),
+        "external_rhs": ("external_rhs", wp.vec3d, operator.n_free),
+        "workspace_delta_piola": ("workspace delta_piola", wp.mat33d, operator.n_tets),
+        "scalar_rhs": ("scalar_rhs", wp.float64, operator.n_free_dofs),
+        "root_primary_correction": ("root_primary_correction", wp.float64, operator.n_free_dofs),
+    }
+    for target_key, (target_name, dtype, length) in apply_target_specs.items():
+        for owned_name, owned_array in owned_arrays:
+            for overlap in ("exact", "partial"):
+                with test.subTest(api="apply", target=target_name, owned=owned_name, overlap=overlap):
+                    target = _owned_overlap_target_view(operator, owned_array, dtype, length, overlap)
+                    outputs = _seeded_output_arrays(operator)
+                    published = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                    product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                    workspace = operator.create_apply_workspace()
+                    if target_key in outputs:
+                        outputs[target_key] = target
+                    elif target_key == "published_direction":
+                        published = target
+                    elif target_key == "product":
+                        product = target
+                    else:
+                        workspace.delta_piola = target
+                    with mock.patch.object(warp_operator_module.wp, "launch") as launch:
+                        with test.assertRaisesRegex(
+                            ValueError,
+                            f"{target_name} must not overlap operator-owned {owned_name}",
+                        ):
+                            operator.launch_apply_residual_scalar_direction_seed_root_zero_start(
+                                direction,
+                                published,
+                                rhs,
+                                product,
+                                outputs["external_rhs"],
+                                workspace,
+                                inverse,
+                                0.5,
+                                outputs["scalar_rhs"],
+                                outputs["root_primary_correction"],
+                            )
+                    test.assertEqual(launch.call_count, 0)
+
+
 class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -177,6 +636,7 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
     def test_kernel_version_is_explicit(self):
         self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-operator-v2-tiled-pcg")
         self.assertEqual(FUSED_GATHER_KERNEL_VERSION, "mg-vbd-warp-fused-gather-v1")
+        self.assertEqual(ROOT_SEEDED_GATHER_KERNEL_VERSION, "mg-vbd-warp-root-seeded-gather-v1")
         self.assertEqual(
             SCALAR_DIRECTION_APPLY_KERNEL_VERSION,
             "mg-vbd-warp-scalar-direction-apply-residual-v1",
@@ -188,6 +648,26 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
         self.assertLess(gradient_source.index("for cursor in range"), gradient_source.index("if active[0] == 0"))
         self.assertNotIn("atomic", gradient_source)
         self.assertNotIn("atomic", apply_source)
+
+        seeded_gradient_source = inspect.getsource(warp_operator_module._gather_gradient_masked_seed_root_zero_start)
+        seeded_apply_source = inspect.getsource(
+            warp_operator_module._gather_operator_product_residual_seed_root_zero_start
+        )
+        for source in (seeded_gradient_source, seeded_apply_source):
+            self.assertNotIn("atomic", source)
+            self.assertIn("transformed = wp.float64(0.0)", source)
+            self.assertIn("for local_column in range(3)", source)
+        self.assertLess(
+            seeded_gradient_source.index("value = scale * value"), seeded_gradient_source.index("if active[0] == 0")
+        )
+        self.assertLess(
+            seeded_gradient_source.index("external_rhs[free_index] = value"),
+            seeded_gradient_source.index("scalar_rhs[scalar_base]"),
+        )
+        self.assertLess(
+            seeded_apply_source.index("product[free_index] = value"),
+            seeded_apply_source.index("residual_value = rhs[free_index] - value"),
+        )
 
         scalar_tet_source = inspect.getsource(warp_operator_module._apply_tet_operator_publish_scalar_direction)
         scalar_gather_source = inspect.getsource(warp_operator_module._gather_operator_product_residual)
@@ -475,6 +955,190 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
                         fused_workspace.delta_piola.numpy(),
                         legacy_workspace.delta_piola.numpy(),
                     )
+
+    def test_root_seeded_producers_are_bitwise_old_route_for_masks_signed_zero_and_nonfinite(self):
+        for case_index, (name, _oracle, operator) in enumerate(
+            (
+                ("shared_vertex", *_oracle_and_device("cpu")),
+                ("default_stretch", *_default_stretch_oracle_and_device("cpu")),
+            )
+        ):
+            with self.subTest(problem=name):
+                generator = np.random.default_rng(1931 + case_index)
+                inverse_host = generator.normal(size=9 * operator.n_free)
+                inverse = wp.array(inverse_host, dtype=wp.float64, device=operator.device)
+                omega = 0.713
+                active = wp.ones(1, dtype=wp.int32, device=operator.device)
+                for active_value in (1, 0):
+                    with self.subTest(problem=name, producer="gradient", active=active_value):
+                        active.assign(np.array([active_value], dtype=np.int32))
+                        old_external = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                        old_scalar = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+                        old_primary = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+                        new_external = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                        new_scalar = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+                        new_primary = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+                        operator.launch_gradient_masked(old_external, active, scale=-1.0)
+                        wp.launch(
+                            scalar_fused_module._fused_root_ingress_zero_start_scalar_jacobi,
+                            dim=operator.n_free_dofs,
+                            inputs=[old_external, inverse, omega, old_scalar, old_primary],
+                            device=operator.device,
+                        )
+                        operator.launch_gradient_masked_seed_root_zero_start(
+                            new_external,
+                            active,
+                            inverse,
+                            omega,
+                            new_scalar,
+                            new_primary,
+                            scale=-1.0,
+                        )
+                        for actual, expected in (
+                            (new_external, old_external),
+                            (new_scalar, old_scalar),
+                            (new_primary, old_primary),
+                        ):
+                            _assert_bitwise_equal(self, actual.numpy(), expected.numpy())
+                        if active_value == 0:
+                            np.testing.assert_array_equal(new_external.numpy().view(np.uint64), 0)
+                            np.testing.assert_array_equal(new_scalar.numpy().view(np.uint64), 0)
+
+                direction_host = generator.normal(size=(operator.n_free, 3))
+                rhs_host = generator.normal(size=(operator.n_free, 3))
+                direction_host.reshape(-1)[:4] = (-0.0, 0.0, np.nan, np.inf)
+                rhs_host.reshape(-1)[-4:] = (-0.0, 0.0, -np.inf, np.nan)
+                direction_scalar = wp.array(direction_host.reshape(-1), dtype=wp.float64, device=operator.device)
+                rhs = wp.array(rhs_host, dtype=wp.vec3d, device=operator.device)
+                old_published = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                old_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                old_external = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                old_scalar = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+                old_primary = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+                old_workspace = operator.create_apply_workspace()
+                operator.launch_apply_residual_scalar_direction(
+                    direction_scalar,
+                    old_published,
+                    rhs,
+                    old_product,
+                    old_external,
+                    old_workspace,
+                )
+                wp.launch(
+                    scalar_fused_module._fused_root_ingress_zero_start_scalar_jacobi,
+                    dim=operator.n_free_dofs,
+                    inputs=[old_external, inverse, omega, old_scalar, old_primary],
+                    device=operator.device,
+                )
+
+                new_published = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                new_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                new_external = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                new_scalar = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+                new_primary = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+                new_workspace = operator.create_apply_workspace()
+                operator.launch_apply_residual_scalar_direction_seed_root_zero_start(
+                    direction_scalar,
+                    new_published,
+                    rhs,
+                    new_product,
+                    new_external,
+                    new_workspace,
+                    inverse,
+                    omega,
+                    new_scalar,
+                    new_primary,
+                )
+                for actual, expected in (
+                    (new_published, old_published),
+                    (new_product, old_product),
+                    (new_external, old_external),
+                    (new_scalar, old_scalar),
+                    (new_primary, old_primary),
+                    (new_workspace.delta_piola, old_workspace.delta_piola),
+                ):
+                    _assert_bitwise_equal(self, actual.numpy(), expected.numpy())
+
+    def test_root_seeded_producer_validation_rejects_aliases_before_launch(self):
+        operator = self.operator
+        n_free = operator.n_free
+        n_dofs = operator.n_free_dofs
+        active = wp.ones(1, dtype=wp.int32, device=operator.device)
+        external = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+        scalar_rhs = wp.empty(n_dofs, dtype=wp.float64, device=operator.device)
+        primary = wp.empty(n_dofs, dtype=wp.float64, device=operator.device)
+        inverse = wp.empty(9 * n_free, dtype=wp.float64, device=operator.device)
+
+        invalid_gradient_calls = (
+            (external, active, inverse, 0.7, scalar_rhs, scalar_rhs),
+            (
+                external,
+                active,
+                wp.array(ptr=scalar_rhs.ptr, dtype=wp.float64, shape=(9 * n_free,), device=operator.device, copy=False),
+                0.7,
+                scalar_rhs,
+                primary,
+            ),
+            (
+                external,
+                wp.array(ptr=external.ptr, dtype=wp.int32, shape=(1,), device=operator.device, copy=False),
+                inverse,
+                0.7,
+                scalar_rhs,
+                primary,
+            ),
+            (external, active, inverse, np.nan, scalar_rhs, primary),
+        )
+        for arguments in invalid_gradient_calls:
+            with self.subTest(
+                arguments=tuple(int(value.ptr) if isinstance(value, wp.array) else value for value in arguments)
+            ):
+                with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+                    with self.assertRaises(ValueError):
+                        operator.launch_gradient_masked_seed_root_zero_start(*arguments)
+                self.assertEqual(launch.call_count, 0)
+
+        direction_scalar = wp.empty(n_dofs, dtype=wp.float64, device=operator.device)
+        published = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+        rhs = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+        product = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+        workspace = operator.create_apply_workspace()
+        invalid_apply_calls = (
+            (direction_scalar, published, rhs, product, rhs, workspace, inverse, 0.7, scalar_rhs, primary),
+            (direction_scalar, published, rhs, product, external, workspace, inverse, 0.7, direction_scalar, primary),
+            (direction_scalar, published, rhs, product, external, workspace, inverse, 0.7, scalar_rhs, scalar_rhs),
+            (
+                direction_scalar,
+                published,
+                rhs,
+                product,
+                external,
+                workspace,
+                wp.array(ptr=product.ptr, dtype=wp.float64, shape=(9 * n_free,), device=operator.device, copy=False),
+                0.7,
+                scalar_rhs,
+                primary,
+            ),
+        )
+        for arguments in invalid_apply_calls:
+            with self.subTest(
+                alias=tuple(
+                    int(value.ptr) if isinstance(value, wp.array) else type(value).__name__ for value in arguments
+                )
+            ):
+                with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+                    with self.assertRaises(ValueError):
+                        operator.launch_apply_residual_scalar_direction_seed_root_zero_start(*arguments)
+                self.assertEqual(launch.call_count, 0)
+
+    def test_root_seeded_producer_writable_layout_preflight(self):
+        _assert_seeded_writable_layout_contract(self, self.operator)
+
+    def test_root_seeded_producer_read_layout_preflight(self):
+        _assert_seeded_read_layout_contract(self, self.operator)
+
+    def test_root_seeded_targets_reject_operator_owned_storage_before_launch(self):
+        _assert_seeded_targets_reject_operator_owned_storage(self, self.operator)
 
     def test_fused_gather_validation_rejects_invalid_arrays_and_output_aliases(self):
         operator = self.operator
@@ -852,6 +1516,9 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
         operator.launch_apply_residual(direction, rhs, product, residual, workspace)
         direction_scalar = wp.zeros(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
         published_direction = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        root_inverse = wp.ones(9 * operator.n_free, dtype=wp.float64, device=operator.device)
+        scalar_rhs = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+        root_primary = wp.empty(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
         operator.launch_apply_residual_scalar_direction(
             direction_scalar,
             published_direction,
@@ -889,6 +1556,41 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
         self.assertIs(
             launch.call_args_list[1].args[0],
             warp_operator_module._gather_operator_product_residual,
+        )
+
+        with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+            operator.launch_gradient_masked_seed_root_zero_start(
+                output,
+                active,
+                root_inverse,
+                0.5,
+                scalar_rhs,
+                root_primary,
+            )
+        self.assertEqual(launch.call_count, 1)
+        self.assertIs(launch.call_args.args[0], warp_operator_module._gather_gradient_masked_seed_root_zero_start)
+
+        with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+            operator.launch_apply_residual_scalar_direction_seed_root_zero_start(
+                direction_scalar,
+                published_direction,
+                rhs,
+                product,
+                residual,
+                workspace,
+                root_inverse,
+                0.5,
+                scalar_rhs,
+                root_primary,
+            )
+        self.assertEqual(launch.call_count, 2)
+        self.assertIs(
+            launch.call_args_list[0].args[0],
+            warp_operator_module._apply_tet_operator_publish_scalar_direction,
+        )
+        self.assertIs(
+            launch.call_args_list[1].args[0],
+            warp_operator_module._gather_operator_product_residual_seed_root_zero_start,
         )
 
 
@@ -1181,6 +1883,12 @@ class TestWarpFixedPCG(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("MG_VBD_TEST_CUDA") == "1", "set MG_VBD_TEST_CUDA=1 after claiming a GPU")
 class TestWarpFusedGatherCudaCapture(unittest.TestCase):
+    def test_root_seeded_producer_writable_layout_preflight(self):
+        if wp.get_cuda_device_count() < 1:
+            self.skipTest("no claimed CUDA device is visible")
+        _oracle, operator = _oracle_and_device("cuda:0")
+        _assert_seeded_writable_layout_contract(self, operator)
+
     def test_scalar_direction_apply_capture_replays_and_overwrites_poison(self):
         if wp.get_cuda_device_count() < 1:
             self.skipTest("no claimed CUDA device is visible")
