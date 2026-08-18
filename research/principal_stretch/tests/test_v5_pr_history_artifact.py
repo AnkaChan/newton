@@ -14,6 +14,7 @@ import zipfile
 
 import numpy as np
 
+from ..iterative_solver import PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32
 from ..pr_scene_history import AtomicCoordinate, PRSceneHistory, _array_digest
 from ..v5_checkpoint import canonical_json_sha256
 from ..v5_pr_history_artifact import (
@@ -152,6 +153,89 @@ class TestV5PRHistoryArtifact(unittest.TestCase):
             self.assertFalse(post_constructor_failure.current_code_compatibility.compatible)
             self.assertIn("future manifest access changed", post_constructor_failure.current_code_compatibility.reason)
 
+    def test_compression_root_ten_round_trip_and_rejects_integration_record_tamper(self):
+        history = PRSceneHistory("compression-50")
+        chain = history.generate(stop=AtomicCoordinate.from_ordinal(10), max_transitions=10)
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = pathlib.Path(raw_root)
+            artifact = write_pr_history_v5_artifact(
+                history,
+                chain,
+                selected_start_ordinal=0,
+                selected_stop_ordinal=10,
+                trajectory_id="unittest-pr-compression-root-ten",
+                bundle_path=root / "compression-root-ten.npz",
+                source_path=root / "compression-root-ten.json",
+                bundle_uri="artifact://unittest/pr-compression-root-ten.npz",
+                source_uri="source://unittest/pr-compression-root-ten.json",
+                expected_history_chain_sha256=chain.chain_sha256,
+                expected_root_checkpoint_sha256=history.initial_checkpoint.checkpoint_sha256,
+                max_chain_transitions=10,
+            )
+            loaded = load_pr_history_v5_artifact(
+                artifact.source_path,
+                artifact.bundle_path,
+                expected_source_file_sha256=artifact.source_file_sha256,
+                expected_bundle_file_sha256=artifact.bundle_file_sha256,
+                expected_history_chain_sha256=chain.chain_sha256,
+                expected_root_checkpoint_sha256=history.initial_checkpoint.checkpoint_sha256,
+                max_chain_transitions=10,
+            )
+            self.assertEqual(len(loaded.loaded_samples), 10)
+            ordinal_six = loaded.loaded_samples[6]
+            self.assertEqual(ordinal_six.training_sample.sample_record.ordinal, 6)
+            self.assertEqual(
+                ordinal_six.physical_integration.integration_policy,
+                PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+            )
+            self.assertEqual(
+                ordinal_six.physical_integration.source_transition_sha256,
+                chain.transitions[6].transition_sha256,
+            )
+            self.assertEqual(
+                ordinal_six.physical_integration.source_evidence_sha256,
+                ordinal_six.training_sample.physical_step.source_evidence.evidence_sha256,
+            )
+            loaded.validate_immutable()
+
+            def policy_tamper(record):
+                record["integration_policy"] = "position-history-execution-dtype-v1"
+
+            def evidence_tamper(record):
+                record["source_evidence_sha256"] = "0" * 64
+
+            def transition_tamper(record):
+                record["source_transition_sha256"] = chain.transitions[1].transition_sha256
+
+            for variant, mutate in (
+                ("integration-policy", policy_tamper),
+                ("integration-evidence", evidence_tamper),
+                ("integration-transition", transition_tamper),
+            ):
+                with self.subTest(variant=variant):
+                    source = json.loads(artifact.source_path.read_bytes())
+                    integration = source["samples"][0]["physical_integration"]
+                    mutate(integration)
+                    integration_payload = dict(integration)
+                    integration_payload.pop("binding_sha256")
+                    integration["binding_sha256"] = canonical_json_sha256(integration_payload)
+                    selection = source["selection"]
+                    selection["selected_physical_integration_binding_sha256"][0] = integration["binding_sha256"]
+                    selection_payload = dict(selection)
+                    selection_payload.pop("selection_sha256")
+                    selection["selection_sha256"] = canonical_json_sha256(selection_payload)
+                    source_path, source_sha256 = self._write_forged_source(root, variant, source)
+                    with self.assertRaisesRegex(ValueError, "physical integration differs"):
+                        load_pr_history_v5_artifact(
+                            source_path,
+                            artifact.bundle_path,
+                            expected_source_file_sha256=source_sha256,
+                            expected_bundle_file_sha256=artifact.bundle_file_sha256,
+                            expected_history_chain_sha256=chain.chain_sha256,
+                            expected_root_checkpoint_sha256=history.initial_checkpoint.checkpoint_sha256,
+                            max_chain_transitions=10,
+                        )
+
     def test_refuses_overwrite_external_hash_tamper_and_bounds(self):
         with tempfile.TemporaryDirectory() as raw_root:
             root = pathlib.Path(raw_root)
@@ -220,6 +304,7 @@ class TestV5PRHistoryArtifact(unittest.TestCase):
                 "selected_transition_sha256",
                 "selected_sample_sha256",
                 "selected_reference_acceptance_sha256",
+                "selected_physical_integration_binding_sha256",
                 "selected_operator_geometry_sha256",
                 "selected_source_tet_poses_sha256",
             ):
@@ -401,7 +486,7 @@ class TestV5PRHistoryArtifact(unittest.TestCase):
                 shape[1] = float(shape[1])
 
             def schema_float(source):
-                source["schema_version"] = 2.0
+                source["schema_version"] = 3.0
 
             def npy_version_float(source):
                 source["npy_version"] = [2.0, 0.0]

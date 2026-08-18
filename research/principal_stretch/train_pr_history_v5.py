@@ -40,6 +40,7 @@ from .iterative_solver import (
     IterativeSolverResult,
     PhysicalStepContext,
     solve_iterative_principal_stretch,
+    validate_physical_objective_integration,
 )
 from .predictor import StretchPredictor, build_stretch_predictor
 from .torch_solver import (
@@ -86,12 +87,13 @@ from .v5_training import (
 _TRAINING_TENSOR_CONTRACT = b"pss-v5-training-tensor-v1\0"
 _OPENED_PAYLOAD_NAMES = ("common_objective", "physical_step", "reference_f", "reference_state")
 _TRAINER_EXECUTION_PAYLOAD = {
-    "schema_version": 1,
-    "contract": "pss-v5-executable-training-foundation-v1",
+    "schema_version": 2,
+    "contract": "pss-v5-executable-training-foundation-v2",
     "representation_reduction": "arithmetic-mean-over-samples-and-K-recurrent-updates",
     "physics_reduction": "mean-compatible-state-total-plus-per-sample-common-potential-excess-batch-total",
     "physics_baseline": "authenticated-physical-persistence-x_current-per-sample",
     "physical_objective_routing": "one-authenticated-CommonObjectiveContext-per-sample",
+    "physical_integration_routing": "sample-record-registered-policy-and-source-evidence",
     "history_policy": "x_current-and-x_previous-fixed-x_iterate-recurrent",
     "projection": "dense-differentiable-full-deformation-gradient",
     "constraint": "exact-registered-identity",
@@ -192,6 +194,13 @@ def build_v5_adamw_optimizer_contract(
 def _verified_record(record: TrajectorySampleRecord) -> None:
     if type(record) is not TrajectorySampleRecord:
         raise TypeError("sample_record must be a canonical TrajectorySampleRecord")
+    if type(record.physical_integration_policy) is not str:
+        raise ValueError("training sample physical integration policy changed type")
+    if (
+        record.source_integration_evidence_sha256 is not None
+        and type(record.source_integration_evidence_sha256) is not str
+    ):
+        raise ValueError("training sample source integration evidence changed type")
     payload = record.as_dict()
     declared = payload.pop("sample_sha256")
     if declared != record.sample_sha256 or canonical_json_sha256(payload) != declared:
@@ -358,6 +367,13 @@ class V5TrainingSample:
                 raise ValueError(f"training common-objective tensor {name} must not require gradients")
         if objective.dt != self.sample_record.dt_seconds:
             raise ValueError("common-objective timestep differs from the sample record")
+        if self.physical_step.integration_policy != self.sample_record.physical_integration_policy:
+            raise ValueError("physical integration policy differs from the sample record")
+        source_evidence_sha256 = (
+            None if self.physical_step.source_evidence is None else self.physical_step.source_evidence.evidence_sha256
+        )
+        if source_evidence_sha256 != self.sample_record.source_integration_evidence_sha256:
+            raise ValueError("source integration evidence differs from the sample record")
 
         x_current, x_previous, force, gravity, mu, lam, pin, pinned_targets = self.physical_step._owned_tensors()
         for name, value in (
@@ -420,15 +436,7 @@ class V5TrainingSample:
         if (torch.linalg.det(self.producer_attested_reference_deformation_gradient) <= 0.0).any():
             raise ValueError("producer-attested reference deformation must have positive orientation")
 
-        free_mask = torch.ones(state.n_verts, dtype=torch.bool, device=objective.device)
-        free_mask[state.pinned] = False
-        mass = objective._owned_tensor("mass")
-        inertial_target = objective._owned_tensor("inertial_target")
-        acceleration = gravity[None, :] + force[free_mask] / mass[free_mask, None]
-        expected_target = 2.0 * x_current[free_mask] - x_previous[free_mask]
-        expected_target = expected_target + objective.dt * objective.dt * acceleration
-        if not torch.allclose(expected_target, inertial_target[free_mask], rtol=1.0e-12, atol=1.0e-14):
-            raise ValueError("physical history and loads differ from the bound common objective")
+        validate_physical_objective_integration(state, objective, self.physical_step)
 
 
 def _verify_sample_topology(sample: V5TrainingSample) -> str:
@@ -571,6 +579,13 @@ class SharedTopologyPredictorBank:
 
 def _reference_matches(reference: SamplingReference, sample: V5TrainingSample) -> None:
     record = sample.sample_record
+    if type(reference.physical_integration_policy) is not str:
+        raise ValueError("scheduled reference physical_integration_policy changed type")
+    if (
+        reference.source_integration_evidence_sha256 is not None
+        and type(reference.source_integration_evidence_sha256) is not str
+    ):
+        raise ValueError("scheduled reference source_integration_evidence_sha256 changed type")
     expected = {
         "trajectory_id": sample.trajectory_id,
         "topology_sha256": record.topology_sha256,
@@ -580,6 +595,8 @@ def _reference_matches(reference: SamplingReference, sample: V5TrainingSample) -
         "sample_id": record.sample_id,
         "sample_sha256": record.sample_sha256,
         "physical_step_sha256": record.physical_step_sha256,
+        "physical_integration_policy": record.physical_integration_policy,
+        "source_integration_evidence_sha256": record.source_integration_evidence_sha256,
         "common_objective_sha256": record.common_objective_sha256,
         "ordinal": record.ordinal,
     }

@@ -105,6 +105,8 @@ def _sample(
         pin_signature_sha256=pin_signature_sha256 or _digest(f"pins:{namespace}:default"),
         dt_seconds=dt_seconds,
         physical_step_sha256=physical_step_sha256 or _digest(f"physical-step:{namespace}:{ordinal}"),
+        physical_integration_policy="algebraic-float64-position-history-loads-v1",
+        source_integration_evidence_sha256=None,
         common_objective_sha256=common_objective_sha256 or _digest(f"common-objective:{namespace}:{ordinal}"),
         **identities,
     )
@@ -330,6 +332,9 @@ class TestCanonicalDatasetRecords(unittest.TestCase):
     def test_objective_context_declarations_are_validated_and_bound_to_sample(self):
         sample = _sample("objective-context", 0)
 
+        class StringSubclass(str):
+            pass
+
         self.assertEqual(sample.as_dict()["physical_step_sha256"], sample.physical_step_sha256)
         self.assertEqual(sample.as_dict()["common_objective_sha256"], sample.common_objective_sha256)
         self.assertNotEqual(
@@ -344,6 +349,21 @@ class TestCanonicalDatasetRecords(unittest.TestCase):
             with self.subTest(component=component):
                 with self.assertRaisesRegex(ValueError, f"sample {component} must be a lowercase SHA-256 digest"):
                     dataclasses.replace(sample, **{component: "not-a-sha256"})
+        with self.assertRaisesRegex(ValueError, "physical_integration_policy is not registered canonical text"):
+            dataclasses.replace(
+                sample,
+                physical_integration_policy=StringSubclass(sample.physical_integration_policy),
+            )
+
+        trajectory = _trajectory("mutated-policy", samples=(_sample("mutated-policy", 0),))
+        manifest = SplitManifest(train=(trajectory,), validation=(), confirmation=())
+        object.__setattr__(
+            trajectory.samples[0],
+            "physical_integration_policy",
+            StringSubclass(trajectory.samples[0].physical_integration_policy),
+        )
+        with self.assertRaisesRegex(ValueError, "manifest sample physical_integration_policy"):
+            build_sampling_schedule(manifest, steps=1, batch_size=1, seed=7)
 
     def test_rejects_numeric_identifier_alias_even_when_bytes_differ(self):
         train = _trajectory("train")

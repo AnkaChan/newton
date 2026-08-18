@@ -367,6 +367,27 @@ class TestV5IdenticalCorrectorAblation(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "operator_geometry_sha256"):
             operator_tamper.validate_immutable()
 
+        class StringSubclass(str):
+            pass
+
+        policy_type_tamper = copy.deepcopy(result)
+        object.__setattr__(
+            policy_type_tamper,
+            "physical_integration_policy",
+            StringSubclass(result.physical_integration_policy),
+        )
+        with self.assertRaisesRegex(ValueError, "unregistered physical integration policy"):
+            policy_type_tamper.validate_immutable()
+
+        row_policy_type_tamper = copy.deepcopy(result)
+        object.__setattr__(
+            row_policy_type_tamper.arms[0],
+            "physical_integration_policy",
+            StringSubclass(result.physical_integration_policy),
+        )
+        with self.assertRaisesRegex(RuntimeError, "physical integration policy type"):
+            row_policy_type_tamper.validate_immutable()
+
         comparison_tamper = copy.deepcopy(result)
         object.__setattr__(
             comparison_tamper.arms[0].corrected_metrics,
@@ -440,7 +461,7 @@ class TestV5IdenticalCorrectorAblation(unittest.TestCase):
         changed_targets = self.physical_step.pinned_targets.clone()
         changed_targets[0, 0] += 1.0e-4
         moving_pin_mismatch = dataclasses.replace(self.physical_step, pinned_targets=changed_targets)
-        with self.assertRaisesRegex(ValueError, "persistence.*exact current pinned"):
+        with self.assertRaisesRegex(ValueError, "physical current state|persistence.*exact current pinned"):
             self._run(physical_step=moving_pin_mismatch)
 
 

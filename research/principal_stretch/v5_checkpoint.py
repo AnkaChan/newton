@@ -40,6 +40,7 @@ from .iterative_solver import (
     IterativeSolverConfig,
     IterativeSolverResult,
     PhysicalStepContext,
+    validate_physical_objective_integration,
 )
 from .predictor import StretchPredictor, predictor_architecture_version
 from .torch_solver import (
@@ -73,9 +74,9 @@ from .v5_training import (
 _SCHEMA_VERSION = 5
 _CHECKPOINT_CONTRACT = "pss-iterative-principal-stretch-checkpoint-v5"
 _SOLVER_CONTRACT = "pss-iterative-principal-stretch-solver-contract-v5"
-_EVALUATION_SCHEMA_VERSION = 2
-_EVALUATION_CONTRACT = "pss-v5-held-out-evaluation-binding-v2"
-_TRAJECTORY_CONTRACT = "pss-v5-dataset-trajectory-v2"
+_EVALUATION_SCHEMA_VERSION = 3
+_EVALUATION_CONTRACT = "pss-v5-held-out-evaluation-binding-v3"
+_TRAJECTORY_CONTRACT = "pss-v5-dataset-trajectory-v3"
 _MODEL_SEMANTICS = "weight-shared-residual-aware-principal-stretch-v5"
 _REPRESENTATION_FORMULA = "F_target=A_iterate@exp(skew(omega))@exp(H_iterate+delta_H)"
 _RESIDUAL_DEFINITION = "exact-common-objective-gradient-at-current-iterate-v1"
@@ -113,7 +114,7 @@ _REPRESENTATION_LOSS_FORMULA = "cap-normalized-delta-h-plus-omega-mse-v1"
 _COMPATIBLE_STATE_LOSS_FORMULA = "mass-position-plus-volume-deformation-relative-mse-v1"
 _POTENTIAL_EXCESS_LOSS_FORMULA = "signed-common-objective-potential-excess-v1"
 _RNG_ALGORITHM = "torch-cpu-plus-numpy-pcg64"
-_BATCH_STREAM_CONTRACT = "pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2"
+_BATCH_STREAM_CONTRACT = "pss-v5-static-layout-homogeneous-trajectory-first-sampling-v3"
 _RUNTIME_CLAIM_SCOPE = "authenticated-development-replay-not-learned-contribution-or-promotion-evidence"
 
 
@@ -2300,6 +2301,8 @@ class EvaluationSampleSelection:
     dt_seconds: float
     dt_float64_bits: str
     physical_step_sha256: str
+    physical_integration_policy: str
+    source_integration_evidence_sha256: str | None
     common_objective_sha256: str
     operator_geometry_sha256: str
 
@@ -2312,6 +2315,21 @@ class EvaluationSampleSelection:
         if self.dt_float64_bits != expected_bits:
             raise ValueError("evaluation sample dt_float64_bits differs from dt_seconds")
         _require_sha256(self.physical_step_sha256, "evaluation sample physical_step_sha256")
+        if type(self.physical_integration_policy) is not str or self.physical_integration_policy not in (
+            "algebraic-float64-position-history-loads-v1",
+            "solver-vbd-staged-float32-v1",
+        ):
+            raise ValueError("evaluation sample physical integration policy is not registered")
+        if self.physical_integration_policy == "algebraic-float64-position-history-loads-v1":
+            if self.source_integration_evidence_sha256 is not None:
+                raise ValueError("algebraic evaluation sample must not name source integration evidence")
+        else:
+            if type(self.source_integration_evidence_sha256) is not str:
+                raise TypeError("evaluation sample source integration evidence sha256 must be canonical text")
+            _require_sha256(
+                self.source_integration_evidence_sha256,
+                "evaluation sample source integration evidence sha256",
+            )
         _require_sha256(self.common_objective_sha256, "evaluation sample common_objective_sha256")
         _require_sha256(self.operator_geometry_sha256, "evaluation sample operator_geometry_sha256")
 
@@ -2331,6 +2349,8 @@ class EvaluationSampleSelection:
                 "dt_seconds",
                 "dt_float64_bits",
                 "physical_step_sha256",
+                "physical_integration_policy",
+                "source_integration_evidence_sha256",
                 "common_objective_sha256",
                 "operator_geometry_sha256",
             },
@@ -2633,6 +2653,8 @@ def build_v5_evaluation_binding(
             dt_seconds=samples[identifier]["dt_seconds"],
             dt_float64_bits=samples[identifier]["dt_float64_bits"],
             physical_step_sha256=samples[identifier]["physical_step_sha256"],
+            physical_integration_policy=samples[identifier]["physical_integration_policy"],
+            source_integration_evidence_sha256=samples[identifier]["source_integration_evidence_sha256"],
             common_objective_sha256=samples[identifier]["common_objective_sha256"],
             operator_geometry_sha256=samples[identifier]["operator_geometry_sha256"],
         )
@@ -2703,6 +2725,8 @@ class VerifiedV5Runtime:
     operator_geometry_sha256: str
     projection_state_sha256: str
     static_graph_sha256: str
+    physical_integration_policy: str
+    source_integration_evidence_sha256: str | None
     physical_step_sha256: str
     common_objective_sha256: str
     iterations: int
@@ -2925,42 +2949,14 @@ def verify_v5_runtime_compatibility(
     physical_step.validate_immutable()
     if physical_step.physical_step_sha256 != selected_sample.physical_step_sha256:
         raise ValueError("runtime physical step differs from the selected sample")
-    if projection_state.n_verts != objective.n_vertices or projection_state.n_tets != objective.n_tets:
-        raise ValueError("runtime projection and common-objective mesh sizes differ")
-    for name, projected, common in (
-        ("tets", projection_state.tets, objective.tets),
-        ("J", projection_state.J, objective.J),
-        ("volume", projection_state.w, objective.volume),
-        ("pinned", projection_state.pinned, objective.pinned),
-    ):
-        if not torch.equal(projected, common):
-            raise ValueError(f"runtime projection and common-objective {name} differ")
-    for name in ("mu", "lam"):
-        physical_value = getattr(physical_step, name)
-        objective_value = getattr(objective, name).expand_as(physical_value)
-        if (
-            physical_value.dtype != objective_value.dtype
-            or physical_value.device != objective_value.device
-            or not torch.equal(physical_value, objective_value)
-        ):
-            raise ValueError(f"runtime physical-step {name} differs from the common objective")
-    expected_pin = torch.isin(projection_state.tets, projection_state.pinned).any(dim=-1).to(physical_step.pin)
-    if not torch.equal(physical_step.pin, expected_pin.expand_as(physical_step.pin)):
-        raise ValueError("runtime physical-step pin features differ from the projection constraints")
-    free_mask = torch.ones(projection_state.n_verts, dtype=torch.bool, device=objective.device)
-    free_mask[projection_state.pinned] = False
-    acceleration = (
-        physical_step.gravity[..., None, :] + physical_step.force[..., free_mask, :] / objective.mass[free_mask, None]
+    if physical_step.integration_policy != selected_sample.physical_integration_policy:
+        raise ValueError("runtime physical integration policy differs from the selected sample")
+    source_evidence_sha256 = (
+        None if physical_step.source_evidence is None else physical_step.source_evidence.evidence_sha256
     )
-    expected_target = 2.0 * physical_step.x_current[..., free_mask, :] - physical_step.x_previous[..., free_mask, :]
-    expected_target = expected_target + objective.dt * objective.dt * acceleration
-    if not torch.allclose(
-        expected_target,
-        objective.inertial_target[free_mask].expand_as(expected_target),
-        rtol=1.0e-12,
-        atol=1.0e-14,
-    ):
-        raise ValueError("runtime physical history and loads differ from the common objective")
+    if source_evidence_sha256 != selected_sample.source_integration_evidence_sha256:
+        raise ValueError("runtime source integration evidence differs from the selected sample")
+    validate_physical_objective_integration(projection_state, objective, physical_step)
 
     if type(result) is not IterativeSolverResult:
         raise ValueError("runtime result must be an IterativeSolverResult")
@@ -2987,6 +2983,16 @@ def verify_v5_runtime_compatibility(
         raise ValueError("runtime result does not carry the registered identity-constraint scope")
     if result.head_mode != "learned" or result.head_permutation is not None:
         raise ValueError("runtime result did not use the learned, unpermuted heads")
+    if (
+        type(result.physical_integration_policy) is not str
+        or result.physical_integration_policy != physical_step.integration_policy
+    ):
+        raise ValueError("runtime result physical integration policy differs from the invoked solve")
+    if (
+        result.source_integration_evidence_sha256 is not None
+        and type(result.source_integration_evidence_sha256) is not str
+    ) or result.source_integration_evidence_sha256 != source_evidence_sha256:
+        raise ValueError("runtime result source integration evidence differs from the invoked solve")
     if result.physical_step_sha256 != physical_step.physical_step_sha256:
         raise ValueError("runtime result physical-step identity differs from the invoked solve")
     if result.common_objective_sha256 != objective.common_objective_sha256:
@@ -3255,6 +3261,8 @@ def verify_v5_runtime_compatibility(
         operator_geometry_sha256=actual_operator_sha256,
         projection_state_sha256=actual_projection_sha256,
         static_graph_sha256=actual_static_graph_sha256,
+        physical_integration_policy=physical_step.integration_policy,
+        source_integration_evidence_sha256=source_evidence_sha256,
         physical_step_sha256=physical_step.physical_step_sha256,
         common_objective_sha256=objective.common_objective_sha256,
         iterations=solver_config.iterations,

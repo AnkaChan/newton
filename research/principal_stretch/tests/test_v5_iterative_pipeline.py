@@ -20,13 +20,16 @@ from research.principal_stretch.graph_transformer import (
     covariant_observation_frame,
 )
 from research.principal_stretch.iterative_solver import (
+    PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
     ConstraintApplication,
     ConstraintObservation,
     IdentityConstraintHook,
     IterativeSolverConfig,
     PhysicalStepContext,
+    SolverVBDStagedFloat32Evidence,
     _validate_config_execution_dtype,
     solve_iterative_principal_stretch,
+    validate_physical_objective_integration,
 )
 from research.principal_stretch.predictor import (
     build_stretch_predictor,
@@ -684,6 +687,156 @@ class TestV5IterativeSolver(unittest.TestCase):
         invalid_pin[0] = 0.5
         with self.assertRaisesRegex(ValueError, "zero or one"):
             dataclasses.replace(self.physical_step, pin=invalid_pin)
+
+    def test_public_integration_validator_rejects_broadcastable_wrong_tet_shape(self):
+        wrong_shape = dataclasses.replace(
+            self.physical_step,
+            mu=self.physical_step.mu.repeat(2),
+            lam=self.physical_step.lam.repeat(2),
+            pin=self.physical_step.pin.repeat(2),
+        )
+        with self.assertRaisesRegex(ValueError, "wrong exact tet shape"):
+            validate_physical_objective_integration(self.state, self.objective, wrong_shape)
+
+    def test_solver_vbd_float32_history_and_target_are_authenticated_separately(self):
+        dt32 = np.float32(1.0 / 300.0)
+        pre_event = self.inputs[0].float()
+        velocity = torch.linspace(
+            -0.071,
+            0.083,
+            pre_event.numel(),
+            dtype=torch.float32,
+        ).reshape_as(pre_event)
+        velocity[self.state.pinned] = 0.0
+        source_mass = torch.linspace(0.8, 1.2, pre_event.shape[0], dtype=torch.float32)
+        inverse_mass = torch.reciprocal(source_mass)
+        force32 = self.inputs[2].float()
+        gravity32 = self.inputs[3].float()
+        pinned_targets32 = pre_event[self.state.pinned].clone()
+        pinned_targets32[:, 1] += torch.tensor(0.0125, dtype=torch.float32)
+        x_current32 = pre_event.clone()
+        x_current32[self.state.pinned] = pinned_targets32
+        x_previous32 = pre_event - velocity * torch.tensor(dt32, dtype=torch.float32)
+        acceleration32 = gravity32 + force32 * inverse_mass[:, None]
+        velocity_new32 = velocity + acceleration32 * torch.tensor(dt32, dtype=torch.float32)
+        target32 = x_current32 + velocity_new32 * torch.tensor(dt32, dtype=torch.float32)
+        target32[self.state.pinned] = x_current32[self.state.pinned]
+
+        source_evidence = SolverVBDStagedFloat32Evidence(
+            source_transition_sha256="a" * 64,
+            dt_seconds=float(dt32),
+            pre_event_positions=pre_event,
+            velocity=velocity,
+            mass=source_mass,
+            inverse_mass=inverse_mass,
+        )
+        physical_step = PhysicalStepContext(
+            x_current=x_current32.double(),
+            x_previous=x_previous32.double(),
+            force=force32.double(),
+            gravity=gravity32.double(),
+            mu=self.inputs[4].double(),
+            lam=self.inputs[5].double(),
+            pin=self.inputs[6].double(),
+            pinned_targets=pinned_targets32.double(),
+            integration_policy=PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+            source_evidence=source_evidence,
+        )
+        objective = CommonObjectiveContext(
+            tets=self.state.tets,
+            J=self.state.J,
+            volume=self.state.w,
+            mass=source_mass.double(),
+            mu=self.inputs[4].double(),
+            lam=self.inputs[5].double(),
+            inertial_target=target32.double(),
+            pinned=self.state.pinned,
+            dt=float(dt32),
+        )
+
+        free = torch.ones(self.state.n_verts, dtype=torch.bool)
+        free[self.state.pinned.cpu()] = False
+        algebraic = 2.0 * physical_step.x_current - physical_step.x_previous
+        algebraic = algebraic + objective.dt**2 * (
+            physical_step.gravity + physical_step.force / objective.mass[:, None]
+        )
+        self.assertGreater((algebraic[free] - objective.inertial_target[free]).abs().max().item(), 1.0e-14)
+        validate_physical_objective_integration(self.state, objective, physical_step)
+        self.assertEqual(physical_step.source_evidence.evidence_sha256, source_evidence.evidence_sha256)
+        self.assertNotEqual(physical_step.physical_step_sha256, self.physical_step.physical_step_sha256)
+
+        changed_velocity = velocity.clone()
+        changed_velocity[-1, 0] = torch.nextafter(
+            changed_velocity[-1, 0],
+            torch.tensor(torch.inf, dtype=torch.float32),
+        )
+        changed_evidence = dataclasses.replace(source_evidence, velocity=changed_velocity)
+        changed_step = dataclasses.replace(physical_step, source_evidence=changed_evidence)
+        self.assertNotEqual(changed_step.physical_step_sha256, physical_step.physical_step_sha256)
+
+        changed_velocity[-1, 0] += torch.tensor(0.01, dtype=torch.float32)
+        changed_evidence = dataclasses.replace(source_evidence, velocity=changed_velocity)
+        changed_step = dataclasses.replace(physical_step, source_evidence=changed_evidence)
+        with self.assertRaisesRegex(ValueError, "x_previous|inertial target"):
+            validate_physical_objective_integration(self.state, objective, changed_step)
+
+        invalid_inverse_mass = inverse_mass.clone()
+        invalid_inverse_mass[-1] = torch.nextafter(
+            invalid_inverse_mass[-1],
+            torch.tensor(torch.inf, dtype=torch.float32),
+        )
+        with self.assertRaisesRegex(ValueError, "exact float32 reciprocal"):
+            dataclasses.replace(source_evidence, inverse_mass=invalid_inverse_mass)
+
+        tampered_dt = dataclasses.replace(source_evidence)
+        object.__setattr__(tampered_dt, "dt_seconds", float(np.float32(1.0 / 150.0)))
+        with self.assertRaisesRegex(RuntimeError, "timestep changed"):
+            tampered_dt.validate_immutable()
+
+        tampered_dt_type = dataclasses.replace(source_evidence)
+        object.__setattr__(tampered_dt_type, "dt_seconds", np.float64(source_evidence.dt_seconds))
+        with self.assertRaisesRegex(RuntimeError, "timestep changed type"):
+            tampered_dt_type.validate_immutable()
+
+        class StringSubclass(str):
+            pass
+
+        tampered_transition_type = dataclasses.replace(source_evidence)
+        object.__setattr__(
+            tampered_transition_type,
+            "source_transition_sha256",
+            StringSubclass(source_evidence.source_transition_sha256),
+        )
+        with self.assertRaisesRegex(RuntimeError, "transition identity changed type"):
+            tampered_transition_type.validate_immutable()
+
+        tampered_step = dataclasses.replace(physical_step)
+        tampered_step._owned_tensors()[-1].add_(0.125)
+        with self.assertRaisesRegex(RuntimeError, "physical-step context changed"):
+            validate_physical_objective_integration(self.state, objective, tampered_step)
+
+        tampered_policy_type = dataclasses.replace(physical_step)
+        object.__setattr__(
+            tampered_policy_type,
+            "integration_policy",
+            StringSubclass(physical_step.integration_policy),
+        )
+        with self.assertRaisesRegex(RuntimeError, "integration policy changed type"):
+            tampered_policy_type.validate_immutable()
+
+        with self.assertRaisesRegex(ValueError, "promoted float64"):
+            PhysicalStepContext(
+                x_current=x_current32,
+                x_previous=x_previous32,
+                force=force32,
+                gravity=gravity32,
+                mu=self.inputs[4].float(),
+                lam=self.inputs[5].float(),
+                pin=self.inputs[6].float(),
+                pinned_targets=pinned_targets32,
+                integration_policy=PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+                source_evidence=source_evidence,
+            )
 
     def test_singular_value_and_nonincrease_safeguards_fail_closed(self):
         predictor = self._predictor()

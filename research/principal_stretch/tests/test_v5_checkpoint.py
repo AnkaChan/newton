@@ -17,9 +17,12 @@ from .. import torch_solver as ts
 from .. import v5_checkpoint as checkpoint_contract
 from ..graph_transformer import GraphTransformerConfig
 from ..iterative_solver import (
+    PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64,
+    PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
     IdentityConstraintHook,
     IterativeSolverConfig,
     PhysicalStepContext,
+    SolverVBDStagedFloat32Evidence,
     solve_iterative_principal_stretch,
 )
 from ..predictor import build_stretch_predictor
@@ -44,6 +47,7 @@ from ..v5_checkpoint import (
 from ..v5_dataset import (
     DataAccessLedger,
     NumericContentIdentity,
+    SamplingSchedule,
     SplitManifest,
     TrajectoryProvenance,
     TrajectoryRecord,
@@ -70,9 +74,12 @@ def _trajectory(
     operator_geometry_sha256: str | None = None,
     physical_step_sha256: str | None = None,
     common_objective_sha256: str | None = None,
+    dt_seconds: float = 1.0 / 120.0,
+    physical_integration_policy: str = PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64,
+    source_integration_evidence_sha256: str | None = None,
 ) -> TrajectoryRecord:
     material = _digest(f"material:{name}")
-    dt = 1.0 / 120.0
+    dt = dt_seconds
     provenance = TrajectoryProvenance(
         generation_spec_sha256=_digest(f"generation:{name}"),
         history_manifest_sha256=_digest(f"history:{name}"),
@@ -116,6 +123,8 @@ def _trajectory(
         pin_signature_sha256=provenance.pin_schedule_sha256,
         dt_seconds=dt,
         physical_step_sha256=physical_step_sha256 or _digest(f"physical-step:{name}"),
+        physical_integration_policy=physical_integration_policy,
+        source_integration_evidence_sha256=source_integration_evidence_sha256,
         common_objective_sha256=common_objective_sha256 or _digest(f"common-objective:{name}"),
         **components,
     )
@@ -246,6 +255,8 @@ class TestV5CheckpointContract(unittest.TestCase):
         architecture_version: int = 5,
         graph_config: dict[str, object] | None = None,
         learned_parameter_dtype: str = "torch.float64",
+        training_split: SplitManifest | None = None,
+        sampling_schedule: SamplingSchedule | None = None,
     ) -> V5SolverContract:
         if graph_config is None:
             graph_config = self.predictor.checkpoint_config()["graph_transformer"]
@@ -255,8 +266,8 @@ class TestV5CheckpointContract(unittest.TestCase):
         return V5SolverContract.build(
             graph_config=graph_config,
             learned_parameter_dtype=learned_parameter_dtype,
-            training_split=self.manifest,
-            sampling_schedule=self.schedule,
+            training_split=training_split or self.manifest,
+            sampling_schedule=sampling_schedule or self.schedule,
             stages=(
                 TrainingStage(
                     name="representation",
@@ -350,7 +361,7 @@ class TestV5CheckpointContract(unittest.TestCase):
             ),
             physical_timestep_source="common-objective-context-per-sample",
             rng_algorithm="torch-cpu-plus-numpy-pcg64",
-            batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2",
+            batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v3",
         )
 
     def test_roundtrip_and_deterministic_tensor_hash(self):
@@ -572,7 +583,7 @@ class TestV5CheckpointContract(unittest.TestCase):
                 optimizer=self.contract.optimizer,
                 physical_timestep_source="common-objective-context-per-sample",
                 rng_algorithm="torch-cpu-plus-numpy-pcg64",
-                batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2",
+                batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v3",
             )
 
         with self.assertRaisesRegex(ValueError, "no greater than"):
@@ -1377,6 +1388,256 @@ class TestV5CheckpointContract(unittest.TestCase):
                 objective=self.objective,
                 physical_step=self.physical_step,
                 result=dataclasses.replace(result, trace=tuple(forged_trace)),
+            )
+
+    def test_runtime_replay_authenticates_staged_float32_source_integration(self):
+        dt32 = np.float32(1.0 / 120.0)
+        pinned = self.projection.pinned.cpu().numpy()
+        pre_event = np.asarray(self.rest, dtype=np.float32)
+        velocity = np.zeros_like(pre_event)
+        velocity[3] = np.asarray((0.0123, -0.0042, 0.0081), dtype=np.float32)
+        displacement = (velocity * dt32).astype(np.float32)
+        x_previous = (pre_event - displacement).astype(np.float32)
+        inertial_target = (pre_event + displacement).astype(np.float32)
+        inertial_target[pinned] = pre_event[pinned]
+        source_mass = np.ones(pre_event.shape[0], dtype=np.float32)
+        source_evidence = SolverVBDStagedFloat32Evidence(
+            source_transition_sha256=_digest("source-transition"),
+            dt_seconds=float(dt32),
+            pre_event_positions=torch.from_numpy(pre_event),
+            velocity=torch.from_numpy(velocity),
+            mass=torch.from_numpy(source_mass),
+            inverse_mass=torch.from_numpy(source_mass.copy()),
+        )
+        physical_step = PhysicalStepContext(
+            x_current=torch.from_numpy(pre_event).double(),
+            x_previous=torch.from_numpy(x_previous).double(),
+            force=torch.zeros_like(self.positions),
+            gravity=torch.zeros(3, dtype=torch.float64),
+            mu=self.mu,
+            lam=self.lam,
+            pin=torch.ones(1, dtype=torch.float64),
+            pinned_targets=torch.from_numpy(pre_event[pinned]).double(),
+            integration_policy=PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+            source_evidence=source_evidence,
+        )
+        objective = CommonObjectiveContext(
+            tets=self.projection.tets,
+            J=self.projection.J,
+            volume=self.projection.w,
+            mass=torch.ones(pre_event.shape[0], dtype=torch.float64),
+            mu=self.mu,
+            lam=self.lam,
+            inertial_target=torch.from_numpy(inertial_target).double(),
+            pinned=self.projection.pinned,
+            dt=float(dt32),
+        )
+        held_out = _trajectory(
+            "source-held-out",
+            self.projection.static_mesh_sha256,
+            operator_geometry_sha256=self.projection.operator_geometry_sha256,
+            physical_step_sha256=physical_step.physical_step_sha256,
+            common_objective_sha256=objective.common_objective_sha256,
+            dt_seconds=float(dt32),
+            physical_integration_policy=PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+            source_integration_evidence_sha256=source_evidence.evidence_sha256,
+        )
+        manifest = SplitManifest(train=(self.train,), validation=(), confirmation=(held_out,))
+        schedule = build_sampling_schedule(manifest, steps=8, batch_size=1, seed=1701)
+        contract = self._contract(training_split=manifest, sampling_schedule=schedule)
+        checkpoint = build_v5_checkpoint(
+            self.state,
+            solver_contract=contract,
+            optimizer_state=self.optimizer_state,
+            rng_state=self.rng_state,
+            batch_stream=schedule,
+            completed_updates=7,
+            parent_lineage=ParentLineage.root(),
+        )
+        config = IterativeSolverConfig(
+            iterations=3,
+            minimum_determinant=0.0,
+            minimum_singular_value=0.0,
+            objective_policy="require-nonincreasing",
+            residual_policy="require-nonincreasing",
+            objective_increase_tolerance=0.0,
+            normalized_residual_increase_tolerance=0.0,
+            initializer_policy="persistence",
+            return_projection_diagnostics=True,
+            head_mode="learned",
+        )
+        constraint = IdentityConstraintHook()
+        result = solve_iterative_principal_stretch(
+            predictor=self.predictor,
+            projection_state=self.projection,
+            objective=objective,
+            physical_step=physical_step,
+            expected_physical_step_sha256=physical_step.physical_step_sha256,
+            config=config,
+            constraint=constraint,
+        )
+        ledger = DataAccessLedger(manifest).record_access(
+            held_out.trajectory_id,
+            purpose="confirmation_evaluation",
+            scope="payload",
+            payload_names=("common_objective", "physical_step", "reference_state"),
+        )
+        binding = build_v5_evaluation_binding(
+            checkpoint,
+            held_out_trajectory=held_out,
+            split_manifest=manifest,
+            access_ledger=ledger,
+            projection_state=self.projection,
+            predictor=self.predictor,
+            selected_sample_ids=(held_out.samples[0].sample_id,),
+            physical_dt_seconds=objective.dt,
+            residual_scale=objective.residual_scale,
+        )
+        verified = verify_v5_runtime_compatibility(
+            checkpoint,
+            evaluation_binding=binding,
+            held_out_trajectory=held_out,
+            split_manifest=manifest,
+            access_ledger=ledger,
+            predictor=self.predictor,
+            solver_config=config,
+            projection_state=self.projection,
+            constraint=constraint,
+            objective=objective,
+            physical_step=physical_step,
+            result=result,
+        )
+        self.assertEqual(
+            verified.physical_integration_policy,
+            PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+        )
+        self.assertEqual(verified.source_integration_evidence_sha256, source_evidence.evidence_sha256)
+
+        class StringSubclass(str):
+            pass
+
+        with self.assertRaisesRegex(ValueError, "result physical integration policy"):
+            verify_v5_runtime_compatibility(
+                checkpoint,
+                evaluation_binding=binding,
+                held_out_trajectory=held_out,
+                split_manifest=manifest,
+                access_ledger=ledger,
+                predictor=self.predictor,
+                solver_config=config,
+                projection_state=self.projection,
+                constraint=constraint,
+                objective=objective,
+                physical_step=physical_step,
+                result=dataclasses.replace(
+                    result,
+                    physical_integration_policy=PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64,
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "result physical integration policy"):
+            verify_v5_runtime_compatibility(
+                checkpoint,
+                evaluation_binding=binding,
+                held_out_trajectory=held_out,
+                split_manifest=manifest,
+                access_ledger=ledger,
+                predictor=self.predictor,
+                solver_config=config,
+                projection_state=self.projection,
+                constraint=constraint,
+                objective=objective,
+                physical_step=physical_step,
+                result=dataclasses.replace(
+                    result,
+                    physical_integration_policy=StringSubclass(result.physical_integration_policy),
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "result source integration evidence"):
+            verify_v5_runtime_compatibility(
+                checkpoint,
+                evaluation_binding=binding,
+                held_out_trajectory=held_out,
+                split_manifest=manifest,
+                access_ledger=ledger,
+                predictor=self.predictor,
+                solver_config=config,
+                projection_state=self.projection,
+                constraint=constraint,
+                objective=objective,
+                physical_step=physical_step,
+                result=dataclasses.replace(result, source_integration_evidence_sha256="b" * 64),
+            )
+        with self.assertRaisesRegex(ValueError, "result source integration evidence"):
+            verify_v5_runtime_compatibility(
+                checkpoint,
+                evaluation_binding=binding,
+                held_out_trajectory=held_out,
+                split_manifest=manifest,
+                access_ledger=ledger,
+                predictor=self.predictor,
+                solver_config=config,
+                projection_state=self.projection,
+                constraint=constraint,
+                objective=objective,
+                physical_step=physical_step,
+                result=dataclasses.replace(
+                    result,
+                    source_integration_evidence_sha256=StringSubclass(result.source_integration_evidence_sha256),
+                ),
+            )
+
+        relabelled_selection = dataclasses.replace(
+            binding.selected_samples[0],
+            physical_integration_policy=PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64,
+            source_integration_evidence_sha256=None,
+        )
+        relabelled_binding = dataclasses.replace(binding, selected_samples=(relabelled_selection,))
+        with self.assertRaisesRegex(ValueError, "evaluation binding.*held-out selection"):
+            verify_v5_runtime_compatibility(
+                checkpoint,
+                evaluation_binding=relabelled_binding,
+                held_out_trajectory=held_out,
+                split_manifest=manifest,
+                access_ledger=ledger,
+                predictor=self.predictor,
+                solver_config=config,
+                projection_state=self.projection,
+                constraint=constraint,
+                objective=objective,
+                physical_step=physical_step,
+                result=result,
+            )
+
+        with self.assertRaisesRegex(ValueError, "physical integration policy is not registered"):
+            dataclasses.replace(
+                binding.selected_samples[0],
+                physical_integration_policy=StringSubclass(binding.selected_samples[0].physical_integration_policy),
+            )
+
+        algebraic_step = PhysicalStepContext(
+            x_current=physical_step.x_current,
+            x_previous=physical_step.x_previous,
+            force=physical_step.force,
+            gravity=physical_step.gravity,
+            mu=physical_step.mu,
+            lam=physical_step.lam,
+            pin=physical_step.pin,
+            pinned_targets=physical_step.pinned_targets,
+        )
+        with self.assertRaisesRegex(ValueError, "physical step differs from the selected sample"):
+            verify_v5_runtime_compatibility(
+                checkpoint,
+                evaluation_binding=binding,
+                held_out_trajectory=held_out,
+                split_manifest=manifest,
+                access_ledger=ledger,
+                predictor=self.predictor,
+                solver_config=config,
+                projection_state=self.projection,
+                constraint=constraint,
+                objective=objective,
+                physical_step=algebraic_step,
+                result=result,
             )
 
     def test_predictor_hooks_and_noncanonical_execution_surface_are_rejected(self):

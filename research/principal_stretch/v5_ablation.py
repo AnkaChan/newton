@@ -351,6 +351,8 @@ class AblationArmResult:
     head_mode: str | None
     head_permutation: tuple[int, ...] | None
     physical_step_sha256: str
+    physical_integration_policy: str
+    source_integration_evidence_sha256: str | None
     common_objective_sha256: str
     static_mesh_sha256: str
     operator_geometry_sha256: str
@@ -393,6 +395,8 @@ class V5AblationResult:
     dat_scope: str
     vbd_freshness_scope: str
     physical_step_sha256: str
+    physical_integration_policy: str
+    source_integration_evidence_sha256: str | None
     common_objective_sha256: str
     static_mesh_sha256: str
     operator_geometry_sha256: str
@@ -421,7 +425,7 @@ class V5AblationResult:
         names = tuple(arm.name for arm in self.arms)
         if names != MANDATORY_ARM_NAMES or len(set(names)) != len(names):
             raise ValueError("ablation result must contain each mandatory canonical row exactly once in order")
-        if self.schema_version != 2 or self.claim_scope != _CLAIM_SCOPE:
+        if self.schema_version != 3 or self.claim_scope != _CLAIM_SCOPE:
             raise ValueError("ablation result has an unsupported claim schema")
         if not self.development_only or self.learned_value_claim:
             raise ValueError("this harness may report only development diagnostics without a learned-value claim")
@@ -440,6 +444,18 @@ class V5AblationResult:
             raise ValueError("ablation result changed its checkpoint or DAT limitation")
         if self.vbd_freshness_scope != _VBD_FRESHNESS_SCOPE:
             raise ValueError("ablation result changed its VBD freshness limitation")
+        if type(self.physical_integration_policy) is not str or self.physical_integration_policy not in (
+            "algebraic-float64-position-history-loads-v1",
+            "solver-vbd-staged-float32-v1",
+        ):
+            raise ValueError("ablation result changed to an unregistered physical integration policy")
+        if self.physical_integration_policy == "algebraic-float64-position-history-loads-v1":
+            if self.source_integration_evidence_sha256 is not None:
+                raise ValueError("algebraic ablation result must not name source integration evidence")
+        else:
+            if type(self.source_integration_evidence_sha256) is not str:
+                raise TypeError("source_integration_evidence_sha256 must be canonical text")
+            _require_sha256(self.source_integration_evidence_sha256, "source_integration_evidence_sha256")
         for name in (
             "physical_step_sha256",
             "common_objective_sha256",
@@ -494,6 +510,13 @@ class V5AblationResult:
             raise RuntimeError("permuted row differs from the authenticated head permutation")
         persistence = self.arm(PERSISTENCE_ARM).pre_corrector_positions
         for arm in self.arms:
+            if type(arm.physical_integration_policy) is not str:
+                raise RuntimeError("ablation row changed its physical integration policy type")
+            if (
+                arm.source_integration_evidence_sha256 is not None
+                and type(arm.source_integration_evidence_sha256) is not str
+            ):
+                raise RuntimeError("ablation row changed its source integration evidence type")
             expected_mode, expected_permutation = expected_heads[arm.name]
             if arm.head_mode != expected_mode or arm.head_permutation != expected_permutation:
                 raise RuntimeError("ablation row changed its canonical head semantics")
@@ -503,6 +526,8 @@ class V5AblationResult:
                 raise RuntimeError("ablation row changed its canonical start origin")
             for name in (
                 "physical_step_sha256",
+                "physical_integration_policy",
+                "source_integration_evidence_sha256",
                 "common_objective_sha256",
                 "static_mesh_sha256",
                 "operator_geometry_sha256",
@@ -722,6 +747,8 @@ class V5AblationResult:
             "checkpoint_scope": self.checkpoint_scope,
             "dat_scope": self.dat_scope,
             "physical_step_sha256": self.physical_step_sha256,
+            "physical_integration_policy": self.physical_integration_policy,
+            "source_integration_evidence_sha256": self.source_integration_evidence_sha256,
             "common_objective_sha256": self.common_objective_sha256,
             "static_mesh_sha256": self.static_mesh_sha256,
             "operator_geometry_sha256": self.operator_geometry_sha256,
@@ -964,6 +991,8 @@ def _validate_iterative_result(
     head_permutation: tuple[int, ...] | None,
     iterations: int,
     physical_step_sha256: str,
+    physical_integration_policy: str,
+    source_integration_evidence_sha256: str | None,
     objective: CommonObjectiveContext,
     projection_state: SolverState,
     static_graph_sha256: str,
@@ -975,6 +1004,16 @@ def _validate_iterative_result(
         raise RuntimeError("v5 ablation arm did not execute the fixed projection schedule")
     if result.head_mode != head_mode or result.head_permutation != head_permutation:
         raise RuntimeError("v5 ablation arm returned a relabelled head mode")
+    if (
+        type(result.physical_integration_policy) is not str
+        or result.physical_integration_policy != physical_integration_policy
+    ):
+        raise RuntimeError("v5 ablation arm changed the physical integration policy")
+    if (
+        result.source_integration_evidence_sha256 is not None
+        and type(result.source_integration_evidence_sha256) is not str
+    ) or result.source_integration_evidence_sha256 != source_integration_evidence_sha256:
+        raise RuntimeError("v5 ablation arm changed the source integration evidence")
     if result.physical_step_sha256 != physical_step_sha256:
         raise RuntimeError("v5 ablation arm changed the physical-step identity")
     if result.common_objective_sha256 != objective.common_objective_sha256:
@@ -1044,6 +1083,8 @@ def _row_evidence_payload(arm: AblationArmResult) -> dict[str, object]:
         "head_mode": arm.head_mode,
         "head_permutation": arm.head_permutation,
         "physical_step_sha256": arm.physical_step_sha256,
+        "physical_integration_policy": arm.physical_integration_policy,
+        "source_integration_evidence_sha256": arm.source_integration_evidence_sha256,
         "common_objective_sha256": arm.common_objective_sha256,
         "static_mesh_sha256": arm.static_mesh_sha256,
         "operator_geometry_sha256": arm.operator_geometry_sha256,
@@ -1209,6 +1250,10 @@ def run_v5_identical_corrector_ablation(
                 head_permutation=head_permutation,
                 iterations=int(config.iterations),
                 physical_step_sha256=physical_step.physical_step_sha256,
+                physical_integration_policy=physical_step.integration_policy,
+                source_integration_evidence_sha256=(
+                    None if physical_step.source_evidence is None else physical_step.source_evidence.evidence_sha256
+                ),
                 objective=objective,
                 projection_state=projection_state,
                 static_graph_sha256=static_graph_sha256,
@@ -1338,6 +1383,10 @@ def run_v5_identical_corrector_ablation(
                     head_mode=head_modes[arm_name],
                     head_permutation=permutation if arm_name == PERMUTED_ARM else None,
                     physical_step_sha256=physical_step.physical_step_sha256,
+                    physical_integration_policy=physical_step.integration_policy,
+                    source_integration_evidence_sha256=(
+                        None if physical_step.source_evidence is None else physical_step.source_evidence.evidence_sha256
+                    ),
                     common_objective_sha256=objective.common_objective_sha256,
                     static_mesh_sha256=projection_state.static_mesh_sha256,
                     operator_geometry_sha256=projection_state.operator_geometry_sha256,
@@ -1381,13 +1430,17 @@ def run_v5_identical_corrector_ablation(
     assert scheduled_work_sha256 is not None
     final_rows = tuple(rows)
     identities = {
-        "schema_version": 2,
+        "schema_version": 3,
         "claim_scope": _CLAIM_SCOPE,
         "development_only": True,
         "learned_value_claim": False,
         "checkpoint_scope": _CHECKPOINT_SCOPE,
         "dat_scope": _DAT_SCOPE,
         "physical_step_sha256": physical_step.physical_step_sha256,
+        "physical_integration_policy": physical_step.integration_policy,
+        "source_integration_evidence_sha256": (
+            None if physical_step.source_evidence is None else physical_step.source_evidence.evidence_sha256
+        ),
         "common_objective_sha256": objective.common_objective_sha256,
         "static_mesh_sha256": projection_state.static_mesh_sha256,
         "operator_geometry_sha256": projection_state.operator_geometry_sha256,
@@ -1409,7 +1462,7 @@ def run_v5_identical_corrector_ablation(
     }
     evidence_sha256 = _ablation_evidence_sha256(identities=identities, arms=final_rows)
     return V5AblationResult(
-        schema_version=2,
+        schema_version=3,
         claim_scope=_CLAIM_SCOPE,
         development_only=True,
         learned_value_claim=False,
@@ -1417,6 +1470,10 @@ def run_v5_identical_corrector_ablation(
         dat_scope=_DAT_SCOPE,
         vbd_freshness_scope=_VBD_FRESHNESS_SCOPE,
         physical_step_sha256=physical_step.physical_step_sha256,
+        physical_integration_policy=physical_step.integration_policy,
+        source_integration_evidence_sha256=(
+            None if physical_step.source_evidence is None else physical_step.source_evidence.evidence_sha256
+        ),
         common_objective_sha256=objective.common_objective_sha256,
         static_mesh_sha256=projection_state.static_mesh_sha256,
         operator_geometry_sha256=projection_state.operator_geometry_sha256,

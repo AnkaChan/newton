@@ -9,6 +9,7 @@ import unittest
 import numpy as np
 import torch
 
+from ..iterative_solver import PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32
 from ..pr_scene_history import AtomicCoordinate, HistoryCheckpoint, PRHistoryChain, PRSceneHistory, _advance_prefix
 from ..v5_pr_history_loader import (
     LOADER_SCOPE_SHA256,
@@ -71,6 +72,18 @@ class TestV5PRHistoryLoader(unittest.TestCase):
 
         self.assertEqual(record.physical_step_sha256, sample.physical_step.physical_step_sha256)
         self.assertEqual(record.common_objective_sha256, objective.common_objective_sha256)
+        self.assertEqual(
+            sample.physical_step.integration_policy,
+            PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+        )
+        self.assertEqual(
+            loaded.physical_integration.source_transition_sha256,
+            self.transition.transition_sha256,
+        )
+        self.assertEqual(
+            loaded.physical_integration.source_evidence_sha256,
+            sample.physical_step.source_evidence.evidence_sha256,
+        )
         self.assertEqual(
             record.material_sha256,
             canonical_runtime_material_sha256(objective.mass, objective.mu, objective.lam),
@@ -135,6 +148,50 @@ class TestV5PRHistoryLoader(unittest.TestCase):
         self.assertEqual(source_bound.loader_scope_sha256, SOURCE_BOUND_LOADER_SCOPE_SHA256)
         self.assertFalse(loader_scope(SOURCE_BOUND_LOADER_SCOPE_SHA256)["source_callback_replayed"])
 
+    def test_compression_ordinal_six_uses_exact_staged_float32_source_evidence(self):
+        history = PRSceneHistory("compression-50")
+        chain = history.generate(stop=AtomicCoordinate.from_ordinal(7), max_transitions=7)
+        transition = chain.transitions[6]
+        loaded = load_pr_history_v5_sample(
+            history,
+            chain,
+            transition,
+            trajectory_id="unittest-pr-compression-through-six",
+            expected_history_chain_sha256=chain.chain_sha256,
+            expected_root_checkpoint_sha256=history.initial_checkpoint.checkpoint_sha256,
+            max_chain_transitions=7,
+        )
+        sample = loaded.training_sample
+        step = sample.physical_step
+        objective = sample.common_objective
+        evidence = step.source_evidence
+        self.assertEqual(step.integration_policy, PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32)
+        self.assertEqual(evidence.source_transition_sha256, transition.transition_sha256)
+        self.assertTrue(
+            torch.equal(evidence.pre_event_positions, torch.as_tensor(np.array(transition.input_state.q, copy=True)))
+        )
+        self.assertTrue(torch.equal(evidence.velocity, torch.as_tensor(np.array(transition.input_state.qd, copy=True))))
+        self.assertTrue(
+            torch.equal(
+                evidence.inverse_mass,
+                torch.as_tensor(np.array(history._base_scene.particle_inv_mass), dtype=torch.float32),
+            )
+        )
+        free = torch.ones(objective.n_vertices, dtype=torch.bool)
+        free[objective.pinned] = False
+        legacy_acceleration = step.gravity[None, :] + step.force[free] / objective.mass[free, None]
+        legacy_target = 2.0 * step.x_current[free] - step.x_previous[free]
+        legacy_target = legacy_target + objective.dt * objective.dt * legacy_acceleration
+        self.assertFalse(
+            torch.allclose(
+                legacy_target,
+                objective.inertial_target[free],
+                rtol=1.0e-12,
+                atol=1.0e-14,
+            )
+        )
+        loaded.validate_immutable()
+
     def test_loaded_sample_rejects_cross_transition_acceptance_swap(self):
         first = self._load()
         second = self._load(transition=self.chain.transitions[1])
@@ -142,8 +199,65 @@ class TestV5PRHistoryLoader(unittest.TestCase):
             LoadedPRHistoryV5Sample(
                 training_sample=first.training_sample,
                 reference_acceptance=second.reference_acceptance,
+                physical_integration=first.physical_integration,
                 loader_scope_sha256=first.loader_scope_sha256,
             )
+        with self.assertRaisesRegex(ValueError, "physical integration evidence"):
+            LoadedPRHistoryV5Sample(
+                training_sample=first.training_sample,
+                reference_acceptance=first.reference_acceptance,
+                physical_integration=second.physical_integration,
+                loader_scope_sha256=first.loader_scope_sha256,
+            )
+
+    def test_canonical_bindings_reject_scalar_aliases_after_object_setattr(self):
+        loaded = self._load()
+
+        integration = loaded.physical_integration
+        original_dt = integration.dt_seconds
+        object.__setattr__(integration, "dt_seconds", np.float64(original_dt))
+        try:
+            with self.assertRaisesRegex(TypeError, "canonical float"):
+                loaded.validate_immutable()
+        finally:
+            object.__setattr__(integration, "dt_seconds", original_dt)
+
+        class StringAlias(str):
+            pass
+
+        original_policy = integration.integration_policy
+        object.__setattr__(integration, "integration_policy", StringAlias(original_policy))
+        try:
+            with self.assertRaisesRegex(ValueError, "staged SolverVBD"):
+                loaded.validate_immutable()
+        finally:
+            object.__setattr__(integration, "integration_policy", original_policy)
+
+        acceptance = loaded.reference_acceptance
+        original_method = acceptance.method
+        object.__setattr__(acceptance, "method", StringAlias(original_method))
+        try:
+            with self.assertRaisesRegex(ValueError, "canonical string"):
+                loaded.validate_immutable()
+        finally:
+            object.__setattr__(acceptance, "method", original_method)
+
+        original_config = acceptance.config
+        object.__setattr__(acceptance, "config", dict(original_config))
+        try:
+            with self.assertRaisesRegex(ValueError, "noncanonical JSON"):
+                loaded.validate_immutable()
+        finally:
+            object.__setattr__(acceptance, "config", original_config)
+
+        original_scope = loaded.loader_scope_sha256
+        object.__setattr__(loaded, "loader_scope_sha256", StringAlias(original_scope))
+        try:
+            with self.assertRaisesRegex(ValueError, "unregistered loader scope"):
+                loaded.validate_immutable()
+        finally:
+            object.__setattr__(loaded, "loader_scope_sha256", original_scope)
+        loaded.validate_immutable()
 
     def test_requires_external_root_chain_bound_and_exact_membership(self):
         with self.assertRaisesRegex(ValueError, "externally pinned SHA-256"):

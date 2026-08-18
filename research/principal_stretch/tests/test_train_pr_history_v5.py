@@ -14,7 +14,10 @@ import torch
 
 from .. import torch_solver as ts
 from ..graph_transformer import GraphTransformerConfig
-from ..iterative_solver import PhysicalStepContext
+from ..iterative_solver import (
+    PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+    PhysicalStepContext,
+)
 from ..train_pr_history_v5 import (
     TRAINER_EXECUTION_CONTRACT_SHA256,
     SharedTopologyPredictorBank,
@@ -167,6 +170,10 @@ def _sample_and_record(
         pin_signature_sha256=_digest(f"pins:{trajectory_id}"),
         dt_seconds=dt,
         physical_step_sha256=physical.physical_step_sha256,
+        physical_integration_policy=physical.integration_policy,
+        source_integration_evidence_sha256=(
+            None if physical.source_evidence is None else physical.source_evidence.evidence_sha256
+        ),
         common_objective_sha256=objective.common_objective_sha256,
         observed_f=_numeric(sample_id, "observed_f"),
         input_f=_numeric(sample_id, "input_f"),
@@ -342,7 +349,7 @@ def _contract(
         ),
         physical_timestep_source="common-objective-context-per-sample",
         rng_algorithm="torch-cpu-plus-numpy-pcg64",
-        batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2",
+        batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v3",
     )
 
 
@@ -585,6 +592,19 @@ class TestExecutableV5Trainer(unittest.TestCase):
                 ),
             )
 
+        class StringSubclass(str):
+            pass
+
+        type_tampered_record = dataclasses.replace(sample.sample_record)
+        type_tampered_sample = dataclasses.replace(sample, sample_record=type_tampered_record)
+        object.__setattr__(
+            type_tampered_record,
+            "physical_integration_policy",
+            StringSubclass(type_tampered_record.physical_integration_policy),
+        )
+        with self.assertRaisesRegex(ValueError, "physical integration policy changed type"):
+            type_tampered_sample.validate_immutable()
+
     def test_two_sample_physics_batch_routes_distinct_objectives(self):
         sample0, payload0 = _sample_and_record(
             "pair-0",
@@ -666,6 +686,46 @@ class TestExecutableV5Trainer(unittest.TestCase):
                 bank=bank,
                 batch=batch,
                 payloads=swapped,
+                stage=contract.stages[1],
+                solver_contract=contract,
+            )
+
+        relabelled_reference = dataclasses.replace(
+            references[0],
+            physical_integration_policy=PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+            source_integration_evidence_sha256="a" * 64,
+        )
+        relabelled_batch = dataclasses.replace(
+            batch,
+            samples=(relabelled_reference, references[1]),
+        )
+        with self.assertRaisesRegex(ValueError, "scheduled reference physical_integration_policy"):
+            compute_v5_training_batch_loss(
+                bank=bank,
+                batch=relabelled_batch,
+                payloads=payloads,
+                stage=contract.stages[1],
+                solver_contract=contract,
+            )
+
+        class StringSubclass(str):
+            pass
+
+        type_tampered_reference = dataclasses.replace(references[0])
+        object.__setattr__(
+            type_tampered_reference,
+            "physical_integration_policy",
+            StringSubclass(type_tampered_reference.physical_integration_policy),
+        )
+        type_tampered_batch = dataclasses.replace(
+            batch,
+            samples=(type_tampered_reference, references[1]),
+        )
+        with self.assertRaisesRegex(ValueError, "physical_integration_policy changed type"):
+            compute_v5_training_batch_loss(
+                bank=bank,
+                batch=type_tampered_batch,
+                payloads=payloads,
                 stage=contract.stages[1],
                 solver_contract=contract,
             )

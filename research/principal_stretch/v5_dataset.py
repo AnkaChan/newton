@@ -37,15 +37,21 @@ _NUMERIC_COMPONENTS = (
 )
 _OBJECTIVE_COMPONENTS = ("physical_step", "common_objective")
 _PAYLOAD_COMPONENTS = (*_NUMERIC_COMPONENTS, *_OBJECTIVE_COMPONENTS)
-_SAMPLE_CONTRACT = "pss-v5-dataset-sample-v2"
+_SAMPLE_CONTRACT = "pss-v5-dataset-sample-v3"
 _STATIC_LAYOUT_CONTRACT = "pss-v5-dataset-static-layout-v2"
 _PROVENANCE_CONTRACT = "pss-v5-dataset-trajectory-provenance-v1"
-_TRAJECTORY_CONTRACT = "pss-v5-dataset-trajectory-v2"
-_SPLIT_CONTRACT = "pss-v5-dataset-split-v2"
+_TRAJECTORY_CONTRACT = "pss-v5-dataset-trajectory-v3"
+_SPLIT_CONTRACT = "pss-v5-dataset-split-v3"
 _ACCESS_CONTRACT = "pss-v5-dataset-access-ledger-v1"
 _PAYLOAD_SELECTION_CONTRACT = "pss-v5-dataset-payload-selection-v1"
-_SAMPLING_CONTRACT = "pss-v5-static-layout-homogeneous-trajectory-first-sampling-v2"
+_SAMPLING_CONTRACT = "pss-v5-static-layout-homogeneous-trajectory-first-sampling-v3"
 _OBJECTIVE_ROUTING = "per-sample-unbatched-physical-objective-v1"
+_PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64 = "algebraic-float64-position-history-loads-v1"
+_PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32 = "solver-vbd-staged-float32-v1"
+_PHYSICAL_INTEGRATION_POLICIES = (
+    _PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64,
+    _PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+)
 _COMPLETE_TRAJECTORY_SELECTION = "complete-contiguous-trajectory-v1"
 _AUTHENTICATED_SUBRANGE_SELECTION = "authenticated-contiguous-subrange-v1"
 _TRAJECTORY_SELECTION_CONTRACTS = (
@@ -105,6 +111,20 @@ def _sha256(value: object, name: str) -> str:
     if type(value) is not str or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
         raise ValueError(f"{name} must be a lowercase SHA-256 digest")
     return value
+
+
+def _validate_physical_integration_identity(
+    policy: object,
+    source_evidence_sha256: object,
+    subject: str,
+) -> None:
+    if type(policy) is not str or policy not in _PHYSICAL_INTEGRATION_POLICIES:
+        raise ValueError(f"{subject} physical_integration_policy is not registered canonical text")
+    if policy == _PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64:
+        if source_evidence_sha256 is not None:
+            raise ValueError(f"{subject} algebraic integration must not name SolverVBD source evidence")
+    else:
+        _sha256(source_evidence_sha256, f"{subject} source_integration_evidence_sha256")
 
 
 def _canonical_uri(value: object, name: str) -> str:
@@ -379,6 +399,8 @@ class TrajectorySampleRecord:
     pin_signature_sha256: str
     dt_seconds: float
     physical_step_sha256: str
+    physical_integration_policy: str
+    source_integration_evidence_sha256: str | None
     common_objective_sha256: str
     observed_f: NumericContentIdentity
     input_f: NumericContentIdentity
@@ -403,6 +425,11 @@ class TrajectorySampleRecord:
             "common_objective_sha256",
         ):
             _sha256(getattr(self, name), f"sample {name}")
+        _validate_physical_integration_identity(
+            self.physical_integration_policy,
+            self.source_integration_evidence_sha256,
+            "sample",
+        )
         dt_seconds = _positive_float64(self.dt_seconds, "sample dt_seconds")
         object.__setattr__(self, "dt_seconds", dt_seconds)
         object.__setattr__(self, "dt_float64_bits", _float64_bits(dt_seconds))
@@ -445,6 +472,8 @@ class TrajectorySampleRecord:
             "dt_float64_bits": self.dt_float64_bits,
             "static_layout_sha256": self.static_layout_sha256,
             "physical_step_sha256": self.physical_step_sha256,
+            "physical_integration_policy": self.physical_integration_policy,
+            "source_integration_evidence_sha256": self.source_integration_evidence_sha256,
             "common_objective_sha256": self.common_objective_sha256,
             "numeric_content": {name: identity.as_dict() for name, identity in self.numeric_content},
         }
@@ -526,6 +555,11 @@ class TrajectoryRecord:
         else:
             _sha256(self.selection_provenance_sha256, "selection_provenance_sha256")
         for sample in samples:
+            _validate_physical_integration_identity(
+                sample.physical_integration_policy,
+                sample.source_integration_evidence_sha256,
+                "trajectory sample",
+            )
             if sample.topology_sha256 != self.topology_sha256:
                 raise ValueError("sample topology disagrees with its trajectory")
             if sample.operator_geometry_sha256 != self.operator_geometry_sha256:
@@ -813,6 +847,14 @@ def _verify_manifest(manifest: SplitManifest) -> None:
         raise ValueError("manifest must be a canonical SplitManifest")
     if manifest.manifest_sha256 != _canonical_digest(manifest._payload()):
         raise ValueError("split manifest changed after authentication")
+    for role in _ROLE_ORDER:
+        for trajectory in manifest.records(role):
+            for sample in trajectory.samples:
+                _validate_physical_integration_identity(
+                    sample.physical_integration_policy,
+                    sample.source_integration_evidence_sha256,
+                    "manifest sample",
+                )
 
 
 def _payload_names(values: Sequence[str]) -> tuple[str, ...]:
@@ -1047,6 +1089,8 @@ class SamplingReference:
     sample_id: str
     sample_sha256: str
     physical_step_sha256: str
+    physical_integration_policy: str
+    source_integration_evidence_sha256: str | None
     common_objective_sha256: str
     ordinal: int
 
@@ -1064,6 +1108,11 @@ class SamplingReference:
             "common_objective_sha256",
         ):
             _sha256(getattr(self, name), f"scheduled {name}")
+        _validate_physical_integration_identity(
+            self.physical_integration_policy,
+            self.source_integration_evidence_sha256,
+            "scheduled sample",
+        )
         if type(self.ordinal) is not int or self.ordinal < 0:
             raise ValueError("scheduled ordinal must be a non-negative integer")
 
@@ -1175,6 +1224,11 @@ class SamplingSchedule:
             raise ValueError("every sampling batch must have batch_size samples")
         for batch in batches:
             for reference in batch.samples:
+                _validate_physical_integration_identity(
+                    reference.physical_integration_policy,
+                    reference.source_integration_evidence_sha256,
+                    "scheduled reference",
+                )
                 if reference.topology_sha256 != batch.topology_sha256:
                     raise ValueError("scheduled reference disagrees with its batch topology")
                 if reference.operator_geometry_sha256 != batch.operator_geometry_sha256:
@@ -1201,6 +1255,10 @@ class SamplingSchedule:
                     raise ValueError("scheduled static layout disagrees with the split manifest")
                 if reference.physical_step_sha256 != sample.physical_step_sha256:
                     raise ValueError("scheduled physical-step identity disagrees with the split manifest")
+                if reference.physical_integration_policy != sample.physical_integration_policy:
+                    raise ValueError("scheduled physical integration policy disagrees with the split manifest")
+                if reference.source_integration_evidence_sha256 != sample.source_integration_evidence_sha256:
+                    raise ValueError("scheduled source integration evidence disagrees with the split manifest")
                 if reference.common_objective_sha256 != sample.common_objective_sha256:
                     raise ValueError("scheduled common-objective identity disagrees with the split manifest")
                 if reference.sample_sha256 != sample.sample_sha256 or reference.ordinal != sample.ordinal:
@@ -1363,6 +1421,8 @@ def _build_sampling_batches(
                     sample_id=sample.sample_id,
                     sample_sha256=sample.sample_sha256,
                     physical_step_sha256=sample.physical_step_sha256,
+                    physical_integration_policy=sample.physical_integration_policy,
+                    source_integration_evidence_sha256=sample.source_integration_evidence_sha256,
                     common_objective_sha256=sample.common_objective_sha256,
                     ordinal=sample.ordinal,
                 )

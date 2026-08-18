@@ -35,7 +35,12 @@ from .correction_ceiling import (
     _validate_accepted_reference_record,
     _verify_history_chain_raw_content,
 )
-from .iterative_solver import PhysicalStepContext
+from .iterative_solver import (
+    PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+    PhysicalStepContext,
+    SolverVBDStagedFloat32Evidence,
+    validate_physical_objective_integration,
+)
 from .pr_scene_history import (
     AtomicCoordinate,
     CommittedState,
@@ -69,14 +74,16 @@ from .v5_dataset import NumericContentIdentity, TrajectorySampleRecord, canonica
 from .v5_objective import CommonObjectiveContext, common_objective_components, common_objective_residual
 
 _LOADER_SCOPE_PAYLOAD = {
-    "schema_version": 1,
-    "contract": "pss-v5-pr-history-in-memory-loader-v1",
+    "schema_version": 2,
+    "contract": "pss-v5-pr-history-in-memory-loader-v2",
     "input": "canonical-in-memory-root-origin-PRHistoryChain",
     "external_anchors": ["history-chain-sha256", "root-checkpoint-sha256"],
     "raw_content_authentication": "canonical-snapshot-and-self-hash-recomputation",
     "operator_geometry_policy": OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
     "operator_geometry_source": "verified-PR-static-float32-rest-tets-and-tet-poses",
     "execution_dtype": "torch.float64",
+    "physical_integration_policy": PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+    "physical_integration_authentication": "exact-source-float32-history-and-staged-SolverVBD-replay",
     "reference_validation": "reconstruct-objective-rescore-endpoint-and-validate-accepted-policy-record",
     "dense_newton_replayed": False,
     "durable_artifact_bundle_opened": False,
@@ -86,8 +93,8 @@ _LOADER_SCOPE_PAYLOAD = {
 LOADER_SCOPE_SHA256 = canonical_json_sha256(_LOADER_SCOPE_PAYLOAD)
 
 _SOURCE_BOUND_LOADER_SCOPE_PAYLOAD = {
-    "schema_version": 1,
-    "contract": "pss-v5-pr-history-source-bound-loader-v1",
+    "schema_version": 2,
+    "contract": "pss-v5-pr-history-source-bound-loader-v2",
     "input": "externally-anchored-source-bound-PR-history-records-and-exact-arrays",
     "external_anchors": ["history-chain-sha256", "root-checkpoint-sha256"],
     "raw_content_authentication": "canonical-snapshot-and-self-hash-recomputation",
@@ -98,6 +105,8 @@ _SOURCE_BOUND_LOADER_SCOPE_PAYLOAD = {
     "operator_geometry_policy": OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
     "operator_geometry_source": "verified-source-bound-float32-rest-tets-and-tet-poses",
     "execution_dtype": "torch.float64",
+    "physical_integration_policy": PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+    "physical_integration_authentication": "exact-source-float32-history-and-staged-SolverVBD-replay",
     "reference_validation": "reconstruct-objective-rescore-endpoint-and-validate-accepted-policy-record",
     "dense_newton_replayed": False,
     "durable_artifact_bundle_opened": False,
@@ -113,7 +122,8 @@ _LOADER_SCOPES = {
 _MATERIAL_CONTRACT = "pss-v5-runtime-material-mass-mu-lambda-v1"
 _PIN_SIGNATURE_CONTRACT = "pss-v5-runtime-pin-factorization-signature-v1"
 _REFERENCE_ACCEPTANCE_CONTRACT = "pss-v5-pr-reference-acceptance-binding-v1"
-_LOADED_SAMPLE_CONTRACT = "pss-v5-loaded-pr-history-training-sample-v2"
+_PHYSICAL_INTEGRATION_BINDING_CONTRACT = "pss-v5-pr-physical-integration-binding-v1"
+_LOADED_SAMPLE_CONTRACT = "pss-v5-loaded-pr-history-training-sample-v3"
 _REFERENCE_WORK_KEYS = (
     "objective_evaluations",
     "gradient_evaluations",
@@ -154,9 +164,63 @@ def _thaw_json(value: object) -> object:
     return value
 
 
+def _validate_canonical_frozen_json(value: object, name: str) -> None:
+    """Reject JSON-compatible aliases that canonical serialization erases."""
+    if type(value) is types.MappingProxyType:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ValueError(f"{name} contains a noncanonical mapping key")
+            _validate_canonical_frozen_json(item, name)
+        return
+    if type(value) is tuple:
+        for item in value:
+            _validate_canonical_frozen_json(item, name)
+        return
+    if value is None or type(value) in (str, int, bool):
+        return
+    if type(value) is float and np.isfinite(value):
+        return
+    raise ValueError(f"{name} contains a noncanonical JSON value")
+
+
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON-shaped values without scalar-subclass or signed-zero aliases."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        if len(left) != len(right):
+            return False
+        unmatched = list(right.items())
+        for left_key, left_value in left.items():
+            matches = [
+                index
+                for index, (right_key, _) in enumerate(unmatched)
+                if type(left_key) is type(right_key) and left_key == right_key
+            ]
+            if len(matches) != 1:
+                return False
+            index = matches[0]
+            _, right_value = unmatched.pop(index)
+            if not _exact_json_equal(left_value, right_value):
+                return False
+        return not unmatched
+    if type(left) in (list, tuple):
+        return len(left) == len(right) and all(
+            _exact_json_equal(left_item, right_item) for left_item, right_item in zip(left, right, strict=True)
+        )
+    if left is None or type(left) in (str, int, bool):
+        return left == right
+    if type(left) is float:
+        try:
+            return json.dumps(left, allow_nan=False) == json.dumps(right, allow_nan=False)
+        except ValueError:
+            return False
+    return False
+
+
 def loader_scope(scope_sha256: str = LOADER_SCOPE_SHA256) -> dict[str, object]:
     """Return the authenticated capability and non-capability declaration."""
-    if scope_sha256 not in _LOADER_SCOPES:
+    if type(scope_sha256) is not str or scope_sha256 not in _LOADER_SCOPES:
         raise ValueError("loader scope SHA-256 is not registered")
     return json.loads(json.dumps(_LOADER_SCOPES[scope_sha256], sort_keys=True))
 
@@ -322,7 +386,7 @@ class ReferenceAcceptanceBinding:
     committed_image_equilibrium_claimed: bool = False
     acceptance_sha256: str = dataclasses.field(init=False)
 
-    def __post_init__(self) -> None:
+    def _validate_scalar_fields(self) -> None:
         for name in (
             "source_chain_sha256",
             "source_transition_sha256",
@@ -337,7 +401,7 @@ class ReferenceAcceptanceBinding:
             _sha256(getattr(self, name), name)
         if type(self.method) is not str or not self.method or self.method != self.method.strip():
             raise ValueError("reference method must be a non-empty canonical string")
-        if self.training_reference_semantics not in (
+        if type(self.training_reference_semantics) is not str or self.training_reference_semantics not in (
             "source-float64-accepted-reference",
             "exact-history-float32-committed-image",
         ):
@@ -348,8 +412,12 @@ class ReferenceAcceptanceBinding:
             raise ValueError("the in-memory loader must not claim dense-Newton replay")
         if self.committed_image_equilibrium_claimed is not False:
             raise ValueError("the loader must not claim that the float32 committed image is an equilibrium")
+
+    def __post_init__(self) -> None:
+        self._validate_scalar_fields()
         for name in ("config", "work", "metrics"):
             object.__setattr__(self, name, _freeze_json(getattr(self, name), f"reference {name}"))
+            _validate_canonical_frozen_json(getattr(self, name), f"reference {name}")
         object.__setattr__(self, "acceptance_sha256", canonical_json_sha256(self._payload()))
 
     def _payload(self) -> dict[str, object]:
@@ -377,6 +445,10 @@ class ReferenceAcceptanceBinding:
 
     def validate_immutable(self) -> None:
         """Recompute the binding hash after construction."""
+        self._validate_scalar_fields()
+        for name in ("config", "work", "metrics"):
+            _validate_canonical_frozen_json(getattr(self, name), f"reference {name}")
+        _sha256(self.acceptance_sha256, "acceptance_sha256")
         if canonical_json_sha256(self._payload()) != self.acceptance_sha256:
             raise ValueError("reference-acceptance binding changed after authentication")
 
@@ -384,6 +456,103 @@ class ReferenceAcceptanceBinding:
         """Return a self-checking JSON-compatible record."""
         payload = self._payload()
         payload["acceptance_sha256"] = self.acceptance_sha256
+        return payload
+
+
+@dataclasses.dataclass(frozen=True)
+class PRPhysicalIntegrationBinding:
+    """Canonical evidence that one PR source step produced the v5 objective.
+
+    The source tensors remain owned by :class:`SolverVBDStagedFloat32Evidence`.
+    This compact record makes their exact identities, the learned
+    ``x_previous`` image, and the bound objective target explicit in durable
+    metadata without duplicating numeric payloads.
+    """
+
+    source_chain_sha256: str
+    source_transition_sha256: str
+    physical_step_sha256: str
+    common_objective_sha256: str
+    integration_policy: str
+    source_evidence_sha256: str
+    dt_seconds: float
+    dt_float32_bits: str
+    source_pre_event_positions_sha256: str
+    source_velocity_sha256: str
+    source_mass_sha256: str
+    source_inverse_mass_sha256: str
+    learned_x_previous_sha256: str
+    bound_inertial_target_sha256: str
+    binding_sha256: str = dataclasses.field(init=False)
+
+    def _validate_fields(self) -> None:
+        for name in (
+            "source_chain_sha256",
+            "source_transition_sha256",
+            "physical_step_sha256",
+            "common_objective_sha256",
+            "source_evidence_sha256",
+            "source_pre_event_positions_sha256",
+            "source_velocity_sha256",
+            "source_mass_sha256",
+            "source_inverse_mass_sha256",
+            "learned_x_previous_sha256",
+            "bound_inertial_target_sha256",
+        ):
+            _sha256(getattr(self, name), name)
+        if (
+            type(self.integration_policy) is not str
+            or self.integration_policy != PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32
+        ):
+            raise ValueError("PR integration binding requires the staged SolverVBD float32 policy")
+        if type(self.dt_seconds) is not float:
+            raise TypeError("PR integration dt_seconds must be a canonical float")
+        if type(self.dt_float32_bits) is not str:
+            raise TypeError("PR integration dt_float32_bits must be a canonical string")
+        dt32 = np.float32(self.dt_seconds)
+        expected_dt_bits = f"0x{np.asarray(dt32).view(np.uint32).item():08x}"
+        if (
+            not np.isfinite(dt32)
+            or dt32 <= np.float32(0.0)
+            or float(dt32) != self.dt_seconds
+            or self.dt_float32_bits != expected_dt_bits
+        ):
+            raise ValueError("PR integration timestep is not its exact authenticated float32 image")
+
+    def __post_init__(self) -> None:
+        self._validate_fields()
+        object.__setattr__(self, "binding_sha256", canonical_json_sha256(self._payload()))
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "contract": _PHYSICAL_INTEGRATION_BINDING_CONTRACT,
+            "source_chain_sha256": self.source_chain_sha256,
+            "source_transition_sha256": self.source_transition_sha256,
+            "physical_step_sha256": self.physical_step_sha256,
+            "common_objective_sha256": self.common_objective_sha256,
+            "integration_policy": self.integration_policy,
+            "source_evidence_sha256": self.source_evidence_sha256,
+            "dt_seconds": self.dt_seconds,
+            "dt_float32_bits": self.dt_float32_bits,
+            "source_pre_event_positions_sha256": self.source_pre_event_positions_sha256,
+            "source_velocity_sha256": self.source_velocity_sha256,
+            "source_mass_sha256": self.source_mass_sha256,
+            "source_inverse_mass_sha256": self.source_inverse_mass_sha256,
+            "learned_x_previous_sha256": self.learned_x_previous_sha256,
+            "bound_inertial_target_sha256": self.bound_inertial_target_sha256,
+        }
+
+    def validate_immutable(self) -> None:
+        """Recompute the binding identity after construction."""
+        self._validate_fields()
+        _sha256(self.binding_sha256, "binding_sha256")
+        if canonical_json_sha256(self._payload()) != self.binding_sha256:
+            raise ValueError("PR physical-integration binding changed after authentication")
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the canonical JSON-compatible integration record."""
+        payload = self._payload()
+        payload["binding_sha256"] = self.binding_sha256
         return payload
 
 
@@ -405,24 +574,74 @@ def _sample_source_identity(sample: TrajectorySampleRecord) -> tuple[str, str]:
     return source_identity
 
 
+def _physical_integration_binding(
+    sample: V5TrainingSample,
+    source_chain_sha256: str,
+    source_transition_sha256: str,
+) -> PRPhysicalIntegrationBinding:
+    """Recompute the exact PR/VBD evidence record consumed by one sample."""
+    step = sample.physical_step
+    evidence = step.source_evidence
+    if (
+        step.integration_policy != PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32
+        or type(evidence) is not SolverVBDStagedFloat32Evidence
+    ):
+        raise ValueError("loaded PR sample is missing canonical staged SolverVBD source evidence")
+    evidence.validate_immutable()
+    if evidence.source_transition_sha256 != source_transition_sha256:
+        raise ValueError("physical integration evidence belongs to a different PR transition")
+    if (
+        sample.sample_record.physical_integration_policy != step.integration_policy
+        or sample.sample_record.source_integration_evidence_sha256 != evidence.evidence_sha256
+    ):
+        raise ValueError("training sample record differs from its physical integration evidence")
+    validate_physical_objective_integration(sample.projection_state, sample.common_objective, step)
+    pre_event_positions, velocity, source_mass, inverse_mass = evidence._owned_tensors()
+    _, x_previous, *_ = step._owned_tensors()
+    inertial_target = sample.common_objective._owned_tensor("inertial_target")
+    return PRPhysicalIntegrationBinding(
+        source_chain_sha256=source_chain_sha256,
+        source_transition_sha256=source_transition_sha256,
+        physical_step_sha256=step.physical_step_sha256,
+        common_objective_sha256=sample.common_objective.common_objective_sha256,
+        integration_policy=step.integration_policy,
+        source_evidence_sha256=evidence.evidence_sha256,
+        dt_seconds=evidence.dt_seconds,
+        dt_float32_bits=evidence.dt_float32_bits,
+        source_pre_event_positions_sha256=canonical_training_tensor_sha256(pre_event_positions),
+        source_velocity_sha256=canonical_training_tensor_sha256(velocity),
+        source_mass_sha256=canonical_training_tensor_sha256(source_mass),
+        source_inverse_mass_sha256=canonical_training_tensor_sha256(inverse_mass),
+        learned_x_previous_sha256=canonical_training_tensor_sha256(x_previous),
+        bound_inertial_target_sha256=canonical_training_tensor_sha256(inertial_target),
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class LoadedPRHistoryV5Sample:
     """One trainer-ready sample plus its independently checked acceptance."""
 
     training_sample: V5TrainingSample
     reference_acceptance: ReferenceAcceptanceBinding
+    physical_integration: PRPhysicalIntegrationBinding
     loader_scope_sha256: str = LOADER_SCOPE_SHA256
     loaded_sample_sha256: str = dataclasses.field(init=False)
 
-    def __post_init__(self) -> None:
+    def _validate_field_types(self) -> None:
         if type(self.training_sample) is not V5TrainingSample:
             raise TypeError("training_sample must be a canonical V5TrainingSample")
         if type(self.reference_acceptance) is not ReferenceAcceptanceBinding:
             raise TypeError("reference_acceptance must be a canonical ReferenceAcceptanceBinding")
-        if self.loader_scope_sha256 not in _LOADER_SCOPES:
+        if type(self.physical_integration) is not PRPhysicalIntegrationBinding:
+            raise TypeError("physical_integration must be a canonical PRPhysicalIntegrationBinding")
+        if type(self.loader_scope_sha256) is not str or self.loader_scope_sha256 not in _LOADER_SCOPES:
             raise ValueError("loaded sample changed to an unregistered loader scope")
+
+    def __post_init__(self) -> None:
+        self._validate_field_types()
         self.training_sample.validate_immutable()
         self.reference_acceptance.validate_immutable()
+        self.physical_integration.validate_immutable()
         self._validate_cross_bindings()
         object.__setattr__(self, "loaded_sample_sha256", canonical_json_sha256(self._payload()))
 
@@ -430,6 +649,7 @@ class LoadedPRHistoryV5Sample:
         sample = self.training_sample
         record = sample.sample_record
         acceptance = self.reference_acceptance
+        integration = self.physical_integration
         source_chain_sha256, source_transition_sha256 = _sample_source_identity(record)
         if (
             acceptance.source_chain_sha256 != source_chain_sha256
@@ -442,6 +662,13 @@ class LoadedPRHistoryV5Sample:
             raise ValueError("reference acceptance state differs from the training sample reference")
         if acceptance.reference_deformation_gradient_sha256 != record.reference_f.sha256:
             raise ValueError("reference acceptance deformation gradient differs from the training sample reference")
+        reconstructed_integration = _physical_integration_binding(
+            sample,
+            source_chain_sha256,
+            source_transition_sha256,
+        )
+        if not _exact_json_equal(reconstructed_integration.as_dict(), integration.as_dict()):
+            raise ValueError("physical integration evidence differs from the training sample and PR source")
 
     def _payload(self) -> dict[str, object]:
         sample = self.training_sample
@@ -455,15 +682,21 @@ class LoadedPRHistoryV5Sample:
             "sample_sha256": sample.sample_record.sample_sha256,
             "physical_step_sha256": sample.physical_step.physical_step_sha256,
             "common_objective_sha256": sample.common_objective.common_objective_sha256,
+            "physical_integration_policy": self.physical_integration.integration_policy,
+            "source_integration_evidence_sha256": self.physical_integration.source_evidence_sha256,
+            "physical_integration_binding_sha256": self.physical_integration.binding_sha256,
             "projection_state_sha256": sample.projection_state_sha256,
             "reference_acceptance_sha256": self.reference_acceptance.acceptance_sha256,
         }
 
     def validate_immutable(self) -> None:
         """Reauthenticate the trainer sample and acceptance evidence."""
+        self._validate_field_types()
         self.training_sample.validate_immutable()
         self.reference_acceptance.validate_immutable()
+        self.physical_integration.validate_immutable()
         self._validate_cross_bindings()
+        _sha256(self.loaded_sample_sha256, "loaded_sample_sha256")
         if canonical_json_sha256(self._payload()) != self.loaded_sample_sha256:
             raise ValueError("loaded PR-history sample changed after authentication")
 
@@ -471,6 +704,7 @@ class LoadedPRHistoryV5Sample:
         """Return the integrity record without duplicating numeric tensors."""
         payload = self._payload()
         payload["reference_acceptance"] = self.reference_acceptance.as_dict()
+        payload["physical_integration"] = self.physical_integration.as_dict()
         payload["loader_scope"] = loader_scope(self.loader_scope_sha256)
         payload["loaded_sample_sha256"] = self.loaded_sample_sha256
         return payload
@@ -712,6 +946,17 @@ def _build_loaded_sample_from_verified_scene(
             return value.detach().to(device=target_device, dtype=dtype).clone()
         return torch.as_tensor(np.array(value, copy=True), dtype=dtype, device=target_device)
 
+    def source_float32(value: np.ndarray, name: str) -> torch.Tensor:
+        raw = np.asarray(value)
+        if raw.dtype not in (np.dtype(np.float32), np.dtype(np.float64)):
+            raise ValueError(f"verified PR source {name} must be float32 or an exact float32 promotion")
+        source = np.array(raw, dtype=np.float32, order="C", copy=True)
+        roundtrip = source if raw.dtype == np.float32 else source.astype(np.float64)
+        canonical_raw = np.ascontiguousarray(raw)
+        if canonical_raw.shape != roundtrip.shape or canonical_raw.tobytes(order="C") != roundtrip.tobytes(order="C"):
+            raise ValueError(f"verified PR source {name} is not an exact float32 image")
+        return torch.as_tensor(source, dtype=torch.float32, device=target_device)
+
     tets = projection_state.tets
     pinned = projection_state.pinned
     mass = floating(problem.mass)
@@ -737,6 +982,14 @@ def _build_loaded_sample_from_verified_scene(
     gravity = floating(static.gravity)
     pin = torch.isin(tets, pinned).any(dim=-1).to(dtype=dtype)
     pinned_targets = floating(model_inputs["pin_targets"])
+    source_evidence = SolverVBDStagedFloat32Evidence(
+        source_transition_sha256=transition_snapshot.transition_sha256,
+        dt_seconds=transition_snapshot.dt_seconds,
+        pre_event_positions=source_float32(transition_snapshot.input_state.q, "pre-event positions"),
+        velocity=source_float32(transition_snapshot.input_state.qd, "velocity"),
+        mass=source_float32(static.mass, "mass"),
+        inverse_mass=source_float32(scene.particle_inv_mass, "inverse mass"),
+    )
     physical_step = PhysicalStepContext(
         x_current=x_current,
         x_previous=x_previous,
@@ -746,7 +999,10 @@ def _build_loaded_sample_from_verified_scene(
         lam=lam,
         pin=pin,
         pinned_targets=pinned_targets,
+        integration_policy=PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+        source_evidence=source_evidence,
     )
+    validate_physical_objective_integration(projection_state, common_objective, physical_step)
 
     input_state = floating(transition_snapshot.input_state.q)
     reference_state = floating(transition_snapshot.reference_positions)
@@ -786,6 +1042,8 @@ def _build_loaded_sample_from_verified_scene(
         dt_seconds=transition_snapshot.dt_seconds,
         physical_step_sha256=physical_step.physical_step_sha256,
         common_objective_sha256=common_objective.common_objective_sha256,
+        physical_integration_policy=physical_step.integration_policy,
+        source_integration_evidence_sha256=source_evidence.evidence_sha256,
         observed_f=numeric["observed_f"],
         input_f=numeric["input_f"],
         reference_f=numeric["reference_f"],
@@ -801,6 +1059,11 @@ def _build_loaded_sample_from_verified_scene(
         projection_state=projection_state,
         producer_attested_reference_positions=reference_state,
         producer_attested_reference_deformation_gradient=reference_f,
+    )
+    physical_integration = _physical_integration_binding(
+        training_sample,
+        chain_snapshot.chain_sha256,
+        transition_snapshot.transition_sha256,
     )
 
     source_position_sha256 = _array_digest(transition_snapshot.reference_positions)
@@ -845,6 +1108,7 @@ def _build_loaded_sample_from_verified_scene(
     result = LoadedPRHistoryV5Sample(
         training_sample=training_sample,
         reference_acceptance=acceptance,
+        physical_integration=physical_integration,
         loader_scope_sha256=loader_scope_sha256,
     )
     result.validate_immutable()

@@ -59,13 +59,13 @@ from .v5_pr_history_loader import (
     load_source_bound_pr_history_v5_sample,
 )
 
-_SOURCE_CONTRACT = "pss-v5-pr-history-artifact-source-v2"
+_SOURCE_CONTRACT = "pss-v5-pr-history-artifact-source-v3"
 _BUNDLE_CONTRACT = "pss-v5-pr-history-deterministic-npz-v1"
 _GENERATION_CONTRACT = "pss-v5-pr-history-generation-spec-v1"
 _PIN_SCHEDULE_CONTRACT = "pss-v5-pr-history-pin-schedule-v1"
 _EVENT_INVENTORY_CONTRACT = "pss-v5-pr-history-event-inventory-v1"
 _COORDINATE_RANGE_CONTRACT = "pss-v5-pr-history-coordinate-range-v1"
-_SELECTION_CONTRACT = "pss-v5-pr-history-contiguous-selection-v1"
+_SELECTION_CONTRACT = "pss-v5-pr-history-contiguous-selection-v2"
 _LOAD_PROGRAM_CONTRACT = "pss-v5-pr-history-load-program-v1"
 _NPY_VERSION = (2, 0)
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -181,6 +181,7 @@ _MAX_NPY_HEADER_BYTES = 64 * 1024
 _SAMPLE_WRAPPER_KEYS = {
     "sample_record",
     "reference_acceptance",
+    "physical_integration",
     "operator_geometry",
     "loaded_sample_sha256",
 }
@@ -512,6 +513,9 @@ def _selection_record(
         "selected_reference_acceptance_sha256": [
             loaded.reference_acceptance.acceptance_sha256 for loaded in loaded_samples
         ],
+        "selected_physical_integration_binding_sha256": [
+            loaded.physical_integration.binding_sha256 for loaded in loaded_samples
+        ],
         "selected_operator_geometry_sha256": [
             loaded.training_sample.sample_record.operator_geometry_sha256 for loaded in loaded_samples
         ],
@@ -559,6 +563,7 @@ def _trust_scope_record() -> dict[str, bool]:
         "reader_must_reconstruct_chain": True,
         "reader_must_reconstruct_source_bound_physics": True,
         "reader_must_rerun_source_bound_trusted_sample_loader": True,
+        "source_integration_replayed_from_exact_archival_arrays": True,
         "current_code_reproduction_is_load_prerequisite": False,
         "current_code_compatibility_reported_separately": True,
         "complete_chain_selection_required": True,
@@ -585,7 +590,7 @@ def _source_payload(
     bundle_sha256: str,
 ) -> dict[str, object]:
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "contract": _SOURCE_CONTRACT,
         "bundle_contract": _BUNDLE_CONTRACT,
         "npy_version": list(_NPY_VERSION),
@@ -609,6 +614,7 @@ def _source_payload(
             {
                 "sample_record": loaded.training_sample.sample_record.as_dict(),
                 "reference_acceptance": loaded.reference_acceptance.as_dict(),
+                "physical_integration": loaded.physical_integration.as_dict(),
                 "operator_geometry": _operator_geometry_record(loaded),
                 "loaded_sample_sha256": loaded.loaded_sample_sha256,
             }
@@ -893,6 +899,7 @@ def write_pr_history_v5_artifact(
         if (
             live.training_sample.sample_record.as_dict() != source_bound.training_sample.sample_record.as_dict()
             or live.reference_acceptance.as_dict() != source_bound.reference_acceptance.as_dict()
+            or live.physical_integration.as_dict() != source_bound.physical_integration.as_dict()
         ):
             raise ValueError("current-code and source-bound loaders disagree while building the artifact")
     arrays = _collect_arrays(canonical_history, snapshot)
@@ -985,7 +992,7 @@ def _read_source(
         raise ValueError("source record SHA-256 changed after authentication")
     if (
         type(source.get("schema_version")) is not int
-        or source["schema_version"] != 2
+        or source["schema_version"] != 3
         or type(source.get("contract")) is not str
         or source["contract"] != _SOURCE_CONTRACT
     ):
@@ -1613,6 +1620,8 @@ def load_pr_history_v5_artifact(
             raise ValueError("persisted sample record differs from trusted reconstruction")
         if not _canonical_json_equal(loaded.reference_acceptance.as_dict(), persisted.get("reference_acceptance")):
             raise ValueError("persisted reference acceptance differs from independent reconstruction")
+        if not _canonical_json_equal(loaded.physical_integration.as_dict(), persisted.get("physical_integration")):
+            raise ValueError("persisted physical integration differs from independent reconstruction")
         if not _canonical_json_equal(_operator_geometry_record(loaded), persisted.get("operator_geometry")):
             raise ValueError("persisted operator geometry differs from trusted reconstruction")
         if loaded.loaded_sample_sha256 != persisted.get("loaded_sample_sha256"):

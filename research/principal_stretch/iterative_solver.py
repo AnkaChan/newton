@@ -24,6 +24,7 @@ import numbers
 from collections.abc import Mapping
 from typing import Protocol
 
+import numpy as np
 import torch
 
 from . import torch_solver
@@ -45,23 +46,202 @@ _PHYSICAL_STEP_TENSOR_FIELDS = (
     "pin",
     "pinned_targets",
 )
+_SOURCE_INTEGRATION_TENSOR_FIELDS = (
+    "pre_event_positions",
+    "velocity",
+    "mass",
+    "inverse_mass",
+)
+PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64 = "algebraic-float64-position-history-loads-v1"
+PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32 = "solver-vbd-staged-float32-v1"
+_PHYSICAL_INTEGRATION_POLICIES = (
+    PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64,
+    PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+)
 _MAX_STANDALONE_NONINCREASE_TOLERANCE = 1.0e-6
 
 
-def _physical_step_digest(tensors: Mapping[str, torch.Tensor]) -> str:
-    digest = hashlib.sha256(b"pr2901-v5-physical-step-context-v1\0")
+def _is_canonical_sha256(value: object) -> bool:
+    return type(value) is str and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _update_tensor_digest(digest: object, name: str, value: torch.Tensor) -> None:
+    value = value.detach().contiguous()
+    metadata = json.dumps(
+        {"name": name, "dtype": str(value.dtype), "shape": list(value.shape)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    raw = value.view(torch.uint8).cpu().numpy().tobytes()
+    digest.update(len(metadata).to_bytes(8, "big"))
+    digest.update(metadata)
+    digest.update(len(raw).to_bytes(8, "big"))
+    digest.update(raw)
+
+
+def _array_bytes_equal(left: np.ndarray, right: np.ndarray) -> bool:
+    return (
+        left.dtype == right.dtype and left.shape == right.shape and left.tobytes(order="C") == right.tobytes(order="C")
+    )
+
+
+def _source_integration_digest(
+    source_transition_sha256: str,
+    dt_float32_bits: str,
+    tensors: Mapping[str, torch.Tensor],
+) -> str:
+    digest = hashlib.sha256(b"pr2901-v5-solver-vbd-staged-float32-evidence-v1\0")
+    metadata = json.dumps(
+        {
+            "policy": PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+            "source_transition_sha256": source_transition_sha256,
+            "dt_float32_bits": dt_float32_bits,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest.update(len(metadata).to_bytes(8, "big"))
+    digest.update(metadata)
+    for name in _SOURCE_INTEGRATION_TENSOR_FIELDS:
+        _update_tensor_digest(digest, name, tensors[name])
+    return digest.hexdigest()
+
+
+@dataclasses.dataclass(frozen=True)
+class SolverVBDStagedFloat32Evidence:
+    """Sealed source arithmetic needed to authenticate one PR/VBD step.
+
+    These tensors are authentication-only. They never enter the learned model.
+    The exact float32 source order is replayed on CPU before a solve or training
+    sample is accepted, avoiding device-specific fusion or rounding ambiguity.
+
+    Args:
+        source_transition_sha256: Exact PR transition identity.
+        dt_seconds: Source timestep [s], exactly representable as float32.
+        pre_event_positions: Committed pre-callback positions [m].
+        velocity: Committed pre-callback velocity [m/s].
+        mass: SolverVBD particle masses [kg].
+        inverse_mass: SolverVBD particle inverse masses [1/kg].
+    """
+
+    source_transition_sha256: str
+    dt_seconds: float
+    pre_event_positions: torch.Tensor
+    velocity: torch.Tensor
+    mass: torch.Tensor
+    inverse_mass: torch.Tensor
+    dt_float32_bits: str = dataclasses.field(init=False)
+    evidence_sha256: str = dataclasses.field(init=False)
+    _sealed: bool = dataclasses.field(init=False, repr=False, default=False)
+
+    def __getattribute__(self, name: str) -> object:
+        value = object.__getattribute__(self, name)
+        if name in _SOURCE_INTEGRATION_TENSOR_FIELDS and object.__getattribute__(self, "_sealed"):
+            return value.clone()
+        return value
+
+    def __post_init__(self) -> None:
+        source_sha = self.source_transition_sha256
+        if not _is_canonical_sha256(source_sha):
+            raise ValueError("source_transition_sha256 must be a lowercase SHA-256 digest")
+        if isinstance(self.dt_seconds, bool) or not isinstance(self.dt_seconds, numbers.Real):
+            raise TypeError("source dt_seconds must be a real number")
+        dt32 = np.float32(self.dt_seconds)
+        if not np.isfinite(dt32) or dt32 <= np.float32(0.0) or float(dt32) != float(self.dt_seconds):
+            raise ValueError("source dt_seconds must be finite, positive, and exactly representable as float32")
+        dt_bits = f"0x{np.asarray(dt32).view(np.uint32).item():08x}"
+        object.__setattr__(self, "dt_seconds", float(dt32))
+        object.__setattr__(self, "dt_float32_bits", dt_bits)
+
+        for name in _SOURCE_INTEGRATION_TENSOR_FIELDS:
+            value = getattr(self, name)
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"source {name} must be a torch.Tensor")
+            if value.layout != torch.strided or value.dtype != torch.float32:
+                raise ValueError(f"source {name} must be a strided float32 tensor")
+            if value.requires_grad:
+                raise ValueError(f"source {name} must not require gradients")
+            if not torch.isfinite(value).all():
+                raise ValueError(f"source {name} must be finite")
+        positions = self.pre_event_positions
+        if positions.ndim != 2 or positions.shape[-1] != 3:
+            raise ValueError("source pre_event_positions must have shape (V, 3)")
+        if self.velocity.shape != positions.shape:
+            raise ValueError("source velocity must match pre_event_positions")
+        if self.mass.shape != (positions.shape[0],) or self.inverse_mass.shape != self.mass.shape:
+            raise ValueError("source mass and inverse_mass must have shape (V,)")
+        device = positions.device
+        if any(getattr(self, name).device != device for name in _SOURCE_INTEGRATION_TENSOR_FIELDS):
+            raise ValueError("all source integration tensors must share one device")
+        if (self.mass < 0.0).any() or (self.inverse_mass < 0.0).any():
+            raise ValueError("source mass and inverse_mass must be non-negative")
+        mass32 = self.mass.detach().contiguous().cpu().numpy().copy()
+        inverse_mass32 = self.inverse_mass.detach().contiguous().cpu().numpy().copy()
+        expected_inverse_mass = np.zeros_like(mass32)
+        positive_mass = mass32 > np.float32(0.0)
+        expected_inverse_mass[positive_mass] = (np.float32(1.0) / mass32[positive_mass]).astype(np.float32)
+        if not _array_bytes_equal(inverse_mass32, expected_inverse_mass):
+            raise ValueError("source inverse_mass must be the exact float32 reciprocal of source mass")
+
+        for name in _SOURCE_INTEGRATION_TENSOR_FIELDS:
+            object.__setattr__(self, name, getattr(self, name).clone())
+        tensors = {name: object.__getattribute__(self, name) for name in _SOURCE_INTEGRATION_TENSOR_FIELDS}
+        object.__setattr__(
+            self,
+            "evidence_sha256",
+            _source_integration_digest(source_sha, dt_bits, tensors),
+        )
+        object.__setattr__(self, "_sealed", True)
+
+    def validate_immutable(self) -> None:
+        """Reauthenticate the source arithmetic against its canonical bytes."""
+        if self._sealed is not True:
+            raise RuntimeError("source integration evidence is not sealed")
+        if not _is_canonical_sha256(self.source_transition_sha256):
+            raise RuntimeError("source integration transition identity changed type or value")
+        if type(self.dt_seconds) is not float or type(self.dt_float32_bits) is not str:
+            raise RuntimeError("source integration timestep changed type after authentication")
+        if not _is_canonical_sha256(self.evidence_sha256):
+            raise RuntimeError("source integration evidence identity changed type or value")
+        dt32 = np.float32(self.dt_seconds)
+        dt_bits = f"0x{np.asarray(dt32).view(np.uint32).item():08x}"
+        if (
+            not np.isfinite(dt32)
+            or dt32 <= np.float32(0.0)
+            or float(dt32) != float(self.dt_seconds)
+            or dt_bits != self.dt_float32_bits
+        ):
+            raise RuntimeError("source integration timestep changed after authentication")
+        tensors = {name: object.__getattribute__(self, name) for name in _SOURCE_INTEGRATION_TENSOR_FIELDS}
+        if (
+            _source_integration_digest(self.source_transition_sha256, self.dt_float32_bits, tensors)
+            != self.evidence_sha256
+        ):
+            raise RuntimeError("source integration evidence changed after authentication")
+
+    def _owned_tensors(self) -> tuple[torch.Tensor, ...]:
+        return tuple(object.__getattribute__(self, name) for name in _SOURCE_INTEGRATION_TENSOR_FIELDS)
+
+
+def _physical_step_digest(
+    tensors: Mapping[str, torch.Tensor],
+    integration_policy: str,
+    source_evidence_sha256: str | None,
+) -> str:
+    digest = hashlib.sha256(b"pr2901-v5-physical-step-context-v2\0")
+    policy = json.dumps(
+        {
+            "integration_policy": integration_policy,
+            "source_evidence_sha256": source_evidence_sha256,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest.update(len(policy).to_bytes(8, "big"))
+    digest.update(policy)
     for name in _PHYSICAL_STEP_TENSOR_FIELDS:
         value = tensors[name].detach().contiguous()
-        metadata = json.dumps(
-            {"name": name, "dtype": str(value.dtype), "shape": list(value.shape)},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        raw = value.view(torch.uint8).cpu().numpy().tobytes()
-        digest.update(len(metadata).to_bytes(8, "big"))
-        digest.update(metadata)
-        digest.update(len(raw).to_bytes(8, "big"))
-        digest.update(raw)
+        _update_tensor_digest(digest, name, value)
     return digest.hexdigest()
 
 
@@ -88,6 +268,10 @@ class PhysicalStepContext:
         lam: Per-tet second material coefficient [Pa].
         pin: Per-tet pin-incidence features.
         pinned_targets: Exact Dirichlet targets [m].
+        integration_policy: Registered arithmetic used to bind the learned
+            history and loads to the common-objective inertial target.
+        source_evidence: Exact authentication-only SolverVBD source inputs for
+            the staged-float32 policy, or ``None`` for the algebraic policy.
     """
 
     x_current: torch.Tensor
@@ -98,6 +282,8 @@ class PhysicalStepContext:
     lam: torch.Tensor
     pin: torch.Tensor
     pinned_targets: torch.Tensor
+    integration_policy: str = PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64
+    source_evidence: SolverVBDStagedFloat32Evidence | None = None
     physical_step_sha256: str = dataclasses.field(init=False)
     _sealed: bool = dataclasses.field(init=False, repr=False, default=False)
 
@@ -108,6 +294,16 @@ class PhysicalStepContext:
         return value
 
     def __post_init__(self) -> None:
+        if type(self.integration_policy) is not str or self.integration_policy not in _PHYSICAL_INTEGRATION_POLICIES:
+            raise ValueError("integration_policy is not registered")
+        if self.integration_policy == PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64:
+            if self.source_evidence is not None:
+                raise ValueError("algebraic integration policy must not carry SolverVBD source evidence")
+        elif type(self.source_evidence) is not SolverVBDStagedFloat32Evidence:
+            raise TypeError("SolverVBD integration policy requires canonical source evidence")
+        else:
+            self.source_evidence.validate_immutable()
+
         for name in _PHYSICAL_STEP_TENSOR_FIELDS:
             value = getattr(self, name)
             if not isinstance(value, torch.Tensor):
@@ -148,19 +344,44 @@ class PhysicalStepContext:
                 raise ValueError(f"{name} must share the position dtype")
         if not torch.logical_or(self.pin == 0.0, self.pin == 1.0).all():
             raise ValueError("pin features must contain only exact zero or one values")
+        if self.source_evidence is not None:
+            source_positions, *_ = self.source_evidence._owned_tensors()
+            if self.x_current.ndim != 2:
+                raise ValueError("SolverVBD source integration evidence supports only one unbatched transition")
+            if position_dtype != torch.float64:
+                raise ValueError("SolverVBD source integration policy requires promoted float64 runtime tensors")
+            if source_positions.shape != self.x_current.shape or source_positions.device != device:
+                raise ValueError("source integration evidence must match the physical position shape and device")
 
         for name in _PHYSICAL_STEP_TENSOR_FIELDS:
             object.__setattr__(self, name, getattr(self, name).clone())
         tensors = {name: getattr(self, name) for name in _PHYSICAL_STEP_TENSOR_FIELDS}
-        object.__setattr__(self, "physical_step_sha256", _physical_step_digest(tensors))
+        evidence_sha256 = None if self.source_evidence is None else self.source_evidence.evidence_sha256
+        object.__setattr__(
+            self,
+            "physical_step_sha256",
+            _physical_step_digest(tensors, self.integration_policy, evidence_sha256),
+        )
         object.__setattr__(self, "_sealed", True)
 
     def validate_immutable(self) -> None:
         """Reauthenticate the sealed context against its canonical bytes."""
-        if not self._sealed:
+        if self._sealed is not True:
             raise RuntimeError("physical-step context is not sealed")
+        if type(self.integration_policy) is not str or self.integration_policy not in _PHYSICAL_INTEGRATION_POLICIES:
+            raise RuntimeError("physical integration policy changed type or value")
+        if not _is_canonical_sha256(self.physical_step_sha256):
+            raise RuntimeError("physical-step identity changed type or value")
+        if self.integration_policy == PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64:
+            if self.source_evidence is not None:
+                raise RuntimeError("algebraic physical step gained source integration evidence")
+        elif type(self.source_evidence) is not SolverVBDStagedFloat32Evidence:
+            raise RuntimeError("SolverVBD physical step lost its canonical source evidence")
+        else:
+            self.source_evidence.validate_immutable()
         tensors = {name: object.__getattribute__(self, name) for name in _PHYSICAL_STEP_TENSOR_FIELDS}
-        if _physical_step_digest(tensors) != self.physical_step_sha256:
+        evidence_sha256 = None if self.source_evidence is None else self.source_evidence.evidence_sha256
+        if _physical_step_digest(tensors, self.integration_policy, evidence_sha256) != self.physical_step_sha256:
             raise RuntimeError("physical-step context changed after authentication")
 
     def _validate_sealed(self) -> None:
@@ -465,6 +686,8 @@ class IterativeSolverResult:
     constraint_registration: str
     head_mode: str
     head_permutation: tuple[int, ...] | None
+    physical_integration_policy: str
+    source_integration_evidence_sha256: str | None
     physical_step_sha256: str
     common_objective_sha256: str
     operator_geometry_sha256: str
@@ -560,13 +783,81 @@ def _validate_problem_identity(
             raise ValueError(f"projection and common-objective {name} differ")
 
 
-def _validate_physical_context(
+def _exact_float32_image(name: str, value: torch.Tensor) -> np.ndarray:
+    """Return an exact float32 source image or reject a lossy runtime value."""
+    runtime = value.detach().contiguous().cpu().numpy()
+    source = np.asarray(runtime, dtype=np.float32)
+    if not _array_bytes_equal(runtime, source.astype(runtime.dtype)):
+        raise ValueError(f"{name} must be an exact promotion of its float32 source value")
+    return np.array(source, dtype=np.float32, order="C", copy=True)
+
+
+def validate_physical_objective_integration(
     projection_state: SolverState,
     objective: CommonObjectiveContext,
     physical_step: PhysicalStepContext,
 ) -> None:
+    """Authenticate learned history/load inputs against one common objective.
+
+    The generic policy retains the execution-dtype algebraic identity used by
+    synthetic fixtures. The SolverVBD policy instead replays the independently
+    rounded source history and forward step in canonical CPU float32. The two
+    float32 expressions are deliberately checked separately; one cannot be
+    inverted to prove the other after rounding.
+    """
+    physical_step.validate_immutable()
+    objective.validate_immutable()
+    torch_solver.validate_authenticated_operator_geometry(projection_state)
+    if projection_state.projection_state_sha256 != torch_solver.projection_state_sha256(projection_state):
+        raise ValueError("compatibility projection state differs from its authenticated identity")
+    if projection_state.n_verts != objective.n_vertices or projection_state.n_tets != objective.n_tets:
+        raise ValueError("projection and common-objective mesh sizes differ")
+    if projection_state.rest_q.device != objective.device or projection_state.rest_q.dtype != objective.dtype:
+        raise ValueError("projection and common objective must share device and dtype")
+    for name, projected, common in (
+        ("tets", projection_state.tets, objective._owned_tensor("tets")),
+        ("J", projection_state.J, objective._owned_tensor("J")),
+        ("volume", projection_state.w, objective._owned_tensor("volume")),
+        ("pinned", projection_state.pinned, objective._owned_tensor("pinned")),
+    ):
+        if not torch.equal(projected, common):
+            raise ValueError(f"projection and common-objective {name} differ")
+    _validate_physical_objective_integration_trusted(projection_state, objective, physical_step)
+
+
+def _validate_physical_objective_integration_trusted(
+    projection_state: SolverState,
+    objective: CommonObjectiveContext,
+    physical_step: PhysicalStepContext,
+) -> None:
+    """Validate integration semantics after caller-owned identity checks."""
     physical_step._validate_sealed()
-    x_current, x_previous, force, gravity, mu, lam, pin, _pinned_targets = physical_step._owned_tensors()
+    x_current, x_previous, force, gravity, mu, lam, pin, pinned_targets = physical_step._owned_tensors()
+    if x_current.ndim not in (2, 3) or x_current.shape[-2:] != (projection_state.n_verts, 3):
+        raise ValueError("physical positions must end in the exact projection vertex shape")
+    if x_previous.shape != x_current.shape or force.shape != x_current.shape:
+        raise ValueError("physical history and force must exactly match x_current")
+    if any(
+        value.device != objective.device or value.dtype != objective.dtype for value in (x_current, x_previous, force)
+    ):
+        raise ValueError("physical positions, history, and force must share the common-objective device and dtype")
+    expected_gravity_shapes = ((3,), (*x_current.shape[:-2], 3))
+    if (
+        gravity.shape not in expected_gravity_shapes
+        or gravity.device != objective.device
+        or gravity.dtype != objective.dtype
+    ):
+        raise ValueError("physical gravity has the wrong shape, device, or dtype")
+    expected_material_shapes = ((projection_state.n_tets,),)
+    if x_current.ndim == 3:
+        expected_material_shapes += ((x_current.shape[0], projection_state.n_tets),)
+    if mu.shape not in expected_material_shapes or lam.shape != mu.shape or pin.shape != mu.shape:
+        raise ValueError("physical material and pin features have the wrong exact tet shape")
+    if any(value.device != objective.device or value.dtype != objective.dtype for value in (mu, lam, pin)):
+        raise ValueError("physical material and pin features must share the common-objective device and dtype")
+    targets = _expand_pinned_targets(x_current, projection_state.pinned, pinned_targets)
+    if not torch.equal(x_current[..., projection_state.pinned, :], targets):
+        raise ValueError("physical current state does not contain the exact pinned targets")
     for name, model_value in (("mu", mu), ("lam", lam)):
         objective_value = objective._owned_tensor(name)
         expected = objective_value.expand_as(model_value)
@@ -578,6 +869,66 @@ def _validate_physical_context(
     if not torch.equal(pin, expected_pin):
         raise ValueError("model pin-incidence features differ from the projection constraints")
 
+    if physical_step.integration_policy == PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32:
+        evidence = physical_step.source_evidence
+        if type(evidence) is not SolverVBDStagedFloat32Evidence:
+            raise TypeError("SolverVBD physical integration policy lost its source evidence")
+        evidence.validate_immutable()
+        if objective.dtype != torch.float64 or x_current.dtype != torch.float64:
+            raise ValueError("SolverVBD source integration policy requires promoted float64 runtime tensors")
+        if x_current.ndim != 2:
+            raise ValueError("SolverVBD physical integration policy requires one unbatched transition")
+        pre_event, velocity, source_mass, inverse_mass = evidence._owned_tensors()
+        if any(value.device != objective.device for value in (pre_event, velocity, source_mass, inverse_mass)):
+            raise ValueError("SolverVBD source evidence must share the common-objective device")
+        if objective.dt != evidence.dt_seconds:
+            raise ValueError("SolverVBD source timestep differs from the common objective")
+
+        mass = objective._owned_tensor("mass")
+        expected_mass = source_mass.to(dtype=mass.dtype)
+        mass_runtime = mass.detach().contiguous().cpu().numpy()
+        mass_expected = expected_mass.detach().contiguous().cpu().numpy()
+        if not _array_bytes_equal(mass_runtime, mass_expected):
+            raise ValueError("common-objective mass differs from the exact SolverVBD source mass")
+
+        pinned = projection_state.pinned.detach().cpu().numpy().astype(np.int64, copy=False)
+        pre_event32 = pre_event.detach().contiguous().cpu().numpy().copy()
+        velocity32 = velocity.detach().contiguous().cpu().numpy().copy()
+        inverse_mass32 = inverse_mass.detach().contiguous().cpu().numpy().copy()
+        x_current32 = _exact_float32_image("x_current", x_current)
+        x_previous32 = _exact_float32_image("x_previous", x_previous)
+        force32 = _exact_float32_image("force", force)
+        gravity32 = _exact_float32_image("gravity", gravity)
+        pin_targets32 = _exact_float32_image("pinned_targets", pinned_targets)
+        if pin_targets32.shape != (pinned.size, 3):
+            raise ValueError("SolverVBD pinned_targets must have shape (P, 3)")
+
+        expected_current = pre_event32.copy()
+        expected_current[pinned] = pin_targets32
+        if not _array_bytes_equal(x_current32, expected_current):
+            raise ValueError("x_current differs from the exact SolverVBD applied callback state")
+
+        dt32 = np.float32(evidence.dt_seconds)
+        displacement = (velocity32 * dt32).astype(np.float32)
+        expected_previous = (pre_event32 - displacement).astype(np.float32)
+        if not _array_bytes_equal(x_previous32, expected_previous):
+            raise ValueError("x_previous differs from the exact SolverVBD float32 history construction")
+
+        force_acceleration = (force32 * inverse_mass32[:, None]).astype(np.float32)
+        acceleration = (gravity32[None, :] + force_acceleration).astype(np.float32)
+        velocity_new = (velocity32 + (acceleration * dt32).astype(np.float32)).astype(np.float32)
+        expected_target = (expected_current + (velocity_new * dt32).astype(np.float32)).astype(np.float32)
+        expected_target[pinned] = expected_current[pinned]
+        inertial_target = objective._owned_tensor("inertial_target")
+        inertial_target32 = _exact_float32_image("common-objective inertial_target", inertial_target)
+        if not _array_bytes_equal(inertial_target32, expected_target):
+            raise ValueError("common-objective inertial target differs from the staged SolverVBD float32 replay")
+        return
+
+    if physical_step.integration_policy != PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64:
+        raise ValueError("physical integration policy is not registered")
+    if objective.dtype != torch.float64 or x_current.dtype != torch.float64:
+        raise ValueError("algebraic-float64 integration policy requires float64 runtime tensors")
     free_mask = torch.ones(projection_state.n_verts, dtype=torch.bool, device=objective.device)
     free_mask[projection_state.pinned] = False
     mass = objective._owned_tensor("mass")
@@ -588,6 +939,11 @@ def _validate_physical_context(
     bound_target = inertial_target[free_mask].expand_as(expected_target)
     if not torch.allclose(expected_target, bound_target, rtol=1.0e-12, atol=1.0e-14):
         raise ValueError("physical history, loads, and timestep differ from the bound inertial target")
+
+
+# Kept as the internal spelling used by the solver and existing ablation
+# harness after they have already authenticated the complete problem.
+_validate_physical_context = _validate_physical_objective_integration_trusted
 
 
 def _normalized_residual_norm(residual: torch.Tensor) -> torch.Tensor:
@@ -957,6 +1313,10 @@ def solve_iterative_principal_stretch(
         constraint_registration=constraint_registration,
         head_mode=config.head_mode,
         head_permutation=config.head_permutation,
+        physical_integration_policy=physical_step.integration_policy,
+        source_integration_evidence_sha256=(
+            None if physical_step.source_evidence is None else physical_step.source_evidence.evidence_sha256
+        ),
         physical_step_sha256=physical_step.physical_step_sha256,
         common_objective_sha256=objective.common_objective_sha256,
         operator_geometry_sha256=projection_state.operator_geometry_sha256,
@@ -971,6 +1331,8 @@ def solve_iterative_principal_stretch(
 
 
 __all__ = [
+    "PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64",
+    "PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32",
     "ConstraintApplication",
     "ConstraintObservation",
     "IdentityConstraintHook",
@@ -980,5 +1342,7 @@ __all__ = [
     "IterativeSolverResult",
     "IterativeSolverWork",
     "PhysicalStepContext",
+    "SolverVBDStagedFloat32Evidence",
     "solve_iterative_principal_stretch",
+    "validate_physical_objective_integration",
 ]
