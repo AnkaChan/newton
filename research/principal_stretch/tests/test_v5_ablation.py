@@ -17,7 +17,7 @@ import torch
 from .. import torch_solver as ts
 from .. import v5_ablation
 from ..graph_transformer import GraphTransformerConfig
-from ..iterative_solver import PhysicalStepContext
+from ..iterative_solver import PhysicalStepContext, ProposalSafeguardConfig
 from ..predictor import build_stretch_predictor
 from ..tests.test_graph_transformer import _chain_mesh, _inputs, _tet_poses
 from ..v5_ablation import (
@@ -219,6 +219,297 @@ class TestV5IdenticalCorrectorAblation(unittest.TestCase):
         self.assertTrue(result.development_only)
         self.assertFalse(result.learned_value_claim)
         self.assertIn("no-learned-value-claim", result.claim_scope)
+        self.assertEqual(result.schema_version, 3)
+        self.assertIsNone(result.proposal_safeguard_config_sha256)
+        self.assertIsNone(result.proposal_pinned_indices)
+        self.assertIsNone(result.proposal_pinned_targets)
+        legacy_config_payload = {
+            "iterations": self.config.iterations,
+            "head_permutation": self.config.head_permutation,
+            "detach_residual_features": self.config.detach_residual_features,
+            "minimum_determinant": self.config.minimum_determinant,
+            "minimum_singular_value": self.config.minimum_singular_value,
+        }
+        self.assertEqual(
+            result.ablation_config_sha256,
+            v5_ablation.canonical_json_sha256(legacy_config_payload),
+        )
+        for arm in result.arms:
+            self.assertIsNone(arm.proposal_safeguard_config_sha256)
+            self.assertIsNone(arm.proposal_trace)
+            self.assertIsNone(arm.solver_proposal_displacement_retention)
+            self.assertIsNone(arm.proposal_accepted_iterations)
+            self.assertIsNone(arm.zero_step_iterations)
+            self.assertIsNone(arm.learned_contribution_retained_iterations)
+            self.assertNotIn(
+                "proposal_safeguard_config_sha256",
+                v5_ablation._row_evidence_payload(arm, result.schema_version),
+            )
+
+    def test_candidate_globalization_propagates_identical_config_and_full_evidence(self) -> None:
+        safeguard = ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0))
+        candidate_config = dataclasses.replace(
+            self.config,
+            proposal_safeguard=safeguard,
+            proposal_objective_increase_tolerance=5.0e-13,
+            proposal_normalized_residual_increase_tolerance=7.0e-13,
+        )
+        solver = v5_ablation.solve_iterative_principal_stretch
+        solver_results = []
+        solver_configs = []
+
+        def capture_solver_result(*args, **kwargs):
+            solver_configs.append(kwargs["config"])
+            result = solver(*args, **kwargs)
+            solver_results.append(result)
+            return result
+
+        with mock.patch.object(
+            v5_ablation,
+            "solve_iterative_principal_stretch",
+            side_effect=capture_solver_result,
+        ) as solver_spy:
+            result = self._run(config=candidate_config)
+
+        self.assertEqual(solver_spy.call_count, 3)
+        self.assertEqual(result.schema_version, 4)
+        self.assertIsNotNone(result.proposal_safeguard_config_sha256)
+        for iterative_config in solver_configs:
+            self.assertIs(iterative_config.proposal_safeguard, safeguard)
+            self.assertEqual(iterative_config.objective_policy, "require-nonincreasing")
+            self.assertEqual(iterative_config.residual_policy, "require-nonincreasing")
+            self.assertEqual(
+                iterative_config.objective_increase_tolerance,
+                candidate_config.proposal_objective_increase_tolerance,
+            )
+            self.assertEqual(
+                iterative_config.normalized_residual_increase_tolerance,
+                candidate_config.proposal_normalized_residual_increase_tolerance,
+            )
+        config_payload = v5_ablation._ablation_config_payload(candidate_config)
+        self.assertEqual(
+            config_payload["proposal_objective_increase_tolerance"],
+            candidate_config.proposal_objective_increase_tolerance,
+        )
+        self.assertEqual(
+            config_payload["proposal_normalized_residual_increase_tolerance"],
+            candidate_config.proposal_normalized_residual_increase_tolerance,
+        )
+        self.assertTrue(torch.equal(result.proposal_pinned_indices, self.projection.pinned))
+        self.assertTrue(torch.equal(result.proposal_pinned_targets, self.physical_step.pinned_targets))
+
+        network_arms = tuple(result.arm(name) for name in (LEARNED_ARM, ZERO_ARM, PERMUTED_ARM))
+        learned_scheduled_work = v5_ablation._iterative_scheduled_work_payload(network_arms[0].iterative_work)
+        candidate_count = len(safeguard.candidate_step_fractions)
+        for arm_index, arm in enumerate(network_arms):
+            self.assertEqual(
+                v5_ablation._iterative_scheduled_work_payload(arm.iterative_work),
+                learned_scheduled_work,
+            )
+            self.assertEqual(arm.iterative_work.residual_evaluations, candidate_config.iterations * candidate_count + 1)
+            self.assertEqual(
+                arm.iterative_work.objective_evaluations, candidate_config.iterations * candidate_count + 1
+            )
+            self.assertEqual(
+                arm.iterative_work.state_validity_evaluations,
+                candidate_config.iterations * candidate_count + 1,
+            )
+            self.assertEqual(arm.iterative_work.constraint_applications, candidate_config.iterations * candidate_count)
+            self.assertEqual(arm.proposal_safeguard_config_sha256, result.proposal_safeguard_config_sha256)
+            self.assertEqual(len(arm.proposal_trace), candidate_config.iterations)
+            self.assertEqual(len(arm.solver_proposal_displacement_retention), candidate_config.iterations)
+            self.assertEqual(
+                arm.proposal_accepted_iterations,
+                sum(item.proposal_accepted is True for item in arm.proposal_trace),
+            )
+            self.assertEqual(
+                arm.zero_step_iterations,
+                sum(item.selected_step_fraction == 0.0 for item in arm.proposal_trace),
+            )
+            self.assertEqual(
+                arm.learned_contribution_retained_iterations,
+                sum(item.learned_contribution_retained is True for item in arm.proposal_trace),
+            )
+            for iteration_index, iteration in enumerate(arm.proposal_trace):
+                self.assertEqual(
+                    tuple(candidate.step_fraction for candidate in iteration.candidate_evaluations),
+                    safeguard.candidate_step_fractions,
+                )
+                zero = iteration.candidate_evaluations[-1]
+                self.assertEqual(zero.step_fraction, 0.0)
+                self.assertIs(zero.zero_step_unchanged, True)
+                self.assertTrue(torch.equal(zero.candidate_positions, iteration.positions_before))
+                self.assertTrue(torch.equal(zero.constrained_positions, iteration.positions_before))
+                expected_selection = next(
+                    (
+                        candidate.candidate_index
+                        for candidate in iteration.candidate_evaluations[:-1]
+                        if candidate.admissible
+                    ),
+                    zero.candidate_index,
+                )
+                self.assertEqual(iteration.selected_candidate_index, expected_selection)
+                selected = iteration.candidate_evaluations[expected_selection]
+                self.assertTrue(torch.equal(iteration.positions, selected.constrained_positions))
+                expected_retention = (
+                    None
+                    if iteration.learned_displacement_retention is None
+                    else float(iteration.learned_displacement_retention)
+                )
+                self.assertEqual(arm.solver_proposal_displacement_retention[iteration_index], expected_retention)
+                source_candidate = solver_results[arm_index].trace[iteration_index].candidate_evaluations[0]
+                self.assertNotEqual(
+                    iteration.candidate_evaluations[0].constrained_positions.data_ptr(),
+                    source_candidate.constrained_positions.data_ptr(),
+                )
+
+        for arm in result.arms[3:]:
+            self.assertIsNone(arm.proposal_safeguard_config_sha256)
+            self.assertIsNone(arm.proposal_trace)
+            self.assertIsNone(arm.solver_proposal_displacement_retention)
+            self.assertIsNone(arm.proposal_accepted_iterations)
+            self.assertIsNone(arm.zero_step_iterations)
+            self.assertIsNone(arm.learned_contribution_retained_iterations)
+        result.validate_immutable()
+
+    def test_candidate_globalization_reauthentication_rejects_trace_selection_zero_retention_and_work_tamper(
+        self,
+    ) -> None:
+        safeguard = ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0))
+        result = self._run(config=dataclasses.replace(self.config, proposal_safeguard=safeguard))
+
+        trace_tamper = copy.deepcopy(result)
+        trace_tamper.arm(LEARNED_ARM).proposal_trace[0].candidate_evaluations[0].constrained_positions[0, 0] += 1.0e-6
+        with self.assertRaises(RuntimeError):
+            trace_tamper.validate_immutable()
+
+        selection_tamper = copy.deepcopy(result)
+        iteration = selection_tamper.arm(LEARNED_ARM).proposal_trace[0]
+        different_selection = 0 if iteration.selected_candidate_index != 0 else len(iteration.candidate_evaluations) - 1
+        object.__setattr__(iteration, "selected_candidate_index", different_selection)
+        with self.assertRaisesRegex(RuntimeError, "candidate selection"):
+            selection_tamper.validate_immutable()
+
+        zero_tamper = copy.deepcopy(result)
+        zero_iteration = zero_tamper.arm(LEARNED_ARM).proposal_trace[0]
+        zero_iteration.candidate_evaluations[-1].constrained_positions[0, 0] += 1.0e-6
+        with self.assertRaisesRegex(RuntimeError, "zero candidate"):
+            zero_tamper.validate_immutable()
+
+        retention_tamper = copy.deepcopy(result)
+        arm = retention_tamper.arm(LEARNED_ARM)
+        values = list(arm.solver_proposal_displacement_retention)
+        values[0] = 0.5 if values[0] is None else values[0] + 0.5
+        object.__setattr__(arm, "solver_proposal_displacement_retention", tuple(values))
+        with self.assertRaisesRegex(RuntimeError, "proposal retention"):
+            retention_tamper.validate_immutable()
+
+        work_tamper = copy.deepcopy(result)
+        work = work_tamper.arm(LEARNED_ARM).iterative_work
+        object.__setattr__(work, "constraint_applications", work.constraint_applications + 1)
+        with self.assertRaisesRegex(RuntimeError, "scheduled (predictor/projection|work)"):
+            work_tamper.validate_immutable()
+
+        replay_tamper = copy.deepcopy(result)
+        iteration = replay_tamper.arm(LEARNED_ARM).proposal_trace[0]
+        candidate = next(
+            item
+            for item in iteration.candidate_evaluations[:-1]
+            if item.candidate_index != iteration.selected_candidate_index
+        )
+        free_vertex = int(self.projection.free[0])
+        candidate.candidate_positions[free_vertex, 0] += 1.0e-6
+        candidate.constrained_positions[free_vertex, 0] += 1.0e-6
+        object.__setattr__(
+            replay_tamper,
+            "evidence_sha256",
+            v5_ablation._ablation_evidence_sha256(
+                identities=v5_ablation._ablation_result_identities(replay_tamper),
+                arms=replay_tamper.arms,
+            ),
+        )
+        with self.assertRaisesRegex(RuntimeError, "candidate interpolation"):
+            replay_tamper.validate_immutable()
+
+        residual_norm_tamper = copy.deepcopy(result)
+        iteration = residual_norm_tamper.arm(LEARNED_ARM).proposal_trace[0]
+        candidate = next(
+            item
+            for item in iteration.candidate_evaluations[:-1]
+            if item.candidate_index != iteration.selected_candidate_index
+        )
+        candidate.normalized_residual.add_(123.0)
+        object.__setattr__(
+            residual_norm_tamper,
+            "evidence_sha256",
+            v5_ablation._ablation_evidence_sha256(
+                identities=v5_ablation._ablation_result_identities(residual_norm_tamper),
+                arms=residual_norm_tamper.arms,
+            ),
+        )
+        with self.assertRaisesRegex(RuntimeError, "normalized residual norm"):
+            residual_norm_tamper.validate_immutable()
+
+        active_work_tamper = copy.deepcopy(result)
+        work = active_work_tamper.arm(LEARNED_ARM).iterative_work
+        object.__setattr__(work, "projection_iterations", work.projection_iterations + 999)
+        object.__setattr__(
+            active_work_tamper,
+            "evidence_sha256",
+            v5_ablation._ablation_evidence_sha256(
+                identities=v5_ablation._ablation_result_identities(active_work_tamper),
+                arms=active_work_tamper.arms,
+            ),
+        )
+        with self.assertRaisesRegex(RuntimeError, "active projection work"):
+            active_work_tamper.validate_immutable()
+
+        zero_type_tamper = copy.deepcopy(result)
+        zero = zero_type_tamper.arm(LEARNED_ARM).proposal_trace[0].candidate_evaluations[-1]
+        object.__setattr__(zero, "zero_step_unchanged", 1)
+        object.__setattr__(
+            zero_type_tamper,
+            "evidence_sha256",
+            v5_ablation._ablation_evidence_sha256(
+                identities=v5_ablation._ablation_result_identities(zero_type_tamper),
+                arms=zero_type_tamper.arms,
+            ),
+        )
+        with self.assertRaisesRegex(RuntimeError, "zero-step decision type"):
+            zero_type_tamper.validate_immutable()
+
+    def test_candidate_execution_dtype_rejects_self_consistent_collapsed_fraction_forgery(self) -> None:
+        safeguard = ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0))
+        result = self._run(config=dataclasses.replace(self.config, proposal_safeguard=safeguard))
+        forged = copy.deepcopy(result)
+        persistence = forged.arm(PERSISTENCE_ARM)
+        object.__setattr__(persistence, "pre_corrector_positions", persistence.pre_corrector_positions.float())
+        object.__setattr__(
+            persistence.pre_corrector_metrics,
+            "positions_sha256",
+            position_sha256(persistence.pre_corrector_positions),
+        )
+        collapsed = ProposalSafeguardConfig(candidate_step_fractions=(1.0, 1.0e-50, 0.0))
+        object.__setattr__(forged.ablation_config, "proposal_safeguard", collapsed)
+        object.__setattr__(
+            forged,
+            "ablation_config_sha256",
+            v5_ablation._ablation_config_sha256(forged.ablation_config),
+        )
+        safeguard_sha256 = v5_ablation._proposal_safeguard_config_sha256(collapsed)
+        object.__setattr__(forged, "proposal_safeguard_config_sha256", safeguard_sha256)
+        for arm in forged.arms[:3]:
+            object.__setattr__(arm, "proposal_safeguard_config_sha256", safeguard_sha256)
+        object.__setattr__(
+            forged,
+            "evidence_sha256",
+            v5_ablation._ablation_evidence_sha256(
+                identities=v5_ablation._ablation_result_identities(forged),
+                arms=forged.arms,
+            ),
+        )
+        with self.assertRaisesRegex(RuntimeError, "strictly descending"):
+            forged.validate_immutable()
 
     def test_corrected_endpoint_metrics_and_retention_are_independent(self) -> None:
         result = self._run()

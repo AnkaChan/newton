@@ -30,10 +30,13 @@ import torch
 
 from . import torch_solver
 from .iterative_solver import (
+    CandidateEvaluation,
     IterativeSolverConfig,
+    IterativeSolverIteration,
     IterativeSolverResult,
     IterativeSolverWork,
     PhysicalStepContext,
+    ProposalSafeguardConfig,
     _expand_pinned_targets,
     _validate_physical_context,
     _validate_problem_identity,
@@ -79,6 +82,9 @@ _DAT_SCOPE = "collision-free-identity-constraint-only-no-dat-claim"
 _TIMING_SCOPE = "host-wall-dispatch-not-device-synchronized-not-performance-evidence"
 _VBD_METHOD = "newton-vbd"
 _VBD_INITIALIZER = "authenticated-physical-step-x-current"
+_DEFAULT_PROPOSAL_OBJECTIVE_INCREASE_TOLERANCE = 1.0e-12
+_DEFAULT_PROPOSAL_NORMALIZED_RESIDUAL_INCREASE_TOLERANCE = 1.0e-12
+_MAX_PROPOSAL_INCREASE_TOLERANCE = 1.0e-6
 _ARM_ORIGINS = {
     LEARNED_ARM: "fresh-v5-learned-k-from-authenticated-physical-persistence",
     ZERO_ARM: "fresh-v5-zero-head-k-with-model-and-projection-executed",
@@ -291,6 +297,9 @@ class V5AblationConfig:
     detach_residual_features: bool = True
     minimum_determinant: float = 0.0
     minimum_singular_value: float = 0.0
+    proposal_safeguard: ProposalSafeguardConfig | None = None
+    proposal_objective_increase_tolerance: float = _DEFAULT_PROPOSAL_OBJECTIVE_INCREASE_TOLERANCE
+    proposal_normalized_residual_increase_tolerance: float = _DEFAULT_PROPOSAL_NORMALIZED_RESIDUAL_INCREASE_TOLERANCE
 
     def __post_init__(self) -> None:
         if isinstance(self.iterations, bool) or not isinstance(self.iterations, numbers.Integral):
@@ -309,6 +318,25 @@ class V5AblationConfig:
                 raise TypeError(f"{name} must be a real number")
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
+        if self.proposal_safeguard is not None:
+            if type(self.proposal_safeguard) is not ProposalSafeguardConfig:
+                raise TypeError("proposal_safeguard must be a ProposalSafeguardConfig")
+            self.proposal_safeguard.validate()
+        for name in (
+            "proposal_objective_increase_tolerance",
+            "proposal_normalized_residual_increase_tolerance",
+        ):
+            value = getattr(self, name)
+            if type(value) is not float:
+                raise TypeError(f"{name} must be a built-in float")
+            if not math.isfinite(value) or value < 0.0 or value > _MAX_PROPOSAL_INCREASE_TOLERANCE:
+                raise ValueError(f"{name} must be a registered finite non-negative tolerance")
+        if self.proposal_safeguard is None and (
+            self.proposal_objective_increase_tolerance != _DEFAULT_PROPOSAL_OBJECTIVE_INCREASE_TOLERANCE
+            or self.proposal_normalized_residual_increase_tolerance
+            != _DEFAULT_PROPOSAL_NORMALIZED_RESIDUAL_INCREASE_TOLERANCE
+        ):
+            raise ValueError("proposal tolerances may change only when proposal_safeguard is enabled")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -381,6 +409,12 @@ class AblationArmResult:
     learned_displacement_retention: float | None
     fallback_preserved_start: bool
     timing: AblationTiming
+    proposal_safeguard_config_sha256: str | None = None
+    proposal_trace: tuple[IterativeSolverIteration, ...] | None = None
+    solver_proposal_displacement_retention: tuple[float | None, ...] | None = None
+    proposal_accepted_iterations: int | None = None
+    zero_step_iterations: int | None = None
+    learned_contribution_retained_iterations: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -416,6 +450,9 @@ class V5AblationResult:
     corrector_call_count: int
     arms: tuple[AblationArmResult, ...]
     evidence_sha256: str
+    proposal_safeguard_config_sha256: str | None = None
+    proposal_pinned_indices: torch.Tensor | None = None
+    proposal_pinned_targets: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         self.validate_immutable()
@@ -425,7 +462,16 @@ class V5AblationResult:
         names = tuple(arm.name for arm in self.arms)
         if names != MANDATORY_ARM_NAMES or len(set(names)) != len(names):
             raise ValueError("ablation result must contain each mandatory canonical row exactly once in order")
-        if self.schema_version != 3 or self.claim_scope != _CLAIM_SCOPE:
+        if type(self.ablation_config) is not V5AblationConfig:
+            raise TypeError("ablation result must embed the exact V5AblationConfig")
+        self.ablation_config.__post_init__()
+        candidate_mode = self.ablation_config.proposal_safeguard is not None
+        expected_schema_version = 4 if candidate_mode else 3
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != expected_schema_version
+            or self.claim_scope != _CLAIM_SCOPE
+        ):
             raise ValueError("ablation result has an unsupported claim schema")
         if not self.development_only or self.learned_value_claim:
             raise ValueError("this harness may report only development diagnostics without a learned-value claim")
@@ -473,11 +519,9 @@ class V5AblationResult:
             "evidence_sha256",
         ):
             _require_sha256(getattr(self, name), name)
-        if type(self.ablation_config) is not V5AblationConfig:
-            raise TypeError("ablation result must embed the exact V5AblationConfig")
         if type(self.corrector_config) is not CorrectorConfig or type(self.corrector_config.pcg) is not FixedPCGConfig:
             raise TypeError("ablation result must embed the exact CorrectorConfig")
-        if _config_sha256(self.ablation_config) != self.ablation_config_sha256:
+        if _ablation_config_sha256(self.ablation_config) != self.ablation_config_sha256:
             raise RuntimeError("embedded ablation configuration changed after authentication")
         if _config_sha256(self.corrector_config) != self.corrector_config_sha256:
             raise RuntimeError("embedded corrector configuration changed after authentication")
@@ -509,6 +553,48 @@ class V5AblationResult:
         ):
             raise RuntimeError("permuted row differs from the authenticated head permutation")
         persistence = self.arm(PERSISTENCE_ARM).pre_corrector_positions
+        if candidate_mode:
+            assert self.ablation_config.proposal_safeguard is not None
+            _validate_candidate_execution_scalars(self.ablation_config, persistence)
+            expected_safeguard_sha256 = _proposal_safeguard_config_sha256(self.ablation_config.proposal_safeguard)
+            if (
+                type(self.proposal_safeguard_config_sha256) is not str
+                or self.proposal_safeguard_config_sha256 != expected_safeguard_sha256
+            ):
+                raise RuntimeError("candidate safeguard configuration changed after authentication")
+            if (
+                type(self.proposal_pinned_indices) is not torch.Tensor
+                or self.proposal_pinned_indices.dtype != torch.int64
+                or self.proposal_pinned_indices.ndim != 1
+                or self.proposal_pinned_indices.numel() != self.pinned_vertex_count
+                or type(self.proposal_pinned_targets) is not torch.Tensor
+                or self.proposal_pinned_targets.shape != (self.pinned_vertex_count, 3)
+                or self.proposal_pinned_targets.device != persistence.device
+                or self.proposal_pinned_targets.dtype != persistence.dtype
+                or self.proposal_pinned_indices.device != persistence.device
+            ):
+                raise RuntimeError("candidate pin evidence changed shape, dtype, or device")
+            if self.proposal_pinned_indices.numel() > 0 and (
+                bool((self.proposal_pinned_indices < 0).any().item())
+                or bool((self.proposal_pinned_indices >= persistence.shape[0]).any().item())
+            ):
+                raise RuntimeError("candidate pin evidence contains an out-of-range vertex")
+            if pin_binding_sha256(
+                self.proposal_pinned_indices, self.proposal_pinned_targets
+            ) != self.pin_binding_sha256 or not torch.equal(
+                persistence.index_select(0, self.proposal_pinned_indices),
+                self.proposal_pinned_targets,
+            ):
+                raise RuntimeError("candidate pin evidence changed after authentication")
+        elif any(
+            value is not None
+            for value in (
+                self.proposal_safeguard_config_sha256,
+                self.proposal_pinned_indices,
+                self.proposal_pinned_targets,
+            )
+        ):
+            raise RuntimeError("legacy direct ablation acquired candidate safeguard evidence")
         for arm in self.arms:
             if type(arm.physical_integration_policy) is not str:
                 raise RuntimeError("ablation row changed its physical integration policy type")
@@ -714,8 +800,53 @@ class V5AblationResult:
                     or arm.iterative_work.projection_calls != self.iterations
                 ):
                     raise RuntimeError("learned ablation row changed its fixed K work")
+                if candidate_mode:
+                    if (
+                        type(arm.proposal_safeguard_config_sha256) is not str
+                        or arm.proposal_safeguard_config_sha256 != self.proposal_safeguard_config_sha256
+                    ):
+                        raise RuntimeError("candidate row changed its shared safeguard configuration")
+                    assert self.ablation_config.proposal_safeguard is not None
+                    _validate_candidate_trace(
+                        arm,
+                        safeguard=self.ablation_config.proposal_safeguard,
+                        minimum_determinant=float(self.ablation_config.minimum_determinant),
+                        minimum_singular_value=float(self.ablation_config.minimum_singular_value),
+                        objective_increase_tolerance=self.ablation_config.proposal_objective_increase_tolerance,
+                        normalized_residual_increase_tolerance=(
+                            self.ablation_config.proposal_normalized_residual_increase_tolerance
+                        ),
+                        iterations=self.iterations,
+                        persistence=persistence,
+                        pinned=self.proposal_pinned_indices,
+                        pinned_targets=self.proposal_pinned_targets,
+                    )
+                elif any(
+                    value is not None
+                    for value in (
+                        arm.proposal_safeguard_config_sha256,
+                        arm.proposal_trace,
+                        arm.solver_proposal_displacement_retention,
+                        arm.proposal_accepted_iterations,
+                        arm.zero_step_iterations,
+                        arm.learned_contribution_retained_iterations,
+                    )
+                ):
+                    raise RuntimeError("legacy direct ablation row acquired unbound candidate evidence")
             elif arm.iterative_work is not None:
                 raise RuntimeError("classical initializer row acquired learned work")
+            elif any(
+                value is not None
+                for value in (
+                    arm.proposal_safeguard_config_sha256,
+                    arm.proposal_trace,
+                    arm.solver_proposal_displacement_retention,
+                    arm.proposal_accepted_iterations,
+                    arm.zero_step_iterations,
+                    arm.learned_contribution_retained_iterations,
+                )
+            ):
+                raise RuntimeError("classical initializer row acquired candidate evidence")
             if arm.name == INERTIAL_ARM:
                 if arm.pin_overwrite_vertices != self.pinned_vertex_count:
                     raise RuntimeError("inertial row changed its explicit pin-overwrite count")
@@ -739,35 +870,7 @@ class V5AblationResult:
             ):
                 raise RuntimeError("non-VBD row acquired VBD evidence")
 
-        identities = {
-            "schema_version": self.schema_version,
-            "claim_scope": self.claim_scope,
-            "development_only": self.development_only,
-            "learned_value_claim": self.learned_value_claim,
-            "checkpoint_scope": self.checkpoint_scope,
-            "dat_scope": self.dat_scope,
-            "physical_step_sha256": self.physical_step_sha256,
-            "physical_integration_policy": self.physical_integration_policy,
-            "source_integration_evidence_sha256": self.source_integration_evidence_sha256,
-            "common_objective_sha256": self.common_objective_sha256,
-            "static_mesh_sha256": self.static_mesh_sha256,
-            "operator_geometry_sha256": self.operator_geometry_sha256,
-            "projection_state_sha256": self.projection_state_sha256,
-            "static_graph_sha256": self.static_graph_sha256,
-            "predictor_state_sha256": self.predictor_state_sha256,
-            "pin_binding_sha256": self.pin_binding_sha256,
-            "ablation_config": dataclasses.asdict(self.ablation_config),
-            "ablation_config_sha256": self.ablation_config_sha256,
-            "corrector_config": dataclasses.asdict(self.corrector_config),
-            "corrector_config_sha256": self.corrector_config_sha256,
-            "corrector_scheduled_work_sha256": self.corrector_scheduled_work_sha256,
-            "learned_scheduled_work_sha256": self.learned_scheduled_work_sha256,
-            "head_permutation_sha256": self.head_permutation_sha256,
-            "iterations": self.iterations,
-            "pinned_vertex_count": self.pinned_vertex_count,
-            "corrector_call_count": self.corrector_call_count,
-            "vbd_freshness_scope": self.vbd_freshness_scope,
-        }
+        identities = _ablation_result_identities(self)
         if _ablation_evidence_sha256(identities=identities, arms=self.arms) != self.evidence_sha256:
             raise RuntimeError("ablation evidence changed after authentication")
 
@@ -853,6 +956,33 @@ def _score_endpoint(
 def _config_sha256(config: object) -> str:
     if not dataclasses.is_dataclass(config):
         raise TypeError("authenticated configuration must be a dataclass")
+    return canonical_json_sha256(dataclasses.asdict(config))
+
+
+def _ablation_config_payload(config: V5AblationConfig) -> dict[str, object]:
+    """Return the versioned config payload without changing legacy bytes."""
+    payload: dict[str, object] = {
+        "iterations": config.iterations,
+        "head_permutation": config.head_permutation,
+        "detach_residual_features": config.detach_residual_features,
+        "minimum_determinant": config.minimum_determinant,
+        "minimum_singular_value": config.minimum_singular_value,
+    }
+    if config.proposal_safeguard is not None:
+        payload["proposal_safeguard"] = dataclasses.asdict(config.proposal_safeguard)
+        payload["proposal_objective_increase_tolerance"] = config.proposal_objective_increase_tolerance
+        payload["proposal_normalized_residual_increase_tolerance"] = (
+            config.proposal_normalized_residual_increase_tolerance
+        )
+    return payload
+
+
+def _ablation_config_sha256(config: V5AblationConfig) -> str:
+    return canonical_json_sha256(_ablation_config_payload(config))
+
+
+def _proposal_safeguard_config_sha256(config: ProposalSafeguardConfig) -> str:
+    config.validate()
     return canonical_json_sha256(dataclasses.asdict(config))
 
 
@@ -1030,6 +1160,610 @@ def _validate_iterative_result(
         raise RuntimeError("v5 ablation arm did not freshly initialize from physical persistence")
 
 
+def _clone_trace_value(value: object) -> object:
+    """Own every tensor in solver proposal evidence without live aliases."""
+    if isinstance(value, torch.Tensor):
+        return value.detach().clone()
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.replace(
+            value,
+            **{field.name: _clone_trace_value(getattr(value, field.name)) for field in dataclasses.fields(value)},
+        )
+    if isinstance(value, dict):
+        return {key: _clone_trace_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_clone_trace_value(item) for item in value)
+    if isinstance(value, list):
+        return [_clone_trace_value(item) for item in value]
+    return value
+
+
+def _clone_proposal_trace(
+    trace: tuple[IterativeSolverIteration, ...],
+) -> tuple[IterativeSolverIteration, ...]:
+    cloned = _clone_trace_value(trace)
+    if type(cloned) is not tuple or any(type(item) is not IterativeSolverIteration for item in cloned):
+        raise RuntimeError("failed to create an owned iterative proposal trace")
+    return cloned
+
+
+def _proposal_retention_value(value: torch.Tensor | None) -> float | None:
+    if value is None:
+        return None
+    if type(value) is not torch.Tensor or value.ndim != 0 or not value.is_floating_point():
+        raise RuntimeError("candidate proposal retention must be a floating scalar tensor or None")
+    if not torch.isfinite(value).all():
+        raise RuntimeError("candidate proposal retention must be None instead of non-finite")
+    return float(value.detach().cpu())
+
+
+def _same_tensor(left: object, right: object) -> bool:
+    if (
+        type(left) is not torch.Tensor
+        or type(right) is not torch.Tensor
+        or left.dtype != right.dtype
+        or left.device != right.device
+        or tuple(left.shape) != tuple(right.shape)
+    ):
+        return False
+    left_bytes = left.detach().contiguous().reshape(-1).view(torch.uint8).cpu()
+    right_bytes = right.detach().contiguous().reshape(-1).view(torch.uint8).cpu()
+    return torch.equal(left_bytes, right_bytes)
+
+
+def _validate_candidate_evidence_types(value: object) -> None:
+    """Reject numeric/string subclasses that collide in canonical JSON."""
+    if type(value) is torch.Tensor or value is None or type(value) in (bool, int, float, str):
+        return
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        for field in dataclasses.fields(value):
+            _validate_candidate_evidence_types(getattr(value, field.name))
+        return
+    if type(value) is dict:
+        if any(type(key) is not str for key in value):
+            raise RuntimeError("candidate proposal diagnostics require built-in string keys")
+        for item in value.values():
+            _validate_candidate_evidence_types(item)
+        return
+    if type(value) in (tuple, list):
+        for item in value:
+            _validate_candidate_evidence_types(item)
+        return
+    raise RuntimeError(f"candidate proposal evidence contains unsupported type {type(value).__name__}")
+
+
+def _expected_candidate_retention(
+    candidate: CandidateEvaluation,
+    *,
+    positions_before: torch.Tensor,
+    proposed_positions: torch.Tensor,
+    pinned: torch.Tensor,
+) -> tuple[torch.Tensor | None, bool]:
+    free = torch.ones(positions_before.shape[0], dtype=torch.bool, device=positions_before.device)
+    free[pinned] = False
+    full_displacement = (proposed_positions - positions_before)[free].reshape(-1)
+    constrained_displacement = (candidate.constrained_positions - positions_before)[free].reshape(-1)
+    full_finite = bool(torch.isfinite(full_displacement).all().item())
+    constrained_finite = bool(torch.isfinite(constrained_displacement).all().item())
+    if not full_finite or not constrained_finite or torch.equal(full_displacement, torch.zeros_like(full_displacement)):
+        retention = None
+    else:
+        numerator = torch.dot(constrained_displacement, full_displacement)
+        denominator = torch.dot(full_displacement, full_displacement)
+        if (
+            not bool(torch.isfinite(numerator).item())
+            or not bool(torch.isfinite(denominator).item())
+            or not bool((denominator > 0.0).item())
+        ):
+            retention = None
+        else:
+            value = numerator / denominator
+            retention = value if bool(torch.isfinite(value).item()) else None
+    learned_retained = (
+        candidate.step_fraction > 0.0
+        and retention is not None
+        and bool(torch.isfinite(retention).item())
+        and bool((retention > 0.0).item())
+    )
+    return retention, learned_retained
+
+
+def _validate_candidate_execution_scalars(config: V5AblationConfig, reference: torch.Tensor) -> None:
+    """Mirror core scalar materialization before accepting schema-v4 evidence."""
+    for name in (
+        "minimum_determinant",
+        "minimum_singular_value",
+        "proposal_objective_increase_tolerance",
+        "proposal_normalized_residual_increase_tolerance",
+    ):
+        python_value = getattr(config, name)
+        materialized = reference.new_tensor(python_value)
+        if not bool(torch.isfinite(materialized).item()):
+            raise RuntimeError(f"{name} is not finite in the recorded execution dtype")
+        if python_value > 0.0 and not bool((materialized > 0.0).item()):
+            raise RuntimeError(f"{name} is not positive in the recorded execution dtype")
+    safeguard = config.proposal_safeguard
+    if type(safeguard) is not ProposalSafeguardConfig:
+        raise RuntimeError("schema-v4 evidence lost its proposal safeguard")
+    safeguard.validate()
+    fractions = reference.new_tensor(safeguard.candidate_step_fractions)
+    if not bool(torch.isfinite(fractions).all().item()):
+        raise RuntimeError("candidate fractions are not finite in the recorded execution dtype")
+    if not bool((fractions[0] == reference.new_tensor(1.0)).item()) or not bool(
+        (fractions[-1] == reference.new_tensor(0.0)).item()
+    ):
+        raise RuntimeError("candidate fraction endpoints changed in the recorded execution dtype")
+    if not bool((fractions[:-1] > fractions[1:]).all().item()):
+        raise RuntimeError("candidate fractions are not strictly descending in the recorded execution dtype")
+
+
+def _validate_candidate_tensor_schema(candidate: CandidateEvaluation, reference: torch.Tensor) -> None:
+    vector_fields = ("candidate_positions", "constrained_positions", "normalized_residual")
+    scalar_fields = (
+        "raw_residual_norm",
+        "normalized_residual_norm",
+        "objective",
+        "minimum_determinant",
+        "minimum_singular_value",
+    )
+    for name in vector_fields:
+        value = getattr(candidate, name)
+        if (
+            type(value) is not torch.Tensor
+            or value.shape != reference.shape
+            or value.device != reference.device
+            or value.dtype != reference.dtype
+        ):
+            raise RuntimeError("candidate proposal trace changed a vector tensor schema")
+    for name in scalar_fields:
+        value = getattr(candidate, name)
+        if (
+            type(value) is not torch.Tensor
+            or value.ndim != 0
+            or value.device != reference.device
+            or value.dtype != reference.dtype
+        ):
+            raise RuntimeError("candidate proposal trace changed a scalar tensor schema")
+
+
+def _validate_iteration_tensor_schema(iteration: IterativeSolverIteration, reference: torch.Tensor) -> None:
+    vector_fields = (
+        "positions_before",
+        "normalized_residual_before",
+        "proposed_positions",
+        "positions",
+        "residual_after",
+    )
+    scalar_fields = (
+        "raw_residual_norm_before",
+        "normalized_residual_norm_before",
+        "objective_before",
+        "minimum_determinant_before",
+        "minimum_singular_value_before",
+        "raw_residual_norm_after",
+        "normalized_residual_norm_after",
+        "objective_after",
+        "minimum_determinant_after",
+        "minimum_singular_value_after",
+    )
+    for name in vector_fields:
+        value = getattr(iteration, name)
+        if (
+            type(value) is not torch.Tensor
+            or value.shape != reference.shape
+            or value.device != reference.device
+            or value.dtype != reference.dtype
+        ):
+            raise RuntimeError("candidate proposal iteration changed a vector tensor schema")
+    for name in scalar_fields:
+        value = getattr(iteration, name)
+        if (
+            type(value) is not torch.Tensor
+            or value.ndim != 0
+            or value.device != reference.device
+            or value.dtype != reference.dtype
+        ):
+            raise RuntimeError("candidate proposal iteration changed a scalar tensor schema")
+
+
+def _recomputed_normalized_residual_norm(residual: torch.Tensor) -> torch.Tensor:
+    return torch.linalg.vector_norm(residual.flatten(start_dim=-2), dim=-1)
+
+
+def _validate_projection_diagnostics(
+    diagnostics: torch_solver.ProjectionDiagnostics,
+    *,
+    expected_backend: str,
+) -> None:
+    if type(diagnostics) is not torch_solver.ProjectionDiagnostics or diagnostics.backend != expected_backend:
+        raise RuntimeError("candidate projection diagnostics changed backend or schema")
+    if type(diagnostics.converged) is not bool or type(diagnostics.breakdown) is not bool:
+        raise RuntimeError("candidate projection diagnostics changed a decision type")
+    integer_fields = (
+        "iterations",
+        "rhs_count",
+        "converged_rhs",
+        "matrix_vector_products",
+        "preconditioner_applications",
+        "factor_solves",
+        "hierarchy_levels",
+        "preconditioner_matrix_vector_products",
+    )
+    if any(type(getattr(diagnostics, name)) is not int or getattr(diagnostics, name) < 0 for name in integer_fields):
+        raise RuntimeError("candidate projection diagnostics changed a non-negative work count")
+    if diagnostics.rhs_count <= 0 or diagnostics.converged_rhs > diagnostics.rhs_count:
+        raise RuntimeError("candidate projection diagnostics changed its right-hand-side counts")
+    float_fields = (
+        "rhs_norm_max",
+        "initial_residual_norm_max",
+        "residual_norm_max",
+        "relative_residual_max",
+    )
+    if any(
+        type(getattr(diagnostics, name)) is not float
+        or not math.isfinite(getattr(diagnostics, name))
+        or getattr(diagnostics, name) < 0.0
+        for name in float_fields
+    ):
+        raise RuntimeError("candidate projection diagnostics changed a finite residual metric")
+    for name in ("relative_tolerance", "absolute_tolerance"):
+        value = getattr(diagnostics, name)
+        if value is not None and (type(value) is not float or not math.isfinite(value) or value < 0.0):
+            raise RuntimeError("candidate projection diagnostics changed a finite tolerance")
+    if diagnostics.preconditioner is not None and type(diagnostics.preconditioner) is not str:
+        raise RuntimeError("candidate projection diagnostics changed its preconditioner schema")
+
+
+def _validate_candidate_trace(
+    arm: AblationArmResult,
+    *,
+    safeguard: ProposalSafeguardConfig,
+    minimum_determinant: float,
+    minimum_singular_value: float,
+    objective_increase_tolerance: float,
+    normalized_residual_increase_tolerance: float,
+    iterations: int,
+    persistence: torch.Tensor,
+    pinned: torch.Tensor,
+    pinned_targets: torch.Tensor,
+) -> None:
+    """Replay stored candidate decisions under the registered v4 contract.
+
+    This validates arithmetic and gate decisions from the authenticated scored
+    tensors. It deliberately does not rerun deformation geometry or the common
+    physical objective, because those execution contexts are outside the
+    standalone ablation result's return surface.
+    """
+    trace = arm.proposal_trace
+    retention_record = arm.solver_proposal_displacement_retention
+    if type(trace) is not tuple or len(trace) != iterations:
+        raise RuntimeError("candidate proposal trace changed its fixed K schedule")
+    _validate_candidate_evidence_types(trace)
+    if type(retention_record) is not tuple or len(retention_record) != iterations:
+        raise RuntimeError("candidate proposal retention changed its fixed K schedule")
+    fractions = safeguard.candidate_step_fractions
+    expected_before = persistence
+    previous_iteration: IterativeSolverIteration | None = None
+    projection_iterations = 0
+    projection_matrix_vector_products = 0
+    projection_preconditioner_applications = 0
+    projection_factor_solves = 0
+    accepted_count = 0
+    zero_count = 0
+    retained_count = 0
+    for iteration_index, iteration in enumerate(trace):
+        if type(iteration) is not IterativeSolverIteration:
+            raise RuntimeError("candidate proposal trace contains an unregistered iteration record")
+        _validate_iteration_tensor_schema(iteration, persistence)
+        expected_fraction = iteration_index / max(iterations - 1, 1)
+        if (
+            type(iteration.iteration) is not int
+            or iteration.iteration != iteration_index
+            or type(iteration.iteration_fraction) is not float
+            or iteration.iteration_fraction != expected_fraction
+            or not _same_tensor(iteration.positions_before, expected_before)
+        ):
+            raise RuntimeError("candidate proposal trace changed its iteration chain")
+        if (
+            type(iteration.proposed_positions) is not torch.Tensor
+            or iteration.proposed_positions.shape != iteration.positions_before.shape
+            or iteration.proposed_positions.device != iteration.positions_before.device
+            or iteration.proposed_positions.dtype != iteration.positions_before.dtype
+            or type(iteration.projection_diagnostics) is not torch_solver.ProjectionDiagnostics
+            or iteration.constraint_prepare_diagnostics != {"refreshes": 0}
+            or type(iteration.constraint_prepare_diagnostics) is not dict
+        ):
+            raise RuntimeError("candidate proposal trace changed its registered iteration schema")
+        _validate_projection_diagnostics(
+            iteration.projection_diagnostics,
+            expected_backend=arm.iterative_work.projection_backend,
+        )
+        projection_iterations += iteration.projection_diagnostics.iterations
+        projection_matrix_vector_products += iteration.projection_diagnostics.matrix_vector_products
+        projection_preconditioner_applications += iteration.projection_diagnostics.preconditioner_applications
+        projection_factor_solves += iteration.projection_diagnostics.factor_solves
+        if not _same_tensor(
+            iteration.normalized_residual_norm_before,
+            _recomputed_normalized_residual_norm(iteration.normalized_residual_before),
+        ) or not _same_tensor(
+            iteration.normalized_residual_norm_after,
+            _recomputed_normalized_residual_norm(iteration.residual_after),
+        ):
+            raise RuntimeError("candidate iteration normalized residual norm changed after replay")
+        if previous_iteration is not None and any(
+            not _same_tensor(before, after)
+            for before, after in (
+                (iteration.normalized_residual_before, previous_iteration.residual_after),
+                (iteration.raw_residual_norm_before, previous_iteration.raw_residual_norm_after),
+                (iteration.normalized_residual_norm_before, previous_iteration.normalized_residual_norm_after),
+                (iteration.objective_before, previous_iteration.objective_after),
+                (iteration.minimum_determinant_before, previous_iteration.minimum_determinant_after),
+                (iteration.minimum_singular_value_before, previous_iteration.minimum_singular_value_after),
+            )
+        ):
+            raise RuntimeError("candidate proposal trace changed its before/after metric chain")
+        candidates = iteration.candidate_evaluations
+        if type(candidates) is not tuple or len(candidates) != len(fractions):
+            raise RuntimeError("candidate proposal trace changed its fixed candidate schedule")
+        for candidate_index, (candidate, step_fraction) in enumerate(zip(candidates, fractions, strict=True)):
+            if type(candidate) is not CandidateEvaluation:
+                raise RuntimeError("candidate proposal trace contains an unregistered candidate record")
+            if (
+                type(candidate.candidate_index) is not int
+                or candidate.candidate_index != candidate_index
+                or type(candidate.step_fraction) is not float
+                or candidate.step_fraction != step_fraction
+            ):
+                raise RuntimeError("candidate proposal trace changed its fixed candidate schedule")
+            _validate_candidate_tensor_schema(candidate, iteration.positions_before)
+            if not _same_tensor(
+                candidate.normalized_residual_norm,
+                _recomputed_normalized_residual_norm(candidate.normalized_residual),
+            ):
+                raise RuntimeError("candidate normalized residual norm changed after replay")
+            for name in (
+                "positions_finite",
+                "exact_pins",
+                "determinant_valid",
+                "singular_value_valid",
+                "objective_finite",
+                "residual_finite",
+                "state_valid",
+                "objective_nonincreasing",
+                "residual_nonincreasing",
+                "learned_contribution_retained",
+                "admissible",
+            ):
+                if type(getattr(candidate, name)) is not bool:
+                    raise RuntimeError("candidate proposal trace changed a canonical decision type")
+            if type(candidate.rejection_reasons) is not tuple or any(
+                type(reason) is not str for reason in candidate.rejection_reasons
+            ):
+                raise RuntimeError("candidate proposal trace changed its rejection-reason schema")
+            if step_fraction == 0.0:
+                if type(candidate.zero_step_unchanged) is not bool:
+                    raise RuntimeError("candidate zero-step decision type changed after authentication")
+            elif candidate.zero_step_unchanged is not None:
+                raise RuntimeError("a positive candidate acquired zero-step metadata")
+            if step_fraction == 1.0:
+                expected_candidate_positions = iteration.proposed_positions
+            elif step_fraction == 0.0:
+                expected_candidate_positions = iteration.positions_before
+            else:
+                expected_candidate_positions = iteration.positions_before + iteration.positions_before.new_tensor(
+                    step_fraction
+                ) * (iteration.proposed_positions - iteration.positions_before)
+            if not _same_tensor(candidate.candidate_positions, expected_candidate_positions):
+                raise RuntimeError("candidate interpolation changed after authentication")
+            if step_fraction == 0.0 and (
+                not _same_tensor(candidate.candidate_positions, iteration.positions_before)
+                or not _same_tensor(candidate.constrained_positions, iteration.positions_before)
+            ):
+                raise RuntimeError("candidate zero candidate changed the exact no-op state")
+            if not _same_tensor(candidate.constrained_positions, candidate.candidate_positions):
+                raise RuntimeError("candidate identity constraint changed its candidate output")
+
+            expected_zero_unchanged = (
+                torch.equal(candidate.constrained_positions, iteration.positions_before)
+                if step_fraction == 0.0
+                else None
+            )
+            positions_finite = bool(torch.isfinite(candidate.constrained_positions).all().item())
+            exact_pins = torch.equal(candidate.constrained_positions.index_select(0, pinned), pinned_targets)
+            determinant_valid = positions_finite and bool(
+                torch.isfinite(candidate.minimum_determinant).all().item()
+                and (candidate.minimum_determinant > candidate.minimum_determinant.new_tensor(minimum_determinant))
+                .all()
+                .item()
+            )
+            singular_value_valid = positions_finite and bool(
+                torch.isfinite(candidate.minimum_singular_value).all().item()
+                and (
+                    candidate.minimum_singular_value
+                    > candidate.minimum_singular_value.new_tensor(minimum_singular_value)
+                )
+                .all()
+                .item()
+            )
+            objective_finite = bool(torch.isfinite(candidate.objective).all().item())
+            residual_finite = (
+                bool(torch.isfinite(candidate.normalized_residual).all().item())
+                and bool(torch.isfinite(candidate.raw_residual_norm).all().item())
+                and bool(torch.isfinite(candidate.normalized_residual_norm).all().item())
+            )
+            state_valid = positions_finite and exact_pins and determinant_valid and singular_value_valid
+            objective_nonincreasing = objective_finite and bool(
+                (
+                    candidate.objective
+                    <= iteration.objective_before + candidate.objective.new_tensor(objective_increase_tolerance)
+                )
+                .all()
+                .item()
+            )
+            residual_nonincreasing = residual_finite and bool(
+                (
+                    candidate.normalized_residual_norm
+                    <= iteration.normalized_residual_norm_before
+                    + candidate.normalized_residual_norm.new_tensor(normalized_residual_increase_tolerance)
+                )
+                .all()
+                .item()
+            )
+            expected_retention, learned_retained = _expected_candidate_retention(
+                candidate,
+                positions_before=iteration.positions_before,
+                proposed_positions=iteration.proposed_positions,
+                pinned=pinned,
+            )
+            if candidate.displacement_retention is None:
+                retention_matches = expected_retention is None
+            else:
+                retention_matches = expected_retention is not None and _same_tensor(
+                    candidate.displacement_retention, expected_retention
+                )
+            rejection_reasons: list[str] = []
+            for valid, reason in (
+                (positions_finite, "non-finite-positions"),
+                (exact_pins, "changed-exact-pins"),
+                (determinant_valid, "determinant-bound"),
+                (singular_value_valid, "singular-value-bound"),
+                (objective_finite, "non-finite-objective"),
+                (residual_finite, "non-finite-residual"),
+                (objective_nonincreasing, "objective-increase"),
+                (residual_nonincreasing, "residual-increase"),
+            ):
+                if not valid:
+                    rejection_reasons.append(reason)
+            if expected_zero_unchanged is False:
+                rejection_reasons.append("zero-step-moved")
+            admissible = (
+                state_valid
+                and objective_nonincreasing
+                and residual_nonincreasing
+                and expected_zero_unchanged is not False
+            )
+            if (
+                candidate.positions_finite != positions_finite
+                or candidate.exact_pins != exact_pins
+                or candidate.determinant_valid != determinant_valid
+                or candidate.singular_value_valid != singular_value_valid
+                or candidate.objective_finite != objective_finite
+                or candidate.residual_finite != residual_finite
+                or candidate.state_valid != state_valid
+                or candidate.objective_nonincreasing != objective_nonincreasing
+                or candidate.residual_nonincreasing != residual_nonincreasing
+                or candidate.zero_step_unchanged != expected_zero_unchanged
+                or not retention_matches
+                or candidate.learned_contribution_retained != learned_retained
+                or candidate.admissible != admissible
+                or candidate.rejection_reasons != tuple(rejection_reasons)
+                or type(candidate.constraint_diagnostics) is not dict
+                or candidate.constraint_diagnostics != {"truncation_calls": 0, "minimum_fraction": 1.0}
+            ):
+                raise RuntimeError("candidate safeguard decisions changed after authenticated replay")
+
+        zero = candidates[-1]
+        if not zero.admissible:
+            raise RuntimeError("candidate zero candidate is no longer an admissible fallback")
+        expected_selection = next(
+            (candidate.candidate_index for candidate in candidates[:-1] if candidate.admissible),
+            zero.candidate_index,
+        )
+        if (
+            type(iteration.selected_candidate_index) is not int
+            or iteration.selected_candidate_index != expected_selection
+        ):
+            raise RuntimeError("candidate selection changed after authentication")
+        selected = candidates[expected_selection]
+        if (
+            type(iteration.selected_step_fraction) is not float
+            or iteration.selected_step_fraction != selected.step_fraction
+            or not _same_tensor(iteration.positions, selected.constrained_positions)
+            or not _same_tensor(iteration.residual_after, selected.normalized_residual)
+            or not _same_tensor(iteration.raw_residual_norm_after, selected.raw_residual_norm)
+            or not _same_tensor(iteration.normalized_residual_norm_after, selected.normalized_residual_norm)
+            or not _same_tensor(iteration.objective_after, selected.objective)
+            or not _same_tensor(iteration.minimum_determinant_after, selected.minimum_determinant)
+            or not _same_tensor(iteration.minimum_singular_value_after, selected.minimum_singular_value)
+            or type(iteration.constraint_diagnostics) is not dict
+            or iteration.constraint_diagnostics != selected.constraint_diagnostics
+        ):
+            raise RuntimeError("candidate selection no longer matches its committed trace state")
+        selected_retention = _proposal_retention_value(selected.displacement_retention)
+        iteration_retention = _proposal_retention_value(iteration.learned_displacement_retention)
+        if iteration_retention != selected_retention or retention_record[iteration_index] != selected_retention:
+            raise RuntimeError("candidate proposal retention changed after authentication")
+        if retention_record[iteration_index] is not None and type(retention_record[iteration_index]) is not float:
+            raise RuntimeError("candidate proposal retention must use built-in float records")
+        proposal_accepted = selected.step_fraction > 0.0
+        if (
+            type(iteration.proposal_accepted) is not bool
+            or iteration.proposal_accepted != proposal_accepted
+            or type(iteration.learned_contribution_retained) is not bool
+            or iteration.learned_contribution_retained != selected.learned_contribution_retained
+        ):
+            raise RuntimeError("candidate selection changed its proposal-retention decision")
+        if expected_selection == zero.candidate_index:
+            expected_reason = "no-admissible-positive"
+        elif selected_retention is None:
+            expected_reason = "first-admissible-positive-candidate-zero-projected-displacement"
+        elif selected.learned_contribution_retained:
+            expected_reason = "first-admissible-positive-candidate"
+        else:
+            expected_reason = "first-admissible-positive-candidate-no-learned-displacement"
+        if type(iteration.selection_reason) is not str or iteration.selection_reason != expected_reason:
+            raise RuntimeError("candidate selection changed its registered reason")
+        accepted_count += int(proposal_accepted)
+        zero_count += int(selected.step_fraction == 0.0)
+        retained_count += int(selected.learned_contribution_retained)
+        expected_before = iteration.positions
+        previous_iteration = iteration
+
+    if not _same_tensor(expected_before, arm.pre_corrector_positions):
+        raise RuntimeError("candidate proposal trace endpoint differs from the corrector initializer")
+    if (
+        type(arm.proposal_accepted_iterations) is not int
+        or arm.proposal_accepted_iterations != accepted_count
+        or type(arm.zero_step_iterations) is not int
+        or arm.zero_step_iterations != zero_count
+        or type(arm.learned_contribution_retained_iterations) is not int
+        or arm.learned_contribution_retained_iterations != retained_count
+    ):
+        raise RuntimeError("candidate proposal aggregate selection counts changed after authentication")
+    work = arm.iterative_work
+    if work is None:
+        raise RuntimeError("candidate ablation row lost its fixed solver work")
+    candidate_count = len(fractions)
+    expected_counts = {
+        "predictor_passes": iterations,
+        "projection_calls": iterations,
+        "residual_evaluations": iterations * candidate_count + 1,
+        "objective_evaluations": iterations * candidate_count + 1,
+        "state_validity_evaluations": iterations * candidate_count + 1,
+        "constraint_preparations": iterations,
+        "constraint_applications": iterations * candidate_count,
+        "physical_step_authentications": iterations * (candidate_count + 1) + 3,
+        "common_objective_authentications": iterations * (candidate_count + 1) + 3,
+    }
+    if any(
+        type(getattr(work, name)) is not int or getattr(work, name) != expected
+        for name, expected in expected_counts.items()
+    ):
+        raise RuntimeError("candidate scheduled work changed after authentication")
+    if (
+        work.projection_diagnostics_recorded is not True
+        or type(work.projection_iterations) is not int
+        or work.projection_iterations != projection_iterations
+        or type(work.projection_matrix_vector_products) is not int
+        or work.projection_matrix_vector_products != projection_matrix_vector_products
+        or type(work.projection_preconditioner_applications) is not int
+        or work.projection_preconditioner_applications != projection_preconditioner_applications
+        or type(work.projection_factor_solves) is not int
+        or work.projection_factor_solves != projection_factor_solves
+    ):
+        raise RuntimeError("candidate active projection work differs from its full trace")
+
+
 def _retention(
     start: torch.Tensor,
     corrected: torch.Tensor,
@@ -1051,8 +1785,23 @@ def _retention(
 
 def _canonical_evidence_value(value: object) -> object:
     """Encode every float exactly, including diagnostic NaN/Inf sentinels."""
+    if isinstance(value, torch.Tensor):
+        if value.layout != torch.strided:
+            raise ValueError("ablation evidence tensors must have strided layout")
+        canonical = value.detach().contiguous()
+        raw = canonical.reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
+        return {
+            "tensor_dtype": str(canonical.dtype),
+            "tensor_device": str(value.device),
+            "tensor_layout": str(value.layout),
+            "tensor_shape": list(canonical.shape),
+            "tensor_stride": list(value.stride()),
+            "tensor_bytes_sha256": hashlib.sha256(raw).hexdigest(),
+        }
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _canonical_evidence_value(dataclasses.asdict(value))
+        return {
+            field.name: _canonical_evidence_value(getattr(value, field.name)) for field in dataclasses.fields(value)
+        }
     if isinstance(value, dict):
         return {str(key): _canonical_evidence_value(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
@@ -1074,8 +1823,8 @@ def _canonical_evidence_value(value: object) -> object:
     raise TypeError(f"unsupported ablation evidence type {type(value).__name__}")
 
 
-def _row_evidence_payload(arm: AblationArmResult) -> dict[str, object]:
-    return {
+def _row_evidence_payload(arm: AblationArmResult, schema_version: int) -> dict[str, object]:
+    payload = {
         "name": arm.name,
         "start_origin": arm.start_origin,
         "evidence_scope": arm.evidence_scope,
@@ -1112,6 +1861,18 @@ def _row_evidence_payload(arm: AblationArmResult) -> dict[str, object]:
         "vbd_method_record_sha256": arm.vbd_method_record_sha256,
         "timing": dataclasses.asdict(arm.timing),
     }
+    if schema_version == 4:
+        payload.update(
+            {
+                "proposal_safeguard_config_sha256": arm.proposal_safeguard_config_sha256,
+                "proposal_trace": arm.proposal_trace,
+                "solver_proposal_displacement_retention": arm.solver_proposal_displacement_retention,
+                "proposal_accepted_iterations": arm.proposal_accepted_iterations,
+                "zero_step_iterations": arm.zero_step_iterations,
+                "learned_contribution_retained_iterations": arm.learned_contribution_retained_iterations,
+            }
+        )
+    return payload
 
 
 def _ablation_evidence_sha256(
@@ -1119,15 +1880,60 @@ def _ablation_evidence_sha256(
     identities: dict[str, object],
     arms: tuple[AblationArmResult, ...],
 ) -> str:
+    schema_version = identities.get("schema_version")
+    if schema_version == 3:
+        contract = "v5-identical-corrector-development-ablation-v2"
+    elif schema_version == 4:
+        contract = "v5-identical-corrector-development-ablation-v3"
+    else:
+        raise ValueError("unsupported ablation evidence schema")
     return canonical_json_sha256(
         _canonical_evidence_value(
             {
-                "contract": "v5-identical-corrector-development-ablation-v2",
+                "contract": contract,
                 **identities,
-                "arms": tuple(_row_evidence_payload(arm) for arm in arms),
+                "arms": tuple(_row_evidence_payload(arm, schema_version) for arm in arms),
             }
         )
     )
+
+
+def _ablation_result_identities(result: V5AblationResult) -> dict[str, object]:
+    """Rebuild the complete versioned top-level evidence payload."""
+    identities: dict[str, object] = {
+        "schema_version": result.schema_version,
+        "claim_scope": result.claim_scope,
+        "development_only": result.development_only,
+        "learned_value_claim": result.learned_value_claim,
+        "checkpoint_scope": result.checkpoint_scope,
+        "dat_scope": result.dat_scope,
+        "physical_step_sha256": result.physical_step_sha256,
+        "physical_integration_policy": result.physical_integration_policy,
+        "source_integration_evidence_sha256": result.source_integration_evidence_sha256,
+        "common_objective_sha256": result.common_objective_sha256,
+        "static_mesh_sha256": result.static_mesh_sha256,
+        "operator_geometry_sha256": result.operator_geometry_sha256,
+        "projection_state_sha256": result.projection_state_sha256,
+        "static_graph_sha256": result.static_graph_sha256,
+        "predictor_state_sha256": result.predictor_state_sha256,
+        "pin_binding_sha256": result.pin_binding_sha256,
+        "ablation_config": _ablation_config_payload(result.ablation_config),
+        "ablation_config_sha256": result.ablation_config_sha256,
+        "corrector_config": dataclasses.asdict(result.corrector_config),
+        "corrector_config_sha256": result.corrector_config_sha256,
+        "corrector_scheduled_work_sha256": result.corrector_scheduled_work_sha256,
+        "learned_scheduled_work_sha256": result.learned_scheduled_work_sha256,
+        "head_permutation_sha256": result.head_permutation_sha256,
+        "iterations": result.iterations,
+        "pinned_vertex_count": result.pinned_vertex_count,
+        "corrector_call_count": result.corrector_call_count,
+        "vbd_freshness_scope": result.vbd_freshness_scope,
+    }
+    if result.schema_version == 4:
+        identities["proposal_safeguard_config_sha256"] = result.proposal_safeguard_config_sha256
+        identities["proposal_pinned_indices"] = result.proposal_pinned_indices
+        identities["proposal_pinned_targets"] = result.proposal_pinned_targets
+    return identities
 
 
 def run_v5_identical_corrector_ablation(
@@ -1205,19 +2011,29 @@ def run_v5_identical_corrector_ablation(
 
     predictor_state_sha256 = learned_state_sha256(predictor.model.state_dict())
     static_graph_sha256 = predictor.model.static_graph_sha256
-    ablation_config_sha256 = _config_sha256(config)
+    candidate_mode = config.proposal_safeguard is not None
+    schema_version = 4 if candidate_mode else 3
+    ablation_config_sha256 = _ablation_config_sha256(config)
+    proposal_safeguard_config_sha256 = (
+        None if config.proposal_safeguard is None else _proposal_safeguard_config_sha256(config.proposal_safeguard)
+    )
     corrector_config_sha256 = _config_sha256(corrector_config)
     permutation_sha256 = _permutation_sha256(permutation)
     persistence = x_current.clone()
+    proposal_pinned_indices = projection_state.pinned.clone() if candidate_mode else None
+    proposal_pinned_targets = pinned_targets.clone() if candidate_mode else None
 
     common_iterative_arguments = {
         "iterations": int(config.iterations),
         "detach_residual_features": config.detach_residual_features,
         "minimum_determinant": float(config.minimum_determinant),
         "minimum_singular_value": float(config.minimum_singular_value),
-        "objective_policy": "record",
-        "residual_policy": "record",
+        "objective_policy": "require-nonincreasing" if candidate_mode else "record",
+        "residual_policy": "require-nonincreasing" if candidate_mode else "record",
+        "objective_increase_tolerance": config.proposal_objective_increase_tolerance,
+        "normalized_residual_increase_tolerance": (config.proposal_normalized_residual_increase_tolerance),
         "return_projection_diagnostics": True,
+        "proposal_safeguard": config.proposal_safeguard,
     }
     solve_specs = (
         (LEARNED_ARM, "learned", None),
@@ -1307,7 +2123,7 @@ def run_v5_identical_corrector_ablation(
             _validate_problem_identity(predictor, projection_state, objective)
             if learned_state_sha256(predictor.model.state_dict()) != predictor_state_sha256:
                 raise RuntimeError("predictor state changed before identical correction")
-            if _config_sha256(config) != ablation_config_sha256:
+            if _ablation_config_sha256(config) != ablation_config_sha256:
                 raise RuntimeError("ablation configuration changed after authentication")
             if _config_sha256(corrector_config) != corrector_config_sha256:
                 raise RuntimeError("corrector configuration changed after authentication")
@@ -1374,6 +2190,19 @@ def run_v5_identical_corrector_ablation(
             start_norm, corrected_norm, retention = _retention(start, correction.positions, persistence)
             learned_retention = retention if arm_name == LEARNED_ARM else None
             iterative_result = iterative_results.get(arm_name)
+            proposal_trace = None
+            solver_proposal_retention = None
+            proposal_accepted_iterations = None
+            zero_step_iterations = None
+            learned_contribution_retained_iterations = None
+            if candidate_mode and iterative_result is not None:
+                proposal_trace = _clone_proposal_trace(iterative_result.trace)
+                solver_proposal_retention = tuple(
+                    _proposal_retention_value(item.learned_displacement_retention) for item in proposal_trace
+                )
+                proposal_accepted_iterations = iterative_result.proposal_accepted_iterations
+                zero_step_iterations = iterative_result.zero_step_iterations
+                learned_contribution_retained_iterations = iterative_result.learned_contribution_retained_iterations
             rows.append(
                 AblationArmResult(
                     name=arm_name,
@@ -1424,13 +2253,21 @@ def run_v5_identical_corrector_ablation(
                         corrector_seconds=corrector_seconds,
                         endpoint_scoring_seconds=endpoint_scoring_seconds,
                     ),
+                    proposal_safeguard_config_sha256=(
+                        proposal_safeguard_config_sha256 if iterative_result is not None else None
+                    ),
+                    proposal_trace=proposal_trace,
+                    solver_proposal_displacement_retention=solver_proposal_retention,
+                    proposal_accepted_iterations=proposal_accepted_iterations,
+                    zero_step_iterations=zero_step_iterations,
+                    learned_contribution_retained_iterations=(learned_contribution_retained_iterations),
                 )
             )
 
     assert scheduled_work_sha256 is not None
     final_rows = tuple(rows)
     identities = {
-        "schema_version": 3,
+        "schema_version": schema_version,
         "claim_scope": _CLAIM_SCOPE,
         "development_only": True,
         "learned_value_claim": False,
@@ -1448,7 +2285,7 @@ def run_v5_identical_corrector_ablation(
         "static_graph_sha256": static_graph_sha256,
         "predictor_state_sha256": predictor_state_sha256,
         "pin_binding_sha256": binding_sha256,
-        "ablation_config": dataclasses.asdict(config),
+        "ablation_config": _ablation_config_payload(config),
         "ablation_config_sha256": ablation_config_sha256,
         "corrector_config": dataclasses.asdict(corrector_config),
         "corrector_config_sha256": corrector_config_sha256,
@@ -1460,9 +2297,13 @@ def run_v5_identical_corrector_ablation(
         "corrector_call_count": len(final_rows),
         "vbd_freshness_scope": _VBD_FRESHNESS_SCOPE,
     }
+    if candidate_mode:
+        identities["proposal_safeguard_config_sha256"] = proposal_safeguard_config_sha256
+        identities["proposal_pinned_indices"] = proposal_pinned_indices
+        identities["proposal_pinned_targets"] = proposal_pinned_targets
     evidence_sha256 = _ablation_evidence_sha256(identities=identities, arms=final_rows)
     return V5AblationResult(
-        schema_version=3,
+        schema_version=schema_version,
         claim_scope=_CLAIM_SCOPE,
         development_only=True,
         learned_value_claim=False,
@@ -1493,6 +2334,9 @@ def run_v5_identical_corrector_ablation(
         corrector_call_count=len(final_rows),
         arms=final_rows,
         evidence_sha256=evidence_sha256,
+        proposal_safeguard_config_sha256=proposal_safeguard_config_sha256,
+        proposal_pinned_indices=proposal_pinned_indices,
+        proposal_pinned_targets=proposal_pinned_targets,
     )
 
 

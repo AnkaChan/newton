@@ -9,6 +9,7 @@ import dataclasses
 import hashlib
 import io
 import unittest
+from unittest import mock
 
 import numpy as np
 import torch
@@ -22,6 +23,7 @@ from ..iterative_solver import (
     IdentityConstraintHook,
     IterativeSolverConfig,
     PhysicalStepContext,
+    ProposalSafeguardConfig,
     SolverVBDStagedFloat32Evidence,
     solve_iterative_principal_stretch,
 )
@@ -32,17 +34,24 @@ from ..v5_checkpoint import (
     OptimizerContract,
     ParentLineage,
     ProjectionContract,
+    ProposalSafeguardContract,
     RepresentationContract,
     ResidualContract,
     SafeguardContract,
     TrainingStage,
     V5SolverContract,
+    V6SolverContract,
     build_v5_checkpoint,
     build_v5_evaluation_binding,
+    build_v6_checkpoint,
+    build_v6_evaluation_binding,
     learned_state_sha256,
     verify_v5_checkpoint,
     verify_v5_evaluation_binding,
     verify_v5_runtime_compatibility,
+    verify_v6_checkpoint,
+    verify_v6_evaluation_binding,
+    verify_v6_runtime_compatibility,
 )
 from ..v5_dataset import (
     DataAccessLedger,
@@ -364,6 +373,154 @@ class TestV5CheckpointContract(unittest.TestCase):
             batch_stream_contract="pss-v5-static-layout-homogeneous-trajectory-first-sampling-v3",
         )
 
+    def _v6_contract(
+        self,
+        fractions: tuple[float, ...] = (1.0, 0.5, 0.0),
+        *,
+        training_split: SplitManifest | None = None,
+        sampling_schedule: SamplingSchedule | None = None,
+    ) -> V6SolverContract:
+        direct = (
+            self.contract
+            if training_split is None and sampling_schedule is None
+            else self._contract(training_split=training_split, sampling_schedule=sampling_schedule)
+        )
+        return V6SolverContract.build(
+            graph_config=direct.graph_config,
+            learned_parameter_dtype=direct.learned_parameter_dtype,
+            training_split=self.manifest if training_split is None else training_split,
+            sampling_schedule=self.schedule if sampling_schedule is None else sampling_schedule,
+            stages=direct.stages,
+            trained_iterations=direct.trained_iterations,
+            inference_iterations=direct.inference_iterations,
+            residual=direct.residual,
+            representation=direct.representation,
+            projection=direct.projection,
+            constraint=direct.constraint,
+            corrector=direct.corrector,
+            safeguards=direct.safeguards,
+            optimizer=direct.optimizer,
+            physical_timestep_source=direct.physical_timestep_source,
+            rng_algorithm=direct.rng_algorithm,
+            batch_stream_contract=direct.batch_stream_contract,
+            training_proposal_policy="direct-unselected-record-v1",
+            inference_proposal_safeguard=ProposalSafeguardContract(
+                candidate_step_fractions=fractions,
+            ),
+        )
+
+    def _v6_checkpoint(self, fractions: tuple[float, ...] = (1.0, 0.5, 0.0)) -> dict[str, object]:
+        return build_v6_checkpoint(
+            self.state,
+            solver_contract=self._v6_contract(fractions),
+            optimizer_state=self.optimizer_state,
+            rng_state=self.rng_state,
+            batch_stream=self.schedule,
+            completed_updates=7,
+            parent_lineage=ParentLineage.root(),
+        )
+
+    def _v6_runtime(self):
+        fractions = (1.0, 0.5, 0.0)
+        checkpoint = self._v6_checkpoint(fractions)
+        config = IterativeSolverConfig(
+            iterations=3,
+            minimum_determinant=0.0,
+            minimum_singular_value=0.0,
+            objective_policy="require-nonincreasing",
+            residual_policy="require-nonincreasing",
+            objective_increase_tolerance=0.0,
+            normalized_residual_increase_tolerance=0.0,
+            initializer_policy="persistence",
+            return_projection_diagnostics=True,
+            head_mode="learned",
+            proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=fractions),
+        )
+        constraint = IdentityConstraintHook()
+        result = solve_iterative_principal_stretch(
+            predictor=self.predictor,
+            projection_state=self.projection,
+            objective=self.objective,
+            physical_step=self.physical_step,
+            expected_physical_step_sha256=self.physical_step.physical_step_sha256,
+            config=config,
+            constraint=constraint,
+        )
+        ledger = DataAccessLedger(self.manifest).record_access(
+            self.held_out.trajectory_id,
+            purpose="confirmation_evaluation",
+            scope="payload",
+            payload_names=("common_objective", "physical_step", "reference_state"),
+        )
+        binding = build_v6_evaluation_binding(
+            checkpoint,
+            held_out_trajectory=self.held_out,
+            split_manifest=self.manifest,
+            access_ledger=ledger,
+            projection_state=self.projection,
+            predictor=self.predictor,
+            selected_sample_ids=(self.held_out.samples[0].sample_id,),
+            physical_dt_seconds=self.objective.dt,
+            residual_scale=self.objective.residual_scale,
+        )
+        return checkpoint, config, constraint, result, ledger, binding
+
+    def _staged_float32_inputs(self):
+        dt32 = np.float32(1.0 / 120.0)
+        pinned = self.projection.pinned.cpu().numpy()
+        pre_event = np.asarray(self.rest, dtype=np.float32)
+        velocity = np.zeros_like(pre_event)
+        velocity[3] = np.asarray((0.0123, -0.0042, 0.0081), dtype=np.float32)
+        displacement = (velocity * dt32).astype(np.float32)
+        x_previous = (pre_event - displacement).astype(np.float32)
+        inertial_target = (pre_event + displacement).astype(np.float32)
+        inertial_target[pinned] = pre_event[pinned]
+        source_mass = np.ones(pre_event.shape[0], dtype=np.float32)
+        source_evidence = SolverVBDStagedFloat32Evidence(
+            source_transition_sha256=_digest("source-transition-v6"),
+            dt_seconds=float(dt32),
+            pre_event_positions=torch.from_numpy(pre_event),
+            velocity=torch.from_numpy(velocity),
+            mass=torch.from_numpy(source_mass),
+            inverse_mass=torch.from_numpy(source_mass.copy()),
+        )
+        physical_step = PhysicalStepContext(
+            x_current=torch.from_numpy(pre_event).double(),
+            x_previous=torch.from_numpy(x_previous).double(),
+            force=torch.zeros_like(self.positions),
+            gravity=torch.zeros(3, dtype=torch.float64),
+            mu=self.mu,
+            lam=self.lam,
+            pin=torch.ones(1, dtype=torch.float64),
+            pinned_targets=torch.from_numpy(pre_event[pinned]).double(),
+            integration_policy=PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+            source_evidence=source_evidence,
+        )
+        objective = CommonObjectiveContext(
+            tets=self.projection.tets,
+            J=self.projection.J,
+            volume=self.projection.w,
+            mass=torch.ones(pre_event.shape[0], dtype=torch.float64),
+            mu=self.mu,
+            lam=self.lam,
+            inertial_target=torch.from_numpy(inertial_target).double(),
+            pinned=self.projection.pinned,
+            dt=float(dt32),
+        )
+        held_out = _trajectory(
+            "source-held-out-v6",
+            self.projection.static_mesh_sha256,
+            operator_geometry_sha256=self.projection.operator_geometry_sha256,
+            physical_step_sha256=physical_step.physical_step_sha256,
+            common_objective_sha256=objective.common_objective_sha256,
+            dt_seconds=float(dt32),
+            physical_integration_policy=PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+            source_integration_evidence_sha256=source_evidence.evidence_sha256,
+        )
+        manifest = SplitManifest(train=(self.train,), validation=(), confirmation=(held_out,))
+        schedule = build_sampling_schedule(manifest, steps=8, batch_size=1, seed=1701)
+        return physical_step, objective, source_evidence, held_out, manifest, schedule
+
     def test_roundtrip_and_deterministic_tensor_hash(self):
         expected_hash = learned_state_sha256(self.state)
         self.assertEqual(self.checkpoint["learned_state_sha256"], expected_hash)
@@ -402,6 +559,644 @@ class TestV5CheckpointContract(unittest.TestCase):
         )
         reconstructed.model.load_state_dict(loaded["state_dict"], strict=True)
         self.assertEqual(learned_state_sha256(reconstructed.model.state_dict()), expected_hash)
+
+    def test_schema_v6_roundtrip_binds_candidate_inference_without_changing_v5(self):
+        self.assertEqual(
+            self.contract.solver_contract_sha256,
+            "84cb02c2b4e60f4205b6e6f6524f2c9700fb2623d074a395d747b07a193f77b1",
+        )
+        contract = self._v6_contract()
+        self.assertEqual(V6SolverContract.from_dict(contract.as_dict()), contract)
+        self.assertEqual(contract.trained_work, self.contract.trained_work)
+        self.assertEqual(contract.inference_work["predictor_passes"], 3)
+        self.assertEqual(contract.inference_work["global_compatibility_projections"], 3)
+        self.assertEqual(contract.inference_work["common_residual_evaluations"], 10)
+        self.assertEqual(contract.inference_work["common_objective_evaluations"], 10)
+        self.assertEqual(contract.inference_work["state_validity_evaluations"], 10)
+        self.assertEqual(contract.inference_work["constraint_applications"], 9)
+        self.assertEqual(contract.inference_work["physical_step_authentications"], 15)
+        self.assertEqual(contract.inference_work["common_objective_authentications"], 15)
+        self.assertEqual(contract.training_proposal_policy, "direct-unselected-record-v1")
+        self.assertEqual(
+            contract.inference_proposal_safeguard.as_config(),
+            ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+        )
+
+        checkpoint = self._v6_checkpoint()
+        verified = verify_v6_checkpoint(checkpoint)
+        self.assertEqual(verified.solver_contract, contract)
+        self.assertEqual(checkpoint["schema_version"], 6)
+        self.assertEqual(checkpoint["contract"], "pss-iterative-principal-stretch-checkpoint-v6")
+        with self.assertRaisesRegex(ValueError, "schema-v5 checkpoint identity"):
+            verify_v5_checkpoint(checkpoint)
+        with self.assertRaisesRegex(ValueError, "schema-v6 checkpoint identity"):
+            verify_v6_checkpoint(self.checkpoint)
+
+        tampered = copy.deepcopy(contract.as_dict())
+        tampered["inference_proposal_safeguard"]["candidate_step_fractions"][1] = 0.25
+        with self.assertRaisesRegex(ValueError, "schema-6 solver-contract SHA-256"):
+            V6SolverContract.from_dict(tampered)
+        with self.assertRaisesRegex(ValueError, "registered core policy"):
+            ProposalSafeguardContract(candidate_step_fractions=(1.0, 0.0, 0.5))
+
+    def test_schema_v6_rejects_execution_dtype_collapsed_candidates_and_safeguards(self):
+        collapsed_candidates = self._v6_contract((1.0, 1.0e-50, 0.0))
+        float32_projection = dataclasses.replace(
+            collapsed_candidates.projection,
+            execution_dtype="torch.float32",
+        )
+        with self.assertRaisesRegex(ValueError, "candidate_step_fractions.*execution dtype"):
+            dataclasses.replace(collapsed_candidates, projection=float32_projection)
+
+        contract = self._v6_contract()
+        float32_projection = dataclasses.replace(contract.projection, execution_dtype="torch.float32")
+        underflowed_safeguards = dataclasses.replace(
+            contract.safeguards,
+            objective_increase_tolerance=1.0e-50,
+        )
+        with self.assertRaisesRegex(ValueError, "objective_increase_tolerance.*execution dtype"):
+            dataclasses.replace(
+                contract,
+                projection=float32_projection,
+                safeguards=underflowed_safeguards,
+            )
+
+    def test_schema_v6_runtime_replays_every_candidate_and_rejects_forgery(self):
+        checkpoint, config, constraint, result, ledger, binding = self._v6_runtime()
+        self.assertEqual(binding.as_dict()["schema_version"], 4)
+        self.assertEqual(
+            binding.as_dict()["contract"],
+            "pss-v6-fixed-candidate-held-out-evaluation-binding-v4",
+        )
+        self.assertEqual(binding.as_dict()["checkpoint"]["schema_version"], 6)
+        self.assertEqual(
+            verify_v6_evaluation_binding(
+                binding,
+                checkpoint=checkpoint,
+                held_out_trajectory=self.held_out,
+                split_manifest=self.manifest,
+                access_ledger=ledger,
+                projection_state=self.projection,
+                predictor=self.predictor,
+            ),
+            binding,
+        )
+        verified = verify_v6_runtime_compatibility(
+            checkpoint,
+            evaluation_binding=binding,
+            held_out_trajectory=self.held_out,
+            split_manifest=self.manifest,
+            access_ledger=ledger,
+            predictor=self.predictor,
+            solver_config=config,
+            projection_state=self.projection,
+            constraint=constraint,
+            objective=self.objective,
+            physical_step=self.physical_step,
+            result=result,
+        )
+        self.assertEqual(verified.proposal_accepted_iterations, 3)
+        self.assertEqual(verified.zero_step_iterations, 0)
+        self.assertEqual(verified.learned_contribution_retained_iterations, 0)
+        self.assertTrue(all(len(trace.candidate_evaluations) == 3 for trace in result.trace))
+        self.assertTrue(all(trace.learned_displacement_retention is None for trace in result.trace))
+        self.assertTrue(
+            all(
+                trace.selection_reason == "first-admissible-positive-candidate-zero-projected-displacement"
+                for trace in result.trace
+            )
+        )
+
+        runtime_arguments = {
+            "evaluation_binding": binding,
+            "held_out_trajectory": self.held_out,
+            "split_manifest": self.manifest,
+            "access_ledger": ledger,
+            "predictor": self.predictor,
+            "solver_config": config,
+            "projection_state": self.projection,
+            "constraint": constraint,
+            "objective": self.objective,
+            "physical_step": self.physical_step,
+        }
+        with self.assertRaisesRegex(ValueError, "proposal safeguard differs"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **{
+                    **runtime_arguments,
+                    "solver_config": dataclasses.replace(
+                        config,
+                        proposal_safeguard=ProposalSafeguardConfig(
+                            candidate_step_fractions=(1.0, 0.25, 0.0),
+                        ),
+                    ),
+                },
+                result=result,
+            )
+        revalidation_tamper = dataclasses.replace(config)
+        object.__setattr__(revalidation_tamper, "return_projection_diagnostics", 1)
+        with self.assertRaisesRegex(TypeError, "return_projection_diagnostics must be a bool"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **{**runtime_arguments, "solver_config": revalidation_tamper},
+                result=result,
+            )
+
+        first_trace = result.trace[0]
+        candidates = list(first_trace.candidate_evaluations)
+        candidates[0] = dataclasses.replace(candidates[0], candidate_index=1)
+        forged_trace = (dataclasses.replace(first_trace, candidate_evaluations=tuple(candidates)), *result.trace[1:])
+        with self.assertRaisesRegex(ValueError, "candidate order"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, trace=forged_trace),
+            )
+
+        candidates = list(first_trace.candidate_evaluations)
+        candidates[0] = dataclasses.replace(candidates[0], objective=candidates[0].objective + 1.0)
+        forged_trace = (dataclasses.replace(first_trace, candidate_evaluations=tuple(candidates)), *result.trace[1:])
+        with self.assertRaisesRegex(ValueError, r"candidate\[0\].objective"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, trace=forged_trace),
+            )
+
+        candidates = list(first_trace.candidate_evaluations)
+        candidates[0] = dataclasses.replace(candidates[0], admissible=False)
+        forged_trace = (dataclasses.replace(first_trace, candidate_evaluations=tuple(candidates)), *result.trace[1:])
+        with self.assertRaisesRegex(ValueError, "candidate gate admissible"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, trace=forged_trace),
+            )
+
+        candidates = list(first_trace.candidate_evaluations)
+        candidates[0] = dataclasses.replace(
+            candidates[0],
+            displacement_retention=torch.zeros((), dtype=self.positions.dtype),
+        )
+        forged_trace = (dataclasses.replace(first_trace, candidate_evaluations=tuple(candidates)), *result.trace[1:])
+        with self.assertRaisesRegex(ValueError, "displacement retention must be absent"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, trace=forged_trace),
+            )
+
+        zero_candidate = first_trace.candidate_evaluations[-1]
+        moved_zero = zero_candidate.constrained_positions.clone()
+        moved_zero[-1, 0] += 1.0e-4
+        candidates = list(first_trace.candidate_evaluations)
+        candidates[-1] = dataclasses.replace(zero_candidate, constrained_positions=moved_zero)
+        forged_trace = (dataclasses.replace(first_trace, candidate_evaluations=tuple(candidates)), *result.trace[1:])
+        with self.assertRaisesRegex(ValueError, "constrained_positions"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, trace=forged_trace),
+            )
+
+        nonselected = first_trace.candidate_evaluations[1]
+        tiny_candidate = nonselected.candidate_positions.clone()
+        tiny_constrained = nonselected.constrained_positions.clone()
+        tiny_candidate[-1, 0] += 5.0e-13
+        tiny_constrained[-1, 0] += 5.0e-13
+        candidates = list(first_trace.candidate_evaluations)
+        candidates[1] = dataclasses.replace(
+            nonselected,
+            candidate_positions=tiny_candidate,
+            constrained_positions=tiny_constrained,
+        )
+        forged_trace = (dataclasses.replace(first_trace, candidate_evaluations=tuple(candidates)), *result.trace[1:])
+        with self.assertRaisesRegex(ValueError, "exact interpolated candidate"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, trace=forged_trace),
+            )
+
+        forged_objective_after = first_trace.objective_after.clone() + 5.0e-13
+        forged_trace = (
+            dataclasses.replace(first_trace, objective_after=forged_objective_after),
+            *result.trace[1:],
+        )
+        with self.assertRaisesRegex(ValueError, "objective_after internal selection"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, trace=forged_trace),
+            )
+
+        forged_second_before = result.trace[1].positions_before.clone()
+        forged_second_before[-1, 0] += 5.0e-13
+        forged_trace = (
+            first_trace,
+            dataclasses.replace(result.trace[1], positions_before=forged_second_before),
+            *result.trace[2:],
+        )
+        with self.assertRaisesRegex(ValueError, r"trace\[1\].positions_before internal chain"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, trace=forged_trace),
+            )
+
+        with self.assertRaisesRegex(ValueError, "result.objective internal chain"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, objective=result.objective + 5.0e-13),
+            )
+
+        with self.assertRaisesRegex(ValueError, "selected candidate index"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(
+                    result,
+                    trace=(dataclasses.replace(first_trace, selected_candidate_index=1), *result.trace[1:]),
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "aggregate proposal_accepted_iterations"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(
+                    result,
+                    proposal_accepted_iterations=result.proposal_accepted_iterations + 1,
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "observed work constraint_applications"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(
+                    result,
+                    work=dataclasses.replace(
+                        result.work,
+                        constraint_applications=result.work.constraint_applications - 1,
+                    ),
+                ),
+            )
+
+    def test_schema_v6_runtime_authenticates_exact_zero_selection(self):
+        predictor = copy.deepcopy(self.predictor)
+        with torch.no_grad():
+            predictor.model.output_head[-1].bias[0] = 1.0e-4
+        checkpoint = build_v6_checkpoint(
+            predictor.model.state_dict(),
+            solver_contract=self._v6_contract(),
+            optimizer_state=self.optimizer_state,
+            rng_state=self.rng_state,
+            batch_stream=self.schedule,
+            completed_updates=7,
+            parent_lineage=ParentLineage.root(),
+        )
+        config = IterativeSolverConfig(
+            iterations=3,
+            objective_increase_tolerance=0.0,
+            normalized_residual_increase_tolerance=0.0,
+            proposal_safeguard=ProposalSafeguardConfig(
+                candidate_step_fractions=(1.0, 0.5, 0.0),
+            ),
+        )
+        constraint = IdentityConstraintHook()
+        result = solve_iterative_principal_stretch(
+            predictor=predictor,
+            projection_state=self.projection,
+            objective=self.objective,
+            physical_step=self.physical_step,
+            expected_physical_step_sha256=self.physical_step.physical_step_sha256,
+            config=config,
+            constraint=constraint,
+        )
+        ledger = DataAccessLedger(self.manifest).record_access(
+            self.held_out.trajectory_id,
+            purpose="confirmation_evaluation",
+            scope="payload",
+            payload_names=("common_objective", "physical_step", "reference_state"),
+        )
+        binding = build_v6_evaluation_binding(
+            checkpoint,
+            held_out_trajectory=self.held_out,
+            split_manifest=self.manifest,
+            access_ledger=ledger,
+            projection_state=self.projection,
+            predictor=predictor,
+            selected_sample_ids=(self.held_out.samples[0].sample_id,),
+            physical_dt_seconds=self.objective.dt,
+            residual_scale=self.objective.residual_scale,
+        )
+        verified = verify_v6_runtime_compatibility(
+            checkpoint,
+            evaluation_binding=binding,
+            held_out_trajectory=self.held_out,
+            split_manifest=self.manifest,
+            access_ledger=ledger,
+            predictor=predictor,
+            solver_config=config,
+            projection_state=self.projection,
+            constraint=constraint,
+            objective=self.objective,
+            physical_step=self.physical_step,
+            result=result,
+        )
+        self.assertEqual(verified.proposal_accepted_iterations, 0)
+        self.assertEqual(verified.zero_step_iterations, 3)
+        self.assertEqual(verified.learned_contribution_retained_iterations, 0)
+        self.assertTrue(torch.equal(result.positions, self.physical_step.x_current))
+        for trace in result.trace:
+            self.assertEqual(trace.selected_step_fraction, 0.0)
+            self.assertEqual(trace.selection_reason, "no-admissible-positive")
+            self.assertFalse(trace.proposal_accepted)
+            self.assertFalse(trace.learned_contribution_retained)
+            self.assertTrue(torch.equal(trace.positions, trace.positions_before))
+            self.assertTrue(torch.equal(trace.candidate_evaluations[-1].constrained_positions, trace.positions_before))
+
+    def test_schema_v6_candidate_runtime_authenticates_staged_float32_source_integration(self):
+        physical_step, objective, source_evidence, held_out, manifest, schedule = self._staged_float32_inputs()
+        contract = self._v6_contract(training_split=manifest, sampling_schedule=schedule)
+        checkpoint = build_v6_checkpoint(
+            self.state,
+            solver_contract=contract,
+            optimizer_state=self.optimizer_state,
+            rng_state=self.rng_state,
+            batch_stream=schedule,
+            completed_updates=7,
+            parent_lineage=ParentLineage.root(),
+        )
+        config = IterativeSolverConfig(
+            iterations=3,
+            objective_increase_tolerance=0.0,
+            normalized_residual_increase_tolerance=0.0,
+            proposal_safeguard=ProposalSafeguardConfig(
+                candidate_step_fractions=(1.0, 0.5, 0.0),
+            ),
+        )
+        constraint = IdentityConstraintHook()
+        result = solve_iterative_principal_stretch(
+            predictor=self.predictor,
+            projection_state=self.projection,
+            objective=objective,
+            physical_step=physical_step,
+            expected_physical_step_sha256=physical_step.physical_step_sha256,
+            config=config,
+            constraint=constraint,
+        )
+        ledger = DataAccessLedger(manifest).record_access(
+            held_out.trajectory_id,
+            purpose="confirmation_evaluation",
+            scope="payload",
+            payload_names=("common_objective", "physical_step", "reference_state"),
+        )
+        binding = build_v6_evaluation_binding(
+            checkpoint,
+            held_out_trajectory=held_out,
+            split_manifest=manifest,
+            access_ledger=ledger,
+            projection_state=self.projection,
+            predictor=self.predictor,
+            selected_sample_ids=(held_out.samples[0].sample_id,),
+            physical_dt_seconds=objective.dt,
+            residual_scale=objective.residual_scale,
+        )
+        runtime_arguments = {
+            "evaluation_binding": binding,
+            "held_out_trajectory": held_out,
+            "split_manifest": manifest,
+            "access_ledger": ledger,
+            "predictor": self.predictor,
+            "solver_config": config,
+            "projection_state": self.projection,
+            "constraint": constraint,
+            "objective": objective,
+            "physical_step": physical_step,
+        }
+        verified = verify_v6_runtime_compatibility(checkpoint, **runtime_arguments, result=result)
+        self.assertEqual(verified.iterations, 3)
+        self.assertEqual(
+            verified.physical_integration_policy,
+            PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+        )
+        self.assertEqual(verified.source_integration_evidence_sha256, source_evidence.evidence_sha256)
+        self.assertTrue(all(len(trace.candidate_evaluations) == 3 for trace in result.trace))
+
+        first = result.trace[0]
+        forged_index = (first.selected_candidate_index + 1) % len(first.candidate_evaluations)
+        forged_trace = (dataclasses.replace(first, selected_candidate_index=forged_index), *result.trace[1:])
+        with self.assertRaisesRegex(ValueError, "selected candidate index"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                **runtime_arguments,
+                result=dataclasses.replace(result, trace=forged_trace),
+            )
+
+    def test_schema_v6_nonfinite_candidate_metrics_fail_closed(self):
+        config = IterativeSolverConfig(
+            iterations=3,
+            objective_increase_tolerance=0.0,
+            normalized_residual_increase_tolerance=0.0,
+            proposal_safeguard=ProposalSafeguardConfig(
+                candidate_step_fractions=(1.0, 0.5, 0.0),
+            ),
+        )
+        before = checkpoint_contract._runtime_state_metrics(
+            self.objective,
+            self.projection,
+            self.positions,
+            detach_residual=True,
+        )
+        projected = self.positions.clone()
+        projected[-1, 0] += 0.1
+        constrained = projected.clone()
+        constrained[-1, 1] = torch.nan
+        metrics = checkpoint_contract._runtime_candidate_metrics(
+            objective=self.objective,
+            projection_state=self.projection,
+            config=config,
+            current=self.positions,
+            projected_positions=projected,
+            constrained_positions=constrained,
+            pinned_targets=self.physical_step.pinned_targets,
+            step_fraction=1.0,
+            objective_before=before["objective"],
+            normalized_residual_norm_before=before["normalized_residual_norm"],
+        )
+        self.assertFalse(metrics["positions_finite"])
+        self.assertFalse(metrics["residual_finite"])
+        self.assertFalse(metrics["state_valid"])
+        self.assertFalse(metrics["learned_contribution_retained"])
+        self.assertIsNone(metrics["displacement_retention"])
+        self.assertIn("non-finite-positions", metrics["rejection_reasons"])
+        self.assertIn("non-finite-residual", metrics["rejection_reasons"])
+        checkpoint_contract._require_same_v6_candidate_tensor(
+            "matching-nonfinite-candidate",
+            constrained.clone(),
+            constrained,
+            relative_tolerance=1.0e-12,
+            absolute_tolerance=1.0e-12,
+        )
+
+        opposite = self.positions.clone()
+        opposite[-1, 0] -= 0.1
+        opposite_metrics = checkpoint_contract._runtime_candidate_metrics(
+            objective=self.objective,
+            projection_state=self.projection,
+            config=config,
+            current=self.positions,
+            projected_positions=projected,
+            constrained_positions=opposite,
+            pinned_targets=self.physical_step.pinned_targets,
+            step_fraction=1.0,
+            objective_before=before["objective"],
+            normalized_residual_norm_before=before["normalized_residual_norm"],
+        )
+        self.assertLess(opposite_metrics["displacement_retention"], 0.0)
+        self.assertFalse(opposite_metrics["learned_contribution_retained"])
+
+    def test_schema_v6_runtime_rejects_nonfinite_replayed_state_norm(self):
+        checkpoint, config, constraint, result, ledger, binding = self._v6_runtime()
+        original = checkpoint_contract._runtime_state_metrics
+        injected = False
+
+        def overflow_first_norm(*args, **kwargs):
+            nonlocal injected
+            metrics = original(*args, **kwargs)
+            if not injected:
+                metrics["raw_residual_norm"] = torch.full_like(metrics["raw_residual_norm"], torch.inf)
+                injected = True
+            return metrics
+
+        with (
+            mock.patch.object(checkpoint_contract, "_runtime_state_metrics", side_effect=overflow_first_norm),
+            self.assertRaisesRegex(ValueError, "initial state metric raw_residual_norm is non-finite"),
+        ):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                evaluation_binding=binding,
+                held_out_trajectory=self.held_out,
+                split_manifest=self.manifest,
+                access_ledger=ledger,
+                predictor=self.predictor,
+                solver_config=config,
+                projection_state=self.projection,
+                constraint=constraint,
+                objective=self.objective,
+                physical_step=self.physical_step,
+                result=result,
+            )
+
+    def test_schema_v6_runtime_rejects_work_and_projection_diagnostic_primitive_aliases(self):
+        checkpoint, config, constraint, result, ledger, binding = self._v6_runtime()
+        runtime_arguments = {
+            "evaluation_binding": binding,
+            "held_out_trajectory": self.held_out,
+            "split_manifest": self.manifest,
+            "access_ledger": ledger,
+            "predictor": self.predictor,
+            "solver_config": config,
+            "projection_state": self.projection,
+            "constraint": constraint,
+            "objective": self.objective,
+            "physical_step": self.physical_step,
+        }
+        work_aliases = (
+            dataclasses.replace(result.work, projection_diagnostics_recorded=1),
+            dataclasses.replace(
+                result.work,
+                projection_factor_solves=bool(result.work.projection_factor_solves),
+            ),
+        )
+        for forged_work in work_aliases:
+            with self.subTest(work=forged_work), self.assertRaisesRegex(ValueError, "canonical primitive type"):
+                verify_v6_runtime_compatibility(
+                    checkpoint,
+                    **runtime_arguments,
+                    result=dataclasses.replace(result, work=forged_work),
+                )
+
+        diagnostics = result.trace[0].projection_diagnostics
+        self.assertIsNotNone(diagnostics)
+        diagnostic_aliases = (
+            dataclasses.replace(diagnostics, converged=1),
+            dataclasses.replace(diagnostics, rhs_count=float(diagnostics.rhs_count)),
+            dataclasses.replace(diagnostics, absolute_tolerance=0),
+        )
+        for forged_diagnostics in diagnostic_aliases:
+            forged_first = dataclasses.replace(result.trace[0], projection_diagnostics=forged_diagnostics)
+            with (
+                self.subTest(diagnostics=forged_diagnostics),
+                self.assertRaisesRegex(ValueError, "canonical primitive type"),
+            ):
+                verify_v6_runtime_compatibility(
+                    checkpoint,
+                    **runtime_arguments,
+                    result=dataclasses.replace(result, trace=(forged_first, *result.trace[1:])),
+                )
+
+        primitive_alias_traces = (
+            dataclasses.replace(result.trace[0], iteration_fraction=False),
+            dataclasses.replace(result.trace[0], constraint_prepare_diagnostics={"refreshes": False}),
+            dataclasses.replace(
+                result.trace[0],
+                candidate_evaluations=(
+                    dataclasses.replace(
+                        result.trace[0].candidate_evaluations[0],
+                        constraint_diagnostics={"truncation_calls": False, "minimum_fraction": True},
+                    ),
+                    *result.trace[0].candidate_evaluations[1:],
+                ),
+            ),
+        )
+        for forged_first in primitive_alias_traces:
+            with self.subTest(trace=forged_first), self.assertRaisesRegex(ValueError, "canonical primitive type"):
+                verify_v6_runtime_compatibility(
+                    checkpoint,
+                    **runtime_arguments,
+                    result=dataclasses.replace(result, trace=(forged_first, *result.trace[1:])),
+                )
+
+    def test_schema_v6_runtime_rejects_a_consistent_signed_zero_trace_forgery(self):
+        checkpoint, config, constraint, result, ledger, binding = self._v6_runtime()
+        last = result.trace[-1]
+        selected_index = last.selected_candidate_index
+        selected = last.candidate_evaluations[selected_index]
+        zero_mask = (selected.normalized_residual == 0.0) & ~torch.signbit(selected.normalized_residual)
+        self.assertTrue(zero_mask.any())
+        flat_index = int(torch.nonzero(zero_mask.reshape(-1), as_tuple=False)[0])
+
+        flipped_residual = selected.normalized_residual.clone()
+        flipped_residual.reshape(-1)[flat_index] = -0.0
+        candidates = list(last.candidate_evaluations)
+        candidates[selected_index] = dataclasses.replace(selected, normalized_residual=flipped_residual)
+        forged_last = dataclasses.replace(
+            last,
+            candidate_evaluations=tuple(candidates),
+            residual_after=flipped_residual.clone(),
+        )
+        forged_result = dataclasses.replace(
+            result,
+            trace=(*result.trace[:-1], forged_last),
+            normalized_residual=flipped_residual.clone(),
+        )
+        with self.assertRaisesRegex(ValueError, "candidate.*normalized_residual"):
+            verify_v6_runtime_compatibility(
+                checkpoint,
+                evaluation_binding=binding,
+                held_out_trajectory=self.held_out,
+                split_manifest=self.manifest,
+                access_ledger=ledger,
+                predictor=self.predictor,
+                solver_config=config,
+                projection_state=self.projection,
+                constraint=constraint,
+                objective=self.objective,
+                physical_step=self.physical_step,
+                result=forged_result,
+            )
 
     def test_graph_config_requires_exact_canonical_v5_fields(self):
         partial = self.predictor.checkpoint_config()["graph_transformer"]

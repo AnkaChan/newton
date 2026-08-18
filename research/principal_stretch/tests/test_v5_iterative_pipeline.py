@@ -11,6 +11,7 @@ from unittest import mock
 import numpy as np
 import torch
 
+from research.principal_stretch import iterative_solver as iterative_solver_module
 from research.principal_stretch import torch_solver as ts
 from research.principal_stretch.graph_transformer import (
     GraphTransformerConfig,
@@ -26,6 +27,7 @@ from research.principal_stretch.iterative_solver import (
     IdentityConstraintHook,
     IterativeSolverConfig,
     PhysicalStepContext,
+    ProposalSafeguardConfig,
     SolverVBDStagedFloat32Evidence,
     _validate_config_execution_dtype,
     solve_iterative_principal_stretch,
@@ -45,7 +47,11 @@ from research.principal_stretch.tests.test_graph_transformer import (
     _rotation,
     _tet_poses,
 )
-from research.principal_stretch.v5_objective import CommonObjectiveContext, common_objective_residual
+from research.principal_stretch.v5_objective import (
+    CommonObjectiveContext,
+    common_objective_components,
+    common_objective_residual,
+)
 
 
 class _HalfStepConstraint:
@@ -152,6 +158,55 @@ class _InvalidObservationConstraint(_HalfStepConstraint):
     ) -> ConstraintObservation:
         observation = super().prepare_iteration(state, iteration, positions)
         return dataclasses.replace(observation, normal=observation.normal.float())
+
+
+class _RecordingCandidateConstraint(_HalfStepConstraint):
+    """Candidate-aware hook that records the fixed schedule in call order."""
+
+    def __init__(self, transform=None):
+        super().__init__()
+        self.candidates: list[tuple[int, int, float]] = []
+        self.candidate_input_states: list[object] = []
+        self.candidate_pinned_inputs: list[torch.Tensor] = []
+        self.candidate_pinned_target_inputs: list[torch.Tensor] = []
+        self.prepared_input_states: list[object] = []
+        self.begin_inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+        self.transform = transform
+
+    def begin_step(self, positions, pinned, pinned_targets):
+        self.begin_inputs = (positions, pinned, pinned_targets)
+        return super().begin_step(positions, pinned, pinned_targets)
+
+    def prepare_iteration(self, state, iteration, positions):
+        self.prepared_input_states.append(state)
+        return super().prepare_iteration(state, iteration, positions)
+
+    def constrain(self, state, iteration, positions, proposed, pinned, pinned_targets):
+        raise AssertionError("candidate mode must not call the legacy constrain method")
+
+    def constrain_candidate(
+        self,
+        state,
+        iteration,
+        candidate_index,
+        candidate_step_fraction,
+        positions,
+        candidate_positions,
+        pinned,
+        pinned_targets,
+    ):
+        self.candidates.append((iteration, candidate_index, candidate_step_fraction))
+        self.candidate_input_states.append(state)
+        self.candidate_pinned_inputs.append(pinned)
+        self.candidate_pinned_target_inputs.append(pinned_targets)
+        constrained = candidate_positions
+        if self.transform is not None:
+            constrained = self.transform(iteration, candidate_index, constrained)
+        return ConstraintApplication(
+            state={"iteration": iteration, "selected_candidate": candidate_index},
+            positions=constrained,
+            diagnostics={"candidate_index": candidate_index},
+        )
 
 
 class TestV5PrincipalStretchRepresentation(unittest.TestCase):
@@ -660,6 +715,721 @@ class TestV5IterativeSolver(unittest.TestCase):
         self.assertEqual(result.constraint_descriptor["kind"], "identity")
         self.assertEqual(len(result.constraint_descriptor_sha256), 64)
         self.assertEqual(result.constraint_registration, "registered-identity-development")
+
+    def test_candidate_globalization_runs_the_full_schedule_before_accepting_full_step(self):
+        predictor = self._predictor()
+        current = self.inputs[0]
+        raw_residual = common_objective_residual(self.objective, current)
+        proposed = current - 1.0e-7 * raw_residual
+        proposed = proposed.index_copy(-2, self.state.pinned, current[self.state.pinned])
+        constraint = _RecordingCandidateConstraint()
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            return_value=(
+                proposed,
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            result = self._solve(
+                predictor,
+                iterations=1,
+                constraint=constraint,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+
+        self.assertEqual(constraint.candidates, [(0, 0, 1.0), (0, 1, 0.5), (0, 2, 0.0)])
+        self.assertEqual(result.trace[0].selected_candidate_index, 0)
+        self.assertEqual(result.trace[0].selected_step_fraction, 1.0)
+        self.assertTrue(result.trace[0].proposal_accepted)
+        self.assertTrue(result.trace[0].learned_contribution_retained)
+        torch.testing.assert_close(
+            result.trace[0].learned_displacement_retention,
+            torch.tensor(1.0, dtype=current.dtype),
+        )
+        self.assertEqual(
+            (
+                result.work.predictor_passes,
+                result.work.projection_calls,
+                result.work.residual_evaluations,
+                result.work.objective_evaluations,
+                result.work.state_validity_evaluations,
+                result.work.constraint_preparations,
+                result.work.constraint_applications,
+                result.work.physical_step_authentications,
+                result.work.common_objective_authentications,
+            ),
+            (1, 1, 4, 4, 4, 1, 3, 7, 7),
+        )
+
+    def test_candidate_globalization_selects_half_step_and_scores_constrained_positions(self):
+        predictor = self._predictor()
+        current = self.inputs[0]
+        raw_residual = common_objective_residual(self.objective, current)
+        proposed = current - 1.5e-6 * raw_residual
+        proposed = proposed.index_copy(-2, self.state.pinned, current[self.state.pinned])
+
+        def truncate_full(_iteration, candidate_index, candidate_positions):
+            if candidate_index == 0:
+                return current + 0.5 * (candidate_positions - current)
+            return candidate_positions
+
+        constraint = _RecordingCandidateConstraint(transform=truncate_full)
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            return_value=(
+                proposed,
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            result = self._solve(
+                predictor,
+                iterations=1,
+                constraint=constraint,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+
+        iteration = result.trace[0]
+        self.assertEqual(iteration.selected_candidate_index, 0)
+        self.assertEqual(iteration.selected_step_fraction, 1.0)
+        expected = current + 0.5 * (proposed - current)
+        torch.testing.assert_close(iteration.positions, expected)
+        torch.testing.assert_close(
+            iteration.candidate_evaluations[0].objective,
+            common_objective_components(self.objective, expected)["total"],
+        )
+        self.assertNotEqual(
+            iteration.candidate_evaluations[0].objective.item(),
+            common_objective_components(self.objective, proposed)["total"].item(),
+        )
+        torch.testing.assert_close(
+            iteration.learned_displacement_retention,
+            torch.tensor(0.5, dtype=current.dtype),
+        )
+
+        identity_result = None
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            return_value=(
+                proposed,
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            identity_result = self._solve(
+                predictor,
+                iterations=1,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+        self.assertEqual(identity_result.trace[0].selected_candidate_index, 1)
+        self.assertEqual(identity_result.trace[0].selected_step_fraction, 0.5)
+        torch.testing.assert_close(identity_result.positions, expected)
+
+    def test_opposite_constraint_motion_does_not_retain_the_learned_displacement(self):
+        predictor = self._predictor()
+        current = self.inputs[0]
+        raw_residual = common_objective_residual(self.objective, current)
+        proposed = current - 1.0e-7 * raw_residual
+        proposed = proposed.index_copy(-2, self.state.pinned, current[self.state.pinned])
+
+        def reverse_full_candidate(_iteration, candidate_index, candidate_positions):
+            if candidate_index == 0:
+                return current - (candidate_positions - current)
+            return candidate_positions
+
+        constraint = _RecordingCandidateConstraint(transform=reverse_full_candidate)
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            return_value=(
+                proposed,
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            result = self._solve(
+                predictor,
+                iterations=1,
+                constraint=constraint,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+
+        reversed_candidate = result.trace[0].candidate_evaluations[0]
+        torch.testing.assert_close(
+            reversed_candidate.displacement_retention,
+            torch.tensor(-1.0, dtype=current.dtype),
+        )
+        self.assertFalse(reversed_candidate.learned_contribution_retained)
+        self.assertEqual(result.trace[0].selected_step_fraction, 0.5)
+
+    def test_objective_null_state_uses_exact_zero_candidate(self):
+        current = self.inputs[0]
+        zeros = torch.zeros_like
+        zero_material = torch.zeros(self.state.n_tets, dtype=current.dtype)
+        physical_step = PhysicalStepContext(
+            x_current=current,
+            x_previous=current,
+            force=zeros(current),
+            gravity=torch.zeros(3, dtype=current.dtype),
+            mu=zero_material,
+            lam=zero_material,
+            pin=self.inputs[6].double(),
+            pinned_targets=current[self.state.pinned],
+        )
+        objective = CommonObjectiveContext(
+            tets=self.state.tets,
+            J=self.state.J,
+            volume=self.state.w,
+            mass=self.objective.mass,
+            mu=zero_material,
+            lam=zero_material,
+            inertial_target=current,
+            pinned=self.state.pinned,
+            dt=self.objective.dt,
+        )
+        proposed = current.clone()
+        proposed[-1, 0] += 1.0e-3
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            return_value=(
+                proposed,
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            result = solve_iterative_principal_stretch(
+                predictor=self._predictor(),
+                projection_state=self.state,
+                objective=objective,
+                physical_step=physical_step,
+                expected_physical_step_sha256=physical_step.physical_step_sha256,
+                config=IterativeSolverConfig(
+                    iterations=1,
+                    proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+                ),
+            )
+
+        iteration = result.trace[0]
+        self.assertTrue(torch.equal(result.positions, current))
+        self.assertEqual(iteration.selected_candidate_index, 2)
+        self.assertEqual(iteration.selected_step_fraction, 0.0)
+        self.assertFalse(iteration.proposal_accepted)
+        self.assertFalse(iteration.learned_contribution_retained)
+        self.assertEqual(iteration.selection_reason, "no-admissible-positive")
+        self.assertEqual(iteration.learned_displacement_retention.item(), 0.0)
+        self.assertEqual(result.proposal_accepted_iterations, 0)
+        self.assertEqual(result.zero_step_iterations, 1)
+        self.assertEqual(result.learned_contribution_retained_iterations, 0)
+
+    def test_candidate_invalid_values_and_pins_are_rejected_after_fixed_scoring(self):
+        predictor = self._predictor()
+        current = self.inputs[0]
+        raw_residual = common_objective_residual(self.objective, current)
+        proposed = current - 1.0e-7 * raw_residual
+        proposed = proposed.index_copy(-2, self.state.pinned, current[self.state.pinned])
+
+        def tamper(_iteration, candidate_index, candidate_positions):
+            tampered = candidate_positions.clone()
+            if candidate_index == 0:
+                tampered[-1, 0] = torch.nan
+            elif candidate_index == 1:
+                tampered[self.state.pinned[0], 0] = torch.nextafter(
+                    tampered[self.state.pinned[0], 0],
+                    torch.tensor(torch.inf, dtype=tampered.dtype),
+                )
+            return tampered
+
+        constraint = _RecordingCandidateConstraint(transform=tamper)
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            return_value=(
+                proposed,
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            result = self._solve(
+                predictor,
+                iterations=1,
+                constraint=constraint,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+
+        evaluations = result.trace[0].candidate_evaluations
+        self.assertEqual(len(evaluations), 3)
+        self.assertIn("non-finite-positions", evaluations[0].rejection_reasons)
+        self.assertFalse(evaluations[0].objective_finite)
+        self.assertFalse(evaluations[0].residual_finite)
+        self.assertIsNone(evaluations[0].displacement_retention)
+        self.assertFalse(evaluations[0].learned_contribution_retained)
+        self.assertIn("changed-exact-pins", evaluations[1].rejection_reasons)
+        self.assertTrue(evaluations[1].objective_finite)
+        self.assertTrue(evaluations[1].residual_finite)
+        self.assertTrue(evaluations[2].admissible)
+        self.assertEqual(result.trace[0].selected_step_fraction, 0.0)
+        self.assertEqual(constraint.candidates, [(0, 0, 1.0), (0, 1, 0.5), (0, 2, 0.0)])
+
+    def test_zero_candidate_must_be_a_bitwise_noop_after_all_candidate_calls(self):
+        predictor = self._predictor()
+        current = self.inputs[0]
+
+        def move_zero(_iteration, candidate_index, candidate_positions):
+            moved = candidate_positions.clone()
+            if candidate_index == 2:
+                moved[-1, 0] = torch.nextafter(
+                    moved[-1, 0],
+                    torch.tensor(torch.inf, dtype=moved.dtype),
+                )
+            return moved
+
+        constraint = _RecordingCandidateConstraint(transform=move_zero)
+        with (
+            mock.patch(
+                "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+                return_value=(
+                    current,
+                    mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+                ),
+            ),
+            self.assertRaisesRegex(RuntimeError, "zero-step constraint candidate.*bitwise"),
+        ):
+            self._solve(
+                predictor,
+                iterations=1,
+                constraint=constraint,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+        self.assertEqual(constraint.candidates, [(0, 0, 1.0), (0, 1, 0.5), (0, 2, 0.0)])
+
+    def test_zero_candidate_rejects_a_signed_zero_bit_flip(self):
+        predictor = self._predictor()
+        translation = torch.zeros_like(self.inputs[0])
+        translation[:, 0] = -self.inputs[0][0, 0]
+        current = self.inputs[0] + translation
+        positive_zero = (current == 0.0) & ~torch.signbit(current)
+        self.assertTrue(positive_zero.any())
+        zero_index = tuple(int(index) for index in torch.nonzero(positive_zero, as_tuple=False)[0])
+        physical_step = PhysicalStepContext(
+            x_current=current,
+            x_previous=self.inputs[1] + translation,
+            force=self.inputs[2],
+            gravity=self.inputs[3],
+            mu=self.inputs[4].double(),
+            lam=self.inputs[5].double(),
+            pin=self.inputs[6].double(),
+            pinned_targets=current[self.state.pinned],
+        )
+        objective = CommonObjectiveContext(
+            tets=self.state.tets,
+            J=self.state.J,
+            volume=self.state.w,
+            mass=self.objective.mass,
+            mu=self.inputs[4].double(),
+            lam=self.inputs[5].double(),
+            inertial_target=self.objective.inertial_target + translation,
+            pinned=self.state.pinned,
+            dt=self.objective.dt,
+        )
+
+        def flip_zero_sign(_iteration, candidate_index, candidate_positions):
+            changed = candidate_positions.clone()
+            if candidate_index == 2:
+                changed[zero_index] = -0.0
+            return changed
+
+        constraint = _RecordingCandidateConstraint(transform=flip_zero_sign)
+        with (
+            mock.patch(
+                "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+                return_value=(
+                    current,
+                    mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+                ),
+            ),
+            self.assertRaisesRegex(RuntimeError, "zero-step constraint candidate.*bitwise"),
+        ):
+            solve_iterative_principal_stretch(
+                predictor=predictor,
+                projection_state=self.state,
+                objective=objective,
+                physical_step=physical_step,
+                expected_physical_step_sha256=physical_step.physical_step_sha256,
+                config=IterativeSolverConfig(
+                    iterations=1,
+                    objective_policy="require-nonincreasing",
+                    residual_policy="require-nonincreasing",
+                    proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+                ),
+                constraint=constraint,
+            )
+
+    def test_candidate_evidence_snapshots_a_reused_constraint_output_buffer(self):
+        predictor = self._predictor()
+        current = self.inputs[0]
+        proposed = current.clone()
+        proposed[-1, 0] += 1.0e-3
+        buffer = torch.empty_like(current)
+
+        def reuse_buffer(_iteration, _candidate_index, candidate_positions):
+            buffer.copy_(candidate_positions)
+            return buffer
+
+        constraint = _RecordingCandidateConstraint(transform=reuse_buffer)
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            return_value=(
+                proposed,
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            result = self._solve(
+                predictor,
+                iterations=1,
+                constraint=constraint,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+
+        evaluations = result.trace[0].candidate_evaluations
+        self.assertTrue(torch.equal(evaluations[0].constrained_positions, proposed))
+        self.assertTrue(torch.equal(evaluations[2].constrained_positions, current))
+        self.assertNotEqual(evaluations[0].constrained_positions.data_ptr(), buffer.data_ptr())
+
+    def test_candidate_hook_cannot_mutate_raw_proposal_or_candidate_evidence(self):
+        predictor = self._predictor()
+        current = self.inputs[0]
+        raw_residual = common_objective_residual(self.objective, current)
+        proposed = current - 1.0e-7 * raw_residual
+        proposed = proposed.index_copy(-2, self.state.pinned, current[self.state.pinned])
+        doubled = current + 2.0 * (proposed - current)
+
+        def mutate_full_candidate_in_place(_iteration, candidate_index, candidate_positions):
+            if candidate_index == 0:
+                candidate_positions.copy_(doubled)
+            return candidate_positions
+
+        constraint = _RecordingCandidateConstraint(transform=mutate_full_candidate_in_place)
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            return_value=(
+                proposed.clone(),
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            result = self._solve(
+                predictor,
+                iterations=1,
+                constraint=constraint,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+
+        iteration = result.trace[0]
+        evaluations = iteration.candidate_evaluations
+        self.assertTrue(torch.equal(iteration.proposed_positions, proposed))
+        self.assertTrue(torch.equal(evaluations[0].candidate_positions, proposed))
+        self.assertTrue(torch.equal(evaluations[0].constrained_positions, doubled))
+        torch.testing.assert_close(
+            evaluations[1].displacement_retention,
+            torch.tensor(0.5, dtype=current.dtype),
+        )
+
+    def test_candidate_hook_cannot_mutate_iteration_base_or_prior_trace(self):
+        predictor = self._predictor()
+
+        class MutatingInputConstraint(_RecordingCandidateConstraint):
+            def __init__(self, objective):
+                super().__init__()
+                self.objective = objective
+
+            def constrain_candidate(
+                self,
+                state,
+                iteration,
+                candidate_index,
+                candidate_step_fraction,
+                positions,
+                candidate_positions,
+                pinned,
+                pinned_targets,
+            ):
+                self.candidates.append((iteration, candidate_index, candidate_step_fraction))
+                self.candidate_input_states.append(state)
+                if iteration == 1 and candidate_index == 0:
+                    with torch.no_grad():
+                        residual = common_objective_residual(self.objective, positions)
+                        positions.add_(-1.0e-7 * residual)
+                        positions.index_copy_(0, pinned, pinned_targets)
+                constrained = candidate_positions.clone()
+                if iteration == 1 and candidate_step_fraction > 0.0:
+                    constrained[-1, 0] = torch.nan
+                return ConstraintApplication(
+                    state={"iteration": iteration, "selected_candidate": candidate_index},
+                    positions=constrained,
+                    diagnostics={"candidate_index": candidate_index},
+                )
+
+        constraint = MutatingInputConstraint(self.objective)
+        result = self._solve(
+            predictor,
+            iterations=2,
+            constraint=constraint,
+            objective_policy="require-nonincreasing",
+            residual_policy="require-nonincreasing",
+            proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+        )
+
+        first, second = result.trace
+        self.assertEqual(second.selected_step_fraction, 0.0)
+        self.assertTrue(torch.equal(second.positions_before, first.positions))
+        self.assertTrue(torch.equal(second.positions, first.positions))
+        self.assertTrue(torch.equal(result.positions, first.positions))
+        self.assertNotEqual(second.positions_before.data_ptr(), first.positions.data_ptr())
+        self.assertNotEqual(second.positions.data_ptr(), first.positions.data_ptr())
+        self.assertNotEqual(result.positions.data_ptr(), second.positions.data_ptr())
+
+    def test_nonfinite_projected_proposal_falls_back_to_exact_zero_at_fixed_work(self):
+        predictor = self._predictor()
+        proposed = self.inputs[0].clone()
+        proposed[-1, 0] = torch.nan
+        constraint = _RecordingCandidateConstraint()
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            return_value=(
+                proposed,
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            result = self._solve(
+                predictor,
+                iterations=1,
+                constraint=constraint,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+        self.assertTrue(torch.equal(result.positions, self.inputs[0]))
+        self.assertEqual(result.trace[0].selected_step_fraction, 0.0)
+        self.assertIsNone(result.trace[0].learned_displacement_retention)
+        self.assertEqual(result.work.constraint_applications, 3)
+        self.assertEqual(result.work.residual_evaluations, 4)
+
+    def test_candidate_iterations_use_same_prepared_state_and_selected_successor(self):
+        predictor = self._predictor()
+        constraint = _RecordingCandidateConstraint()
+        with mock.patch(
+            "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+            side_effect=lambda *_args, **_kwargs: (
+                _args[0].rest_q,
+                mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+            ),
+        ):
+            result = self._solve(
+                predictor,
+                iterations=2,
+                constraint=constraint,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+
+        self.assertEqual(
+            constraint.candidates,
+            [(0, 0, 1.0), (0, 1, 0.5), (0, 2, 0.0), (1, 0, 1.0), (1, 1, 0.5), (1, 2, 0.0)],
+        )
+        self.assertIs(constraint.candidate_input_states[0], constraint.candidate_input_states[1])
+        self.assertIs(constraint.candidate_input_states[1], constraint.candidate_input_states[2])
+        self.assertIs(constraint.candidate_input_states[3], constraint.candidate_input_states[4])
+        self.assertIs(constraint.candidate_input_states[4], constraint.candidate_input_states[5])
+        self.assertIs(constraint.prepared_input_states[0], constraint.candidate_input_states[0])
+        self.assertIs(constraint.prepared_input_states[1], constraint.candidate_input_states[3])
+        self.assertEqual(
+            constraint.prepared_input_states[1],
+            {"iteration": 0, "selected_candidate": result.trace[0].selected_candidate_index},
+        )
+        self.assertIsNotNone(constraint.begin_inputs)
+        begin_positions, begin_pinned, begin_targets = constraint.begin_inputs
+        owned_positions, *_unused, owned_targets = self.physical_step._owned_tensors()
+        self.assertNotEqual(begin_positions.data_ptr(), owned_positions.data_ptr())
+        self.assertNotEqual(begin_pinned.data_ptr(), self.state.pinned.data_ptr())
+        self.assertNotEqual(begin_targets.data_ptr(), owned_targets.data_ptr())
+        self.assertNotIn(begin_pinned.data_ptr(), {value.data_ptr() for value in constraint.candidate_pinned_inputs})
+        self.assertNotIn(
+            begin_targets.data_ptr(),
+            {value.data_ptr() for value in constraint.candidate_pinned_target_inputs},
+        )
+        self.assertEqual(
+            len({value.data_ptr() for value in constraint.candidate_pinned_inputs}),
+            len(constraint.candidate_pinned_inputs),
+        )
+        self.assertEqual(
+            len({value.data_ptr() for value in constraint.candidate_pinned_target_inputs}),
+            len(constraint.candidate_pinned_target_inputs),
+        )
+        self.assertTrue(all(torch.equal(value, self.state.pinned) for value in constraint.candidate_pinned_inputs))
+        self.assertTrue(
+            all(
+                torch.equal(value, self.physical_step.pinned_targets)
+                for value in constraint.candidate_pinned_target_inputs
+            )
+        )
+        self.assertEqual(result.work.predictor_passes, 2)
+        self.assertEqual(result.work.projection_calls, 2)
+        self.assertEqual(result.work.constraint_applications, 6)
+        self.assertEqual(result.work.residual_evaluations, 7)
+        self.assertEqual(result.work.physical_step_authentications, 11)
+
+    def test_proposal_safeguard_configuration_fails_closed_on_dtype_and_policy_tamper(self):
+        with self.assertRaisesRegex(TypeError, "built-in floats"):
+            ProposalSafeguardConfig(candidate_step_fractions=(1.0, np.float64(0.5), 0.0))
+        config = IterativeSolverConfig(
+            iterations=1,
+            proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 1.0e-50, 0.0)),
+        )
+        with self.assertRaisesRegex(ValueError, "execution dtype"):
+            _validate_config_execution_dtype(config, torch.zeros((), dtype=torch.float32))
+
+        safeguard = ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0))
+        config = IterativeSolverConfig(iterations=1, proposal_safeguard=safeguard)
+        object.__setattr__(safeguard, "selection_policy", "last-admissible")
+        with self.assertRaisesRegex(ValueError, "selection_policy"):
+            solve_iterative_principal_stretch(
+                predictor=self._predictor(),
+                projection_state=self.state,
+                objective=self.objective,
+                physical_step=self.physical_step,
+                expected_physical_step_sha256=self.physical_step.physical_step_sha256,
+                config=config,
+            )
+
+    def test_solver_revalidates_the_exact_config_at_the_execution_boundary(self):
+        predictor = self._predictor()
+
+        def solve(config):
+            return solve_iterative_principal_stretch(
+                predictor=predictor,
+                projection_state=self.state,
+                objective=self.objective,
+                physical_step=self.physical_step,
+                expected_physical_step_sha256=self.physical_step.physical_step_sha256,
+                config=config,
+            )
+
+        cases = (
+            ("iterations", True, TypeError, "iterations must be an integer"),
+            ("minimum_determinant", -1.0, ValueError, "minimum_determinant must be finite and non-negative"),
+            ("objective_policy", "record", ValueError, "requires strict objective and residual"),
+            ("head_mode", "permuted", ValueError, "permuted head mode requires"),
+            ("head_permutation", (0,), ValueError, "only valid with head_mode"),
+        )
+        for name, value, error, message in cases:
+            with self.subTest(name=name):
+                config = IterativeSolverConfig(
+                    iterations=1,
+                    proposal_safeguard=(
+                        ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0))
+                        if name == "objective_policy"
+                        else None
+                    ),
+                )
+                object.__setattr__(config, name, value)
+                with self.assertRaisesRegex(error, message):
+                    solve(config)
+
+        class DerivedConfig(IterativeSolverConfig):
+            pass
+
+        with self.assertRaisesRegex(TypeError, "exact IterativeSolverConfig"):
+            solve(DerivedConfig(iterations=1))
+
+        accepted = IterativeSolverConfig(
+            iterations=np.int64(1),
+            minimum_determinant=np.float64(0.0),
+            head_mode="permuted",
+            head_permutation=tuple(np.int64(index) for index in range(self.state.n_tets)),
+        )
+        accepted.validate()
+
+    def test_initial_and_direct_committed_residual_norms_must_be_finite(self):
+        real_norm = iterative_solver_module._normalized_residual_norm
+        cases = (
+            (1, "initial raw residual norm"),
+            (2, "initial normalized residual norm"),
+            (3, "committed raw residual norm"),
+            (4, "committed normalized residual norm"),
+        )
+        for failing_call, message in cases:
+            with self.subTest(message=message):
+                call_count = 0
+
+                def inject_nonfinite_norm(residual, failing_call=failing_call):
+                    nonlocal call_count
+                    call_count += 1
+                    result = real_norm(residual)
+                    if call_count == failing_call:
+                        result = torch.full_like(result, torch.inf)
+                    return result
+
+                with (
+                    mock.patch.object(
+                        iterative_solver_module,
+                        "_normalized_residual_norm",
+                        side_effect=inject_nonfinite_norm,
+                    ),
+                    self.assertRaisesRegex(RuntimeError, message),
+                ):
+                    self._solve(self._predictor(), iterations=1)
+
+    def test_candidate_residual_finite_includes_the_normalized_norm(self):
+        predictor = self._predictor()
+        current = self.inputs[0]
+        raw_residual = common_objective_residual(self.objective, current)
+        proposed = current - 1.0e-7 * raw_residual
+        proposed = proposed.index_copy(-2, self.state.pinned, current[self.state.pinned])
+        real_norm = iterative_solver_module._normalized_residual_norm
+        call_count = 0
+
+        def overflow_first_candidate_normalized_norm(residual):
+            nonlocal call_count
+            call_count += 1
+            result = real_norm(residual)
+            if call_count == 4:
+                result = torch.full_like(result, torch.inf)
+            return result
+
+        with (
+            mock.patch.object(
+                iterative_solver_module,
+                "_normalized_residual_norm",
+                side_effect=overflow_first_candidate_normalized_norm,
+            ),
+            mock.patch(
+                "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+                return_value=(
+                    proposed,
+                    mock.Mock(iterations=1, matrix_vector_products=0, preconditioner_applications=0, factor_solves=1),
+                ),
+            ),
+        ):
+            result = self._solve(
+                predictor,
+                iterations=1,
+                objective_policy="require-nonincreasing",
+                residual_policy="require-nonincreasing",
+                proposal_safeguard=ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0)),
+            )
+
+        candidate = result.trace[0].candidate_evaluations[0]
+        self.assertFalse(candidate.residual_finite)
+        self.assertIn("non-finite-residual", candidate.rejection_reasons)
 
     def test_config_rejects_an_inversion_permitting_determinant_bound(self):
         default = IterativeSolverConfig(iterations=1)

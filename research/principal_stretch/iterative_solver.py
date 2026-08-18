@@ -395,6 +395,59 @@ class PhysicalStepContext:
 
 
 @dataclasses.dataclass(frozen=True)
+class ProposalSafeguardConfig:
+    """Versionable fixed-work proposal-globalization semantics.
+
+    Args:
+        policy: Registered top-level safeguard policy.
+        candidate_step_fractions: Unique built-in floats in strictly descending
+            order from exactly ``1.0`` to exactly ``0.0``.
+        interpolation_policy: Registered candidate construction policy.
+        selection_policy: Registered deterministic selection policy.
+        zero_policy: Registered zero-candidate behavior.
+        candidate_state_policy: Registered constraint-state branching policy.
+            Registered candidate hooks must treat the prepared input state as
+            immutable and return a separately owned successor state. Tensor
+            inputs are defensively copied, but opaque Python state cannot be
+            copied generically by the solver.
+    """
+
+    candidate_step_fractions: tuple[float, ...]
+    policy: str = "fixed-constrained-backtracking-v1"
+    interpolation_policy: str = "current-to-projected-position-segment"
+    selection_policy: str = "first-admissible-positive-else-zero"
+    zero_policy: str = "exact-no-op"
+    candidate_state_policy: str = "same-prepared-state-selected-successor"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Revalidate exact policy types and values at the execution boundary."""
+        fractions = self.candidate_step_fractions
+        if type(fractions) is not tuple or len(fractions) < 2:
+            raise TypeError("candidate_step_fractions must be a tuple containing at least 1.0 and 0.0")
+        if any(type(fraction) is not float for fraction in fractions):
+            raise TypeError("candidate_step_fractions entries must be built-in floats")
+        if any(not math.isfinite(fraction) or fraction < 0.0 or fraction > 1.0 for fraction in fractions):
+            raise ValueError("candidate_step_fractions entries must be finite and lie in [0, 1]")
+        if fractions[0] != 1.0 or fractions[-1] != 0.0:
+            raise ValueError("candidate_step_fractions must start at exactly 1.0 and end at exactly 0.0")
+        if any(fractions[index] <= fractions[index + 1] for index in range(len(fractions) - 1)):
+            raise ValueError("candidate_step_fractions must be unique and strictly descending")
+        policies = {
+            "policy": "fixed-constrained-backtracking-v1",
+            "interpolation_policy": "current-to-projected-position-segment",
+            "selection_policy": "first-admissible-positive-else-zero",
+            "zero_policy": "exact-no-op",
+            "candidate_state_policy": "same-prepared-state-selected-successor",
+        }
+        for name, expected in policies.items():
+            if type(getattr(self, name)) is not str or getattr(self, name) != expected:
+                raise ValueError(f"{name} must be {expected!r}")
+
+
+@dataclasses.dataclass(frozen=True)
 class IterativeSolverConfig:
     """Fixed learned work and fail-closed state checks.
 
@@ -426,6 +479,10 @@ class IterativeSolverConfig:
             ``"zero"``/``"permuted"`` learned-contribution ablation.
         head_permutation: Explicit all-tet permutation for the permuted-head
             ablation. The model is still executed once per iteration.
+        proposal_safeguard: Optional fixed inference-only proposal safeguard.
+            Safeguard mode requires an unbatched state and strict
+            objective/residual policies. Every configured candidate is
+            constrained and scored before deterministic selection.
     """
 
     iterations: int
@@ -440,8 +497,13 @@ class IterativeSolverConfig:
     return_projection_diagnostics: bool = True
     head_mode: str = "learned"
     head_permutation: tuple[int, ...] | None = None
+    proposal_safeguard: ProposalSafeguardConfig | None = None
 
     def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Revalidate all solver semantics at an execution boundary."""
         if isinstance(self.iterations, bool) or not isinstance(self.iterations, numbers.Integral):
             raise TypeError("iterations must be an integer")
         if self.iterations <= 0:
@@ -487,6 +549,12 @@ class IterativeSolverConfig:
                 raise TypeError("head_permutation entries must be integers")
         elif self.head_permutation is not None:
             raise ValueError("head_permutation is only valid with head_mode='permuted'")
+        if self.proposal_safeguard is not None:
+            if type(self.proposal_safeguard) is not ProposalSafeguardConfig:
+                raise TypeError("proposal_safeguard must be a ProposalSafeguardConfig")
+            self.proposal_safeguard.validate()
+            if self.objective_policy != "require-nonincreasing" or self.residual_policy != "require-nonincreasing":
+                raise ValueError("proposal safeguard requires strict objective and residual nonincrease policies")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -540,6 +608,25 @@ class IterationConstraintHook(Protocol):
         pinned_targets: torch.Tensor,
     ) -> ConstraintApplication:
         """Constrain the proposed displacement before it is committed."""
+
+    def constrain_candidate(
+        self,
+        state: object,
+        iteration: int,
+        candidate_index: int,
+        candidate_step_fraction: float,
+        positions: torch.Tensor,
+        candidate_positions: torch.Tensor,
+        pinned: torch.Tensor,
+        pinned_targets: torch.Tensor,
+    ) -> ConstraintApplication:
+        """Constrain one fixed globalization candidate without committing it.
+
+        Registered implementations must treat ``state`` and all tensor inputs
+        as immutable. Every candidate receives the same prepared state; only
+        the separately owned state returned for the selected candidate is
+        advanced to the next iteration.
+        """
 
 
 def _expand_pinned_targets(
@@ -611,6 +698,52 @@ class IdentityConstraintHook:
             diagnostics={"truncation_calls": 0, "minimum_fraction": 1.0},
         )
 
+    def constrain_candidate(
+        self,
+        state: object,
+        iteration: int,
+        candidate_index: int,
+        candidate_step_fraction: float,
+        positions: torch.Tensor,
+        candidate_positions: torch.Tensor,
+        pinned: torch.Tensor,
+        pinned_targets: torch.Tensor,
+    ) -> ConstraintApplication:
+        """Apply identity semantics independently to one fixed candidate."""
+        del candidate_index, candidate_step_fraction
+        return self.constrain(state, iteration, positions, candidate_positions, pinned, pinned_targets)
+
+
+@dataclasses.dataclass(frozen=True)
+class CandidateEvaluation:
+    """One constrained and fully scored fixed globalization candidate."""
+
+    candidate_index: int
+    step_fraction: float
+    candidate_positions: torch.Tensor
+    constrained_positions: torch.Tensor
+    normalized_residual: torch.Tensor
+    raw_residual_norm: torch.Tensor
+    normalized_residual_norm: torch.Tensor
+    objective: torch.Tensor
+    minimum_determinant: torch.Tensor
+    minimum_singular_value: torch.Tensor
+    positions_finite: bool
+    exact_pins: bool
+    determinant_valid: bool
+    singular_value_valid: bool
+    objective_finite: bool
+    residual_finite: bool
+    state_valid: bool
+    objective_nonincreasing: bool
+    residual_nonincreasing: bool
+    zero_step_unchanged: bool | None
+    displacement_retention: torch.Tensor | None
+    learned_contribution_retained: bool
+    admissible: bool
+    rejection_reasons: tuple[str, ...]
+    constraint_diagnostics: Mapping[str, object]
+
 
 @dataclasses.dataclass(frozen=True)
 class IterativeSolverWork:
@@ -660,6 +793,13 @@ class IterativeSolverIteration:
     projection_diagnostics: ProjectionDiagnostics | None
     constraint_prepare_diagnostics: Mapping[str, object]
     constraint_diagnostics: Mapping[str, object]
+    candidate_evaluations: tuple[CandidateEvaluation, ...] | None = None
+    selected_candidate_index: int | None = None
+    selected_step_fraction: float | None = None
+    learned_displacement_retention: torch.Tensor | None = None
+    learned_contribution_retained: bool | None = None
+    proposal_accepted: bool | None = None
+    selection_reason: str | None = None
 
 
 @dataclasses.dataclass
@@ -698,6 +838,9 @@ class IterativeSolverResult:
     normalized_residual_norm: torch.Tensor
     minimum_determinant: torch.Tensor
     minimum_singular_value: torch.Tensor
+    proposal_accepted_iterations: int | None = None
+    zero_step_iterations: int | None = None
+    learned_contribution_retained_iterations: int | None = None
 
 
 def _canonical_constraint_descriptor(hook: IterationConstraintHook) -> tuple[dict[str, object], str]:
@@ -717,6 +860,23 @@ def _canonical_constraint_descriptor(hook: IterationConstraintHook) -> tuple[dic
 def _validate_finite(name: str, value: torch.Tensor) -> None:
     if not torch.isfinite(value).all():
         raise RuntimeError(f"{name} contains a non-finite value")
+
+
+def _tensor_bytes_equal(left: object, right: object) -> bool:
+    """Compare exact tensor metadata and contiguous storage bytes."""
+    if not isinstance(left, torch.Tensor) or not isinstance(right, torch.Tensor):
+        return False
+    if (
+        left.shape != right.shape
+        or left.device != right.device
+        or left.dtype != right.dtype
+        or left.layout != torch.strided
+        or right.layout != torch.strided
+    ):
+        return False
+    left_bytes = left.contiguous().reshape(-1).view(torch.uint8)
+    right_bytes = right.contiguous().reshape(-1).view(torch.uint8)
+    return torch.equal(left_bytes, right_bytes)
 
 
 def _validate_committed_state(
@@ -973,6 +1133,21 @@ def _validate_config_execution_dtype(config: IterativeSolverConfig, reference: t
             raise ValueError(f"{name} must remain finite in execution dtype {reference.dtype}")
         if python_value > 0.0 and not bool((materialized > 0.0).item()):
             raise ValueError(f"{name} must remain positive in execution dtype {reference.dtype}")
+    if config.proposal_safeguard is not None:
+        if type(config.proposal_safeguard) is not ProposalSafeguardConfig:
+            raise TypeError("proposal_safeguard must remain a ProposalSafeguardConfig at execution")
+        config.proposal_safeguard.validate()
+        fractions = reference.new_tensor(config.proposal_safeguard.candidate_step_fractions)
+        if not bool(torch.isfinite(fractions).all().item()):
+            raise ValueError(f"candidate_step_fractions must remain finite in execution dtype {reference.dtype}")
+        if not bool((fractions[0] == reference.new_tensor(1.0)).item()) or not bool(
+            (fractions[-1] == reference.new_tensor(0.0)).item()
+        ):
+            raise ValueError(f"candidate_step_fractions endpoints changed in execution dtype {reference.dtype}")
+        if not bool((fractions[:-1] > fractions[1:]).all().item()):
+            raise ValueError(
+                f"candidate_step_fractions must remain unique and strictly descending in execution dtype {reference.dtype}"
+            )
 
 
 def _enforce_nonincrease(
@@ -985,6 +1160,190 @@ def _enforce_nonincrease(
     if policy == "require-nonincreasing" and (after > before + tolerance).any():
         increase = float((after - before).detach().max())
         raise RuntimeError(f"committed iteration increased {name} by {increase:.6e}")
+
+
+def _candidate_geometry_metrics(
+    projection_state: SolverState,
+    positions: torch.Tensor,
+    pinned_targets: torch.Tensor,
+    minimum_determinant_bound: float,
+    minimum_singular_value_bound: float,
+) -> tuple[torch.Tensor, torch.Tensor, bool, bool, bool, bool, bool]:
+    """Measure candidate geometry without aborting the fixed schedule."""
+    nan = positions.new_full((), torch.nan)
+    positions_finite = bool(torch.isfinite(positions).all().item())
+    targets = _expand_pinned_targets(positions, projection_state.pinned, pinned_targets)
+    exact_pins = torch.equal(positions[..., projection_state.pinned, :], targets)
+    minimum_determinant = nan
+    minimum_singular_value = nan
+    determinant_valid = False
+    singular_value_valid = False
+    if positions_finite:
+        deformation_gradient = torch_solver.compute_F(positions, projection_state.tets, projection_state.J)
+        determinant = torch.linalg.det(deformation_gradient)
+        determinant_finite = bool(torch.isfinite(determinant).all().item())
+        if determinant_finite:
+            minimum_determinant = determinant.amin()
+            determinant_valid = bool((determinant > minimum_determinant_bound).all().item())
+        if bool(torch.isfinite(deformation_gradient).all().item()):
+            try:
+                singular_values = torch.linalg.svdvals(deformation_gradient)
+            except RuntimeError:
+                singular_values = None
+            if singular_values is not None and bool(torch.isfinite(singular_values).all().item()):
+                minimum_singular_value = singular_values.amin()
+                singular_value_valid = bool((singular_values > minimum_singular_value_bound).all().item())
+    state_valid = positions_finite and exact_pins and determinant_valid and singular_value_valid
+    return (
+        minimum_determinant,
+        minimum_singular_value,
+        positions_finite,
+        exact_pins,
+        determinant_valid,
+        singular_value_valid,
+        state_valid,
+    )
+
+
+def _score_candidate(
+    *,
+    projection_state: SolverState,
+    objective: CommonObjectiveContext,
+    config: IterativeSolverConfig,
+    current: torch.Tensor,
+    objective_before: torch.Tensor,
+    normalized_residual_norm_before: torch.Tensor,
+    pinned_targets: torch.Tensor,
+    candidate_index: int,
+    step_fraction: float,
+    projected_positions: torch.Tensor,
+    candidate_positions: torch.Tensor,
+    application: ConstraintApplication,
+) -> CandidateEvaluation:
+    """Score one constrained candidate under the registered strict gates."""
+    constrained = application.positions
+    (
+        minimum_determinant,
+        minimum_singular_value,
+        positions_finite,
+        exact_pins,
+        determinant_valid,
+        singular_value_valid,
+        state_valid,
+    ) = _candidate_geometry_metrics(
+        projection_state,
+        constrained,
+        pinned_targets,
+        config.minimum_determinant,
+        config.minimum_singular_value,
+    )
+    raw_residual = _common_objective_residual_trusted(
+        objective,
+        constrained,
+        detach=config.detach_residual_features,
+    )
+    normalized_residual = raw_residual / objective.residual_scale
+    raw_residual_norm = _normalized_residual_norm(raw_residual)
+    normalized_residual_norm = _normalized_residual_norm(normalized_residual)
+    objective_value = _common_objective_components_trusted(objective, constrained)["total"]
+    objective_finite = bool(torch.isfinite(objective_value).all().item())
+    residual_finite = (
+        bool(torch.isfinite(normalized_residual).all().item())
+        and bool(torch.isfinite(raw_residual_norm).all().item())
+        and bool(torch.isfinite(normalized_residual_norm).all().item())
+    )
+    objective_nonincreasing = objective_finite and bool(
+        (objective_value <= objective_before + objective_value.new_tensor(config.objective_increase_tolerance))
+        .all()
+        .item()
+    )
+    residual_nonincreasing = residual_finite and bool(
+        (
+            normalized_residual_norm
+            <= normalized_residual_norm_before
+            + normalized_residual_norm.new_tensor(config.normalized_residual_increase_tolerance)
+        )
+        .all()
+        .item()
+    )
+    zero_step_unchanged = _tensor_bytes_equal(constrained, current) if step_fraction == 0.0 else None
+    free = torch.ones(projection_state.n_verts, dtype=torch.bool, device=current.device)
+    free[projection_state.pinned] = False
+    full_displacement = (projected_positions - current)[free].reshape(-1)
+    constrained_displacement = (constrained - current)[free].reshape(-1)
+    full_displacement_finite = bool(torch.isfinite(full_displacement).all().item())
+    constrained_displacement_finite = bool(torch.isfinite(constrained_displacement).all().item())
+    if (
+        not full_displacement_finite
+        or not constrained_displacement_finite
+        or torch.equal(full_displacement, torch.zeros_like(full_displacement))
+    ):
+        displacement_retention = None
+    else:
+        retention_numerator = torch.dot(constrained_displacement, full_displacement)
+        retention_denominator = torch.dot(full_displacement, full_displacement)
+        if (
+            not bool(torch.isfinite(retention_numerator).item())
+            or not bool(torch.isfinite(retention_denominator).item())
+            or not bool((retention_denominator > 0.0).item())
+        ):
+            displacement_retention = None
+        else:
+            candidate_retention = retention_numerator / retention_denominator
+            displacement_retention = candidate_retention if bool(torch.isfinite(candidate_retention).item()) else None
+    learned_contribution_retained = (
+        step_fraction > 0.0
+        and displacement_retention is not None
+        and bool(torch.isfinite(displacement_retention).item())
+        and bool((displacement_retention > 0.0).item())
+    )
+    rejection_reasons: list[str] = []
+    if not positions_finite:
+        rejection_reasons.append("non-finite-positions")
+    if not exact_pins:
+        rejection_reasons.append("changed-exact-pins")
+    if not determinant_valid:
+        rejection_reasons.append("determinant-bound")
+    if not singular_value_valid:
+        rejection_reasons.append("singular-value-bound")
+    if not objective_finite:
+        rejection_reasons.append("non-finite-objective")
+    if not residual_finite:
+        rejection_reasons.append("non-finite-residual")
+    if not objective_nonincreasing:
+        rejection_reasons.append("objective-increase")
+    if not residual_nonincreasing:
+        rejection_reasons.append("residual-increase")
+    if zero_step_unchanged is False:
+        rejection_reasons.append("zero-step-moved")
+    admissible = state_valid and objective_nonincreasing and residual_nonincreasing and zero_step_unchanged is not False
+    return CandidateEvaluation(
+        candidate_index=candidate_index,
+        step_fraction=step_fraction,
+        candidate_positions=candidate_positions,
+        constrained_positions=constrained,
+        normalized_residual=normalized_residual,
+        raw_residual_norm=raw_residual_norm,
+        normalized_residual_norm=normalized_residual_norm,
+        objective=objective_value,
+        minimum_determinant=minimum_determinant,
+        minimum_singular_value=minimum_singular_value,
+        positions_finite=positions_finite,
+        exact_pins=exact_pins,
+        determinant_valid=determinant_valid,
+        singular_value_valid=singular_value_valid,
+        objective_finite=objective_finite,
+        residual_finite=residual_finite,
+        state_valid=state_valid,
+        objective_nonincreasing=objective_nonincreasing,
+        residual_nonincreasing=residual_nonincreasing,
+        zero_step_unchanged=zero_step_unchanged,
+        displacement_retention=displacement_retention,
+        learned_contribution_retained=learned_contribution_retained,
+        admissible=admissible,
+        rejection_reasons=tuple(rejection_reasons),
+        constraint_diagnostics=dict(application.diagnostics),
+    )
 
 
 def solve_iterative_principal_stretch(
@@ -1030,11 +1389,14 @@ def solve_iterative_principal_stretch(
             collision-free identity hook.
 
     Returns:
-        Final state, normalized residual, differentiable per-iteration trace,
-        exact work counts, and the constraint descriptor.
+        Final state, normalized residual, per-iteration trace, exact work
+        counts, and the constraint descriptor. The direct path remains fully
+        differentiable. Proposal-safeguard selection is an inference/research
+        path with deterministic host-visible gate decisions.
     """
-    if not isinstance(config, IterativeSolverConfig):
-        raise TypeError("config must be an IterativeSolverConfig")
+    if type(config) is not IterativeSolverConfig:
+        raise TypeError("config must be the exact IterativeSolverConfig type")
+    config.validate()
     if predictor_architecture_version(predictor) != 5:
         raise ValueError("iterative principal-stretch solving requires an architecture-v5 predictor")
     _validate_problem_identity(predictor, projection_state, objective)
@@ -1054,6 +1416,9 @@ def solve_iterative_principal_stretch(
     x_initial = x_current
     if x_initial.ndim not in (2, 3):
         raise ValueError("the graph predictor supports unbatched (V, 3) or batched (B, V, 3) positions")
+    safeguard = config.proposal_safeguard
+    if safeguard is not None and x_initial.ndim != 2:
+        raise ValueError("proposal safeguard v1 requires an unbatched position state")
     expected_positions = (projection_state.n_verts, 3)
     for name, value in (
         ("x_current", x_current),
@@ -1089,6 +1454,9 @@ def solve_iterative_principal_stretch(
 
     hook: IterationConstraintHook = IdentityConstraintHook() if constraint is None else constraint
     descriptor, descriptor_sha256 = _canonical_constraint_descriptor(hook)
+    constrain_candidate = getattr(hook, "constrain_candidate", None)
+    if safeguard is not None and not callable(constrain_candidate):
+        raise TypeError("proposal safeguard requires a candidate-aware constrain_candidate hook")
     constraint_registration = (
         "registered-identity-development"
         if type(hook) is IdentityConstraintHook
@@ -1103,7 +1471,10 @@ def solve_iterative_principal_stretch(
         config.minimum_determinant,
         config.minimum_singular_value,
     )
-    constraint_state = hook.begin_step(current, projection_state.pinned, pinned_targets)
+    if safeguard is None:
+        constraint_state = hook.begin_step(current, projection_state.pinned, pinned_targets)
+    else:
+        constraint_state = hook.begin_step(current.clone(), projection_state.pinned.clone(), pinned_targets.clone())
     _reauthenticate_contexts(physical_step, objective)
     raw_residual = _common_objective_residual_trusted(
         objective,
@@ -1114,6 +1485,8 @@ def solve_iterative_principal_stretch(
     _validate_finite("initial common residual", residual)
     raw_residual_norm = _normalized_residual_norm(raw_residual)
     normalized_residual_norm = _normalized_residual_norm(residual)
+    _validate_finite("initial raw residual norm", raw_residual_norm)
+    _validate_finite("initial normalized residual norm", normalized_residual_norm)
     objective_value = _common_objective_components_trusted(objective, current)["total"]
     _validate_finite("initial common objective", objective_value)
     trace: list[IterativeSolverIteration] = []
@@ -1128,7 +1501,9 @@ def solve_iterative_principal_stretch(
 
     for iteration in range(config.iterations):
         iteration_fraction = iteration / max(config.iterations - 1, 1)
-        observation = hook.prepare_iteration(constraint_state, iteration, current)
+        iteration_positions = current if safeguard is None else current.clone()
+        observation_positions = iteration_positions if safeguard is None else iteration_positions.clone()
+        observation = hook.prepare_iteration(constraint_state, iteration, observation_positions)
         _reauthenticate_contexts(physical_step, objective)
         if not isinstance(observation, ConstraintObservation):
             raise RuntimeError("constraint hook prepare_iteration must return ConstraintObservation")
@@ -1148,7 +1523,7 @@ def solve_iterative_principal_stretch(
             projection_state,
             x_current,
             x_previous,
-            current,
+            iteration_positions,
             network_force,
             gravity,
             mu,
@@ -1165,7 +1540,7 @@ def solve_iterative_principal_stretch(
         _validate_finite("learned target deformation gradient", target_f)
         projection_kwargs: dict[str, object] = {}
         if projection_state.projection_backend != "dense":
-            projection_kwargs["initial_positions"] = current
+            projection_kwargs["initial_positions"] = iteration_positions
         projection_diagnostics: ProjectionDiagnostics | None = None
         if config.return_projection_diagnostics:
             proposed, projection_diagnostics = torch_solver.project_deformation_gradient(
@@ -1182,41 +1557,152 @@ def solve_iterative_principal_stretch(
                 pinned_targets,
                 **projection_kwargs,
             )
-        _validate_finite("projected proposal", proposed)
+        if safeguard is None:
+            _validate_finite("projected proposal", proposed)
+        elif (
+            proposed.shape != iteration_positions.shape
+            or proposed.device != iteration_positions.device
+            or proposed.dtype != iteration_positions.dtype
+        ):
+            raise RuntimeError("projected proposal changed the position shape, device, or dtype")
+        trace_proposed = proposed if safeguard is None else proposed.clone()
 
-        application = hook.constrain(
-            constraint_state,
-            iteration,
-            current,
-            proposed,
-            projection_state.pinned,
-            pinned_targets,
-        )
-        _reauthenticate_contexts(physical_step, objective)
-        if not isinstance(application, ConstraintApplication):
-            raise RuntimeError("constraint hook constrain must return ConstraintApplication")
-        constraint_state = application.state
-        committed = application.positions
-        if committed.shape != current.shape or committed.device != current.device or committed.dtype != current.dtype:
-            raise RuntimeError("constraint hook changed the position shape, device, or dtype")
-        minimum_determinant_after, minimum_singular_value_after = _validate_committed_state(
-            projection_state,
-            committed,
-            pinned_targets,
-            config.minimum_determinant,
-            config.minimum_singular_value,
-        )
-        raw_residual_after = _common_objective_residual_trusted(
-            objective,
-            committed,
-            detach=config.detach_residual_features,
-        )
-        residual_after = raw_residual_after / objective.residual_scale
-        _validate_finite("committed common residual", residual_after)
-        raw_residual_norm_after = _normalized_residual_norm(raw_residual_after)
-        normalized_residual_norm_after = _normalized_residual_norm(residual_after)
-        objective_after = _common_objective_components_trusted(objective, committed)["total"]
-        _validate_finite("committed common objective", objective_after)
+        candidate_evaluations: tuple[CandidateEvaluation, ...] | None = None
+        selected_candidate_index: int | None = None
+        selected_step_fraction: float | None = None
+        learned_displacement_retention: torch.Tensor | None = None
+        learned_contribution_retained: bool | None = None
+        proposal_accepted: bool | None = None
+        selection_reason: str | None = None
+        if safeguard is None:
+            application = hook.constrain(
+                constraint_state,
+                iteration,
+                iteration_positions,
+                proposed,
+                projection_state.pinned,
+                pinned_targets,
+            )
+            _reauthenticate_contexts(physical_step, objective)
+            if not isinstance(application, ConstraintApplication):
+                raise RuntimeError("constraint hook constrain must return ConstraintApplication")
+            constraint_state = application.state
+            committed = application.positions
+            if (
+                committed.shape != iteration_positions.shape
+                or committed.device != iteration_positions.device
+                or committed.dtype != iteration_positions.dtype
+            ):
+                raise RuntimeError("constraint hook changed the position shape, device, or dtype")
+            minimum_determinant_after, minimum_singular_value_after = _validate_committed_state(
+                projection_state,
+                committed,
+                pinned_targets,
+                config.minimum_determinant,
+                config.minimum_singular_value,
+            )
+            raw_residual_after = _common_objective_residual_trusted(
+                objective,
+                committed,
+                detach=config.detach_residual_features,
+            )
+            residual_after = raw_residual_after / objective.residual_scale
+            _validate_finite("committed common residual", residual_after)
+            raw_residual_norm_after = _normalized_residual_norm(raw_residual_after)
+            normalized_residual_norm_after = _normalized_residual_norm(residual_after)
+            _validate_finite("committed raw residual norm", raw_residual_norm_after)
+            _validate_finite("committed normalized residual norm", normalized_residual_norm_after)
+            objective_after = _common_objective_components_trusted(objective, committed)["total"]
+            _validate_finite("committed common objective", objective_after)
+        else:
+            applications: list[ConstraintApplication] = []
+            evaluations: list[CandidateEvaluation] = []
+            projected_displacement = trace_proposed - iteration_positions
+            for candidate_index, step_fraction in enumerate(safeguard.candidate_step_fractions):
+                if step_fraction == 1.0:
+                    candidate_positions = trace_proposed.clone()
+                elif step_fraction == 0.0:
+                    candidate_positions = iteration_positions.clone()
+                else:
+                    candidate_positions = (
+                        iteration_positions + iteration_positions.new_tensor(step_fraction) * projected_displacement
+                    )
+                hook_positions = iteration_positions.clone()
+                hook_candidate_positions = candidate_positions.clone()
+                application = constrain_candidate(
+                    constraint_state,
+                    iteration,
+                    candidate_index,
+                    step_fraction,
+                    hook_positions,
+                    hook_candidate_positions,
+                    projection_state.pinned.clone(),
+                    pinned_targets.clone(),
+                )
+                _reauthenticate_contexts(physical_step, objective)
+                if not isinstance(application, ConstraintApplication):
+                    raise RuntimeError("constraint hook constrain_candidate must return ConstraintApplication")
+                constrained = application.positions
+                if (
+                    constrained.shape != iteration_positions.shape
+                    or constrained.device != iteration_positions.device
+                    or constrained.dtype != iteration_positions.dtype
+                ):
+                    raise RuntimeError("constraint candidate changed the position shape, device, or dtype")
+                application = dataclasses.replace(application, positions=constrained.clone())
+                applications.append(application)
+                evaluations.append(
+                    _score_candidate(
+                        projection_state=projection_state,
+                        objective=objective,
+                        config=config,
+                        current=iteration_positions,
+                        objective_before=objective_value,
+                        normalized_residual_norm_before=normalized_residual_norm,
+                        pinned_targets=pinned_targets,
+                        candidate_index=candidate_index,
+                        step_fraction=step_fraction,
+                        projected_positions=trace_proposed,
+                        candidate_positions=candidate_positions,
+                        application=application,
+                    )
+                )
+            candidate_evaluations = tuple(evaluations)
+            zero_evaluation = candidate_evaluations[-1]
+            if zero_evaluation.zero_step_unchanged is not True:
+                raise RuntimeError("zero-step constraint candidate must return the current iterate bitwise")
+            selected_candidate_index = next(
+                (item.candidate_index for item in candidate_evaluations[:-1] if item.admissible),
+                None,
+            )
+            if selected_candidate_index is None:
+                if not zero_evaluation.admissible:
+                    reasons = ", ".join(zero_evaluation.rejection_reasons)
+                    raise RuntimeError(f"zero-step fallback is not admissible: {reasons}")
+                selected_candidate_index = zero_evaluation.candidate_index
+                selection_reason = "no-admissible-positive"
+            selected_evaluation = candidate_evaluations[selected_candidate_index]
+            selected_application = applications[selected_candidate_index]
+            selected_step_fraction = selected_evaluation.step_fraction
+            proposal_accepted = selected_step_fraction > 0.0
+            learned_displacement_retention = selected_evaluation.displacement_retention
+            learned_contribution_retained = selected_evaluation.learned_contribution_retained
+            if selection_reason is None:
+                if learned_displacement_retention is None:
+                    selection_reason = "first-admissible-positive-candidate-zero-projected-displacement"
+                elif learned_contribution_retained:
+                    selection_reason = "first-admissible-positive-candidate"
+                else:
+                    selection_reason = "first-admissible-positive-candidate-no-learned-displacement"
+            constraint_state = selected_application.state
+            committed = selected_evaluation.constrained_positions.clone()
+            residual_after = selected_evaluation.normalized_residual
+            raw_residual_norm_after = selected_evaluation.raw_residual_norm
+            normalized_residual_norm_after = selected_evaluation.normalized_residual_norm
+            objective_after = selected_evaluation.objective
+            minimum_determinant_after = selected_evaluation.minimum_determinant
+            minimum_singular_value_after = selected_evaluation.minimum_singular_value
+            application = selected_application
         _enforce_nonincrease(
             "common objective",
             config.objective_policy,
@@ -1235,7 +1721,7 @@ def solve_iterative_principal_stretch(
             IterativeSolverIteration(
                 iteration=iteration,
                 iteration_fraction=iteration_fraction,
-                positions_before=current,
+                positions_before=iteration_positions,
                 normalized_residual_before=residual,
                 raw_residual_norm_before=raw_residual_norm,
                 normalized_residual_norm_before=normalized_residual_norm,
@@ -1245,7 +1731,7 @@ def solve_iterative_principal_stretch(
                 delta_h=delta_h,
                 omega=omega,
                 target_deformation_gradient=target_f,
-                proposed_positions=proposed,
+                proposed_positions=trace_proposed,
                 positions=committed,
                 residual_after=residual_after,
                 raw_residual_norm_after=raw_residual_norm_after,
@@ -1256,9 +1742,16 @@ def solve_iterative_principal_stretch(
                 projection_diagnostics=projection_diagnostics,
                 constraint_prepare_diagnostics=dict(observation.diagnostics),
                 constraint_diagnostics=dict(application.diagnostics),
+                candidate_evaluations=candidate_evaluations,
+                selected_candidate_index=selected_candidate_index,
+                selected_step_fraction=selected_step_fraction,
+                learned_displacement_retention=learned_displacement_retention,
+                learned_contribution_retained=learned_contribution_retained,
+                proposal_accepted=proposal_accepted,
+                selection_reason=selection_reason,
             )
         )
-        current = committed
+        current = committed if safeguard is None else committed.clone()
         residual = residual_after
         raw_residual_norm = raw_residual_norm_after
         normalized_residual_norm = normalized_residual_norm_after
@@ -1280,6 +1773,16 @@ def solve_iterative_principal_stretch(
         projection_preconditioner_applications = None
         projection_factor_solves = None
 
+    candidate_applications_per_iteration = 1 if safeguard is None else len(safeguard.candidate_step_fractions)
+    if safeguard is None:
+        proposal_accepted_iterations = None
+        zero_step_iterations = None
+        learned_contribution_retained_iterations = None
+    else:
+        proposal_accepted_iterations = sum(item.proposal_accepted is True for item in trace)
+        zero_step_iterations = sum(item.selected_step_fraction == 0.0 for item in trace)
+        learned_contribution_retained_iterations = sum(item.learned_contribution_retained is True for item in trace)
+
     # Reauthenticate after all user-supplied hook calls so a hook retaining an
     # internal context reference cannot silently change the bound problem
     # during execution. These canonical byte checks are explicitly cold
@@ -1294,13 +1797,13 @@ def solve_iterative_principal_stretch(
         work=IterativeSolverWork(
             predictor_passes=config.iterations,
             projection_calls=config.iterations,
-            residual_evaluations=config.iterations + 1,
-            objective_evaluations=config.iterations + 1,
-            state_validity_evaluations=config.iterations + 1,
+            residual_evaluations=config.iterations * candidate_applications_per_iteration + 1,
+            objective_evaluations=config.iterations * candidate_applications_per_iteration + 1,
+            state_validity_evaluations=config.iterations * candidate_applications_per_iteration + 1,
             constraint_preparations=config.iterations,
-            constraint_applications=config.iterations,
-            physical_step_authentications=2 * config.iterations + 3,
-            common_objective_authentications=2 * config.iterations + 3,
+            constraint_applications=config.iterations * candidate_applications_per_iteration,
+            physical_step_authentications=config.iterations * (candidate_applications_per_iteration + 1) + 3,
+            common_objective_authentications=config.iterations * (candidate_applications_per_iteration + 1) + 3,
             projection_backend=projection_state.projection_backend,
             projection_diagnostics_recorded=projection_diagnostics_recorded,
             projection_iterations=projection_iterations,
@@ -1327,12 +1830,16 @@ def solve_iterative_principal_stretch(
         normalized_residual_norm=normalized_residual_norm,
         minimum_determinant=minimum_determinant,
         minimum_singular_value=minimum_singular_value,
+        proposal_accepted_iterations=proposal_accepted_iterations,
+        zero_step_iterations=zero_step_iterations,
+        learned_contribution_retained_iterations=learned_contribution_retained_iterations,
     )
 
 
 __all__ = [
     "PHYSICAL_INTEGRATION_POLICY_ALGEBRAIC_FLOAT64",
     "PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32",
+    "CandidateEvaluation",
     "ConstraintApplication",
     "ConstraintObservation",
     "IdentityConstraintHook",
@@ -1342,6 +1849,7 @@ __all__ = [
     "IterativeSolverResult",
     "IterativeSolverWork",
     "PhysicalStepContext",
+    "ProposalSafeguardConfig",
     "SolverVBDStagedFloat32Evidence",
     "solve_iterative_principal_stretch",
     "validate_physical_objective_integration",
