@@ -11,14 +11,15 @@ every later sweep uses a scalar-row CSR residual followed by an out-of-place
 scalar-row Jacobi update.  Corrections ping-pong between fixed A/B buffers so
 no sweep reads values that another thread is overwriting.
 
-For ``n`` noncoarsest levels, ``p`` pre-sweeps, ``q`` post-sweeps, and a
-construction-bound CUDA terminal-fusion indicator ``f``, the scalar core
+For ``n`` noncoarsest levels and ``p``/``q`` pre/post sweeps, the scalar core
 schedules exactly
-``2 + n * (2 + 2*p + 2*q) - int(n > 0) - 2*f`` kernels.  The one-block CUDA
-route makes ``f == 1`` by replacing the deepest restriction, ordered coarse
-solve, and deepest prolongation launches with one launch.  CPU, oversized,
-unsupported, and coarsest-only hierarchies retain the exact legacy route with
-``f == 0``.
+``2 + n * (2 + 2*p + 2*q) - int(n > 0) - r`` kernels.  The immutable terminal
+route gives launch reduction ``r``: six for the CUDA ``p == q == 1`` complete
+terminal micro-cycle, two for the CUDA transfer/solve fusion fallback, and zero
+for legacy fallbacks.  The complete micro-cycle preserves seven logical phases
+behind six unconditional tile-broadcast synchronization collectives (twelve
+physical ``__syncthreads`` in Warp 1.12.1).  CPU, oversized, unsupported, and
+coarsest-only hierarchies retain their exact legacy schedules.
 The standalone public adapter adds one scalar-to-vec3 publication kernel.
 With the required symmetric ``p == q >= 1``, every noncoarsest result finishes
 in B and the coarsest result finishes in A.  The launch path allocates no
@@ -50,9 +51,9 @@ from .correction_multigrid_warp import (
     _solve_coarsest_cholesky,
 )
 
-KERNEL_VERSION = "mg-vbd-warp-static-v-cycle-scalar-fused-v5"
+KERNEL_VERSION = "mg-vbd-warp-static-v-cycle-scalar-fused-v6"
 CONTRACT_ID = "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1"
-SCHEDULE_VERSION = "scalar-core-terminal-fused-seeded-root-publication-routes-v7"
+SCHEDULE_VERSION = "scalar-core-terminal-microcycle-seeded-root-publication-routes-v9"
 PUBLICATION_VERSION = "scalar-fused-v-cycle-publication-routes-v2"
 STANDALONE_PUBLICATION_ROUTE = "standalone-scalar-to-vec3-kernel"
 EXTERNAL_SHARED_PUBLICATION_ROUTE = "external-shared-owner-scalar-to-vec3"
@@ -60,12 +61,27 @@ ROOT_INGRESS_INTERNAL_ROUTE = "internal-fused-vec3d-scalar-zero-start"
 ROOT_INGRESS_EXTERNAL_SHARED_ROUTE = "external-shared-producer-scalar-zero-start"
 ROOT_INGRESS_COARSE_COPY_ROUTE = "coarsest-copy-vec3d-to-scalar"
 PHYSICAL_EXECUTION_AUTHENTICATION = "schema-validated-not-launch-authenticated-v1"
-TERMINAL_FUSION_VERSION = "terminal-restrict-ordered-cholesky-prolong-v1"
+TERMINAL_FUSION_VERSION = "terminal-route-family-with-p1q1-microcycle-v2"
 TERMINAL_FUSION_CUDA_ROUTE = "cuda-one-block-terminal-restrict-ordered-cholesky-prolong-v1"
+TERMINAL_MICROCYCLE_KERNEL_VERSION = "terminal-zero-jacobi-residual-transfer-solve-prolong-residual-jacobi-v1"
+TERMINAL_MICROCYCLE_CUDA_ROUTE = "cuda-one-block-entire-terminal-p1q1-microcycle-v1"
 TERMINAL_FUSION_CPU_FALLBACK_ROUTE = "cpu-legacy-three-launch-terminal-restrict-coarse-prolong-v1"
 TERMINAL_FUSION_OVERSIZE_FALLBACK_ROUTE = "cuda-oversize-legacy-three-launch-terminal-v1"
 TERMINAL_FUSION_UNSUPPORTED_FALLBACK_ROUTE = "cuda-unsupported-legacy-three-launch-terminal-v1"
 TERMINAL_FUSION_COARSEST_ONLY_ROUTE = "coarsest-only-copy-and-ordered-solve-v1"
+TERMINAL_MICROCYCLE_LOGICAL_PHASES = (
+    "zero-start-jacobi",
+    "pre-residual",
+    "restriction",
+    "ordered-coarse-cholesky",
+    "prolongation",
+    "post-residual",
+    "post-jacobi",
+)
+TERMINAL_MICROCYCLE_LOGICAL_PHASES_SERIALIZED = "|".join(TERMINAL_MICROCYCLE_LOGICAL_PHASES)
+TERMINAL_B2_LOGICAL_PHASES_SERIALIZED = "restriction|ordered-coarse-cholesky|prolongation"
+TERMINAL_LEGACY_LOGICAL_PHASES_SERIALIZED = "restriction|coarse-recursion|prolongation"
+TERMINAL_COARSEST_LOGICAL_PHASES_SERIALIZED = "coarsest-copy|ordered-coarse-cholesky"
 _SCHEMA_ROUTE_STANDALONE = "standalone"
 _SCHEMA_ROUTE_CORE = "core"
 _SCHEMA_ROUTE_SEEDED_CORE = "seeded-core"
@@ -303,6 +319,179 @@ def _terminal_restrict_ordered_solve_prolong(
         fine_correction[scalar_row] += value
 
 
+@wp.kernel(enable_backward=False)
+def _terminal_zero_jacobi_residual_restrict_solve_prolong_residual_jacobi(
+    row_offsets: wp.array[wp.int32],
+    column_indices: wp.array[wp.int32],
+    matrix_values: wp.array[wp.float64],
+    inverse_diagonal: wp.array[wp.float64],
+    member_offsets: wp.array[wp.int32],
+    member_fine_nodes: wp.array[wp.int32],
+    aggregate: wp.array[wp.int32],
+    prolongation_blocks: wp.array[wp.float64],
+    fine_block_size: int,
+    coarse_block_size: int,
+    fine_scalar_size: int,
+    fine_rhs: wp.array[wp.float64],
+    fine_primary: wp.array[wp.float64],
+    fine_alternate: wp.array[wp.float64],
+    fine_residual: wp.array[wp.float64],
+    coarse_scalar_size: int,
+    coarse_rhs: wp.array[wp.float64],
+    lower: wp.array[wp.float64],
+    intermediate: wp.array[wp.float64],
+    coarse_solution: wp.array[wp.float64],
+    omega: wp.float64,
+):
+    """Execute one exact p=q=1 terminal micro-cycle in one CUDA block."""
+    scalar_row = wp.tid()
+
+    if scalar_row < fine_scalar_size:
+        block_row = scalar_row // fine_block_size
+        local_row = scalar_row - block_row * fine_block_size
+        block_base = block_row * fine_block_size * fine_block_size + local_row * fine_block_size
+        rhs_base = block_row * fine_block_size
+        value = wp.float64(0.0)
+        for local_column in range(fine_block_size):
+            value += inverse_diagonal[block_base + local_column] * fine_rhs[rhs_base + local_column]
+        fine_primary[scalar_row] = omega * value
+
+    zero_start_done = int(0)
+    if scalar_row == 0:
+        zero_start_done = 1
+    zero_start_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=zero_start_done,
+        thread_idx=0,
+        storage="shared",
+    )
+    zero_start_done = wp.tile_extract(zero_start_tile, 0)
+
+    if scalar_row < fine_scalar_size and zero_start_done != 0:
+        block_row = scalar_row // fine_block_size
+        local_row = scalar_row - block_row * fine_block_size
+        product = wp.float64(0.0)
+        for entry in range(row_offsets[block_row], row_offsets[block_row + 1]):
+            block_column = column_indices[entry]
+            value_base = (entry * fine_block_size + local_row) * fine_block_size
+            vector_base = block_column * fine_block_size
+            for local_column in range(fine_block_size):
+                product += matrix_values[value_base + local_column] * fine_primary[vector_base + local_column]
+        fine_residual[scalar_row] = fine_rhs[scalar_row] - product
+
+    pre_residual_done = int(0)
+    if scalar_row == 0:
+        pre_residual_done = 1
+    pre_residual_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=pre_residual_done,
+        thread_idx=0,
+        storage="shared",
+    )
+    pre_residual_done = wp.tile_extract(pre_residual_tile, 0)
+
+    if scalar_row < coarse_scalar_size and pre_residual_done != 0:
+        coarse_node = scalar_row // coarse_block_size
+        coarse_local = scalar_row - coarse_node * coarse_block_size
+        value = wp.float64(0.0)
+        for cursor in range(member_offsets[coarse_node], member_offsets[coarse_node + 1]):
+            fine_node = member_fine_nodes[cursor]
+            fine_base = fine_node * fine_block_size
+            for fine_local in range(fine_block_size):
+                block_entry = (fine_base + fine_local) * coarse_block_size + coarse_local
+                value += prolongation_blocks[block_entry] * fine_residual[fine_base + fine_local]
+        coarse_rhs[scalar_row] = value
+
+    restriction_done = int(0)
+    if scalar_row == 0:
+        restriction_done = 1
+    restriction_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=restriction_done,
+        thread_idx=0,
+        storage="shared",
+    )
+    restriction_done = wp.tile_extract(restriction_tile, 0)
+
+    solve_done = int(0)
+    if scalar_row == 0 and restriction_done != 0:
+        for row in range(coarse_scalar_size):
+            value = coarse_rhs[row]
+            for column in range(row):
+                value -= lower[row * coarse_scalar_size + column] * intermediate[column]
+            intermediate[row] = value / lower[row * coarse_scalar_size + row]
+        cursor = int(0)
+        while cursor < coarse_scalar_size:
+            row = coarse_scalar_size - cursor - 1
+            value = intermediate[row]
+            for column in range(row + 1, coarse_scalar_size):
+                value -= lower[column * coarse_scalar_size + row] * coarse_solution[column]
+            coarse_solution[row] = value / lower[row * coarse_scalar_size + row]
+            cursor += 1
+        solve_done = 1
+
+    solve_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=solve_done,
+        thread_idx=0,
+        storage="shared",
+    )
+    solve_done = wp.tile_extract(solve_tile, 0)
+
+    if scalar_row < fine_scalar_size and solve_done != 0:
+        fine_node = scalar_row // fine_block_size
+        coarse_base = aggregate[fine_node] * coarse_block_size
+        block_base = scalar_row * coarse_block_size
+        value = wp.float64(0.0)
+        for coarse_local in range(coarse_block_size):
+            value += prolongation_blocks[block_base + coarse_local] * coarse_solution[coarse_base + coarse_local]
+        fine_primary[scalar_row] += value
+
+    prolong_done = int(0)
+    if scalar_row == 0:
+        prolong_done = 1
+    prolong_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=prolong_done,
+        thread_idx=0,
+        storage="shared",
+    )
+    prolong_done = wp.tile_extract(prolong_tile, 0)
+
+    if scalar_row < fine_scalar_size and prolong_done != 0:
+        block_row = scalar_row // fine_block_size
+        local_row = scalar_row - block_row * fine_block_size
+        product = wp.float64(0.0)
+        for entry in range(row_offsets[block_row], row_offsets[block_row + 1]):
+            block_column = column_indices[entry]
+            value_base = (entry * fine_block_size + local_row) * fine_block_size
+            vector_base = block_column * fine_block_size
+            for local_column in range(fine_block_size):
+                product += matrix_values[value_base + local_column] * fine_primary[vector_base + local_column]
+        fine_residual[scalar_row] = fine_rhs[scalar_row] - product
+
+    post_residual_done = int(0)
+    if scalar_row == 0:
+        post_residual_done = 1
+    post_residual_tile = wp.tile_from_thread(
+        shape=(1,),
+        value=post_residual_done,
+        thread_idx=0,
+        storage="shared",
+    )
+    post_residual_done = wp.tile_extract(post_residual_tile, 0)
+
+    if scalar_row < fine_scalar_size and post_residual_done != 0:
+        block_row = scalar_row // fine_block_size
+        local_row = scalar_row - block_row * fine_block_size
+        block_base = block_row * fine_block_size * fine_block_size + local_row * fine_block_size
+        residual_base = block_row * fine_block_size
+        value = wp.float64(0.0)
+        for local_column in range(fine_block_size):
+            value += inverse_diagonal[block_base + local_column] * fine_residual[residual_base + local_column]
+        fine_alternate[scalar_row] = fine_primary[scalar_row] + omega * value
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class WarpScalarFusedVCyclePhysicalWork:
     """Immutable physical-work evidence for one scalar-fused schedule."""
@@ -316,18 +505,21 @@ class WarpScalarFusedVCyclePhysicalWork:
     zero_start_block_solves: int
     noncoarse_level_count: int
     terminal_fusion_kernel_launches: int
+    terminal_fusion_launch_reduction: int
     terminal_level_index: int
     terminal_block_dim: int
     terminal_collective_count: int
     terminal_owner_thread: int
     terminal_fusion_version: str
+    terminal_microcycle_kernel_version: str
     terminal_fusion_route: str
+    terminal_logical_phases: str
     root_ingress_zero_start_fusions: int
     root_ingress_route: str
     root_ingress_kernel_launches: int
     out_of_place_jacobi_block_solves: int
-    matrix_kernel_launches: int
-    jacobi_kernel_launches: int
+    matrix_recurrence_phases: int
+    jacobi_recurrence_phases: int
     core_kernel_launches: int
     publication_kernel_launches: int
     publication_version: str
@@ -347,13 +539,14 @@ class WarpScalarFusedVCyclePhysicalWork:
             "zero_start_block_solves",
             "noncoarse_level_count",
             "terminal_fusion_kernel_launches",
+            "terminal_fusion_launch_reduction",
             "terminal_block_dim",
             "terminal_collective_count",
             "root_ingress_zero_start_fusions",
             "root_ingress_kernel_launches",
             "out_of_place_jacobi_block_solves",
-            "matrix_kernel_launches",
-            "jacobi_kernel_launches",
+            "matrix_recurrence_phases",
+            "jacobi_recurrence_phases",
             "core_kernel_launches",
             "publication_kernel_launches",
             "scheduled_kernel_launches",
@@ -367,18 +560,41 @@ class WarpScalarFusedVCyclePhysicalWork:
             raise TypeError("terminal level and owner fields must be built-in integers")
         if type(self.terminal_fusion_version) is not str or self.terminal_fusion_version != TERMINAL_FUSION_VERSION:
             raise ValueError("terminal fusion version is stale")
+        if (
+            type(self.terminal_microcycle_kernel_version) is not str
+            or self.terminal_microcycle_kernel_version != TERMINAL_MICROCYCLE_KERNEL_VERSION
+        ):
+            raise ValueError("terminal micro-cycle kernel version is stale")
         if type(self.terminal_fusion_route) is not str:
             raise TypeError("terminal_fusion_route must be a built-in string")
-        if self.terminal_fusion_route == TERMINAL_FUSION_CUDA_ROUTE:
+        if type(self.terminal_logical_phases) is not str:
+            raise TypeError("terminal_logical_phases must be a built-in string")
+        if self.terminal_fusion_route == TERMINAL_MICROCYCLE_CUDA_ROUTE:
+            if (
+                noncoarse < 2
+                or self.terminal_fusion_kernel_launches != 1
+                or self.terminal_fusion_launch_reduction != 6
+                or self.terminal_level_index != noncoarse - 1
+                or self.terminal_block_dim < 32
+                or self.terminal_block_dim > 1024
+                or self.terminal_block_dim % 32 != 0
+                or self.terminal_collective_count != 6
+                or self.terminal_owner_thread != 0
+                or self.terminal_logical_phases != TERMINAL_MICROCYCLE_LOGICAL_PHASES_SERIALIZED
+            ):
+                raise ValueError("CUDA terminal micro-cycle route metadata is inconsistent")
+        elif self.terminal_fusion_route == TERMINAL_FUSION_CUDA_ROUTE:
             if (
                 noncoarse < 1
                 or self.terminal_fusion_kernel_launches != 1
+                or self.terminal_fusion_launch_reduction != 2
                 or self.terminal_level_index != noncoarse - 1
                 or self.terminal_block_dim < 32
                 or self.terminal_block_dim > 1024
                 or self.terminal_block_dim % 32 != 0
                 or self.terminal_collective_count != 2
                 or self.terminal_owner_thread != 0
+                or self.terminal_logical_phases != TERMINAL_B2_LOGICAL_PHASES_SERIALIZED
             ):
                 raise ValueError("CUDA terminal fusion route metadata is inconsistent")
         elif self.terminal_fusion_route in (
@@ -389,20 +605,24 @@ class WarpScalarFusedVCyclePhysicalWork:
             if (
                 noncoarse < 1
                 or self.terminal_fusion_kernel_launches != 0
+                or self.terminal_fusion_launch_reduction != 0
                 or self.terminal_level_index != noncoarse - 1
                 or self.terminal_block_dim != 0
                 or self.terminal_collective_count != 0
                 or self.terminal_owner_thread != -1
+                or self.terminal_logical_phases != TERMINAL_LEGACY_LOGICAL_PHASES_SERIALIZED
             ):
                 raise ValueError("legacy terminal fallback route metadata is inconsistent")
         elif self.terminal_fusion_route == TERMINAL_FUSION_COARSEST_ONLY_ROUTE:
             if (
                 noncoarse != 0
                 or self.terminal_fusion_kernel_launches != 0
+                or self.terminal_fusion_launch_reduction != 0
                 or self.terminal_level_index != -1
                 or self.terminal_block_dim != 0
                 or self.terminal_collective_count != 0
                 or self.terminal_owner_thread != -1
+                or self.terminal_logical_phases != TERMINAL_COARSEST_LOGICAL_PHASES_SERIALIZED
             ):
                 raise ValueError("coarsest-only terminal route metadata is inconsistent")
         else:
@@ -410,13 +630,18 @@ class WarpScalarFusedVCyclePhysicalWork:
         expected_root_fusions = int(noncoarse > 0)
         if self.root_ingress_zero_start_fusions != expected_root_fusions:
             raise ValueError("root ingress fusion count does not match the retained topology")
-        if self.matrix_kernel_launches != self.jacobi_kernel_launches:
-            raise ValueError("matrix and logical Jacobi launch counts must match")
+        if self.matrix_recurrence_phases != self.jacobi_recurrence_phases:
+            raise ValueError("matrix and Jacobi recurrence phase counts must match")
         if noncoarse == 0:
-            if self.matrix_kernel_launches != 0:
-                raise ValueError("a coarsest-only topology cannot claim smoother launches")
-        elif self.matrix_kernel_launches < 2 * noncoarse or self.matrix_kernel_launches % (2 * noncoarse) != 0:
+            if self.matrix_recurrence_phases != 0:
+                raise ValueError("a coarsest-only topology cannot claim smoother recurrence phases")
+        elif self.matrix_recurrence_phases < 2 * noncoarse or self.matrix_recurrence_phases % (2 * noncoarse) != 0:
             raise ValueError("symmetric positive smoothing counts do not match the retained topology")
+        if (
+            self.terminal_fusion_route == TERMINAL_MICROCYCLE_CUDA_ROUTE
+            and self.matrix_recurrence_phases != 2 * noncoarse
+        ):
+            raise ValueError("the terminal micro-cycle route requires exactly p=q=1")
         if type(self.root_ingress_route) is not str:
             raise TypeError("root_ingress_route must be a built-in string")
         if self.root_ingress_route == ROOT_INGRESS_INTERNAL_ROUTE:
@@ -424,21 +649,21 @@ class WarpScalarFusedVCyclePhysicalWork:
                 raise ValueError("internal root ingress requires a noncoarsest root level")
             expected_root_launches = 1
             expected_core_launches = (
-                self.matrix_kernel_launches
-                + self.jacobi_kernel_launches
+                self.matrix_recurrence_phases
+                + self.jacobi_recurrence_phases
                 + 2 * noncoarse
                 + 1
-                - 2 * self.terminal_fusion_kernel_launches
+                - self.terminal_fusion_launch_reduction
             )
         elif self.root_ingress_route == ROOT_INGRESS_EXTERNAL_SHARED_ROUTE:
             if noncoarse == 0:
                 raise ValueError("external root ingress requires a noncoarsest root level")
             expected_root_launches = 0
             expected_core_launches = (
-                self.matrix_kernel_launches
-                + self.jacobi_kernel_launches
+                self.matrix_recurrence_phases
+                + self.jacobi_recurrence_phases
                 + 2 * noncoarse
-                - 2 * self.terminal_fusion_kernel_launches
+                - self.terminal_fusion_launch_reduction
             )
         elif self.root_ingress_route == ROOT_INGRESS_COARSE_COPY_ROUTE:
             if noncoarse != 0:
@@ -476,7 +701,7 @@ class WarpScalarFusedVCyclePhysicalWork:
         ):
             raise ValueError("physical-work evidence must remain schema-validated and unauthenticated")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v9",
+            "warp-scalar-fused-v-cycle-physical-work-v11",
             tuple(
                 (field.name, getattr(self, field.name))
                 for field in dataclasses.fields(self)
@@ -607,7 +832,7 @@ class WarpScalarFusedVCycleRecord:
         ):
             raise ValueError("coarsest-only seeded-core bindings must equal the unchanged core fallback")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v9",
+            "warp-scalar-fused-v-cycle-result-v11",
             (
                 ("contract_id", self.contract_id),
                 ("kernel_version", self.kernel_version),
@@ -671,18 +896,21 @@ class WarpScalarFusedVCycleRecord:
             "zero_start_block_solves": physical.zero_start_block_solves,
             "noncoarse_level_count": physical.noncoarse_level_count,
             "terminal_fusion_kernel_launches": physical.terminal_fusion_kernel_launches,
+            "terminal_fusion_launch_reduction": physical.terminal_fusion_launch_reduction,
             "terminal_level_index": physical.terminal_level_index,
             "terminal_block_dim": physical.terminal_block_dim,
             "terminal_collective_count": physical.terminal_collective_count,
             "terminal_owner_thread": physical.terminal_owner_thread,
             "terminal_fusion_version": physical.terminal_fusion_version,
+            "terminal_microcycle_kernel_version": physical.terminal_microcycle_kernel_version,
             "terminal_fusion_route": physical.terminal_fusion_route,
+            "terminal_logical_phases": physical.terminal_logical_phases.split("|"),
             "root_ingress_zero_start_fusions": physical.root_ingress_zero_start_fusions,
             "root_ingress_route": physical.root_ingress_route,
             "root_ingress_kernel_launches": physical.root_ingress_kernel_launches,
             "out_of_place_jacobi_block_solves": physical.out_of_place_jacobi_block_solves,
-            "matrix_kernel_launches": physical.matrix_kernel_launches,
-            "jacobi_kernel_launches": physical.jacobi_kernel_launches,
+            "matrix_recurrence_phases": physical.matrix_recurrence_phases,
+            "jacobi_recurrence_phases": physical.jacobi_recurrence_phases,
             "core_kernel_launches": physical.core_kernel_launches,
             "publication_kernel_launches": physical.publication_kernel_launches,
             "publication_version": physical.publication_version,
@@ -725,8 +953,10 @@ class WarpScalarFusedStaticMultigridHierarchy:
         "_terminal_block_dim",
         "_terminal_collective_count",
         "_terminal_fusion_kernel_launches",
+        "_terminal_fusion_launch_reduction",
         "_terminal_fusion_route",
         "_terminal_level_index",
+        "_terminal_logical_phases",
         "_terminal_owner_thread",
         "_terminal_route_signature",
     )
@@ -780,10 +1010,12 @@ class WarpScalarFusedStaticMultigridHierarchy:
         (
             self._terminal_fusion_route,
             self._terminal_fusion_kernel_launches,
+            self._terminal_fusion_launch_reduction,
             self._terminal_level_index,
             self._terminal_block_dim,
             self._terminal_collective_count,
             self._terminal_owner_thread,
+            self._terminal_logical_phases,
         ) = terminal_metadata
         self._terminal_route_signature = terminal_metadata
         self._static_array_objects = self._current_static_arrays()
@@ -807,17 +1039,20 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ("noncoarse_result_buffer", "B"),
             ("coarsest_result_buffer", "A"),
             ("terminal_fusion_version", TERMINAL_FUSION_VERSION),
+            ("terminal_microcycle_kernel_version", TERMINAL_MICROCYCLE_KERNEL_VERSION),
             ("terminal_fusion_route", self.terminal_fusion_route),
             ("terminal_fusion_kernel_launches", self.terminal_fusion_kernel_launches),
+            ("terminal_fusion_launch_reduction", self.terminal_fusion_launch_reduction),
             ("terminal_level_index", self.terminal_level_index),
             ("terminal_block_dim", self.terminal_block_dim),
             ("terminal_collective_count", self.terminal_collective_count),
             ("terminal_owner_thread", self.terminal_owner_thread),
+            ("terminal_logical_phases", self.terminal_logical_phases),
             ("core_kernel_launches", self.core_kernel_launches),
             ("publication_version", PUBLICATION_VERSION),
         )
         self._core_schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-core-schedule-v5",
+            "warp-scalar-fused-v-cycle-core-schedule-v7",
             (
                 *common_schedule_parts,
                 ("publication_route", EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -826,7 +1061,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-schedule-v7",
+            "warp-scalar-fused-v-cycle-schedule-v9",
             (
                 *common_schedule_parts,
                 ("publication_route", STANDALONE_PUBLICATION_ROUTE),
@@ -835,7 +1070,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._core_device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-core-snapshot-v5",
+            "warp-scalar-fused-static-multigrid-core-snapshot-v7",
             (
                 ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                 ("static_device_content_sha256", self._static_device_content_sha256),
@@ -843,7 +1078,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-snapshot-v7",
+            "warp-scalar-fused-static-multigrid-snapshot-v9",
             (
                 ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                 ("static_device_content_sha256", self._static_device_content_sha256),
@@ -862,7 +1097,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
                 ("core_kernel_launches", self.seeded_core_kernel_launches),
             )
             self._seeded_core_schedule_sha256 = _hash_parts(
-                "warp-scalar-fused-v-cycle-seeded-core-schedule-v3",
+                "warp-scalar-fused-v-cycle-seeded-core-schedule-v5",
                 (
                     *seeded_common_schedule_parts,
                     ("publication_route", EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -871,7 +1106,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
                 ),
             )
             self._seeded_core_device_snapshot_sha256 = _hash_parts(
-                "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v3",
+                "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v5",
                 (
                     ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                     ("static_device_content_sha256", self._static_device_content_sha256),
@@ -882,10 +1117,19 @@ class WarpScalarFusedStaticMultigridHierarchy:
             self._seeded_core_schedule_sha256 = self._core_schedule_sha256
             self._seeded_core_device_snapshot_sha256 = self._core_device_snapshot_sha256
 
-    def _derive_terminal_fusion_metadata(self) -> tuple[str, int, int, int, int, int]:
+    def _derive_terminal_fusion_metadata(self) -> tuple[str, int, int, int, int, int, int, str]:
         """Derive the immutable terminal route from exact device/topology facts."""
         if len(self._levels) == 1:
-            return (TERMINAL_FUSION_COARSEST_ONLY_ROUTE, 0, -1, 0, 0, -1)
+            return (
+                TERMINAL_FUSION_COARSEST_ONLY_ROUTE,
+                0,
+                0,
+                -1,
+                0,
+                0,
+                -1,
+                TERMINAL_COARSEST_LOGICAL_PHASES_SERIALIZED,
+            )
         terminal_index = len(self._levels) - 2
         terminal = self._levels[terminal_index]
         coarse = self._levels[-1]
@@ -903,14 +1147,61 @@ class WarpScalarFusedStaticMultigridHierarchy:
             and int(self._coarse_cholesky.size) == coarse.scalar_size * coarse.scalar_size
         )
         if not topology_supported:
-            return (TERMINAL_FUSION_UNSUPPORTED_FALLBACK_ROUTE, 0, terminal_index, 0, 0, -1)
+            return (
+                TERMINAL_FUSION_UNSUPPORTED_FALLBACK_ROUTE,
+                0,
+                0,
+                terminal_index,
+                0,
+                0,
+                -1,
+                TERMINAL_LEGACY_LOGICAL_PHASES_SERIALIZED,
+            )
         if not self._device.is_cuda:
-            return (TERMINAL_FUSION_CPU_FALLBACK_ROUTE, 0, terminal_index, 0, 0, -1)
+            return (
+                TERMINAL_FUSION_CPU_FALLBACK_ROUTE,
+                0,
+                0,
+                terminal_index,
+                0,
+                0,
+                -1,
+                TERMINAL_LEGACY_LOGICAL_PHASES_SERIALIZED,
+            )
         required_threads = max(terminal.scalar_size, coarse.scalar_size)
         block_dim = ((required_threads + 31) // 32) * 32
         if block_dim > 1024:
-            return (TERMINAL_FUSION_OVERSIZE_FALLBACK_ROUTE, 0, terminal_index, 0, 0, -1)
-        return (TERMINAL_FUSION_CUDA_ROUTE, 1, terminal_index, block_dim, 2, 0)
+            return (
+                TERMINAL_FUSION_OVERSIZE_FALLBACK_ROUTE,
+                0,
+                0,
+                terminal_index,
+                0,
+                0,
+                -1,
+                TERMINAL_LEGACY_LOGICAL_PHASES_SERIALIZED,
+            )
+        if terminal_index > 0 and self.pre_smooth_steps == 1 and self.post_smooth_steps == 1:
+            return (
+                TERMINAL_MICROCYCLE_CUDA_ROUTE,
+                1,
+                6,
+                terminal_index,
+                block_dim,
+                6,
+                0,
+                TERMINAL_MICROCYCLE_LOGICAL_PHASES_SERIALIZED,
+            )
+        return (
+            TERMINAL_FUSION_CUDA_ROUTE,
+            1,
+            2,
+            terminal_index,
+            block_dim,
+            2,
+            0,
+            TERMINAL_B2_LOGICAL_PHASES_SERIALIZED,
+        )
 
     @classmethod
     def from_hierarchy(
@@ -1021,6 +1312,11 @@ class WarpScalarFusedStaticMultigridHierarchy:
         return self._terminal_fusion_kernel_launches
 
     @property
+    def terminal_fusion_launch_reduction(self) -> int:
+        """Physical launch reduction versus the exact legacy terminal sequence."""
+        return self._terminal_fusion_launch_reduction
+
+    @property
     def terminal_level_index(self) -> int:
         """Deepest noncoarsest level, or ``-1`` for coarsest-only."""
         return self._terminal_level_index
@@ -1041,9 +1337,19 @@ class WarpScalarFusedStaticMultigridHierarchy:
         return self._terminal_owner_thread
 
     @property
+    def terminal_logical_phases(self) -> str:
+        """Canonical delimiter-separated terminal recurrence phases."""
+        return self._terminal_logical_phases
+
+    @property
     def supports_terminal_fusion(self) -> bool:
         """Whether this exact hierarchy uses the CUDA one-block terminal route."""
         return self._terminal_fusion_kernel_launches == 1
+
+    @property
+    def supports_terminal_microcycle(self) -> bool:
+        """Whether this hierarchy uses the complete p=q=1 terminal micro-cycle."""
+        return self._terminal_fusion_route == TERMINAL_MICROCYCLE_CUDA_ROUTE
 
     @property
     def static_device_content_sha256(self) -> str:
@@ -1063,7 +1369,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             2
             + noncoarse * (2 + 2 * self.pre_smooth_steps + 2 * self.post_smooth_steps)
             - int(noncoarse > 0)
-            - 2 * self.terminal_fusion_kernel_launches
+            - self.terminal_fusion_launch_reduction
         )
 
     @property
@@ -1148,10 +1454,12 @@ class WarpScalarFusedStaticMultigridHierarchy:
             or (
                 self._terminal_fusion_route,
                 self._terminal_fusion_kernel_launches,
+                self._terminal_fusion_launch_reduction,
                 self._terminal_level_index,
                 self._terminal_block_dim,
                 self._terminal_collective_count,
                 self._terminal_owner_thread,
+                self._terminal_logical_phases,
             )
             != self._terminal_route_signature
             or len(static_arrays) != len(self._static_array_objects)
@@ -1397,7 +1705,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
         return workspace.level_correction_alt[self.terminal_level_index]
 
     def _validate_terminal_fusion_preflight(self, workspace: WarpScalarFusedVCycleWorkspace) -> None:
-        """Validate all ten same-kernel arrays before the first fused launch."""
+        """Validate every same-kernel array before the first fused launch."""
         if not self.supports_terminal_fusion:
             return
         terminal = self.levels[self.terminal_level_index]
@@ -1411,7 +1719,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             or terminal.coarse_block_size is None
         ):
             raise RuntimeError("terminal fusion arrays changed after route construction")
-        specs = (
+        specs = [
             ("terminal.member_offsets", terminal.member_offsets, wp.int32, terminal.coarse_node_count + 1),
             ("terminal.member_fine_nodes", terminal.member_fine_nodes, wp.int32, terminal.block_row_count),
             ("terminal.aggregate", terminal.aggregate, wp.int32, terminal.block_row_count),
@@ -1442,7 +1750,40 @@ class WarpScalarFusedStaticMultigridHierarchy:
                 wp.float64,
                 terminal.scalar_size,
             ),
-        )
+        ]
+        if self.supports_terminal_microcycle:
+            if terminal.inverse_diagonal is None:
+                raise RuntimeError("terminal micro-cycle inverse diagonal changed after route construction")
+            specs[0:0] = (
+                ("terminal.row_offsets", terminal.row_offsets, wp.int32, terminal.block_row_count + 1),
+                ("terminal.column_indices", terminal.column_indices, wp.int32, terminal.stored_block_count),
+                (
+                    "terminal.matrix_values",
+                    terminal.matrix_values,
+                    wp.float64,
+                    terminal.stored_block_count * terminal.block_size * terminal.block_size,
+                ),
+                (
+                    "terminal.inverse_diagonal",
+                    terminal.inverse_diagonal,
+                    wp.float64,
+                    terminal.block_row_count * terminal.block_size * terminal.block_size,
+                ),
+                (
+                    "terminal.fine_rhs",
+                    workspace.level_rhs[self.terminal_level_index],
+                    wp.float64,
+                    terminal.scalar_size,
+                ),
+                (
+                    "terminal.fine_alternate",
+                    workspace.level_correction_alt[self.terminal_level_index],
+                    wp.float64,
+                    terminal.scalar_size,
+                ),
+            )
+            if len(specs) != 16:
+                raise RuntimeError("terminal micro-cycle must bind exactly sixteen arrays")
         for name, array, dtype, size in specs:
             self._validate_exact_1d_array(array, name=name, dtype=dtype, size=size)
         for left_index, (left_name, left, _left_dtype, _left_size) in enumerate(specs):
@@ -1707,6 +2048,40 @@ class WarpScalarFusedStaticMultigridHierarchy:
 
         alternate = workspace.level_correction_alt[level_index]
         residual = workspace.level_residual[level_index]
+        if self.supports_terminal_microcycle and level_index == self.terminal_level_index:
+            if root_zero_start_complete:
+                raise RuntimeError("a non-root terminal micro-cycle cannot arrive with a completed root seed")
+            coarse = self.levels[-1]
+            wp.launch(
+                _terminal_zero_jacobi_residual_restrict_solve_prolong_residual_jacobi,
+                dim=self.terminal_block_dim,
+                block_dim=self.terminal_block_dim,
+                inputs=[
+                    level.row_offsets,
+                    level.column_indices,
+                    level.matrix_values,
+                    level.inverse_diagonal,
+                    level.member_offsets,
+                    level.member_fine_nodes,
+                    level.aggregate,
+                    level.prolongation_blocks,
+                    level.block_size,
+                    level.coarse_block_size,
+                    level.scalar_size,
+                    rhs,
+                    primary,
+                    alternate,
+                    residual,
+                    coarse.scalar_size,
+                    workspace.level_rhs[-1],
+                    self.coarse_cholesky,
+                    workspace.coarse_intermediate,
+                    workspace.level_correction[-1],
+                    level.omega,
+                ],
+                device=self.device,
+            )
+            return
         if not root_zero_start_complete:
             wp.launch(
                 _zero_start_scalar_jacobi,
@@ -2047,7 +2422,7 @@ class WarpScalarFusedVCycleWorkspace:
         zero_start_solves = sum(level.block_row_count for level in self.hierarchy.levels[:-1])
         noncoarse_level_count = len(self.hierarchy.levels) - 1
         root_ingress_zero_start_fusions = int(noncoarse_level_count > 0)
-        matrix_kernel_launches = noncoarse_level_count * (
+        matrix_recurrence_phases = noncoarse_level_count * (
             self.hierarchy.pre_smooth_steps + self.hierarchy.post_smooth_steps
         )
         schema_claim = _schema_route_claim(self.hierarchy, schema_route)
@@ -2069,18 +2444,21 @@ class WarpScalarFusedVCycleWorkspace:
             ("zero_start_block_solves", zero_start_solves),
             ("noncoarse_level_count", noncoarse_level_count),
             ("terminal_fusion_kernel_launches", self.hierarchy.terminal_fusion_kernel_launches),
+            ("terminal_fusion_launch_reduction", self.hierarchy.terminal_fusion_launch_reduction),
             ("terminal_level_index", self.hierarchy.terminal_level_index),
             ("terminal_block_dim", self.hierarchy.terminal_block_dim),
             ("terminal_collective_count", self.hierarchy.terminal_collective_count),
             ("terminal_owner_thread", self.hierarchy.terminal_owner_thread),
             ("terminal_fusion_version", TERMINAL_FUSION_VERSION),
+            ("terminal_microcycle_kernel_version", TERMINAL_MICROCYCLE_KERNEL_VERSION),
             ("terminal_fusion_route", self.hierarchy.terminal_fusion_route),
+            ("terminal_logical_phases", self.hierarchy.terminal_logical_phases),
             ("root_ingress_zero_start_fusions", root_ingress_zero_start_fusions),
             ("root_ingress_route", root_ingress_route),
             ("root_ingress_kernel_launches", root_ingress_kernel_launches),
             ("out_of_place_jacobi_block_solves", smoother_solves - zero_start_solves),
-            ("matrix_kernel_launches", matrix_kernel_launches),
-            ("jacobi_kernel_launches", matrix_kernel_launches),
+            ("matrix_recurrence_phases", matrix_recurrence_phases),
+            ("jacobi_recurrence_phases", matrix_recurrence_phases),
             ("core_kernel_launches", core_kernel_launches),
             ("publication_kernel_launches", publication_kernel_launches),
             ("publication_version", PUBLICATION_VERSION),
@@ -2090,7 +2468,7 @@ class WarpScalarFusedVCycleWorkspace:
             ("solver_issued_authentication", False),
             ("performance_evidence", False),
         )
-        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v9", physical_parts)
+        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v11", physical_parts)
         physical_work = WarpScalarFusedVCyclePhysicalWork(
             hierarchy_sha256=self.hierarchy.hierarchy_sha256,
             schedule_sha256=schedule_sha256,
@@ -2101,18 +2479,21 @@ class WarpScalarFusedVCycleWorkspace:
             zero_start_block_solves=zero_start_solves,
             noncoarse_level_count=noncoarse_level_count,
             terminal_fusion_kernel_launches=self.hierarchy.terminal_fusion_kernel_launches,
+            terminal_fusion_launch_reduction=self.hierarchy.terminal_fusion_launch_reduction,
             terminal_level_index=self.hierarchy.terminal_level_index,
             terminal_block_dim=self.hierarchy.terminal_block_dim,
             terminal_collective_count=self.hierarchy.terminal_collective_count,
             terminal_owner_thread=self.hierarchy.terminal_owner_thread,
             terminal_fusion_version=TERMINAL_FUSION_VERSION,
+            terminal_microcycle_kernel_version=TERMINAL_MICROCYCLE_KERNEL_VERSION,
             terminal_fusion_route=self.hierarchy.terminal_fusion_route,
+            terminal_logical_phases=self.hierarchy.terminal_logical_phases,
             root_ingress_zero_start_fusions=root_ingress_zero_start_fusions,
             root_ingress_route=root_ingress_route,
             root_ingress_kernel_launches=root_ingress_kernel_launches,
             out_of_place_jacobi_block_solves=smoother_solves - zero_start_solves,
-            matrix_kernel_launches=matrix_kernel_launches,
-            jacobi_kernel_launches=matrix_kernel_launches,
+            matrix_recurrence_phases=matrix_recurrence_phases,
+            jacobi_recurrence_phases=matrix_recurrence_phases,
             core_kernel_launches=core_kernel_launches,
             publication_kernel_launches=publication_kernel_launches,
             publication_version=PUBLICATION_VERSION,
@@ -2121,7 +2502,7 @@ class WarpScalarFusedVCycleWorkspace:
             content_sha256=physical_sha256,
         )
         content_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v9",
+            "warp-scalar-fused-v-cycle-result-v11",
             (
                 ("contract_id", CONTRACT_ID),
                 ("kernel_version", KERNEL_VERSION),

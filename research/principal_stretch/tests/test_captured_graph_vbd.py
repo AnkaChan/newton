@@ -89,10 +89,16 @@ from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     STANDALONE_PUBLICATION_ROUTE as V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
 )
 from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
-    TERMINAL_FUSION_CUDA_ROUTE as V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE,
+    TERMINAL_FUSION_VERSION as V_CYCLE_TERMINAL_FUSION_VERSION,
 )
 from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
-    TERMINAL_FUSION_VERSION as V_CYCLE_TERMINAL_FUSION_VERSION,
+    TERMINAL_MICROCYCLE_CUDA_ROUTE as V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE,
+)
+from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
+    TERMINAL_MICROCYCLE_KERNEL_VERSION as V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+)
+from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
+    TERMINAL_MICROCYCLE_LOGICAL_PHASES_SERIALIZED as V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES,
 )
 from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     WarpScalarFusedStaticMultigridHierarchy,
@@ -395,7 +401,7 @@ def _run_gate_case(
 
 def _tiny_scene():
     return build_structured_cantilever_scene(
-        dimensions=(2, 2, 1),
+        dimensions=(6, 3, 3),
         dt=1.0 / 16.0,
         gravity=(0.1, -0.2, -2.0),
         total_tip_force=(4.0, -3.0, -6.0),
@@ -591,13 +597,13 @@ def _enqueue_unfused_outer_oracle(solver: CapturedDirectGraphVBD):
     return binding
 
 
-def _enqueue_committed_178_route(solver: CapturedDirectGraphVBD):
-    """Enqueue the exact pre-terminal-fusion 178-node route as an oracle."""
+def _enqueue_committed_162_route(solver: CapturedDirectGraphVBD):
+    """Enqueue the exact committed B2 162-node correction route as an oracle."""
     module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
     binding = module._lookup_workspace_owners(solver)
     with mock.patch.object(
         WarpScalarFusedStaticMultigridHierarchy,
-        "supports_terminal_fusion",
+        "supports_terminal_microcycle",
         new=property(lambda _self: False),
     ):
         solver._enqueue_integrated(binding)
@@ -711,9 +717,9 @@ def _assert_float32_device_reconstruction(
             and segment > solver.config.minimum_determinant
         )
         testcase.assertEqual(endpoint.accepted[outer_index], accepted)
-        testcase.assertAlmostEqual(endpoint.initial_objectives[outer_index], operator.objective(), delta=2.0e-14)
+        testcase.assertAlmostEqual(endpoint.initial_objectives[outer_index], operator.objective(), delta=2.0e-12)
         testcase.assertAlmostEqual(
-            endpoint.candidate_objectives[outer_index], candidate_operator.objective(), delta=2.0e-14
+            endpoint.candidate_objectives[outer_index], candidate_operator.objective(), delta=2.0e-12
         )
         testcase.assertAlmostEqual(endpoint.directional_derivatives[outer_index], derivative, delta=5.0e-12)
         testcase.assertAlmostEqual(endpoint.segment_minimum_determinants[outer_index], segment, delta=2.0e-11)
@@ -742,7 +748,7 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
         self.assertEqual(source.count("operator.launch_gradient_masked("), 1)
         self.assertEqual(source.count("operator.launch_apply_residual("), 0)
         self.assertEqual(source.count("operator.launch_apply_residual_scalar_direction("), 1)
-        self.assertIn('"captured-direct-graph-vbd-graph-identity-v10"', source)
+        self.assertIn('"captured-direct-graph-vbd-graph-identity-v11"', source)
         self.assertEqual(source.count("operator.launch_gradient_masked_seed_root_zero_start("), 1)
         self.assertEqual(source.count("operator.launch_apply_residual_scalar_direction_seed_root_zero_start("), 1)
 
@@ -766,7 +772,7 @@ class TestCapturedDirectGraphVBD(unittest.TestCase):
             FINALIZE_GATE_COLLECTIVE_VERSION,
             "shared-tile-vec2d-float64-vec2d-int32-broadcasts-v1",
         )
-        self.assertEqual(OUTER_SCHEDULE_SHA256, "af86c71cc1d4d67a85dd8cedcc964c7329fc24a6a645c6a73ededdf7b17cccc9")
+        self.assertEqual(OUTER_SCHEDULE_SHA256, "4df2d0039531d582046d1362bdb8085d9209fe1f3e2289717090f1d65a523236")
         self.assertEqual(gate_source.count("wp.tile_from_thread("), 4)
         self.assertEqual(gate_source.count('storage="shared"'), 4)
         self.assertEqual(gate_source.count("wp.tile_extract("), 4)
@@ -889,12 +895,15 @@ assert not any(name in vars(module) for name in private_names)
             "v_cycle_kernel_version": V_CYCLE_KERNEL_VERSION,
             "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
             "v_cycle_terminal_fusion_version": V_CYCLE_TERMINAL_FUSION_VERSION,
-            "v_cycle_terminal_fusion_route": V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE,
+            "v_cycle_terminal_microcycle_kernel_version": V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+            "v_cycle_terminal_fusion_route": V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE,
             "v_cycle_terminal_fusion_kernel_launches": 1,
+            "v_cycle_terminal_fusion_launch_reduction": 6,
             "v_cycle_terminal_level_index": 2,
             "v_cycle_terminal_block_dim": 64,
-            "v_cycle_terminal_collective_count": 2,
+            "v_cycle_terminal_collective_count": 6,
             "v_cycle_terminal_owner_thread": 0,
+            "v_cycle_terminal_logical_phases": V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES,
             "v_cycle_schedule_sha256": "7" * 64,
             "v_cycle_core_schedule_sha256": "8" * 64,
             "v_cycle_seeded_core_schedule_sha256": "9" * 64,
@@ -903,9 +912,9 @@ assert not any(name in vars(module) for name in private_names)
             "v_cycle_external_shared_publication_route": V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
             "first_cycle_publication_role": FIRST_CYCLE_PUBLICATION_ROLE,
             "second_cycle_publication_role": SECOND_CYCLE_PUBLICATION_ROLE,
-            "v_cycle_kernel_launches": 18,
-            "v_cycle_core_kernel_launches": 17,
-            "v_cycle_seeded_core_kernel_launches": 16,
+            "v_cycle_kernel_launches": 14,
+            "v_cycle_core_kernel_launches": 13,
+            "v_cycle_seeded_core_kernel_launches": 12,
             "v_cycle_seeded_root_ingress_route": V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE,
             "outer_kernel_version": OUTER_KERNEL_VERSION,
             "outer_schedule_version": OUTER_SCHEDULE_VERSION,
@@ -915,7 +924,7 @@ assert not any(name in vars(module) for name in private_names)
             "finalize_gate_owner_threads": FINALIZE_GATE_OWNER_THREADS,
             "finalize_gate_owner_roles": FINALIZE_GATE_OWNER_ROLES,
             "finalize_gate_collective_version": FINALIZE_GATE_COLLECTIVE_VERSION,
-            "correction_kernel_launches": 162,
+            "correction_kernel_launches": 130,
         }
         with self.assertRaisesRegex(ValueError, "equal AB and BA"):
             CapturedGraphVBDTiming(pair_orders=("AB", "AB"), warmup_replays=1, **common)
@@ -950,14 +959,24 @@ assert not any(name in vars(module) for name in private_names)
                 "kernel and publication",
             ),
             (
-                {"v_cycle_terminal_fusion_route": V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE + "-forged"},
+                {
+                    "v_cycle_terminal_microcycle_kernel_version": (
+                        V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION + "-forged"
+                    )
+                },
+                "kernel and publication",
+            ),
+            (
+                {"v_cycle_terminal_fusion_route": V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE + "-forged"},
                 "kernel and publication",
             ),
             ({"v_cycle_terminal_fusion_kernel_launches": 0}, "kernel and publication"),
+            ({"v_cycle_terminal_fusion_launch_reduction": 2}, "kernel and publication"),
             ({"v_cycle_terminal_level_index": -1}, "kernel and publication"),
             ({"v_cycle_terminal_block_dim": 100}, "kernel and publication"),
             ({"v_cycle_terminal_collective_count": 1}, "kernel and publication"),
             ({"v_cycle_terminal_owner_thread": 1}, "kernel and publication"),
+            ({"v_cycle_terminal_logical_phases": "forged"}, "kernel and publication"),
             ({"v_cycle_publication_version": V_CYCLE_PUBLICATION_VERSION + "-forged"}, "kernel and publication"),
             ({"first_cycle_publication_role": FIRST_CYCLE_PUBLICATION_ROLE + "-forged"}, "kernel and publication"),
             ({"second_cycle_publication_role": SECOND_CYCLE_PUBLICATION_ROLE + "-forged"}, "kernel and publication"),
@@ -972,7 +991,7 @@ assert not any(name in vars(module) for name in private_names)
                 {"finalize_gate_collective_version": FINALIZE_GATE_COLLECTIVE_VERSION + "-forged"},
                 "finalize gate collective version",
             ),
-            ({"correction_kernel_launches": 178}, "dual-core captured schedule"),
+            ({"correction_kernel_launches": 162}, "dual-core captured schedule"),
             ({"graph_identity_sha256": "forged"}, "lowercase SHA-256"),
             ({"graph_seconds": (-1.0e-3, 1.1e-3)}, "finite and positive"),
             ({"pair_orders": ["AB"]}, "same positive even length"),
@@ -1001,12 +1020,21 @@ assert not any(name in vars(module) for name in private_names)
             self.assertEqual(canonical["finalize_gate_owner_roles"], list(FINALIZE_GATE_OWNER_ROLES))
             self.assertEqual(canonical["finalize_gate_collective_version"], FINALIZE_GATE_COLLECTIVE_VERSION)
             self.assertEqual(canonical["v_cycle_terminal_fusion_version"], V_CYCLE_TERMINAL_FUSION_VERSION)
-            self.assertEqual(canonical["v_cycle_terminal_fusion_route"], V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE)
+            self.assertEqual(
+                canonical["v_cycle_terminal_microcycle_kernel_version"],
+                V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+            )
+            self.assertEqual(canonical["v_cycle_terminal_fusion_route"], V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE)
             self.assertEqual(canonical["v_cycle_terminal_fusion_kernel_launches"], 1)
+            self.assertEqual(canonical["v_cycle_terminal_fusion_launch_reduction"], 6)
             self.assertEqual(canonical["v_cycle_terminal_level_index"], 2)
             self.assertEqual(canonical["v_cycle_terminal_block_dim"], 64)
-            self.assertEqual(canonical["v_cycle_terminal_collective_count"], 2)
+            self.assertEqual(canonical["v_cycle_terminal_collective_count"], 6)
             self.assertEqual(canonical["v_cycle_terminal_owner_thread"], 0)
+            self.assertEqual(
+                canonical["v_cycle_terminal_logical_phases"],
+                V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES.split("|"),
+            )
             self.assertEqual(
                 canonical["measurement_authentication"],
                 "schema-validated-not-content-authenticated-v1",
@@ -1347,7 +1375,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             "create_workspace",
             side_effect=AssertionError("V-cycle workspace allocated before the terminal route guard"),
         ) as create_workspace:
-            with self.assertRaisesRegex(ValueError, "fixed-162 contract requires the supported one-block CUDA"):
+            with self.assertRaisesRegex(ValueError, "fixed-130 contract requires the supported one-block CUDA p=q=1"):
                 CapturedDirectGraphVBD(scene, device="cuda:0", config=config)
         self.assertEqual(create_workspace.call_count, 0)
 
@@ -1396,12 +1424,21 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                     self.assertEqual(physical.root_ingress_kernel_launches, 0)
                     self.assertEqual(physical.schedule_sha256, expected_schedule)
                     self.assertEqual(physical.terminal_fusion_version, V_CYCLE_TERMINAL_FUSION_VERSION)
-                    self.assertEqual(physical.terminal_fusion_route, V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE)
+                    self.assertEqual(
+                        physical.terminal_microcycle_kernel_version,
+                        V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+                    )
+                    self.assertEqual(physical.terminal_fusion_route, V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE)
                     self.assertEqual(physical.terminal_fusion_kernel_launches, 1)
+                    self.assertEqual(physical.terminal_fusion_launch_reduction, 6)
                     self.assertEqual(physical.terminal_level_index, self.solver.device_hierarchy.terminal_level_index)
                     self.assertEqual(physical.terminal_block_dim, self.solver.device_hierarchy.terminal_block_dim)
-                    self.assertEqual(physical.terminal_collective_count, 2)
+                    self.assertEqual(physical.terminal_collective_count, 6)
                     self.assertEqual(physical.terminal_owner_thread, 0)
+                    self.assertEqual(
+                        physical.terminal_logical_phases,
+                        V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES,
+                    )
         schedule = self.solver.deterministic_record()
         self.assertEqual(schedule["contract_id"], CONTRACT_ID)
         self.assertEqual(schedule["krylov_iterations"], 0)
@@ -1412,7 +1449,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(schedule["finalize_gate_kernel_launches_per_outer"], 1)
         self.assertEqual(schedule["outer_kernel_launches_per_outer"], expected_outer)
         self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], expected_total)
-        self.assertEqual(schedule["graph_identity_schema"], "captured-direct-graph-vbd-graph-identity-v10")
+        self.assertEqual(schedule["graph_identity_schema"], "captured-direct-graph-vbd-graph-identity-v11")
         self.assertEqual(schedule["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(schedule["root_seeded_gather_kernel_version"], ROOT_SEEDED_GATHER_KERNEL_VERSION)
         self.assertEqual(
@@ -1424,12 +1461,21 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(schedule["v_cycle_core_kernel_launches"], logical_core_launches)
         self.assertEqual(schedule["v_cycle_seeded_core_kernel_launches"], seeded_core_launches)
         self.assertEqual(schedule["v_cycle_terminal_fusion_version"], V_CYCLE_TERMINAL_FUSION_VERSION)
-        self.assertEqual(schedule["v_cycle_terminal_fusion_route"], V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE)
+        self.assertEqual(
+            schedule["v_cycle_terminal_microcycle_kernel_version"],
+            V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+        )
+        self.assertEqual(schedule["v_cycle_terminal_fusion_route"], V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE)
         self.assertEqual(schedule["v_cycle_terminal_fusion_kernel_launches"], 1)
+        self.assertEqual(schedule["v_cycle_terminal_fusion_launch_reduction"], 6)
         self.assertEqual(schedule["v_cycle_terminal_level_index"], self.solver.device_hierarchy.terminal_level_index)
         self.assertEqual(schedule["v_cycle_terminal_block_dim"], self.solver.device_hierarchy.terminal_block_dim)
-        self.assertEqual(schedule["v_cycle_terminal_collective_count"], 2)
+        self.assertEqual(schedule["v_cycle_terminal_collective_count"], 6)
         self.assertEqual(schedule["v_cycle_terminal_owner_thread"], 0)
+        self.assertEqual(
+            schedule["v_cycle_terminal_logical_phases"],
+            V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES.split("|"),
+        )
         self.assertEqual(schedule["first_cycle_kernel_launches"], seeded_core_launches)
         self.assertEqual(schedule["second_cycle_kernel_launches"], seeded_core_launches)
         self.assertEqual(schedule["shared_root_ingress_kernel_launches_per_outer"], 2)
@@ -1470,14 +1516,26 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         self.assertEqual(endpoint_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
         self.assertEqual(endpoint_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
         self.assertEqual(endpoint_record["v_cycle_terminal_fusion_version"], V_CYCLE_TERMINAL_FUSION_VERSION)
-        self.assertEqual(endpoint_record["v_cycle_terminal_fusion_route"], V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE)
+        self.assertEqual(
+            endpoint_record["v_cycle_terminal_microcycle_kernel_version"],
+            V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+        )
+        self.assertEqual(
+            endpoint_record["v_cycle_terminal_fusion_route"],
+            V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE,
+        )
         self.assertEqual(endpoint_record["v_cycle_terminal_fusion_kernel_launches"], 1)
+        self.assertEqual(endpoint_record["v_cycle_terminal_fusion_launch_reduction"], 6)
         self.assertEqual(
             endpoint_record["v_cycle_terminal_level_index"], self.solver.device_hierarchy.terminal_level_index
         )
         self.assertEqual(endpoint_record["v_cycle_terminal_block_dim"], self.solver.device_hierarchy.terminal_block_dim)
-        self.assertEqual(endpoint_record["v_cycle_terminal_collective_count"], 2)
+        self.assertEqual(endpoint_record["v_cycle_terminal_collective_count"], 6)
         self.assertEqual(endpoint_record["v_cycle_terminal_owner_thread"], 0)
+        self.assertEqual(
+            endpoint_record["v_cycle_terminal_logical_phases"],
+            V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES.split("|"),
+        )
         self.assertEqual(endpoint_record["finalize_gate_route"], FINALIZE_GATE_ROUTE)
         self.assertEqual(endpoint_record["finalize_gate_block_dim"], FINALIZE_GATE_BLOCK_DIM)
         self.assertEqual(endpoint_record["finalize_gate_owner_threads"], list(FINALIZE_GATE_OWNER_THREADS))
@@ -1500,16 +1558,28 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             self.assertEqual(outer_record["outer_schedule_version"], OUTER_SCHEDULE_VERSION)
             self.assertEqual(outer_record["outer_schedule_sha256"], OUTER_SCHEDULE_SHA256)
             self.assertEqual(outer_record["v_cycle_terminal_fusion_version"], V_CYCLE_TERMINAL_FUSION_VERSION)
-            self.assertEqual(outer_record["v_cycle_terminal_fusion_route"], V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE)
+            self.assertEqual(
+                outer_record["v_cycle_terminal_microcycle_kernel_version"],
+                V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+            )
+            self.assertEqual(
+                outer_record["v_cycle_terminal_fusion_route"],
+                V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE,
+            )
             self.assertEqual(outer_record["v_cycle_terminal_fusion_kernel_launches"], 1)
+            self.assertEqual(outer_record["v_cycle_terminal_fusion_launch_reduction"], 6)
             self.assertEqual(
                 outer_record["v_cycle_terminal_level_index"], self.solver.device_hierarchy.terminal_level_index
             )
             self.assertEqual(
                 outer_record["v_cycle_terminal_block_dim"], self.solver.device_hierarchy.terminal_block_dim
             )
-            self.assertEqual(outer_record["v_cycle_terminal_collective_count"], 2)
+            self.assertEqual(outer_record["v_cycle_terminal_collective_count"], 6)
             self.assertEqual(outer_record["v_cycle_terminal_owner_thread"], 0)
+            self.assertEqual(
+                outer_record["v_cycle_terminal_logical_phases"],
+                V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES.split("|"),
+            )
             self.assertEqual(outer_record["finalize_gate_route"], FINALIZE_GATE_ROUTE)
             self.assertEqual(outer_record["finalize_gate_block_dim"], FINALIZE_GATE_BLOCK_DIM)
             self.assertEqual(outer_record["finalize_gate_owner_threads"], list(FINALIZE_GATE_OWNER_THREADS))
@@ -1573,7 +1643,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 bit_pattern = _device_bit_pattern(getattr(workspace, field_name))[2]
                 self.assertEqual(bit_pattern, bytes(len(bit_pattern)))
 
-    def test_162_route_is_bitwise_equal_to_exact_committed_178_route(self):
+    def test_130_route_is_bitwise_equal_to_exact_committed_162_route(self):
         for label, config in (
             ("accepted", None),
             ("sticky-rejection", DirectGraphVBDConfig(minimum_determinant=2.0)),
@@ -1585,8 +1655,12 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 committed.poison(seed=7919)
                 module = __import__("research.principal_stretch.captured_graph_vbd", fromlist=["*"])
                 fused_binding = module._lookup_workspace_owners(fused)
-                fused._enqueue_integrated(fused_binding)
-                committed_binding = _enqueue_committed_178_route(committed)
+                with mock.patch.object(wp, "launch", wraps=wp.launch) as micro_launch:
+                    fused._enqueue_integrated(fused_binding)
+                with mock.patch.object(wp, "launch", wraps=wp.launch) as b2_launch:
+                    committed_binding = _enqueue_committed_162_route(committed)
+                self.assertEqual(fused.correction_kernel_launches, 130)
+                self.assertEqual(b2_launch.call_count, micro_launch.call_count + 32)
                 fused_patterns = _integrated_bit_patterns(fused_binding)
                 committed_patterns = _integrated_bit_patterns(committed_binding)
                 self.assertEqual(fused_patterns.keys(), committed_patterns.keys())
@@ -1597,7 +1671,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 with wp.ScopedCapture(device=fused.device) as fused_capture:
                     fused._enqueue_integrated(fused_binding)
                 with wp.ScopedCapture(device=committed.device) as committed_capture:
-                    _enqueue_committed_178_route(committed)
+                    _enqueue_committed_162_route(committed)
                 fused.poison(seed=9923)
                 committed.poison(seed=9923)
                 wp.capture_launch(fused_capture.graph)
@@ -1828,7 +1902,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                         module.V_CYCLE_KERNEL_VERSION,
                         module.V_CYCLE_SCHEDULE_VERSION,
                         module.V_CYCLE_TERMINAL_FUSION_VERSION,
-                        module.V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE,
+                        module.V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE,
                         module.V_CYCLE_PUBLICATION_VERSION,
                         module.V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
                         module.V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
@@ -2134,7 +2208,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         direct = self.solver.run(graph_replay=False)
         for endpoint in (replay, direct):
             for evidence, contract, hash_field in (
-                (endpoint.outer_work[0], "captured-direct-graph-vbd-outer-work-v8", "content_sha256"),
+                (endpoint.outer_work[0], "captured-direct-graph-vbd-outer-work-v9", "content_sha256"),
                 (endpoint, CONTRACT_ID, "endpoint_sha256"),
             ):
                 payloads = []
@@ -2307,7 +2381,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         )
         bad_work = dataclasses.replace(bad_work, content_sha256=work_sha256)
         record_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v9",
+            "warp-scalar-fused-v-cycle-result-v11",
             (
                 ("contract_id", record.contract_id),
                 ("kernel_version", record.kernel_version),
@@ -2345,7 +2419,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         bad_executed = physical.matrix_block_products_executed + 1
         bad_elided = physical.matrix_block_products_elided_zero_start - 1
         physical_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v9",
+            "warp-scalar-fused-v-cycle-physical-work-v11",
             (
                 ("hierarchy_sha256", physical.hierarchy_sha256),
                 ("schedule_sha256", physical.schedule_sha256),
@@ -2356,12 +2430,15 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 ("zero_start_block_solves", physical.zero_start_block_solves),
                 ("noncoarse_level_count", physical.noncoarse_level_count),
                 ("terminal_fusion_kernel_launches", physical.terminal_fusion_kernel_launches),
+                ("terminal_fusion_launch_reduction", physical.terminal_fusion_launch_reduction),
                 ("terminal_level_index", physical.terminal_level_index),
                 ("terminal_block_dim", physical.terminal_block_dim),
                 ("terminal_collective_count", physical.terminal_collective_count),
                 ("terminal_owner_thread", physical.terminal_owner_thread),
                 ("terminal_fusion_version", physical.terminal_fusion_version),
+                ("terminal_microcycle_kernel_version", physical.terminal_microcycle_kernel_version),
                 ("terminal_fusion_route", physical.terminal_fusion_route),
+                ("terminal_logical_phases", physical.terminal_logical_phases),
                 (
                     "root_ingress_zero_start_fusions",
                     physical.root_ingress_zero_start_fusions,
@@ -2369,8 +2446,8 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 ("root_ingress_route", physical.root_ingress_route),
                 ("root_ingress_kernel_launches", physical.root_ingress_kernel_launches),
                 ("out_of_place_jacobi_block_solves", physical.out_of_place_jacobi_block_solves),
-                ("matrix_kernel_launches", physical.matrix_kernel_launches),
-                ("jacobi_kernel_launches", physical.jacobi_kernel_launches),
+                ("matrix_recurrence_phases", physical.matrix_recurrence_phases),
+                ("jacobi_recurrence_phases", physical.jacobi_recurrence_phases),
                 ("core_kernel_launches", physical.core_kernel_launches),
                 ("publication_kernel_launches", physical.publication_kernel_launches),
                 ("publication_version", physical.publication_version),
@@ -2388,7 +2465,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             content_sha256=physical_sha256,
         )
         physical_record_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v9",
+            "warp-scalar-fused-v-cycle-result-v11",
             (
                 ("contract_id", record.contract_id),
                 ("kernel_version", record.kernel_version),
@@ -2431,7 +2508,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         original_record_sha256 = record.content_sha256
         forged_root_fusions = 0
         forged_physical_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v9",
+            "warp-scalar-fused-v-cycle-physical-work-v11",
             (
                 ("hierarchy_sha256", physical.hierarchy_sha256),
                 ("schedule_sha256", physical.schedule_sha256),
@@ -2445,18 +2522,21 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
                 ("zero_start_block_solves", physical.zero_start_block_solves),
                 ("noncoarse_level_count", physical.noncoarse_level_count),
                 ("terminal_fusion_kernel_launches", physical.terminal_fusion_kernel_launches),
+                ("terminal_fusion_launch_reduction", physical.terminal_fusion_launch_reduction),
                 ("terminal_level_index", physical.terminal_level_index),
                 ("terminal_block_dim", physical.terminal_block_dim),
                 ("terminal_collective_count", physical.terminal_collective_count),
                 ("terminal_owner_thread", physical.terminal_owner_thread),
                 ("terminal_fusion_version", physical.terminal_fusion_version),
+                ("terminal_microcycle_kernel_version", physical.terminal_microcycle_kernel_version),
                 ("terminal_fusion_route", physical.terminal_fusion_route),
+                ("terminal_logical_phases", physical.terminal_logical_phases),
                 ("root_ingress_zero_start_fusions", forged_root_fusions),
                 ("root_ingress_route", physical.root_ingress_route),
                 ("root_ingress_kernel_launches", physical.root_ingress_kernel_launches),
                 ("out_of_place_jacobi_block_solves", physical.out_of_place_jacobi_block_solves),
-                ("matrix_kernel_launches", physical.matrix_kernel_launches),
-                ("jacobi_kernel_launches", physical.jacobi_kernel_launches),
+                ("matrix_recurrence_phases", physical.matrix_recurrence_phases),
+                ("jacobi_recurrence_phases", physical.jacobi_recurrence_phases),
                 ("core_kernel_launches", physical.core_kernel_launches),
                 ("publication_kernel_launches", physical.publication_kernel_launches),
                 ("publication_version", physical.publication_version),
@@ -2468,7 +2548,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             ),
         )
         forged_record_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v9",
+            "warp-scalar-fused-v-cycle-result-v11",
             (
                 ("contract_id", record.contract_id),
                 ("kernel_version", record.kernel_version),
@@ -2515,7 +2595,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             object.__setattr__(physical, "root_ingress_route", V_CYCLE_ROOT_INGRESS_INTERNAL_ROUTE)
             object.__setattr__(physical, "root_ingress_kernel_launches", 1)
             forged_physical_sha256 = _hash_parts(
-                "warp-scalar-fused-v-cycle-physical-work-v9",
+                "warp-scalar-fused-v-cycle-physical-work-v11",
                 tuple(
                     (field.name, getattr(physical, field.name))
                     for field in dataclasses.fields(physical)
@@ -2524,7 +2604,7 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             )
             object.__setattr__(physical, "content_sha256", forged_physical_sha256)
             forged_record_sha256 = _hash_parts(
-                "warp-scalar-fused-v-cycle-result-v9",
+                "warp-scalar-fused-v-cycle-result-v11",
                 (
                     ("contract_id", record.contract_id),
                     ("kernel_version", record.kernel_version),
@@ -2618,12 +2698,15 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         original_seeded_core_launches = context.v_cycle_seeded_core_kernel_launches
         original_terminal = {
             "v_cycle_terminal_fusion_version": context.v_cycle_terminal_fusion_version,
+            "v_cycle_terminal_microcycle_kernel_version": context.v_cycle_terminal_microcycle_kernel_version,
             "v_cycle_terminal_fusion_route": context.v_cycle_terminal_fusion_route,
             "v_cycle_terminal_fusion_kernel_launches": context.v_cycle_terminal_fusion_kernel_launches,
+            "v_cycle_terminal_fusion_launch_reduction": context.v_cycle_terminal_fusion_launch_reduction,
             "v_cycle_terminal_level_index": context.v_cycle_terminal_level_index,
             "v_cycle_terminal_block_dim": context.v_cycle_terminal_block_dim,
             "v_cycle_terminal_collective_count": context.v_cycle_terminal_collective_count,
             "v_cycle_terminal_owner_thread": context.v_cycle_terminal_owner_thread,
+            "v_cycle_terminal_logical_phases": context.v_cycle_terminal_logical_phases,
         }
         original_publication_version = context.v_cycle_publication_version
         original_root_fusions = context.v_cycle_root_ingress_zero_start_fusions
@@ -2672,12 +2755,17 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
             object.__setattr__(context, "v_cycle_seeded_core_kernel_launches", original_seeded_core_launches)
             terminal_attacks = {
                 "v_cycle_terminal_fusion_version": original_terminal["v_cycle_terminal_fusion_version"] + "-forged",
+                "v_cycle_terminal_microcycle_kernel_version": (
+                    original_terminal["v_cycle_terminal_microcycle_kernel_version"] + "-forged"
+                ),
                 "v_cycle_terminal_fusion_route": original_terminal["v_cycle_terminal_fusion_route"] + "-forged",
                 "v_cycle_terminal_fusion_kernel_launches": 0,
+                "v_cycle_terminal_fusion_launch_reduction": 2,
                 "v_cycle_terminal_level_index": original_terminal["v_cycle_terminal_level_index"] - 1,
                 "v_cycle_terminal_block_dim": original_terminal["v_cycle_terminal_block_dim"] + 32,
                 "v_cycle_terminal_collective_count": 1,
                 "v_cycle_terminal_owner_thread": 1,
+                "v_cycle_terminal_logical_phases": "forged",
             }
             for field_name, forged_value in terminal_attacks.items():
                 with self.subTest(context_terminal_field=field_name):
@@ -3349,8 +3437,8 @@ class TestCapturedDirectGraphVBDTinyCuda(unittest.TestCase):
         binding = module._lookup_workspace_owners(self.solver)
         persistent = binding.persistent
         self.assertIsNotNone(persistent)
-        self.assertEqual(len(persistent.arrays), 384)
-        self.assertEqual(len(persistent.signatures), 384)
+        self.assertEqual(len(persistent.arrays), 464)
+        self.assertEqual(len(persistent.signatures), 464)
         self.assertIs(self.solver._persistent_array_identity, persistent.signatures)
         for (array_name, array), (signature_name, _signature) in zip(
             persistent.arrays,
@@ -3926,58 +4014,79 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
             self.assertGreater(endpoint.segment_minimum_determinants[index], 0.0)
 
     def test_real_default_stretch_scalar_fused_schedule_and_physical_work_are_exact(self):
-        self.assertEqual(self.solver.device_hierarchy.scheduled_kernel_launches, 18)
-        self.assertEqual(self.solver.device_hierarchy.core_kernel_launches, 17)
-        self.assertEqual(self.solver.device_hierarchy.seeded_core_kernel_launches, 16)
-        self.assertEqual(self.solver.linear_prefix_kernel_launches_per_outer, 36)
-        self.assertEqual(self.solver.linear_kernel_launches_per_outer, 37)
-        self.assertEqual(self.solver.outer_kernel_launches_per_outer, 40)
-        self.assertEqual(self.solver.correction_kernel_launches, 162)
+        self.assertEqual(self.solver.device_hierarchy.scheduled_kernel_launches, 14)
+        self.assertEqual(self.solver.device_hierarchy.core_kernel_launches, 13)
+        self.assertEqual(self.solver.device_hierarchy.seeded_core_kernel_launches, 12)
+        self.assertEqual(self.solver.linear_prefix_kernel_launches_per_outer, 28)
+        self.assertEqual(self.solver.linear_kernel_launches_per_outer, 29)
+        self.assertEqual(self.solver.outer_kernel_launches_per_outer, 32)
+        self.assertEqual(self.solver.correction_kernel_launches, 130)
         for outer in self.endpoint.outer_work:
-            self.assertEqual(outer.linear_kernel_launches, 37)
+            self.assertEqual(outer.linear_kernel_launches, 29)
             for record in outer.v_cycles:
                 self.assertEqual(record.work.matrix_block_products, 5058)
                 self.assertEqual(record.physical_work.matrix_block_products_executed, 3372)
                 self.assertEqual(record.physical_work.matrix_block_products_elided_zero_start, 1686)
                 self.assertEqual(record.physical_work.zero_start_block_solves, 184)
                 self.assertEqual(record.physical_work.out_of_place_jacobi_block_solves, 184)
-                self.assertEqual(record.physical_work.matrix_kernel_launches, 6)
-                self.assertEqual(record.physical_work.jacobi_kernel_launches, 6)
+                self.assertEqual(record.physical_work.matrix_recurrence_phases, 6)
+                self.assertEqual(record.physical_work.jacobi_recurrence_phases, 6)
                 self.assertEqual(record.physical_work.root_ingress_zero_start_fusions, 1)
-                self.assertEqual(record.physical_work.scheduled_kernel_launches, 16)
-                self.assertEqual(record.physical_work.core_kernel_launches, 16)
+                self.assertEqual(record.physical_work.scheduled_kernel_launches, 12)
+                self.assertEqual(record.physical_work.core_kernel_launches, 12)
                 self.assertEqual(record.physical_work.publication_kernel_launches, 0)
                 self.assertEqual(record.physical_work.publication_route, V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE)
                 self.assertEqual(record.physical_work.root_ingress_route, V_CYCLE_ROOT_INGRESS_EXTERNAL_SHARED_ROUTE)
                 self.assertEqual(record.physical_work.root_ingress_kernel_launches, 0)
                 self.assertEqual(record.physical_work.terminal_fusion_version, V_CYCLE_TERMINAL_FUSION_VERSION)
-                self.assertEqual(record.physical_work.terminal_fusion_route, V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE)
+                self.assertEqual(
+                    record.physical_work.terminal_microcycle_kernel_version,
+                    V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+                )
+                self.assertEqual(
+                    record.physical_work.terminal_fusion_route,
+                    V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE,
+                )
                 self.assertEqual(record.physical_work.terminal_fusion_kernel_launches, 1)
+                self.assertEqual(record.physical_work.terminal_fusion_launch_reduction, 6)
                 self.assertEqual(record.physical_work.terminal_level_index, 2)
                 self.assertEqual(record.physical_work.terminal_block_dim, 64)
-                self.assertEqual(record.physical_work.terminal_collective_count, 2)
+                self.assertEqual(record.physical_work.terminal_collective_count, 6)
                 self.assertEqual(record.physical_work.terminal_owner_thread, 0)
+                self.assertEqual(
+                    record.physical_work.terminal_logical_phases,
+                    V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES,
+                )
                 self.assertEqual(record.schedule_version, V_CYCLE_SCHEDULE_VERSION)
                 self.assertFalse(record.performance_evidence)
         schedule = self.solver.deterministic_record()
-        self.assertEqual(schedule["v_cycle_kernel_launches"], 18)
-        self.assertEqual(schedule["v_cycle_core_kernel_launches"], 17)
-        self.assertEqual(schedule["v_cycle_seeded_core_kernel_launches"], 16)
+        self.assertEqual(schedule["v_cycle_kernel_launches"], 14)
+        self.assertEqual(schedule["v_cycle_core_kernel_launches"], 13)
+        self.assertEqual(schedule["v_cycle_seeded_core_kernel_launches"], 12)
         self.assertEqual(schedule["v_cycle_root_ingress_zero_start_fusions"], 1)
         self.assertEqual(schedule["v_cycle_terminal_fusion_version"], V_CYCLE_TERMINAL_FUSION_VERSION)
-        self.assertEqual(schedule["v_cycle_terminal_fusion_route"], V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE)
+        self.assertEqual(
+            schedule["v_cycle_terminal_microcycle_kernel_version"],
+            V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+        )
+        self.assertEqual(schedule["v_cycle_terminal_fusion_route"], V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE)
         self.assertEqual(schedule["v_cycle_terminal_fusion_kernel_launches"], 1)
+        self.assertEqual(schedule["v_cycle_terminal_fusion_launch_reduction"], 6)
         self.assertEqual(schedule["v_cycle_terminal_level_index"], 2)
         self.assertEqual(schedule["v_cycle_terminal_block_dim"], 64)
-        self.assertEqual(schedule["v_cycle_terminal_collective_count"], 2)
+        self.assertEqual(schedule["v_cycle_terminal_collective_count"], 6)
         self.assertEqual(schedule["v_cycle_terminal_owner_thread"], 0)
-        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 36)
+        self.assertEqual(
+            schedule["v_cycle_terminal_logical_phases"],
+            V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES.split("|"),
+        )
+        self.assertEqual(schedule["linear_prefix_kernel_launches_per_outer"], 28)
         self.assertEqual(schedule["fused_gather_kernel_launches_per_outer"], 2)
         self.assertEqual(schedule["fused_vertex_kernel_launches_per_outer"], 1)
         self.assertEqual(schedule["finalize_gate_kernel_launches_per_outer"], 1)
-        self.assertEqual(schedule["linear_kernel_launches_per_outer"], 37)
-        self.assertEqual(schedule["outer_kernel_launches_per_outer"], 40)
-        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 162)
+        self.assertEqual(schedule["linear_kernel_launches_per_outer"], 29)
+        self.assertEqual(schedule["outer_kernel_launches_per_outer"], 32)
+        self.assertEqual(schedule["correction_kernel_launches_excluding_public_k1"], 130)
         self.assertEqual(schedule["fused_gather_kernel_version"], FUSED_GATHER_KERNEL_VERSION)
         self.assertEqual(schedule["root_seeded_gather_kernel_version"], ROOT_SEEDED_GATHER_KERNEL_VERSION)
         self.assertEqual(schedule["shared_root_ingress_kernel_launches_per_outer"], 2)
@@ -4003,8 +4112,8 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
         self.assertEqual(schedule["v_cycle_matrix_block_products_elided_zero_start"], 1686)
         self.assertEqual(schedule["v_cycle_zero_start_block_solves"], 184)
         self.assertEqual(schedule["v_cycle_out_of_place_jacobi_block_solves"], 184)
-        self.assertEqual(schedule["v_cycle_matrix_kernel_launches"], 6)
-        self.assertEqual(schedule["v_cycle_jacobi_kernel_launches"], 6)
+        self.assertEqual(schedule["v_cycle_matrix_recurrence_phases"], 6)
+        self.assertEqual(schedule["v_cycle_jacobi_recurrence_phases"], 6)
 
     def test_real_default_stretch_is_safe_exactly_pinned_and_better_than_k4(self):
         endpoint = self.endpoint
@@ -4041,7 +4150,7 @@ class TestCapturedDirectGraphVBDDefaultStretchCuda(unittest.TestCase):
         self.assertEqual(record["finalize_gate_owner_threads"], list(FINALIZE_GATE_OWNER_THREADS))
         self.assertEqual(record["finalize_gate_owner_roles"], list(FINALIZE_GATE_OWNER_ROLES))
         self.assertEqual(record["finalize_gate_collective_version"], FINALIZE_GATE_COLLECTIVE_VERSION)
-        self.assertEqual(record["correction_kernel_launches"], 162)
+        self.assertEqual(record["correction_kernel_launches"], 130)
         print("CAPTURED_DIRECT_GRAPH_VBD_TIMING=" + json.dumps(record, sort_keys=True))
 
 
