@@ -9,6 +9,8 @@
 - Radius-query candidate: `2feb9748`
 - Radius-query Warp: measured `4491567b`, final equivalent `67621f80`
 - Current-main comparison: upstream `6d3fdf6f`, candidate `29fa8719`
+- Holistic endpoint comparison: Newton `6d3fdf6f` + Warp `c4675e0c`
+  versus Newton `fe8a9771` + Warp `67621f80`
 - Branch: `ankac/cloth-franka-perf`
 - Device: NVIDIA L40 (isolated by the Newton GPU claim for each suite)
 
@@ -34,6 +36,13 @@ follow-up improves the frozen production traversal pair by **1.061696x**, the
 traced detector by **1.039724x**, and end-to-end throughput by **1.005657x**,
 95% CI **[1.002605x, 1.008975x]**. It does not replace or compound the
 original baseline-to-candidate result.
+
+The final holistic production-endpoint A/B changes both dependencies: old Warp
+`c4675e0c` plus Newton main `6d3fdf6f` versus final Warp `67621f80` plus final
+Newton `fe8a9771`. It measures **1.204944x** end-to-end throughput, 95% CI
+**[1.201446x, 1.208345x]**, and **1.490235x** traced detector plus
+force/Hessian performance. This combined result is not an attribution
+experiment and must not be multiplied by either controlled comparison.
 
 ## Direct current upstream/main comparison
 
@@ -116,6 +125,103 @@ has SHA-256 `8e5f0a23...045`. Raw main/candidate report hashes are
 `e30c6d60...a0b`/`3535c281...ff7`, SQLite hashes are
 `b6e3186e...4bb`/`2b7c0c0d...8e4`, and benchmark-result hashes are
 `493d4beb...14b`/`4d7aadb3...450`.
+
+## Holistic old-Warp/main-to-new-Warp/final comparison
+
+The final user-requested endpoint A/B changes both production components:
+
+- **Old stack:** clean official Newton `upstream/main`
+  `6d3fdf6f7885378677d9b69899aad1ee5bd6c667` with clean Warp
+  `c4675e0c4c3e14fea07829f8853ca6e4c82a9bde`, the exact parent immediately
+  before the seven `bvh-query-perf` commits.
+- **New stack:** clean final Newton
+  `fe8a977145a9cf63fb4fdc3b7e49b76d6bbf9d05` with clean final Warp
+  `67621f8074b045673c2b72db5f2c8ce5e9b2cbc6`, which contains those seven
+  commits plus the later radius-query and bounded traversal-safety work.
+
+This is the deployable combined endpoint comparison requested by the user. It
+is not an attribution experiment: both Newton and Warp change together. The
+controlled current-main comparison above holds final Warp fixed, while the
+radius-query follow-up holds final Warp and optimized Newton largely fixed.
+The three speedups must not be multiplied.
+
+The baseline Warp tree/source SHA-256 is
+`5370809c6d4154179d0fe28df63e328c779da464` /
+`73a02ed272efb9fd729bc7a91c9b2511e8d9898411f414bdd0428149b001240f`;
+its freshly built `warp.so` is
+`c541281e1cba136e07b90403f2274d6b6d33d8564343668c6fc2484479985d77`.
+The candidate Warp tree/source/`warp.so` hashes are
+`4dcf21d7714f3fd481d4eb0fd3eb3f4565e408c6`,
+`5a91716353e5814287d7ae5908dae0768aff75632a0dc5f7a894b13db15772de`,
+and `d071cd89a45f66bb2784dcd0e942852211fde3f6ec68fcffdf131d48e211ca43`.
+Both use the same
+`warp-clang.so`, SHA-256 `5a436646...691`. The old build completed
+successfully; its log SHA-256 is `2b19cf91...271`.
+
+Both stacks used their unmodified production policies: old Newton resolved
+VT16/EE16 and capped force/Hessian accumulation at 142 SM blocks; new Newton
+resolved VT4/EE8 and used its natural uncapped force grid. Both ran through the
+same frozen candidate virtual environment and Python executable, with
+variant-specific `PYTHONPATH` plus isolated Newton, Warp, UV, and JIT caches.
+The asset seed was identical. This controls Python packages but is not a
+comparison of independently resolved lockfile environments.
+
+One excluded fresh-cache warm process per variant preceded 32 included fresh
+30-frame processes in eight alternating BCCB/CBBC blocks on an isolated L40:
+
+| Production stack | Processes | Median ms/frame | Mean ms/frame | CV |
+|---|---:|---:|---:|---:|
+| Old Warp + Newton main | 16 | 17.410782 | 17.404971 | 0.324% |
+| New Warp + final Newton | 16 | 14.410856 | 14.444803 | 0.596% |
+
+The complete-block geometric throughput speedup is **1.204944x** (+20.4944%),
+with a 200,000-resample 95% interval of **[1.201446x, 1.208345x]**. All 8/8
+blocks favored the new stack. Median frame latency is 17.23% lower. All 32
+valid observations were retained, including one candidate modified-z outlier
+diagnostic; the analyzer emitted no warnings and no VT or EE row overflowed.
+
+A matched 30-frame Nsight Systems graph-node trace per endpoint localizes the
+combined gain:
+
+| Component | Old stack ms | New stack ms | Speedup |
+|---|---:|---:|---:|
+| Vertex-triangle traversal | 23.672956 | 13.144844 | **1.800931x** |
+| Edge-edge traversal | 53.708395 | 36.691017 | **1.463802x** |
+| Full detector | 98.840012 | 70.312863 | **1.405717x** |
+| Force/Hessian accumulation | 86.936544 | 54.349736 | **1.599576x** |
+| **Full detector + force/Hessian** | **185.776556** | **124.662599** | **1.490235x** |
+| Planar truncation | 57.104387 | 47.492421 | **1.202389x** |
+| Extended self-contact pipeline | 254.748916 | 183.992887 | **1.384559x** |
+| All captured graph kernels | 440.837157 | 353.747556 | **1.246191x** |
+
+The trace analyzer found all 30 frame markers, exact variant-specific component
+counts, and no structural warnings. Old/new graph-kernel counts are
+63,810/63,870; the expected 60-kernel difference is candidate skip-link
+construction (`compute_node_escapes`) and is charged to the full detector.
+Trace sums localize one process per stack and are not replicated end-to-end
+timings. Fresh CUDA processes can follow different trajectories and contact
+histories because of unordered floating-point atomics, so component movement
+is not a paired causal decomposition.
+
+Raw Nsight diagnostics again contain two warnings per trace: Nsight 2024.5
+uses its CUDA 12.6 tracing libraries with the newer 12.8 driver, and reports
+that not all CUDA events might have been collected. There are no severity
+errors, and every expected frame marker and workload kernel is present. Raw
+reports and SQLite exports remain uncommitted because their metadata can
+contain the launch environment.
+
+ABBA evidence is under `/tmp/cloth-franka-holistic-20260818`: manifest,
+analysis, summary, and CSV SHA-256 values are `0d8028f0...c9c4`,
+`2e0f917a...07b9`, `41b81e83...7d6`, and `e0b3deed...720e`. The frozen
+runner, benchmark, and analyzer hashes are `5cea293f...a095`,
+`b5c2f79f...b4cae`, and `5cc0253b...f22f`.
+
+Trace evidence is under `/tmp/cloth-franka-holistic-nsys-20260818`.
+`evidence.json`, `trace-analysis.json`, and the trace runner have hashes
+`2ca1f55c...cdc7`, `0e71d64c...7687`, and `b0db4877...bbb8`.
+Old/new `.nsys-rep` hashes are `93cbe799...4230` / `5ef7c4ab...bc8b`, SQLite
+hashes are `d2a9fb9b...7650` / `8e355bd4...0e51`, and result JSON hashes are
+`904d559e...c9b` / `a6c90d1a...47db`.
 
 ## Workload and measurement
 

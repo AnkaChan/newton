@@ -16,6 +16,12 @@
       "definition": "Aggregate current official upstream/main versus final feature-branch comparison with an identical final custom Warp build",
       "not_a_single_change_ablation": true,
       "must_not_be_compounded_with_other_speedups": true
+    },
+    "holistic_old_to_new_stack_comparison": {
+      "definition": "Combined production endpoints: old Warp plus official Newton main versus final Warp plus final optimized Newton",
+      "changes_newton_and_warp_together": true,
+      "not_an_attribution_experiment": true,
+      "must_not_be_compounded_with_other_speedups": true
     }
   },
   "final_provenance": {
@@ -243,6 +249,208 @@
       "summary_json": "d5a67ce49668d7a9a29e806a50f1b92c14bb536d2908a8b5ca0cc32085cd59db",
       "runs_csv": "6caef88aaeb44a82332f1dbc6592a755ae2b385a5e78fa6e9fb4de7b3dcb2d83",
       "frozen_runner": "14cde0739aa20b976538315f781a03efe2129f83ba8efa4184fd2a736e7b00f1",
+      "frozen_benchmark": "b5c2f79f38a42570196c28f557d83e2951d1375c253a715762964bc1816b4cae",
+      "frozen_analyzer": "5cc0253b311bb360bfd4997f5195516ca5fa45967da4be42fc0ab51e1e240c27"
+    }
+  },
+  "holistic_old_warp_main_vs_new_warp_final": {
+    "suite_id": "cloth-franka-old-warp-main-vs-new-warp-final-20260818",
+    "suite_path": "/tmp/cloth-franka-holistic-20260818",
+    "status": "completed",
+    "comparison_scope": "Holistic production pairing: official Newton upstream/main with the exact Warp snapshot immediately before the seven bvh-query-perf commits, versus final optimized Newton with final custom Warp",
+    "interpretation": "Both Newton and Warp change together; this deployable endpoint result does not attribute gain between them and must not be multiplied by controlled-comparison speedups",
+    "provenance": {
+      "old_stack": {
+        "newton": {
+          "git_head": "6d3fdf6f7885378677d9b69899aad1ee5bd6c667",
+          "git_tree": "ee4d3e1161399fbf437f1b81b65c0e6cc813f59a",
+          "source_sha256": "2a60f15df801abf029f53c21103b1543234726a4fb3eae27b191728b104dbbf7",
+          "source_file_count": 717,
+          "source_byte_count": 21205026,
+          "remote_ref_verified_at_suite_start": true,
+          "tracked_tree_clean": true
+        },
+        "warp": {
+          "git_head": "c4675e0c4c3e14fea07829f8853ca6e4c82a9bde",
+          "git_tree": "5370809c6d4154179d0fe28df63e328c779da464",
+          "source_sha256": "73a02ed272efb9fd729bc7a91c9b2511e8d9898411f414bdd0428149b001240f",
+          "source_file_count": 598,
+          "source_byte_count": 13853911,
+          "version": "1.17.0.dev4",
+          "warp_so_sha256": "c541281e1cba136e07b90403f2274d6b6d33d8564343668c6fc2484479985d77",
+          "warp_clang_so_sha256": "5a4366461d9acf30d598354448b5894f88d2c30ddb1a9c76155034cb869fe691",
+          "relationship": "Exact parent immediately before the first of seven bvh-query-perf commits",
+          "native_build_log_sha256": "2b19cf91f166d0e3105de3dcd53497a4912795d8b8b56e1312ddaeacbb0db271"
+        }
+      },
+      "new_stack": {
+        "newton": {
+          "git_head": "fe8a977145a9cf63fb4fdc3b7e49b76d6bbf9d05",
+          "git_tree": "ea63de957a79896e77608a0a61ac5fc3552b359f",
+          "source_sha256": "a47822d50a0cab3a8057914c3b505d3713aefe61276cba7b15f846cfee65bb04",
+          "source_file_count": 718,
+          "source_byte_count": 20550231,
+          "tracked_tree_clean": true
+        },
+        "warp": {
+          "git_head": "67621f8074b045673c2b72db5f2c8ce5e9b2cbc6",
+          "git_tree": "4dcf21d7714f3fd481d4eb0fd3eb3f4565e408c6",
+          "source_sha256": "5a91716353e5814287d7ae5908dae0768aff75632a0dc5f7a894b13db15772de",
+          "source_file_count": 598,
+          "source_byte_count": 13936215,
+          "version": "1.17.0.dev4",
+          "warp_so_sha256": "d071cd89a45f66bb2784dcd0e942852211fde3f6ec68fcffdf131d48e211ca43",
+          "warp_clang_so_sha256": "5a4366461d9acf30d598354448b5894f88d2c30ddb1a9c76155034cb869fe691"
+        }
+      },
+      "warp_lineage": {
+        "old_snapshot": "c4675e0c4c3e14fea07829f8853ca6e4c82a9bde",
+        "first_bvh_query_perf_commit": "4336fbc6b6c274ba8131125da938de7fcad0c034",
+        "bvh_query_perf_stable": "fed678170369a7fa2876ecf9cfd60f7eb530662c",
+        "final_custom_warp": "67621f8074b045673c2b72db5f2c8ce5e9b2cbc6"
+      }
+    },
+    "environment_control": {
+      "common_candidate_worktree_virtual_environment": true,
+      "python_sha256": "339de109f072e52523066d97a2b3372e358a10cc00c6a9df62c28a6618061900",
+      "variant_pythonpath_isolated": true,
+      "variant_newton_warp_uv_and_jit_caches_isolated": true,
+      "same_asset_seed": true,
+      "asset_git_head": "261cd1f429619d8ef4f546bd788ab9dea906b5e1",
+      "asset_git_tree": "085eded0e518525b000ee83dad00f5d71e9f44af",
+      "caveat": "This controls Python dependencies but does not compare independently resolved lockfile environments"
+    },
+    "production_launch_policies": {
+      "launch_overrides": false,
+      "old_stack": {
+        "vertex_triangle_block_size": 16,
+        "edge_edge_block_size": 16,
+        "self_contact_force_block_dim": 256,
+        "self_contact_force_max_blocks": 142
+      },
+      "new_stack": {
+        "vertex_triangle_block_size": 4,
+        "edge_edge_block_size": 8,
+        "self_contact_force_block_dim": 256,
+        "self_contact_force_max_blocks": null
+      }
+    },
+    "protocol": {
+      "device": "NVIDIA L40",
+      "frames_per_process": 30,
+      "excluded_warm_processes_per_variant": 1,
+      "included_processes_per_variant": 16,
+      "completed_processes": 32,
+      "all_completed_processes_included": true,
+      "balanced_blocks": 8,
+      "alternating_orders": [
+        "BCCB",
+        "CBBC"
+      ],
+      "bootstrap_unit": "complete balanced four-process block",
+      "bootstrap_samples": 200000,
+      "bootstrap_seed": 20260818,
+      "analyzer_warnings": 0,
+      "contact_overflow_rows": 0,
+      "outlier_policy": "No observations removed; modified-z flags are diagnostics only",
+      "candidate_modified_z_outlier_ordinals": [
+        26
+      ]
+    },
+    "old_stack": {
+      "median_milliseconds_per_frame": 17.410781622553863,
+      "mean_milliseconds_per_frame": 17.404970567440614,
+      "coefficient_of_variation": 0.0032376535388885293
+    },
+    "new_stack": {
+      "median_milliseconds_per_frame": 14.410856195415061,
+      "mean_milliseconds_per_frame": 14.444802701473236,
+      "coefficient_of_variation": 0.005962211782371554
+    },
+    "balanced_block_geometric_speedup": 1.2049436620444003,
+    "throughput_improvement_fraction": 0.20494366204440027,
+    "equivalent_latency_reduction_fraction": 0.17008567993683377,
+    "median_latency_reduction_fraction": 0.17230274275870016,
+    "bootstrap_95_ci": [
+      1.2014455308206646,
+      1.2083445995125592
+    ],
+    "positive_blocks": 8,
+    "block_count": 8,
+    "nsight_trace_localization": {
+      "suite_path": "/tmp/cloth-franka-holistic-nsys-20260818",
+      "frames": 30,
+      "old_stack_graph_kernel_count": 63810,
+      "new_stack_graph_kernel_count": 63870,
+      "all_expected_variant_specific_kernel_counts_exact": true,
+      "expected_graph_kernel_count_difference": "The new stack adds 60 compute_node_escapes launches for two BVHs across 30 frames",
+      "analyzer_warnings": 0,
+      "nsight_diagnostic_warnings_per_variant": 2,
+      "nsight_diagnostic_errors_per_variant": 0,
+      "nsight_diagnostic_caveat": "Nsight 2024.5 reports that the 12.8 driver is newer than the tool and uses CUDA 12.6 tracing libraries, plus a generic warning that not all CUDA events might have been collected; all expected frame markers and workload kernel counts are present",
+      "profiler_wall_time_valid_for_end_to_end": false,
+      "trajectory_caveat": "Fresh CUDA processes use unordered floating-point atomics and need not have identical trajectories or contact totals",
+      "interpretation": "Single-process trace sums localize work; the replicated ABBA estimator remains authoritative end to end",
+      "components": {
+        "vertex_triangle_traversal": {
+          "old_stack_milliseconds": 23.672956,
+          "new_stack_milliseconds": 13.144844,
+          "speedup": 1.8009309201387251
+        },
+        "edge_edge_traversal": {
+          "old_stack_milliseconds": 53.708395,
+          "new_stack_milliseconds": 36.691017,
+          "speedup": 1.4638022979848173
+        },
+        "detector": {
+          "old_stack_milliseconds": 98.840012,
+          "new_stack_milliseconds": 70.312863,
+          "speedup": 1.405717357860965
+        },
+        "force_hessian": {
+          "old_stack_milliseconds": 86.936544,
+          "new_stack_milliseconds": 54.349736,
+          "speedup": 1.5995761966534667
+        },
+        "detector_plus_force_hessian": {
+          "old_stack_milliseconds": 185.776556,
+          "new_stack_milliseconds": 124.662599,
+          "speedup": 1.4902349019692747
+        },
+        "planar_truncation": {
+          "old_stack_milliseconds": 57.104387,
+          "new_stack_milliseconds": 47.492421,
+          "speedup": 1.2023894717854033
+        },
+        "extended_self_contact_pipeline": {
+          "old_stack_milliseconds": 254.748916,
+          "new_stack_milliseconds": 183.992887,
+          "speedup": 1.3845585019816553
+        },
+        "all_captured_graph_kernels": {
+          "old_stack_milliseconds": 440.837157,
+          "new_stack_milliseconds": 353.747556,
+          "speedup": 1.2461913857010507
+        }
+      },
+      "evidence_sha256": {
+        "evidence_json": "2ca1f55c937d3291a393c44b5c73a38ff5c7359246c141002edcfec0e0cecdc7",
+        "trace_analysis_json": "0e71d64cab64bcf833df5ed2604f1fb0977d85e8ffd2a6158e58f69f66b87687",
+        "trace_runner": "b0db4877e7b30764350d0beb70d877e2a4838a800c80d2103211321a297cbbb8",
+        "old_stack_nsys_report": "93cbe799c0114f5a565a139ba0ed33b567e4be99b5ddc491d8feacb1da904230",
+        "new_stack_nsys_report": "5ef7c4ab4acf7567a21066d5e1ba6e9ac681f42e0904888a6c1f184cbb0abc8b",
+        "old_stack_sqlite": "d2a9fb9bf145e5a30e91564341f7ad8e97fba78d6decb608d5acaca039e57650",
+        "new_stack_sqlite": "8e355bd45f15bd4126554b0047d255576c6a9001070d1232c916f4a136600e51",
+        "old_stack_result_json": "904d559e31dd2634d75f858294fb4f743d890e7835fb22eca023e0dedbee0c9b",
+        "new_stack_result_json": "a6c90d1a339f32e9c0d7118e7286953be8cdf79f3b4a563acaa7d9d8776d47db"
+      }
+    },
+    "artifact_sha256": {
+      "manifest_json": "0d8028f0010063583a38e6a0028fa698d3ba6de7e18c4f90d7fc30e65ad6c9c4",
+      "analysis_json": "2e0f917adb9c8139236ac0cbdf89ff7d355a6ad0b9aedac8f26c4052b15707b9",
+      "summary_json": "41b81e83cc1d8e80ac5dc93d63b96de93c5925627b856743319e1d068719d7d6",
+      "runs_csv": "e0b3deed5eb58577b67b0f98f26b64db881e0b686bdc762f1e0932e43fc1720e",
+      "frozen_runner": "5cea293fbf8fa4a9cf18caee38e7d43737105a836386bd027ac2440c2073a095",
       "frozen_benchmark": "b5c2f79f38a42570196c28f557d83e2951d1375c253a715762964bc1816b4cae",
       "frozen_analyzer": "5cc0253b311bb360bfd4997f5195516ca5fa45967da4be42fc0ab51e1e240c27"
     }

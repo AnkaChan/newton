@@ -744,3 +744,87 @@ Trace evidence remains under
 - main/candidate `.nsys-rep`: `e30c6d60...a0b` / `3535c281...ff7`;
 - main/candidate SQLite: `b6e3186e...4bb` / `2b7c0c0d...8e4`;
 - main/candidate result JSON: `493d4beb...14b` / `4d7aadb3...450`.
+
+## 2026-08-18: holistic old/new production-stack comparison
+
+Completed the missing endpoint comparison requested after the Warp-walkthrough
+discussion. Unlike the two earlier controlled comparisons, this suite changes
+both components together:
+
+- baseline: clean official Newton main `6d3fdf6f` plus clean Warp
+  `c4675e0c`, the exact parent of the first `bvh-query-perf` commit;
+- candidate: clean final Newton `fe8a9771` plus clean final Warp `67621f80`,
+  containing all seven `bvh-query-perf` commits and the later radius-query and
+  traversal-safety work.
+
+The baseline/candidate Warp trees are `5370809c` / `4dcf21d7`, source hashes
+are `73a02ed2...240f` / `5a917163...72de`, and freshly measured `warp.so`
+hashes are `c541281e...5d77` / `d071cd89...ca43`. Both use
+`warp-clang.so` `5a436646...e691`. The old Warp native build completed
+successfully; `/tmp/cloth-franka-old-warp-c467-build.log` has SHA-256
+`2b19cf91f166d0e3105de3dcd53497a4912795d8b8b56e1312ddaeacbb0db271`.
+
+The pre-registered suite used the same frozen benchmark/analyzer and candidate
+virtual environment for both endpoints, variant-specific `PYTHONPATH`, and
+separate Newton/Warp/UV/JIT caches. Both variants retained their production
+launch policy with no overrides: baseline VT16/EE16 plus a 142-block force cap;
+candidate VT4/EE8 plus the uncapped natural force grid. One fresh-cache warm
+process per endpoint was excluded before 32 included fresh 30-frame runs in
+eight alternating BCCB/CBBC blocks on the isolated L40.
+
+| Production stack | n | Median ms/frame | Mean ms/frame | CV |
+|---|---:|---:|---:|---:|
+| Old Warp + Newton main | 16 | 17.410782 | 17.404971 | 0.324% |
+| New Warp + final Newton | 16 | 14.410856 | 14.444803 | 0.596% |
+
+The balanced-block geometric throughput speedup is **1.204944x** (+20.4944%),
+95% whole-block bootstrap interval **[1.201446x, 1.208345x]**. All 8/8 blocks
+favored the candidate and median latency is 17.23% lower. Every valid
+observation was retained, including candidate ordinal 26, which was only a
+modified-z diagnostic. The analyzer emitted no warnings and no contact row
+overflowed.
+
+Matched source-isolated graph-node traces localized the endpoint delta:
+
+| Component | Old stack ms | New stack ms | Speedup |
+|---|---:|---:|---:|
+| VT traversal | 23.672956 | 13.144844 | **1.800931x** |
+| EE traversal | 53.708395 | 36.691017 | **1.463802x** |
+| Full detector | 98.840012 | 70.312863 | **1.405717x** |
+| Force/Hessian | 86.936544 | 54.349736 | **1.599576x** |
+| Full detector + force/Hessian | 185.776556 | 124.662599 | **1.490235x** |
+| Planar truncation | 57.104387 | 47.492421 | **1.202389x** |
+| Extended self-contact pipeline | 254.748916 | 183.992887 | **1.384559x** |
+| All captured graph kernels | 440.837157 | 353.747556 | **1.246191x** |
+
+The old/new traces contain 63,810/63,870 graph kernels and exact expected
+variant-specific counts. The 60 extra candidate graph kernels are
+`compute_node_escapes` construction for the two BVHs across 30 frames and are
+included in the detector. The structural analyzer emitted no warnings. Raw
+Nsight metadata contains the same two trace-level warnings in each endpoint:
+CUDA 12.8 driver compatibility tracing through Nsight's CUDA 12.6 libraries,
+and the generic incomplete-events warning. No severity error occurred, and all
+frame markers and expected workload kernels are present.
+
+Fresh processes are trajectory-nondeterministic because of unordered
+floating-point atomics. The traces therefore localize work but do not provide a
+paired causal decomposition, and profiler wall time is not an end-to-end
+metric. The replicated ABBA estimate is authoritative. This endpoint result
+also cannot attribute the total gain separately to Newton and Warp and must not
+be multiplied by either earlier controlled speedup.
+
+Evidence:
+
+- `/tmp/cloth-franka-holistic-20260818`: manifest `0d8028f0...c9c4`,
+  analysis `2e0f917a...07b9`, summary `41b81e83...7d6`, runs CSV
+  `e0b3deed...720e`, frozen runner `5cea293f...a095`, benchmark
+  `b5c2f79f...b4cae`, and analyzer `5cc0253b...f22f`;
+- `/tmp/cloth-franka-holistic-nsys-20260818`: evidence
+  `2ca1f55c...cdc7`, trace analysis `0e71d64c...7687`, trace runner
+  `b0db4877...bbb8`, old/new reports `93cbe799...4230` /
+  `5ef7c4ab...bc8b`, SQLite `d2a9fb9b...7650` / `8e355bd4...0e51`, and
+  result JSON `904d559e...c9b` / `a6c90d1a...47db`.
+
+Raw `.nsys-rep`, SQLite, process logs, and result records remain under `/tmp`
+because they can contain environment metadata. The sanitized combined endpoint
+aggregate is recorded in `profiling/cloth_franka_radius_query_results.json`.
