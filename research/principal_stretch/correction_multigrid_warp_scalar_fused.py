@@ -51,9 +51,9 @@ from .correction_multigrid_warp import (
     _solve_coarsest_cholesky,
 )
 
-KERNEL_VERSION = "mg-vbd-warp-static-v-cycle-scalar-fused-v8"
+KERNEL_VERSION = "mg-vbd-warp-static-v-cycle-scalar-fused-v9"
 CONTRACT_ID = "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v3"
-SCHEDULE_VERSION = "scalar-core-fixed12-terminal-microcycle-seeded-root-publication-routes-v11"
+SCHEDULE_VERSION = "scalar-core-literal-nonterminal-fixed12-terminal-seeded-root-routes-v12"
 PUBLICATION_VERSION = "scalar-fused-v-cycle-publication-routes-v2"
 STANDALONE_PUBLICATION_ROUTE = "standalone-scalar-to-vec3-kernel"
 EXTERNAL_SHARED_PUBLICATION_ROUTE = "external-shared-owner-scalar-to-vec3"
@@ -61,6 +61,14 @@ ROOT_INGRESS_INTERNAL_ROUTE = "internal-fused-vec3d-scalar-zero-start"
 ROOT_INGRESS_EXTERNAL_SHARED_ROUTE = "external-shared-producer-scalar-zero-start"
 ROOT_INGRESS_COARSE_COPY_ROUTE = "coarsest-copy-vec3d-to-scalar"
 PHYSICAL_EXECUTION_AUTHENTICATION = "schema-validated-not-launch-authenticated-v1"
+NONTERMINAL_LITERAL_KERNEL_VERSION = "nonterminal-scalar-row-literal-bs3-bs6-v1"
+NONTERMINAL_LITERAL_CUDA_ROUTE = "cuda-literal-bs3-bs6-before-terminal-with-generic-fallback-v1"
+NONTERMINAL_GENERIC_CUDA_ROUTE = "cuda-runtime-block-size-before-terminal-v1"
+NONTERMINAL_GENERIC_CPU_ROUTE = "cpu-runtime-block-size-before-terminal-v1"
+NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP = (
+    "residual-bs3=2|residual-bs6=2|zero-jacobi-bs6=1|jacobi-bs3=1|jacobi-bs6=1|"
+    "restrict-3to6=1|restrict-6to6=1|prolong-3from6=1|prolong-6from6=1"
+)
 TERMINAL_FUSION_VERSION = "terminal-route-family-with-fixed12-p1q1-microcycle-v4"
 TERMINAL_FUSION_CUDA_ROUTE = "cuda-one-block-terminal-restrict-ordered-cholesky-prolong-v1"
 TERMINAL_MICROCYCLE_KERNEL_VERSION = "terminal-zero-jacobi-residual-transfer-solve-prolong-residual-jacobi-v2"
@@ -120,6 +128,73 @@ def _work_sha256(work: VCycleWorkRecord) -> str:
             ("coarsest_factor_solves", work.coarsest_factor_solves),
         ),
     )
+
+
+def _serialize_nonterminal_literal_physical_nodes(counts: tuple[int, int, int, int, int, int, int, int, int]) -> str:
+    """Serialize exact literal physical-node counts in canonical order."""
+    labels = (
+        "residual-bs3",
+        "residual-bs6",
+        "zero-jacobi-bs6",
+        "jacobi-bs3",
+        "jacobi-bs6",
+        "restrict-3to6",
+        "restrict-6to6",
+        "prolong-3from6",
+        "prolong-6from6",
+    )
+    if any(type(count) is not int or count < 0 for count in counts):
+        raise ValueError("literal physical-node counts must be non-negative built-in integers")
+    return "|".join(f"{label}={count}" for label, count in zip(labels, counts, strict=True) if count)
+
+
+def _parse_nonterminal_literal_physical_nodes(serialized: object) -> tuple[int, int, int, int, int, int, int, int, int]:
+    """Parse one canonical literal physical-node map without accepting aliases."""
+    if type(serialized) is not str:
+        raise TypeError("nonterminal_literal_physical_node_map must be a built-in string")
+    if not serialized:
+        return (0, 0, 0, 0, 0, 0, 0, 0, 0)
+    labels = (
+        "residual-bs3",
+        "residual-bs6",
+        "zero-jacobi-bs6",
+        "jacobi-bs3",
+        "jacobi-bs6",
+        "restrict-3to6",
+        "restrict-6to6",
+        "prolong-3from6",
+        "prolong-6from6",
+    )
+    counts = [0] * len(labels)
+    previous_index = -1
+    for item in serialized.split("|"):
+        if item.count("=") != 1:
+            raise ValueError("nonterminal literal physical-node map is malformed")
+        label, count_text = item.split("=")
+        if label not in labels:
+            raise ValueError("nonterminal literal physical-node map names an unsupported kernel")
+        index = labels.index(label)
+        if index <= previous_index or not count_text.isascii() or not count_text.isdecimal():
+            raise ValueError("nonterminal literal physical-node map is not canonical")
+        count = int(count_text)
+        if count < 1 or str(count) != count_text:
+            raise ValueError("nonterminal literal physical-node counts must be canonical positive integers")
+        counts[index] = count
+        previous_index = index
+    result = (
+        counts[0],
+        counts[1],
+        counts[2],
+        counts[3],
+        counts[4],
+        counts[5],
+        counts[6],
+        counts[7],
+        counts[8],
+    )
+    if _serialize_nonterminal_literal_physical_nodes(result) != serialized:
+        raise ValueError("nonterminal literal physical-node map changed during canonicalization")
+    return result
 
 
 def _schema_route_claim(hierarchy: object, route: str) -> dict[str, object]:
@@ -245,6 +320,231 @@ def _out_of_place_scalar_jacobi(
     for local_column in range(block_size):
         value += inverse_diagonal[block_base + local_column] * residual[residual_base + local_column]
     output[scalar_row] = current[scalar_row] + omega * value
+
+
+@wp.kernel(enable_backward=False)
+def _scalar_csr_residual_bs3(
+    row_offsets: wp.array[wp.int32],
+    column_indices: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    block_size: int,
+    rhs: wp.array[wp.float64],
+    vector: wp.array[wp.float64],
+    residual: wp.array[wp.float64],
+):
+    """Apply one block-3 CSR row with literal ascending column order."""
+    scalar_row = wp.tid()
+    block_row = scalar_row // 3
+    local_row = scalar_row - block_row * 3
+    product = wp.float64(0.0)
+    for entry in range(row_offsets[block_row], row_offsets[block_row + 1]):
+        block_column = column_indices[entry]
+        value_base = (entry * 3 + local_row) * 3
+        vector_base = block_column * 3
+        product += values[value_base] * vector[vector_base]
+        product += values[value_base + 1] * vector[vector_base + 1]
+        product += values[value_base + 2] * vector[vector_base + 2]
+    residual[scalar_row] = rhs[scalar_row] - product
+
+
+@wp.kernel(enable_backward=False)
+def _scalar_csr_residual_bs6(
+    row_offsets: wp.array[wp.int32],
+    column_indices: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    block_size: int,
+    rhs: wp.array[wp.float64],
+    vector: wp.array[wp.float64],
+    residual: wp.array[wp.float64],
+):
+    """Apply one block-6 CSR row with literal ascending column order."""
+    scalar_row = wp.tid()
+    block_row = scalar_row // 6
+    local_row = scalar_row - block_row * 6
+    product = wp.float64(0.0)
+    for entry in range(row_offsets[block_row], row_offsets[block_row + 1]):
+        block_column = column_indices[entry]
+        value_base = (entry * 6 + local_row) * 6
+        vector_base = block_column * 6
+        product += values[value_base] * vector[vector_base]
+        product += values[value_base + 1] * vector[vector_base + 1]
+        product += values[value_base + 2] * vector[vector_base + 2]
+        product += values[value_base + 3] * vector[vector_base + 3]
+        product += values[value_base + 4] * vector[vector_base + 4]
+        product += values[value_base + 5] * vector[vector_base + 5]
+    residual[scalar_row] = rhs[scalar_row] - product
+
+
+@wp.kernel(enable_backward=False)
+def _zero_start_scalar_jacobi_bs6(
+    rhs: wp.array[wp.float64],
+    inverse_diagonal: wp.array[wp.float64],
+    block_size: int,
+    omega: wp.float64,
+    output: wp.array[wp.float64],
+):
+    """Apply one block-6 zero-start Jacobi row in literal order."""
+    scalar_row = wp.tid()
+    block_row = scalar_row // 6
+    local_row = scalar_row - block_row * 6
+    block_base = block_row * 36 + local_row * 6
+    rhs_base = block_row * 6
+    value = wp.float64(0.0)
+    value += inverse_diagonal[block_base] * rhs[rhs_base]
+    value += inverse_diagonal[block_base + 1] * rhs[rhs_base + 1]
+    value += inverse_diagonal[block_base + 2] * rhs[rhs_base + 2]
+    value += inverse_diagonal[block_base + 3] * rhs[rhs_base + 3]
+    value += inverse_diagonal[block_base + 4] * rhs[rhs_base + 4]
+    value += inverse_diagonal[block_base + 5] * rhs[rhs_base + 5]
+    output[scalar_row] = omega * value
+
+
+@wp.kernel(enable_backward=False)
+def _out_of_place_scalar_jacobi_bs3(
+    residual: wp.array[wp.float64],
+    inverse_diagonal: wp.array[wp.float64],
+    block_size: int,
+    omega: wp.float64,
+    current: wp.array[wp.float64],
+    output: wp.array[wp.float64],
+):
+    """Apply one block-3 out-of-place Jacobi row in literal order."""
+    scalar_row = wp.tid()
+    block_row = scalar_row // 3
+    local_row = scalar_row - block_row * 3
+    block_base = block_row * 9 + local_row * 3
+    residual_base = block_row * 3
+    value = wp.float64(0.0)
+    value += inverse_diagonal[block_base] * residual[residual_base]
+    value += inverse_diagonal[block_base + 1] * residual[residual_base + 1]
+    value += inverse_diagonal[block_base + 2] * residual[residual_base + 2]
+    output[scalar_row] = current[scalar_row] + omega * value
+
+
+@wp.kernel(enable_backward=False)
+def _out_of_place_scalar_jacobi_bs6(
+    residual: wp.array[wp.float64],
+    inverse_diagonal: wp.array[wp.float64],
+    block_size: int,
+    omega: wp.float64,
+    current: wp.array[wp.float64],
+    output: wp.array[wp.float64],
+):
+    """Apply one block-6 out-of-place Jacobi row in literal order."""
+    scalar_row = wp.tid()
+    block_row = scalar_row // 6
+    local_row = scalar_row - block_row * 6
+    block_base = block_row * 36 + local_row * 6
+    residual_base = block_row * 6
+    value = wp.float64(0.0)
+    value += inverse_diagonal[block_base] * residual[residual_base]
+    value += inverse_diagonal[block_base + 1] * residual[residual_base + 1]
+    value += inverse_diagonal[block_base + 2] * residual[residual_base + 2]
+    value += inverse_diagonal[block_base + 3] * residual[residual_base + 3]
+    value += inverse_diagonal[block_base + 4] * residual[residual_base + 4]
+    value += inverse_diagonal[block_base + 5] * residual[residual_base + 5]
+    output[scalar_row] = current[scalar_row] + omega * value
+
+
+@wp.kernel(enable_backward=False)
+def _restrict_owned_rows_3to6(
+    member_offsets: wp.array[wp.int32],
+    member_fine_nodes: wp.array[wp.int32],
+    prolongation_blocks: wp.array[wp.float64],
+    fine_block_size: int,
+    coarse_block_size: int,
+    fine_value: wp.array[wp.float64],
+    coarse_value: wp.array[wp.float64],
+):
+    """Restrict one 3-to-6 scalar row with literal fine-local order."""
+    scalar_row = wp.tid()
+    coarse_node = scalar_row // 6
+    coarse_local = scalar_row - coarse_node * 6
+    result = wp.float64(0.0)
+    for cursor in range(member_offsets[coarse_node], member_offsets[coarse_node + 1]):
+        fine_node = member_fine_nodes[cursor]
+        fine_base = fine_node * 3
+        block_entry = fine_base * 6 + coarse_local
+        result += prolongation_blocks[block_entry] * fine_value[fine_base]
+        result += prolongation_blocks[block_entry + 6] * fine_value[fine_base + 1]
+        result += prolongation_blocks[block_entry + 12] * fine_value[fine_base + 2]
+    coarse_value[scalar_row] = result
+
+
+@wp.kernel(enable_backward=False)
+def _restrict_owned_rows_6to6(
+    member_offsets: wp.array[wp.int32],
+    member_fine_nodes: wp.array[wp.int32],
+    prolongation_blocks: wp.array[wp.float64],
+    fine_block_size: int,
+    coarse_block_size: int,
+    fine_value: wp.array[wp.float64],
+    coarse_value: wp.array[wp.float64],
+):
+    """Restrict one 6-to-6 scalar row with literal fine-local order."""
+    scalar_row = wp.tid()
+    coarse_node = scalar_row // 6
+    coarse_local = scalar_row - coarse_node * 6
+    result = wp.float64(0.0)
+    for cursor in range(member_offsets[coarse_node], member_offsets[coarse_node + 1]):
+        fine_node = member_fine_nodes[cursor]
+        fine_base = fine_node * 6
+        block_entry = fine_base * 6 + coarse_local
+        result += prolongation_blocks[block_entry] * fine_value[fine_base]
+        result += prolongation_blocks[block_entry + 6] * fine_value[fine_base + 1]
+        result += prolongation_blocks[block_entry + 12] * fine_value[fine_base + 2]
+        result += prolongation_blocks[block_entry + 18] * fine_value[fine_base + 3]
+        result += prolongation_blocks[block_entry + 24] * fine_value[fine_base + 4]
+        result += prolongation_blocks[block_entry + 30] * fine_value[fine_base + 5]
+    coarse_value[scalar_row] = result
+
+
+@wp.kernel(enable_backward=False)
+def _prolong_add_owned_rows_3from6(
+    aggregate: wp.array[wp.int32],
+    prolongation_blocks: wp.array[wp.float64],
+    fine_block_size: int,
+    coarse_block_size: int,
+    coarse_value: wp.array[wp.float64],
+    fine_value: wp.array[wp.float64],
+):
+    """Prolong one 3-from-6 scalar row with literal coarse-local order."""
+    scalar_row = wp.tid()
+    fine_node = scalar_row // 3
+    coarse_base = aggregate[fine_node] * 6
+    block_base = scalar_row * 6
+    result = wp.float64(0.0)
+    result += prolongation_blocks[block_base] * coarse_value[coarse_base]
+    result += prolongation_blocks[block_base + 1] * coarse_value[coarse_base + 1]
+    result += prolongation_blocks[block_base + 2] * coarse_value[coarse_base + 2]
+    result += prolongation_blocks[block_base + 3] * coarse_value[coarse_base + 3]
+    result += prolongation_blocks[block_base + 4] * coarse_value[coarse_base + 4]
+    result += prolongation_blocks[block_base + 5] * coarse_value[coarse_base + 5]
+    fine_value[scalar_row] += result
+
+
+@wp.kernel(enable_backward=False)
+def _prolong_add_owned_rows_6from6(
+    aggregate: wp.array[wp.int32],
+    prolongation_blocks: wp.array[wp.float64],
+    fine_block_size: int,
+    coarse_block_size: int,
+    coarse_value: wp.array[wp.float64],
+    fine_value: wp.array[wp.float64],
+):
+    """Prolong one 6-from-6 scalar row with literal coarse-local order."""
+    scalar_row = wp.tid()
+    fine_node = scalar_row // 6
+    coarse_base = aggregate[fine_node] * 6
+    block_base = scalar_row * 6
+    result = wp.float64(0.0)
+    result += prolongation_blocks[block_base] * coarse_value[coarse_base]
+    result += prolongation_blocks[block_base + 1] * coarse_value[coarse_base + 1]
+    result += prolongation_blocks[block_base + 2] * coarse_value[coarse_base + 2]
+    result += prolongation_blocks[block_base + 3] * coarse_value[coarse_base + 3]
+    result += prolongation_blocks[block_base + 4] * coarse_value[coarse_base + 4]
+    result += prolongation_blocks[block_base + 5] * coarse_value[coarse_base + 5]
+    fine_value[scalar_row] += result
 
 
 @wp.kernel(enable_backward=False)
@@ -899,6 +1199,10 @@ class WarpScalarFusedVCyclePhysicalWork:
     matrix_block_products_elided_zero_start: int
     zero_start_block_solves: int
     noncoarse_level_count: int
+    nonterminal_literal_kernel_version: str
+    nonterminal_literal_kernel_route: str
+    nonterminal_literal_physical_nodes: int
+    nonterminal_literal_physical_node_map: str
     terminal_fusion_kernel_launches: int
     terminal_fusion_launch_reduction: int
     terminal_level_index: int
@@ -936,6 +1240,7 @@ class WarpScalarFusedVCyclePhysicalWork:
             "matrix_block_products_elided_zero_start",
             "zero_start_block_solves",
             "noncoarse_level_count",
+            "nonterminal_literal_physical_nodes",
             "terminal_fusion_kernel_launches",
             "terminal_fusion_launch_reduction",
             "terminal_block_dim",
@@ -954,6 +1259,25 @@ class WarpScalarFusedVCyclePhysicalWork:
             raise ValueError("physical-work counts must be non-negative built-in integers")
         if self.core_kernel_launches < 2 or self.scheduled_kernel_launches < 2:
             raise ValueError("a scalar-fused V-cycle core must schedule at least input and coarse kernels")
+        if (
+            type(self.nonterminal_literal_kernel_version) is not str
+            or self.nonterminal_literal_kernel_version != NONTERMINAL_LITERAL_KERNEL_VERSION
+        ):
+            raise ValueError("nonterminal literal kernel version is stale")
+        literal_counts = _parse_nonterminal_literal_physical_nodes(self.nonterminal_literal_physical_node_map)
+        if sum(literal_counts) != self.nonterminal_literal_physical_nodes:
+            raise ValueError("nonterminal literal physical-node count and map disagree")
+        if self.nonterminal_literal_kernel_route in (
+            NONTERMINAL_GENERIC_CPU_ROUTE,
+            NONTERMINAL_GENERIC_CUDA_ROUTE,
+        ):
+            if self.nonterminal_literal_physical_nodes != 0 or self.nonterminal_literal_physical_node_map:
+                raise ValueError("generic nonterminal route cannot claim literal physical nodes")
+        elif self.nonterminal_literal_kernel_route == NONTERMINAL_LITERAL_CUDA_ROUTE:
+            if self.nonterminal_literal_physical_nodes < 1 or not self.nonterminal_literal_physical_node_map:
+                raise ValueError("literal CUDA nonterminal route must identify its exact physical nodes")
+        else:
+            raise ValueError("nonterminal literal kernel route is outside the fixed physical schedule")
         noncoarse = self.noncoarse_level_count
         if type(self.terminal_level_index) is not int or type(self.terminal_owner_thread) is not int:
             raise TypeError("terminal level and owner fields must be built-in integers")
@@ -1130,7 +1454,7 @@ class WarpScalarFusedVCyclePhysicalWork:
         ):
             raise ValueError("physical-work evidence must remain schema-validated and unauthenticated")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v13",
+            "warp-scalar-fused-v-cycle-physical-work-v14",
             tuple(
                 (field.name, getattr(self, field.name))
                 for field in dataclasses.fields(self)
@@ -1261,7 +1585,7 @@ class WarpScalarFusedVCycleRecord:
         ):
             raise ValueError("coarsest-only seeded-core bindings must equal the unchanged core fallback")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v13",
+            "warp-scalar-fused-v-cycle-result-v14",
             (
                 ("contract_id", self.contract_id),
                 ("kernel_version", self.kernel_version),
@@ -1324,6 +1648,10 @@ class WarpScalarFusedVCycleRecord:
             "matrix_block_products_elided_zero_start": physical.matrix_block_products_elided_zero_start,
             "zero_start_block_solves": physical.zero_start_block_solves,
             "noncoarse_level_count": physical.noncoarse_level_count,
+            "nonterminal_literal_kernel_version": physical.nonterminal_literal_kernel_version,
+            "nonterminal_literal_kernel_route": physical.nonterminal_literal_kernel_route,
+            "nonterminal_literal_physical_nodes": physical.nonterminal_literal_physical_nodes,
+            "nonterminal_literal_physical_node_map": physical.nonterminal_literal_physical_node_map,
             "terminal_fusion_kernel_launches": physical.terminal_fusion_kernel_launches,
             "terminal_fusion_launch_reduction": physical.terminal_fusion_launch_reduction,
             "terminal_level_index": physical.terminal_level_index,
@@ -1368,6 +1696,10 @@ class WarpScalarFusedStaticMultigridHierarchy:
         "_levels",
         "_n_free",
         "_n_free_dofs",
+        "_nonterminal_literal_kernel_route",
+        "_nonterminal_literal_physical_node_map",
+        "_nonterminal_literal_physical_nodes",
+        "_nonterminal_literal_route_signature",
         "_post_smooth_steps",
         "_pre_smooth_steps",
         "_schedule_sha256",
@@ -1456,6 +1788,13 @@ class WarpScalarFusedStaticMultigridHierarchy:
             self._terminal_coarse_scalar_size,
         ) = terminal_metadata
         self._terminal_route_signature = terminal_metadata
+        nonterminal_literal_metadata = self._derive_nonterminal_literal_metadata()
+        (
+            self._nonterminal_literal_kernel_route,
+            self._nonterminal_literal_physical_nodes,
+            self._nonterminal_literal_physical_node_map,
+        ) = nonterminal_literal_metadata
+        self._nonterminal_literal_route_signature = nonterminal_literal_metadata
         self._static_array_objects = self._current_static_arrays()
         self._static_array_pointers = tuple(int(array.ptr) for array in self._static_array_objects)
         self._static_level_signature = self._current_level_signature()
@@ -1476,6 +1815,10 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ("root_ingress_kernel_launches", 1),
             ("noncoarse_result_buffer", "B"),
             ("coarsest_result_buffer", "A"),
+            ("nonterminal_literal_kernel_version", NONTERMINAL_LITERAL_KERNEL_VERSION),
+            ("nonterminal_literal_kernel_route", self.nonterminal_literal_kernel_route),
+            ("nonterminal_literal_physical_nodes", self.nonterminal_literal_physical_nodes),
+            ("nonterminal_literal_physical_node_map", self.nonterminal_literal_physical_node_map),
             ("terminal_fusion_version", TERMINAL_FUSION_VERSION),
             ("terminal_microcycle_kernel_version", TERMINAL_MICROCYCLE_KERNEL_VERSION),
             ("terminal_coarse_solve_kernel_version", self.terminal_coarse_solve_kernel_version),
@@ -1493,7 +1836,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ("publication_version", PUBLICATION_VERSION),
         )
         self._core_schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-core-schedule-v9",
+            "warp-scalar-fused-v-cycle-core-schedule-v10",
             (
                 *common_schedule_parts,
                 ("publication_route", EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -1502,7 +1845,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-schedule-v11",
+            "warp-scalar-fused-v-cycle-schedule-v12",
             (
                 *common_schedule_parts,
                 ("publication_route", STANDALONE_PUBLICATION_ROUTE),
@@ -1511,7 +1854,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._core_device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-core-snapshot-v9",
+            "warp-scalar-fused-static-multigrid-core-snapshot-v10",
             (
                 ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                 ("static_device_content_sha256", self._static_device_content_sha256),
@@ -1519,7 +1862,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-snapshot-v11",
+            "warp-scalar-fused-static-multigrid-snapshot-v12",
             (
                 ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                 ("static_device_content_sha256", self._static_device_content_sha256),
@@ -1538,7 +1881,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
                 ("core_kernel_launches", self.seeded_core_kernel_launches),
             )
             self._seeded_core_schedule_sha256 = _hash_parts(
-                "warp-scalar-fused-v-cycle-seeded-core-schedule-v7",
+                "warp-scalar-fused-v-cycle-seeded-core-schedule-v8",
                 (
                     *seeded_common_schedule_parts,
                     ("publication_route", EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -1547,7 +1890,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
                 ),
             )
             self._seeded_core_device_snapshot_sha256 = _hash_parts(
-                "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v7",
+                "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v8",
                 (
                     ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                     ("static_device_content_sha256", self._static_device_content_sha256),
@@ -1557,6 +1900,46 @@ class WarpScalarFusedStaticMultigridHierarchy:
         else:
             self._seeded_core_schedule_sha256 = self._core_schedule_sha256
             self._seeded_core_device_snapshot_sha256 = self._core_device_snapshot_sha256
+
+    def _derive_nonterminal_literal_metadata(self) -> tuple[str, int, str]:
+        """Derive exact literal-kernel physical nodes before the terminal level."""
+        if not self._device.is_cuda:
+            return (NONTERMINAL_GENERIC_CPU_ROUTE, 0, "")
+        counts = [0] * 9
+        for level_index in range(self._terminal_level_index):
+            level = self._levels[level_index]
+            recurrence_count = self._pre_smooth_steps + self._post_smooth_steps
+            jacobi_count = recurrence_count - 1
+            if level.block_size == 3:
+                counts[0] += recurrence_count
+                counts[3] += jacobi_count
+            elif level.block_size == 6:
+                counts[1] += recurrence_count
+                counts[2] += int(level_index > 0)
+                counts[4] += jacobi_count
+            transfer_path = (level.block_size, level.coarse_block_size)
+            if transfer_path == (3, 6):
+                counts[5] += 1
+                counts[7] += 1
+            elif transfer_path == (6, 6):
+                counts[6] += 1
+                counts[8] += 1
+        physical_node_map = _serialize_nonterminal_literal_physical_nodes(
+            (
+                counts[0],
+                counts[1],
+                counts[2],
+                counts[3],
+                counts[4],
+                counts[5],
+                counts[6],
+                counts[7],
+                counts[8],
+            )
+        )
+        physical_nodes = sum(counts)
+        route = NONTERMINAL_LITERAL_CUDA_ROUTE if physical_nodes else NONTERMINAL_GENERIC_CUDA_ROUTE
+        return (route, physical_nodes, physical_node_map)
 
     def _derive_terminal_fusion_metadata(
         self,
@@ -1777,6 +2160,26 @@ class WarpScalarFusedStaticMultigridHierarchy:
         return self._seeded_core_device_snapshot_sha256
 
     @property
+    def nonterminal_literal_kernel_version(self) -> str:
+        """Immutable exact-kernel family version for pre-terminal scalar rows."""
+        return NONTERMINAL_LITERAL_KERNEL_VERSION
+
+    @property
+    def nonterminal_literal_kernel_route(self) -> str:
+        """Construction-bound literal or generic pre-terminal route."""
+        return self._nonterminal_literal_kernel_route
+
+    @property
+    def nonterminal_literal_physical_nodes(self) -> int:
+        """Number of physical launches selecting a literal kernel per cycle."""
+        return self._nonterminal_literal_physical_nodes
+
+    @property
+    def nonterminal_literal_physical_node_map(self) -> str:
+        """Canonical exact literal physical-launch map, excluding terminal work."""
+        return self._nonterminal_literal_physical_node_map
+
+    @property
     def terminal_fusion_route(self) -> str:
         """Construction-bound terminal execution route."""
         return self._terminal_fusion_route
@@ -1948,6 +2351,13 @@ class WarpScalarFusedStaticMultigridHierarchy:
             or hierarchy.levels is not self._levels
             or hierarchy.coarse_cholesky is not self._coarse_cholesky
             or self._current_level_signature() != self._static_level_signature
+            or self._derive_nonterminal_literal_metadata() != self._nonterminal_literal_route_signature
+            or (
+                self._nonterminal_literal_kernel_route,
+                self._nonterminal_literal_physical_nodes,
+                self._nonterminal_literal_physical_node_map,
+            )
+            != self._nonterminal_literal_route_signature
             or self._derive_terminal_fusion_metadata() != self._terminal_route_signature
             or (
                 self._terminal_fusion_route,
@@ -2472,8 +2882,14 @@ class WarpScalarFusedStaticMultigridHierarchy:
         residual: wp.array,
     ) -> None:
         level = self.levels[level_index]
+        residual_kernel = _scalar_csr_residual
+        if self._uses_nonterminal_literal_kernel(level_index):
+            if level.block_size == 3:
+                residual_kernel = _scalar_csr_residual_bs3
+            elif level.block_size == 6:
+                residual_kernel = _scalar_csr_residual_bs6
         wp.launch(
-            _scalar_csr_residual,
+            residual_kernel,
             dim=level.scalar_size,
             inputs=[
                 level.row_offsets,
@@ -2499,8 +2915,14 @@ class WarpScalarFusedStaticMultigridHierarchy:
             raise RuntimeError("scalar Jacobi requires distinct input and output buffers")
         if level.inverse_diagonal is None or level.omega is None:
             raise RuntimeError(f"device level {level_index} is missing its smoother")
+        jacobi_kernel = _out_of_place_scalar_jacobi
+        if self._uses_nonterminal_literal_kernel(level_index):
+            if level.block_size == 3:
+                jacobi_kernel = _out_of_place_scalar_jacobi_bs3
+            elif level.block_size == 6:
+                jacobi_kernel = _out_of_place_scalar_jacobi_bs6
         wp.launch(
-            _out_of_place_scalar_jacobi,
+            jacobi_kernel,
             dim=level.scalar_size,
             inputs=[
                 residual,
@@ -2512,6 +2934,40 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ],
             device=self.device,
         )
+
+    def _uses_nonterminal_literal_kernel(self, level_index: int) -> bool:
+        """Return whether one level is before the bound CUDA terminal route."""
+        return (
+            self._nonterminal_literal_kernel_route == NONTERMINAL_LITERAL_CUDA_ROUTE
+            and 0 <= level_index < self._terminal_level_index
+        )
+
+    def _nonterminal_zero_start_kernel(self, level_index: int):
+        """Select the immutable literal or generic zero-start executable."""
+        level = self.levels[level_index]
+        if self._uses_nonterminal_literal_kernel(level_index) and level.block_size == 6:
+            return _zero_start_scalar_jacobi_bs6
+        return _zero_start_scalar_jacobi
+
+    def _nonterminal_restriction_kernel(self, level_index: int):
+        """Select the immutable literal or generic restriction executable."""
+        level = self.levels[level_index]
+        if self._uses_nonterminal_literal_kernel(level_index):
+            if (level.block_size, level.coarse_block_size) == (3, 6):
+                return _restrict_owned_rows_3to6
+            if (level.block_size, level.coarse_block_size) == (6, 6):
+                return _restrict_owned_rows_6to6
+        return _restrict_owned_rows
+
+    def _nonterminal_prolongation_kernel(self, level_index: int):
+        """Select the immutable literal or generic prolongation executable."""
+        level = self.levels[level_index]
+        if self._uses_nonterminal_literal_kernel(level_index):
+            if (level.block_size, level.coarse_block_size) == (3, 6):
+                return _prolong_add_owned_rows_3from6
+            if (level.block_size, level.coarse_block_size) == (6, 6):
+                return _prolong_add_owned_rows_6from6
+        return _prolong_add_owned_rows
 
     def _launch_level(
         self,
@@ -2590,7 +3046,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             return
         if not root_zero_start_complete:
             wp.launch(
-                _zero_start_scalar_jacobi,
+                self._nonterminal_zero_start_kernel(level_index),
                 dim=level.scalar_size,
                 inputs=[rhs, level.inverse_diagonal, level.block_size, level.omega, primary],
                 device=self.device,
@@ -2629,7 +3085,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             )
         else:
             wp.launch(
-                _restrict_owned_rows,
+                self._nonterminal_restriction_kernel(level_index),
                 dim=self.levels[level_index + 1].scalar_size,
                 inputs=[
                     level.member_offsets,
@@ -2644,7 +3100,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             )
             self._launch_level(level_index + 1, workspace)
             wp.launch(
-                _prolong_add_owned_rows,
+                self._nonterminal_prolongation_kernel(level_index),
                 dim=level.scalar_size,
                 inputs=[
                     level.aggregate,
@@ -2949,6 +3405,10 @@ class WarpScalarFusedVCycleWorkspace:
             ("matrix_block_products_elided_zero_start", elided_matrix_products),
             ("zero_start_block_solves", zero_start_solves),
             ("noncoarse_level_count", noncoarse_level_count),
+            ("nonterminal_literal_kernel_version", self.hierarchy.nonterminal_literal_kernel_version),
+            ("nonterminal_literal_kernel_route", self.hierarchy.nonterminal_literal_kernel_route),
+            ("nonterminal_literal_physical_nodes", self.hierarchy.nonterminal_literal_physical_nodes),
+            ("nonterminal_literal_physical_node_map", self.hierarchy.nonterminal_literal_physical_node_map),
             ("terminal_fusion_kernel_launches", self.hierarchy.terminal_fusion_kernel_launches),
             ("terminal_fusion_launch_reduction", self.hierarchy.terminal_fusion_launch_reduction),
             ("terminal_level_index", self.hierarchy.terminal_level_index),
@@ -2977,7 +3437,7 @@ class WarpScalarFusedVCycleWorkspace:
             ("solver_issued_authentication", False),
             ("performance_evidence", False),
         )
-        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v13", physical_parts)
+        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v14", physical_parts)
         physical_work = WarpScalarFusedVCyclePhysicalWork(
             hierarchy_sha256=self.hierarchy.hierarchy_sha256,
             schedule_sha256=schedule_sha256,
@@ -2987,6 +3447,10 @@ class WarpScalarFusedVCycleWorkspace:
             matrix_block_products_elided_zero_start=elided_matrix_products,
             zero_start_block_solves=zero_start_solves,
             noncoarse_level_count=noncoarse_level_count,
+            nonterminal_literal_kernel_version=self.hierarchy.nonterminal_literal_kernel_version,
+            nonterminal_literal_kernel_route=self.hierarchy.nonterminal_literal_kernel_route,
+            nonterminal_literal_physical_nodes=self.hierarchy.nonterminal_literal_physical_nodes,
+            nonterminal_literal_physical_node_map=self.hierarchy.nonterminal_literal_physical_node_map,
             terminal_fusion_kernel_launches=self.hierarchy.terminal_fusion_kernel_launches,
             terminal_fusion_launch_reduction=self.hierarchy.terminal_fusion_launch_reduction,
             terminal_level_index=self.hierarchy.terminal_level_index,
@@ -3014,7 +3478,7 @@ class WarpScalarFusedVCycleWorkspace:
             content_sha256=physical_sha256,
         )
         content_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v13",
+            "warp-scalar-fused-v-cycle-result-v14",
             (
                 ("contract_id", CONTRACT_ID),
                 ("kernel_version", KERNEL_VERSION),

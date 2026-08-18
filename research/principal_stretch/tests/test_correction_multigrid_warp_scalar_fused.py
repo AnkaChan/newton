@@ -14,6 +14,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -34,6 +35,11 @@ from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     CONTRACT_ID,
     EXTERNAL_SHARED_PUBLICATION_ROUTE,
     KERNEL_VERSION,
+    NONTERMINAL_GENERIC_CPU_ROUTE,
+    NONTERMINAL_GENERIC_CUDA_ROUTE,
+    NONTERMINAL_LITERAL_CUDA_ROUTE,
+    NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP,
+    NONTERMINAL_LITERAL_KERNEL_VERSION,
     PHYSICAL_EXECUTION_AUTHENTICATION,
     PUBLICATION_VERSION,
     ROOT_INGRESS_COARSE_COPY_ROUTE,
@@ -257,7 +263,7 @@ def _rehash_physical_work(physical_work) -> None:
         physical_work,
         "content_sha256",
         scalar_fused_module._hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v13",
+            "warp-scalar-fused-v-cycle-physical-work-v14",
             tuple(
                 (field.name, getattr(physical_work, field.name))
                 for field in dataclasses.fields(physical_work)
@@ -273,7 +279,7 @@ def _rehash_v_cycle_record(record) -> None:
         record,
         "content_sha256",
         scalar_fused_module._hash_parts(
-            "warp-scalar-fused-v-cycle-result-v13",
+            "warp-scalar-fused-v-cycle-result-v14",
             (
                 ("contract_id", record.contract_id),
                 ("kernel_version", record.kernel_version),
@@ -462,11 +468,11 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
 
     def test_contract_scalar_owners_source_sharing_and_launch_path(self):
         hierarchy = self.device_hierarchy
-        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v8")
+        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v9")
         self.assertEqual(CONTRACT_ID, "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v3")
         self.assertEqual(
             SCHEDULE_VERSION,
-            "scalar-core-fixed12-terminal-microcycle-seeded-root-publication-routes-v11",
+            "scalar-core-literal-nonterminal-fixed12-terminal-seeded-root-routes-v12",
         )
         self.assertEqual(PUBLICATION_VERSION, "scalar-fused-v-cycle-publication-routes-v2")
         self.assertEqual(EXTERNAL_SHARED_PUBLICATION_ROUTE, "external-shared-owner-scalar-to-vec3")
@@ -478,6 +484,10 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         self.assertEqual(hierarchy.scheduled_kernel_launches, 22)
         self.assertEqual(hierarchy.core_kernel_launches, 21)
         self.assertEqual(hierarchy.seeded_core_kernel_launches, 20)
+        self.assertEqual(hierarchy.nonterminal_literal_kernel_version, NONTERMINAL_LITERAL_KERNEL_VERSION)
+        self.assertEqual(hierarchy.nonterminal_literal_kernel_route, NONTERMINAL_GENERIC_CPU_ROUTE)
+        self.assertEqual(hierarchy.nonterminal_literal_physical_nodes, 0)
+        self.assertEqual(hierarchy.nonterminal_literal_physical_node_map, "")
         self.assertTrue(hierarchy.supports_seeded_root_zero_start)
         self.assertFalse(hierarchy.supports_terminal_fusion)
         self.assertEqual(hierarchy.terminal_fusion_route, TERMINAL_FUSION_CPU_FALLBACK_ROUTE)
@@ -517,6 +527,139 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             self.assertNotIn("wp.zeros", launch_source)
             self.assertNotIn(".numpy(", launch_source)
             self.assertNotIn("synchronize", launch_source)
+
+    def test_literal_kernels_freeze_scalar_row_source_order_and_direct_selectors(self):
+        residual_specs = (
+            (scalar_fused_module._scalar_csr_residual_bs3, 3),
+            (scalar_fused_module._scalar_csr_residual_bs6, 6),
+        )
+        jacobi_specs = (
+            (scalar_fused_module._zero_start_scalar_jacobi_bs6, 6, "output[scalar_row] = omega * value"),
+            (
+                scalar_fused_module._out_of_place_scalar_jacobi_bs3,
+                3,
+                "output[scalar_row] = current[scalar_row] + omega * value",
+            ),
+            (
+                scalar_fused_module._out_of_place_scalar_jacobi_bs6,
+                6,
+                "output[scalar_row] = current[scalar_row] + omega * value",
+            ),
+        )
+        for kernel, block_size in residual_specs:
+            source = inspect.getsource(kernel.func)
+            self.assertNotIn("for local_column", source)
+            self.assertEqual(source.count("product +="), block_size)
+            additions = ["values[value_base]"] + [f"values[value_base + {index}]" for index in range(1, block_size)]
+            positions = [source.index(term) for term in additions]
+            self.assertEqual(positions, sorted(positions))
+            self.assertEqual(source.count("residual[scalar_row] = rhs[scalar_row] - product"), 1)
+        for kernel, block_size, retained_store in jacobi_specs:
+            source = inspect.getsource(kernel.func)
+            self.assertNotIn("for local_column", source)
+            self.assertEqual(source.count("value +="), block_size)
+            additions = ["inverse_diagonal[block_base]"] + [
+                f"inverse_diagonal[block_base + {index}]" for index in range(1, block_size)
+            ]
+            positions = [source.index(term) for term in additions]
+            self.assertEqual(positions, sorted(positions))
+            self.assertEqual(source.count(retained_store), 1)
+        transfer_specs = (
+            (scalar_fused_module._restrict_owned_rows_3to6, 3, "coarse_value[scalar_row] = result"),
+            (scalar_fused_module._restrict_owned_rows_6to6, 6, "coarse_value[scalar_row] = result"),
+            (scalar_fused_module._prolong_add_owned_rows_3from6, 6, "fine_value[scalar_row] += result"),
+            (scalar_fused_module._prolong_add_owned_rows_6from6, 6, "fine_value[scalar_row] += result"),
+        )
+        for kernel, addition_count, retained_store in transfer_specs:
+            source = inspect.getsource(kernel.func)
+            self.assertNotIn("for fine_local", source)
+            self.assertNotIn("for coarse_local", source)
+            self.assertEqual(source.count("result +="), addition_count)
+            self.assertEqual(source.count(retained_store), 1)
+
+        for selector_name in (
+            "_nonterminal_zero_start_kernel",
+            "_nonterminal_restriction_kernel",
+            "_nonterminal_prolongation_kernel",
+        ):
+            selector_source = inspect.getsource(getattr(WarpScalarFusedStaticMultigridHierarchy, selector_name))
+            self.assertNotIn("globals(", selector_source)
+            self.assertNotIn(".get(", selector_source)
+        mutable_kernel_globals = [
+            name
+            for name, value in vars(scalar_fused_module).items()
+            if "kernel" in name.lower() and isinstance(value, (dict, list, set))
+        ]
+        self.assertEqual(mutable_kernel_globals, [])
+
+    def test_literal_kernel_module_hash_ignores_plausible_mutable_global_injection(self):
+        script_prefix = (
+            "import hashlib\nfrom research.principal_stretch import correction_multigrid_warp_scalar_fused as module\n"
+        )
+        scripts = (
+            script_prefix,
+            script_prefix
+            + "module._NONTERMINAL_LITERAL_KERNEL_MAP = {'bs3': object()}\n"
+            + "module._BLOCK_SIZE = 17\n"
+            + "module._BLOCK_OFFSETS = [9, 1, 4]\n"
+            + "module._SCALAR_ROW_VECTOR_TYPE = object()\n",
+        )
+        hashes = []
+        for prefix in scripts:
+            script = (
+                prefix
+                + "kernels = (module._scalar_csr_residual_bs3, module._scalar_csr_residual_bs6, "
+                + "module._zero_start_scalar_jacobi_bs6, module._out_of_place_scalar_jacobi_bs3, "
+                + "module._out_of_place_scalar_jacobi_bs6, module._restrict_owned_rows_3to6, "
+                + "module._restrict_owned_rows_6to6, module._prolong_add_owned_rows_3from6, "
+                + "module._prolong_add_owned_rows_6from6)\n"
+                + "digest = hashlib.sha256()\n"
+                + "[digest.update(kernel.module.get_module_hash()) for kernel in kernels]\n"
+                + "print('LITERAL_MODULE_SHA256=' + digest.hexdigest())\n"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=os.getcwd(),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60.0,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            matches = [
+                line.removeprefix("LITERAL_MODULE_SHA256=")
+                for line in completed.stdout.splitlines()
+                if line.startswith("LITERAL_MODULE_SHA256=")
+            ]
+            self.assertEqual(len(matches), 1, completed.stdout + completed.stderr)
+            hashes.append(matches[0])
+        self.assertEqual(hashes[0], hashes[1])
+
+    def test_literal_selectors_keep_zero_bs3_and_transfer_6to3_generic(self):
+        probe = object.__new__(WarpScalarFusedStaticMultigridHierarchy)
+        object.__setattr__(probe, "_nonterminal_literal_kernel_route", NONTERMINAL_LITERAL_CUDA_ROUTE)
+        object.__setattr__(probe, "_terminal_level_index", 1)
+        object.__setattr__(
+            probe,
+            "_levels",
+            (
+                SimpleNamespace(block_size=6, coarse_block_size=3),
+                SimpleNamespace(block_size=3, coarse_block_size=None),
+            ),
+        )
+        self.assertIs(probe._nonterminal_restriction_kernel(0), scalar_fused_module._restrict_owned_rows)
+        self.assertIs(probe._nonterminal_prolongation_kernel(0), scalar_fused_module._prolong_add_owned_rows)
+        object.__setattr__(
+            probe,
+            "_levels",
+            (
+                SimpleNamespace(block_size=3, coarse_block_size=3),
+                SimpleNamespace(block_size=3, coarse_block_size=None),
+            ),
+        )
+        self.assertIs(probe._nonterminal_zero_start_kernel(0), scalar_fused_module._zero_start_scalar_jacobi)
+        self.assertIs(probe._nonterminal_restriction_kernel(0), scalar_fused_module._restrict_owned_rows)
+        self.assertIs(probe._nonterminal_prolongation_kernel(0), scalar_fused_module._prolong_add_owned_rows)
 
     def test_terminal_microcycle_uses_literal_owner_and_six_unconditional_collectives(self):
         kernel = scalar_fused_module._terminal_zero_jacobi_residual_restrict_solve_prolong_residual_jacobi
@@ -693,6 +836,15 @@ assert "_Vec12d" not in vars(module)
                         stored_blocks,
                     )
                     self.assertEqual(actual.physical_work.zero_start_block_solves, block_rows)
+                    self.assertEqual(
+                        actual.physical_work.nonterminal_literal_kernel_version,
+                        NONTERMINAL_LITERAL_KERNEL_VERSION,
+                    )
+                    self.assertEqual(
+                        actual.physical_work.nonterminal_literal_kernel_route, NONTERMINAL_GENERIC_CPU_ROUTE
+                    )
+                    self.assertEqual(actual.physical_work.nonterminal_literal_physical_nodes, 0)
+                    self.assertEqual(actual.physical_work.nonterminal_literal_physical_node_map, "")
                     self.assertEqual(actual.physical_work.terminal_fusion_kernel_launches, 0)
                     self.assertEqual(actual.physical_work.terminal_level_index, len(hierarchy.levels) - 2)
                     self.assertEqual(actual.physical_work.terminal_block_dim, 0)
@@ -1660,6 +1812,240 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
         cls.hierarchy = _mixed_hierarchy(smooth_steps=2)
         cls.device_hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(cls.hierarchy, device="cuda:0")
 
+    @staticmethod
+    def _generic_nonterminal_kernels() -> dict[str, object]:
+        return {
+            "_scalar_csr_residual_bs3": scalar_fused_module._scalar_csr_residual,
+            "_scalar_csr_residual_bs6": scalar_fused_module._scalar_csr_residual,
+            "_zero_start_scalar_jacobi_bs6": scalar_fused_module._zero_start_scalar_jacobi,
+            "_out_of_place_scalar_jacobi_bs3": scalar_fused_module._out_of_place_scalar_jacobi,
+            "_out_of_place_scalar_jacobi_bs6": scalar_fused_module._out_of_place_scalar_jacobi,
+            "_restrict_owned_rows_3to6": scalar_fused_module._restrict_owned_rows,
+            "_restrict_owned_rows_6to6": scalar_fused_module._restrict_owned_rows,
+            "_prolong_add_owned_rows_3from6": scalar_fused_module._prolong_add_owned_rows,
+            "_prolong_add_owned_rows_6from6": scalar_fused_module._prolong_add_owned_rows,
+        }
+
+    def test_cuda_literal_route_exact_map_trace_and_generic_fallbacks(self):
+        default_source = _default_stretch_hierarchy()
+        default = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(default_source, device="cuda:0")
+        self.assertEqual(default.nonterminal_literal_kernel_version, NONTERMINAL_LITERAL_KERNEL_VERSION)
+        self.assertEqual(default.nonterminal_literal_kernel_route, NONTERMINAL_LITERAL_CUDA_ROUTE)
+        self.assertEqual(default.nonterminal_literal_physical_nodes, 11)
+        self.assertEqual(default.nonterminal_literal_physical_node_map, NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP)
+        workspace = default.create_workspace()
+        workspace.set_rhs(np.random.default_rng(190817).normal(size=default.n_free_dofs))
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            workspace.launch()
+        kernels = [call.args[0] for call in launch.call_args_list]
+        expected_counts = (
+            (scalar_fused_module._scalar_csr_residual_bs3, 2),
+            (scalar_fused_module._scalar_csr_residual_bs6, 2),
+            (scalar_fused_module._zero_start_scalar_jacobi_bs6, 1),
+            (scalar_fused_module._out_of_place_scalar_jacobi_bs3, 1),
+            (scalar_fused_module._out_of_place_scalar_jacobi_bs6, 1),
+            (scalar_fused_module._restrict_owned_rows_3to6, 1),
+            (scalar_fused_module._restrict_owned_rows_6to6, 1),
+            (scalar_fused_module._prolong_add_owned_rows_3from6, 1),
+            (scalar_fused_module._prolong_add_owned_rows_6from6, 1),
+        )
+        for kernel, count in expected_counts:
+            self.assertEqual(kernels.count(kernel), count, str(kernel))
+        self.assertEqual(sum(kernels.count(kernel) for kernel, _count in expected_counts), 11)
+        for generic_kernel in (
+            scalar_fused_module._scalar_csr_residual,
+            scalar_fused_module._zero_start_scalar_jacobi,
+            scalar_fused_module._out_of_place_scalar_jacobi,
+            scalar_fused_module._restrict_owned_rows,
+            scalar_fused_module._prolong_add_owned_rows,
+        ):
+            self.assertNotIn(generic_kernel, kernels)
+        record = workspace.record()
+        self.assertEqual(record.physical_work.nonterminal_literal_kernel_version, NONTERMINAL_LITERAL_KERNEL_VERSION)
+        self.assertEqual(record.physical_work.nonterminal_literal_kernel_route, NONTERMINAL_LITERAL_CUDA_ROUTE)
+        self.assertEqual(record.physical_work.nonterminal_literal_physical_nodes, 11)
+        self.assertEqual(
+            record.physical_work.nonterminal_literal_physical_node_map,
+            NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP,
+        )
+        self.assertEqual(record.physical_work.matrix_recurrence_phases, 6)
+        self.assertEqual(record.physical_work.jacobi_recurrence_phases, 6)
+
+        translation_source = _translation_hierarchy(16)
+        translation = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(translation_source, device="cuda:0")
+        self.assertEqual(translation.nonterminal_literal_kernel_route, NONTERMINAL_LITERAL_CUDA_ROUTE)
+        self.assertEqual(translation.nonterminal_literal_physical_nodes, 3)
+        self.assertEqual(
+            translation.nonterminal_literal_physical_node_map,
+            "residual-bs3=2|jacobi-bs3=1",
+        )
+        translation_workspace = translation.create_workspace()
+        translation_workspace.set_rhs(np.random.default_rng(190818).normal(size=translation.n_free_dofs))
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as translation_launch:
+            translation_workspace.launch()
+        translation_kernels = [call.args[0] for call in translation_launch.call_args_list]
+        self.assertEqual(translation_kernels.count(scalar_fused_module._scalar_csr_residual_bs3), 2)
+        self.assertEqual(translation_kernels.count(scalar_fused_module._out_of_place_scalar_jacobi_bs3), 1)
+        self.assertEqual(translation_kernels.count(scalar_fused_module._restrict_owned_rows), 1)
+        self.assertEqual(translation_kernels.count(scalar_fused_module._prolong_add_owned_rows), 1)
+        self.assertNotIn(scalar_fused_module._zero_start_scalar_jacobi_bs6, translation_kernels)
+        self.assertNotIn(scalar_fused_module._restrict_owned_rows_3to6, translation_kernels)
+        self.assertNotIn(scalar_fused_module._prolong_add_owned_rows_3from6, translation_kernels)
+
+        terminal_root = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _translation_hierarchy(341),
+            device="cuda:0",
+        )
+        self.assertEqual(terminal_root.nonterminal_literal_kernel_route, NONTERMINAL_GENERIC_CUDA_ROUTE)
+        self.assertEqual(terminal_root.nonterminal_literal_physical_nodes, 0)
+        self.assertEqual(terminal_root.nonterminal_literal_physical_node_map, "")
+
+        p2 = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _default_stretch_hierarchy(smooth_steps=2),
+            device="cuda:0",
+        )
+        self.assertEqual(p2.nonterminal_literal_physical_nodes, 19)
+        self.assertEqual(
+            p2.nonterminal_literal_physical_node_map,
+            "residual-bs3=4|residual-bs6=4|zero-jacobi-bs6=1|jacobi-bs3=3|jacobi-bs6=3|"
+            "restrict-3to6=1|restrict-6to6=1|prolong-3from6=1|prolong-6from6=1",
+        )
+        self.assertEqual(p2.scheduled_kernel_launches, 30)
+
+    def test_cuda_literal_all17_direct_capture_poison_signedzero_nonfinite_and_sticky_are_bitwise_generic(self):
+        source = _default_stretch_hierarchy()
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(source, device="cuda:0")
+        literal = hierarchy.create_workspace()
+        generic = hierarchy.create_workspace()
+        pointers = (_pointer_tuple(hierarchy, literal), _pointer_tuple(hierarchy, generic))
+        generator = np.random.default_rng(190819)
+        random_rhs = generator.normal(size=(hierarchy.n_free, 3))
+        signed_zero_rhs = np.zeros((hierarchy.n_free, 3), dtype=np.float64)
+        signed_zero_rhs.reshape(-1)[1::2] = -0.0
+        nonfinite_rhs = generator.normal(size=(hierarchy.n_free, 3))
+        nonfinite_rhs.reshape(-1)[:8] = (np.inf, -np.inf, np.nan, -0.0, 0.0, np.nan, np.inf, -np.inf)
+        generic_kernels = self._generic_nonterminal_kernels()
+
+        def run_literal(rhs: np.ndarray) -> None:
+            literal.rhs.assign(rhs)
+            literal.launch()
+
+        def run_generic(rhs: np.ndarray) -> None:
+            generic.rhs.assign(rhs)
+            with mock.patch.multiple(scalar_fused_module, **generic_kernels):
+                generic.launch()
+
+        for initialization in ("clean", "poison"):
+            for order in ("literal-generic", "generic-literal"):
+                for label, rhs in (
+                    ("random", random_rhs),
+                    ("signed-zero", signed_zero_rhs),
+                    ("nonfinite", nonfinite_rhs),
+                ):
+                    with self.subTest(initialization=initialization, order=order, rhs=label):
+                        initializer = _clear_workspace if initialization == "clean" else _poison_workspace
+                        initializer(literal)
+                        initializer(generic)
+                        first, second = (
+                            (run_literal, run_generic) if order == "literal-generic" else (run_generic, run_literal)
+                        )
+                        first(rhs)
+                        second(rhs)
+                        literal_patterns = _workspace_bit_patterns(literal)
+                        generic_patterns = _workspace_bit_patterns(generic)
+                        self.assertEqual(len(literal_patterns), 17)
+                        self.assertEqual(literal_patterns, generic_patterns)
+
+        run_literal(nonfinite_rhs)
+        run_generic(nonfinite_rhs)
+        run_literal(random_rhs)
+        run_generic(random_rhs)
+        self.assertEqual(_workspace_bit_patterns(literal), _workspace_bit_patterns(generic))
+
+        literal.rhs.assign(random_rhs)
+        generic.rhs.assign(random_rhs)
+        with wp.ScopedCapture(device=hierarchy.device) as literal_capture:
+            literal.launch()
+        with (
+            mock.patch.multiple(scalar_fused_module, **generic_kernels),
+            wp.ScopedCapture(device=hierarchy.device) as generic_capture,
+        ):
+            generic.launch()
+        for replay_index, (order, rhs) in enumerate(
+            (
+                ("literal-generic", signed_zero_rhs),
+                ("generic-literal", nonfinite_rhs),
+                ("literal-generic", random_rhs),
+                ("generic-literal", random_rhs),
+            )
+        ):
+            with self.subTest(replay=replay_index, order=order):
+                _poison_workspace(literal)
+                _poison_workspace(generic)
+                literal.rhs.assign(rhs)
+                generic.rhs.assign(rhs)
+                first_graph, second_graph = (
+                    (literal_capture.graph, generic_capture.graph)
+                    if order == "literal-generic"
+                    else (generic_capture.graph, literal_capture.graph)
+                )
+                wp.capture_launch(first_graph)
+                wp.capture_launch(second_graph)
+                literal_patterns = _workspace_bit_patterns(literal)
+                generic_patterns = _workspace_bit_patterns(generic)
+                self.assertEqual(len(literal_patterns), 17)
+                self.assertEqual(literal_patterns, generic_patterns)
+        self.assertEqual((_pointer_tuple(hierarchy, literal), _pointer_tuple(hierarchy, generic)), pointers)
+
+    def test_cuda_literal_route_map_tamper_fails_before_launch_even_with_coherent_signature(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _default_stretch_hierarchy(),
+            device="cuda:0",
+        )
+        workspace = hierarchy.create_workspace()
+        workspace.set_rhs(np.random.default_rng(190821).normal(size=hierarchy.n_free_dofs))
+        original = (
+            hierarchy._nonterminal_literal_kernel_route,
+            hierarchy._nonterminal_literal_physical_nodes,
+            hierarchy._nonterminal_literal_physical_node_map,
+        )
+        attacks = (
+            (
+                NONTERMINAL_LITERAL_CUDA_ROUTE,
+                11,
+                "residual-bs6=2|residual-bs3=2|zero-jacobi-bs6=1|jacobi-bs3=1|jacobi-bs6=1|"
+                "restrict-3to6=1|restrict-6to6=1|prolong-3from6=1|prolong-6from6=1",
+            ),
+            (
+                NONTERMINAL_LITERAL_CUDA_ROUTE,
+                13,
+                NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP + "|residual-bs3=2",
+            ),
+            (
+                NONTERMINAL_LITERAL_CUDA_ROUTE,
+                9,
+                "residual-bs3=2|residual-bs6=2|zero-jacobi-bs6=1|jacobi-bs3=1|jacobi-bs6=1|"
+                "restrict-3to6=1|restrict-6to6=1",
+            ),
+            (NONTERMINAL_GENERIC_CUDA_ROUTE, 0, ""),
+        )
+        try:
+            for route, count, physical_map in attacks:
+                with self.subTest(route=route, count=count, map=physical_map):
+                    object.__setattr__(hierarchy, "_nonterminal_literal_kernel_route", route)
+                    object.__setattr__(hierarchy, "_nonterminal_literal_physical_nodes", count)
+                    object.__setattr__(hierarchy, "_nonterminal_literal_physical_node_map", physical_map)
+                    object.__setattr__(hierarchy, "_nonterminal_literal_route_signature", (route, count, physical_map))
+                    with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                        with self.assertRaisesRegex(RuntimeError, "hierarchy identity changed"):
+                            workspace.launch()
+                    self.assertEqual(launch.call_count, 0)
+        finally:
+            object.__setattr__(hierarchy, "_nonterminal_literal_kernel_route", original[0])
+            object.__setattr__(hierarchy, "_nonterminal_literal_physical_nodes", original[1])
+            object.__setattr__(hierarchy, "_nonterminal_literal_physical_node_map", original[2])
+            object.__setattr__(hierarchy, "_nonterminal_literal_route_signature", original)
+
     def test_cuda_oracle_symmetry_positive_determinism_and_pointers(self):
         workspace = self.device_hierarchy.create_workspace()
         rhs_values = _rhs_set(self.hierarchy.levels[0].matrix.scalar_size)
@@ -1927,6 +2313,69 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
         self.assertNotIn("vec_t<12", excerpt)
         self.assertIn("// work0 =", excerpt)
         self.assertIn("// work11 =", excerpt)
+
+    def test_cuda_all_nine_literal_kernels_have_no_local_stack_or_ldl_stl_spills(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _default_stretch_hierarchy(),
+            device="cuda:0",
+        )
+        workspace = hierarchy.create_workspace()
+        workspace.set_rhs(np.random.default_rng(190820).normal(size=hierarchy.n_free_dofs))
+        workspace.launch()
+        symbols = (
+            "scalar_csr_residual_bs3",
+            "scalar_csr_residual_bs6",
+            "zero_start_scalar_jacobi_bs6",
+            "out_of_place_scalar_jacobi_bs3",
+            "out_of_place_scalar_jacobi_bs6",
+            "restrict_owned_rows_3to6",
+            "restrict_owned_rows_6to6",
+            "prolong_add_owned_rows_3from6",
+            "prolong_add_owned_rows_6from6",
+        )
+        module_hash_prefix = wp.get_module(scalar_fused_module.__name__).get_module_hash().hex()[:7]
+        cache_root = Path(str(wp.config.kernel_cache_dir))
+        sources = [
+            path
+            for path in cache_root.rglob("*.cu")
+            if path.parent.name.endswith(module_hash_prefix)
+            and all(symbol.encode() in path.read_bytes() for symbol in symbols)
+        ]
+        self.assertTrue(sources, f"no generated CUDA source for all literal symbols under {cache_root}")
+        source = max(sources, key=lambda path: path.stat().st_mtime_ns)
+        cubins = sorted(source.parent.glob("*.cubin"), key=lambda path: path.stat().st_mtime_ns)
+        self.assertTrue(cubins, f"no cubin found beside {source}")
+        cuobjdump = shutil.which("cuobjdump") or "/usr/local/cuda-12.6/bin/cuobjdump"
+        self.assertTrue(Path(cuobjdump).is_file(), "cuobjdump is required for the literal resource gate")
+        resource_output = subprocess.run(
+            [cuobjdump, "--dump-resource-usage", str(cubins[-1])],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        sass_output = subprocess.run(
+            [cuobjdump, "--dump-sass", str(cubins[-1])],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        resource_sections = re.split(r"(?m)(?=^[ \t]*Function\b)", resource_output)
+        sass_sections = re.split(r"(?m)(?=^[ \t]*Function\b)", sass_output)
+        for symbol in symbols:
+            with self.subTest(symbol=symbol):
+                resources = "\n".join(section for section in resource_sections if symbol in section)
+                self.assertTrue(resources, f"resource output did not name {symbol!r}")
+                registers = [int(value) for value in re.findall(r"\bREG:(\d+)", resources)]
+                local = [int(value) for value in re.findall(r"\bLOCAL:(\d+)", resources)]
+                stack = [int(value) for value in re.findall(r"\bSTACK:(\d+)", resources)]
+                self.assertTrue(registers, resources)
+                self.assertGreater(max(registers), 0, resources)
+                self.assertEqual(max(local, default=0), 0, resources)
+                self.assertEqual(max(stack, default=0), 0, resources)
+                sass = "\n".join(section for section in sass_sections if symbol in section)
+                self.assertTrue(sass, f"SASS output did not name {symbol!r}")
+                self.assertEqual(len(re.findall(r"\bLDL(?:\.|\b)", sass)), 0, sass)
+                self.assertEqual(len(re.findall(r"\bSTL(?:\.|\b)", sass)), 0, sass)
 
     def test_cuda_fixed12_route_and_solve_identity_tamper_fail_after_coordinated_rehash(self):
         hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(

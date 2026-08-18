@@ -96,6 +96,18 @@ from .correction_multigrid_warp_scalar_fused import (
     KERNEL_VERSION as V_CYCLE_KERNEL_VERSION,
 )
 from .correction_multigrid_warp_scalar_fused import (
+    NONTERMINAL_GENERIC_CUDA_ROUTE as V_CYCLE_NONTERMINAL_GENERIC_CUDA_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    NONTERMINAL_LITERAL_CUDA_ROUTE as V_CYCLE_NONTERMINAL_LITERAL_CUDA_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP as V_CYCLE_NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    NONTERMINAL_LITERAL_KERNEL_VERSION as V_CYCLE_NONTERMINAL_LITERAL_KERNEL_VERSION,
+)
+from .correction_multigrid_warp_scalar_fused import (
     PHYSICAL_EXECUTION_AUTHENTICATION as V_CYCLE_PHYSICAL_EXECUTION_AUTHENTICATION,
 )
 from .correction_multigrid_warp_scalar_fused import (
@@ -160,14 +172,15 @@ from .correction_multigrid_warp_scalar_fused import (
     WarpScalarFusedVCyclePhysicalWork,
     WarpScalarFusedVCycleRecord,
     WarpScalarFusedVCycleWorkspace,
+    _serialize_nonterminal_literal_physical_nodes,
 )
 from .solver_benchmark import TetBenchmarkScene, build_common_problem, common_objective_manifest
 
 CONTRACT_ID = "captured-direct-multiplicative-graph-vbd-v2"
 OUTER_CORRECTIONS = 4
 V_CYCLES_PER_OUTER = 2
-OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-four-warp-fixed12-terminal-outer-v9"
-OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v13"
+OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-four-warp-literal-nonterminal-fixed12-terminal-outer-v10"
+OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v14"
 FIRST_CYCLE_PUBLICATION_ROLE = "current-a-apply-free-row-owner-scalar-to-vec3"
 SECOND_CYCLE_PUBLICATION_ROLE = "vertex-owner-scalar-to-vec3"
 FINALIZE_GATE_ROUTE = "cuda-one-block-four-warp-ordered-fp64-v1"
@@ -287,6 +300,10 @@ def _derive_outer_schedule_sha256(
     scalar_direction_apply_kernel_version: str,
     v_cycle_kernel_version: str,
     v_cycle_schedule_version: str,
+    v_cycle_nonterminal_literal_kernel_version: str,
+    v_cycle_nonterminal_literal_kernel_route: str,
+    v_cycle_nonterminal_literal_physical_nodes: int,
+    v_cycle_nonterminal_literal_physical_node_map: str,
     v_cycle_terminal_fusion_version: str,
     v_cycle_terminal_fusion_route: str,
     v_cycle_terminal_coarse_solve_kernel_version: str,
@@ -308,13 +325,17 @@ def _derive_outer_schedule_sha256(
     """Bind fused formulas and the exact ordered four-warp gate."""
     return _canonical_digest(
         {
-            "contract": "captured-direct-graph-vbd-outer-schedule-v13",
+            "contract": "captured-direct-graph-vbd-outer-schedule-v14",
             "kernel_version": kernel_version,
             "fused_gather_kernel_version": fused_gather_kernel_version,
             "root_seeded_gather_kernel_version": root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": scalar_direction_apply_kernel_version,
             "v_cycle_kernel_version": v_cycle_kernel_version,
             "v_cycle_schedule_version": v_cycle_schedule_version,
+            "v_cycle_nonterminal_literal_kernel_version": v_cycle_nonterminal_literal_kernel_version,
+            "v_cycle_nonterminal_literal_kernel_route": v_cycle_nonterminal_literal_kernel_route,
+            "v_cycle_nonterminal_literal_physical_nodes": v_cycle_nonterminal_literal_physical_nodes,
+            "v_cycle_nonterminal_literal_physical_node_map": v_cycle_nonterminal_literal_physical_node_map,
             "v_cycle_terminal_fusion_version": v_cycle_terminal_fusion_version,
             "v_cycle_terminal_microcycle_kernel_version": V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
             "v_cycle_terminal_fusion_route": v_cycle_terminal_fusion_route,
@@ -375,9 +396,21 @@ def _derive_outer_schedule_sha256(
             "shared_root_ingress_kernel_launches_per_outer": 2,
             "separate_root_ingress_kernel_launches_per_outer": 0,
             "fused_vertex_kernel_launches_per_outer": 1,
+            "literal_kernel_substitutions_per_outer": 2 * v_cycle_nonterminal_literal_physical_nodes,
+            "literal_kernel_substitutions_per_integrated_correction": (
+                OUTER_CORRECTIONS * V_CYCLES_PER_OUTER * v_cycle_nonterminal_literal_physical_nodes
+            ),
             "finalize_gate_kernel_launches_per_outer": 1,
             "retained_linear_work_launches_per_outer": "5+2*seeded_core_v_cycle_launches",
             "remaining_gate_commit_launches_per_outer": 3,
+            "nonterminal_literal_kernel_schedule": {
+                "kernel_version": v_cycle_nonterminal_literal_kernel_version,
+                "route": v_cycle_nonterminal_literal_kernel_route,
+                "physical_kernel_substitutions_per_v_cycle": v_cycle_nonterminal_literal_physical_nodes,
+                "physical_node_map": v_cycle_nonterminal_literal_physical_node_map,
+                "terminal_level_excluded": True,
+                "logical_recurrence_phases_changed": False,
+            },
             "terminal_fusion_schedule": {
                 "operations": V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES.split("|"),
                 "coarse_solve_route": V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_ROUTE,
@@ -428,6 +461,10 @@ OUTER_SCHEDULE_SHA256 = _derive_outer_schedule_sha256(
     SCALAR_DIRECTION_APPLY_KERNEL_VERSION,
     V_CYCLE_KERNEL_VERSION,
     V_CYCLE_SCHEDULE_VERSION,
+    V_CYCLE_NONTERMINAL_LITERAL_KERNEL_VERSION,
+    V_CYCLE_NONTERMINAL_LITERAL_CUDA_ROUTE,
+    11,
+    V_CYCLE_NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP,
     V_CYCLE_TERMINAL_FUSION_VERSION,
     V_CYCLE_TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE,
     V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION,
@@ -902,6 +939,10 @@ def _validate_v_cycle_record(
         "matrix_block_products_elided_zero_start": expected_elided_products,
         "zero_start_block_solves": expected_zero_start_solves,
         "noncoarse_level_count": len(noncoarse_levels),
+        "nonterminal_literal_kernel_version": scalar_evidence.nonterminal_literal_kernel_version,
+        "nonterminal_literal_kernel_route": scalar_evidence.nonterminal_literal_kernel_route,
+        "nonterminal_literal_physical_nodes": scalar_evidence.nonterminal_literal_physical_nodes,
+        "nonterminal_literal_physical_node_map": scalar_evidence.nonterminal_literal_physical_node_map,
         "terminal_fusion_kernel_launches": scalar_evidence.terminal_fusion_kernel_launches,
         "terminal_fusion_launch_reduction": scalar_evidence.terminal_fusion_launch_reduction,
         "terminal_level_index": scalar_evidence.terminal_level_index,
@@ -939,6 +980,7 @@ def _validate_v_cycle_record(
         "matrix_block_products_elided_zero_start",
         "zero_start_block_solves",
         "noncoarse_level_count",
+        "nonterminal_literal_physical_nodes",
         "terminal_fusion_kernel_launches",
         "terminal_fusion_launch_reduction",
         "terminal_level_index",
@@ -966,6 +1008,9 @@ def _validate_v_cycle_record(
         type(physical.publication_version) is not str
         or type(physical.publication_route) is not str
         or type(physical.root_ingress_route) is not str
+        or type(physical.nonterminal_literal_kernel_version) is not str
+        or type(physical.nonterminal_literal_kernel_route) is not str
+        or type(physical.nonterminal_literal_physical_node_map) is not str
         or type(physical.terminal_microcycle_kernel_version) is not str
         or type(physical.terminal_coarse_solve_kernel_version) is not str
         or type(physical.terminal_coarse_solve_route) is not str
@@ -974,13 +1019,13 @@ def _validate_v_cycle_record(
     ):
         raise ValueError(f"{name} physical publication route or launch accounting is invalid")
     physical_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-physical-work-v13",
+        "warp-scalar-fused-v-cycle-physical-work-v14",
         tuple(expected_physical.items()),
     )
     if physical.content_sha256 != physical_sha256:
         raise ValueError(f"{name} physical work hash is stale")
     record_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-result-v13",
+        "warp-scalar-fused-v-cycle-result-v14",
         (
             ("contract_id", V_CYCLE_CONTRACT_ID),
             ("kernel_version", V_CYCLE_KERNEL_VERSION),
@@ -1094,6 +1139,10 @@ class _EndpointValidationContext:
     scalar_direction_apply_kernel_version: str
     v_cycle_kernel_version: str
     v_cycle_schedule_version: str
+    v_cycle_nonterminal_literal_kernel_version: str
+    v_cycle_nonterminal_literal_kernel_route: str
+    v_cycle_nonterminal_literal_physical_nodes: int
+    v_cycle_nonterminal_literal_physical_node_map: str
     v_cycle_terminal_fusion_version: str
     v_cycle_terminal_microcycle_kernel_version: str
     v_cycle_terminal_coarse_solve_kernel_version: str
@@ -1176,6 +1225,15 @@ class _EndpointValidationContext:
             or self.v_cycle_kernel_version != V_CYCLE_KERNEL_VERSION
             or type(self.v_cycle_schedule_version) is not str
             or self.v_cycle_schedule_version != V_CYCLE_SCHEDULE_VERSION
+            or type(self.v_cycle_nonterminal_literal_kernel_version) is not str
+            or self.v_cycle_nonterminal_literal_kernel_version != V_CYCLE_NONTERMINAL_LITERAL_KERNEL_VERSION
+            or type(self.v_cycle_nonterminal_literal_kernel_route) is not str
+            or self.v_cycle_nonterminal_literal_kernel_route != V_CYCLE_NONTERMINAL_LITERAL_CUDA_ROUTE
+            or type(self.v_cycle_nonterminal_literal_physical_nodes) is not int
+            or self.v_cycle_nonterminal_literal_physical_nodes != 11
+            or type(self.v_cycle_nonterminal_literal_physical_node_map) is not str
+            or self.v_cycle_nonterminal_literal_physical_node_map
+            != V_CYCLE_NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP
             or type(self.v_cycle_terminal_fusion_version) is not str
             or self.v_cycle_terminal_fusion_version != V_CYCLE_TERMINAL_FUSION_VERSION
             or type(self.v_cycle_terminal_microcycle_kernel_version) is not str
@@ -1213,6 +1271,10 @@ class _EndpointValidationContext:
                 self.scalar_direction_apply_kernel_version,
                 self.v_cycle_kernel_version,
                 self.v_cycle_schedule_version,
+                self.v_cycle_nonterminal_literal_kernel_version,
+                self.v_cycle_nonterminal_literal_kernel_route,
+                self.v_cycle_nonterminal_literal_physical_nodes,
+                self.v_cycle_nonterminal_literal_physical_node_map,
                 self.v_cycle_terminal_fusion_version,
                 self.v_cycle_terminal_fusion_route,
                 self.v_cycle_terminal_coarse_solve_kernel_version,
@@ -1235,7 +1297,11 @@ class _EndpointValidationContext:
             raise ValueError("endpoint validation outer kernel schedule is not canonical")
         scalar_evidence = _canonical_scalar_fused_evidence(self.hierarchy)
         if (
-            type(self.v_cycle_terminal_coarse_solve_kernel_version) is not str
+            type(self.v_cycle_nonterminal_literal_kernel_version) is not str
+            or type(self.v_cycle_nonterminal_literal_kernel_route) is not str
+            or type(self.v_cycle_nonterminal_literal_physical_nodes) is not int
+            or type(self.v_cycle_nonterminal_literal_physical_node_map) is not str
+            or type(self.v_cycle_terminal_coarse_solve_kernel_version) is not str
             or type(self.v_cycle_terminal_coarse_solve_route) is not str
             or type(self.v_cycle_terminal_coarse_scalar_size) is not int
             or type(self.v_cycle_terminal_fusion_route) is not str
@@ -1246,6 +1312,11 @@ class _EndpointValidationContext:
             or type(self.v_cycle_terminal_collective_count) is not int
             or type(self.v_cycle_terminal_owner_thread) is not int
             or type(self.v_cycle_terminal_logical_phases) is not str
+            or self.v_cycle_nonterminal_literal_kernel_version != scalar_evidence.nonterminal_literal_kernel_version
+            or self.v_cycle_nonterminal_literal_kernel_route != scalar_evidence.nonterminal_literal_kernel_route
+            or self.v_cycle_nonterminal_literal_physical_nodes != scalar_evidence.nonterminal_literal_physical_nodes
+            or self.v_cycle_nonterminal_literal_physical_node_map
+            != scalar_evidence.nonterminal_literal_physical_node_map
             or self.v_cycle_terminal_coarse_solve_kernel_version != scalar_evidence.terminal_coarse_solve_kernel_version
             or self.v_cycle_terminal_coarse_solve_route != scalar_evidence.terminal_coarse_solve_route
             or self.v_cycle_terminal_coarse_scalar_size != scalar_evidence.terminal_coarse_scalar_size
@@ -1258,7 +1329,7 @@ class _EndpointValidationContext:
             or self.v_cycle_terminal_owner_thread != scalar_evidence.terminal_owner_thread
             or self.v_cycle_terminal_logical_phases != scalar_evidence.terminal_logical_phases
         ):
-            raise ValueError("endpoint validation terminal fusion route is not canonical")
+            raise ValueError("endpoint validation scalar literal and terminal routes are not canonical")
         if type(self.v_cycle_kernel_launches) is not int or self.v_cycle_kernel_launches < 1:
             raise ValueError("v_cycle_kernel_launches must be a positive built-in int")
         if (
@@ -1679,6 +1750,10 @@ class CapturedGraphVBDOuterWork:
                 self.scalar_direction_apply_kernel_version,
                 self._validation_context.v_cycle_kernel_version,
                 self._validation_context.v_cycle_schedule_version,
+                self._validation_context.v_cycle_nonterminal_literal_kernel_version,
+                self._validation_context.v_cycle_nonterminal_literal_kernel_route,
+                self._validation_context.v_cycle_nonterminal_literal_physical_nodes,
+                self._validation_context.v_cycle_nonterminal_literal_physical_node_map,
                 self._validation_context.v_cycle_terminal_fusion_version,
                 self._validation_context.v_cycle_terminal_fusion_route,
                 self._validation_context.v_cycle_terminal_coarse_solve_kernel_version,
@@ -1820,7 +1895,7 @@ class CapturedGraphVBDOuterWork:
         if type(self.linear_kernel_launches) is not int or self.linear_kernel_launches != expected_launches:
             raise ValueError("linear_kernel_launches does not match the fixed direct schedule")
         payload = {
-            "contract": "captured-direct-graph-vbd-outer-work-v11",
+            "contract": "captured-direct-graph-vbd-outer-work-v12",
             "outer_index": self.outer_index,
             "start_position_sha256": start_position_sha256,
             "current_operator_sha256": operator_sha256,
@@ -1837,6 +1912,16 @@ class CapturedGraphVBDOuterWork:
             "scalar_direction_apply_kernel_version": self.scalar_direction_apply_kernel_version,
             "v_cycle_kernel_version": self._validation_context.v_cycle_kernel_version,
             "v_cycle_schedule_version": self._validation_context.v_cycle_schedule_version,
+            "v_cycle_nonterminal_literal_kernel_version": (
+                self._validation_context.v_cycle_nonterminal_literal_kernel_version
+            ),
+            "v_cycle_nonterminal_literal_kernel_route": self._validation_context.v_cycle_nonterminal_literal_kernel_route,
+            "v_cycle_nonterminal_literal_physical_nodes": (
+                self._validation_context.v_cycle_nonterminal_literal_physical_nodes
+            ),
+            "v_cycle_nonterminal_literal_physical_node_map": (
+                self._validation_context.v_cycle_nonterminal_literal_physical_node_map
+            ),
             "v_cycle_terminal_fusion_version": self._validation_context.v_cycle_terminal_fusion_version,
             "v_cycle_terminal_microcycle_kernel_version": (
                 self._validation_context.v_cycle_terminal_microcycle_kernel_version
@@ -1901,7 +1986,7 @@ class CapturedGraphVBDOuterWork:
         ):
             raise ValueError("outer work content hash is not canonical at serialization")
         return {
-            "contract": "captured-direct-graph-vbd-outer-work-v11",
+            "contract": "captured-direct-graph-vbd-outer-work-v12",
             "outer_index": self.outer_index,
             "start_position_sha256": self.start_position_sha256,
             "current_operator_sha256": self.current_operator_sha256,
@@ -1918,6 +2003,16 @@ class CapturedGraphVBDOuterWork:
             "scalar_direction_apply_kernel_version": self.scalar_direction_apply_kernel_version,
             "v_cycle_kernel_version": self._validation_context.v_cycle_kernel_version,
             "v_cycle_schedule_version": self._validation_context.v_cycle_schedule_version,
+            "v_cycle_nonterminal_literal_kernel_version": (
+                self._validation_context.v_cycle_nonterminal_literal_kernel_version
+            ),
+            "v_cycle_nonterminal_literal_kernel_route": self._validation_context.v_cycle_nonterminal_literal_kernel_route,
+            "v_cycle_nonterminal_literal_physical_nodes": (
+                self._validation_context.v_cycle_nonterminal_literal_physical_nodes
+            ),
+            "v_cycle_nonterminal_literal_physical_node_map": (
+                self._validation_context.v_cycle_nonterminal_literal_physical_node_map
+            ),
             "v_cycle_terminal_fusion_version": self._validation_context.v_cycle_terminal_fusion_version,
             "v_cycle_terminal_microcycle_kernel_version": (
                 self._validation_context.v_cycle_terminal_microcycle_kernel_version
@@ -2115,6 +2210,10 @@ class CapturedGraphVBDEndpoint:
                 self.scalar_direction_apply_kernel_version,
                 context.v_cycle_kernel_version,
                 context.v_cycle_schedule_version,
+                context.v_cycle_nonterminal_literal_kernel_version,
+                context.v_cycle_nonterminal_literal_kernel_route,
+                context.v_cycle_nonterminal_literal_physical_nodes,
+                context.v_cycle_nonterminal_literal_physical_node_map,
                 context.v_cycle_terminal_fusion_version,
                 context.v_cycle_terminal_fusion_route,
                 context.v_cycle_terminal_coarse_solve_kernel_version,
@@ -2421,6 +2520,12 @@ class CapturedGraphVBDEndpoint:
                     "root_seeded_gather_kernel_version": self.root_seeded_gather_kernel_version,
                     "v_cycle_kernel_version": context.v_cycle_kernel_version,
                     "v_cycle_schedule_version": context.v_cycle_schedule_version,
+                    "v_cycle_nonterminal_literal_kernel_version": context.v_cycle_nonterminal_literal_kernel_version,
+                    "v_cycle_nonterminal_literal_kernel_route": context.v_cycle_nonterminal_literal_kernel_route,
+                    "v_cycle_nonterminal_literal_physical_nodes": context.v_cycle_nonterminal_literal_physical_nodes,
+                    "v_cycle_nonterminal_literal_physical_node_map": (
+                        context.v_cycle_nonterminal_literal_physical_node_map
+                    ),
                     "v_cycle_terminal_fusion_version": context.v_cycle_terminal_fusion_version,
                     "v_cycle_terminal_microcycle_kernel_version": context.v_cycle_terminal_microcycle_kernel_version,
                     "v_cycle_terminal_coarse_solve_kernel_version": (
@@ -2515,6 +2620,16 @@ class CapturedGraphVBDEndpoint:
             "scalar_direction_apply_kernel_version": self.scalar_direction_apply_kernel_version,
             "v_cycle_kernel_version": self._validation_context.v_cycle_kernel_version,
             "v_cycle_schedule_version": self._validation_context.v_cycle_schedule_version,
+            "v_cycle_nonterminal_literal_kernel_version": (
+                self._validation_context.v_cycle_nonterminal_literal_kernel_version
+            ),
+            "v_cycle_nonterminal_literal_kernel_route": self._validation_context.v_cycle_nonterminal_literal_kernel_route,
+            "v_cycle_nonterminal_literal_physical_nodes": (
+                self._validation_context.v_cycle_nonterminal_literal_physical_nodes
+            ),
+            "v_cycle_nonterminal_literal_physical_node_map": (
+                self._validation_context.v_cycle_nonterminal_literal_physical_node_map
+            ),
             "v_cycle_terminal_fusion_version": self._validation_context.v_cycle_terminal_fusion_version,
             "v_cycle_terminal_microcycle_kernel_version": (
                 self._validation_context.v_cycle_terminal_microcycle_kernel_version
@@ -2620,6 +2735,10 @@ class CapturedGraphVBDTiming:
     scalar_direction_apply_kernel_version: str
     v_cycle_kernel_version: str
     v_cycle_schedule_version: str
+    v_cycle_nonterminal_literal_kernel_version: str
+    v_cycle_nonterminal_literal_kernel_route: str
+    v_cycle_nonterminal_literal_physical_nodes: int
+    v_cycle_nonterminal_literal_physical_node_map: str
     v_cycle_terminal_fusion_version: str
     v_cycle_terminal_microcycle_kernel_version: str
     v_cycle_terminal_coarse_solve_kernel_version: str
@@ -2698,6 +2817,15 @@ class CapturedGraphVBDTiming:
             or self.v_cycle_kernel_version != V_CYCLE_KERNEL_VERSION
             or type(self.v_cycle_schedule_version) is not str
             or self.v_cycle_schedule_version != V_CYCLE_SCHEDULE_VERSION
+            or type(self.v_cycle_nonterminal_literal_kernel_version) is not str
+            or self.v_cycle_nonterminal_literal_kernel_version != V_CYCLE_NONTERMINAL_LITERAL_KERNEL_VERSION
+            or type(self.v_cycle_nonterminal_literal_kernel_route) is not str
+            or self.v_cycle_nonterminal_literal_kernel_route != V_CYCLE_NONTERMINAL_LITERAL_CUDA_ROUTE
+            or type(self.v_cycle_nonterminal_literal_physical_nodes) is not int
+            or self.v_cycle_nonterminal_literal_physical_nodes != 11
+            or type(self.v_cycle_nonterminal_literal_physical_node_map) is not str
+            or self.v_cycle_nonterminal_literal_physical_node_map
+            != V_CYCLE_NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP
             or type(self.v_cycle_terminal_fusion_version) is not str
             or self.v_cycle_terminal_fusion_version != V_CYCLE_TERMINAL_FUSION_VERSION
             or type(self.v_cycle_terminal_microcycle_kernel_version) is not str
@@ -2752,6 +2880,10 @@ class CapturedGraphVBDTiming:
                 self.scalar_direction_apply_kernel_version,
                 self.v_cycle_kernel_version,
                 self.v_cycle_schedule_version,
+                self.v_cycle_nonterminal_literal_kernel_version,
+                self.v_cycle_nonterminal_literal_kernel_route,
+                self.v_cycle_nonterminal_literal_physical_nodes,
+                self.v_cycle_nonterminal_literal_physical_node_map,
                 self.v_cycle_terminal_fusion_version,
                 self.v_cycle_terminal_fusion_route,
                 self.v_cycle_terminal_coarse_solve_kernel_version,
@@ -2845,6 +2977,10 @@ class CapturedGraphVBDTiming:
             "scalar_direction_apply_kernel_version": validated.scalar_direction_apply_kernel_version,
             "v_cycle_kernel_version": validated.v_cycle_kernel_version,
             "v_cycle_schedule_version": validated.v_cycle_schedule_version,
+            "v_cycle_nonterminal_literal_kernel_version": validated.v_cycle_nonterminal_literal_kernel_version,
+            "v_cycle_nonterminal_literal_kernel_route": validated.v_cycle_nonterminal_literal_kernel_route,
+            "v_cycle_nonterminal_literal_physical_nodes": validated.v_cycle_nonterminal_literal_physical_nodes,
+            "v_cycle_nonterminal_literal_physical_node_map": validated.v_cycle_nonterminal_literal_physical_node_map,
             "v_cycle_terminal_fusion_version": validated.v_cycle_terminal_fusion_version,
             "v_cycle_terminal_microcycle_kernel_version": validated.v_cycle_terminal_microcycle_kernel_version,
             "v_cycle_terminal_coarse_solve_kernel_version": validated.v_cycle_terminal_coarse_solve_kernel_version,
@@ -3012,6 +3148,10 @@ class _ScalarFusedHierarchyEvidence:
     scheduled_kernel_launches: int
     core_kernel_launches: int
     seeded_core_kernel_launches: int
+    nonterminal_literal_kernel_version: str
+    nonterminal_literal_kernel_route: str
+    nonterminal_literal_physical_nodes: int
+    nonterminal_literal_physical_node_map: str
     terminal_fusion_version: str
     terminal_microcycle_kernel_version: str
     terminal_coarse_solve_kernel_version: str
@@ -3199,6 +3339,46 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         - terminal_fusion_launch_reduction
     )
     scheduled_kernel_launches = core_kernel_launches + 1
+    literal_counts = [0] * 9
+    for level_index in range(terminal_level_index):
+        level = hierarchy.levels[level_index]
+        recurrence_count = hierarchy.pre_smooth_steps + hierarchy.post_smooth_steps
+        jacobi_count = recurrence_count - 1
+        if level.matrix.block_size == 3:
+            literal_counts[0] += recurrence_count
+            literal_counts[3] += jacobi_count
+        elif level.matrix.block_size == 6:
+            literal_counts[1] += recurrence_count
+            literal_counts[2] += int(level_index > 0)
+            literal_counts[4] += jacobi_count
+        if level.prolongation is None:
+            raise RuntimeError("canonical pre-terminal hierarchy level is missing prolongation")
+        transfer_path = (level.matrix.block_size, level.prolongation.coarse_block_size)
+        if transfer_path == (3, 6):
+            literal_counts[5] += 1
+            literal_counts[7] += 1
+        elif transfer_path == (6, 6):
+            literal_counts[6] += 1
+            literal_counts[8] += 1
+    nonterminal_literal_physical_node_map = _serialize_nonterminal_literal_physical_nodes(
+        (
+            literal_counts[0],
+            literal_counts[1],
+            literal_counts[2],
+            literal_counts[3],
+            literal_counts[4],
+            literal_counts[5],
+            literal_counts[6],
+            literal_counts[7],
+            literal_counts[8],
+        )
+    )
+    nonterminal_literal_physical_nodes = sum(literal_counts)
+    nonterminal_literal_kernel_route = (
+        V_CYCLE_NONTERMINAL_LITERAL_CUDA_ROUTE
+        if nonterminal_literal_physical_nodes
+        else V_CYCLE_NONTERMINAL_GENERIC_CUDA_ROUTE
+    )
     common_schedule_parts = (
         ("source_device_snapshot_sha256", source_snapshot_sha256),
         ("kernel_version", V_CYCLE_KERNEL_VERSION),
@@ -3213,6 +3393,10 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ("root_ingress_kernel_launches", 1),
         ("noncoarse_result_buffer", "B"),
         ("coarsest_result_buffer", "A"),
+        ("nonterminal_literal_kernel_version", V_CYCLE_NONTERMINAL_LITERAL_KERNEL_VERSION),
+        ("nonterminal_literal_kernel_route", nonterminal_literal_kernel_route),
+        ("nonterminal_literal_physical_nodes", nonterminal_literal_physical_nodes),
+        ("nonterminal_literal_physical_node_map", nonterminal_literal_physical_node_map),
         ("terminal_fusion_version", V_CYCLE_TERMINAL_FUSION_VERSION),
         ("terminal_microcycle_kernel_version", V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION),
         ("terminal_coarse_solve_kernel_version", terminal_coarse_solve_kernel_version),
@@ -3230,7 +3414,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ("publication_version", V_CYCLE_PUBLICATION_VERSION),
     )
     core_schedule_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-core-schedule-v9",
+        "warp-scalar-fused-v-cycle-core-schedule-v10",
         (
             *common_schedule_parts,
             ("publication_route", V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -3239,7 +3423,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     schedule_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-schedule-v11",
+        "warp-scalar-fused-v-cycle-schedule-v12",
         (
             *common_schedule_parts,
             ("publication_route", V_CYCLE_STANDALONE_PUBLICATION_ROUTE),
@@ -3248,7 +3432,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     core_device_snapshot_sha256 = _hash_parts(
-        "warp-scalar-fused-static-multigrid-core-snapshot-v9",
+        "warp-scalar-fused-static-multigrid-core-snapshot-v10",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
@@ -3256,7 +3440,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     device_snapshot_sha256 = _hash_parts(
-        "warp-scalar-fused-static-multigrid-snapshot-v11",
+        "warp-scalar-fused-static-multigrid-snapshot-v12",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
@@ -3276,7 +3460,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             ("core_kernel_launches", seeded_core_kernel_launches),
         )
         seeded_core_schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-seeded-core-schedule-v7",
+            "warp-scalar-fused-v-cycle-seeded-core-schedule-v8",
             (
                 *seeded_common_schedule_parts,
                 ("publication_route", V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -3285,7 +3469,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             ),
         )
         seeded_core_device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v7",
+            "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v8",
             (
                 ("source_device_snapshot_sha256", source_snapshot_sha256),
                 ("static_device_content_sha256", static_device_content_sha256),
@@ -3310,6 +3494,10 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         scheduled_kernel_launches=scheduled_kernel_launches,
         core_kernel_launches=core_kernel_launches,
         seeded_core_kernel_launches=seeded_core_kernel_launches,
+        nonterminal_literal_kernel_version=V_CYCLE_NONTERMINAL_LITERAL_KERNEL_VERSION,
+        nonterminal_literal_kernel_route=nonterminal_literal_kernel_route,
+        nonterminal_literal_physical_nodes=nonterminal_literal_physical_nodes,
+        nonterminal_literal_physical_node_map=nonterminal_literal_physical_node_map,
         terminal_fusion_version=V_CYCLE_TERMINAL_FUSION_VERSION,
         terminal_microcycle_kernel_version=V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
         terminal_coarse_solve_kernel_version=terminal_coarse_solve_kernel_version,
@@ -3412,6 +3600,10 @@ def _validate_scalar_fused_hierarchy_inputs(
         or scalar_hierarchy.scheduled_kernel_launches != expected.scheduled_kernel_launches
         or scalar_hierarchy.core_kernel_launches != expected.core_kernel_launches
         or scalar_hierarchy.seeded_core_kernel_launches != expected.seeded_core_kernel_launches
+        or scalar_hierarchy.nonterminal_literal_kernel_version != expected.nonterminal_literal_kernel_version
+        or scalar_hierarchy.nonterminal_literal_kernel_route != expected.nonterminal_literal_kernel_route
+        or scalar_hierarchy.nonterminal_literal_physical_nodes != expected.nonterminal_literal_physical_nodes
+        or scalar_hierarchy.nonterminal_literal_physical_node_map != expected.nonterminal_literal_physical_node_map
         or scalar_hierarchy.terminal_coarse_solve_kernel_version != expected.terminal_coarse_solve_kernel_version
         or scalar_hierarchy.terminal_coarse_solve_route != expected.terminal_coarse_solve_route
         or scalar_hierarchy.terminal_coarse_scalar_size != expected.terminal_coarse_scalar_size
@@ -3949,7 +4141,12 @@ class CapturedDirectGraphVBD:
             coarse = self.hierarchy.levels[-1]
             terminal_block_dim = ((max(terminal.matrix.scalar_size, coarse.matrix.scalar_size) + 31) // 32) * 32
         if (
-            scalar_evidence.terminal_microcycle_kernel_version != V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION
+            scalar_evidence.nonterminal_literal_kernel_version != V_CYCLE_NONTERMINAL_LITERAL_KERNEL_VERSION
+            or scalar_evidence.nonterminal_literal_kernel_route != V_CYCLE_NONTERMINAL_LITERAL_CUDA_ROUTE
+            or scalar_evidence.nonterminal_literal_physical_nodes != 11
+            or scalar_evidence.nonterminal_literal_physical_node_map
+            != V_CYCLE_NONTERMINAL_LITERAL_DEFAULT_PHYSICAL_NODE_MAP
+            or scalar_evidence.terminal_microcycle_kernel_version != V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION
             or scalar_evidence.terminal_coarse_solve_kernel_version
             != V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION
             or scalar_evidence.terminal_coarse_solve_route != V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_ROUTE
@@ -3972,10 +4169,14 @@ class CapturedDirectGraphVBD:
         ):
             raise ValueError(
                 "captured direct graph VBD fixed-130 contract requires the supported one-block CUDA p=q=1 "
-                "fixed-12 entire terminal micro-cycle route at block dimension 64 with "
+                "11 literal pre-terminal physical substitutions and the fixed-12 entire terminal micro-cycle "
+                "route at block dimension 64 with "
                 "full/core/seeded counts 14/13/12"
             )
-        actual_terminal_metadata = (
+        actual_scalar_route_metadata = (
+            self.device_hierarchy._nonterminal_literal_kernel_route,
+            self.device_hierarchy._nonterminal_literal_physical_nodes,
+            self.device_hierarchy._nonterminal_literal_physical_node_map,
             self.device_hierarchy._terminal_coarse_solve_kernel_version,
             self.device_hierarchy._terminal_coarse_solve_route,
             self.device_hierarchy._terminal_coarse_scalar_size,
@@ -3988,7 +4189,10 @@ class CapturedDirectGraphVBD:
             self.device_hierarchy._terminal_owner_thread,
             self.device_hierarchy._terminal_logical_phases,
         )
-        expected_terminal_metadata = (
+        expected_scalar_route_metadata = (
+            scalar_evidence.nonterminal_literal_kernel_route,
+            scalar_evidence.nonterminal_literal_physical_nodes,
+            scalar_evidence.nonterminal_literal_physical_node_map,
             scalar_evidence.terminal_coarse_solve_kernel_version,
             scalar_evidence.terminal_coarse_solve_route,
             scalar_evidence.terminal_coarse_scalar_size,
@@ -4001,8 +4205,8 @@ class CapturedDirectGraphVBD:
             scalar_evidence.terminal_owner_thread,
             scalar_evidence.terminal_logical_phases,
         )
-        if actual_terminal_metadata != expected_terminal_metadata:
-            raise RuntimeError("captured direct graph VBD scalar terminal fusion metadata is not canonical")
+        if actual_scalar_route_metadata != expected_scalar_route_metadata:
+            raise RuntimeError("captured direct graph VBD scalar literal and terminal metadata is not canonical")
         self._hierarchy_owner_identity_bound = (id(self.source_device_hierarchy), id(self.device_hierarchy))
 
         n_vertices = scene.n_vertices
@@ -4712,6 +4916,10 @@ class CapturedDirectGraphVBD:
                 claims.scalar_direction_apply_kernel_version,
                 V_CYCLE_KERNEL_VERSION,
                 V_CYCLE_SCHEDULE_VERSION,
+                claims.scalar_fused_evidence.nonterminal_literal_kernel_version,
+                claims.scalar_fused_evidence.nonterminal_literal_kernel_route,
+                claims.scalar_fused_evidence.nonterminal_literal_physical_nodes,
+                claims.scalar_fused_evidence.nonterminal_literal_physical_node_map,
                 claims.scalar_fused_evidence.terminal_fusion_version,
                 claims.scalar_fused_evidence.terminal_fusion_route,
                 claims.scalar_fused_evidence.terminal_coarse_solve_kernel_version,
@@ -5141,7 +5349,7 @@ class CapturedDirectGraphVBD:
 
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v11",
+                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v12",
                 "scene_object": id(binding.scene),
                 "config_object": id(binding.config),
                 "warp_device_object": id(binding.warp_device),
@@ -5249,7 +5457,7 @@ class CapturedDirectGraphVBD:
         correction_kernel_launches = 2 + OUTER_CORRECTIONS * outer_kernel_launches
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-graph-identity-v13",
+                "contract": "captured-direct-graph-vbd-graph-identity-v14",
                 "solver_contract": CONTRACT_ID,
                 "comparator_contract": VBD_BASELINE_CONTRACT_ID if comparator else None,
                 "scene_sha256": scene_sha256,
@@ -5276,6 +5484,10 @@ class CapturedDirectGraphVBD:
                 "finalize_gate_collective_version": claims.finalize_gate_collective_version,
                 "v_cycle_kernel_version": V_CYCLE_KERNEL_VERSION,
                 "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
+                "v_cycle_nonterminal_literal_kernel_version": scalar_evidence.nonterminal_literal_kernel_version,
+                "v_cycle_nonterminal_literal_kernel_route": scalar_evidence.nonterminal_literal_kernel_route,
+                "v_cycle_nonterminal_literal_physical_nodes": scalar_evidence.nonterminal_literal_physical_nodes,
+                "v_cycle_nonterminal_literal_physical_node_map": scalar_evidence.nonterminal_literal_physical_node_map,
                 "v_cycle_terminal_fusion_version": scalar_evidence.terminal_fusion_version,
                 "v_cycle_terminal_microcycle_kernel_version": scalar_evidence.terminal_microcycle_kernel_version,
                 "v_cycle_terminal_coarse_solve_kernel_version": (scalar_evidence.terminal_coarse_solve_kernel_version),
@@ -5490,7 +5702,12 @@ class CapturedDirectGraphVBD:
         if context.v_cycle_seeded_core_kernel_launches != scalar_evidence.seeded_core_kernel_launches:
             raise ValueError("validation context seeded V-cycle core launch count is not canonical")
         if (
-            context.v_cycle_terminal_fusion_version != scalar_evidence.terminal_fusion_version
+            context.v_cycle_nonterminal_literal_kernel_version != scalar_evidence.nonterminal_literal_kernel_version
+            or context.v_cycle_nonterminal_literal_kernel_route != scalar_evidence.nonterminal_literal_kernel_route
+            or context.v_cycle_nonterminal_literal_physical_nodes != scalar_evidence.nonterminal_literal_physical_nodes
+            or context.v_cycle_nonterminal_literal_physical_node_map
+            != scalar_evidence.nonterminal_literal_physical_node_map
+            or context.v_cycle_terminal_fusion_version != scalar_evidence.terminal_fusion_version
             or context.v_cycle_terminal_microcycle_kernel_version != scalar_evidence.terminal_microcycle_kernel_version
             or context.v_cycle_terminal_coarse_solve_kernel_version
             != scalar_evidence.terminal_coarse_solve_kernel_version
@@ -5505,7 +5722,7 @@ class CapturedDirectGraphVBD:
             or context.v_cycle_terminal_owner_thread != scalar_evidence.terminal_owner_thread
             or context.v_cycle_terminal_logical_phases != scalar_evidence.terminal_logical_phases
         ):
-            raise ValueError("validation context terminal V-cycle fusion route is not canonical")
+            raise ValueError("validation context literal and terminal V-cycle routes are not canonical")
         if (
             context.v_cycle_publication_version != scalar_evidence.publication_version
             or context.v_cycle_standalone_publication_route != scalar_evidence.standalone_publication_route
@@ -6137,7 +6354,7 @@ class CapturedDirectGraphVBD:
         if scalar_evidence != claims.scalar_fused_evidence:
             raise RuntimeError("captured scalar-fused construction evidence changed")
         persistent_sha256 = _hash_parts(
-            "captured-direct-graph-vbd-persistent-inputs-v11",
+            "captured-direct-graph-vbd-persistent-inputs-v12",
             (
                 ("scene_sha256", scene_sha256),
                 ("objective_instance_sha256", objective_sha256),
@@ -6182,6 +6399,22 @@ class CapturedDirectGraphVBD:
                 ("scalar_v_cycle_kernel_launches", scalar_evidence.scheduled_kernel_launches),
                 ("scalar_v_cycle_core_kernel_launches", scalar_evidence.core_kernel_launches),
                 ("scalar_v_cycle_seeded_core_kernel_launches", scalar_evidence.seeded_core_kernel_launches),
+                (
+                    "scalar_v_cycle_nonterminal_literal_kernel_version",
+                    scalar_evidence.nonterminal_literal_kernel_version,
+                ),
+                (
+                    "scalar_v_cycle_nonterminal_literal_kernel_route",
+                    scalar_evidence.nonterminal_literal_kernel_route,
+                ),
+                (
+                    "scalar_v_cycle_nonterminal_literal_physical_nodes",
+                    scalar_evidence.nonterminal_literal_physical_nodes,
+                ),
+                (
+                    "scalar_v_cycle_nonterminal_literal_physical_node_map",
+                    scalar_evidence.nonterminal_literal_physical_node_map,
+                ),
                 ("scalar_v_cycle_terminal_fusion_version", scalar_evidence.terminal_fusion_version),
                 (
                     "scalar_v_cycle_terminal_microcycle_kernel_version",
@@ -6656,6 +6889,10 @@ class CapturedDirectGraphVBD:
             scalar_direction_apply_kernel_version=owner_binding.claims.scalar_direction_apply_kernel_version,
             v_cycle_kernel_version=V_CYCLE_KERNEL_VERSION,
             v_cycle_schedule_version=V_CYCLE_SCHEDULE_VERSION,
+            v_cycle_nonterminal_literal_kernel_version=scalar_evidence.nonterminal_literal_kernel_version,
+            v_cycle_nonterminal_literal_kernel_route=scalar_evidence.nonterminal_literal_kernel_route,
+            v_cycle_nonterminal_literal_physical_nodes=scalar_evidence.nonterminal_literal_physical_nodes,
+            v_cycle_nonterminal_literal_physical_node_map=scalar_evidence.nonterminal_literal_physical_node_map,
             v_cycle_terminal_fusion_version=scalar_evidence.terminal_fusion_version,
             v_cycle_terminal_microcycle_kernel_version=scalar_evidence.terminal_microcycle_kernel_version,
             v_cycle_terminal_coarse_solve_kernel_version=(scalar_evidence.terminal_coarse_solve_kernel_version),
@@ -6783,6 +7020,10 @@ class CapturedDirectGraphVBD:
             scalar_direction_apply_kernel_version=owner_binding.claims.scalar_direction_apply_kernel_version,
             v_cycle_kernel_version=V_CYCLE_KERNEL_VERSION,
             v_cycle_schedule_version=V_CYCLE_SCHEDULE_VERSION,
+            v_cycle_nonterminal_literal_kernel_version=scalar_evidence.nonterminal_literal_kernel_version,
+            v_cycle_nonterminal_literal_kernel_route=scalar_evidence.nonterminal_literal_kernel_route,
+            v_cycle_nonterminal_literal_physical_nodes=scalar_evidence.nonterminal_literal_physical_nodes,
+            v_cycle_nonterminal_literal_physical_node_map=scalar_evidence.nonterminal_literal_physical_node_map,
             v_cycle_terminal_fusion_version=scalar_evidence.terminal_fusion_version,
             v_cycle_terminal_microcycle_kernel_version=scalar_evidence.terminal_microcycle_kernel_version,
             v_cycle_terminal_coarse_solve_kernel_version=(scalar_evidence.terminal_coarse_solve_kernel_version),
@@ -7071,7 +7312,7 @@ class CapturedDirectGraphVBD:
             "solver_static_array_sha256": self._solver_static_array_sha256_bound,
             "workspace_owner_identity_sha256": self._workspace_owner_identity_sha256(owner_binding),
             "persistent_device_sha256": persistent_device_sha256,
-            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v13",
+            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v14",
             "graph_identity_sha256": graph_identity_sha256,
             "k4_graph_identity_sha256": k4_graph_identity_sha256,
             "fused_gather_kernel_version": owner_binding.claims.fused_gather_kernel_version,
@@ -7102,6 +7343,14 @@ class CapturedDirectGraphVBD:
             "v_cycle_contract_id": V_CYCLE_CONTRACT_ID,
             "v_cycle_kernel_version": V_CYCLE_KERNEL_VERSION,
             "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
+            "v_cycle_nonterminal_literal_kernel_version": scalar_evidence.nonterminal_literal_kernel_version,
+            "v_cycle_nonterminal_literal_kernel_route": scalar_evidence.nonterminal_literal_kernel_route,
+            "v_cycle_nonterminal_literal_physical_nodes": scalar_evidence.nonterminal_literal_physical_nodes,
+            "v_cycle_nonterminal_literal_physical_node_map": scalar_evidence.nonterminal_literal_physical_node_map,
+            "literal_kernel_substitutions_per_outer": 2 * scalar_evidence.nonterminal_literal_physical_nodes,
+            "literal_kernel_substitutions_per_integrated_correction": (
+                OUTER_CORRECTIONS * V_CYCLES_PER_OUTER * scalar_evidence.nonterminal_literal_physical_nodes
+            ),
             "v_cycle_terminal_fusion_version": scalar_evidence.terminal_fusion_version,
             "v_cycle_terminal_microcycle_kernel_version": scalar_evidence.terminal_microcycle_kernel_version,
             "v_cycle_terminal_coarse_solve_kernel_version": scalar_evidence.terminal_coarse_solve_kernel_version,
