@@ -11,6 +11,11 @@
     "radius_query_followup": {
       "definition": "Incremental AABB-versus-sphere/capsule comparison on top of the optimized candidate with an identical Warp build",
       "must_not_be_compounded_with_original_speedup": true
+    },
+    "current_upstream_main_comparison": {
+      "definition": "Aggregate current official upstream/main versus final feature-branch comparison with an identical final custom Warp build",
+      "not_a_single_change_ablation": true,
+      "must_not_be_compounded_with_other_speedups": true
     }
   },
   "final_provenance": {
@@ -58,6 +63,188 @@
       "name": "NVIDIA L40",
       "sm_count": 142,
       "compute_capability": "8.9"
+    }
+  },
+  "current_upstream_main_end_to_end_abba": {
+    "suite_id": "cloth-franka-upstream-main-vs-final-20260818",
+    "suite_path": "/tmp/cloth-franka-main-vs-final-20260818",
+    "status": "completed",
+    "comparison_scope": "Current official upstream/main versus the final feature branch; histories diverge, so this is not a single-change or radius-query ablation",
+    "branch_divergence": {
+      "merge_base": "fd8d9d4e184b1298f989be13b0fbe3b59c5bbd58",
+      "upstream_main_unique_commits": 80,
+      "candidate_unique_commits": 27
+    },
+    "provenance": {
+      "upstream_main": {
+        "git_head": "6d3fdf6f7885378677d9b69899aad1ee5bd6c667",
+        "git_tree": "ee4d3e1161399fbf437f1b81b65c0e6cc813f59a",
+        "source_sha256": "2a60f15df801abf029f53c21103b1543234726a4fb3eae27b191728b104dbbf7",
+        "source_file_count": 717,
+        "source_byte_count": 21205026,
+        "remote_ref_verified_at_suite_start": true,
+        "tracked_tree_clean": true
+      },
+      "candidate": {
+        "git_head": "29fa8719a5c5a1277b1d1fdde3d68090bd7d08b9",
+        "git_tree": "878b4a78627841c9817295827239f75090a91e0f",
+        "source_sha256": "a47822d50a0cab3a8057914c3b505d3713aefe61276cba7b15f846cfee65bb04",
+        "source_file_count": 718,
+        "source_byte_count": 20550231,
+        "tracked_tree_clean": true
+      },
+      "warp": {
+        "git_head": "67621f8074b045673c2b72db5f2c8ce5e9b2cbc6",
+        "git_tree": "4dcf21d7714f3fd481d4eb0fd3eb3f4565e408c6",
+        "same_build_for_both_variants": true,
+        "stock_main_dependency_comparison": false,
+        "warp_so_sha256": "d071cd89a45f66bb2784dcd0e942852211fde3f6ec68fcffdf131d48e211ca43",
+        "warp_clang_so_sha256": "5a4366461d9acf30d598354448b5894f88d2c30ddb1a9c76155034cb869fe691"
+      }
+    },
+    "controlled_workload": {
+      "example_cloth_franka_git_blob": "e41e136e83f95529dd7165e800b2f232415f647f",
+      "example_cloth_franka_sha256": "16b2c9d38558b3f5dc06ea9f1bad680173a9275c619ca9276cb6fbf88a83383c",
+      "example_source_byte_identical": true,
+      "unisex_shirt_usd_sha256": "9eb7f161154ce8d3f00253650e78a97d022ebe99b5017656ee965a536d5e64c5",
+      "cloth_asset_byte_identical": true,
+      "franka_sparse_checkout_non_git_file_count": 64,
+      "franka_sparse_checkout_non_git_byte_count": 80323199,
+      "franka_sparse_checkout_normalized_content_sha256": "26b1bf342f861c8676c3b6ade16f6bc4bb1027c34cc85e1336f11f4a3d396758",
+      "franka_target_contents_byte_identical": true
+    },
+    "environment_control": {
+      "common_candidate_worktree_virtual_environment": true,
+      "python_sha256": "339de109f072e52523066d97a2b3372e358a10cc00c6a9df62c28a6618061900",
+      "variant_pythonpath_isolated": true,
+      "variant_newton_and_warp_caches_isolated": true,
+      "caveat": "This controls Python dependencies but does not compare each branch's own lockfile-derived environment"
+    },
+    "production_launch_policies": {
+      "launch_overrides": false,
+      "upstream_main": {
+        "vertex_triangle_block_size": 16,
+        "edge_edge_block_size": 16,
+        "self_contact_force_block_dim": 256,
+        "self_contact_force_max_blocks": 142
+      },
+      "candidate": {
+        "vertex_triangle_block_size": 4,
+        "edge_edge_block_size": 8,
+        "self_contact_force_block_dim": 256,
+        "self_contact_force_max_blocks": null
+      }
+    },
+    "protocol": {
+      "device": "NVIDIA L40",
+      "frames_per_process": 30,
+      "excluded_warm_processes_per_variant": 1,
+      "included_processes_per_variant": 16,
+      "completed_processes": 32,
+      "all_completed_processes_included": true,
+      "balanced_blocks": 8,
+      "alternating_orders": [
+        "BCCB",
+        "CBBC"
+      ],
+      "bootstrap_samples": 200000,
+      "bootstrap_seed": 20260818,
+      "warnings": 0,
+      "contact_overflow_rows": 0
+    },
+    "upstream_main": {
+      "median_milliseconds_per_frame": 17.272597504779696,
+      "mean_milliseconds_per_frame": 17.31441393106555,
+      "coefficient_of_variation": 0.005922946275797703
+    },
+    "candidate": {
+      "median_milliseconds_per_frame": 14.494029882674415,
+      "mean_milliseconds_per_frame": 14.500801430161422,
+      "coefficient_of_variation": 0.006728953884820693
+    },
+    "balanced_block_geometric_speedup": 1.1940372032447217,
+    "throughput_improvement_fraction": 0.19403720324472174,
+    "equivalent_latency_reduction_fraction": 0.1625051570566124,
+    "median_latency_reduction_fraction": 0.16086564984429197,
+    "bootstrap_95_ci": [
+      1.1897072782754892,
+      1.1982998966796956
+    ],
+    "positive_blocks": 8,
+    "block_count": 8,
+    "nsight_trace_localization": {
+      "suite_path": "/tmp/cloth-franka-main-vs-final-nsys-20260818",
+      "frames": 30,
+      "graph_kernel_count_per_variant": 63870,
+      "all_expected_kernel_counts_exact": true,
+      "warnings": 0,
+      "nsight_diagnostic_warnings_per_variant": 2,
+      "nsight_diagnostic_errors_per_variant": 0,
+      "nsight_diagnostic_caveat": "Nsight 2024.5 reports that the 12.8 driver is newer than the tool and uses its CUDA 12.6 tracing libraries, plus a generic warning that not all CUDA events might have been collected; all expected frame markers and kernel counts are present",
+      "profiler_wall_time_valid_for_end_to_end": false,
+      "trajectory_caveat": "Fresh CUDA processes use unordered floating-point atomics and need not have identical trajectories or contact totals",
+      "interpretation": "Single-process trace sums localize work; the replicated ABBA estimator remains authoritative for end-to-end performance",
+      "components": {
+        "vertex_triangle_traversal": {
+          "upstream_main_milliseconds": 21.804819,
+          "candidate_milliseconds": 13.299248,
+          "speedup": 1.639552777720966
+        },
+        "edge_edge_traversal": {
+          "upstream_main_milliseconds": 49.115971,
+          "candidate_milliseconds": 36.738971,
+          "speedup": 1.3368902193803958
+        },
+        "detector": {
+          "upstream_main_milliseconds": 92.370216,
+          "candidate_milliseconds": 70.223996,
+          "speedup": 1.3153654201051161
+        },
+        "force_hessian": {
+          "upstream_main_milliseconds": 85.274545,
+          "candidate_milliseconds": 54.052334,
+          "speedup": 1.5776292842414539
+        },
+        "detector_plus_force_hessian": {
+          "upstream_main_milliseconds": 177.644761,
+          "candidate_milliseconds": 124.276330,
+          "speedup": 1.4294335936698486
+        },
+        "planar_truncation": {
+          "upstream_main_milliseconds": 55.001940,
+          "candidate_milliseconds": 47.425850,
+          "speedup": 1.1597460034980922
+        },
+        "extended_self_contact_pipeline": {
+          "upstream_main_milliseconds": 244.488994,
+          "candidate_milliseconds": 183.536550,
+          "speedup": 1.3320997588763654
+        },
+        "all_captured_graph_kernels": {
+          "upstream_main_milliseconds": 430.530160,
+          "candidate_milliseconds": 353.734332,
+          "speedup": 1.2171002954839
+        }
+      },
+      "evidence_sha256": {
+        "trace_analysis_json": "9e71cbefc44b47d7cd224e9be404eb6b58e0b5f8f9283f898af66c543a32b90a",
+        "fail_closed_trace_runner": "8e5f0a23ed8775115dcd12ad181a47bb4a43d0f50966a2b5de74da85bc55d045",
+        "upstream_main_nsys_report": "e30c6d60d8b0b465cdad8e55a228152c195fe183248f5f088972f9bd7e21ca0b",
+        "candidate_nsys_report": "3535c2814cd6c3ca0a25ef4d6d762245c4358de80d3c2ef21c07c970e3c9bff7",
+        "upstream_main_sqlite": "b6e3186eee0cde3ed70a0f493ebcf37d273b733b9747e30858f94a147ef324bb",
+        "candidate_sqlite": "2b7c0c0db8cce723299fbfb684e34477d0e7a6f7c6a854f4670107c2567ed8e4",
+        "upstream_main_result_json": "493d4bebcff79c09b857084f7717fa0e7be24901ea11aeb9c8b175102e87f14b",
+        "candidate_result_json": "4d7aadb31d0c10450191535bbfa7414c9d1b0b1e4e56d492a0d08bf5ff0f9450"
+      }
+    },
+    "artifact_sha256": {
+      "manifest_json": "f7851419eb743c70fa6498416db31f61af029372118d08d9697b5504f9d1bb31",
+      "analysis_json": "59ab5160196e7d1d48df47ef997d8e9ed024a83037ac82890b074cdb28ea777c",
+      "summary_json": "d5a67ce49668d7a9a29e806a50f1b92c14bb536d2908a8b5ca0cc32085cd59db",
+      "runs_csv": "6caef88aaeb44a82332f1dbc6592a755ae2b385a5e78fa6e9fb4de7b3dcb2d83",
+      "frozen_runner": "14cde0739aa20b976538315f781a03efe2129f83ba8efa4184fd2a736e7b00f1",
+      "frozen_benchmark": "b5c2f79f38a42570196c28f557d83e2951d1375c253a715762964bc1816b4cae",
+      "frozen_analyzer": "5cc0253b311bb360bfd4997f5195516ca5fa45967da4be42fc0ab51e1e240c27"
     }
   },
   "query_volume_accounting": {

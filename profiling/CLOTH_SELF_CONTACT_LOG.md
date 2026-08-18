@@ -656,3 +656,91 @@ Raw frozen arrays, process records, `.nsys-rep`, and SQLite files remain
 untracked under `/tmp/cloth-franka-minkowski`. They can contain full process
 environment metadata. The sanitized aggregate is committed as
 `profiling/cloth_franka_radius_query_results.json`.
+
+## 2026-08-18: direct current upstream/main comparison
+
+Fetched and verified official `upstream/main` at
+`6d3fdf6f7885378677d9b69899aad1ee5bd6c667`, then compared its clean tree with
+final candidate `29fa8719a5c5a1277b1d1fdde3d68090bd7d08b9`. This is an aggregate
+branch comparison rather than a single-change ablation: the histories diverge
+at `fd8d9d4e`, with 80 main-only and 27 candidate-only commits.
+
+The source example is byte-identical in both trees (Git blob `e41e136e`,
+SHA-256 `16b2c9d3...383c`), and the cloth asset `unisex_shirt.usd` has SHA-256
+`9eb7f161...4c5` on both sides. The Franka asset cache used by each run has 64
+non-Git files totaling 80,323,199 bytes and normalized content fingerprint
+`26b1bf34...6758`; current main's separately named cache resolves a newer
+asset-repository commit, but the target Franka sparse-checkout contents are
+byte-identical.
+
+Both variants used final custom Warp `67621f80`, tree `4dcf21d7`, with native
+SHA-256 values `d071cd89...a43` (`warp.so`) and `5a436646...691`
+(`warp-clang.so`). Production launches were not overridden: main resolved
+VT16/EE16 and capped the force/Hessian grid at 142 SM blocks, whereas the
+candidate resolved VT4/EE8 and used the uncapped grid. Both ran from the
+candidate worktree's common frozen virtual environment with variant-specific
+`PYTHONPATH` and Newton/Warp caches. This controls dependencies but does not
+compare each branch's own lockfile-derived environment.
+
+The isolated L40 suite used one excluded warm process per variant followed by
+32 included fresh 30-frame processes in eight alternating BCCB/CBBC blocks:
+
+| Variant | Processes | Median ms/frame | Mean ms/frame | CV |
+|---|---:|---:|---:|---:|
+| Current upstream/main | 16 | 17.272598 | 17.314414 | 0.592% |
+| Final candidate | 16 | 14.494030 | 14.500801 | 0.673% |
+
+The balanced-block geometric speedup is **1.194037x** (+19.4037% throughput),
+with a 200,000-resample complete-block 95% interval of
+**[1.189707x, 1.198300x]**. All 8/8 blocks favored the candidate, median frame
+latency was 16.09% lower, every observation was retained, the analyzer emitted
+no warnings, and no contact row overflowed. This direct result must not be
+multiplied by the earlier original-baseline or radius-query speedups.
+
+A source-isolated 30-frame Nsight Systems trace per variant then localized the
+same aggregate comparison:
+
+| Component | Current main ms | Candidate ms | Speedup |
+|---|---:|---:|---:|
+| VT traversal | 21.804819 | 13.299248 | **1.639553x** |
+| EE traversal | 49.115971 | 36.738971 | **1.336890x** |
+| Full detector | 92.370216 | 70.223996 | **1.315365x** |
+| Force/Hessian | 85.274545 | 54.052334 | **1.577629x** |
+| Full detector + force/Hessian | 177.644761 | 124.276330 | **1.429434x** |
+| Planar truncation | 55.001940 | 47.425850 | **1.159746x** |
+| Extended self-contact pipeline | 244.488994 | 183.536550 | **1.332100x** |
+| All captured graph kernels | 430.530160 | 353.734332 | **1.217100x** |
+
+Each trace contains 30 frame graphs, 63,870 graph kernels, exact expected
+component counts, and no warnings. Fresh processes had different cloth state
+and contact totals because of unordered floating-point atomics, so these
+component sums localize work but do not form a paired statistical estimate.
+Profiler wall time is invalid; the replicated ABBA estimator remains the
+end-to-end authority.
+
+The structural analyzer emitted no warnings, but raw Nsight diagnostics contain
+two severity-warning rows in each trace: the 12.8 driver is newer than Nsight
+2024.5 and was traced using the tool's CUDA 12.6 libraries, and a generic warning
+says not all CUDA events might have been collected. There are no severity
+errors. All 30 frame markers, total graph-kernel counts, and expected
+per-component/per-frame launch counts are present, so no expected workload
+kernel is known to be missing; retain this as a trace caveat.
+
+Evidence remains under `/tmp/cloth-franka-main-vs-final-20260818`:
+
+- `manifest.json`: `f7851419...b31`;
+- `analysis.json`: `59ab5160...77c`;
+- `summary.json`: `d5a67ce4...9db`;
+- `runs.csv`: `6caef88a...d83`;
+- frozen runner: `14cde073...0f1`;
+- frozen benchmark: `b5c2f79f...cae`;
+- frozen analyzer: `5cc0253b...c27`.
+
+Trace evidence remains under
+`/tmp/cloth-franka-main-vs-final-nsys-20260818`:
+
+- `trace-analysis.json`: `9e71cbef...b90`;
+- fail-closed trace runner: `8e5f0a23...045`;
+- main/candidate `.nsys-rep`: `e30c6d60...a0b` / `3535c281...ff7`;
+- main/candidate SQLite: `b6e3186e...4bb` / `2b7c0c0d...8e4`;
+- main/candidate result JSON: `493d4beb...14b` / `4d7aadb3...450`.

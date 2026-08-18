@@ -8,6 +8,7 @@
 - Radius-query AABB control: `7134ddfa`
 - Radius-query candidate: `2feb9748`
 - Radius-query Warp: measured `4491567b`, final equivalent `67621f80`
+- Current-main comparison: upstream `6d3fdf6f`, candidate `29fa8719`
 - Branch: `ankac/cloth-franka-perf`
 - Device: NVIDIA L40 (isolated by the Newton GPU claim for each suite)
 
@@ -33,6 +34,88 @@ follow-up improves the frozen production traversal pair by **1.061696x**, the
 traced detector by **1.039724x**, and end-to-end throughput by **1.005657x**,
 95% CI **[1.002605x, 1.008975x]**. It does not replace or compound the
 original baseline-to-candidate result.
+
+## Direct current upstream/main comparison
+
+A separate user-requested ABBA suite directly compared official
+`upstream/main` `6d3fdf6f7885378677d9b69899aad1ee5bd6c667` with final candidate
+`29fa8719a5c5a1277b1d1fdde3d68090bd7d08b9`:
+
+| Variant | Processes | Median ms/frame | Mean ms/frame | CV |
+|---|---:|---:|---:|---:|
+| Current upstream/main | 16 | 17.272598 | 17.314414 | 0.592% |
+| Final candidate | 16 | 14.494030 | 14.500801 | 0.673% |
+
+The primary balanced-block throughput speedup is **1.194037x** (+19.4037%),
+with a 200,000-resample complete-block 95% confidence interval of
+**[1.189707x, 1.198300x]**. All eight blocks favored the candidate. The median
+frame latency is 16.09% lower (17.272598 to 14.494030 ms/frame). All 32 included
+30-frame processes completed, all observations were retained, the analyzer
+emitted no warnings, and no contact row overflowed.
+
+This is an aggregate current-main-versus-feature result, not an isolated
+radius-query or single-change ablation. The branches diverge at `fd8d9d4e`;
+main and the candidate have 80 and 27 unique commits respectively. The target
+`example_cloth_franka.py` is byte-identical in both trees (Git blob `e41e136e`,
+SHA-256 `16b2c9d3...383c`), as is `unisex_shirt.usd` (SHA-256
+`9eb7f161...4c5`). The Franka asset cache used by each process has the same 64
+non-Git files and 80,323,199 bytes; their normalized content fingerprint is
+`26b1bf34...6758`. Current main resolves a newer asset-repository commit, but
+the target Franka sparse-checkout contents are byte-identical.
+
+Both variants used the exact same final custom Warp `67621f80`, tree
+`4dcf21d7`, and native binaries (`warp.so` SHA-256 `d071cd89...a43` and
+`warp-clang.so` SHA-256 `5a436646...691`). This controls Warp but means the
+result is not a stock-main dependency comparison. Each Newton tree retained its
+production launch policy without overrides: main resolved VT16/EE16 and capped
+force/Hessian accumulation at the L40's 142 SM blocks; the candidate resolved
+VT4/EE8 and used the natural uncapped force grid. Both variants also used the
+candidate worktree's common frozen virtual environment while `PYTHONPATH` and
+Newton/Warp caches were isolated per variant. This controls Python dependencies
+but does not compare each branch's own lockfile-derived environment.
+
+The suite is `/tmp/cloth-franka-main-vs-final-20260818`. Primary evidence
+SHA-256 values are `f7851419...b31` (`manifest.json`),
+`59ab5160...77c` (`analysis.json`), `d5a67ce4...9db` (`summary.json`), and
+`6caef88a...d83` (`runs.csv`). The frozen runner, benchmark, and analyzer hashes
+are `14cde073...0f1`, `b5c2f79f...cae`, and `5cc0253b...c27` respectively.
+
+One 30-frame Nsight Systems graph-node trace per variant localizes the aggregate
+gain under the same pinned-source, shared-Warp, common-environment,
+isolated-cache, and production-launch controls:
+
+| Component | Current main ms | Candidate ms | Speedup |
+|---|---:|---:|---:|
+| Vertex-triangle traversal | 21.804819 | 13.299248 | **1.639553x** |
+| Edge-edge traversal | 49.115971 | 36.738971 | **1.336890x** |
+| Full detector | 92.370216 | 70.223996 | **1.315365x** |
+| Force/Hessian accumulation | 85.274545 | 54.052334 | **1.577629x** |
+| **Full detector + force/Hessian** | **177.644761** | **124.276330** | **1.429434x** |
+| Planar truncation | 55.001940 | 47.425850 | **1.159746x** |
+| Extended self-contact pipeline | 244.488994 | 183.536550 | **1.332100x** |
+| All captured graph kernels | 430.530160 | 353.734332 | **1.217100x** |
+
+Both traces contain 30 frame graphs, 63,870 graph kernels, all expected
+component launch counts, and no analyzer warnings. The two fresh CUDA processes
+followed different trajectories and ended with different contact totals because
+of the solver's unordered floating-point atomics. These sums localize work but
+are not a paired statistical estimate, and profiler wall time is invalid for
+end-to-end comparison; the 32-process ABBA result remains authoritative.
+
+Nsight itself emitted two diagnostic warnings per trace: the 12.8 driver is
+newer than this Nsight 2024.5 build, so it used its CUDA 12.6 tracing libraries,
+and a generic warning said that not all CUDA events might have been collected.
+There were no severity errors. All 30 frame markers, total graph-kernel counts,
+and expected per-component/per-frame launch counts are present, so there is no
+evidence that an expected workload kernel was omitted; the diagnostics remain
+a trace-level caveat.
+
+Trace evidence is under `/tmp/cloth-franka-main-vs-final-nsys-20260818`.
+`trace-analysis.json` has SHA-256 `9e71cbef...b90`; the fail-closed trace runner
+has SHA-256 `8e5f0a23...045`. Raw main/candidate report hashes are
+`e30c6d60...a0b`/`3535c281...ff7`, SQLite hashes are
+`b6e3186e...4bb`/`2b7c0c0d...8e4`, and benchmark-result hashes are
+`493d4beb...14b`/`4d7aadb3...450`.
 
 ## Workload and measurement
 
