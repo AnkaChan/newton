@@ -223,9 +223,10 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         self.assertEqual(CONTRACT_ID, "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1")
         self.assertEqual(
             SCHEDULE_VERSION,
-            "scalar-core-and-versioned-publication-routes-v3",
+            "scalar-core-and-versioned-publication-routes-v4",
         )
-        self.assertEqual(PUBLICATION_VERSION, "scalar-fused-v-cycle-publication-routes-v1")
+        self.assertEqual(PUBLICATION_VERSION, "scalar-fused-v-cycle-publication-routes-v2")
+        self.assertEqual(EXTERNAL_SHARED_PUBLICATION_ROUTE, "external-shared-owner-scalar-to-vec3")
         self.assertIs(hierarchy.source_hierarchy, self.source)
         self.assertIs(hierarchy.levels, self.source.levels)
         self.assertEqual(int(hierarchy.coarse_cholesky.ptr), int(self.source.coarse_cholesky.ptr))
@@ -804,9 +805,9 @@ class TestWarpScalarFusedDefaultStretchCpu(unittest.TestCase):
         self.assertEqual(actual.physical_work.out_of_place_jacobi_block_solves, 184)
         self.assertEqual(actual.physical_work.matrix_kernel_launches, 6)
         self.assertEqual(actual.physical_work.jacobi_kernel_launches, 6)
-        linear_prefix_launches = 4 + actual.scheduled_kernel_launches + actual.physical_work.core_kernel_launches
+        linear_prefix_launches = 4 + 2 * actual.physical_work.core_kernel_launches
         predicted_captured_launches = 2 + 4 * ((linear_prefix_launches + 1) + 3)
-        self.assertEqual(predicted_captured_launches, 190)
+        self.assertEqual(predicted_captured_launches, 186)
         self.assertFalse(actual.performance_evidence)
 
 

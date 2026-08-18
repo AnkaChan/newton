@@ -20,6 +20,7 @@ from research.principal_stretch.correction_gpu_warp import (
     CONTRACT_ID,
     FUSED_GATHER_KERNEL_VERSION,
     KERNEL_VERSION,
+    SCALAR_DIRECTION_APPLY_KERNEL_VERSION,
     WarpFixedPCGWorkspace,
     WarpMatrixFreeStableNHOperator,
 )
@@ -43,6 +44,12 @@ def _subtract_vectors(
 ):
     index = wp.tid()
     output[index] = left[index] - right[index]
+
+
+@wp.kernel(enable_backward=False)
+def _publish_scalar_direction(source: wp.array[wp.float64], destination: wp.array[wp.vec3d]):
+    index = wp.tid()
+    destination[index] = wp.vec3d(source[3 * index], source[3 * index + 1], source[3 * index + 2])
 
 
 def _shared_vertex_problem() -> NewtonProblem:
@@ -170,6 +177,10 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
     def test_kernel_version_is_explicit(self):
         self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-operator-v2-tiled-pcg")
         self.assertEqual(FUSED_GATHER_KERNEL_VERSION, "mg-vbd-warp-fused-gather-v1")
+        self.assertEqual(
+            SCALAR_DIRECTION_APPLY_KERNEL_VERSION,
+            "mg-vbd-warp-scalar-direction-apply-residual-v1",
+        )
         self.assertEqual(CONTRACT_ID, "mg-vbd-warp-fixed-pcg-research-v2")
 
         gradient_source = inspect.getsource(warp_operator_module._gather_gradient_masked)
@@ -177,6 +188,13 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
         self.assertLess(gradient_source.index("for cursor in range"), gradient_source.index("if active[0] == 0"))
         self.assertNotIn("atomic", gradient_source)
         self.assertNotIn("atomic", apply_source)
+
+        scalar_tet_source = inspect.getsource(warp_operator_module._apply_tet_operator_publish_scalar_direction)
+        scalar_gather_source = inspect.getsource(warp_operator_module._gather_operator_product_residual)
+        self.assertNotIn("atomic", scalar_tet_source)
+        self.assertNotIn("atomic", scalar_gather_source)
+        self.assertIn("published_direction[free_index] = wp.vec3d", scalar_tet_source)
+        self.assertIn("if owner < n_tets", scalar_tet_source)
 
     def test_sorted_gather_and_exact_free_elimination(self):
         operator = self.operator
@@ -396,6 +414,68 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
         _assert_bitwise_equal(self, fused_product.numpy(), legacy_product.numpy())
         _assert_bitwise_equal(self, fused_residual.numpy(), legacy_residual.numpy())
 
+    def test_scalar_direction_apply_matches_standalone_publication_bitwise(self):
+        cases = (
+            ("shared_vertex", *_oracle_and_device("cpu")),
+            ("default_stretch", *_default_stretch_oracle_and_device("cpu")),
+        )
+        for case_index, (name, _oracle, operator) in enumerate(cases):
+            generator = np.random.default_rng(1910 + case_index)
+            random_direction = generator.normal(size=(operator.n_free, 3))
+            edge_direction = np.array(random_direction, copy=True)
+            edge_direction[0] = np.array((-0.0, 0.0, np.nan), dtype=np.float64)
+            edge_direction[-1, 1] = np.inf
+            rhs_host = generator.normal(size=(operator.n_free, 3))
+            rhs_host[-1, 2] = -np.inf
+            for edge_label, direction_host in (("finite", random_direction), ("edge", edge_direction)):
+                with self.subTest(name=name, edge=edge_label):
+                    direction_scalar = wp.array(
+                        direction_host.reshape(-1),
+                        dtype=wp.float64,
+                        device=operator.device,
+                    )
+                    rhs = wp.array(rhs_host, dtype=wp.vec3d, device=operator.device)
+                    legacy_direction = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                    legacy_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                    legacy_residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                    published_direction = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                    fused_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                    fused_residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+                    legacy_workspace = operator.create_apply_workspace()
+                    fused_workspace = operator.create_apply_workspace()
+
+                    wp.launch(
+                        _publish_scalar_direction,
+                        dim=operator.n_free,
+                        inputs=[direction_scalar, legacy_direction],
+                        device=operator.device,
+                    )
+                    operator.launch_apply_residual(
+                        legacy_direction,
+                        rhs,
+                        legacy_product,
+                        legacy_residual,
+                        legacy_workspace,
+                    )
+                    published_direction.assign(np.full((operator.n_free, 3), 41.0, dtype=np.float64))
+                    operator.launch_apply_residual_scalar_direction(
+                        direction_scalar,
+                        published_direction,
+                        rhs,
+                        fused_product,
+                        fused_residual,
+                        fused_workspace,
+                    )
+
+                    _assert_bitwise_equal(self, published_direction.numpy(), legacy_direction.numpy())
+                    _assert_bitwise_equal(self, fused_product.numpy(), legacy_product.numpy())
+                    _assert_bitwise_equal(self, fused_residual.numpy(), legacy_residual.numpy())
+                    _assert_bitwise_equal(
+                        self,
+                        fused_workspace.delta_piola.numpy(),
+                        legacy_workspace.delta_piola.numpy(),
+                    )
+
     def test_fused_gather_validation_rejects_invalid_arrays_and_output_aliases(self):
         operator = self.operator
         n_free = operator.n_free
@@ -506,6 +586,229 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, f"{vector_name} must not alias workspace delta_piola"):
                     operator.launch_apply_residual(direction, rhs, product, residual, aliased_workspace)
 
+    def test_scalar_direction_apply_rejects_every_alias_before_launch(self):
+        operator = self.operator
+        n_free = operator.n_free
+        direction_scalar = wp.zeros(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+        published = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+        rhs = wp.zeros(n_free, dtype=wp.vec3d, device=operator.device)
+        product = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+        residual = wp.empty(n_free, dtype=wp.vec3d, device=operator.device)
+        workspace = operator.create_apply_workspace()
+
+        for invalid in (
+            wp.empty(operator.n_free_dofs, dtype=wp.float32, device=operator.device),
+            wp.empty(operator.n_free_dofs + 1, dtype=wp.float64, device=operator.device),
+            wp.empty((operator.n_free, 3), dtype=wp.float64, device=operator.device),
+        ):
+            with self.subTest(dtype=invalid.dtype, shape=invalid.shape):
+                with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+                    with self.assertRaisesRegex(ValueError, "direction_scalar must be a float64 array"):
+                        operator.launch_apply_residual_scalar_direction(
+                            invalid,
+                            published,
+                            rhs,
+                            product,
+                            residual,
+                            workspace,
+                        )
+                self.assertEqual(launch.call_count, 0)
+
+        named_vectors = {
+            "published_direction": published,
+            "rhs": rhs,
+            "product": product,
+            "residual": residual,
+        }
+        vector_names = tuple(named_vectors)
+        vector_element_size = wp.types.type_size_in_bytes(wp.vec3d)
+        for vector_name in ("published_direction", "product", "residual"):
+            for layout_name, stride in (("zero", 0), ("sub-element", vector_element_size - 1)):
+                backing = wp.empty(n_free + 1, dtype=wp.vec3d, device=operator.device)
+                overlapping_output = wp.array(
+                    ptr=backing.ptr,
+                    dtype=wp.vec3d,
+                    shape=(n_free,),
+                    strides=(stride,),
+                    device=operator.device,
+                    copy=False,
+                )
+                arguments = dict(named_vectors)
+                arguments[vector_name] = overlapping_output
+                with self.subTest(writable_layout=vector_name, layout=layout_name):
+                    with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+                        with self.assertRaisesRegex(
+                            ValueError,
+                            f"{vector_name} must have a non-overlapping writable 1-D layout",
+                        ):
+                            operator.launch_apply_residual_scalar_direction(
+                                direction_scalar,
+                                arguments["published_direction"],
+                                arguments["rhs"],
+                                arguments["product"],
+                                arguments["residual"],
+                                workspace,
+                            )
+                    self.assertEqual(launch.call_count, 0)
+
+        delta_element_size = wp.types.type_size_in_bytes(wp.mat33d)
+        for layout_name, stride in (("zero", 0), ("sub-element", delta_element_size - 1)):
+            backing = wp.empty(operator.n_tets + 1, dtype=wp.mat33d, device=operator.device)
+            overlapping_delta = wp.array(
+                ptr=backing.ptr,
+                dtype=wp.mat33d,
+                shape=(operator.n_tets,),
+                strides=(stride,),
+                device=operator.device,
+                copy=False,
+            )
+            overlapping_workspace = operator.create_apply_workspace()
+            overlapping_workspace.delta_piola = overlapping_delta
+            with self.subTest(writable_layout="workspace delta_piola", layout=layout_name):
+                with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "workspace delta_piola must have a non-overlapping writable 1-D layout",
+                    ):
+                        operator.launch_apply_residual_scalar_direction(
+                            direction_scalar,
+                            published,
+                            rhs,
+                            product,
+                            residual,
+                            overlapping_workspace,
+                        )
+                self.assertEqual(launch.call_count, 0)
+
+        for left_index, left_name in enumerate(vector_names):
+            for right_name in vector_names[left_index + 1 :]:
+                arguments = dict(named_vectors)
+                arguments[right_name] = arguments[left_name]
+                with self.subTest(alias=f"{left_name}-{right_name}"):
+                    with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+                        with self.assertRaisesRegex(ValueError, f"{left_name} and {right_name} must not alias"):
+                            operator.launch_apply_residual_scalar_direction(
+                                direction_scalar,
+                                arguments["published_direction"],
+                                arguments["rhs"],
+                                arguments["product"],
+                                arguments["residual"],
+                                workspace,
+                            )
+                    self.assertEqual(launch.call_count, 0)
+
+                overlap_storage = wp.empty(n_free + 1, dtype=wp.vec3d, device=operator.device)
+                arguments = dict(named_vectors)
+                arguments[left_name] = overlap_storage[:n_free]
+                arguments[right_name] = overlap_storage[1:]
+                with self.subTest(partial_alias=f"{left_name}-{right_name}"):
+                    with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+                        with self.assertRaisesRegex(ValueError, f"{left_name} and {right_name} must not alias"):
+                            operator.launch_apply_residual_scalar_direction(
+                                direction_scalar,
+                                arguments["published_direction"],
+                                arguments["rhs"],
+                                arguments["product"],
+                                arguments["residual"],
+                                workspace,
+                            )
+                    self.assertEqual(launch.call_count, 0)
+
+        for vector_name in vector_names:
+            storage = wp.empty(operator.n_free_dofs + 1, dtype=wp.float64, device=operator.device)
+            scalar_view = storage[: operator.n_free_dofs]
+            overlapping_vector = wp.array(
+                ptr=int(storage.ptr) + wp.types.type_size_in_bytes(wp.float64),
+                dtype=wp.vec3d,
+                shape=(n_free,),
+                device=operator.device,
+                copy=False,
+            )
+            arguments = dict(named_vectors)
+            arguments[vector_name] = overlapping_vector
+            with self.subTest(scalar_alias=vector_name):
+                with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+                    with self.assertRaisesRegex(ValueError, f"direction_scalar and {vector_name} must not alias"):
+                        operator.launch_apply_residual_scalar_direction(
+                            scalar_view,
+                            arguments["published_direction"],
+                            arguments["rhs"],
+                            arguments["product"],
+                            arguments["residual"],
+                            workspace,
+                        )
+                self.assertEqual(launch.call_count, 0)
+
+        aliased_workspace = operator.create_apply_workspace()
+        aliased_workspace.delta_piola = wp.array(
+            ptr=direction_scalar.ptr,
+            dtype=wp.mat33d,
+            shape=(operator.n_tets,),
+            device=operator.device,
+            copy=False,
+        )
+        with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(ValueError, "direction_scalar must not alias workspace delta_piola"):
+                operator.launch_apply_residual_scalar_direction(
+                    direction_scalar,
+                    published,
+                    rhs,
+                    product,
+                    residual,
+                    aliased_workspace,
+                )
+        self.assertEqual(launch.call_count, 0)
+
+        for vector_name, vector in named_vectors.items():
+            arguments = dict(named_vectors)
+            aliased_workspace = operator.create_apply_workspace()
+            aliased_workspace.delta_piola = wp.array(
+                ptr=int(vector.ptr) + wp.types.type_size_in_bytes(wp.float64),
+                dtype=wp.mat33d,
+                shape=(operator.n_tets,),
+                device=operator.device,
+                copy=False,
+            )
+            with self.subTest(workspace_partial_alias=vector_name):
+                with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+                    with self.assertRaisesRegex(ValueError, f"{vector_name} must not alias workspace delta_piola"):
+                        operator.launch_apply_residual_scalar_direction(
+                            direction_scalar,
+                            arguments["published_direction"],
+                            arguments["rhs"],
+                            arguments["product"],
+                            arguments["residual"],
+                            aliased_workspace,
+                        )
+                self.assertEqual(launch.call_count, 0)
+
+        invalid_workspace = operator.create_apply_workspace()
+        invalid_workspace.delta_piola = wp.empty(operator.n_tets, dtype=wp.vec3d, device=operator.device)
+        with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(ValueError, "workspace delta_piola must be a mat33d array"):
+                operator.launch_apply_residual_scalar_direction(
+                    direction_scalar,
+                    published,
+                    rhs,
+                    product,
+                    residual,
+                    invalid_workspace,
+                )
+        self.assertEqual(launch.call_count, 0)
+
+        _other_oracle, other_operator = _oracle_and_device("cpu")
+        with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(ValueError, "workspace belongs to a different operator"):
+                operator.launch_apply_residual_scalar_direction(
+                    direction_scalar,
+                    published,
+                    rhs,
+                    product,
+                    residual,
+                    other_operator.create_apply_workspace(),
+                )
+        self.assertEqual(launch.call_count, 0)
+
     def test_direction_aliases_are_safe_for_fused_apply(self):
         operator = self.operator
         n_free = operator.n_free
@@ -547,6 +850,16 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
         workspace = operator.create_apply_workspace()
         operator.launch_gradient_masked(output, active)
         operator.launch_apply_residual(direction, rhs, product, residual, workspace)
+        direction_scalar = wp.zeros(operator.n_free_dofs, dtype=wp.float64, device=operator.device)
+        published_direction = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        operator.launch_apply_residual_scalar_direction(
+            direction_scalar,
+            published_direction,
+            rhs,
+            product,
+            residual,
+            workspace,
+        )
 
         with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
             operator.launch_gradient_masked(output, active)
@@ -558,6 +871,25 @@ class TestWarpMatrixFreeStableNHOperator(unittest.TestCase):
         self.assertEqual(launch.call_count, 2)
         self.assertIs(launch.call_args_list[0].args[0], warp_operator_module._apply_tet_operator)
         self.assertIs(launch.call_args_list[1].args[0], warp_operator_module._gather_operator_product_residual)
+
+        with mock.patch.object(warp_operator_module.wp, "launch", wraps=wp.launch) as launch:
+            operator.launch_apply_residual_scalar_direction(
+                direction_scalar,
+                published_direction,
+                rhs,
+                product,
+                residual,
+                workspace,
+            )
+        self.assertEqual(launch.call_count, 2)
+        self.assertIs(
+            launch.call_args_list[0].args[0],
+            warp_operator_module._apply_tet_operator_publish_scalar_direction,
+        )
+        self.assertIs(
+            launch.call_args_list[1].args[0],
+            warp_operator_module._gather_operator_product_residual,
+        )
 
 
 class TestWarpFixedPCG(unittest.TestCase):
@@ -849,6 +1181,97 @@ class TestWarpFixedPCG(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("MG_VBD_TEST_CUDA") == "1", "set MG_VBD_TEST_CUDA=1 after claiming a GPU")
 class TestWarpFusedGatherCudaCapture(unittest.TestCase):
+    def test_scalar_direction_apply_capture_replays_and_overwrites_poison(self):
+        if wp.get_cuda_device_count() < 1:
+            self.skipTest("no claimed CUDA device is visible")
+        torch.set_default_dtype(torch.float64)
+        _oracle, operator = _oracle_and_device("cuda:0")
+        generator = np.random.default_rng(1931)
+        direction_scalar = wp.array(
+            generator.normal(size=operator.n_free_dofs),
+            dtype=wp.float64,
+            device=operator.device,
+        )
+        rhs = wp.array(generator.normal(size=(operator.n_free, 3)), dtype=wp.vec3d, device=operator.device)
+        published = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+        workspace = operator.create_apply_workspace()
+        operator.launch_apply_residual_scalar_direction(
+            direction_scalar,
+            published,
+            rhs,
+            product,
+            residual,
+            workspace,
+        )
+        pointers = tuple(
+            int(value.ptr) for value in (direction_scalar, rhs, published, product, residual, workspace.delta_piola)
+        )
+        with wp.ScopedCapture(device=operator.device) as capture:
+            operator.launch_apply_residual_scalar_direction(
+                direction_scalar,
+                published,
+                rhs,
+                product,
+                residual,
+                workspace,
+            )
+
+        snapshots = []
+        for replay_index in range(3):
+            if replay_index == 1:
+                direction_host = np.zeros(operator.n_free_dofs, dtype=np.float64)
+                direction_host[0] = -0.0
+            elif replay_index == 2:
+                direction_host = generator.normal(size=operator.n_free_dofs)
+                direction_host[:6] = (-0.0, 0.0, np.nextafter(0.0, 1.0), np.nan, np.inf, -np.inf)
+            else:
+                direction_host = generator.normal(size=operator.n_free_dofs) * (replay_index + 1.0)
+            rhs_host = generator.normal(size=(operator.n_free, 3))
+            if replay_index == 2:
+                rhs_host[-1] = (np.nan, np.inf, -np.inf)
+            direction_scalar.assign(direction_host)
+            rhs.assign(rhs_host)
+            poison = np.full((operator.n_free, 3), 91.0, dtype=np.float64)
+            published.assign(poison)
+            product.assign(poison)
+            residual.assign(poison)
+            workspace.delta_piola.assign(np.full((operator.n_tets, 3, 3), -73.0, dtype=np.float64))
+            wp.capture_launch(capture.graph)
+
+            legacy_direction = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+            legacy_product = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+            legacy_residual = wp.empty(operator.n_free, dtype=wp.vec3d, device=operator.device)
+            legacy_workspace = operator.create_apply_workspace()
+            wp.launch(
+                _publish_scalar_direction,
+                dim=operator.n_free,
+                inputs=[direction_scalar, legacy_direction],
+                device=operator.device,
+            )
+            operator.launch_apply_residual(
+                legacy_direction,
+                rhs,
+                legacy_product,
+                legacy_residual,
+                legacy_workspace,
+            )
+            _assert_bitwise_equal(self, published.numpy(), legacy_direction.numpy())
+            _assert_bitwise_equal(self, product.numpy(), legacy_product.numpy())
+            _assert_bitwise_equal(self, residual.numpy(), legacy_residual.numpy())
+            _assert_bitwise_equal(self, workspace.delta_piola.numpy(), legacy_workspace.delta_piola.numpy())
+            snapshots.append(published.numpy())
+
+        self.assertNotEqual(snapshots[0].tobytes(), snapshots[1].tobytes())
+        self.assertNotEqual(snapshots[1].tobytes(), snapshots[2].tobytes())
+        self.assertEqual(
+            pointers,
+            tuple(
+                int(value.ptr) for value in (direction_scalar, rhs, published, product, residual, workspace.delta_piola)
+            ),
+        )
+
     def test_capture_replays_changed_inputs_after_output_poisoning(self):
         if wp.get_cuda_device_count() < 1:
             self.skipTest("no claimed CUDA device is visible")

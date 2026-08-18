@@ -27,6 +27,7 @@ import hashlib
 import math
 import numbers
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -35,7 +36,9 @@ from .correction_gpu import MatrixFreeStableNHOperator
 
 KERNEL_VERSION = "mg-vbd-warp-operator-v2-tiled-pcg"
 FUSED_GATHER_KERNEL_VERSION = "mg-vbd-warp-fused-gather-v1"
+SCALAR_DIRECTION_APPLY_KERNEL_VERSION = "mg-vbd-warp-scalar-direction-apply-residual-v1"
 print(f"[kernels] fused gather version: {FUSED_GATHER_KERNEL_VERSION}")
+print(f"[kernels] scalar-direction apply version: {SCALAR_DIRECTION_APPLY_KERNEL_VERSION}")
 CONTRACT_ID = "mg-vbd-warp-fixed-pcg-research-v2"
 _PCG_REDUCTION_BLOCK_SIZE = 256
 _PCG_REDUCTION_STAGES = 2
@@ -387,6 +390,46 @@ def _apply_tet_operator(
             delta_deformation += _outer3(direction[free_index], shape_gradients[entry])
     determinant_direction = _double_dot(cofactors[tet], delta_deformation)
     delta_piola[tet] = mu[tet] * delta_deformation + lam[tet] * determinant_direction * cofactors[tet]
+
+
+@wp.kernel(enable_backward=False)
+def _apply_tet_operator_publish_scalar_direction(
+    direction_scalar: wp.array[wp.float64],
+    tets: wp.array[int],
+    vertex_to_free: wp.array[int],
+    shape_gradients: wp.array[wp.vec3d],
+    cofactors: wp.array[wp.mat33d],
+    mu: wp.array[wp.float64],
+    lam: wp.array[wp.float64],
+    delta_piola: wp.array[wp.mat33d],
+    published_direction: wp.array[wp.vec3d],
+    n_tets: int,
+):
+    owner = wp.tid()
+    if owner < n_tets:
+        tet = owner
+        delta_deformation = _zero_matrix()
+        for corner in range(4):
+            entry = 4 * tet + corner
+            free_index = vertex_to_free[tets[entry]]
+            if free_index >= 0:
+                scalar_offset = 3 * free_index
+                direction_value = wp.vec3d(
+                    direction_scalar[scalar_offset],
+                    direction_scalar[scalar_offset + 1],
+                    direction_scalar[scalar_offset + 2],
+                )
+                delta_deformation += _outer3(direction_value, shape_gradients[entry])
+        determinant_direction = _double_dot(cofactors[tet], delta_deformation)
+        delta_piola[tet] = mu[tet] * delta_deformation + lam[tet] * determinant_direction * cofactors[tet]
+    else:
+        free_index = owner - n_tets
+        scalar_offset = 3 * free_index
+        published_direction[free_index] = wp.vec3d(
+            direction_scalar[scalar_offset],
+            direction_scalar[scalar_offset + 1],
+            direction_scalar[scalar_offset + 2],
+        )
 
 
 @wp.kernel(enable_backward=False)
@@ -1298,6 +1341,16 @@ class WarpMatrixFreeStableNHOperator:
         if vector.device != self.device or vector.dtype != wp.vec3d or vector.shape != (self.n_free,):
             raise ValueError(f"{name} must be a vec3d array of shape ({self.n_free},) on {self.device}")
 
+    def _validate_scalar_direction(self, vector: wp.array[wp.float64], name: str) -> None:
+        if (
+            type(vector) is not wp.array
+            or vector.device != self.device
+            or vector.dtype != wp.float64
+            or vector.ndim != 1
+            or vector.shape != (self.n_free_dofs,)
+        ):
+            raise ValueError(f"{name} must be a float64 array of shape ({self.n_free_dofs},) on {self.device}")
+
     def _validate_active(self, active: wp.array[int]) -> None:
         if (
             type(active) is not wp.array
@@ -1320,6 +1373,19 @@ class WarpMatrixFreeStableNHOperator:
     @classmethod
     def _vector_memory_span(cls, vector: wp.array[wp.vec3d]) -> tuple[int, int]:
         return cls._array_memory_span(vector, wp.types.type_size_in_bytes(vector.dtype))
+
+    @staticmethod
+    def _validate_writable_1d_layout(array: wp.array[Any], name: str) -> None:
+        """Reject a writable 1-D view whose logical elements overlap."""
+        strides = array.strides
+        element_size = wp.types.type_size_in_bytes(array.dtype)
+        if (
+            type(strides) is not tuple
+            or len(strides) != 1
+            or type(strides[0]) is not int
+            or (array.size > 1 and abs(strides[0]) < element_size)
+        ):
+            raise ValueError(f"{name} must have a non-overlapping writable 1-D layout")
 
     @staticmethod
     def _memory_spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
@@ -1529,6 +1595,107 @@ class WarpMatrixFreeStableNHOperator:
             dim=self.n_free,
             inputs=[
                 direction,
+                rhs,
+                self.mass,
+                self.free,
+                self.incidence_offsets,
+                self.incidence_tets,
+                self.incidence_corners,
+                self.shape_gradients,
+                self.volumes,
+                workspace.delta_piola,
+                self.inverse_dt_squared,
+                product,
+                residual,
+            ],
+            device=self.device,
+        )
+
+    def launch_apply_residual_scalar_direction(
+        self,
+        direction_scalar: wp.array[wp.float64],
+        published_direction: wp.array[wp.vec3d],
+        rhs: wp.array[wp.vec3d],
+        product: wp.array[wp.vec3d],
+        residual: wp.array[wp.vec3d],
+        workspace: WarpMatrixFreeWorkspace,
+    ) -> None:
+        """Apply from an immutable scalar direction and publish it in the apply.
+
+        The first launch has disjoint tet and free-row ownership.  Tet owners
+        build ``delta_piola`` directly from ``direction_scalar`` while each
+        unique free-row owner publishes its exact fp64 triplet.  The second
+        launch gathers the product and ``rhs - product`` from that publication.
+        Every argument occupies disjoint storage, including partial views.
+        """
+        self._validate_scalar_direction(direction_scalar, "direction_scalar")
+        self._validate_vector(published_direction, "published_direction")
+        self._validate_vector(rhs, "rhs")
+        self._validate_vector(product, "product")
+        self._validate_vector(residual, "residual")
+        if not isinstance(workspace, WarpMatrixFreeWorkspace) or workspace._operator_identity != id(self):
+            raise ValueError("workspace belongs to a different operator")
+        delta_piola = workspace.delta_piola
+        if (
+            type(delta_piola) is not wp.array
+            or delta_piola.device != self.device
+            or delta_piola.dtype != wp.mat33d
+            or delta_piola.ndim != 1
+            or delta_piola.shape != (self.n_tets,)
+        ):
+            raise ValueError(f"workspace delta_piola must be a mat33d array of shape ({self.n_tets},) on {self.device}")
+        named_vectors = (
+            ("published_direction", published_direction),
+            ("rhs", rhs),
+            ("product", product),
+            ("residual", residual),
+        )
+        for output_name, output in (
+            ("published_direction", published_direction),
+            ("product", product),
+            ("residual", residual),
+            ("workspace delta_piola", delta_piola),
+        ):
+            self._validate_writable_1d_layout(output, output_name)
+        for left_index, (left_name, left) in enumerate(named_vectors):
+            for right_name, right in named_vectors[left_index + 1 :]:
+                if self._vectors_overlap(left, right):
+                    raise ValueError(f"{left_name} and {right_name} must not alias")
+        scalar_span = self._array_memory_span(
+            direction_scalar,
+            wp.types.type_size_in_bytes(direction_scalar.dtype),
+        )
+        for vector_name, vector in named_vectors:
+            if self._memory_spans_overlap(scalar_span, self._vector_memory_span(vector)):
+                raise ValueError(f"direction_scalar and {vector_name} must not alias")
+        delta_piola_span = self._array_memory_span(delta_piola, wp.types.type_size_in_bytes(delta_piola.dtype))
+        if self._memory_spans_overlap(delta_piola_span, scalar_span):
+            raise ValueError("direction_scalar must not alias workspace delta_piola")
+        for vector_name, vector in named_vectors:
+            if self._memory_spans_overlap(delta_piola_span, self._vector_memory_span(vector)):
+                raise ValueError(f"{vector_name} must not alias workspace delta_piola")
+        wp.launch(
+            _apply_tet_operator_publish_scalar_direction,
+            dim=self.n_tets + self.n_free,
+            inputs=[
+                direction_scalar,
+                self.tets,
+                self.vertex_to_free,
+                self.shape_gradients,
+                self.cofactors,
+                self.mu,
+                self.lam,
+                workspace.delta_piola,
+                published_direction,
+                self.n_tets,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            _gather_operator_product_residual,
+            dim=self.n_free,
+            inputs=[
+                published_direction,
                 rhs,
                 self.mass,
                 self.free,

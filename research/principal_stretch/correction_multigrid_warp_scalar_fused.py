@@ -47,10 +47,10 @@ from .correction_multigrid_warp import (
 
 KERNEL_VERSION = "mg-vbd-warp-static-v-cycle-scalar-fused-v3"
 CONTRACT_ID = "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1"
-SCHEDULE_VERSION = "scalar-core-and-versioned-publication-routes-v3"
-PUBLICATION_VERSION = "scalar-fused-v-cycle-publication-routes-v1"
+SCHEDULE_VERSION = "scalar-core-and-versioned-publication-routes-v4"
+PUBLICATION_VERSION = "scalar-fused-v-cycle-publication-routes-v2"
 STANDALONE_PUBLICATION_ROUTE = "standalone-scalar-to-vec3-kernel"
-EXTERNAL_SHARED_PUBLICATION_ROUTE = "external-shared-vertex-owner-scalar-to-vec3"
+EXTERNAL_SHARED_PUBLICATION_ROUTE = "external-shared-owner-scalar-to-vec3"
 _CORE_RECORD_TOKEN = object()
 SUPPORTED_BLOCK_SIZES = (3, 6)
 
@@ -225,7 +225,7 @@ class WarpScalarFusedVCyclePhysicalWork:
         ):
             raise ValueError("physical publication route and launch counts disagree")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v3",
+            "warp-scalar-fused-v-cycle-physical-work-v4",
             tuple(
                 (field.name, getattr(self, field.name))
                 for field in dataclasses.fields(self)
@@ -303,7 +303,7 @@ class WarpScalarFusedVCycleRecord:
         if physical.root_ingress_zero_start_fusions != int(len(self.work.level_visits) > 1):
             raise ValueError("physical work has the wrong root ingress fusion count")
         expected = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v3",
+            "warp-scalar-fused-v-cycle-result-v4",
             (
                 ("device_snapshot_sha256", self.device_snapshot_sha256),
                 ("static_device_content_sha256", self.static_device_content_sha256),
@@ -457,7 +457,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ("publication_version", PUBLICATION_VERSION),
         )
         self._core_schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-core-schedule-v1",
+            "warp-scalar-fused-v-cycle-core-schedule-v2",
             (
                 *common_schedule_parts,
                 ("publication_route", EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -466,7 +466,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-schedule-v3",
+            "warp-scalar-fused-v-cycle-schedule-v4",
             (
                 *common_schedule_parts,
                 ("publication_route", STANDALONE_PUBLICATION_ROUTE),
@@ -475,7 +475,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._core_device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-core-snapshot-v1",
+            "warp-scalar-fused-static-multigrid-core-snapshot-v2",
             (
                 ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                 ("static_device_content_sha256", self._static_device_content_sha256),
@@ -483,7 +483,7 @@ class WarpScalarFusedStaticMultigridHierarchy:
             ),
         )
         self._device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-snapshot-v3",
+            "warp-scalar-fused-static-multigrid-snapshot-v4",
             (
                 ("source_device_snapshot_sha256", hierarchy.device_snapshot_sha256),
                 ("static_device_content_sha256", self._static_device_content_sha256),
@@ -1218,7 +1218,7 @@ class WarpScalarFusedVCycleWorkspace:
             ("publication_route", publication_route),
             ("scheduled_kernel_launches", scheduled_kernel_launches),
         )
-        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v3", physical_parts)
+        physical_sha256 = _hash_parts("warp-scalar-fused-v-cycle-physical-work-v4", physical_parts)
         physical_work = WarpScalarFusedVCyclePhysicalWork(
             hierarchy_sha256=self.hierarchy.hierarchy_sha256,
             schedule_sha256=schedule_sha256,
@@ -1239,7 +1239,7 @@ class WarpScalarFusedVCycleWorkspace:
             content_sha256=physical_sha256,
         )
         content_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-result-v3",
+            "warp-scalar-fused-v-cycle-result-v4",
             (
                 ("device_snapshot_sha256", device_snapshot_sha256),
                 ("static_device_content_sha256", self.hierarchy.static_device_content_sha256),
