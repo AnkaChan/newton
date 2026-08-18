@@ -35,6 +35,11 @@ from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     ROOT_INGRESS_INTERNAL_ROUTE,
     SCHEDULE_VERSION,
     STANDALONE_PUBLICATION_ROUTE,
+    TERMINAL_FUSION_COARSEST_ONLY_ROUTE,
+    TERMINAL_FUSION_CPU_FALLBACK_ROUTE,
+    TERMINAL_FUSION_CUDA_ROUTE,
+    TERMINAL_FUSION_OVERSIZE_FALLBACK_ROUTE,
+    TERMINAL_FUSION_VERSION,
     WarpScalarFusedStaticMultigridHierarchy,
     WarpScalarFusedStaticMultigridPreconditioner,
 )
@@ -125,12 +130,25 @@ def _coarsest_only_hierarchy() -> StaticMultigridHierarchy:
     )
 
 
+def _single_vertex_coarsest_only_hierarchy() -> StaticMultigridHierarchy:
+    source = _translation_hierarchy(3)
+    level = source.levels[-1]
+    return dataclasses.replace(
+        source,
+        levels=(level,),
+        free_vertices=np.array([0], dtype=np.int64),
+        rest_positions=np.zeros((1, 3), dtype=np.float64),
+        free_masses=np.ones(1, dtype=np.float64),
+        content_sha256="d" * 64,
+    )
+
+
 def _rehash_physical_work(physical_work) -> None:
     object.__setattr__(
         physical_work,
         "content_sha256",
         scalar_fused_module._hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v7",
+            "warp-scalar-fused-v-cycle-physical-work-v9",
             tuple(
                 (field.name, getattr(physical_work, field.name))
                 for field in dataclasses.fields(physical_work)
@@ -146,7 +164,7 @@ def _rehash_v_cycle_record(record) -> None:
         record,
         "content_sha256",
         scalar_fused_module._hash_parts(
-            "warp-scalar-fused-v-cycle-result-v7",
+            "warp-scalar-fused-v-cycle-result-v9",
             (
                 ("contract_id", record.contract_id),
                 ("kernel_version", record.kernel_version),
@@ -193,7 +211,7 @@ def _coordinated_rehash(record, *, physical_updates, record_updates=None):
     return forged_record
 
 
-def _default_stretch_hierarchy() -> StaticMultigridHierarchy:
+def _default_stretch_hierarchy(*, smooth_steps: int = 1) -> StaticMultigridHierarchy:
     scene = build_stretch_scene()
     problem = build_common_problem(scene)
     positions = np.array(scene.x_current, dtype=np.float64, copy=True)
@@ -208,8 +226,8 @@ def _default_stretch_hierarchy() -> StaticMultigridHierarchy:
         minimum_aggregate_size=config.minimum_aggregate_size,
         coarse_node_limit=config.coarse_node_limit,
         maximum_levels=config.maximum_levels,
-        pre_smooth_steps=config.pre_smooth_steps,
-        post_smooth_steps=config.post_smooth_steps,
+        pre_smooth_steps=smooth_steps,
+        post_smooth_steps=smooth_steps,
         smoother_safety=config.smoother_safety,
     )
 
@@ -267,6 +285,37 @@ def _poison_workspace(workspace) -> None:
     workspace.coarse_intermediate.fill_(np.nan)
 
 
+def _workspace_bit_patterns(workspace) -> tuple[tuple[str, tuple[int, ...], bytes], ...]:
+    """Materialize every retained workspace array as exact host bytes."""
+    patterns = []
+    for array in workspace._current_arrays():
+        host = np.ascontiguousarray(array.numpy())
+        patterns.append((host.dtype.str, host.shape, host.tobytes()))
+    return tuple(patterns)
+
+
+def _external_vec3_view(
+    *,
+    size: int,
+    stride: int,
+    device: str | wp.context.Device,
+) -> tuple[wp.array[wp.vec3d], wp.array[wp.vec3d]]:
+    """Allocate backing storage and one explicit-stride external vec3 view."""
+    element_size = wp.types.type_size_in_bytes(wp.vec3d)
+    backing_size = 1 if stride == 0 else 1 + (size - 1) * abs(stride) // element_size
+    backing = wp.empty(backing_size, dtype=wp.vec3d, device=device)
+    pointer = int(backing.ptr) + ((size - 1) * -stride if stride < 0 else 0)
+    view = wp.array(
+        ptr=pointer,
+        dtype=wp.vec3d,
+        shape=(size,),
+        strides=(stride,),
+        device=device,
+        copy=False,
+    )
+    return backing, view
+
+
 def _assert_canonical_work_matches(testcase: unittest.TestCase, actual, expected) -> None:
     for field in (
         "hierarchy_sha256",
@@ -291,11 +340,11 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
 
     def test_contract_scalar_owners_source_sharing_and_launch_path(self):
         hierarchy = self.device_hierarchy
-        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v4")
+        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v5")
         self.assertEqual(CONTRACT_ID, "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1")
         self.assertEqual(
             SCHEDULE_VERSION,
-            "scalar-core-seeded-root-and-versioned-publication-routes-v5",
+            "scalar-core-terminal-fused-seeded-root-publication-routes-v7",
         )
         self.assertEqual(PUBLICATION_VERSION, "scalar-fused-v-cycle-publication-routes-v2")
         self.assertEqual(EXTERNAL_SHARED_PUBLICATION_ROUTE, "external-shared-owner-scalar-to-vec3")
@@ -308,6 +357,13 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         self.assertEqual(hierarchy.core_kernel_launches, 21)
         self.assertEqual(hierarchy.seeded_core_kernel_launches, 20)
         self.assertTrue(hierarchy.supports_seeded_root_zero_start)
+        self.assertFalse(hierarchy.supports_terminal_fusion)
+        self.assertEqual(hierarchy.terminal_fusion_route, TERMINAL_FUSION_CPU_FALLBACK_ROUTE)
+        self.assertEqual(hierarchy.terminal_fusion_kernel_launches, 0)
+        self.assertEqual(hierarchy.terminal_level_index, 1)
+        self.assertEqual(hierarchy.terminal_block_dim, 0)
+        self.assertEqual(hierarchy.terminal_collective_count, 0)
+        self.assertEqual(hierarchy.terminal_owner_thread, -1)
         self.assertNotEqual(hierarchy.schedule_sha256, hierarchy.core_schedule_sha256)
         self.assertNotEqual(hierarchy.core_schedule_sha256, hierarchy.seeded_core_schedule_sha256)
         self.assertNotEqual(hierarchy.device_snapshot_sha256, hierarchy.core_device_snapshot_sha256)
@@ -323,6 +379,7 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             "_zero_start_scalar_jacobi",
             "_scalar_csr_residual",
             "_out_of_place_scalar_jacobi",
+            "_terminal_restrict_ordered_solve_prolong",
         ):
             self.assertIn(kernel, source)
         for method in (
@@ -406,6 +463,13 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                         stored_blocks,
                     )
                     self.assertEqual(actual.physical_work.zero_start_block_solves, block_rows)
+                    self.assertEqual(actual.physical_work.terminal_fusion_kernel_launches, 0)
+                    self.assertEqual(actual.physical_work.terminal_level_index, len(hierarchy.levels) - 2)
+                    self.assertEqual(actual.physical_work.terminal_block_dim, 0)
+                    self.assertEqual(actual.physical_work.terminal_collective_count, 0)
+                    self.assertEqual(actual.physical_work.terminal_owner_thread, -1)
+                    self.assertEqual(actual.physical_work.terminal_fusion_version, TERMINAL_FUSION_VERSION)
+                    self.assertEqual(actual.physical_work.terminal_fusion_route, TERMINAL_FUSION_CPU_FALLBACK_ROUTE)
                     self.assertEqual(actual.physical_work.root_ingress_zero_start_fusions, 1)
                     self.assertEqual(actual.physical_work.root_ingress_route, ROOT_INGRESS_INTERNAL_ROUTE)
                     self.assertEqual(actual.physical_work.root_ingress_kernel_launches, 1)
@@ -671,6 +735,24 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         self.assertFalse(coherent["solver_issued_authentication"])
         self.assertFalse(coherent["performance_evidence"])
 
+        coherent_terminal = _coordinated_rehash(
+            standalone_record,
+            physical_updates={
+                "terminal_fusion_kernel_launches": 1,
+                "terminal_block_dim": 64,
+                "terminal_collective_count": 2,
+                "terminal_owner_thread": 0,
+                "terminal_fusion_route": TERMINAL_FUSION_CUDA_ROUTE,
+                "core_kernel_launches": hierarchy.core_kernel_launches - 2,
+                "scheduled_kernel_launches": hierarchy.scheduled_kernel_launches - 2,
+            },
+            record_updates={"scheduled_kernel_launches": hierarchy.scheduled_kernel_launches - 2},
+        )
+        coherent_terminal_record = coherent_terminal.deterministic_record()
+        self.assertEqual(coherent_terminal_record["terminal_fusion_route"], TERMINAL_FUSION_CUDA_ROUTE)
+        self.assertFalse(coherent_terminal_record["solver_issued_authentication"])
+        self.assertFalse(coherent_terminal_record["performance_evidence"])
+
     def test_schema_policy_reconstruction_and_tamper_fail_closed(self):
         hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
             _mixed_hierarchy(smooth_steps=1),
@@ -794,6 +876,25 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
                         hierarchy.launch_apply(workspace.rhs, aliased_output, workspace)
                 self.assertEqual(launch.call_count, 0)
 
+        static_storage = hierarchy.levels[0].matrix_values
+        for role in ("rhs", "output"):
+            with self.subTest(external_static_alias=role):
+                workspace = hierarchy.create_workspace()
+                aliased = wp.array(
+                    ptr=int(static_storage.ptr),
+                    dtype=wp.vec3d,
+                    shape=(hierarchy.n_free,),
+                    device=hierarchy.device,
+                    copy=False,
+                )
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    with self.assertRaisesRegex(ValueError, f"{role} and static"):
+                        if role == "rhs":
+                            hierarchy.launch_apply_core(aliased, workspace)
+                        else:
+                            hierarchy.launch_apply(workspace.rhs, aliased, workspace)
+                self.assertEqual(launch.call_count, 0)
+
         workspace = hierarchy.create_workspace()
         shifted_primary = wp.array(
             ptr=int(workspace.level_rhs[0].ptr) + 8,
@@ -820,6 +921,156 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         np.testing.assert_array_equal(workspace.level_rhs[0].numpy(), rhs)
         np.testing.assert_allclose(internal_record.correction, expected.correction, rtol=4.0e-14, atol=4.0e-14)
         self.assertEqual(_pointer_tuple(hierarchy, workspace), pointers)
+
+    def test_external_vec3_layouts_preserve_gapped_reversed_zero_stride_and_identity_on_cpu(self):
+        source = _mixed_hierarchy(smooth_steps=1)
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(source, device="cpu")
+        host_rhs = np.random.default_rng(181030).normal(size=(hierarchy.n_free, 3))
+        expected = apply_v_cycle(source, host_rhs.reshape(-1)).correction.reshape(-1, 3)
+
+        for stride in (48, -48):
+            with self.subTest(stride=stride, role="separate-rhs-output"):
+                _rhs_backing, rhs = _external_vec3_view(
+                    size=hierarchy.n_free,
+                    stride=stride,
+                    device=hierarchy.device,
+                )
+                _output_backing, output = _external_vec3_view(
+                    size=hierarchy.n_free,
+                    stride=stride,
+                    device=hierarchy.device,
+                )
+                rhs.assign(host_rhs)
+                workspace = hierarchy.create_workspace()
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    hierarchy.launch_apply(rhs, output, workspace)
+                self.assertEqual(launch.call_count, hierarchy.scheduled_kernel_launches)
+                np.testing.assert_allclose(output.numpy(), expected, rtol=4.0e-14, atol=4.0e-14)
+
+            with self.subTest(stride=stride, role="rhs-is-output"):
+                _shared_backing, shared = _external_vec3_view(
+                    size=hierarchy.n_free,
+                    stride=stride,
+                    device=hierarchy.device,
+                )
+                shared.assign(host_rhs)
+                workspace = hierarchy.create_workspace()
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    hierarchy.launch_apply(shared, shared, workspace)
+                self.assertEqual(launch.call_count, hierarchy.scheduled_kernel_launches)
+                np.testing.assert_allclose(shared.numpy(), expected, rtol=4.0e-14, atol=4.0e-14)
+
+        repeated_value = np.array([[0.25, -0.0, 1.5]], dtype=np.float64)
+        zero_backing, zero_rhs = _external_vec3_view(
+            size=hierarchy.n_free,
+            stride=0,
+            device=hierarchy.device,
+        )
+        zero_backing.assign(repeated_value)
+        output = wp.empty(hierarchy.n_free, dtype=wp.vec3d, device=hierarchy.device)
+        workspace = hierarchy.create_workspace()
+        hierarchy.launch_apply(zero_rhs, output, workspace)
+        repeated_rhs = np.repeat(repeated_value, hierarchy.n_free, axis=0)
+        repeated_expected = apply_v_cycle(source, repeated_rhs.reshape(-1)).correction.reshape(-1, 3)
+        np.testing.assert_allclose(output.numpy(), repeated_expected, rtol=4.0e-14, atol=4.0e-14)
+
+    def test_external_vec3_invalid_alignment_and_writable_overlap_are_zero_launch(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cpu",
+        )
+        rhs = wp.empty(hierarchy.n_free, dtype=wp.vec3d, device=hierarchy.device)
+        output_backing = wp.empty(2 * hierarchy.n_free, dtype=wp.vec3d, device=hierarchy.device)
+        invalid_outputs = (
+            (
+                "zero-stride",
+                wp.array(
+                    ptr=int(output_backing.ptr),
+                    dtype=wp.vec3d,
+                    shape=(hierarchy.n_free,),
+                    strides=(0,),
+                    device=hierarchy.device,
+                    copy=False,
+                ),
+                "must not overlap",
+            ),
+            (
+                "overlapping-stride",
+                wp.array(
+                    ptr=int(output_backing.ptr),
+                    dtype=wp.vec3d,
+                    shape=(hierarchy.n_free,),
+                    strides=(16,),
+                    device=hierarchy.device,
+                    copy=False,
+                ),
+                "must not overlap",
+            ),
+            (
+                "misaligned-stride",
+                wp.array(
+                    ptr=int(output_backing.ptr),
+                    dtype=wp.vec3d,
+                    shape=(hierarchy.n_free,),
+                    strides=(28,),
+                    device=hierarchy.device,
+                    copy=False,
+                ),
+                "naturally aligned",
+            ),
+            (
+                "misaligned-pointer",
+                wp.array(
+                    ptr=int(output_backing.ptr) + 4,
+                    dtype=wp.vec3d,
+                    shape=(hierarchy.n_free,),
+                    strides=(24,),
+                    device=hierarchy.device,
+                    copy=False,
+                ),
+                "naturally aligned",
+            ),
+        )
+        for label, output, message in invalid_outputs:
+            with self.subTest(output=label):
+                workspace = hierarchy.create_workspace()
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    with self.assertRaisesRegex(ValueError, message):
+                        hierarchy.launch_apply(rhs, output, workspace)
+                self.assertEqual(launch.call_count, 0)
+
+        misaligned_rhs = wp.array(
+            ptr=int(output_backing.ptr) + 4,
+            dtype=wp.vec3d,
+            shape=(hierarchy.n_free,),
+            strides=(24,),
+            device=hierarchy.device,
+            copy=False,
+        )
+        workspace = hierarchy.create_workspace()
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(ValueError, "naturally aligned"):
+                hierarchy.launch_apply_core(misaligned_rhs, workspace)
+        self.assertEqual(launch.call_count, 0)
+
+    def test_single_element_zero_stride_output_and_identity_are_valid_on_cpu(self):
+        source = _single_vertex_coarsest_only_hierarchy()
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(source, device="cpu")
+        host_rhs = np.array([[0.25, -0.5, 1.0]], dtype=np.float64)
+        expected = apply_v_cycle(source, host_rhs.reshape(-1)).correction.reshape(1, 3)
+        for shared in (False, True):
+            with self.subTest(rhs_is_output=shared):
+                backing, output = _external_vec3_view(size=1, stride=0, device=hierarchy.device)
+                if shared:
+                    backing.assign(host_rhs)
+                    rhs = output
+                else:
+                    rhs = wp.array(host_rhs, dtype=wp.vec3d, device=hierarchy.device)
+                workspace = hierarchy.create_workspace()
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    hierarchy.launch_apply(rhs, output, workspace)
+                self.assertEqual(launch.call_count, hierarchy.scheduled_kernel_launches)
+                np.testing.assert_allclose(output.numpy(), expected, rtol=4.0e-14, atol=4.0e-14)
 
     def test_core_and_full_publication_are_bitwise_for_signed_zero_and_nonfinite(self):
         hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
@@ -920,6 +1171,13 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             ("root_ingress_zero_start_fusions", 0),
             ("root_ingress_route", ROOT_INGRESS_EXTERNAL_SHARED_ROUTE),
             ("root_ingress_kernel_launches", 0),
+            ("terminal_fusion_kernel_launches", 1),
+            ("terminal_level_index", 0),
+            ("terminal_block_dim", 64),
+            ("terminal_collective_count", 2),
+            ("terminal_owner_thread", 0),
+            ("terminal_fusion_version", TERMINAL_FUSION_VERSION + "-forged"),
+            ("terminal_fusion_route", TERMINAL_FUSION_CUDA_ROUTE),
             ("zero_start_block_solves", record.physical_work.zero_start_block_solves + 1),
             ("matrix_kernel_launches", record.physical_work.matrix_kernel_launches + 1),
             ("core_kernel_launches", record.physical_work.core_kernel_launches + 1),
@@ -1050,9 +1308,17 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
         self.assertEqual(coarse_device.core_kernel_launches, 2)
         self.assertEqual(coarse_device.seeded_core_kernel_launches, 2)
         self.assertFalse(coarse_device.supports_seeded_root_zero_start)
+        self.assertFalse(coarse_device.supports_terminal_fusion)
+        self.assertEqual(coarse_device.terminal_fusion_route, TERMINAL_FUSION_COARSEST_ONLY_ROUTE)
+        self.assertEqual(coarse_device.terminal_fusion_kernel_launches, 0)
+        self.assertEqual(coarse_device.terminal_level_index, -1)
+        self.assertEqual(coarse_device.terminal_block_dim, 0)
+        self.assertEqual(coarse_device.terminal_collective_count, 0)
+        self.assertEqual(coarse_device.terminal_owner_thread, -1)
         self.assertEqual(coarse_device.seeded_core_schedule_sha256, coarse_device.core_schedule_sha256)
         coarse_record = coarse_workspace.record()
         self.assertEqual(coarse_record.physical_work.root_ingress_zero_start_fusions, 0)
+        self.assertEqual(coarse_record.physical_work.terminal_fusion_route, TERMINAL_FUSION_COARSEST_ONLY_ROUTE)
         np.testing.assert_allclose(
             coarse_record.correction,
             apply_v_cycle(coarse, coarse_rhs).correction,
@@ -1186,6 +1452,288 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
             np.testing.assert_array_equal(snapshot, snapshots[0])
         self.assertEqual(_pointer_tuple(self.device_hierarchy, workspace), pointers)
 
+    def test_cuda_terminal_route_counts_and_1024_thread_boundary(self):
+        hierarchy = self.device_hierarchy
+        self.assertTrue(hierarchy.supports_terminal_fusion)
+        self.assertEqual(hierarchy.terminal_fusion_route, TERMINAL_FUSION_CUDA_ROUTE)
+        self.assertEqual(hierarchy.terminal_fusion_kernel_launches, 1)
+        self.assertEqual(hierarchy.terminal_level_index, len(hierarchy.levels) - 2)
+        self.assertEqual(hierarchy.terminal_block_dim, 64)
+        self.assertEqual(hierarchy.terminal_collective_count, 2)
+        self.assertEqual(hierarchy.terminal_owner_thread, 0)
+        self.assertEqual(hierarchy.scheduled_kernel_launches, 20)
+        self.assertEqual(hierarchy.core_kernel_launches, 19)
+        self.assertEqual(hierarchy.seeded_core_kernel_launches, 18)
+
+        supported_cpu = _translation_hierarchy(341)
+        supported = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(supported_cpu, device="cuda:0")
+        self.assertEqual(supported.levels[-2].scalar_size, 1023)
+        self.assertTrue(supported.supports_terminal_fusion)
+        self.assertEqual(supported.terminal_fusion_route, TERMINAL_FUSION_CUDA_ROUTE)
+        self.assertEqual(supported.terminal_block_dim, 1024)
+        boundary_rhs = np.random.default_rng(181032).normal(size=supported_cpu.levels[0].matrix.scalar_size)
+        fused = supported.create_workspace()
+        legacy = supported.create_workspace()
+        _poison_workspace(fused)
+        _poison_workspace(legacy)
+        fused.set_rhs(boundary_rhs)
+        legacy.set_rhs(boundary_rhs)
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as fused_launch:
+            fused.launch()
+        with (
+            mock.patch.object(
+                WarpScalarFusedStaticMultigridHierarchy,
+                "supports_terminal_fusion",
+                new=property(lambda _self: False),
+            ),
+            mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as legacy_launch,
+        ):
+            legacy.launch()
+        self.assertEqual(fused_launch.call_count, supported.scheduled_kernel_launches)
+        self.assertEqual(legacy_launch.call_count, fused_launch.call_count + 2)
+        self.assertEqual(_workspace_bit_patterns(fused), _workspace_bit_patterns(legacy))
+
+        oversized_cpu = _translation_hierarchy(342)
+        oversized = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(oversized_cpu, device="cuda:0")
+        self.assertEqual(oversized.levels[-2].scalar_size, 1026)
+        self.assertFalse(oversized.supports_terminal_fusion)
+        self.assertEqual(oversized.terminal_fusion_route, TERMINAL_FUSION_OVERSIZE_FALLBACK_ROUTE)
+        self.assertEqual(oversized.terminal_block_dim, 0)
+        self.assertEqual(oversized.scheduled_kernel_launches, 8)
+        rhs = np.random.default_rng(181018).normal(size=oversized_cpu.levels[0].matrix.scalar_size)
+        workspace = oversized.create_workspace()
+        workspace.set_rhs(rhs)
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            workspace.launch()
+        self.assertEqual(launch.call_count, 8)
+        np.testing.assert_allclose(
+            workspace.record().correction,
+            apply_v_cycle(oversized_cpu, rhs).correction,
+            rtol=5.0e-13,
+            atol=5.0e-13,
+        )
+
+    def test_cuda_external_vec3_gapped_reversed_rhs_output_and_identity(self):
+        hierarchy = self.device_hierarchy
+        host_rhs = np.random.default_rng(181031).normal(size=(hierarchy.n_free, 3))
+        expected = apply_v_cycle(self.hierarchy, host_rhs.reshape(-1)).correction.reshape(-1, 3)
+        for stride in (48, -48):
+            with self.subTest(stride=stride, role="separate-rhs-output"):
+                _rhs_backing, rhs = _external_vec3_view(
+                    size=hierarchy.n_free,
+                    stride=stride,
+                    device=hierarchy.device,
+                )
+                _output_backing, output = _external_vec3_view(
+                    size=hierarchy.n_free,
+                    stride=stride,
+                    device=hierarchy.device,
+                )
+                rhs.assign(host_rhs)
+                workspace = hierarchy.create_workspace()
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    hierarchy.launch_apply(rhs, output, workspace)
+                self.assertEqual(launch.call_count, hierarchy.scheduled_kernel_launches)
+                np.testing.assert_allclose(output.numpy(), expected, rtol=3.0e-13, atol=3.0e-13)
+
+            with self.subTest(stride=stride, role="rhs-is-output"):
+                _shared_backing, shared = _external_vec3_view(
+                    size=hierarchy.n_free,
+                    stride=stride,
+                    device=hierarchy.device,
+                )
+                shared.assign(host_rhs)
+                workspace = hierarchy.create_workspace()
+                hierarchy.launch_apply(shared, shared, workspace)
+                np.testing.assert_allclose(shared.numpy(), expected, rtol=3.0e-13, atol=3.0e-13)
+
+        backing = wp.empty(2 * hierarchy.n_free, dtype=wp.vec3d, device=hierarchy.device)
+        invalid_output = wp.array(
+            ptr=int(backing.ptr),
+            dtype=wp.vec3d,
+            shape=(hierarchy.n_free,),
+            strides=(16,),
+            device=hierarchy.device,
+            copy=False,
+        )
+        workspace = hierarchy.create_workspace()
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(ValueError, "must not overlap"):
+                hierarchy.launch_apply(workspace.rhs, invalid_output, workspace)
+        self.assertEqual(launch.call_count, 0)
+
+    def test_cuda_single_element_zero_stride_output_and_identity_are_valid(self):
+        source = _single_vertex_coarsest_only_hierarchy()
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(source, device="cuda:0")
+        host_rhs = np.array([[0.25, -0.5, 1.0]], dtype=np.float64)
+        expected = apply_v_cycle(source, host_rhs.reshape(-1)).correction.reshape(1, 3)
+        for shared in (False, True):
+            with self.subTest(rhs_is_output=shared):
+                backing, output = _external_vec3_view(size=1, stride=0, device=hierarchy.device)
+                if shared:
+                    backing.assign(host_rhs)
+                    rhs = output
+                else:
+                    rhs = wp.array(host_rhs, dtype=wp.vec3d, device=hierarchy.device)
+                workspace = hierarchy.create_workspace()
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    hierarchy.launch_apply(rhs, output, workspace)
+                self.assertEqual(launch.call_count, hierarchy.scheduled_kernel_launches)
+                np.testing.assert_allclose(output.numpy(), expected, rtol=3.0e-13, atol=3.0e-13)
+
+    def test_cuda_terminal_fusion_is_all_buffer_bitwise_legacy_for_p1_p2_and_edge_values(self):
+        for steps, expected_full in ((1, 12), (2, 20)):
+            with self.subTest(steps=steps):
+                hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+                    _mixed_hierarchy(smooth_steps=steps),
+                    device="cuda:0",
+                )
+                generator = np.random.default_rng(181020 + steps)
+                random_rhs = generator.normal(size=(hierarchy.n_free, 3))
+                signed_zero_rhs = np.zeros((hierarchy.n_free, 3), dtype=np.float64)
+                signed_zero_rhs.reshape(-1)[::2] = -0.0
+                nonfinite_rhs = generator.normal(size=(hierarchy.n_free, 3))
+                nonfinite_rhs.reshape(-1)[:8] = (np.inf, -np.inf, np.nan, -0.0, 0.0, np.nan, np.inf, -np.inf)
+                self.assertEqual(hierarchy.scheduled_kernel_launches, expected_full)
+                self.assertEqual(hierarchy.core_kernel_launches, expected_full - 1)
+                self.assertEqual(hierarchy.seeded_core_kernel_launches, expected_full - 2)
+                for label, rhs in (
+                    ("random", random_rhs),
+                    ("signed-zero", signed_zero_rhs),
+                    ("nonfinite", nonfinite_rhs),
+                ):
+                    with self.subTest(steps=steps, rhs=label):
+                        fused = hierarchy.create_workspace()
+                        legacy = hierarchy.create_workspace()
+                        _poison_workspace(fused)
+                        _poison_workspace(legacy)
+                        fused.rhs.assign(rhs)
+                        legacy.rhs.assign(rhs)
+                        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as fused_launch:
+                            fused.launch()
+                        with (
+                            mock.patch.object(
+                                WarpScalarFusedStaticMultigridHierarchy,
+                                "supports_terminal_fusion",
+                                new=property(lambda _self: False),
+                            ),
+                            mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as legacy_launch,
+                        ):
+                            legacy.launch()
+                        self.assertEqual(fused_launch.call_count, expected_full)
+                        self.assertEqual(legacy_launch.call_count, expected_full + 2)
+                        self.assertEqual(_workspace_bit_patterns(fused), _workspace_bit_patterns(legacy))
+
+    def test_cuda_terminal_fusion_capture_replay_restores_poison_bitwise_legacy(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cuda:0",
+        )
+        fused = hierarchy.create_workspace()
+        legacy = hierarchy.create_workspace()
+        warmup_rhs = np.random.default_rng(181024).normal(size=(hierarchy.n_free, 3))
+        fused.rhs.assign(warmup_rhs)
+        legacy.rhs.assign(warmup_rhs)
+        fused.launch()
+        with mock.patch.object(
+            WarpScalarFusedStaticMultigridHierarchy,
+            "supports_terminal_fusion",
+            new=property(lambda _self: False),
+        ):
+            legacy.launch()
+        with wp.ScopedCapture(device=hierarchy.device) as fused_capture:
+            fused.launch()
+        with (
+            mock.patch.object(
+                WarpScalarFusedStaticMultigridHierarchy,
+                "supports_terminal_fusion",
+                new=property(lambda _self: False),
+            ),
+            wp.ScopedCapture(device=hierarchy.device) as legacy_capture,
+        ):
+            legacy.launch()
+
+        generator = np.random.default_rng(181025)
+        signed_zero_rhs = np.zeros((hierarchy.n_free, 3), dtype=np.float64)
+        signed_zero_rhs.reshape(-1)[1::2] = -0.0
+        nonfinite_rhs = generator.normal(size=(hierarchy.n_free, 3))
+        nonfinite_rhs.reshape(-1)[:4] = (np.inf, -np.inf, np.nan, -0.0)
+        for label, rhs in (
+            ("changed", generator.normal(size=(hierarchy.n_free, 3))),
+            ("signed-zero", signed_zero_rhs),
+            ("nonfinite", nonfinite_rhs),
+        ):
+            with self.subTest(rhs=label):
+                _poison_workspace(fused)
+                _poison_workspace(legacy)
+                fused.rhs.assign(rhs)
+                legacy.rhs.assign(rhs)
+                wp.capture_launch(fused_capture.graph)
+                wp.capture_launch(legacy_capture.graph)
+                self.assertEqual(_workspace_bit_patterns(fused), _workspace_bit_patterns(legacy))
+
+    def test_cuda_terminal_preflight_rejects_alias_and_layout_before_launch(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cuda:0",
+        )
+
+        def bind_workspace(workspace) -> None:
+            workspace._persistent_arrays = workspace._current_arrays()
+            workspace._persistent_pointers = tuple(int(array.ptr) for array in workspace._persistent_arrays)
+
+        workspace = hierarchy.create_workspace()
+        workspace.level_rhs = (*workspace.level_rhs[:-1], workspace.coarse_intermediate)
+        bind_workspace(workspace)
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(ValueError, "workspace arrays"):
+                workspace.launch()
+        self.assertEqual(launch.call_count, 0)
+
+        workspace = hierarchy.create_workspace()
+        coarse_size = hierarchy.levels[-1].scalar_size
+        workspace.coarse_intermediate = wp.array(
+            ptr=int(hierarchy.coarse_cholesky.ptr),
+            dtype=wp.float64,
+            shape=(coarse_size,),
+            device=hierarchy.device,
+            copy=False,
+        )
+        bind_workspace(workspace)
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(ValueError, "static .* mutable"):
+                workspace.launch()
+        self.assertEqual(launch.call_count, 0)
+
+        workspace = hierarchy.create_workspace()
+        workspace.coarse_intermediate = wp.array(
+            ptr=int(workspace.coarse_intermediate.ptr) + 4,
+            dtype=wp.float64,
+            shape=(coarse_size,),
+            device=hierarchy.device,
+            copy=False,
+        )
+        bind_workspace(workspace)
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(ValueError, "naturally aligned"):
+                workspace.launch()
+        self.assertEqual(launch.call_count, 0)
+
+        workspace = hierarchy.create_workspace()
+        workspace.coarse_intermediate = wp.array(
+            ptr=int(workspace.coarse_intermediate.ptr),
+            dtype=wp.float64,
+            shape=(coarse_size,),
+            strides=(16,),
+            device=hierarchy.device,
+            copy=False,
+        )
+        bind_workspace(workspace)
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            with self.assertRaisesRegex(ValueError, "contiguous one-dimensional"):
+                workspace.launch()
+        self.assertEqual(launch.call_count, 0)
+
     def test_cuda_fused_root_ingress_is_bitwise_legacy_for_signed_zero(self):
         root = self.device_hierarchy.levels[0]
         host_rhs = np.zeros((self.device_hierarchy.n_free, 3), dtype=np.float64)
@@ -1263,7 +1811,7 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
         self.assertNotEqual(recovered.work.rhs_sha256, changed.work.rhs_sha256)
         self.assertEqual(_pointer_tuple(self.device_hierarchy, workspace), pointers)
 
-    def test_real_default_stretch_cuda_oracle_uses_20_launches(self):
+    def test_real_default_stretch_cuda_oracle_uses_18_launches(self):
         hierarchy = _default_stretch_hierarchy()
         device_hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(hierarchy, device="cuda:0")
         workspace = device_hierarchy.create_workspace()
@@ -1271,7 +1819,15 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
         workspace.set_rhs(rhs)
         workspace.launch()
         actual = workspace.record()
-        self.assertEqual(actual.scheduled_kernel_launches, 20)
+        self.assertEqual(actual.scheduled_kernel_launches, 18)
+        self.assertEqual(actual.physical_work.core_kernel_launches, 17)
+        self.assertEqual(actual.physical_work.terminal_fusion_kernel_launches, 1)
+        self.assertEqual(actual.physical_work.terminal_level_index, 2)
+        self.assertEqual(actual.physical_work.terminal_block_dim, 64)
+        self.assertEqual(actual.physical_work.terminal_collective_count, 2)
+        self.assertEqual(actual.physical_work.terminal_owner_thread, 0)
+        self.assertEqual(actual.physical_work.terminal_fusion_version, TERMINAL_FUSION_VERSION)
+        self.assertEqual(actual.physical_work.terminal_fusion_route, TERMINAL_FUSION_CUDA_ROUTE)
         np.testing.assert_allclose(
             actual.correction,
             apply_v_cycle(hierarchy, rhs).correction,
@@ -1279,6 +1835,29 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
             atol=4.0e-13,
         )
         self.assertFalse(actual.performance_evidence)
+
+    def test_real_default_stretch_four_level_p2_launch_equation(self):
+        hierarchy = _default_stretch_hierarchy(smooth_steps=2)
+        self.assertEqual(len(hierarchy.levels), 4)
+        device_hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(hierarchy, device="cuda:0")
+        self.assertEqual(device_hierarchy.scheduled_kernel_launches, 30)
+        self.assertEqual(device_hierarchy.core_kernel_launches, 29)
+        self.assertEqual(device_hierarchy.seeded_core_kernel_launches, 28)
+        workspace = device_hierarchy.create_workspace()
+        rhs = np.random.default_rng(181033).normal(size=hierarchy.levels[0].matrix.scalar_size)
+        workspace.set_rhs(rhs)
+        with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+            workspace.launch()
+        self.assertEqual(launch.call_count, 30)
+        actual = workspace.record()
+        self.assertEqual(actual.physical_work.matrix_kernel_launches, 12)
+        self.assertEqual(actual.physical_work.jacobi_kernel_launches, 12)
+        np.testing.assert_allclose(
+            actual.correction,
+            apply_v_cycle(hierarchy, rhs).correction,
+            rtol=5.0e-13,
+            atol=5.0e-13,
+        )
 
 
 if __name__ == "__main__":

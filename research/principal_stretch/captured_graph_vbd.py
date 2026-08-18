@@ -117,6 +117,21 @@ from .correction_multigrid_warp_scalar_fused import (
     STANDALONE_PUBLICATION_ROUTE as V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
 )
 from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_FUSION_COARSEST_ONLY_ROUTE as V_CYCLE_TERMINAL_FUSION_COARSEST_ONLY_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_FUSION_CUDA_ROUTE as V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_FUSION_OVERSIZE_FALLBACK_ROUTE as V_CYCLE_TERMINAL_FUSION_OVERSIZE_FALLBACK_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_FUSION_UNSUPPORTED_FALLBACK_ROUTE as V_CYCLE_TERMINAL_FUSION_UNSUPPORTED_FALLBACK_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_FUSION_VERSION as V_CYCLE_TERMINAL_FUSION_VERSION,
+)
+from .correction_multigrid_warp_scalar_fused import (
     WarpScalarFusedStaticMultigridHierarchy,
     WarpScalarFusedVCyclePhysicalWork,
     WarpScalarFusedVCycleRecord,
@@ -128,7 +143,7 @@ CONTRACT_ID = "captured-direct-multiplicative-graph-vbd-v1"
 OUTER_CORRECTIONS = 4
 V_CYCLES_PER_OUTER = 2
 OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-four-warp-exact-finalize-outer-v6"
-OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v7"
+OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v9"
 FIRST_CYCLE_PUBLICATION_ROLE = "current-a-apply-free-row-owner-scalar-to-vec3"
 SECOND_CYCLE_PUBLICATION_ROLE = "vertex-owner-scalar-to-vec3"
 FINALIZE_GATE_ROUTE = "cuda-one-block-four-warp-ordered-fp64-v1"
@@ -246,6 +261,10 @@ def _derive_outer_schedule_sha256(
     fused_gather_kernel_version: str,
     root_seeded_gather_kernel_version: str,
     scalar_direction_apply_kernel_version: str,
+    v_cycle_kernel_version: str,
+    v_cycle_schedule_version: str,
+    v_cycle_terminal_fusion_version: str,
+    v_cycle_terminal_fusion_route: str,
     v_cycle_publication_version: str,
     v_cycle_standalone_publication_route: str,
     v_cycle_external_shared_publication_route: str,
@@ -262,11 +281,15 @@ def _derive_outer_schedule_sha256(
     """Bind fused formulas and the exact ordered four-warp gate."""
     return _canonical_digest(
         {
-            "contract": "captured-direct-graph-vbd-outer-schedule-v7",
+            "contract": "captured-direct-graph-vbd-outer-schedule-v9",
             "kernel_version": kernel_version,
             "fused_gather_kernel_version": fused_gather_kernel_version,
             "root_seeded_gather_kernel_version": root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": scalar_direction_apply_kernel_version,
+            "v_cycle_kernel_version": v_cycle_kernel_version,
+            "v_cycle_schedule_version": v_cycle_schedule_version,
+            "v_cycle_terminal_fusion_version": v_cycle_terminal_fusion_version,
+            "v_cycle_terminal_fusion_route": v_cycle_terminal_fusion_route,
             "v_cycle_publication_version": v_cycle_publication_version,
             "v_cycle_standalone_publication_route": v_cycle_standalone_publication_route,
             "v_cycle_external_shared_publication_route": v_cycle_external_shared_publication_route,
@@ -322,6 +345,13 @@ def _derive_outer_schedule_sha256(
             "finalize_gate_kernel_launches_per_outer": 1,
             "retained_linear_work_launches_per_outer": "5+2*seeded_core_v_cycle_launches",
             "remaining_gate_commit_launches_per_outer": 3,
+            "terminal_fusion_schedule": {
+                "operations": ["deepest-restriction", "ordered-coarse-cholesky", "deepest-prolongation"],
+                "unconditional_tile_broadcast_collectives": 2,
+                "ordered_owner_thread": 0,
+                "block_dim": "next-warp(max(terminal-scalar-size,coarse-scalar-size))<=1024",
+                "launch_reduction_per_v_cycle": 2,
+            },
         }
     )
 
@@ -359,6 +389,10 @@ OUTER_SCHEDULE_SHA256 = _derive_outer_schedule_sha256(
     FUSED_GATHER_KERNEL_VERSION,
     ROOT_SEEDED_GATHER_KERNEL_VERSION,
     SCALAR_DIRECTION_APPLY_KERNEL_VERSION,
+    V_CYCLE_KERNEL_VERSION,
+    V_CYCLE_SCHEDULE_VERSION,
+    V_CYCLE_TERMINAL_FUSION_VERSION,
+    V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE,
     V_CYCLE_PUBLICATION_VERSION,
     V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
     V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
@@ -813,6 +847,7 @@ def _validate_v_cycle_record(
     expected_zero_start_solves = sum(level.matrix.block_row_count for level in noncoarse_levels)
     expected_matrix_launches = len(noncoarse_levels) * (hierarchy.pre_smooth_steps + hierarchy.post_smooth_steps)
     expected_root_fusions = int(bool(noncoarse_levels))
+    scalar_evidence = _canonical_scalar_fused_evidence(hierarchy)
     if type(root_ingress_zero_start_fusions) is not int or root_ingress_zero_start_fusions != expected_root_fusions:
         raise ValueError(f"{name} root ingress fusion count is stale")
     physical = record.physical_work
@@ -825,6 +860,13 @@ def _validate_v_cycle_record(
         "matrix_block_products_elided_zero_start": expected_elided_products,
         "zero_start_block_solves": expected_zero_start_solves,
         "noncoarse_level_count": len(noncoarse_levels),
+        "terminal_fusion_kernel_launches": scalar_evidence.terminal_fusion_kernel_launches,
+        "terminal_level_index": scalar_evidence.terminal_level_index,
+        "terminal_block_dim": scalar_evidence.terminal_block_dim,
+        "terminal_collective_count": scalar_evidence.terminal_collective_count,
+        "terminal_owner_thread": scalar_evidence.terminal_owner_thread,
+        "terminal_fusion_version": scalar_evidence.terminal_fusion_version,
+        "terminal_fusion_route": scalar_evidence.terminal_fusion_route,
         "root_ingress_zero_start_fusions": root_ingress_zero_start_fusions,
         "root_ingress_route": root_ingress_route,
         "root_ingress_kernel_launches": root_ingress_kernel_launches,
@@ -849,6 +891,11 @@ def _validate_v_cycle_record(
         "matrix_block_products_elided_zero_start",
         "zero_start_block_solves",
         "noncoarse_level_count",
+        "terminal_fusion_kernel_launches",
+        "terminal_level_index",
+        "terminal_block_dim",
+        "terminal_collective_count",
+        "terminal_owner_thread",
         "root_ingress_zero_start_fusions",
         "root_ingress_kernel_launches",
         "out_of_place_jacobi_block_solves",
@@ -873,13 +920,13 @@ def _validate_v_cycle_record(
     ):
         raise ValueError(f"{name} physical publication route or launch accounting is invalid")
     physical_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-physical-work-v7",
+        "warp-scalar-fused-v-cycle-physical-work-v9",
         tuple(expected_physical.items()),
     )
     if physical.content_sha256 != physical_sha256:
         raise ValueError(f"{name} physical work hash is stale")
     record_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-result-v7",
+        "warp-scalar-fused-v-cycle-result-v9",
         (
             ("contract_id", V_CYCLE_CONTRACT_ID),
             ("kernel_version", V_CYCLE_KERNEL_VERSION),
@@ -991,6 +1038,15 @@ class _EndpointValidationContext:
     fused_gather_kernel_version: str
     root_seeded_gather_kernel_version: str
     scalar_direction_apply_kernel_version: str
+    v_cycle_kernel_version: str
+    v_cycle_schedule_version: str
+    v_cycle_terminal_fusion_version: str
+    v_cycle_terminal_fusion_route: str
+    v_cycle_terminal_fusion_kernel_launches: int
+    v_cycle_terminal_level_index: int
+    v_cycle_terminal_block_dim: int
+    v_cycle_terminal_collective_count: int
+    v_cycle_terminal_owner_thread: int
     v_cycle_publication_version: str
     v_cycle_standalone_publication_route: str
     v_cycle_external_shared_publication_route: str
@@ -1056,6 +1112,12 @@ class _EndpointValidationContext:
             or self.root_seeded_gather_kernel_version != ROOT_SEEDED_GATHER_KERNEL_VERSION
             or type(self.scalar_direction_apply_kernel_version) is not str
             or self.scalar_direction_apply_kernel_version != SCALAR_DIRECTION_APPLY_KERNEL_VERSION
+            or type(self.v_cycle_kernel_version) is not str
+            or self.v_cycle_kernel_version != V_CYCLE_KERNEL_VERSION
+            or type(self.v_cycle_schedule_version) is not str
+            or self.v_cycle_schedule_version != V_CYCLE_SCHEDULE_VERSION
+            or type(self.v_cycle_terminal_fusion_version) is not str
+            or self.v_cycle_terminal_fusion_version != V_CYCLE_TERMINAL_FUSION_VERSION
             or type(self.v_cycle_publication_version) is not str
             or self.v_cycle_publication_version != V_CYCLE_PUBLICATION_VERSION
             or type(self.v_cycle_standalone_publication_route) is not str
@@ -1081,6 +1143,10 @@ class _EndpointValidationContext:
                 self.fused_gather_kernel_version,
                 self.root_seeded_gather_kernel_version,
                 self.scalar_direction_apply_kernel_version,
+                self.v_cycle_kernel_version,
+                self.v_cycle_schedule_version,
+                self.v_cycle_terminal_fusion_version,
+                self.v_cycle_terminal_fusion_route,
                 self.v_cycle_publication_version,
                 self.v_cycle_standalone_publication_route,
                 self.v_cycle_external_shared_publication_route,
@@ -1096,6 +1162,22 @@ class _EndpointValidationContext:
             )
         ):
             raise ValueError("endpoint validation outer kernel schedule is not canonical")
+        scalar_evidence = _canonical_scalar_fused_evidence(self.hierarchy)
+        if (
+            type(self.v_cycle_terminal_fusion_route) is not str
+            or type(self.v_cycle_terminal_fusion_kernel_launches) is not int
+            or type(self.v_cycle_terminal_level_index) is not int
+            or type(self.v_cycle_terminal_block_dim) is not int
+            or type(self.v_cycle_terminal_collective_count) is not int
+            or type(self.v_cycle_terminal_owner_thread) is not int
+            or self.v_cycle_terminal_fusion_route != scalar_evidence.terminal_fusion_route
+            or self.v_cycle_terminal_fusion_kernel_launches != scalar_evidence.terminal_fusion_kernel_launches
+            or self.v_cycle_terminal_level_index != scalar_evidence.terminal_level_index
+            or self.v_cycle_terminal_block_dim != scalar_evidence.terminal_block_dim
+            or self.v_cycle_terminal_collective_count != scalar_evidence.terminal_collective_count
+            or self.v_cycle_terminal_owner_thread != scalar_evidence.terminal_owner_thread
+        ):
+            raise ValueError("endpoint validation terminal fusion route is not canonical")
         if type(self.v_cycle_kernel_launches) is not int or self.v_cycle_kernel_launches < 1:
             raise ValueError("v_cycle_kernel_launches must be a positive built-in int")
         if (
@@ -1508,6 +1590,10 @@ class CapturedGraphVBDOuterWork:
                 self.fused_gather_kernel_version,
                 self.root_seeded_gather_kernel_version,
                 self.scalar_direction_apply_kernel_version,
+                self._validation_context.v_cycle_kernel_version,
+                self._validation_context.v_cycle_schedule_version,
+                self._validation_context.v_cycle_terminal_fusion_version,
+                self._validation_context.v_cycle_terminal_fusion_route,
                 self.v_cycle_publication_version,
                 self._validation_context.v_cycle_standalone_publication_route,
                 self._validation_context.v_cycle_external_shared_publication_route,
@@ -1644,7 +1730,7 @@ class CapturedGraphVBDOuterWork:
         if type(self.linear_kernel_launches) is not int or self.linear_kernel_launches != expected_launches:
             raise ValueError("linear_kernel_launches does not match the fixed direct schedule")
         payload = {
-            "contract": "captured-direct-graph-vbd-outer-work-v6",
+            "contract": "captured-direct-graph-vbd-outer-work-v8",
             "outer_index": self.outer_index,
             "start_position_sha256": start_position_sha256,
             "current_operator_sha256": operator_sha256,
@@ -1659,6 +1745,17 @@ class CapturedGraphVBDOuterWork:
             "fused_gather_kernel_version": self.fused_gather_kernel_version,
             "root_seeded_gather_kernel_version": self.root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": self.scalar_direction_apply_kernel_version,
+            "v_cycle_kernel_version": self._validation_context.v_cycle_kernel_version,
+            "v_cycle_schedule_version": self._validation_context.v_cycle_schedule_version,
+            "v_cycle_terminal_fusion_version": self._validation_context.v_cycle_terminal_fusion_version,
+            "v_cycle_terminal_fusion_route": self._validation_context.v_cycle_terminal_fusion_route,
+            "v_cycle_terminal_fusion_kernel_launches": (
+                self._validation_context.v_cycle_terminal_fusion_kernel_launches
+            ),
+            "v_cycle_terminal_level_index": self._validation_context.v_cycle_terminal_level_index,
+            "v_cycle_terminal_block_dim": self._validation_context.v_cycle_terminal_block_dim,
+            "v_cycle_terminal_collective_count": self._validation_context.v_cycle_terminal_collective_count,
+            "v_cycle_terminal_owner_thread": self._validation_context.v_cycle_terminal_owner_thread,
             "v_cycle_publication_version": self.v_cycle_publication_version,
             "first_cycle_publication_route": self.first_cycle_publication_route,
             "second_cycle_publication_route": self.second_cycle_publication_route,
@@ -1702,7 +1799,7 @@ class CapturedGraphVBDOuterWork:
         ):
             raise ValueError("outer work content hash is not canonical at serialization")
         return {
-            "contract": "captured-direct-graph-vbd-outer-work-v6",
+            "contract": "captured-direct-graph-vbd-outer-work-v8",
             "outer_index": self.outer_index,
             "start_position_sha256": self.start_position_sha256,
             "current_operator_sha256": self.current_operator_sha256,
@@ -1717,6 +1814,17 @@ class CapturedGraphVBDOuterWork:
             "fused_gather_kernel_version": self.fused_gather_kernel_version,
             "root_seeded_gather_kernel_version": self.root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": self.scalar_direction_apply_kernel_version,
+            "v_cycle_kernel_version": self._validation_context.v_cycle_kernel_version,
+            "v_cycle_schedule_version": self._validation_context.v_cycle_schedule_version,
+            "v_cycle_terminal_fusion_version": self._validation_context.v_cycle_terminal_fusion_version,
+            "v_cycle_terminal_fusion_route": self._validation_context.v_cycle_terminal_fusion_route,
+            "v_cycle_terminal_fusion_kernel_launches": (
+                self._validation_context.v_cycle_terminal_fusion_kernel_launches
+            ),
+            "v_cycle_terminal_level_index": self._validation_context.v_cycle_terminal_level_index,
+            "v_cycle_terminal_block_dim": self._validation_context.v_cycle_terminal_block_dim,
+            "v_cycle_terminal_collective_count": self._validation_context.v_cycle_terminal_collective_count,
+            "v_cycle_terminal_owner_thread": self._validation_context.v_cycle_terminal_owner_thread,
             "v_cycle_publication_version": self.v_cycle_publication_version,
             "first_cycle_publication_route": self.first_cycle_publication_route,
             "second_cycle_publication_route": self.second_cycle_publication_route,
@@ -1891,6 +1999,10 @@ class CapturedGraphVBDEndpoint:
                 self.fused_gather_kernel_version,
                 self.root_seeded_gather_kernel_version,
                 self.scalar_direction_apply_kernel_version,
+                context.v_cycle_kernel_version,
+                context.v_cycle_schedule_version,
+                context.v_cycle_terminal_fusion_version,
+                context.v_cycle_terminal_fusion_route,
                 self.v_cycle_publication_version,
                 self.v_cycle_standalone_publication_route,
                 self.v_cycle_external_shared_publication_route,
@@ -2190,6 +2302,15 @@ class CapturedGraphVBDEndpoint:
                     "graph_identity_sha256": graph_identity_sha256,
                     "fused_gather_kernel_version": self.fused_gather_kernel_version,
                     "root_seeded_gather_kernel_version": self.root_seeded_gather_kernel_version,
+                    "v_cycle_kernel_version": context.v_cycle_kernel_version,
+                    "v_cycle_schedule_version": context.v_cycle_schedule_version,
+                    "v_cycle_terminal_fusion_version": context.v_cycle_terminal_fusion_version,
+                    "v_cycle_terminal_fusion_route": context.v_cycle_terminal_fusion_route,
+                    "v_cycle_terminal_fusion_kernel_launches": context.v_cycle_terminal_fusion_kernel_launches,
+                    "v_cycle_terminal_level_index": context.v_cycle_terminal_level_index,
+                    "v_cycle_terminal_block_dim": context.v_cycle_terminal_block_dim,
+                    "v_cycle_terminal_collective_count": context.v_cycle_terminal_collective_count,
+                    "v_cycle_terminal_owner_thread": context.v_cycle_terminal_owner_thread,
                     "v_cycle_publication_version": self.v_cycle_publication_version,
                     "v_cycle_standalone_publication_route": self.v_cycle_standalone_publication_route,
                     "v_cycle_external_shared_publication_route": self.v_cycle_external_shared_publication_route,
@@ -2267,6 +2388,17 @@ class CapturedGraphVBDEndpoint:
             "fused_gather_kernel_version": self.fused_gather_kernel_version,
             "root_seeded_gather_kernel_version": self.root_seeded_gather_kernel_version,
             "scalar_direction_apply_kernel_version": self.scalar_direction_apply_kernel_version,
+            "v_cycle_kernel_version": self._validation_context.v_cycle_kernel_version,
+            "v_cycle_schedule_version": self._validation_context.v_cycle_schedule_version,
+            "v_cycle_terminal_fusion_version": self._validation_context.v_cycle_terminal_fusion_version,
+            "v_cycle_terminal_fusion_route": self._validation_context.v_cycle_terminal_fusion_route,
+            "v_cycle_terminal_fusion_kernel_launches": (
+                self._validation_context.v_cycle_terminal_fusion_kernel_launches
+            ),
+            "v_cycle_terminal_level_index": self._validation_context.v_cycle_terminal_level_index,
+            "v_cycle_terminal_block_dim": self._validation_context.v_cycle_terminal_block_dim,
+            "v_cycle_terminal_collective_count": self._validation_context.v_cycle_terminal_collective_count,
+            "v_cycle_terminal_owner_thread": self._validation_context.v_cycle_terminal_owner_thread,
             "v_cycle_publication_version": self.v_cycle_publication_version,
             "v_cycle_standalone_publication_route": self.v_cycle_standalone_publication_route,
             "v_cycle_external_shared_publication_route": self.v_cycle_external_shared_publication_route,
@@ -2351,6 +2483,13 @@ class CapturedGraphVBDTiming:
     scalar_direction_apply_kernel_version: str
     v_cycle_kernel_version: str
     v_cycle_schedule_version: str
+    v_cycle_terminal_fusion_version: str
+    v_cycle_terminal_fusion_route: str
+    v_cycle_terminal_fusion_kernel_launches: int
+    v_cycle_terminal_level_index: int
+    v_cycle_terminal_block_dim: int
+    v_cycle_terminal_collective_count: int
+    v_cycle_terminal_owner_thread: int
     v_cycle_schedule_sha256: str
     v_cycle_core_schedule_sha256: str
     v_cycle_seeded_core_schedule_sha256: str
@@ -2416,6 +2555,21 @@ class CapturedGraphVBDTiming:
             or self.v_cycle_kernel_version != V_CYCLE_KERNEL_VERSION
             or type(self.v_cycle_schedule_version) is not str
             or self.v_cycle_schedule_version != V_CYCLE_SCHEDULE_VERSION
+            or type(self.v_cycle_terminal_fusion_version) is not str
+            or self.v_cycle_terminal_fusion_version != V_CYCLE_TERMINAL_FUSION_VERSION
+            or type(self.v_cycle_terminal_fusion_route) is not str
+            or self.v_cycle_terminal_fusion_route != V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE
+            or type(self.v_cycle_terminal_fusion_kernel_launches) is not int
+            or self.v_cycle_terminal_fusion_kernel_launches != 1
+            or type(self.v_cycle_terminal_level_index) is not int
+            or self.v_cycle_terminal_level_index < 0
+            or type(self.v_cycle_terminal_block_dim) is not int
+            or not 32 <= self.v_cycle_terminal_block_dim <= 1024
+            or self.v_cycle_terminal_block_dim % 32 != 0
+            or type(self.v_cycle_terminal_collective_count) is not int
+            or self.v_cycle_terminal_collective_count != 2
+            or type(self.v_cycle_terminal_owner_thread) is not int
+            or self.v_cycle_terminal_owner_thread != 0
             or type(self.v_cycle_publication_version) is not str
             or self.v_cycle_publication_version != V_CYCLE_PUBLICATION_VERSION
             or type(self.v_cycle_standalone_publication_route) is not str
@@ -2442,6 +2596,10 @@ class CapturedGraphVBDTiming:
                 self.fused_gather_kernel_version,
                 self.root_seeded_gather_kernel_version,
                 self.scalar_direction_apply_kernel_version,
+                self.v_cycle_kernel_version,
+                self.v_cycle_schedule_version,
+                self.v_cycle_terminal_fusion_version,
+                self.v_cycle_terminal_fusion_route,
                 self.v_cycle_publication_version,
                 self.v_cycle_standalone_publication_route,
                 self.v_cycle_external_shared_publication_route,
@@ -2523,6 +2681,13 @@ class CapturedGraphVBDTiming:
             "scalar_direction_apply_kernel_version": validated.scalar_direction_apply_kernel_version,
             "v_cycle_kernel_version": validated.v_cycle_kernel_version,
             "v_cycle_schedule_version": validated.v_cycle_schedule_version,
+            "v_cycle_terminal_fusion_version": validated.v_cycle_terminal_fusion_version,
+            "v_cycle_terminal_fusion_route": validated.v_cycle_terminal_fusion_route,
+            "v_cycle_terminal_fusion_kernel_launches": validated.v_cycle_terminal_fusion_kernel_launches,
+            "v_cycle_terminal_level_index": validated.v_cycle_terminal_level_index,
+            "v_cycle_terminal_block_dim": validated.v_cycle_terminal_block_dim,
+            "v_cycle_terminal_collective_count": validated.v_cycle_terminal_collective_count,
+            "v_cycle_terminal_owner_thread": validated.v_cycle_terminal_owner_thread,
             "v_cycle_schedule_sha256": validated.v_cycle_schedule_sha256,
             "v_cycle_core_schedule_sha256": validated.v_cycle_core_schedule_sha256,
             "v_cycle_seeded_core_schedule_sha256": validated.v_cycle_seeded_core_schedule_sha256,
@@ -2677,6 +2842,13 @@ class _ScalarFusedHierarchyEvidence:
     scheduled_kernel_launches: int
     core_kernel_launches: int
     seeded_core_kernel_launches: int
+    terminal_fusion_version: str
+    terminal_fusion_route: str
+    terminal_fusion_kernel_launches: int
+    terminal_level_index: int
+    terminal_block_dim: int
+    terminal_collective_count: int
+    terminal_owner_thread: int
     publication_version: str
     standalone_publication_route: str
     external_shared_publication_route: str
@@ -2769,6 +2941,45 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
                 raise RuntimeError("canonical noncoarse hierarchy level is missing prolongation")
             transfer_paths.extend((level.matrix.block_size, level.prolongation.coarse_block_size))
     noncoarse = len(hierarchy.levels) - 1
+    if noncoarse == 0:
+        terminal_fusion_route = V_CYCLE_TERMINAL_FUSION_COARSEST_ONLY_ROUTE
+        terminal_fusion_kernel_launches = 0
+        terminal_level_index = -1
+        terminal_block_dim = 0
+        terminal_collective_count = 0
+        terminal_owner_thread = -1
+    else:
+        terminal_level_index = noncoarse - 1
+        terminal = hierarchy.levels[terminal_level_index]
+        coarse = hierarchy.levels[-1]
+        topology_supported = (
+            terminal.prolongation is not None
+            and terminal.prolongation.coarse_node_count == coarse.matrix.block_row_count
+            and terminal.prolongation.coarse_block_size == coarse.matrix.block_size
+            and terminal.matrix.scalar_size > 0
+            and coarse.matrix.scalar_size > 0
+            and np.asarray(hierarchy.coarse_cholesky).size == coarse.matrix.scalar_size * coarse.matrix.scalar_size
+        )
+        required_threads = max(terminal.matrix.scalar_size, coarse.matrix.scalar_size)
+        derived_block_dim = ((required_threads + 31) // 32) * 32
+        if not topology_supported:
+            terminal_fusion_route = V_CYCLE_TERMINAL_FUSION_UNSUPPORTED_FALLBACK_ROUTE
+            terminal_fusion_kernel_launches = 0
+            terminal_block_dim = 0
+            terminal_collective_count = 0
+            terminal_owner_thread = -1
+        elif derived_block_dim > 1024:
+            terminal_fusion_route = V_CYCLE_TERMINAL_FUSION_OVERSIZE_FALLBACK_ROUTE
+            terminal_fusion_kernel_launches = 0
+            terminal_block_dim = 0
+            terminal_collective_count = 0
+            terminal_owner_thread = -1
+        else:
+            terminal_fusion_route = V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE
+            terminal_fusion_kernel_launches = 1
+            terminal_block_dim = derived_block_dim
+            terminal_collective_count = 2
+            terminal_owner_thread = 0
     root_ingress_zero_start_fusions = int(noncoarse > 0)
     root_ingress_route = (
         V_CYCLE_ROOT_INGRESS_INTERNAL_ROUTE
@@ -2779,6 +2990,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         2
         + noncoarse * (2 + 2 * hierarchy.pre_smooth_steps + 2 * hierarchy.post_smooth_steps)
         - root_ingress_zero_start_fusions
+        - 2 * terminal_fusion_kernel_launches
     )
     scheduled_kernel_launches = core_kernel_launches + 1
     common_schedule_parts = (
@@ -2795,11 +3007,18 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ("root_ingress_kernel_launches", 1),
         ("noncoarse_result_buffer", "B"),
         ("coarsest_result_buffer", "A"),
+        ("terminal_fusion_version", V_CYCLE_TERMINAL_FUSION_VERSION),
+        ("terminal_fusion_route", terminal_fusion_route),
+        ("terminal_fusion_kernel_launches", terminal_fusion_kernel_launches),
+        ("terminal_level_index", terminal_level_index),
+        ("terminal_block_dim", terminal_block_dim),
+        ("terminal_collective_count", terminal_collective_count),
+        ("terminal_owner_thread", terminal_owner_thread),
         ("core_kernel_launches", core_kernel_launches),
         ("publication_version", V_CYCLE_PUBLICATION_VERSION),
     )
     core_schedule_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-core-schedule-v3",
+        "warp-scalar-fused-v-cycle-core-schedule-v5",
         (
             *common_schedule_parts,
             ("publication_route", V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -2808,7 +3027,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     schedule_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-schedule-v5",
+        "warp-scalar-fused-v-cycle-schedule-v7",
         (
             *common_schedule_parts,
             ("publication_route", V_CYCLE_STANDALONE_PUBLICATION_ROUTE),
@@ -2817,7 +3036,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     core_device_snapshot_sha256 = _hash_parts(
-        "warp-scalar-fused-static-multigrid-core-snapshot-v3",
+        "warp-scalar-fused-static-multigrid-core-snapshot-v5",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
@@ -2825,7 +3044,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     device_snapshot_sha256 = _hash_parts(
-        "warp-scalar-fused-static-multigrid-snapshot-v5",
+        "warp-scalar-fused-static-multigrid-snapshot-v7",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
@@ -2845,7 +3064,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             ("core_kernel_launches", seeded_core_kernel_launches),
         )
         seeded_core_schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-seeded-core-schedule-v1",
+            "warp-scalar-fused-v-cycle-seeded-core-schedule-v3",
             (
                 *seeded_common_schedule_parts,
                 ("publication_route", V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -2854,7 +3073,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             ),
         )
         seeded_core_device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v1",
+            "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v3",
             (
                 ("source_device_snapshot_sha256", source_snapshot_sha256),
                 ("static_device_content_sha256", static_device_content_sha256),
@@ -2879,6 +3098,13 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         scheduled_kernel_launches=scheduled_kernel_launches,
         core_kernel_launches=core_kernel_launches,
         seeded_core_kernel_launches=seeded_core_kernel_launches,
+        terminal_fusion_version=V_CYCLE_TERMINAL_FUSION_VERSION,
+        terminal_fusion_route=terminal_fusion_route,
+        terminal_fusion_kernel_launches=terminal_fusion_kernel_launches,
+        terminal_level_index=terminal_level_index,
+        terminal_block_dim=terminal_block_dim,
+        terminal_collective_count=terminal_collective_count,
+        terminal_owner_thread=terminal_owner_thread,
         publication_version=V_CYCLE_PUBLICATION_VERSION,
         standalone_publication_route=V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
         external_shared_publication_route=V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
@@ -2968,6 +3194,12 @@ def _validate_scalar_fused_hierarchy_inputs(
         or scalar_hierarchy.scheduled_kernel_launches != expected.scheduled_kernel_launches
         or scalar_hierarchy.core_kernel_launches != expected.core_kernel_launches
         or scalar_hierarchy.seeded_core_kernel_launches != expected.seeded_core_kernel_launches
+        or scalar_hierarchy.terminal_fusion_route != expected.terminal_fusion_route
+        or scalar_hierarchy.terminal_fusion_kernel_launches != expected.terminal_fusion_kernel_launches
+        or scalar_hierarchy.terminal_level_index != expected.terminal_level_index
+        or scalar_hierarchy.terminal_block_dim != expected.terminal_block_dim
+        or scalar_hierarchy.terminal_collective_count != expected.terminal_collective_count
+        or scalar_hierarchy.terminal_owner_thread != expected.terminal_owner_thread
         or scalar_hierarchy._static_level_signature != tuple(expected_level_signature)
         or len(scalar_hierarchy._static_array_objects) != len(source_arrays)
         or any(
@@ -3485,6 +3717,46 @@ class CapturedDirectGraphVBD:
         self.device_hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_device_hierarchy(
             self.source_device_hierarchy
         )
+        scalar_evidence = _canonical_scalar_fused_evidence(self.hierarchy)
+        terminal_level_index = len(self.hierarchy.levels) - 2
+        if terminal_level_index < 0:
+            terminal_block_dim = 0
+        else:
+            terminal = self.hierarchy.levels[terminal_level_index]
+            coarse = self.hierarchy.levels[-1]
+            terminal_block_dim = ((max(terminal.matrix.scalar_size, coarse.matrix.scalar_size) + 31) // 32) * 32
+        if (
+            scalar_evidence.terminal_fusion_route != V_CYCLE_TERMINAL_FUSION_CUDA_ROUTE
+            or scalar_evidence.terminal_fusion_kernel_launches != 1
+            or scalar_evidence.terminal_level_index != terminal_level_index
+            or not 32 <= scalar_evidence.terminal_block_dim <= 1024
+            or scalar_evidence.terminal_block_dim % 32 != 0
+            or scalar_evidence.terminal_block_dim != terminal_block_dim
+            or scalar_evidence.terminal_collective_count != 2
+            or scalar_evidence.terminal_owner_thread != 0
+        ):
+            raise ValueError(
+                "captured direct graph VBD fixed-162 contract requires the supported one-block CUDA terminal "
+                "restriction, ordered coarse solve, and prolongation route"
+            )
+        actual_terminal_metadata = (
+            self.device_hierarchy._terminal_fusion_route,
+            self.device_hierarchy._terminal_fusion_kernel_launches,
+            self.device_hierarchy._terminal_level_index,
+            self.device_hierarchy._terminal_block_dim,
+            self.device_hierarchy._terminal_collective_count,
+            self.device_hierarchy._terminal_owner_thread,
+        )
+        expected_terminal_metadata = (
+            scalar_evidence.terminal_fusion_route,
+            scalar_evidence.terminal_fusion_kernel_launches,
+            scalar_evidence.terminal_level_index,
+            scalar_evidence.terminal_block_dim,
+            scalar_evidence.terminal_collective_count,
+            scalar_evidence.terminal_owner_thread,
+        )
+        if actual_terminal_metadata != expected_terminal_metadata:
+            raise RuntimeError("captured direct graph VBD scalar terminal fusion metadata is not canonical")
         self._hierarchy_owner_identity_bound = (id(self.source_device_hierarchy), id(self.device_hierarchy))
 
         n_vertices = scene.n_vertices
@@ -4192,6 +4464,10 @@ class CapturedDirectGraphVBD:
                 claims.fused_gather_kernel_version,
                 claims.root_seeded_gather_kernel_version,
                 claims.scalar_direction_apply_kernel_version,
+                V_CYCLE_KERNEL_VERSION,
+                V_CYCLE_SCHEDULE_VERSION,
+                claims.scalar_fused_evidence.terminal_fusion_version,
+                claims.scalar_fused_evidence.terminal_fusion_route,
                 claims.scalar_fused_evidence.publication_version,
                 claims.scalar_fused_evidence.standalone_publication_route,
                 claims.scalar_fused_evidence.external_shared_publication_route,
@@ -4616,7 +4892,7 @@ class CapturedDirectGraphVBD:
 
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v7",
+                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v8",
                 "scene_object": id(binding.scene),
                 "config_object": id(binding.config),
                 "warp_device_object": id(binding.warp_device),
@@ -4724,7 +5000,7 @@ class CapturedDirectGraphVBD:
         correction_kernel_launches = 2 + OUTER_CORRECTIONS * outer_kernel_launches
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-graph-identity-v8",
+                "contract": "captured-direct-graph-vbd-graph-identity-v10",
                 "solver_contract": CONTRACT_ID,
                 "comparator_contract": VBD_BASELINE_CONTRACT_ID if comparator else None,
                 "scene_sha256": scene_sha256,
@@ -4751,6 +5027,13 @@ class CapturedDirectGraphVBD:
                 "finalize_gate_collective_version": claims.finalize_gate_collective_version,
                 "v_cycle_kernel_version": V_CYCLE_KERNEL_VERSION,
                 "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
+                "v_cycle_terminal_fusion_version": scalar_evidence.terminal_fusion_version,
+                "v_cycle_terminal_fusion_route": scalar_evidence.terminal_fusion_route,
+                "v_cycle_terminal_fusion_kernel_launches": scalar_evidence.terminal_fusion_kernel_launches,
+                "v_cycle_terminal_level_index": scalar_evidence.terminal_level_index,
+                "v_cycle_terminal_block_dim": scalar_evidence.terminal_block_dim,
+                "v_cycle_terminal_collective_count": scalar_evidence.terminal_collective_count,
+                "v_cycle_terminal_owner_thread": scalar_evidence.terminal_owner_thread,
                 "v_cycle_schedule_sha256": scalar_evidence.schedule_sha256,
                 "v_cycle_core_schedule_sha256": scalar_evidence.core_schedule_sha256,
                 "v_cycle_seeded_core_schedule_sha256": scalar_evidence.seeded_core_schedule_sha256,
@@ -4880,6 +5163,8 @@ class CapturedDirectGraphVBD:
             or context.root_seeded_gather_kernel_version != owner_binding.claims.root_seeded_gather_kernel_version
             or context.scalar_direction_apply_kernel_version
             != owner_binding.claims.scalar_direction_apply_kernel_version
+            or context.v_cycle_kernel_version != V_CYCLE_KERNEL_VERSION
+            or context.v_cycle_schedule_version != V_CYCLE_SCHEDULE_VERSION
             or context.first_cycle_publication_role != owner_binding.claims.first_cycle_publication_role
             or context.second_cycle_publication_role != owner_binding.claims.second_cycle_publication_role
             or context.outer_kernel_version != owner_binding.claims.outer_kernel_version
@@ -4949,6 +5234,16 @@ class CapturedDirectGraphVBD:
             raise ValueError("validation context V-cycle core launch count is not canonical")
         if context.v_cycle_seeded_core_kernel_launches != scalar_evidence.seeded_core_kernel_launches:
             raise ValueError("validation context seeded V-cycle core launch count is not canonical")
+        if (
+            context.v_cycle_terminal_fusion_version != scalar_evidence.terminal_fusion_version
+            or context.v_cycle_terminal_fusion_route != scalar_evidence.terminal_fusion_route
+            or context.v_cycle_terminal_fusion_kernel_launches != scalar_evidence.terminal_fusion_kernel_launches
+            or context.v_cycle_terminal_level_index != scalar_evidence.terminal_level_index
+            or context.v_cycle_terminal_block_dim != scalar_evidence.terminal_block_dim
+            or context.v_cycle_terminal_collective_count != scalar_evidence.terminal_collective_count
+            or context.v_cycle_terminal_owner_thread != scalar_evidence.terminal_owner_thread
+        ):
+            raise ValueError("validation context terminal V-cycle fusion route is not canonical")
         if (
             context.v_cycle_publication_version != scalar_evidence.publication_version
             or context.v_cycle_standalone_publication_route != scalar_evidence.standalone_publication_route
@@ -5580,7 +5875,7 @@ class CapturedDirectGraphVBD:
         if scalar_evidence != claims.scalar_fused_evidence:
             raise RuntimeError("captured scalar-fused construction evidence changed")
         persistent_sha256 = _hash_parts(
-            "captured-direct-graph-vbd-persistent-inputs-v6",
+            "captured-direct-graph-vbd-persistent-inputs-v8",
             (
                 ("scene_sha256", scene_sha256),
                 ("objective_instance_sha256", objective_sha256),
@@ -5625,6 +5920,16 @@ class CapturedDirectGraphVBD:
                 ("scalar_v_cycle_kernel_launches", scalar_evidence.scheduled_kernel_launches),
                 ("scalar_v_cycle_core_kernel_launches", scalar_evidence.core_kernel_launches),
                 ("scalar_v_cycle_seeded_core_kernel_launches", scalar_evidence.seeded_core_kernel_launches),
+                ("scalar_v_cycle_terminal_fusion_version", scalar_evidence.terminal_fusion_version),
+                ("scalar_v_cycle_terminal_fusion_route", scalar_evidence.terminal_fusion_route),
+                (
+                    "scalar_v_cycle_terminal_fusion_kernel_launches",
+                    scalar_evidence.terminal_fusion_kernel_launches,
+                ),
+                ("scalar_v_cycle_terminal_level_index", scalar_evidence.terminal_level_index),
+                ("scalar_v_cycle_terminal_block_dim", scalar_evidence.terminal_block_dim),
+                ("scalar_v_cycle_terminal_collective_count", scalar_evidence.terminal_collective_count),
+                ("scalar_v_cycle_terminal_owner_thread", scalar_evidence.terminal_owner_thread),
                 ("scalar_v_cycle_seeded_root_ingress_route", scalar_evidence.seeded_root_ingress_route),
                 ("scalar_v_cycle_publication_version", scalar_evidence.publication_version),
                 ("scalar_v_cycle_standalone_publication_route", scalar_evidence.standalone_publication_route),
@@ -6074,6 +6379,13 @@ class CapturedDirectGraphVBD:
             scalar_direction_apply_kernel_version=owner_binding.claims.scalar_direction_apply_kernel_version,
             v_cycle_kernel_version=V_CYCLE_KERNEL_VERSION,
             v_cycle_schedule_version=V_CYCLE_SCHEDULE_VERSION,
+            v_cycle_terminal_fusion_version=scalar_evidence.terminal_fusion_version,
+            v_cycle_terminal_fusion_route=scalar_evidence.terminal_fusion_route,
+            v_cycle_terminal_fusion_kernel_launches=scalar_evidence.terminal_fusion_kernel_launches,
+            v_cycle_terminal_level_index=scalar_evidence.terminal_level_index,
+            v_cycle_terminal_block_dim=scalar_evidence.terminal_block_dim,
+            v_cycle_terminal_collective_count=scalar_evidence.terminal_collective_count,
+            v_cycle_terminal_owner_thread=scalar_evidence.terminal_owner_thread,
             v_cycle_schedule_sha256=scalar_evidence.schedule_sha256,
             v_cycle_core_schedule_sha256=scalar_evidence.core_schedule_sha256,
             v_cycle_seeded_core_schedule_sha256=scalar_evidence.seeded_core_schedule_sha256,
@@ -6186,6 +6498,15 @@ class CapturedDirectGraphVBD:
             fused_gather_kernel_version=owner_binding.claims.fused_gather_kernel_version,
             root_seeded_gather_kernel_version=owner_binding.claims.root_seeded_gather_kernel_version,
             scalar_direction_apply_kernel_version=owner_binding.claims.scalar_direction_apply_kernel_version,
+            v_cycle_kernel_version=V_CYCLE_KERNEL_VERSION,
+            v_cycle_schedule_version=V_CYCLE_SCHEDULE_VERSION,
+            v_cycle_terminal_fusion_version=scalar_evidence.terminal_fusion_version,
+            v_cycle_terminal_fusion_route=scalar_evidence.terminal_fusion_route,
+            v_cycle_terminal_fusion_kernel_launches=scalar_evidence.terminal_fusion_kernel_launches,
+            v_cycle_terminal_level_index=scalar_evidence.terminal_level_index,
+            v_cycle_terminal_block_dim=scalar_evidence.terminal_block_dim,
+            v_cycle_terminal_collective_count=scalar_evidence.terminal_collective_count,
+            v_cycle_terminal_owner_thread=scalar_evidence.terminal_owner_thread,
             v_cycle_publication_version=scalar_evidence.publication_version,
             v_cycle_standalone_publication_route=scalar_evidence.standalone_publication_route,
             v_cycle_external_shared_publication_route=scalar_evidence.external_shared_publication_route,
@@ -6461,7 +6782,7 @@ class CapturedDirectGraphVBD:
             "solver_static_array_sha256": self._solver_static_array_sha256_bound,
             "workspace_owner_identity_sha256": self._workspace_owner_identity_sha256(owner_binding),
             "persistent_device_sha256": persistent_device_sha256,
-            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v8",
+            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v10",
             "graph_identity_sha256": graph_identity_sha256,
             "k4_graph_identity_sha256": k4_graph_identity_sha256,
             "fused_gather_kernel_version": owner_binding.claims.fused_gather_kernel_version,
@@ -6492,6 +6813,13 @@ class CapturedDirectGraphVBD:
             "v_cycle_contract_id": V_CYCLE_CONTRACT_ID,
             "v_cycle_kernel_version": V_CYCLE_KERNEL_VERSION,
             "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
+            "v_cycle_terminal_fusion_version": scalar_evidence.terminal_fusion_version,
+            "v_cycle_terminal_fusion_route": scalar_evidence.terminal_fusion_route,
+            "v_cycle_terminal_fusion_kernel_launches": scalar_evidence.terminal_fusion_kernel_launches,
+            "v_cycle_terminal_level_index": scalar_evidence.terminal_level_index,
+            "v_cycle_terminal_block_dim": scalar_evidence.terminal_block_dim,
+            "v_cycle_terminal_collective_count": scalar_evidence.terminal_collective_count,
+            "v_cycle_terminal_owner_thread": scalar_evidence.terminal_owner_thread,
             "v_cycle_schedule_sha256": scalar_evidence.schedule_sha256,
             "v_cycle_core_schedule_sha256": scalar_evidence.core_schedule_sha256,
             "v_cycle_seeded_core_schedule_sha256": scalar_evidence.seeded_core_schedule_sha256,
