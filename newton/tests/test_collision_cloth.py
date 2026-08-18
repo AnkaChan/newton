@@ -10,7 +10,12 @@ import warp.examples
 
 import newton
 from newton import Mesh
+from newton._src.geometry.bvh import compute_bvh_group_roots
 from newton._src.geometry.kernels import (
+    _USE_BVH_RADIUS_QUERIES,
+    _bvh_query_edge_radius,
+    _bvh_query_vertex_radius,
+    _resolve_edge_query_segment,
     init_triangle_collision_data_kernel,
     triangle_closest_point,
     triangle_closest_point_barycentric,
@@ -26,8 +31,38 @@ from newton.tests.unittest_utils import (
     get_test_devices,
 )
 
-_VERSION = "self_contact_count_bounds_test_v1"
+_VERSION = "self_contact_minkowski_broad_phase_test_v1"
 print(f"[test_collision_cloth] version: {_VERSION}")
+
+
+@wp.kernel
+def query_vertex_radius_candidates(
+    bvh_id: wp.uint64,
+    center: wp.vec3,
+    radius: float,
+    root: int,
+    candidates: wp.array[wp.int32],
+):
+    query = _bvh_query_vertex_radius(bvh_id, center, radius, root)
+    candidate = wp.int32(0)
+    while wp.bvh_query_next(query, candidate):
+        candidates[candidate] = 1
+
+
+@wp.kernel
+def query_edge_radius_candidates(
+    bvh_id: wp.uint64,
+    start: wp.vec3,
+    end: wp.vec3,
+    radius: float,
+    root: int,
+    candidates: wp.array[wp.int32],
+):
+    direction, max_dist = _resolve_edge_query_segment(start, end)
+    query = _bvh_query_edge_radius(bvh_id, start, end, direction, radius, root)
+    candidate = wp.int32(0)
+    while wp.bvh_query_next(query, candidate, max_dist):
+        candidates[candidate] = 1
 
 
 @wp.kernel
@@ -925,6 +960,112 @@ def test_mesh_ground_collision_index(test, device):
     test.assertTrue(np.allclose(normals[:, 2], 0.0, atol=1e-6))
 
 
+def test_self_contact_broad_phase_query_geometry(test, device):
+    """Keep radius queries conservative across geometry, roots, and degenerate segments."""
+    half_extent = 1.0e-3
+
+    vertex_centers = np.array(
+        [
+            [0.5, 0.0, 0.0],
+            [0.8, 0.8, 0.0],
+            [0.0, 0.5, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    vertex_lowers = wp.array(vertex_centers - half_extent, dtype=wp.vec3, device=device)
+    vertex_uppers = wp.array(vertex_centers + half_extent, dtype=wp.vec3, device=device)
+    vertex_groups = wp.array([0, 0, 1], dtype=wp.int32, device=device)
+    vertex_bvh = wp.Bvh(vertex_lowers, vertex_uppers, groups=vertex_groups)
+    vertex_group_roots = wp.empty(2, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel=compute_bvh_group_roots,
+        dim=2,
+        inputs=[vertex_bvh.id],
+        outputs=[vertex_group_roots],
+        device=device,
+    )
+    vertex_group_root = int(vertex_group_roots.numpy()[0])
+
+    vertex_group_candidates = wp.zeros(3, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel=query_vertex_radius_candidates,
+        dim=1,
+        inputs=[vertex_bvh.id, wp.vec3(0.0), 1.0, vertex_group_root],
+        outputs=[vertex_group_candidates],
+        device=device,
+    )
+    vertex_all_candidates = wp.zeros(3, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel=query_vertex_radius_candidates,
+        dim=1,
+        inputs=[vertex_bvh.id, wp.vec3(0.0), 1.0, -1],
+        outputs=[vertex_all_candidates],
+        device=device,
+    )
+
+    broad_corner = 0 if _USE_BVH_RADIUS_QUERIES else 1
+    assert_np_equal(vertex_group_candidates.numpy(), np.array([1, broad_corner, 0], dtype=np.int32))
+    assert_np_equal(vertex_all_candidates.numpy(), np.array([1, broad_corner, 1], dtype=np.int32))
+
+    edge_centers = np.array(
+        [
+            [0.5, 0.5, 0.05],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 0.0],
+            [1.0, 1.05, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    edge_lowers = wp.array(edge_centers - half_extent, dtype=wp.vec3, device=device)
+    edge_uppers = wp.array(edge_centers + half_extent, dtype=wp.vec3, device=device)
+    edge_groups = wp.array([0, 0, 1, 0], dtype=wp.int32, device=device)
+    edge_bvh = wp.Bvh(edge_lowers, edge_uppers, groups=edge_groups)
+    edge_group_roots = wp.empty(2, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel=compute_bvh_group_roots,
+        dim=2,
+        inputs=[edge_bvh.id],
+        outputs=[edge_group_roots],
+        device=device,
+    )
+    edge_group_root = int(edge_group_roots.numpy()[0])
+
+    edge_group_candidates = wp.zeros(4, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel=query_edge_radius_candidates,
+        dim=1,
+        inputs=[edge_bvh.id, wp.vec3(0.0), wp.vec3(1.0, 1.0, 0.0), 0.1, edge_group_root],
+        outputs=[edge_group_candidates],
+        device=device,
+    )
+    edge_all_candidates = wp.zeros(4, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel=query_edge_radius_candidates,
+        dim=1,
+        inputs=[edge_bvh.id, wp.vec3(0.0), wp.vec3(1.0, 1.0, 0.0), 0.1, -1],
+        outputs=[edge_all_candidates],
+        device=device,
+    )
+
+    broad_edge = 0 if _USE_BVH_RADIUS_QUERIES else 1
+    assert_np_equal(edge_group_candidates.numpy(), np.array([1, broad_edge, 0, 1], dtype=np.int32))
+    assert_np_equal(edge_all_candidates.numpy(), np.array([1, broad_edge, 1, 1], dtype=np.int32))
+
+    point_centers = np.array([[0.05, 0.05, 0.0], [0.2, 0.0, 0.0]], dtype=np.float32)
+    point_lowers = wp.array(point_centers - half_extent, dtype=wp.vec3, device=device)
+    point_uppers = wp.array(point_centers + half_extent, dtype=wp.vec3, device=device)
+    point_bvh = wp.Bvh(point_lowers, point_uppers)
+    point_candidates = wp.zeros(2, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel=query_edge_radius_candidates,
+        dim=1,
+        inputs=[point_bvh.id, wp.vec3(0.0), wp.vec3(0.0), 0.1, -1],
+        outputs=[point_candidates],
+        device=device,
+    )
+    assert_np_equal(point_candidates.numpy(), np.array([1, 0], dtype=np.int32))
+
+
 def test_vertex_triangle_collision_same_world_detected(test, device):
     vertices = np.array(
         [
@@ -1480,6 +1621,12 @@ add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_t
 add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_collision, devices=devices)
 add_function_test(TestCollision, "test_particle_collision", test_particle_collision, devices=devices)
 add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
+add_function_test(
+    TestCollision,
+    "test_self_contact_broad_phase_query_geometry",
+    test_self_contact_broad_phase_query_geometry,
+    devices=devices,
+)
 add_function_test(
     TestCollision,
     "test_vertex_triangle_collision_same_world_detected",
