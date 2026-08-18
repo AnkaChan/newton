@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -62,6 +63,228 @@ def _file_hash(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _run_capture(argv: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        cwd=cwd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+
+def _native_library_names() -> tuple[str, str]:
+    if os.name == "nt":
+        return "warp.dll", "warp-clang.dll"
+    if sys.platform == "darwin":
+        return "libwarp.dylib", "libwarp-clang.dylib"
+    return "warp.so", "warp-clang.so"
+
+
+def _native_file_evidence(path: Path) -> dict[str, object]:
+    path = path.resolve()
+    if not path.is_file():
+        return {"path": str(path), "size": None, "sha256": None}
+    return {"path": str(path), "size": path.stat().st_size, "sha256": _file_hash(path)}
+
+
+def _expected_sha256(value: str | None, argument: str) -> str | None:
+    if value is None:
+        return None
+    normalized = value.lower()
+    if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
+        raise ValueError(f"{argument} must be a 64-character hexadecimal SHA-256")
+    return normalized
+
+
+def _expected_git_head(value: str | None, argument: str) -> str | None:
+    if value is None:
+        return None
+    normalized = value.lower()
+    if len(normalized) not in (40, 64) or any(character not in "0123456789abcdef" for character in normalized):
+        raise ValueError(f"{argument} must be a full hexadecimal Git object ID")
+    return normalized
+
+
+def _git_provenance(root: Path) -> dict[str, object]:
+    root = root.resolve()
+    top_level = _run_capture(["git", "-C", str(root), "rev-parse", "--show-toplevel"])
+    is_git_root = top_level.returncode == 0 and Path(top_level.stdout.strip()).resolve() == root
+    if not is_git_root:
+        return {
+            "git_head": None,
+            "git_tree": None,
+            "git_dirty_tracked": None,
+            "git_status_tracked": None,
+        }
+
+    head = _run_capture(["git", "-C", str(root), "rev-parse", "HEAD"])
+    tree = _run_capture(["git", "-C", str(root), "rev-parse", "HEAD^{tree}"])
+    status = _run_capture(["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=no"])
+    if any(item.returncode != 0 for item in (head, tree, status)):
+        return {
+            "git_head": None,
+            "git_tree": None,
+            "git_dirty_tracked": None,
+            "git_status_tracked": None,
+        }
+    status_lines = status.stdout.splitlines()
+    return {
+        "git_head": head.stdout.strip(),
+        "git_tree": tree.stdout.strip(),
+        "git_dirty_tracked": bool(status_lines),
+        "git_status_tracked": status_lines,
+    }
+
+
+def _warp_provenance(
+    *,
+    expected_root: Path | None,
+    expected_git_head: str | None,
+    expected_core_sha256: str | None,
+    expected_clang_sha256: str | None,
+) -> dict[str, object]:
+    warp_file = Path(wp.__file__).resolve()
+    warp_root = warp_file.parents[1]
+    if expected_root is not None and warp_root != expected_root.resolve():
+        raise ValueError(f"imported Warp from {warp_root}, expected {expected_root.resolve()}")
+
+    git = _git_provenance(warp_root)
+    git_head = git["git_head"]
+
+    normalized_head = _expected_git_head(expected_git_head, "--expected-warp-git-head")
+    if normalized_head is not None:
+        if git_head is None:
+            raise ValueError(f"cannot verify Warp Git provenance under {warp_root}")
+        if git_head != normalized_head:
+            raise ValueError(f"Warp Git HEAD {git_head} does not match expected {normalized_head}")
+        if git["git_dirty_tracked"]:
+            raise ValueError(f"Warp source has tracked modifications under {warp_root}")
+
+    core_name, clang_name = _native_library_names()
+    native_libraries = {
+        "core": _native_file_evidence(warp_file.parent / "bin" / core_name),
+        "clang": _native_file_evidence(warp_file.parent / "bin" / clang_name),
+    }
+    expected_native_hashes = {
+        "core": _expected_sha256(expected_core_sha256, "--expected-warp-core-sha256"),
+        "clang": _expected_sha256(expected_clang_sha256, "--expected-warp-clang-sha256"),
+    }
+    for name, expected_hash in expected_native_hashes.items():
+        actual_hash = native_libraries[name]["sha256"]
+        if expected_hash is not None and actual_hash != expected_hash:
+            raise ValueError(f"Warp {name} library SHA-256 {actual_hash} does not match expected {expected_hash}")
+
+    return {
+        "root": str(warp_root),
+        "warp_file": str(warp_file),
+        "version": str(wp.config.version),
+        **git,
+        "native_libraries": native_libraries,
+    }
+
+
+def _newton_provenance(
+    *,
+    expected_root: Path | None,
+    expected_git_head: str | None,
+) -> dict[str, object]:
+    newton_file = Path(newton.__file__).resolve()
+    newton_root = newton_file.parents[1]
+    if expected_root is not None and newton_root != expected_root.resolve():
+        raise ValueError(f"imported Newton from {newton_root}, expected {expected_root.resolve()}")
+
+    git = _git_provenance(newton_root)
+    normalized_head = _expected_git_head(expected_git_head, "--expected-newton-git-head")
+    if expected_root is not None or normalized_head is not None:
+        if git["git_head"] is None:
+            raise ValueError(f"cannot verify Newton Git provenance under {newton_root}")
+        if git["git_dirty_tracked"]:
+            raise ValueError(f"Newton source has tracked modifications under {newton_root}")
+    if normalized_head is not None and git["git_head"] != normalized_head:
+        raise ValueError(f"Newton Git HEAD {git['git_head']} does not match expected {normalized_head}")
+
+    return {
+        "root": str(newton_root),
+        "newton_file": str(newton_file),
+        "version": getattr(newton, "__version__", None),
+        **git,
+    }
+
+
+def _array_evidence(array) -> dict[str, object] | None:
+    if array is None:
+        return None
+    value = array.numpy()
+    return {
+        "shape": list(value.shape),
+        "dtype": value.dtype.str,
+        "sha256": _array_hash(value),
+    }
+
+
+def _workload_provenance(workload: DetectorWorkload) -> dict[str, object]:
+    detector = workload.detector
+    model = workload.model
+    scalars = {
+        "self_contact_margin": float(workload.self_contact_margin),
+        "rest_shape_exclusion_radius": float(workload.rest_shape_exclusion_radius),
+        "edge_edge_parallel_epsilon": float(detector.edge_edge_parallel_epsilon),
+        "record_triangle_contacting_vertices": bool(detector.record_triangle_contacting_vertices),
+        "world_count": int(model.world_count),
+        "world_copies": int(model.world_count),
+        "particle_count": int(model.particle_count),
+        "triangle_count": int(model.tri_count),
+        "edge_count": int(model.edge_count),
+    }
+    arrays = {
+        "vertex_positions": _array_evidence(detector.vertex_positions),
+        "rest_positions": _array_evidence(workload.rest_positions),
+        "tri_indices": _array_evidence(model.tri_indices),
+        "edge_indices": _array_evidence(model.edge_indices),
+        "particle_world": _array_evidence(model.particle_world),
+        "triangle_bvh_lower_bounds": _array_evidence(detector.lower_bounds_tris),
+        "triangle_bvh_upper_bounds": _array_evidence(detector.upper_bounds_tris),
+        "triangle_bvh_groups": _array_evidence(detector.tri_groups),
+        "triangle_bvh_group_roots": _array_evidence(detector.bvh_tris_group_roots),
+        "edge_bvh_lower_bounds": _array_evidence(detector.lower_bounds_edges),
+        "edge_bvh_upper_bounds": _array_evidence(detector.upper_bounds_edges),
+        "edge_bvh_groups": _array_evidence(detector.edge_groups),
+        "edge_bvh_group_roots": _array_evidence(detector.bvh_edges_group_roots),
+        "vertex_colliding_triangles_offsets": _array_evidence(detector.vertex_colliding_triangles_offsets),
+        "vertex_colliding_triangles_buffer_sizes": _array_evidence(detector.vertex_colliding_triangles_buffer_sizes),
+        "triangle_colliding_vertices_offsets": _array_evidence(detector.triangle_colliding_vertices_offsets),
+        "triangle_colliding_vertices_buffer_sizes": _array_evidence(detector.triangle_colliding_vertices_buffer_sizes),
+        "vertex_triangle_filtering_list": _array_evidence(detector.vertex_triangle_filtering_list),
+        "vertex_triangle_filtering_list_offsets": _array_evidence(detector.vertex_triangle_filtering_list_offsets),
+        "edge_colliding_edges_offsets": _array_evidence(detector.edge_colliding_edges_offsets),
+        "edge_colliding_edges_buffer_sizes": _array_evidence(detector.edge_colliding_edges_buffer_sizes),
+        "edge_filtering_list": _array_evidence(detector.edge_filtering_list),
+        "edge_filtering_list_offsets": _array_evidence(detector.edge_filtering_list_offsets),
+    }
+    bvh_constructors = {
+        "triangles": {"constructor": int(detector.bvh_tris._constructor), "leaf_size": 1},
+        "edges": {"constructor": int(detector.bvh_edges._constructor), "leaf_size": 1},
+    }
+    fingerprint_inputs = {
+        "scalars": scalars,
+        "arrays": arrays,
+        "bvh_constructors": bvh_constructors,
+    }
+    encoded = json.dumps(
+        fingerprint_inputs,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return {
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        **fingerprint_inputs,
+    }
 
 
 def _same_array(left: np.ndarray, right: np.ndarray) -> bool:
@@ -436,6 +659,26 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--warmups", type=int, default=20)
     parser.add_argument("--repeats", type=int, default=200)
     parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument(
+        "--expected-newton-root",
+        "--expected-source-root",
+        dest="expected_newton_root",
+        type=Path,
+    )
+    parser.add_argument(
+        "--expected-newton-git-head",
+        "--expected-newton-head",
+        "--expected-source-git-head",
+        dest="expected_newton_git_head",
+    )
+    parser.add_argument("--expected-warp-root", type=Path)
+    parser.add_argument(
+        "--expected-warp-git-head",
+        "--expected-warp-head",
+        dest="expected_warp_git_head",
+    )
+    parser.add_argument("--expected-warp-core-sha256")
+    parser.add_argument("--expected-warp-clang-sha256")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -458,9 +701,27 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    newton_provenance = _newton_provenance(
+        expected_root=args.expected_newton_root,
+        expected_git_head=args.expected_newton_git_head,
+    )
+    warp_provenance = _warp_provenance(
+        expected_root=args.expected_warp_root,
+        expected_git_head=args.expected_warp_git_head,
+        expected_core_sha256=args.expected_warp_core_sha256,
+        expected_clang_sha256=args.expected_warp_clang_sha256,
+    )
     viewer = ViewerNull(num_frames=max(args.state_frames, 1))
     example_args = newton.examples.default_args() if hasattr(newton.examples, "default_args") else None
-    example = Example(viewer, example_args)
+    if args.state_input is None:
+        example = Example(viewer, example_args)
+    else:
+        capture = Example.capture
+        try:
+            Example.capture = lambda _example: None
+            example = Example(viewer, example_args)
+        finally:
+            Example.capture = capture
     if example.cloth_solver is None:
         raise RuntimeError("cloth Franka did not create its VBD solver")
 
@@ -578,12 +839,18 @@ def main() -> None:
             }
         results.append({"block_size": block_size, **kind_results})
 
-    source_root = Path(newton.__file__).resolve().parents[1]
+    source_root = Path(str(newton_provenance["root"]))
+    if newton_provenance["git_head"] is None:
+        raise RuntimeError(f"cannot record Newton Git provenance under {source_root}")
+    workload_provenance = _workload_provenance(workload)
     result = {
         "source_root": str(source_root),
-        "git_head": subprocess.check_output(["git", "-C", str(source_root), "rev-parse", "HEAD"], text=True).strip(),
+        "git_head": newton_provenance["git_head"],
+        "newton": newton_provenance,
         "harness": str(Path(__file__).resolve()),
+        "harness_sha256": _file_hash(Path(__file__).resolve()),
         "argv": sys.argv,
+        "warp": warp_provenance,
         "device": str(model.device),
         "sm_count": model.device.sm_count,
         "state": state_provenance,
@@ -596,10 +863,12 @@ def main() -> None:
         "warmups": args.warmups,
         "repeats": args.repeats,
         "samples": args.samples,
+        "block_sizes": args.block_sizes,
         "timing_schedule": timing_schedule,
         "reference_block_size": reference_size,
         "all_outputs_exactly_equal": all_outputs_equal,
         "all_world_copies_exact": all_world_copies_equal,
+        "workload": workload_provenance,
         "results": results,
     }
     payload = json.dumps(result, indent=2) + "\n"

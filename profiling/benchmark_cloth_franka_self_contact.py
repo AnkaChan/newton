@@ -111,6 +111,100 @@ def _file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _native_library_names() -> tuple[str, str]:
+    if os.name == "nt":
+        return "warp.dll", "warp-clang.dll"
+    if sys.platform == "darwin":
+        return "libwarp.dylib", "libwarp-clang.dylib"
+    return "warp.so", "warp-clang.so"
+
+
+def _native_file_evidence(path: Path) -> dict[str, object]:
+    path = path.resolve()
+    if not path.is_file():
+        return {"path": str(path), "size": None, "sha256": None}
+    return {"path": str(path), "size": path.stat().st_size, "sha256": _file_hash(path)}
+
+
+def _expected_sha256(value: str | None, argument: str) -> str | None:
+    if value is None:
+        return None
+    normalized = value.lower()
+    if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
+        raise ValueError(f"{argument} must be a 64-character hexadecimal SHA-256")
+    return normalized
+
+
+def _expected_git_head(value: str | None, argument: str) -> str | None:
+    if value is None:
+        return None
+    normalized = value.lower()
+    if len(normalized) not in (40, 64) or any(character not in "0123456789abcdef" for character in normalized):
+        raise ValueError(f"{argument} must be a full hexadecimal Git object ID")
+    return normalized
+
+
+def _warp_provenance(
+    *,
+    expected_root: Path | None,
+    expected_git_head: str | None,
+    expected_core_sha256: str | None,
+    expected_clang_sha256: str | None,
+) -> dict[str, object]:
+    warp_file = Path(wp.__file__).resolve()
+    warp_root = warp_file.parents[1]
+    if expected_root is not None and warp_root != expected_root.resolve():
+        raise ValueError(f"imported Warp from {warp_root}, expected {expected_root.resolve()}")
+
+    top_level = _run_capture(["git", "-C", str(warp_root), "rev-parse", "--show-toplevel"])
+    is_git_root = top_level.returncode == 0 and Path(top_level.stdout.strip()).resolve() == warp_root
+    head = _run_capture(["git", "-C", str(warp_root), "rev-parse", "HEAD"]) if is_git_root else None
+    tree = _run_capture(["git", "-C", str(warp_root), "rev-parse", "HEAD^{tree}"]) if is_git_root else None
+    status = (
+        _run_capture(["git", "-C", str(warp_root), "status", "--porcelain=v1", "--untracked-files=no"])
+        if is_git_root
+        else None
+    )
+    git_commands_succeeded = all(item is not None and item.returncode == 0 for item in (head, tree, status))
+    git_head = head.stdout.strip() if git_commands_succeeded and head is not None else None
+    git_tree = tree.stdout.strip() if git_commands_succeeded and tree is not None else None
+    git_status = status.stdout.splitlines() if git_commands_succeeded and status is not None else None
+
+    normalized_head = _expected_git_head(expected_git_head, "--expected-warp-git-head")
+    if normalized_head is not None:
+        if not git_commands_succeeded:
+            raise ValueError(f"cannot verify Warp Git provenance under {warp_root}")
+        if git_head != normalized_head:
+            raise ValueError(f"Warp Git HEAD {git_head} does not match expected {normalized_head}")
+        if git_status:
+            raise ValueError(f"Warp source has tracked modifications under {warp_root}")
+
+    core_name, clang_name = _native_library_names()
+    native_libraries = {
+        "core": _native_file_evidence(warp_file.parent / "bin" / core_name),
+        "clang": _native_file_evidence(warp_file.parent / "bin" / clang_name),
+    }
+    expected_native_hashes = {
+        "core": _expected_sha256(expected_core_sha256, "--expected-warp-core-sha256"),
+        "clang": _expected_sha256(expected_clang_sha256, "--expected-warp-clang-sha256"),
+    }
+    for name, expected_hash in expected_native_hashes.items():
+        actual_hash = native_libraries[name]["sha256"]
+        if expected_hash is not None and actual_hash != expected_hash:
+            raise ValueError(f"Warp {name} library SHA-256 {actual_hash} does not match expected {expected_hash}")
+
+    return {
+        "root": str(warp_root),
+        "warp_file": str(warp_file),
+        "version": str(wp.config.version),
+        "git_head": git_head,
+        "git_tree": git_tree,
+        "git_dirty_tracked": bool(git_status) if git_status is not None else None,
+        "git_status_tracked": git_status,
+        "native_libraries": native_libraries,
+    }
+
+
 def _validate_output_paths(*paths: Path | None) -> None:
     resolved = [path.resolve() for path in paths if path is not None]
     if len(resolved) != len(set(resolved)):
@@ -235,8 +329,27 @@ def main() -> None:
         "--self-contact-force-max-blocks",
         choices=("sm", "2sm", "uncapped"),
     )
-    parser.add_argument("--expected-source-root", type=Path)
+    parser.add_argument(
+        "--expected-source-root",
+        "--expected-newton-root",
+        dest="expected_source_root",
+        type=Path,
+    )
     parser.add_argument("--expected-source-hash")
+    parser.add_argument(
+        "--expected-source-git-head",
+        "--expected-newton-git-head",
+        "--expected-newton-head",
+        dest="expected_source_git_head",
+    )
+    parser.add_argument("--expected-warp-root", type=Path)
+    parser.add_argument(
+        "--expected-warp-git-head",
+        "--expected-warp-head",
+        dest="expected_warp_git_head",
+    )
+    parser.add_argument("--expected-warp-core-sha256")
+    parser.add_argument("--expected-warp-clang-sha256")
     parser.add_argument("--run-id")
     args = parser.parse_args()
 
@@ -264,6 +377,9 @@ def main() -> None:
     source = _source_fingerprint(source_root)
     if args.expected_source_root is not None and source_root != args.expected_source_root.resolve():
         raise ValueError(f"imported Newton from {source_root}, expected {args.expected_source_root.resolve()}")
+    expected_source_git_head = _expected_git_head(args.expected_source_git_head, "--expected-source-git-head")
+    if expected_source_git_head is not None and source["git_head"] != expected_source_git_head:
+        raise ValueError(f"Newton Git HEAD {source['git_head']} does not match expected {expected_source_git_head}")
     if args.expected_source_hash is not None:
         expected_source_hash = args.expected_source_hash.lower()
         if len(expected_source_hash) != 64 or any(
@@ -272,6 +388,18 @@ def main() -> None:
             raise ValueError("--expected-source-hash must be a 64-character hexadecimal SHA-256")
         if source["source_hash"] != expected_source_hash:
             raise ValueError(f"source SHA-256 {source['source_hash']} does not match expected {expected_source_hash}")
+    if (
+        args.expected_source_root is not None
+        or expected_source_git_head is not None
+        or args.expected_source_hash is not None
+    ) and source["git_dirty_tracked"]:
+        raise ValueError(f"Newton source has tracked modifications under {source_root}")
+    warp_provenance = _warp_provenance(
+        expected_root=args.expected_warp_root,
+        expected_git_head=args.expected_warp_git_head,
+        expected_core_sha256=args.expected_warp_core_sha256,
+        expected_clang_sha256=args.expected_warp_clang_sha256,
+    )
     run_id = args.run_id or uuid.uuid4().hex
     viewer = ViewerNull(num_frames=args.frames)
     example_args = newton.examples.default_args() if hasattr(newton.examples, "default_args") else None
@@ -389,6 +517,7 @@ def main() -> None:
             **source,
             "newton_file": str(Path(newton.__file__).resolve()),
         },
+        "warp": warp_provenance,
         "harness": {
             "path": str(Path(__file__).resolve()),
             "sha256": _file_hash(Path(__file__).resolve()),
