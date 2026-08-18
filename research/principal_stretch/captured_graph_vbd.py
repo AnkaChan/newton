@@ -117,6 +117,12 @@ from .correction_multigrid_warp_scalar_fused import (
     STANDALONE_PUBLICATION_ROUTE as V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
 )
 from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION as V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_FIXED12_COARSE_SOLVE_ROUTE as V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
     TERMINAL_FUSION_COARSEST_ONLY_ROUTE as V_CYCLE_TERMINAL_FUSION_COARSEST_ONLY_ROUTE,
 )
 from .correction_multigrid_warp_scalar_fused import (
@@ -132,7 +138,16 @@ from .correction_multigrid_warp_scalar_fused import (
     TERMINAL_FUSION_VERSION as V_CYCLE_TERMINAL_FUSION_VERSION,
 )
 from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_GENERIC_COARSE_SOLVE_KERNEL_VERSION as V_CYCLE_TERMINAL_GENERIC_COARSE_SOLVE_KERNEL_VERSION,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_GENERIC_COARSE_SOLVE_ROUTE as V_CYCLE_TERMINAL_GENERIC_COARSE_SOLVE_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
     TERMINAL_MICROCYCLE_CUDA_ROUTE as V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE,
+)
+from .correction_multigrid_warp_scalar_fused import (
+    TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE as V_CYCLE_TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE,
 )
 from .correction_multigrid_warp_scalar_fused import (
     TERMINAL_MICROCYCLE_KERNEL_VERSION as V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
@@ -148,11 +163,11 @@ from .correction_multigrid_warp_scalar_fused import (
 )
 from .solver_benchmark import TetBenchmarkScene, build_common_problem, common_objective_manifest
 
-CONTRACT_ID = "captured-direct-multiplicative-graph-vbd-v1"
+CONTRACT_ID = "captured-direct-multiplicative-graph-vbd-v2"
 OUTER_CORRECTIONS = 4
 V_CYCLES_PER_OUTER = 2
-OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-four-warp-exact-finalize-outer-v7"
-OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v11"
+OUTER_KERNEL_VERSION = "captured-direct-graph-vbd-four-warp-fixed12-terminal-outer-v9"
+OUTER_SCHEDULE_VERSION = "captured-direct-graph-vbd-outer-schedule-v13"
 FIRST_CYCLE_PUBLICATION_ROLE = "current-a-apply-free-row-owner-scalar-to-vec3"
 SECOND_CYCLE_PUBLICATION_ROLE = "vertex-owner-scalar-to-vec3"
 FINALIZE_GATE_ROUTE = "cuda-one-block-four-warp-ordered-fp64-v1"
@@ -274,6 +289,9 @@ def _derive_outer_schedule_sha256(
     v_cycle_schedule_version: str,
     v_cycle_terminal_fusion_version: str,
     v_cycle_terminal_fusion_route: str,
+    v_cycle_terminal_coarse_solve_kernel_version: str,
+    v_cycle_terminal_coarse_solve_route: str,
+    v_cycle_terminal_coarse_scalar_size: int,
     v_cycle_publication_version: str,
     v_cycle_standalone_publication_route: str,
     v_cycle_external_shared_publication_route: str,
@@ -290,7 +308,7 @@ def _derive_outer_schedule_sha256(
     """Bind fused formulas and the exact ordered four-warp gate."""
     return _canonical_digest(
         {
-            "contract": "captured-direct-graph-vbd-outer-schedule-v11",
+            "contract": "captured-direct-graph-vbd-outer-schedule-v13",
             "kernel_version": kernel_version,
             "fused_gather_kernel_version": fused_gather_kernel_version,
             "root_seeded_gather_kernel_version": root_seeded_gather_kernel_version,
@@ -300,6 +318,9 @@ def _derive_outer_schedule_sha256(
             "v_cycle_terminal_fusion_version": v_cycle_terminal_fusion_version,
             "v_cycle_terminal_microcycle_kernel_version": V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
             "v_cycle_terminal_fusion_route": v_cycle_terminal_fusion_route,
+            "v_cycle_terminal_coarse_solve_kernel_version": v_cycle_terminal_coarse_solve_kernel_version,
+            "v_cycle_terminal_coarse_solve_route": v_cycle_terminal_coarse_solve_route,
+            "v_cycle_terminal_coarse_scalar_size": v_cycle_terminal_coarse_scalar_size,
             "v_cycle_terminal_fusion_launch_reduction": 6,
             "v_cycle_terminal_logical_phases": V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES.split("|"),
             "v_cycle_publication_version": v_cycle_publication_version,
@@ -359,10 +380,13 @@ def _derive_outer_schedule_sha256(
             "remaining_gate_commit_launches_per_outer": 3,
             "terminal_fusion_schedule": {
                 "operations": V_CYCLE_TERMINAL_MICROCYCLE_LOGICAL_PHASES.split("|"),
+                "coarse_solve_route": V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_ROUTE,
+                "coarse_solve_kernel_version": V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION,
+                "coarse_scalar_size": 12,
                 "unconditional_tile_broadcast_collectives": 6,
                 "warp_1_12_1_physical_syncthreads": 12,
                 "ordered_owner_thread": 0,
-                "block_dim": "next-warp(max(terminal-scalar-size,coarse-scalar-size))<=1024",
+                "block_dim": 64,
                 "launch_reduction_per_v_cycle": 6,
             },
         }
@@ -405,7 +429,10 @@ OUTER_SCHEDULE_SHA256 = _derive_outer_schedule_sha256(
     V_CYCLE_KERNEL_VERSION,
     V_CYCLE_SCHEDULE_VERSION,
     V_CYCLE_TERMINAL_FUSION_VERSION,
-    V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE,
+    V_CYCLE_TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE,
+    V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION,
+    V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_ROUTE,
+    12,
     V_CYCLE_PUBLICATION_VERSION,
     V_CYCLE_STANDALONE_PUBLICATION_ROUTE,
     V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE,
@@ -883,6 +910,9 @@ def _validate_v_cycle_record(
         "terminal_owner_thread": scalar_evidence.terminal_owner_thread,
         "terminal_fusion_version": scalar_evidence.terminal_fusion_version,
         "terminal_microcycle_kernel_version": scalar_evidence.terminal_microcycle_kernel_version,
+        "terminal_coarse_solve_kernel_version": scalar_evidence.terminal_coarse_solve_kernel_version,
+        "terminal_coarse_solve_route": scalar_evidence.terminal_coarse_solve_route,
+        "terminal_coarse_scalar_size": scalar_evidence.terminal_coarse_scalar_size,
         "terminal_fusion_route": scalar_evidence.terminal_fusion_route,
         "terminal_logical_phases": scalar_evidence.terminal_logical_phases,
         "root_ingress_zero_start_fusions": root_ingress_zero_start_fusions,
@@ -915,6 +945,7 @@ def _validate_v_cycle_record(
         "terminal_block_dim",
         "terminal_collective_count",
         "terminal_owner_thread",
+        "terminal_coarse_scalar_size",
         "root_ingress_zero_start_fusions",
         "root_ingress_kernel_launches",
         "out_of_place_jacobi_block_solves",
@@ -936,18 +967,20 @@ def _validate_v_cycle_record(
         or type(physical.publication_route) is not str
         or type(physical.root_ingress_route) is not str
         or type(physical.terminal_microcycle_kernel_version) is not str
+        or type(physical.terminal_coarse_solve_kernel_version) is not str
+        or type(physical.terminal_coarse_solve_route) is not str
         or type(physical.terminal_logical_phases) is not str
         or physical.scheduled_kernel_launches != physical.core_kernel_launches + physical.publication_kernel_launches
     ):
         raise ValueError(f"{name} physical publication route or launch accounting is invalid")
     physical_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-physical-work-v11",
+        "warp-scalar-fused-v-cycle-physical-work-v13",
         tuple(expected_physical.items()),
     )
     if physical.content_sha256 != physical_sha256:
         raise ValueError(f"{name} physical work hash is stale")
     record_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-result-v11",
+        "warp-scalar-fused-v-cycle-result-v13",
         (
             ("contract_id", V_CYCLE_CONTRACT_ID),
             ("kernel_version", V_CYCLE_KERNEL_VERSION),
@@ -1063,6 +1096,9 @@ class _EndpointValidationContext:
     v_cycle_schedule_version: str
     v_cycle_terminal_fusion_version: str
     v_cycle_terminal_microcycle_kernel_version: str
+    v_cycle_terminal_coarse_solve_kernel_version: str
+    v_cycle_terminal_coarse_solve_route: str
+    v_cycle_terminal_coarse_scalar_size: int
     v_cycle_terminal_fusion_route: str
     v_cycle_terminal_fusion_kernel_launches: int
     v_cycle_terminal_fusion_launch_reduction: int
@@ -1144,6 +1180,12 @@ class _EndpointValidationContext:
             or self.v_cycle_terminal_fusion_version != V_CYCLE_TERMINAL_FUSION_VERSION
             or type(self.v_cycle_terminal_microcycle_kernel_version) is not str
             or self.v_cycle_terminal_microcycle_kernel_version != V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION
+            or type(self.v_cycle_terminal_coarse_solve_kernel_version) is not str
+            or self.v_cycle_terminal_coarse_solve_kernel_version != V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION
+            or type(self.v_cycle_terminal_coarse_solve_route) is not str
+            or self.v_cycle_terminal_coarse_solve_route != V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_ROUTE
+            or type(self.v_cycle_terminal_coarse_scalar_size) is not int
+            or self.v_cycle_terminal_coarse_scalar_size != 12
             or type(self.v_cycle_publication_version) is not str
             or self.v_cycle_publication_version != V_CYCLE_PUBLICATION_VERSION
             or type(self.v_cycle_standalone_publication_route) is not str
@@ -1173,6 +1215,9 @@ class _EndpointValidationContext:
                 self.v_cycle_schedule_version,
                 self.v_cycle_terminal_fusion_version,
                 self.v_cycle_terminal_fusion_route,
+                self.v_cycle_terminal_coarse_solve_kernel_version,
+                self.v_cycle_terminal_coarse_solve_route,
+                self.v_cycle_terminal_coarse_scalar_size,
                 self.v_cycle_publication_version,
                 self.v_cycle_standalone_publication_route,
                 self.v_cycle_external_shared_publication_route,
@@ -1190,7 +1235,10 @@ class _EndpointValidationContext:
             raise ValueError("endpoint validation outer kernel schedule is not canonical")
         scalar_evidence = _canonical_scalar_fused_evidence(self.hierarchy)
         if (
-            type(self.v_cycle_terminal_fusion_route) is not str
+            type(self.v_cycle_terminal_coarse_solve_kernel_version) is not str
+            or type(self.v_cycle_terminal_coarse_solve_route) is not str
+            or type(self.v_cycle_terminal_coarse_scalar_size) is not int
+            or type(self.v_cycle_terminal_fusion_route) is not str
             or type(self.v_cycle_terminal_fusion_kernel_launches) is not int
             or type(self.v_cycle_terminal_fusion_launch_reduction) is not int
             or type(self.v_cycle_terminal_level_index) is not int
@@ -1198,6 +1246,9 @@ class _EndpointValidationContext:
             or type(self.v_cycle_terminal_collective_count) is not int
             or type(self.v_cycle_terminal_owner_thread) is not int
             or type(self.v_cycle_terminal_logical_phases) is not str
+            or self.v_cycle_terminal_coarse_solve_kernel_version != scalar_evidence.terminal_coarse_solve_kernel_version
+            or self.v_cycle_terminal_coarse_solve_route != scalar_evidence.terminal_coarse_solve_route
+            or self.v_cycle_terminal_coarse_scalar_size != scalar_evidence.terminal_coarse_scalar_size
             or self.v_cycle_terminal_fusion_route != scalar_evidence.terminal_fusion_route
             or self.v_cycle_terminal_fusion_kernel_launches != scalar_evidence.terminal_fusion_kernel_launches
             or self.v_cycle_terminal_fusion_launch_reduction != scalar_evidence.terminal_fusion_launch_reduction
@@ -1630,6 +1681,9 @@ class CapturedGraphVBDOuterWork:
                 self._validation_context.v_cycle_schedule_version,
                 self._validation_context.v_cycle_terminal_fusion_version,
                 self._validation_context.v_cycle_terminal_fusion_route,
+                self._validation_context.v_cycle_terminal_coarse_solve_kernel_version,
+                self._validation_context.v_cycle_terminal_coarse_solve_route,
+                self._validation_context.v_cycle_terminal_coarse_scalar_size,
                 self.v_cycle_publication_version,
                 self._validation_context.v_cycle_standalone_publication_route,
                 self._validation_context.v_cycle_external_shared_publication_route,
@@ -1766,7 +1820,7 @@ class CapturedGraphVBDOuterWork:
         if type(self.linear_kernel_launches) is not int or self.linear_kernel_launches != expected_launches:
             raise ValueError("linear_kernel_launches does not match the fixed direct schedule")
         payload = {
-            "contract": "captured-direct-graph-vbd-outer-work-v9",
+            "contract": "captured-direct-graph-vbd-outer-work-v11",
             "outer_index": self.outer_index,
             "start_position_sha256": start_position_sha256,
             "current_operator_sha256": operator_sha256,
@@ -1787,6 +1841,11 @@ class CapturedGraphVBDOuterWork:
             "v_cycle_terminal_microcycle_kernel_version": (
                 self._validation_context.v_cycle_terminal_microcycle_kernel_version
             ),
+            "v_cycle_terminal_coarse_solve_kernel_version": (
+                self._validation_context.v_cycle_terminal_coarse_solve_kernel_version
+            ),
+            "v_cycle_terminal_coarse_solve_route": self._validation_context.v_cycle_terminal_coarse_solve_route,
+            "v_cycle_terminal_coarse_scalar_size": self._validation_context.v_cycle_terminal_coarse_scalar_size,
             "v_cycle_terminal_fusion_route": self._validation_context.v_cycle_terminal_fusion_route,
             "v_cycle_terminal_fusion_kernel_launches": (
                 self._validation_context.v_cycle_terminal_fusion_kernel_launches
@@ -1842,7 +1901,7 @@ class CapturedGraphVBDOuterWork:
         ):
             raise ValueError("outer work content hash is not canonical at serialization")
         return {
-            "contract": "captured-direct-graph-vbd-outer-work-v9",
+            "contract": "captured-direct-graph-vbd-outer-work-v11",
             "outer_index": self.outer_index,
             "start_position_sha256": self.start_position_sha256,
             "current_operator_sha256": self.current_operator_sha256,
@@ -1863,6 +1922,11 @@ class CapturedGraphVBDOuterWork:
             "v_cycle_terminal_microcycle_kernel_version": (
                 self._validation_context.v_cycle_terminal_microcycle_kernel_version
             ),
+            "v_cycle_terminal_coarse_solve_kernel_version": (
+                self._validation_context.v_cycle_terminal_coarse_solve_kernel_version
+            ),
+            "v_cycle_terminal_coarse_solve_route": self._validation_context.v_cycle_terminal_coarse_solve_route,
+            "v_cycle_terminal_coarse_scalar_size": self._validation_context.v_cycle_terminal_coarse_scalar_size,
             "v_cycle_terminal_fusion_route": self._validation_context.v_cycle_terminal_fusion_route,
             "v_cycle_terminal_fusion_kernel_launches": (
                 self._validation_context.v_cycle_terminal_fusion_kernel_launches
@@ -2053,6 +2117,9 @@ class CapturedGraphVBDEndpoint:
                 context.v_cycle_schedule_version,
                 context.v_cycle_terminal_fusion_version,
                 context.v_cycle_terminal_fusion_route,
+                context.v_cycle_terminal_coarse_solve_kernel_version,
+                context.v_cycle_terminal_coarse_solve_route,
+                context.v_cycle_terminal_coarse_scalar_size,
                 self.v_cycle_publication_version,
                 self.v_cycle_standalone_publication_route,
                 self.v_cycle_external_shared_publication_route,
@@ -2356,6 +2423,11 @@ class CapturedGraphVBDEndpoint:
                     "v_cycle_schedule_version": context.v_cycle_schedule_version,
                     "v_cycle_terminal_fusion_version": context.v_cycle_terminal_fusion_version,
                     "v_cycle_terminal_microcycle_kernel_version": context.v_cycle_terminal_microcycle_kernel_version,
+                    "v_cycle_terminal_coarse_solve_kernel_version": (
+                        context.v_cycle_terminal_coarse_solve_kernel_version
+                    ),
+                    "v_cycle_terminal_coarse_solve_route": context.v_cycle_terminal_coarse_solve_route,
+                    "v_cycle_terminal_coarse_scalar_size": context.v_cycle_terminal_coarse_scalar_size,
                     "v_cycle_terminal_fusion_route": context.v_cycle_terminal_fusion_route,
                     "v_cycle_terminal_fusion_kernel_launches": context.v_cycle_terminal_fusion_kernel_launches,
                     "v_cycle_terminal_fusion_launch_reduction": context.v_cycle_terminal_fusion_launch_reduction,
@@ -2447,6 +2519,11 @@ class CapturedGraphVBDEndpoint:
             "v_cycle_terminal_microcycle_kernel_version": (
                 self._validation_context.v_cycle_terminal_microcycle_kernel_version
             ),
+            "v_cycle_terminal_coarse_solve_kernel_version": (
+                self._validation_context.v_cycle_terminal_coarse_solve_kernel_version
+            ),
+            "v_cycle_terminal_coarse_solve_route": self._validation_context.v_cycle_terminal_coarse_solve_route,
+            "v_cycle_terminal_coarse_scalar_size": self._validation_context.v_cycle_terminal_coarse_scalar_size,
             "v_cycle_terminal_fusion_route": self._validation_context.v_cycle_terminal_fusion_route,
             "v_cycle_terminal_fusion_kernel_launches": (
                 self._validation_context.v_cycle_terminal_fusion_kernel_launches
@@ -2545,6 +2622,9 @@ class CapturedGraphVBDTiming:
     v_cycle_schedule_version: str
     v_cycle_terminal_fusion_version: str
     v_cycle_terminal_microcycle_kernel_version: str
+    v_cycle_terminal_coarse_solve_kernel_version: str
+    v_cycle_terminal_coarse_solve_route: str
+    v_cycle_terminal_coarse_scalar_size: int
     v_cycle_terminal_fusion_route: str
     v_cycle_terminal_fusion_kernel_launches: int
     v_cycle_terminal_fusion_launch_reduction: int
@@ -2622,8 +2702,14 @@ class CapturedGraphVBDTiming:
             or self.v_cycle_terminal_fusion_version != V_CYCLE_TERMINAL_FUSION_VERSION
             or type(self.v_cycle_terminal_microcycle_kernel_version) is not str
             or self.v_cycle_terminal_microcycle_kernel_version != V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION
+            or type(self.v_cycle_terminal_coarse_solve_kernel_version) is not str
+            or self.v_cycle_terminal_coarse_solve_kernel_version != V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION
+            or type(self.v_cycle_terminal_coarse_solve_route) is not str
+            or self.v_cycle_terminal_coarse_solve_route != V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_ROUTE
+            or type(self.v_cycle_terminal_coarse_scalar_size) is not int
+            or self.v_cycle_terminal_coarse_scalar_size != 12
             or type(self.v_cycle_terminal_fusion_route) is not str
-            or self.v_cycle_terminal_fusion_route != V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE
+            or self.v_cycle_terminal_fusion_route != V_CYCLE_TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE
             or type(self.v_cycle_terminal_fusion_kernel_launches) is not int
             or self.v_cycle_terminal_fusion_kernel_launches != 1
             or type(self.v_cycle_terminal_fusion_launch_reduction) is not int
@@ -2631,8 +2717,7 @@ class CapturedGraphVBDTiming:
             or type(self.v_cycle_terminal_level_index) is not int
             or self.v_cycle_terminal_level_index <= 0
             or type(self.v_cycle_terminal_block_dim) is not int
-            or not 32 <= self.v_cycle_terminal_block_dim <= 1024
-            or self.v_cycle_terminal_block_dim % 32 != 0
+            or self.v_cycle_terminal_block_dim != 64
             or type(self.v_cycle_terminal_collective_count) is not int
             or self.v_cycle_terminal_collective_count != 6
             or type(self.v_cycle_terminal_owner_thread) is not int
@@ -2669,6 +2754,9 @@ class CapturedGraphVBDTiming:
                 self.v_cycle_schedule_version,
                 self.v_cycle_terminal_fusion_version,
                 self.v_cycle_terminal_fusion_route,
+                self.v_cycle_terminal_coarse_solve_kernel_version,
+                self.v_cycle_terminal_coarse_solve_route,
+                self.v_cycle_terminal_coarse_scalar_size,
                 self.v_cycle_publication_version,
                 self.v_cycle_standalone_publication_route,
                 self.v_cycle_external_shared_publication_route,
@@ -2759,6 +2847,9 @@ class CapturedGraphVBDTiming:
             "v_cycle_schedule_version": validated.v_cycle_schedule_version,
             "v_cycle_terminal_fusion_version": validated.v_cycle_terminal_fusion_version,
             "v_cycle_terminal_microcycle_kernel_version": validated.v_cycle_terminal_microcycle_kernel_version,
+            "v_cycle_terminal_coarse_solve_kernel_version": validated.v_cycle_terminal_coarse_solve_kernel_version,
+            "v_cycle_terminal_coarse_solve_route": validated.v_cycle_terminal_coarse_solve_route,
+            "v_cycle_terminal_coarse_scalar_size": validated.v_cycle_terminal_coarse_scalar_size,
             "v_cycle_terminal_fusion_route": validated.v_cycle_terminal_fusion_route,
             "v_cycle_terminal_fusion_kernel_launches": validated.v_cycle_terminal_fusion_kernel_launches,
             "v_cycle_terminal_fusion_launch_reduction": validated.v_cycle_terminal_fusion_launch_reduction,
@@ -2923,6 +3014,9 @@ class _ScalarFusedHierarchyEvidence:
     seeded_core_kernel_launches: int
     terminal_fusion_version: str
     terminal_microcycle_kernel_version: str
+    terminal_coarse_solve_kernel_version: str
+    terminal_coarse_solve_route: str
+    terminal_coarse_scalar_size: int
     terminal_fusion_route: str
     terminal_fusion_kernel_launches: int
     terminal_fusion_launch_reduction: int
@@ -3024,6 +3118,9 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             transfer_paths.extend((level.matrix.block_size, level.prolongation.coarse_block_size))
     noncoarse = len(hierarchy.levels) - 1
     if noncoarse == 0:
+        terminal_coarse_scalar_size = hierarchy.levels[-1].matrix.scalar_size
+        terminal_coarse_solve_kernel_version = V_CYCLE_TERMINAL_GENERIC_COARSE_SOLVE_KERNEL_VERSION
+        terminal_coarse_solve_route = V_CYCLE_TERMINAL_GENERIC_COARSE_SOLVE_ROUTE
         terminal_fusion_route = V_CYCLE_TERMINAL_FUSION_COARSEST_ONLY_ROUTE
         terminal_fusion_kernel_launches = 0
         terminal_fusion_launch_reduction = 0
@@ -3036,6 +3133,9 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         terminal_level_index = noncoarse - 1
         terminal = hierarchy.levels[terminal_level_index]
         coarse = hierarchy.levels[-1]
+        terminal_coarse_scalar_size = coarse.matrix.scalar_size
+        terminal_coarse_solve_kernel_version = V_CYCLE_TERMINAL_GENERIC_COARSE_SOLVE_KERNEL_VERSION
+        terminal_coarse_solve_route = V_CYCLE_TERMINAL_GENERIC_COARSE_SOLVE_ROUTE
         topology_supported = (
             terminal.prolongation is not None
             and terminal.prolongation.coarse_node_count == coarse.matrix.block_row_count
@@ -3063,7 +3163,15 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             terminal_owner_thread = -1
             terminal_logical_phases = "restriction|coarse-recursion|prolongation"
         elif terminal_level_index > 0 and hierarchy.pre_smooth_steps == 1 and hierarchy.post_smooth_steps == 1:
-            terminal_fusion_route = V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE
+            fixed12_route = terminal_coarse_scalar_size == 12 and derived_block_dim == 64
+            terminal_fusion_route = (
+                V_CYCLE_TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE
+                if fixed12_route
+                else V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE
+            )
+            if fixed12_route:
+                terminal_coarse_solve_kernel_version = V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION
+                terminal_coarse_solve_route = V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_ROUTE
             terminal_fusion_kernel_launches = 1
             terminal_fusion_launch_reduction = 6
             terminal_block_dim = derived_block_dim
@@ -3107,6 +3215,9 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ("coarsest_result_buffer", "A"),
         ("terminal_fusion_version", V_CYCLE_TERMINAL_FUSION_VERSION),
         ("terminal_microcycle_kernel_version", V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION),
+        ("terminal_coarse_solve_kernel_version", terminal_coarse_solve_kernel_version),
+        ("terminal_coarse_solve_route", terminal_coarse_solve_route),
+        ("terminal_coarse_scalar_size", terminal_coarse_scalar_size),
         ("terminal_fusion_route", terminal_fusion_route),
         ("terminal_fusion_kernel_launches", terminal_fusion_kernel_launches),
         ("terminal_fusion_launch_reduction", terminal_fusion_launch_reduction),
@@ -3119,7 +3230,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ("publication_version", V_CYCLE_PUBLICATION_VERSION),
     )
     core_schedule_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-core-schedule-v7",
+        "warp-scalar-fused-v-cycle-core-schedule-v9",
         (
             *common_schedule_parts,
             ("publication_route", V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -3128,7 +3239,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     schedule_sha256 = _hash_parts(
-        "warp-scalar-fused-v-cycle-schedule-v9",
+        "warp-scalar-fused-v-cycle-schedule-v11",
         (
             *common_schedule_parts,
             ("publication_route", V_CYCLE_STANDALONE_PUBLICATION_ROUTE),
@@ -3137,7 +3248,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     core_device_snapshot_sha256 = _hash_parts(
-        "warp-scalar-fused-static-multigrid-core-snapshot-v7",
+        "warp-scalar-fused-static-multigrid-core-snapshot-v9",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
@@ -3145,7 +3256,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         ),
     )
     device_snapshot_sha256 = _hash_parts(
-        "warp-scalar-fused-static-multigrid-snapshot-v9",
+        "warp-scalar-fused-static-multigrid-snapshot-v11",
         (
             ("source_device_snapshot_sha256", source_snapshot_sha256),
             ("static_device_content_sha256", static_device_content_sha256),
@@ -3165,7 +3276,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             ("core_kernel_launches", seeded_core_kernel_launches),
         )
         seeded_core_schedule_sha256 = _hash_parts(
-            "warp-scalar-fused-v-cycle-seeded-core-schedule-v5",
+            "warp-scalar-fused-v-cycle-seeded-core-schedule-v7",
             (
                 *seeded_common_schedule_parts,
                 ("publication_route", V_CYCLE_EXTERNAL_SHARED_PUBLICATION_ROUTE),
@@ -3174,7 +3285,7 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
             ),
         )
         seeded_core_device_snapshot_sha256 = _hash_parts(
-            "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v5",
+            "warp-scalar-fused-static-multigrid-seeded-core-snapshot-v7",
             (
                 ("source_device_snapshot_sha256", source_snapshot_sha256),
                 ("static_device_content_sha256", static_device_content_sha256),
@@ -3201,6 +3312,9 @@ def _canonical_scalar_fused_evidence(hierarchy: StaticMultigridHierarchy) -> _Sc
         seeded_core_kernel_launches=seeded_core_kernel_launches,
         terminal_fusion_version=V_CYCLE_TERMINAL_FUSION_VERSION,
         terminal_microcycle_kernel_version=V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION,
+        terminal_coarse_solve_kernel_version=terminal_coarse_solve_kernel_version,
+        terminal_coarse_solve_route=terminal_coarse_solve_route,
+        terminal_coarse_scalar_size=terminal_coarse_scalar_size,
         terminal_fusion_route=terminal_fusion_route,
         terminal_fusion_kernel_launches=terminal_fusion_kernel_launches,
         terminal_fusion_launch_reduction=terminal_fusion_launch_reduction,
@@ -3298,6 +3412,9 @@ def _validate_scalar_fused_hierarchy_inputs(
         or scalar_hierarchy.scheduled_kernel_launches != expected.scheduled_kernel_launches
         or scalar_hierarchy.core_kernel_launches != expected.core_kernel_launches
         or scalar_hierarchy.seeded_core_kernel_launches != expected.seeded_core_kernel_launches
+        or scalar_hierarchy.terminal_coarse_solve_kernel_version != expected.terminal_coarse_solve_kernel_version
+        or scalar_hierarchy.terminal_coarse_solve_route != expected.terminal_coarse_solve_route
+        or scalar_hierarchy.terminal_coarse_scalar_size != expected.terminal_coarse_scalar_size
         or scalar_hierarchy.terminal_fusion_route != expected.terminal_fusion_route
         or scalar_hierarchy.terminal_fusion_kernel_launches != expected.terminal_fusion_kernel_launches
         or scalar_hierarchy.terminal_fusion_launch_reduction != expected.terminal_fusion_launch_reduction
@@ -3833,12 +3950,15 @@ class CapturedDirectGraphVBD:
             terminal_block_dim = ((max(terminal.matrix.scalar_size, coarse.matrix.scalar_size) + 31) // 32) * 32
         if (
             scalar_evidence.terminal_microcycle_kernel_version != V_CYCLE_TERMINAL_MICROCYCLE_KERNEL_VERSION
-            or scalar_evidence.terminal_fusion_route != V_CYCLE_TERMINAL_MICROCYCLE_CUDA_ROUTE
+            or scalar_evidence.terminal_coarse_solve_kernel_version
+            != V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION
+            or scalar_evidence.terminal_coarse_solve_route != V_CYCLE_TERMINAL_FIXED12_COARSE_SOLVE_ROUTE
+            or scalar_evidence.terminal_coarse_scalar_size != 12
+            or scalar_evidence.terminal_fusion_route != V_CYCLE_TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE
             or scalar_evidence.terminal_fusion_kernel_launches != 1
             or scalar_evidence.terminal_fusion_launch_reduction != 6
             or scalar_evidence.terminal_level_index != terminal_level_index
-            or not 32 <= scalar_evidence.terminal_block_dim <= 1024
-            or scalar_evidence.terminal_block_dim % 32 != 0
+            or scalar_evidence.terminal_block_dim != 64
             or scalar_evidence.terminal_block_dim != terminal_block_dim
             or scalar_evidence.terminal_collective_count != 6
             or scalar_evidence.terminal_owner_thread != 0
@@ -3852,9 +3972,13 @@ class CapturedDirectGraphVBD:
         ):
             raise ValueError(
                 "captured direct graph VBD fixed-130 contract requires the supported one-block CUDA p=q=1 "
-                "entire terminal micro-cycle route with full/core/seeded counts 14/13/12"
+                "fixed-12 entire terminal micro-cycle route at block dimension 64 with "
+                "full/core/seeded counts 14/13/12"
             )
         actual_terminal_metadata = (
+            self.device_hierarchy._terminal_coarse_solve_kernel_version,
+            self.device_hierarchy._terminal_coarse_solve_route,
+            self.device_hierarchy._terminal_coarse_scalar_size,
             self.device_hierarchy._terminal_fusion_route,
             self.device_hierarchy._terminal_fusion_kernel_launches,
             self.device_hierarchy._terminal_fusion_launch_reduction,
@@ -3865,6 +3989,9 @@ class CapturedDirectGraphVBD:
             self.device_hierarchy._terminal_logical_phases,
         )
         expected_terminal_metadata = (
+            scalar_evidence.terminal_coarse_solve_kernel_version,
+            scalar_evidence.terminal_coarse_solve_route,
+            scalar_evidence.terminal_coarse_scalar_size,
             scalar_evidence.terminal_fusion_route,
             scalar_evidence.terminal_fusion_kernel_launches,
             scalar_evidence.terminal_fusion_launch_reduction,
@@ -4587,6 +4714,9 @@ class CapturedDirectGraphVBD:
                 V_CYCLE_SCHEDULE_VERSION,
                 claims.scalar_fused_evidence.terminal_fusion_version,
                 claims.scalar_fused_evidence.terminal_fusion_route,
+                claims.scalar_fused_evidence.terminal_coarse_solve_kernel_version,
+                claims.scalar_fused_evidence.terminal_coarse_solve_route,
+                claims.scalar_fused_evidence.terminal_coarse_scalar_size,
                 claims.scalar_fused_evidence.publication_version,
                 claims.scalar_fused_evidence.standalone_publication_route,
                 claims.scalar_fused_evidence.external_shared_publication_route,
@@ -5011,7 +5141,7 @@ class CapturedDirectGraphVBD:
 
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v9",
+                "contract": "captured-direct-graph-vbd-workspace-owner-identity-v11",
                 "scene_object": id(binding.scene),
                 "config_object": id(binding.config),
                 "warp_device_object": id(binding.warp_device),
@@ -5119,7 +5249,7 @@ class CapturedDirectGraphVBD:
         correction_kernel_launches = 2 + OUTER_CORRECTIONS * outer_kernel_launches
         return _canonical_digest(
             {
-                "contract": "captured-direct-graph-vbd-graph-identity-v11",
+                "contract": "captured-direct-graph-vbd-graph-identity-v13",
                 "solver_contract": CONTRACT_ID,
                 "comparator_contract": VBD_BASELINE_CONTRACT_ID if comparator else None,
                 "scene_sha256": scene_sha256,
@@ -5148,6 +5278,9 @@ class CapturedDirectGraphVBD:
                 "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
                 "v_cycle_terminal_fusion_version": scalar_evidence.terminal_fusion_version,
                 "v_cycle_terminal_microcycle_kernel_version": scalar_evidence.terminal_microcycle_kernel_version,
+                "v_cycle_terminal_coarse_solve_kernel_version": (scalar_evidence.terminal_coarse_solve_kernel_version),
+                "v_cycle_terminal_coarse_solve_route": scalar_evidence.terminal_coarse_solve_route,
+                "v_cycle_terminal_coarse_scalar_size": scalar_evidence.terminal_coarse_scalar_size,
                 "v_cycle_terminal_fusion_route": scalar_evidence.terminal_fusion_route,
                 "v_cycle_terminal_fusion_kernel_launches": scalar_evidence.terminal_fusion_kernel_launches,
                 "v_cycle_terminal_fusion_launch_reduction": scalar_evidence.terminal_fusion_launch_reduction,
@@ -5359,6 +5492,10 @@ class CapturedDirectGraphVBD:
         if (
             context.v_cycle_terminal_fusion_version != scalar_evidence.terminal_fusion_version
             or context.v_cycle_terminal_microcycle_kernel_version != scalar_evidence.terminal_microcycle_kernel_version
+            or context.v_cycle_terminal_coarse_solve_kernel_version
+            != scalar_evidence.terminal_coarse_solve_kernel_version
+            or context.v_cycle_terminal_coarse_solve_route != scalar_evidence.terminal_coarse_solve_route
+            or context.v_cycle_terminal_coarse_scalar_size != scalar_evidence.terminal_coarse_scalar_size
             or context.v_cycle_terminal_fusion_route != scalar_evidence.terminal_fusion_route
             or context.v_cycle_terminal_fusion_kernel_launches != scalar_evidence.terminal_fusion_kernel_launches
             or context.v_cycle_terminal_fusion_launch_reduction != scalar_evidence.terminal_fusion_launch_reduction
@@ -6000,7 +6137,7 @@ class CapturedDirectGraphVBD:
         if scalar_evidence != claims.scalar_fused_evidence:
             raise RuntimeError("captured scalar-fused construction evidence changed")
         persistent_sha256 = _hash_parts(
-            "captured-direct-graph-vbd-persistent-inputs-v9",
+            "captured-direct-graph-vbd-persistent-inputs-v11",
             (
                 ("scene_sha256", scene_sha256),
                 ("objective_instance_sha256", objective_sha256),
@@ -6050,6 +6187,12 @@ class CapturedDirectGraphVBD:
                     "scalar_v_cycle_terminal_microcycle_kernel_version",
                     scalar_evidence.terminal_microcycle_kernel_version,
                 ),
+                (
+                    "scalar_v_cycle_terminal_coarse_solve_kernel_version",
+                    scalar_evidence.terminal_coarse_solve_kernel_version,
+                ),
+                ("scalar_v_cycle_terminal_coarse_solve_route", scalar_evidence.terminal_coarse_solve_route),
+                ("scalar_v_cycle_terminal_coarse_scalar_size", scalar_evidence.terminal_coarse_scalar_size),
                 ("scalar_v_cycle_terminal_fusion_route", scalar_evidence.terminal_fusion_route),
                 (
                     "scalar_v_cycle_terminal_fusion_kernel_launches",
@@ -6515,6 +6658,9 @@ class CapturedDirectGraphVBD:
             v_cycle_schedule_version=V_CYCLE_SCHEDULE_VERSION,
             v_cycle_terminal_fusion_version=scalar_evidence.terminal_fusion_version,
             v_cycle_terminal_microcycle_kernel_version=scalar_evidence.terminal_microcycle_kernel_version,
+            v_cycle_terminal_coarse_solve_kernel_version=(scalar_evidence.terminal_coarse_solve_kernel_version),
+            v_cycle_terminal_coarse_solve_route=scalar_evidence.terminal_coarse_solve_route,
+            v_cycle_terminal_coarse_scalar_size=scalar_evidence.terminal_coarse_scalar_size,
             v_cycle_terminal_fusion_route=scalar_evidence.terminal_fusion_route,
             v_cycle_terminal_fusion_kernel_launches=scalar_evidence.terminal_fusion_kernel_launches,
             v_cycle_terminal_fusion_launch_reduction=scalar_evidence.terminal_fusion_launch_reduction,
@@ -6639,6 +6785,9 @@ class CapturedDirectGraphVBD:
             v_cycle_schedule_version=V_CYCLE_SCHEDULE_VERSION,
             v_cycle_terminal_fusion_version=scalar_evidence.terminal_fusion_version,
             v_cycle_terminal_microcycle_kernel_version=scalar_evidence.terminal_microcycle_kernel_version,
+            v_cycle_terminal_coarse_solve_kernel_version=(scalar_evidence.terminal_coarse_solve_kernel_version),
+            v_cycle_terminal_coarse_solve_route=scalar_evidence.terminal_coarse_solve_route,
+            v_cycle_terminal_coarse_scalar_size=scalar_evidence.terminal_coarse_scalar_size,
             v_cycle_terminal_fusion_route=scalar_evidence.terminal_fusion_route,
             v_cycle_terminal_fusion_kernel_launches=scalar_evidence.terminal_fusion_kernel_launches,
             v_cycle_terminal_fusion_launch_reduction=scalar_evidence.terminal_fusion_launch_reduction,
@@ -6922,7 +7071,7 @@ class CapturedDirectGraphVBD:
             "solver_static_array_sha256": self._solver_static_array_sha256_bound,
             "workspace_owner_identity_sha256": self._workspace_owner_identity_sha256(owner_binding),
             "persistent_device_sha256": persistent_device_sha256,
-            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v11",
+            "graph_identity_schema": "captured-direct-graph-vbd-graph-identity-v13",
             "graph_identity_sha256": graph_identity_sha256,
             "k4_graph_identity_sha256": k4_graph_identity_sha256,
             "fused_gather_kernel_version": owner_binding.claims.fused_gather_kernel_version,
@@ -6955,6 +7104,9 @@ class CapturedDirectGraphVBD:
             "v_cycle_schedule_version": V_CYCLE_SCHEDULE_VERSION,
             "v_cycle_terminal_fusion_version": scalar_evidence.terminal_fusion_version,
             "v_cycle_terminal_microcycle_kernel_version": scalar_evidence.terminal_microcycle_kernel_version,
+            "v_cycle_terminal_coarse_solve_kernel_version": scalar_evidence.terminal_coarse_solve_kernel_version,
+            "v_cycle_terminal_coarse_solve_route": scalar_evidence.terminal_coarse_solve_route,
+            "v_cycle_terminal_coarse_scalar_size": scalar_evidence.terminal_coarse_scalar_size,
             "v_cycle_terminal_fusion_route": scalar_evidence.terminal_fusion_route,
             "v_cycle_terminal_fusion_kernel_launches": scalar_evidence.terminal_fusion_kernel_launches,
             "v_cycle_terminal_fusion_launch_reduction": scalar_evidence.terminal_fusion_launch_reduction,

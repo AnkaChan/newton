@@ -8,7 +8,12 @@ import dataclasses
 import inspect
 import json
 import os
+import re
+import shutil
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -36,12 +41,17 @@ from research.principal_stretch.correction_multigrid_warp_scalar_fused import (
     ROOT_INGRESS_INTERNAL_ROUTE,
     SCHEDULE_VERSION,
     STANDALONE_PUBLICATION_ROUTE,
+    TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION,
+    TERMINAL_FIXED12_COARSE_SOLVE_ROUTE,
     TERMINAL_FUSION_COARSEST_ONLY_ROUTE,
     TERMINAL_FUSION_CPU_FALLBACK_ROUTE,
     TERMINAL_FUSION_CUDA_ROUTE,
     TERMINAL_FUSION_OVERSIZE_FALLBACK_ROUTE,
     TERMINAL_FUSION_VERSION,
+    TERMINAL_GENERIC_COARSE_SOLVE_KERNEL_VERSION,
+    TERMINAL_GENERIC_COARSE_SOLVE_ROUTE,
     TERMINAL_MICROCYCLE_CUDA_ROUTE,
+    TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE,
     TERMINAL_MICROCYCLE_KERNEL_VERSION,
     TERMINAL_MICROCYCLE_LOGICAL_PHASES,
     WarpScalarFusedStaticMultigridHierarchy,
@@ -81,6 +91,44 @@ def _mixed_hierarchy(*, smooth_steps: int) -> StaticMultigridHierarchy:
     shapes = [(level.matrix.block_row_count, level.matrix.block_size) for level in hierarchy.levels]
     if shapes != [(32, 3), (8, 6), (2, 6)]:
         raise RuntimeError(f"mixed-block fixture changed shape: {shapes}")
+    return hierarchy
+
+
+def _rigid_terminal_coarse_hierarchy(
+    node_count: int,
+    coarse_node_limit: int,
+    *,
+    device_hash_marker: str,
+) -> StaticMultigridHierarchy:
+    """Build a three-level rigid path with a selected coarse scalar size."""
+    index = np.arange(node_count, dtype=np.float64)
+    rest = np.column_stack((0.13 * index, np.sin(0.71 * index), np.cos(0.43 * index)))
+    graph = 0.37 * np.eye(node_count, dtype=np.float64)
+    for node in range(node_count - 1):
+        weight = 0.7 + 0.03 * (node % 5)
+        graph[node, node] += weight
+        graph[node + 1, node + 1] += weight
+        graph[node, node + 1] -= weight
+        graph[node + 1, node] -= weight
+    coordinate_metric = np.array(
+        ((1.7, 0.21, -0.08), (0.21, 1.3, 0.14), (-0.08, 0.14, 0.9)),
+        dtype=np.float64,
+    )
+    hierarchy = build_static_multigrid(
+        np.kron(graph, coordinate_metric),
+        rest,
+        np.arange(node_count, dtype=np.int64),
+        mode_kind="rigid",
+        target_aggregate_size=4,
+        minimum_aggregate_size=3,
+        coarse_node_limit=coarse_node_limit,
+        maximum_levels=3,
+        pre_smooth_steps=1,
+        post_smooth_steps=1,
+        static_model_sha256=device_hash_marker * 64,
+    )
+    if len(hierarchy.levels) != 3:
+        raise RuntimeError("fixed coarse-size fixture changed level count")
     return hierarchy
 
 
@@ -209,7 +257,7 @@ def _rehash_physical_work(physical_work) -> None:
         physical_work,
         "content_sha256",
         scalar_fused_module._hash_parts(
-            "warp-scalar-fused-v-cycle-physical-work-v11",
+            "warp-scalar-fused-v-cycle-physical-work-v13",
             tuple(
                 (field.name, getattr(physical_work, field.name))
                 for field in dataclasses.fields(physical_work)
@@ -225,7 +273,7 @@ def _rehash_v_cycle_record(record) -> None:
         record,
         "content_sha256",
         scalar_fused_module._hash_parts(
-            "warp-scalar-fused-v-cycle-result-v11",
+            "warp-scalar-fused-v-cycle-result-v13",
             (
                 ("contract_id", record.contract_id),
                 ("kernel_version", record.kernel_version),
@@ -346,6 +394,19 @@ def _poison_workspace(workspace) -> None:
     workspace.coarse_intermediate.fill_(np.nan)
 
 
+def _clear_workspace(workspace) -> None:
+    workspace.correction.fill_(wp.vec3d(0.0, 0.0, 0.0))
+    for arrays in (
+        workspace.level_rhs,
+        workspace.level_correction,
+        workspace.level_correction_alt,
+        workspace.level_residual,
+    ):
+        for array in arrays:
+            array.fill_(0.0)
+    workspace.coarse_intermediate.fill_(0.0)
+
+
 def _workspace_bit_patterns(workspace) -> tuple[tuple[str, tuple[int, ...], bytes], ...]:
     """Materialize every retained workspace array as exact host bytes."""
     patterns = []
@@ -401,11 +462,11 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
 
     def test_contract_scalar_owners_source_sharing_and_launch_path(self):
         hierarchy = self.device_hierarchy
-        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v6")
-        self.assertEqual(CONTRACT_ID, "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v1")
+        self.assertEqual(KERNEL_VERSION, "mg-vbd-warp-static-v-cycle-scalar-fused-v8")
+        self.assertEqual(CONTRACT_ID, "spectral-free-multiplicative-graph-vbd-warp-static-scalar-fused-v3")
         self.assertEqual(
             SCHEDULE_VERSION,
-            "scalar-core-terminal-microcycle-seeded-root-publication-routes-v9",
+            "scalar-core-fixed12-terminal-microcycle-seeded-root-publication-routes-v11",
         )
         self.assertEqual(PUBLICATION_VERSION, "scalar-fused-v-cycle-publication-routes-v2")
         self.assertEqual(EXTERNAL_SHARED_PUBLICATION_ROUTE, "external-shared-owner-scalar-to-vec3")
@@ -442,6 +503,7 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             "_out_of_place_scalar_jacobi",
             "_terminal_restrict_ordered_solve_prolong",
             "_terminal_zero_jacobi_residual_restrict_solve_prolong_residual_jacobi",
+            "_terminal_zero_jacobi_residual_restrict_fixed12_solve_prolong_residual_jacobi",
         ):
             self.assertIn(kernel, source)
         for method in (
@@ -476,6 +538,85 @@ class TestWarpScalarFusedStaticMultigridHierarchy(unittest.TestCase):
             del scalar_fused_module._TERMINAL_OWNER_THREAD
             del scalar_fused_module._TERMINAL_COLLECTIVE_COUNT
             del scalar_fused_module._TERMINAL_BLOCK_DIM
+
+    def test_fixed12_solve_is_literal_ordered_and_retains_all_global_stores(self):
+        kernel = scalar_fused_module._terminal_zero_jacobi_residual_restrict_fixed12_solve_prolong_residual_jacobi
+        source = inspect.getsource(kernel.func)
+        self.assertEqual(source.count("wp.tile_from_thread("), 6)
+        self.assertEqual(source.count('storage="shared"'), 6)
+        self.assertEqual(source.count("thread_idx=0"), 6)
+        self.assertEqual(source.count("wp.tile_extract("), 6)
+        self.assertNotIn("atomic_", source)
+        self.assertNotIn("_Vec12d", inspect.getsource(scalar_fused_module))
+        self.assertNotIn("wp.types.vector", source)
+        solve = source[source.index("value = coarse_rhs[0]") : source.index("solve_tile = wp.tile_from_thread(")]
+        self.assertNotIn("for ", solve)
+        self.assertNotIn("while ", solve)
+        self.assertEqual(solve.count("intermediate["), 12)
+        self.assertEqual(solve.count("coarse_solution["), 12)
+        for row in range(12):
+            self.assertIn(f"work{row} =", solve)
+        forward_offsets = [solve.index(f"intermediate[{row}]") for row in range(12)]
+        backward_offsets = [solve.index(f"coarse_solution[{row}]") for row in range(11, -1, -1)]
+        self.assertEqual(forward_offsets, sorted(forward_offsets))
+        self.assertEqual(backward_offsets, sorted(backward_offsets))
+        self.assertIn("lower[143]", solve)
+
+    def test_fresh_process_legacy_vec12_injection_cannot_change_prejit_module_hash(self):
+        script_prefix = """
+import importlib
+import warp as wp
+module = importlib.import_module("research.principal_stretch.correction_multigrid_warp_scalar_fused")
+assert "_Vec12d" not in vars(module)
+"""
+        hashes = []
+        for injection in (
+            "\n",
+            "\nmodule._Vec12d = wp.types.vector(length=11, dtype=wp.float64)\n",
+            "\nmodule._Vec12d = wp.types.vector(length=12, dtype=wp.float32)\n",
+        ):
+            script = (
+                script_prefix
+                + injection
+                + "kernel = module._terminal_zero_jacobi_residual_restrict_fixed12_solve_prolong_residual_jacobi\n"
+                + 'print("FIXED12_MODULE_SHA256=" + kernel.module.get_module_hash(64).hex())\n'
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=os.getcwd(),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            marker = "FIXED12_MODULE_SHA256="
+            matches = [line.removeprefix(marker) for line in completed.stdout.splitlines() if line.startswith(marker)]
+            self.assertEqual(len(matches), 1, completed.stdout + completed.stderr)
+            hashes.append(matches[0])
+        self.assertEqual(len(set(hashes)), 1)
+
+    def test_cpu_coarse_solve_sizes_and_non64_fixed12_candidate_use_generic_fallback(self):
+        fixtures = (
+            ("coarse6", _rigid_terminal_coarse_hierarchy(16, 1, device_hash_marker="6"), 6),
+            ("coarse18", _rigid_terminal_coarse_hierarchy(48, 3, device_hash_marker="7"), 18),
+            ("coarse96", _rigid_terminal_coarse_hierarchy(256, 16, device_hash_marker="8"), 96),
+            ("coarse12-non64", _terminal_block_boundary_hierarchy(64), 12),
+        )
+        for label, source, coarse_size in fixtures:
+            with self.subTest(label=label):
+                hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(source, device="cpu")
+                self.assertEqual(hierarchy.terminal_coarse_scalar_size, coarse_size)
+                self.assertEqual(
+                    hierarchy.terminal_coarse_solve_kernel_version,
+                    TERMINAL_GENERIC_COARSE_SOLVE_KERNEL_VERSION,
+                )
+                self.assertEqual(hierarchy.terminal_coarse_solve_route, TERMINAL_GENERIC_COARSE_SOLVE_ROUTE)
+                self.assertEqual(hierarchy.terminal_fusion_route, TERMINAL_FUSION_CPU_FALLBACK_ROUTE)
+                self.assertFalse(hierarchy.supports_fixed12_terminal_microcycle)
+        non64 = fixtures[-1][1]
+        required_threads = max(non64.levels[-2].matrix.scalar_size, non64.levels[-1].matrix.scalar_size)
+        self.assertEqual(((required_threads + 31) // 32) * 32, 192)
 
     def test_cpu_oracle_p1_p2_exact_launches_work_and_fixed_b_result(self):
         for steps, expected_launches, expected_recurrence_phases in ((1, 14, 4), (2, 22, 8)):
@@ -1624,6 +1765,194 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
             atol=5.0e-13,
         )
 
+    def test_cuda_generic_coarse_solve_routes_cover_6_18_96_and_coarse12_non64(self):
+        fixtures = (
+            ("coarse6", _rigid_terminal_coarse_hierarchy(16, 1, device_hash_marker="6"), 6, 32),
+            ("coarse18", _rigid_terminal_coarse_hierarchy(48, 3, device_hash_marker="7"), 18, 96),
+            ("coarse96", _rigid_terminal_coarse_hierarchy(256, 16, device_hash_marker="8"), 96, 384),
+            ("coarse12-non64", _terminal_block_boundary_hierarchy(64), 12, 192),
+        )
+        fixed_kernel = scalar_fused_module._terminal_zero_jacobi_residual_restrict_fixed12_solve_prolong_residual_jacobi
+        generic_kernel = scalar_fused_module._terminal_zero_jacobi_residual_restrict_solve_prolong_residual_jacobi
+        for label, source, coarse_size, block_dim in fixtures:
+            with self.subTest(label=label):
+                hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(source, device="cuda:0")
+                self.assertTrue(hierarchy.supports_terminal_microcycle)
+                self.assertFalse(hierarchy.supports_fixed12_terminal_microcycle)
+                self.assertEqual(hierarchy.terminal_fusion_route, TERMINAL_MICROCYCLE_CUDA_ROUTE)
+                self.assertEqual(hierarchy.terminal_block_dim, block_dim)
+                self.assertEqual(hierarchy.terminal_coarse_scalar_size, coarse_size)
+                self.assertEqual(
+                    hierarchy.terminal_coarse_solve_kernel_version,
+                    TERMINAL_GENERIC_COARSE_SOLVE_KERNEL_VERSION,
+                )
+                self.assertEqual(hierarchy.terminal_coarse_solve_route, TERMINAL_GENERIC_COARSE_SOLVE_ROUTE)
+                workspace = hierarchy.create_workspace()
+                rhs = np.random.default_rng(185000 + coarse_size).normal(size=hierarchy.n_free_dofs)
+                workspace.set_rhs(rhs)
+                with mock.patch.object(scalar_fused_module.wp, "launch", wraps=wp.launch) as launch:
+                    workspace.launch()
+                kernels = [call.args[0] for call in launch.call_args_list]
+                self.assertEqual(kernels.count(generic_kernel), 1)
+                self.assertNotIn(fixed_kernel, kernels)
+                np.testing.assert_allclose(
+                    workspace.record().correction,
+                    apply_v_cycle(source, rhs).correction,
+                    rtol=5.0e-13,
+                    atol=5.0e-13,
+                )
+
+    def test_cuda_fixed12_is_all_workspace_bitwise_generic_for_ab_ba_edge_and_random_factor(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cuda:0",
+        )
+        self.assertTrue(hierarchy.supports_fixed12_terminal_microcycle)
+        self.assertEqual(hierarchy.terminal_block_dim, 64)
+        self.assertEqual(hierarchy.terminal_coarse_scalar_size, 12)
+        self.assertEqual(
+            hierarchy.terminal_coarse_solve_kernel_version,
+            TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION,
+        )
+        self.assertEqual(hierarchy.terminal_coarse_solve_route, TERMINAL_FIXED12_COARSE_SOLVE_ROUTE)
+        generator = np.random.default_rng(185120)
+        random_rhs = generator.normal(size=(hierarchy.n_free, 3))
+        signed_zero_rhs = np.zeros((hierarchy.n_free, 3), dtype=np.float64)
+        signed_zero_rhs.reshape(-1)[1::2] = -0.0
+        nonfinite_rhs = generator.normal(size=(hierarchy.n_free, 3))
+        nonfinite_rhs.reshape(-1)[:8] = (np.inf, -np.inf, np.nan, -0.0, 0.0, np.nan, np.inf, -np.inf)
+        original_lower = np.ascontiguousarray(hierarchy.coarse_cholesky.numpy())
+        random_lower = np.tril(generator.uniform(-0.2, 0.2, size=(12, 12)))
+        random_lower[np.diag_indices(12)] = generator.uniform(0.8, 1.8, size=12)
+        cases = (
+            ("random", random_rhs, original_lower),
+            ("signed-zero", signed_zero_rhs, original_lower),
+            ("nonfinite", nonfinite_rhs, original_lower),
+            ("random-factor", random_rhs, np.ascontiguousarray(random_lower.reshape(-1))),
+        )
+        try:
+            for label, rhs, lower in cases:
+                for poisoned in (False, True):
+                    for order in ("fixed-generic", "generic-fixed"):
+                        with self.subTest(label=label, poisoned=poisoned, order=order):
+                            fixed = hierarchy.create_workspace()
+                            generic = hierarchy.create_workspace()
+                            initialize = _poison_workspace if poisoned else _clear_workspace
+                            initialize(fixed)
+                            initialize(generic)
+                            fixed.rhs.assign(rhs)
+                            generic.rhs.assign(rhs)
+                            hierarchy.coarse_cholesky.assign(lower)
+
+                            def launch_fixed(fixed=fixed) -> None:
+                                fixed.launch()
+
+                            def launch_generic(generic=generic) -> None:
+                                with mock.patch.object(
+                                    WarpScalarFusedStaticMultigridHierarchy,
+                                    "supports_fixed12_terminal_microcycle",
+                                    new=property(lambda _self: False),
+                                ):
+                                    generic.launch()
+
+                            first, second = (
+                                (launch_fixed, launch_generic)
+                                if order == "fixed-generic"
+                                else (launch_generic, launch_fixed)
+                            )
+                            first()
+                            second()
+                            self.assertEqual(_workspace_bit_patterns(fixed), _workspace_bit_patterns(generic))
+        finally:
+            hierarchy.coarse_cholesky.assign(original_lower)
+
+    def test_cuda_fixed12_generated_kernel_has_no_local_or_stack_spills_at_block64(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cuda:0",
+        )
+        self.assertTrue(hierarchy.supports_fixed12_terminal_microcycle)
+        self.assertEqual(hierarchy.terminal_block_dim, 64)
+        wp.load_module(module=scalar_fused_module, device=hierarchy.device, block_dim=64)
+        symbol = "terminal_zero_jacobi_residual_restrict_fixed12_solve_prolong_residual_jacobi"
+        module_hash_prefix = wp.get_module(scalar_fused_module.__name__).get_module_hash(64).hex()[:7]
+        cache_root = Path(str(wp.config.kernel_cache_dir))
+        sources = [
+            path
+            for path in cache_root.rglob("*.cu")
+            if path.parent.name.endswith(module_hash_prefix) and symbol.encode() in path.read_bytes()
+        ]
+        self.assertTrue(sources, f"no generated CUDA source for {symbol!r} under {cache_root}")
+        source = max(sources, key=lambda path: path.stat().st_mtime_ns)
+        cubins = sorted(source.parent.glob("*.cubin"), key=lambda path: path.stat().st_mtime_ns)
+        self.assertTrue(cubins, f"no cubin found beside {source}")
+        cubin = cubins[-1]
+        cuobjdump = shutil.which("cuobjdump") or "/usr/local/cuda-12.6/bin/cuobjdump"
+        self.assertTrue(Path(cuobjdump).is_file(), "cuobjdump is required for the fixed12 resource gate")
+        resource_output = subprocess.run(
+            [cuobjdump, "--dump-resource-usage", str(cubin)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        resource_sections = [
+            section for section in re.split(r"(?m)(?=^[ \t]*Function\b)", resource_output) if symbol in section
+        ]
+        self.assertTrue(resource_sections, f"resource output did not name {symbol!r}")
+        resource = "\n".join(resource_sections)
+        registers = [int(value) for value in re.findall(r"\bREG:(\d+)", resource)]
+        local = [int(value) for value in re.findall(r"\bLOCAL:(\d+)", resource)]
+        stack = [int(value) for value in re.findall(r"\bSTACK:(\d+)", resource)]
+        shared = [int(value) for value in re.findall(r"\bSHARED:(\d+)", resource)]
+        self.assertTrue(registers, resource)
+        self.assertGreater(max(registers), 0)
+        self.assertEqual(max(local, default=0), 0)
+        self.assertEqual(max(stack, default=0), 0)
+        self.assertGreater(max(shared, default=0), 0)
+        sass_output = subprocess.run(
+            [cuobjdump, "--dump-sass", str(cubin)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        sass_sections = [
+            section for section in re.split(r"(?m)(?=^[ \t]*Function\b)", sass_output) if symbol in section
+        ]
+        sass = "\n".join(sass_sections)
+        self.assertTrue(sass_sections, f"SASS output did not name {symbol!r}")
+        self.assertEqual(len(re.findall(r"\bLDL(?:\.|\b)", sass)), 0)
+        self.assertEqual(len(re.findall(r"\bSTL(?:\.|\b)", sass)), 0)
+        generated = source.read_text(errors="replace")
+        excerpt = generated[generated.index(symbol) : generated.index(symbol) + 120_000]
+        self.assertNotIn("vec_t<12", excerpt)
+        self.assertIn("// work0 =", excerpt)
+        self.assertIn("// work11 =", excerpt)
+
+    def test_cuda_fixed12_route_and_solve_identity_tamper_fail_after_coordinated_rehash(self):
+        hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
+            _mixed_hierarchy(smooth_steps=1),
+            device="cuda:0",
+        )
+        workspace = hierarchy.create_workspace()
+        workspace.set_rhs(np.random.default_rng(185121).normal(size=hierarchy.n_free_dofs))
+        workspace.launch()
+        record = workspace.record()
+        attacks = (
+            {"terminal_coarse_solve_kernel_version": TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION + "-forged"},
+            {"terminal_coarse_solve_route": TERMINAL_FIXED12_COARSE_SOLVE_ROUTE + "-forged"},
+            {"terminal_coarse_scalar_size": 11},
+            {
+                "terminal_fusion_route": TERMINAL_MICROCYCLE_CUDA_ROUTE,
+                "terminal_coarse_solve_kernel_version": TERMINAL_GENERIC_COARSE_SOLVE_KERNEL_VERSION,
+                "terminal_coarse_solve_route": TERMINAL_GENERIC_COARSE_SOLVE_ROUTE,
+            },
+        )
+        for updates in attacks:
+            with self.subTest(updates=updates):
+                forged = _coordinated_rehash(record, physical_updates=updates)
+                with self.assertRaisesRegex(ValueError, "coarse-solve route|complete scalar schedule"):
+                    forged.deterministic_record()
+
     def test_cuda_external_vec3_gapped_reversed_rhs_output_and_identity(self):
         hierarchy = self.device_hierarchy
         host_rhs = np.random.default_rng(181031).normal(size=(hierarchy.n_free, 3))
@@ -1710,7 +2039,8 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
                 self.assertEqual(hierarchy.seeded_core_kernel_launches, expected_full - 2)
                 if steps == 1:
                     self.assertTrue(hierarchy.supports_terminal_microcycle)
-                    self.assertEqual(hierarchy.terminal_fusion_route, TERMINAL_MICROCYCLE_CUDA_ROUTE)
+                    self.assertEqual(hierarchy.terminal_fusion_route, TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE)
+                    self.assertTrue(hierarchy.supports_fixed12_terminal_microcycle)
                     self.assertEqual(hierarchy.terminal_fusion_launch_reduction, 6)
                     self.assertEqual(hierarchy.terminal_collective_count, 6)
                     self.assertEqual(
@@ -1751,34 +2081,34 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
                         self.assertEqual(oracle_launch.call_count, expected_full + oracle_launch_delta)
                         self.assertEqual(_workspace_bit_patterns(fused), _workspace_bit_patterns(oracle))
 
-    def test_cuda_terminal_fusion_capture_replay_restores_poison_bitwise_legacy(self):
+    def test_cuda_fixed12_capture_replay_restores_poison_bitwise_generic(self):
         hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
             _mixed_hierarchy(smooth_steps=1),
             device="cuda:0",
         )
         fused = hierarchy.create_workspace()
-        b2 = hierarchy.create_workspace()
+        generic = hierarchy.create_workspace()
         warmup_rhs = np.random.default_rng(181024).normal(size=(hierarchy.n_free, 3))
         fused.rhs.assign(warmup_rhs)
-        b2.rhs.assign(warmup_rhs)
+        generic.rhs.assign(warmup_rhs)
         fused.launch()
         with mock.patch.object(
             WarpScalarFusedStaticMultigridHierarchy,
-            "supports_terminal_microcycle",
+            "supports_fixed12_terminal_microcycle",
             new=property(lambda _self: False),
         ):
-            b2.launch()
+            generic.launch()
         with wp.ScopedCapture(device=hierarchy.device) as fused_capture:
             fused.launch()
         with (
             mock.patch.object(
                 WarpScalarFusedStaticMultigridHierarchy,
-                "supports_terminal_microcycle",
+                "supports_fixed12_terminal_microcycle",
                 new=property(lambda _self: False),
             ),
-            wp.ScopedCapture(device=hierarchy.device) as b2_capture,
+            wp.ScopedCapture(device=hierarchy.device) as generic_capture,
         ):
-            b2.launch()
+            generic.launch()
 
         generator = np.random.default_rng(181025)
         signed_zero_rhs = np.zeros((hierarchy.n_free, 3), dtype=np.float64)
@@ -1792,12 +2122,12 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
         ):
             with self.subTest(rhs=label):
                 _poison_workspace(fused)
-                _poison_workspace(b2)
+                _poison_workspace(generic)
                 fused.rhs.assign(rhs)
-                b2.rhs.assign(rhs)
+                generic.rhs.assign(rhs)
                 wp.capture_launch(fused_capture.graph)
-                wp.capture_launch(b2_capture.graph)
-                self.assertEqual(_workspace_bit_patterns(fused), _workspace_bit_patterns(b2))
+                wp.capture_launch(generic_capture.graph)
+                self.assertEqual(_workspace_bit_patterns(fused), _workspace_bit_patterns(generic))
 
     def test_cuda_terminal_preflight_rejects_alias_and_layout_before_launch(self):
         hierarchy = WarpScalarFusedStaticMultigridHierarchy.from_hierarchy(
@@ -2033,7 +2363,13 @@ class TestWarpScalarFusedStaticMultigridCudaCapture(unittest.TestCase):
             list(TERMINAL_MICROCYCLE_LOGICAL_PHASES),
         )
         self.assertEqual(actual.physical_work.terminal_fusion_version, TERMINAL_FUSION_VERSION)
-        self.assertEqual(actual.physical_work.terminal_fusion_route, TERMINAL_MICROCYCLE_CUDA_ROUTE)
+        self.assertEqual(actual.physical_work.terminal_fusion_route, TERMINAL_MICROCYCLE_FIXED12_CUDA_ROUTE)
+        self.assertEqual(
+            actual.physical_work.terminal_coarse_solve_kernel_version,
+            TERMINAL_FIXED12_COARSE_SOLVE_KERNEL_VERSION,
+        )
+        self.assertEqual(actual.physical_work.terminal_coarse_solve_route, TERMINAL_FIXED12_COARSE_SOLVE_ROUTE)
+        self.assertEqual(actual.physical_work.terminal_coarse_scalar_size, 12)
         np.testing.assert_allclose(
             actual.correction,
             apply_v_cycle(hierarchy, rhs).correction,
