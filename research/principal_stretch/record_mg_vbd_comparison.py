@@ -58,6 +58,7 @@ SCHEMA_V1 = "principal-stretch-mg-vbd-recording-v1"
 SCHEMA = "principal-stretch-mg-vbd-recording-v2"
 STATIC_REFERENCE_SCHEMA = "authenticated-medium-newton-endpoints-v2"
 GAIA_ASSET_BUNDLE_SCHEMA = "principal-stretch-gaia-asset-bundle-v1"
+GAIA_TIP_FORCE_POLICY_SCHEMA = "principal-stretch-gaia-volume-scaled-tip-force-v1"
 GENERATION_SOURCE_SCHEMA_V2 = "principal-stretch-mg-vbd-generation-source-v2"
 GENERATION_SOURCE_SCHEMA = "principal-stretch-mg-vbd-generation-source-v3"
 RENDER_SOURCE_SCHEMA = "principal-stretch-mg-vbd-render-source-v1"
@@ -319,6 +320,45 @@ class RecordingSpec:
     camera_direction: tuple[float, float, float]
 
 
+_GAIA_REFERENCE_TOTAL_TIP_FORCE_N = (10.0, 0.0, 0.0)
+_GAIA_TIP_FORCE_UNIT_SCALE_EXPONENT = 3
+
+
+@dataclasses.dataclass(frozen=True)
+class GaiaRecordingScenePolicy:
+    """One exact Gaia asset, scale, and similarity-scaled load declaration."""
+
+    asset_name: str
+    unit_scale_m_per_source_unit: float
+    total_tip_force_n: tuple[float, float, float]
+    contract: str = GAIA_TIP_FORCE_POLICY_SCHEMA
+
+    def __post_init__(self) -> None:
+        expected_x = (
+            _GAIA_REFERENCE_TOTAL_TIP_FORCE_N[0]
+            * self.unit_scale_m_per_source_unit**_GAIA_TIP_FORCE_UNIT_SCALE_EXPONENT
+        )
+        if (
+            not self.asset_name
+            or self.contract != GAIA_TIP_FORCE_POLICY_SCHEMA
+            or not math.isfinite(self.unit_scale_m_per_source_unit)
+            or self.unit_scale_m_per_source_unit <= 0.0
+            or len(self.total_tip_force_n) != 3
+            or not all(math.isfinite(value) for value in self.total_tip_force_n)
+            or not math.isclose(self.total_tip_force_n[0], expected_x, rel_tol=1.0e-15, abs_tol=0.0)
+            or self.total_tip_force_n[1:] != (0.0, 0.0)
+        ):
+            raise ValueError("Gaia scene policy must declare +x 10 N times unit_scale cubed")
+
+
+_GAIA_SCENE_ASSETS: Mapping[str, GaiaRecordingScenePolicy] = types.MappingProxyType(
+    {
+        "gaia-bunny-small": GaiaRecordingScenePolicy("bunny_small", 0.1, (0.01, 0.0, 0.0)),
+        "gaia-armadilo-lowres": GaiaRecordingScenePolicy("Armadilo_lowres", 1.0, (10.0, 0.0, 0.0)),
+    }
+)
+
+
 _SPECS = {
     "refinement-medium": RecordingSpec(
         key="refinement-medium",
@@ -349,12 +389,6 @@ _SPECS = {
         camera_direction=(1.4, -1.8, 0.35),
     ),
 }
-_GAIA_SCENE_ASSETS: Mapping[str, tuple[str, float]] = types.MappingProxyType(
-    {
-        "gaia-bunny-small": ("bunny_small", 0.1),
-        "gaia-armadilo-lowres": ("Armadilo_lowres", 1.0),
-    }
-)
 _GAIA_BUNDLE_ROOT_RELATIVE = f"gaia-{GAIA_SOURCE_REVISION[:10]}"
 _GAIA_BUNDLE_FILES: Mapping[str, tuple[int, str, str]] = types.MappingProxyType(
     {
@@ -398,15 +432,15 @@ def _resolve_gaia_asset_root(value: str | os.PathLike[str] | None) -> pathlib.Pa
 def _gaia_asset_bundle_manifest(scene_key: str) -> dict[str, object] | None:
     if scene_key not in _GAIA_SCENE_ASSETS:
         return None
-    asset_name, unit_scale = _GAIA_SCENE_ASSETS[scene_key]
+    policy = _GAIA_SCENE_ASSETS[scene_key]
     payload: dict[str, object] = {
         "contract": GAIA_ASSET_BUNDLE_SCHEMA,
         "source_repository_url": GAIA_REPOSITORY_URL,
         "source_revision": GAIA_SOURCE_REVISION,
         "bundle_root_relative_path": _GAIA_BUNDLE_ROOT_RELATIVE,
-        "selected_asset_name": asset_name,
-        "selected_asset_relative_path": GAIA_ASSETS[asset_name].relative_path,
-        "unit_scale_m_per_source_unit": unit_scale,
+        "selected_asset_name": policy.asset_name,
+        "selected_asset_relative_path": GAIA_ASSETS[policy.asset_name].relative_path,
+        "unit_scale_m_per_source_unit": policy.unit_scale_m_per_source_unit,
         "files": {
             relative: {"bytes": size, "sha256": sha256, "git_blob_oid": blob_oid}
             for relative, (size, sha256, blob_oid) in _GAIA_BUNDLE_FILES.items()
@@ -511,11 +545,12 @@ def build_recording_scene(
         if gaia_asset_root is not None:
             raise ValueError("gaia_asset_root is valid only for Gaia recording scenes")
         return build_twist_scene(twist_angle=0.0, one_shot_diagnostic=True)
-    asset_name, unit_scale = _GAIA_SCENE_ASSETS[scene_key]
+    policy = _GAIA_SCENE_ASSETS[scene_key]
     return build_registered_gaia_scene(
-        asset_name,
+        policy.asset_name,
         _resolve_gaia_asset_root(gaia_asset_root),
-        unit_scale_m_per_source_unit=unit_scale,
+        unit_scale_m_per_source_unit=policy.unit_scale_m_per_source_unit,
+        total_tip_force=policy.total_tip_force_n,
     )
 
 
@@ -1425,10 +1460,11 @@ def _gaia_protocol_annotation(scene_key: object) -> str | None:
     """Return the physical Gaia protocol shown directly on rendered frames."""
     if type(scene_key) is not str or scene_key not in _GAIA_SCENE_ASSETS:
         return None
-    _asset_name, unit_scale = _GAIA_SCENE_ASSETS[scene_key]
+    policy = _GAIA_SCENE_ASSETS[scene_key]
     return (
-        f"scale {unit_scale:g} m/source unit · fixed min-y 2% slab · "
-        "+x 10 N total on max-y 2% slab · gravity -y 9.81 m/s²"
+        f"scale {policy.unit_scale_m_per_source_unit:g} m/source unit · fixed min-y 2% slab · "
+        f"+x {policy.total_tip_force_n[0]:g} N total (10 N x scale³) on max-y 2% slab · "
+        "gravity -y 9.81 m/s²"
     )
 
 

@@ -270,16 +270,26 @@ class TestRecordingPolicy(unittest.TestCase):
 
     def test_gaia_specs_route_only_the_two_pinned_assets(self):
         expected = {
-            "gaia-bunny-small": ("bunny_small", 0.1, "Gaia bunny_small"),
-            "gaia-armadilo-lowres": ("Armadilo_lowres", 1.0, "Gaia Armadilo_lowres"),
+            "gaia-bunny-small": (
+                "bunny_small",
+                0.1,
+                (0.01, 0.0, 0.0),
+                "Gaia bunny_small: static support under gravity and tip load",
+            ),
+            "gaia-armadilo-lowres": (
+                "Armadilo_lowres",
+                1.0,
+                (10.0, 0.0, 0.0),
+                "Gaia Armadilo_lowres: static support under gravity and tip load",
+            ),
         }
         with tempfile.TemporaryDirectory() as directory:
-            for scene_key, (asset_name, scale, display_prefix) in expected.items():
+            for scene_key, (asset_name, scale, total_tip_force, display_name) in expected.items():
                 with self.subTest(scene=scene_key):
                     spec = recording.recording_spec(scene_key)
                     self.assertEqual(spec.substeps_per_source_frame, 6)
                     self.assertEqual(spec.reference_iterations, 40)
-                    self.assertTrue(spec.display_name.startswith(display_prefix))
+                    self.assertEqual(spec.display_name, display_name)
                     marker = object()
                     with mock.patch.object(recording, "build_registered_gaia_scene", return_value=marker) as build:
                         actual = recording.build_recording_scene(scene_key, gaia_asset_root=directory)
@@ -288,6 +298,7 @@ class TestRecordingPolicy(unittest.TestCase):
                         asset_name,
                         pathlib.Path(directory).resolve(),
                         unit_scale_m_per_source_unit=scale,
+                        total_tip_force=total_tip_force,
                     )
 
     def test_gaia_scene_requires_an_explicit_or_environment_asset_root(self):
@@ -309,6 +320,39 @@ class TestRecordingPolicy(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "only for Gaia"):
                 recording.build_recording_scene("twist", gaia_asset_root=directory)
 
+    def test_gaia_scene_total_tip_force_scales_with_volume(self):
+        expected = {
+            "gaia-bunny-small": (0.01, 0.0, 0.0),
+            "gaia-armadilo-lowres": (10.0, 0.0, 0.0),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for scene_key, total_tip_force in expected.items():
+                with self.subTest(scene=scene_key):
+                    with mock.patch.object(recording, "build_registered_gaia_scene", return_value=object()) as build:
+                        recording.build_recording_scene(scene_key, gaia_asset_root=directory)
+                    self.assertEqual(build.call_args.kwargs["total_tip_force"], total_tip_force)
+                    policy = recording._GAIA_SCENE_ASSETS[scene_key]
+                    self.assertEqual(
+                        policy.contract,
+                        "principal-stretch-gaia-volume-scaled-tip-force-v1",
+                    )
+                    self.assertEqual(policy.total_tip_force_n, total_tip_force)
+                    self.assertAlmostEqual(total_tip_force[0], 10.0 * policy.unit_scale_m_per_source_unit**3)
+
+    def test_arm_gaia_asset_bundle_manifest_remains_committed_v1(self):
+        manifest = recording._gaia_asset_bundle_manifest("gaia-armadilo-lowres")
+        self.assertIsNotNone(manifest)
+        self.assertEqual(manifest["contract"], "principal-stretch-gaia-asset-bundle-v1")
+        self.assertEqual(
+            manifest["manifest_sha256"],
+            "b54af208c2cdaaee0c018ddb29df255be197468243dda43ed32f6369b515680e",
+        )
+        self.assertEqual(
+            hashlib.sha256(recording._canonical_json(manifest)).hexdigest(),
+            "ac0940501ef7e4b3e5cdb34cde8848cc59559a1e72d4b60817e0a8dbcd584630",
+        )
+        self.assertNotIn("tip_force_policy", manifest)
+
     def test_gaia_targets_and_source_schedule_are_static(self):
         scene = mock.Mock()
         scene.pin_targets = np.array([[1.0, 2.0, 3.0]], dtype=np.float64)
@@ -324,11 +368,13 @@ class TestRecordingPolicy(unittest.TestCase):
     def test_gaia_protocol_annotation_declares_scale_support_load_and_gravity(self):
         self.assertEqual(
             recording._gaia_protocol_annotation("gaia-bunny-small"),
-            "scale 0.1 m/source unit · fixed min-y 2% slab · +x 10 N total on max-y 2% slab · gravity -y 9.81 m/s²",
+            "scale 0.1 m/source unit · fixed min-y 2% slab · "
+            "+x 0.01 N total (10 N x scale³) on max-y 2% slab · gravity -y 9.81 m/s²",
         )
         self.assertEqual(
             recording._gaia_protocol_annotation("gaia-armadilo-lowres"),
-            "scale 1 m/source unit · fixed min-y 2% slab · +x 10 N total on max-y 2% slab · gravity -y 9.81 m/s²",
+            "scale 1 m/source unit · fixed min-y 2% slab · "
+            "+x 10 N total (10 N x scale³) on max-y 2% slab · gravity -y 9.81 m/s²",
         )
         self.assertIsNone(recording._gaia_protocol_annotation("twist"))
 
@@ -456,12 +502,15 @@ class TestGaiaRecordingAssets(unittest.TestCase):
             "gaia-bunny-small": {
                 "counts": (1839, 5891, 3674, 142, 2),
                 "source": "5052f098fd0eba9efa20c6dbb4a8915f50df09948a4b9d438a44976e86f9b746",
-                "physical": "24f4eddc5500712f66472b176033befa5f6ec29e307bcf3e6015bbdadc15acbe",
+                "physical": "548cc2784115d1fcf52a77d657a6b0e879ccfe1482df6b9111fdab302892509a",
                 "source_topology": "598c36655ec2eb4071a201be92c2c10d5c1d8d5852edbba893d602c48dd0b3f4",
                 "topology": "45fb137b9d9bee8520e9013ce7d461521a49834e0d7f5792f95b17c64aec3bd5",
                 "material": "730f434320a69962fe87e2ed347408d43da048e922f3545996626a24099be026",
-                "boundary": "30db2b091ebbc1c681d75e6276e26e777369064d5460c9b2e80ce55eccfca27e",
+                "boundary": "3c023ad84d099d184e773ab145a52d7913923c72f3e92db493f4c1f774093f42",
                 "mass": "34a5f1f706b69415e467a4362d36674de33292664ab1dd4b179e2ad3b384c0da",
+                "declared_total_tip_force_n": (0.01, 0.0, 0.0),
+                "actual_float32_total_tip_force_n": (0.009999999776482582, 0.0, 0.0),
+                "external_force_sum_float64_n": [0.009999999776482582, 0.0, 0.0],
             },
             "gaia-armadilo-lowres": {
                 "counts": (3992, 14870, 6000, 116, 17),
@@ -472,6 +521,9 @@ class TestGaiaRecordingAssets(unittest.TestCase):
                 "material": "c5e428af9ea9ae8fa2d623b6fada5c5ec1d75f2a5f461143ba2d2ffc4895fa94",
                 "boundary": "5ea472aec69867d7abbfcb1296794fee54cee34656a3caf3eb68522719a85421",
                 "mass": "577847731bd889da5ad70fc8b10311302e127c1faa3fb6a17ddf6e6114ecd798",
+                "declared_total_tip_force_n": (10.0, 0.0, 0.0),
+                "actual_float32_total_tip_force_n": (9.999999046325684, 0.0, 0.0),
+                "external_force_sum_float64_n": [10.000000417232513, 0.0, 0.0],
             },
         }
         for scene_key, evidence in expected.items():
@@ -493,11 +545,45 @@ class TestGaiaRecordingAssets(unittest.TestCase):
                 self.assertEqual(first.metadata["topology_sha256"], evidence["topology"])
                 self.assertEqual(first.metadata["material_sha256"], evidence["material"])
                 self.assertEqual(first.metadata["boundary_sha256"], evidence["boundary"])
+                self.assertEqual(first.metadata["declared_total_tip_force_n"], evidence["declared_total_tip_force_n"])
+                self.assertEqual(
+                    first.metadata["actual_float32_total_tip_force_n"],
+                    evidence["actual_float32_total_tip_force_n"],
+                )
+                self.assertEqual(
+                    np.asarray(first.external_force, dtype=np.float64).sum(axis=0).tolist(),
+                    evidence["external_force_sum_float64_n"],
+                )
                 self.assertEqual(first.manifest()["arrays"]["mass"]["sha256"], evidence["mass"])
                 self.assertEqual(recording._scene_physical_sha256(first), evidence["physical"])
                 self.assertEqual(first.manifest(), second.manifest())
                 self.assertEqual(recording._scene_physical_sha256(first), recording._scene_physical_sha256(second))
                 np.testing.assert_array_equal(recording.pin_targets_for_frame(scene_key, first, 0), first.pin_targets)
+
+    def test_synthetic_historical_arm_bundle_retains_committed_policy_and_loads(self):
+        root = pathlib.Path(os.environ["PSS_GAIA_ASSET_ROOT"])
+        metadata, arrays = _valid_bundle("gaia-armadilo-lowres", gaia_asset_root=root)
+        self.assertEqual(metadata["git_revision"], "a" * 40)
+        self.assertEqual(
+            metadata["scene_display_name"],
+            "Gaia Armadilo_lowres: static support under gravity and tip load",
+        )
+        self.assertEqual(metadata["simulation"]["source_schedule"], "fixed support slab under gravity and tip load")
+        self.assertEqual(
+            metadata["gaia_asset_bundle"]["manifest_sha256"],
+            "b54af208c2cdaaee0c018ddb29df255be197468243dda43ed32f6369b515680e",
+        )
+        self.assertEqual(
+            metadata["scene_physical_sha256"],
+            "a633c58e2b3b10040402b5f909bb26bce705e658fc793cc1c84f1c9949fbbb21",
+        )
+        with tempfile.TemporaryDirectory() as output_directory:
+            path = _save_validated_bundle(output_directory, metadata, arrays, gaia_asset_root=root)
+            record, loaded = _load_test_bundle(path)
+        self.assertEqual(record["scene_display_name"], metadata["scene_display_name"])
+        self.assertEqual(record["simulation"]["source_schedule"], metadata["simulation"]["source_schedule"])
+        for name, expected in arrays.items():
+            np.testing.assert_array_equal(loaded[name], expected)
 
     def test_gaia_bundles_are_root_independent_and_require_v3_source_provenance(self):
         source_root = pathlib.Path(os.environ["PSS_GAIA_ASSET_ROOT"])
