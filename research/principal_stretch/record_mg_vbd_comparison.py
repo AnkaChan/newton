@@ -26,10 +26,13 @@ import math
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import types
 from collections.abc import Mapping
 from typing import Any
 
@@ -40,6 +43,7 @@ import newton
 from newton.solvers import SolverVBD
 
 from .correction_graph_vbd import DirectGraphVBDConfig
+from .gaia_assets import GAIA_ASSETS, GAIA_REPOSITORY_URL, GAIA_SOURCE_REVISION, build_registered_gaia_scene
 from .solver_benchmark import (
     CommonStateMetrics,
     TetBenchmarkScene,
@@ -50,11 +54,15 @@ from .solver_benchmark import (
 )
 from .solver_scenes import build_refinement_scene, build_twist_scene
 
-SCHEMA = "principal-stretch-mg-vbd-recording-v1"
+SCHEMA_V1 = "principal-stretch-mg-vbd-recording-v1"
+SCHEMA = "principal-stretch-mg-vbd-recording-v2"
 STATIC_REFERENCE_SCHEMA = "authenticated-medium-newton-endpoints-v2"
-GENERATION_SOURCE_SCHEMA = "principal-stretch-mg-vbd-generation-source-v2"
+GAIA_ASSET_BUNDLE_SCHEMA = "principal-stretch-gaia-asset-bundle-v1"
+GENERATION_SOURCE_SCHEMA_V2 = "principal-stretch-mg-vbd-generation-source-v2"
+GENERATION_SOURCE_SCHEMA = "principal-stretch-mg-vbd-generation-source-v3"
 RENDER_SOURCE_SCHEMA = "principal-stretch-mg-vbd-render-source-v1"
 RENDER_RECORD_SCHEMA = "principal-stretch-mg-vbd-render-record-v1"
+GENERATION_RECEIPT_SCHEMA = "principal-stretch-mg-vbd-process-local-generation-receipt-v1"
 METHOD_IDS = ("reference", "mg_vbd", "vbd_k4")
 METRIC_NAMES = (
     "objective",
@@ -81,7 +89,7 @@ _COMMON_METRIC_NAMES = (
     "max_pin_error_m",
     "position_sha256",
 )
-_GENERATION_SOURCE_PATHS = (
+_GENERATION_SOURCE_PATHS_V2 = (
     "research/principal_stretch/record_mg_vbd_comparison.py",
     "research/principal_stretch/mg_vbd_rollout.py",
     "research/principal_stretch/captured_graph_vbd.py",
@@ -101,6 +109,11 @@ _GENERATION_SOURCE_PATHS = (
     "research/principal_stretch/polar.py",
     "research/principal_stretch/sparse_newton_reference.py",
     "research/principal_stretch/torch_solver.py",
+)
+_GENERATION_SOURCE_PATHS = (
+    "research/principal_stretch/__init__.py",
+    *_GENERATION_SOURCE_PATHS_V2,
+    "research/principal_stretch/gaia_assets.py",
 )
 _STATIC_REFERENCE_METHODS = {
     "dense": ("dense-cpu-newton-float64", "fresh-dense-newton-accepted-reference-v1"),
@@ -253,7 +266,7 @@ _NON_METRIC_ARRAY_NAMES = (
     "mg_frame_gate_accept_count",
 )
 _ARRAY_NAMES = frozenset((*_NON_METRIC_ARRAY_NAMES, *(f"metric_{name}" for name in METRIC_NAMES)))
-_UNSEALED_RECORD_NAMES = frozenset(
+_UNSEALED_RECORD_NAMES_V1 = frozenset(
     {
         "schema",
         "scene_key",
@@ -272,6 +285,16 @@ _UNSEALED_RECORD_NAMES = frozenset(
         "device",
         "camera",
         "static_first_step_newton_reference",
+    }
+)
+_UNSEALED_RECORD_NAMES = frozenset({*_UNSEALED_RECORD_NAMES_V1, "gaia_asset_bundle", "execution_authentication"})
+_SEALED_RECORD_NAMES_V1 = frozenset(
+    {
+        *_UNSEALED_RECORD_NAMES_V1,
+        "npz_filename",
+        "npz_file_sha256",
+        "arrays",
+        "record_sha256",
     }
 )
 _SEALED_RECORD_NAMES = frozenset(
@@ -311,7 +334,47 @@ _SPECS = {
         reference_iterations=20,
         camera_direction=(1.4, -2.0, 0.35),
     ),
+    "gaia-bunny-small": RecordingSpec(
+        key="gaia-bunny-small",
+        display_name="Gaia bunny_small: static support under gravity and tip load",
+        substeps_per_source_frame=6,
+        reference_iterations=40,
+        camera_direction=(1.25, -1.8, 0.55),
+    ),
+    "gaia-armadilo-lowres": RecordingSpec(
+        key="gaia-armadilo-lowres",
+        display_name="Gaia Armadilo_lowres: static support under gravity and tip load",
+        substeps_per_source_frame=6,
+        reference_iterations=40,
+        camera_direction=(1.4, -1.8, 0.35),
+    ),
 }
+_GAIA_SCENE_ASSETS: Mapping[str, tuple[str, float]] = types.MappingProxyType(
+    {
+        "gaia-bunny-small": ("bunny_small", 0.1),
+        "gaia-armadilo-lowres": ("Armadilo_lowres", 1.0),
+    }
+)
+_GAIA_BUNDLE_ROOT_RELATIVE = f"gaia-{GAIA_SOURCE_REVISION[:10]}"
+_GAIA_BUNDLE_FILES: Mapping[str, tuple[int, str, str]] = types.MappingProxyType(
+    {
+        "LICENSE": (
+            11357,
+            "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+        ),
+        "Data/mesh_models/t/bunny_small.t": (
+            227758,
+            "5052f098fd0eba9efa20c6dbb4a8915f50df09948a4b9d438a44976e86f9b746",
+            "200198bea3ceb65dad808d5c7058ff6913008772",
+        ),
+        "Data/mesh_models/t/Armadilo_lowres.t": (
+            584313,
+            "6226e096aa61f27ec4de582fcf82d834bf2647bbfcbaefb0ba9c320d99809644",
+            "15553dbe3eaabd1a946beb7df1389ca9b3423567",
+        ),
+    }
+)
 
 
 def recording_spec(scene_key: str) -> RecordingSpec:
@@ -322,12 +385,138 @@ def recording_spec(scene_key: str) -> RecordingSpec:
         raise ValueError(f"scene must be one of {tuple(_SPECS)}") from error
 
 
-def build_recording_scene(scene_key: str) -> TetBenchmarkScene:
-    """Build the rest-state scene used to start a recording."""
+def _resolve_gaia_asset_root(value: str | os.PathLike[str] | None) -> pathlib.Path:
+    raw = os.environ.get("PSS_GAIA_ASSET_ROOT") if value is None else value
+    if raw is None or not str(raw):
+        raise ValueError("Gaia recording scenes require --gaia-asset-root or PSS_GAIA_ASSET_ROOT")
+    root = pathlib.Path(raw).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"Gaia asset root is not a directory: {root}")
+    return root
+
+
+def _gaia_asset_bundle_manifest(scene_key: str) -> dict[str, object] | None:
+    if scene_key not in _GAIA_SCENE_ASSETS:
+        return None
+    asset_name, unit_scale = _GAIA_SCENE_ASSETS[scene_key]
+    payload: dict[str, object] = {
+        "contract": GAIA_ASSET_BUNDLE_SCHEMA,
+        "source_repository_url": GAIA_REPOSITORY_URL,
+        "source_revision": GAIA_SOURCE_REVISION,
+        "bundle_root_relative_path": _GAIA_BUNDLE_ROOT_RELATIVE,
+        "selected_asset_name": asset_name,
+        "selected_asset_relative_path": GAIA_ASSETS[asset_name].relative_path,
+        "unit_scale_m_per_source_unit": unit_scale,
+        "files": {
+            relative: {"bytes": size, "sha256": sha256, "git_blob_oid": blob_oid}
+            for relative, (size, sha256, blob_oid) in _GAIA_BUNDLE_FILES.items()
+        },
+    }
+    payload["manifest_sha256"] = hashlib.sha256(_canonical_json(payload)).hexdigest()
+    return payload
+
+
+def _validate_gaia_asset_bundle_manifest(value: object, scene_key: str) -> None:
+    expected = _gaia_asset_bundle_manifest(scene_key)
+    if _canonical_json(value) != _canonical_json(expected):
+        raise ValueError("recording Gaia asset bundle manifest is not canonical")
+
+
+def _copy_gaia_asset_bundle(source_root: pathlib.Path, output_directory: pathlib.Path) -> pathlib.Path:
+    destination_root = output_directory / _GAIA_BUNDLE_ROOT_RELATIVE
+    if destination_root.exists():
+        if destination_root.is_symlink() or not destination_root.is_dir():
+            raise RuntimeError("existing Gaia bundle root must be a real directory")
+    else:
+        destination_root.mkdir()
+    for relative, (expected_size, expected_sha256, _blob_oid) in _GAIA_BUNDLE_FILES.items():
+        source = source_root / pathlib.PurePosixPath(relative)
+        if not source.is_file() or source.stat().st_size != expected_size or _file_sha256(source) != expected_sha256:
+            raise ValueError(f"Gaia bundle source file differs from its pinned bytes: {relative}")
+        destination = destination_root / pathlib.PurePosixPath(relative)
+        parent = destination_root
+        for component in pathlib.PurePosixPath(relative).parts[:-1]:
+            parent /= component
+            if parent.exists():
+                if parent.is_symlink() or not parent.is_dir():
+                    raise RuntimeError(f"existing Gaia bundle directory must not redirect: {relative}")
+            else:
+                parent.mkdir()
+        if destination.exists():
+            if destination.is_symlink():
+                raise RuntimeError(f"existing Gaia bundle file must not be a symlink: {relative}")
+            if destination.stat().st_size != expected_size or _file_sha256(destination) != expected_sha256:
+                raise RuntimeError(f"existing Gaia bundle file differs from its pinned bytes: {relative}")
+            continue
+        with tempfile.NamedTemporaryFile(prefix=".gaia-asset-", dir=destination.parent, delete=False) as stream:
+            temporary = pathlib.Path(stream.name)
+        try:
+            shutil.copyfile(source, temporary)
+            if temporary.stat().st_size != expected_size or _file_sha256(temporary) != expected_sha256:
+                raise RuntimeError(f"copied Gaia bundle file differs from its pinned bytes: {relative}")
+            os.replace(temporary, destination)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    return destination_root
+
+
+def _verify_gaia_asset_bundle_files(root: pathlib.Path) -> None:
+    for relative, (expected_size, expected_sha256, _blob_oid) in _GAIA_BUNDLE_FILES.items():
+        path = root
+        redirected = False
+        for component in pathlib.PurePosixPath(relative).parts:
+            path /= component
+            redirected = redirected or path.is_symlink()
+        if (
+            redirected
+            or not path.is_file()
+            or path.stat().st_size != expected_size
+            or _file_sha256(path) != expected_sha256
+        ):
+            raise ValueError(f"Gaia asset bundle file differs from its pinned bytes: {relative}")
+
+
+def _bundle_gaia_asset_root(
+    scene_key: object,
+    bundle_directory: pathlib.Path,
+    explicit_root: str | os.PathLike[str] | None,
+) -> str | os.PathLike[str] | None:
+    if type(scene_key) is not str or scene_key not in _GAIA_SCENE_ASSETS or explicit_root is not None:
+        return explicit_root
+    bundled = bundle_directory / _GAIA_BUNDLE_ROOT_RELATIVE
+    if bundled.is_symlink():
+        raise ValueError("packaged Gaia bundle root must not redirect outside the recording directory")
+    return bundled if bundled.is_dir() else None
+
+
+def build_recording_scene(
+    scene_key: str,
+    *,
+    gaia_asset_root: str | os.PathLike[str] | None = None,
+) -> TetBenchmarkScene:
+    """Build the rest-state scene used to start a recording.
+
+    Args:
+        scene_key: Canonical recording scene key.
+        gaia_asset_root: Gaia checkout root for a Gaia scene. Uses
+            ``PSS_GAIA_ASSET_ROOT`` when omitted.
+    """
     recording_spec(scene_key)
     if scene_key == "refinement-medium":
+        if gaia_asset_root is not None:
+            raise ValueError("gaia_asset_root is valid only for Gaia recording scenes")
         return build_refinement_scene("medium")
-    return build_twist_scene(twist_angle=0.0, one_shot_diagnostic=True)
+    if scene_key == "twist":
+        if gaia_asset_root is not None:
+            raise ValueError("gaia_asset_root is valid only for Gaia recording scenes")
+        return build_twist_scene(twist_angle=0.0, one_shot_diagnostic=True)
+    asset_name, unit_scale = _GAIA_SCENE_ASSETS[scene_key]
+    return build_registered_gaia_scene(
+        asset_name,
+        _resolve_gaia_asset_root(gaia_asset_root),
+        unit_scale_m_per_source_unit=unit_scale,
+    )
 
 
 def _canonical_json(value: object) -> bytes:
@@ -348,6 +537,84 @@ def array_sha256(value: np.ndarray) -> str:
     digest.update(json.dumps(array.shape, separators=(",", ":")).encode("ascii"))
     digest.update(memoryview(array).cast("B"))
     return digest.hexdigest()
+
+
+def _execution_authentication_policy() -> dict[str, object]:
+    return {
+        "contract": GENERATION_RECEIPT_SCHEMA,
+        "producer_process_receipt_required_at_seal": True,
+        "receipt_is_one_shot": True,
+        "offline_cryptographic_attestation": False,
+        "transition_replay_at_load": False,
+        "claim_scope": "process-local accidental producer mixup detection at generation-to-seal boundary",
+    }
+
+
+def _trajectory_content_sha256(
+    metadata: Mapping[str, object],
+    arrays: Mapping[str, np.ndarray],
+) -> str:
+    payload = {
+        "metadata": metadata,
+        "arrays": {
+            name: {
+                "dtype": array.dtype.name,
+                "shape": list(array.shape),
+                "array_sha256": array_sha256(array),
+            }
+            for name, array in sorted(arrays.items())
+        },
+    }
+    return hashlib.sha256(_canonical_json(payload)).hexdigest()
+
+
+def _make_generated_trajectory_registry():
+    """Create one process-local, identity-bound generation receipt registry."""
+    registry: dict[int, tuple[Mapping[str, object], Mapping[str, np.ndarray], str, bool]] = {}
+    lock = threading.Lock()
+
+    def issue(metadata: Mapping[str, object], arrays: Mapping[str, np.ndarray]) -> None:
+        content_sha256 = _trajectory_content_sha256(metadata, arrays)
+        with lock:
+            key = id(metadata)
+            if key in registry:
+                raise RuntimeError("trajectory metadata already has an unconsumed generation receipt")
+            # Strong references prevent Python from reusing either identity.
+            registry[key] = (metadata, arrays, content_sha256, False)
+
+    def consume(
+        metadata: Mapping[str, object],
+        arrays: Mapping[str, np.ndarray],
+        frozen_metadata: Mapping[str, object],
+        canonical_arrays: Mapping[str, np.ndarray],
+    ) -> None:
+        with lock:
+            registered = registry.get(id(metadata))
+            if registered is None or registered[0] is not metadata or registered[1] is not arrays:
+                raise RuntimeError("recording was not returned by this process's exact generation run")
+            if registered[3]:
+                raise RuntimeError("recording generation receipt is already reserved by a seal attempt")
+            if _trajectory_content_sha256(frozen_metadata, canonical_arrays) != registered[2]:
+                raise RuntimeError("recording changed after its process-local generation receipt was issued")
+            registry[id(metadata)] = (*registered[:3], True)
+
+    def finalize(metadata: Mapping[str, object], *, success: bool) -> None:
+        with lock:
+            registered = registry.get(id(metadata))
+            if registered is None or registered[0] is not metadata or not registered[3]:
+                raise RuntimeError("recording generation receipt reservation is not live")
+            if success:
+                del registry[id(metadata)]
+            else:
+                registry[id(metadata)] = (*registered[:3], False)
+
+    return issue, consume, finalize
+
+
+_issue_generated_trajectory, _consume_generated_trajectory, _finalize_generated_trajectory = (
+    _make_generated_trajectory_registry()
+)
+del _make_generated_trajectory_registry
 
 
 def _file_sha256(path: pathlib.Path) -> str:
@@ -517,7 +784,12 @@ def _validate_generation_source_manifest(value: object) -> dict[str, object]:
         },
         name="generation source manifest",
     )
-    if manifest["contract"] != GENERATION_SOURCE_SCHEMA:
+    contract = manifest["contract"]
+    if contract == GENERATION_SOURCE_SCHEMA:
+        expected_source_paths = _GENERATION_SOURCE_PATHS
+    elif contract == GENERATION_SOURCE_SCHEMA_V2:
+        expected_source_paths = _GENERATION_SOURCE_PATHS_V2
+    else:
         raise ValueError("generation source contract is not canonical")
     object_format = manifest["git_object_format"]
     if type(object_format) is not str:
@@ -531,7 +803,7 @@ def _validate_generation_source_manifest(value: object) -> dict[str, object]:
     for name in ("newton_version", "warp_version"):
         if type(manifest[name]) is not str or not manifest[name]:
             raise ValueError(f"generation source {name} must be a non-empty string")
-    files = _require_exact_keys(manifest["files"], set(_GENERATION_SOURCE_PATHS), name="generation source files")
+    files = _require_exact_keys(manifest["files"], set(expected_source_paths), name="generation source files")
     for relative, item_value in files.items():
         item = _require_exact_keys(item_value, {"sha256", "git_blob_oid"}, name=f"generation source {relative}")
         _require_sha256(item["sha256"], name=f"generation source {relative} SHA-256")
@@ -638,12 +910,12 @@ def twist_pin_targets(scene: TetBenchmarkScene, source_frame: int) -> np.ndarray
 
 def pin_targets_for_frame(scene_key: str, scene: TetBenchmarkScene, source_frame: int) -> np.ndarray:
     """Return targets held constant through one source frame's substeps."""
-    if scene_key == "refinement-medium":
-        if type(source_frame) is not int or source_frame < 0:
-            raise ValueError("source_frame must be a non-negative built-in int")
-        return np.array(scene.pin_targets, dtype=np.float64, copy=True)
     recording_spec(scene_key)
-    return twist_pin_targets(scene, source_frame)
+    if type(source_frame) is not int or source_frame < 0:
+        raise ValueError("source_frame must be a non-negative built-in int")
+    if scene_key == "twist":
+        return twist_pin_targets(scene, source_frame)
+    return np.array(scene.pin_targets, dtype=np.float64, copy=True)
 
 
 def fixed_camera(
@@ -1141,10 +1413,22 @@ def _metrics_policy() -> dict[str, object]:
 
 
 def _source_schedule(scene_key: str) -> str:
+    recording_spec(scene_key)
+    if scene_key == "twist":
+        return "angle(f)=2*pi if f>=200 else (f/200)*2*pi; target held through five substeps"
+    if scene_key == "refinement-medium":
+        return "fixed top face under gravity"
+    return "fixed support slab under gravity and tip load"
+
+
+def _gaia_protocol_annotation(scene_key: object) -> str | None:
+    """Return the physical Gaia protocol shown directly on rendered frames."""
+    if type(scene_key) is not str or scene_key not in _GAIA_SCENE_ASSETS:
+        return None
+    _asset_name, unit_scale = _GAIA_SCENE_ASSETS[scene_key]
     return (
-        "fixed top face under gravity"
-        if scene_key == "refinement-medium"
-        else "angle(f)=2*pi if f>=200 else (f/200)*2*pi; target held through five substeps"
+        f"scale {unit_scale:g} m/source unit · fixed min-y 2% slab · "
+        "+x 10 N total on max-y 2% slab · gravity -y 9.81 m/s²"
     )
 
 
@@ -1168,12 +1452,26 @@ def generate_trajectory(
     panel_width: int = 640,
     panel_height: int = 720,
     static_reference: dict[str, object] | None = None,
+    gaia_asset_root: str | os.PathLike[str] | None = None,
 ) -> tuple[dict[str, object], dict[str, np.ndarray]]:
-    """Generate and independently score one three-method trajectory."""
+    """Generate and independently score one three-method trajectory.
+
+    Args:
+        scene_key: Canonical recording scene key.
+        source_frames: Number of 60 Hz source frames to simulate.
+        device: Claimed CUDA device visible to this process.
+        panel_width: Width of each output panel in pixels.
+        panel_height: Height of each output panel in pixels.
+        static_reference: Optional authenticated medium-scene Newton evidence.
+        gaia_asset_root: Gaia checkout root for a Gaia scene.
+    """
     if type(source_frames) is not int or source_frames < 1:
         raise ValueError("source_frames must be a positive built-in int")
     spec = recording_spec(scene_key)
-    scene = build_recording_scene(scene_key)
+    if scene_key in _GAIA_SCENE_ASSETS:
+        gaia_asset_root = _resolve_gaia_asset_root(gaia_asset_root)
+        _verify_gaia_asset_bundle_files(gaia_asset_root)
+    scene = build_recording_scene(scene_key, gaia_asset_root=gaia_asset_root)
     requested_device = wp.get_device(device)
     if not requested_device.is_cuda:
         raise ValueError("MG-VBD recording generation requires a claimed CUDA device")
@@ -1331,11 +1629,36 @@ def generate_trajectory(
         "device": device_record,
         "camera": camera,
         "static_first_step_newton_reference": static_reference,
+        "gaia_asset_bundle": _gaia_asset_bundle_manifest(scene_key),
+        "execution_authentication": _execution_authentication_policy(),
     }
+    _validate_recording_bundle(
+        metadata,
+        arrays,
+        sealed=False,
+        require_current_generation_source=True,
+        gaia_asset_root=gaia_asset_root,
+    )
+    _issue_generated_trajectory(metadata, arrays)
     return metadata, arrays
 
 
-def _validate_scene_manifest(value: object, scene: TetBenchmarkScene) -> None:
+def _historical_scene_manifest(scene: TetBenchmarkScene, revision: str) -> dict[str, object]:
+    manifest = json.loads(_canonical_json(scene.manifest()))
+    del manifest["scene_sha256"]
+    manifest["metadata"]["newton_revision"] = revision
+    manifest["metadata"]["dirty_tree_sha256"] = None
+    manifest["scene_sha256"] = hashlib.sha256(_canonical_json(manifest)).hexdigest()
+    return manifest
+
+
+def _validate_scene_manifest(
+    value: object,
+    scene: TetBenchmarkScene,
+    *,
+    require_current: bool,
+    expected_revision: str,
+) -> None:
     expected_names = {
         "schema_version",
         "name",
@@ -1356,11 +1679,31 @@ def _validate_scene_manifest(value: object, scene: TetBenchmarkScene) -> None:
     if hashlib.sha256(_canonical_json(unsigned)).hexdigest() != expected_sha256:
         raise ValueError("scene manifest semantic digest does not match")
     current = scene.manifest()
-    if manifest != current:
+    manifest_bytes = _canonical_json(manifest)
+    current_bytes = _canonical_json(current)
+    historical_bytes = _canonical_json(_historical_scene_manifest(scene, expected_revision))
+    if require_current and manifest_bytes not in (current_bytes, historical_bytes):
         raise ValueError("scene manifest differs from the current canonical scene")
+    if not require_current and manifest_bytes != historical_bytes:
+        raise ValueError("historical scene manifest differs from its exact clean physical reconstruction")
 
 
-def _validate_compact_static_reference(value: object, scene: TetBenchmarkScene) -> None:
+def _historical_static_reference_identities(scene: TetBenchmarkScene, revision: str) -> tuple[str, str, str]:
+    historical_scene = str(_historical_scene_manifest(scene, revision)["scene_sha256"])
+    historical_objective = json.loads(_canonical_json(common_objective_manifest(scene, build_common_problem(scene))))
+    del historical_objective["objective_instance_sha256"]
+    historical_objective["scene_sha256"] = historical_scene
+    historical_objective_sha256 = hashlib.sha256(_canonical_json(historical_objective)).hexdigest()
+    return historical_scene, historical_scene, historical_objective_sha256
+
+
+def _validate_compact_static_reference(
+    value: object,
+    scene: TetBenchmarkScene,
+    *,
+    require_current: bool,
+    expected_revision: str | None = None,
+) -> None:
     record = _require_exact_keys(
         value,
         {
@@ -1403,14 +1746,27 @@ def _validate_compact_static_reference(value: object, scene: TetBenchmarkScene) 
     current_physical = _scene_physical_sha256(scene)
     current_scene = str(scene.manifest()["scene_sha256"])
     current_objective = str(common_objective_manifest(scene, build_common_problem(scene))["objective_instance_sha256"])
-    if record["source_scene_sha256"] != current_scene or record["current_scene_sha256"] != current_scene:
-        raise ValueError("static Newton scene manifest is not current")
+    current_identities = (current_scene, current_scene, current_objective)
+    actual_identities = (
+        record["source_scene_sha256"],
+        record["current_scene_sha256"],
+        record["source_objective_instance_sha256"],
+    )
+    if require_current:
+        allowed_identities = {current_identities}
+        if expected_revision is not None:
+            allowed_identities.add(_historical_static_reference_identities(scene, expected_revision))
+        if actual_identities not in allowed_identities:
+            raise ValueError("static Newton scene manifest or objective is not current")
+    else:
+        if expected_revision is None:
+            raise ValueError("historical static Newton validation requires its recorded revision")
+        if actual_identities != _historical_static_reference_identities(scene, expected_revision):
+            raise ValueError("historical static Newton scene or objective identity is not canonical")
     if record["source_scene_physical_sha256"] != current_physical:
         raise ValueError("static Newton source physical scene is not current")
     if record["current_scene_physical_sha256"] != current_physical:
         raise ValueError("static Newton current physical scene digest is stale")
-    if record["source_objective_instance_sha256"] != current_objective:
-        raise ValueError("static Newton objective is not current")
     for role in ("dense", "sparse"):
         item = _require_exact_keys(
             record[role],
@@ -1494,12 +1850,29 @@ def _validate_metric_arrays(
         if not np.isnan(values[:, 0]).all() or not np.isfinite(values[:, 1:]).all():
             raise ValueError(f"metric_{name} must be NaN only on the initial frame")
 
+    if np.any(arrays["metric_determinant_min"][:, 1:] <= 0.0):
+        raise ValueError("recording trajectories contain a non-positive tetrahedron determinant")
+    if np.any(arrays["metric_inverted_tet_fraction"][:, 1:] != 0.0):
+        raise ValueError("recording trajectories contain inverted tetrahedra")
+
     for frame in range(1, stored_frames):
         reference_positions = arrays["positions"][0, frame]
         for method in range(len(METHOD_IDS)):
+            input_positions = arrays["objective_input_positions"][method, frame]
+            tets = scene.tet_indices
+            edges = np.stack(
+                (
+                    input_positions[tets[:, 1]] - input_positions[tets[:, 0]],
+                    input_positions[tets[:, 2]] - input_positions[tets[:, 0]],
+                    input_positions[tets[:, 3]] - input_positions[tets[:, 0]],
+                ),
+                axis=2,
+            )
+            if np.any(np.linalg.det(edges @ scene.tet_poses) <= 0.0):
+                raise ValueError("recording objective-input trajectory contains an inverted tetrahedron")
             objective_scene = dataclasses.replace(
                 scene,
-                x_current=arrays["objective_input_positions"][method, frame],
+                x_current=input_positions,
                 velocity=arrays["objective_input_velocities"][method, frame],
                 pin_targets=arrays["pin_targets"][frame],
             )
@@ -1521,7 +1894,7 @@ def _validate_array_manifest(value: object, arrays: Mapping[str, np.ndarray]) ->
         item = _require_exact_keys(
             manifest[name], {"dtype", "shape", "array_sha256"}, name=f"recording array manifest {name!r}"
         )
-        if item["dtype"] != array.dtype.name or item["shape"] != list(array.shape):
+        if item["dtype"] != array.dtype.name or _canonical_json(item["shape"]) != _canonical_json(list(array.shape)):
             raise ValueError(f"recording array {name!r} dtype/shape differs from its manifest")
         _require_sha256(item["array_sha256"], name=f"recording array {name!r} SHA-256")
         if item["array_sha256"] != array_sha256(array):
@@ -1534,12 +1907,17 @@ def _validate_recording_bundle(
     *,
     sealed: bool,
     require_current_generation_source: bool = False,
+    gaia_asset_root: str | os.PathLike[str] | None = None,
 ) -> None:
     """Reject a byte-valid recording whose physical or presentation semantics drifted."""
-    expected_record_names = _SEALED_RECORD_NAMES if sealed else _UNSEALED_RECORD_NAMES
+    schema = record_value.get("schema")
+    if schema == SCHEMA:
+        expected_record_names = _SEALED_RECORD_NAMES if sealed else _UNSEALED_RECORD_NAMES
+    elif schema == SCHEMA_V1:
+        expected_record_names = _SEALED_RECORD_NAMES_V1 if sealed else _UNSEALED_RECORD_NAMES_V1
+    else:
+        raise ValueError(f"recording must use schema {SCHEMA!r} or {SCHEMA_V1!r}")
     record = _require_exact_keys(record_value, expected_record_names, name="recording metadata")
-    if record["schema"] != SCHEMA:
-        raise ValueError(f"recording must use schema {SCHEMA!r}")
     arrays = _require_exact_keys(arrays_value, set(_ARRAY_NAMES), name="recording arrays")
     scene_key = record["scene_key"]
     if type(scene_key) is not str:
@@ -1555,23 +1933,43 @@ def _validate_recording_bundle(
         del unsigned["record_sha256"]
         if hashlib.sha256(_canonical_json(unsigned)).hexdigest() != expected_record_sha256:
             raise ValueError("recording semantic digest does not match")
-    scene = build_recording_scene(scene_key)
+    scene = build_recording_scene(scene_key, gaia_asset_root=gaia_asset_root)
     if record["scene_display_name"] != spec.display_name:
         raise ValueError("recording scene display name is not canonical")
-    _validate_scene_manifest(record["scene_manifest"], scene)
+    revision = _require_git_revision(record["git_revision"], name="recording Git revision")
+    _validate_scene_manifest(
+        record["scene_manifest"],
+        scene,
+        require_current=not sealed,
+        expected_revision=revision,
+    )
     if record["scene_physical_sha256"] != _scene_physical_sha256(scene):
         raise ValueError("recording physical scene digest differs from the current scene")
-    revision = _require_git_revision(record["git_revision"], name="recording Git revision")
     generation_source = _validate_generation_source_manifest(record["generation_source"])
+    if schema == SCHEMA_V1:
+        if scene_key in _GAIA_SCENE_ASSETS or generation_source["contract"] != GENERATION_SOURCE_SCHEMA_V2:
+            raise ValueError("v1 recordings require a non-Gaia v2 generation source contract")
+    else:
+        _validate_gaia_asset_bundle_manifest(record["gaia_asset_bundle"], scene_key)
+        if _canonical_json(record["execution_authentication"]) != _canonical_json(_execution_authentication_policy()):
+            raise ValueError("recording execution-authentication boundary is not canonical")
+        if generation_source["contract"] != GENERATION_SOURCE_SCHEMA:
+            raise ValueError("v2 recordings require the v3 generation source contract")
+        if scene_key in _GAIA_SCENE_ASSETS:
+            _verify_gaia_asset_bundle_files(_resolve_gaia_asset_root(gaia_asset_root))
     if generation_source["git_revision"] != revision:
         raise ValueError("recording Git revision differs from its generation source")
-    if require_current_generation_source and generation_source != _generation_source_manifest():
+    if require_current_generation_source and _canonical_json(generation_source) != _canonical_json(
+        _generation_source_manifest()
+    ):
         raise ValueError("recording generation source changed between simulation and sealing")
-    if record["method_order"] != list(METHOD_IDS) or record["methods"] != _method_records(spec):
+    if _canonical_json(record["method_order"]) != _canonical_json(list(METHOD_IDS)) or _canonical_json(
+        record["methods"]
+    ) != _canonical_json(_method_records(spec)):
         raise ValueError("recording method order or claims are not canonical")
-    if record["reference_policy"] != _reference_policy(spec):
+    if _canonical_json(record["reference_policy"]) != _canonical_json(_reference_policy(spec)):
         raise ValueError("recording numerical-reference policy is not canonical")
-    if record["metrics"] != _metrics_policy():
+    if _canonical_json(record["metrics"]) != _canonical_json(_metrics_policy()):
         raise ValueError("recording metric policy is not canonical")
 
     simulation = _require_exact_keys(
@@ -1589,13 +1987,25 @@ def _validate_recording_bundle(
     )
     source_frames = simulation["source_frames"]
     stored_frames = simulation["stored_frames_including_initial"]
-    if type(source_frames) is not int or source_frames < 1 or stored_frames != source_frames + 1:
+    if (
+        type(source_frames) is not int
+        or source_frames < 1
+        or type(stored_frames) is not int
+        or stored_frames != source_frames + 1
+    ):
         raise ValueError("recording frame counts are not canonical")
-    if simulation["source_frame_rate_hz"] != 60:
+    if type(simulation["source_frame_rate_hz"]) is not int or simulation["source_frame_rate_hz"] != 60:
         raise ValueError("recording source frame rate must be exactly 60 Hz")
-    if simulation["substeps_per_source_frame"] != spec.substeps_per_source_frame:
+    if (
+        type(simulation["substeps_per_source_frame"]) is not int
+        or simulation["substeps_per_source_frame"] != spec.substeps_per_source_frame
+    ):
         raise ValueError("recording substep count differs from its scene policy")
-    if simulation["atomic_dt_seconds"] != scene.dt or simulation["source_schedule"] != _source_schedule(scene_key):
+    if (
+        type(simulation["atomic_dt_seconds"]) is not float
+        or simulation["atomic_dt_seconds"] != scene.dt
+        or _canonical_json(simulation["source_schedule"]) != _canonical_json(_source_schedule(scene_key))
+    ):
         raise ValueError("recording timestep or source schedule is not canonical")
 
     method_count = len(METHOD_IDS)
@@ -1619,7 +2029,9 @@ def _validate_recording_bundle(
     expected_times = np.arange(stored_frames, dtype=np.float64) * spec.substeps_per_source_frame * scene.dt
     if not np.array_equal(time_seconds, expected_times):
         raise ValueError("recording time grid is not canonical")
-    if simulation["stored_duration_seconds"] != float(expected_times[-1]):
+    if type(simulation["stored_duration_seconds"]) is not float or simulation["stored_duration_seconds"] != float(
+        expected_times[-1]
+    ):
         raise ValueError("recording stored duration differs from its time grid")
     if not np.array_equal(source_indices, np.arange(-1, source_frames, dtype=np.int64)):
         raise ValueError("recording source-frame indices are not canonical")
@@ -1699,41 +2111,44 @@ def _validate_recording_bundle(
         panel_height=panel_height,
         direction=spec.camera_direction,
     )
-    if camera != expected_camera:
+    if _canonical_json(camera) != _canonical_json(expected_camera):
         raise ValueError("recording fixed camera does not match the full trajectory union")
     static_reference = record["static_first_step_newton_reference"]
     if static_reference is not None:
         if scene_key != "refinement-medium":
             raise ValueError("static Newton evidence may only accompany refinement-medium")
-        _validate_compact_static_reference(static_reference, scene)
+        _validate_compact_static_reference(
+            static_reference,
+            scene,
+            require_current=not sealed,
+            expected_revision=revision,
+        )
 
     _validate_metric_arrays(arrays, scene, stored_frames)
 
 
-def save_content_addressed_bundle(
-    output_directory: str | os.PathLike[str],
-    metadata: Mapping[str, object],
-    arrays: Mapping[str, np.ndarray],
+def _write_frozen_content_addressed_bundle(
+    directory: pathlib.Path,
+    frozen_metadata: dict[str, object],
+    canonical_arrays: Mapping[str, np.ndarray],
+    gaia_asset_root: pathlib.Path | None,
 ) -> pathlib.Path:
-    """Atomically write one self-verifying content-addressed NPZ/JSON pair."""
-    directory = pathlib.Path(output_directory).resolve()
-    directory.mkdir(parents=True, exist_ok=True)
-    canonical_arrays = {name: _canonical_array(np.asarray(value)) for name, value in sorted(arrays.items())}
-    _validate_recording_bundle(
-        dict(metadata),
-        canonical_arrays,
-        sealed=False,
-        require_current_generation_source=True,
-    )
+    scene_key = frozen_metadata.get("scene_key")
+    is_gaia = type(scene_key) is str and scene_key in _GAIA_SCENE_ASSETS
+    if is_gaia:
+        assert gaia_asset_root is not None
+        _copy_gaia_asset_bundle(gaia_asset_root, directory)
 
     with tempfile.NamedTemporaryFile(prefix=".trajectory-", suffix=".npz", dir=directory, delete=False) as stream:
         temporary_npz = pathlib.Path(stream.name)
     try:
         np.savez_compressed(temporary_npz, **canonical_arrays)
         npz_sha256 = _file_sha256(temporary_npz)
-        scene_key = str(metadata.get("scene_key", "recording"))
-        npz_name = f"{scene_key}-{npz_sha256}.npz"
+        scene_key_name = str(frozen_metadata.get("scene_key", "recording"))
+        npz_name = f"{scene_key_name}-{npz_sha256}.npz"
         npz_path = directory / npz_name
+        if npz_path.is_symlink():
+            raise RuntimeError("existing content-addressed NPZ must not be a symlink")
         if npz_path.exists():
             if _file_sha256(npz_path) != npz_sha256:
                 raise RuntimeError("existing content-addressed NPZ failed its filename digest")
@@ -1752,7 +2167,7 @@ def save_content_addressed_bundle(
         }
         for name, array in canonical_arrays.items()
     }
-    payload = dict(metadata)
+    payload = dict(frozen_metadata)
     payload.update(
         {
             "npz_filename": npz_name,
@@ -1762,7 +2177,9 @@ def save_content_addressed_bundle(
     )
     record_sha256 = hashlib.sha256(_canonical_json(payload)).hexdigest()
     payload["record_sha256"] = record_sha256
-    json_path = directory / f"{metadata.get('scene_key', 'recording')}-{record_sha256}.json"
+    json_path = directory / f"{frozen_metadata.get('scene_key', 'recording')}-{record_sha256}.json"
+    if json_path.is_symlink():
+        raise RuntimeError("existing content-addressed JSON must not be a symlink")
     serialized = (json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
     if json_path.exists():
         if json_path.read_bytes() != serialized:
@@ -1771,18 +2188,82 @@ def save_content_addressed_bundle(
         with tempfile.NamedTemporaryFile(prefix=".record-", suffix=".json", dir=directory, delete=False) as stream:
             temporary_json = pathlib.Path(stream.name)
             stream.write(serialized)
-        os.replace(temporary_json, json_path)
+        try:
+            os.replace(temporary_json, json_path)
+        finally:
+            if temporary_json.exists():
+                temporary_json.unlink()
     return json_path
+
+
+def save_content_addressed_bundle(
+    output_directory: str | os.PathLike[str],
+    metadata: Mapping[str, object],
+    arrays: Mapping[str, np.ndarray],
+    *,
+    gaia_asset_root: str | os.PathLike[str] | None = None,
+) -> pathlib.Path:
+    """Atomically write one self-verifying content-addressed NPZ/JSON pair.
+
+    Args:
+        output_directory: Destination directory for the sealed bundle.
+        metadata: Unsealed trajectory metadata.
+        arrays: Named trajectory arrays.
+        gaia_asset_root: Gaia checkout root for a Gaia scene. Exact source
+            assets and the license are copied into the sealed bundle.
+    """
+    frozen_metadata = json.loads(_canonical_json(metadata))
+    if type(frozen_metadata) is not dict:
+        raise ValueError("recording metadata must be a JSON object")
+    directory = pathlib.Path(output_directory).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    scene_key = frozen_metadata.get("scene_key")
+    is_gaia = type(scene_key) is str and scene_key in _GAIA_SCENE_ASSETS
+    resolved_gaia_root = _resolve_gaia_asset_root(gaia_asset_root) if is_gaia else None
+    canonical_arrays = {
+        name: _canonical_array(np.asarray(value)).copy(order="C") for name, value in sorted(arrays.items())
+    }
+    _validate_recording_bundle(
+        frozen_metadata,
+        canonical_arrays,
+        sealed=False,
+        require_current_generation_source=True,
+        gaia_asset_root=resolved_gaia_root,
+    )
+    _consume_generated_trajectory(metadata, arrays, frozen_metadata, canonical_arrays)
+    try:
+        result = _write_frozen_content_addressed_bundle(
+            directory,
+            frozen_metadata,
+            canonical_arrays,
+            resolved_gaia_root,
+        )
+    except BaseException:
+        _finalize_generated_trajectory(metadata, success=False)
+        raise
+    _finalize_generated_trajectory(metadata, success=True)
+    return result
 
 
 def load_content_addressed_bundle(
     json_path: str | os.PathLike[str],
+    *,
+    gaia_asset_root: str | os.PathLike[str] | None = None,
 ) -> tuple[dict[str, object], dict[str, np.ndarray]]:
-    """Load a recording only after verifying every semantic and byte digest."""
-    path = pathlib.Path(json_path).resolve()
+    """Load a recording only after verifying every semantic and byte digest.
+
+    Args:
+        json_path: Content-addressed recording JSON path.
+        gaia_asset_root: Optional Gaia checkout root. A packaged sibling asset
+            root is used automatically when present.
+    """
+    unresolved_path = pathlib.Path(json_path).expanduser()
+    if unresolved_path.is_symlink():
+        raise ValueError("recording JSON must not be a symlink")
+    path = unresolved_path.resolve()
     record = json.loads(path.read_text(encoding="utf-8"))
-    if type(record) is not dict or record.get("schema") != SCHEMA:
-        raise ValueError(f"recording must use schema {SCHEMA!r}")
+    if type(record) is not dict or record.get("schema") not in {SCHEMA, SCHEMA_V1}:
+        raise ValueError(f"recording must use schema {SCHEMA!r} or {SCHEMA_V1!r}")
     expected_record_sha256 = _require_sha256(record.get("record_sha256"), name="record SHA-256")
     unsigned = dict(record)
     del unsigned["record_sha256"]
@@ -1797,6 +2278,8 @@ def load_content_addressed_bundle(
     if record.get("npz_filename") != expected_npz_filename:
         raise ValueError("recording NPZ filename is not content addressed")
     npz_path = path.parent / expected_npz_filename
+    if npz_path.is_symlink():
+        raise ValueError("recording NPZ must not be a symlink")
     if _file_sha256(npz_path) != npz_sha256:
         raise ValueError("recording NPZ bytes or filename do not match")
     array_records = record.get("arrays")
@@ -1810,11 +2293,14 @@ def load_content_addressed_bundle(
         item = array_records[name]
         if type(item) is not dict:
             raise ValueError(f"recording array manifest for {name!r} is invalid")
-        if item.get("dtype") != array.dtype.name or item.get("shape") != list(array.shape):
+        if item.get("dtype") != array.dtype.name or _canonical_json(item.get("shape")) != _canonical_json(
+            list(array.shape)
+        ):
             raise ValueError(f"recording array {name!r} dtype/shape differs from its manifest")
         if item.get("array_sha256") != array_sha256(array):
             raise ValueError(f"recording array {name!r} digest differs from its manifest")
-    _validate_recording_bundle(record, arrays, sealed=True)
+    resolved_gaia_root = _bundle_gaia_asset_root(record.get("scene_key"), path.parent, gaia_asset_root)
+    _validate_recording_bundle(record, arrays, sealed=True, gaia_asset_root=resolved_gaia_root)
     return record, arrays
 
 
@@ -2070,8 +2556,17 @@ def _save_render_record(path: pathlib.Path, record: Mapping[str, object]) -> pat
     return path
 
 
-def load_render_record(path: str | os.PathLike[str]) -> dict[str, object]:
-    """Load and verify an MP4 render sidecar and both files it binds."""
+def load_render_record(
+    path: str | os.PathLike[str],
+    *,
+    gaia_asset_root: str | os.PathLike[str] | None = None,
+) -> dict[str, object]:
+    """Load and verify an MP4 render sidecar and both files it binds.
+
+    Args:
+        path: Render sidecar JSON path.
+        gaia_asset_root: Optional Gaia checkout root for a Gaia recording.
+    """
     sidecar = pathlib.Path(path).resolve()
     record = _validate_render_record(json.loads(sidecar.read_text(encoding="utf-8")))
     if sidecar.name != f"{record['mp4_filename']}.render.json":
@@ -2080,7 +2575,7 @@ def load_render_record(path: str | os.PathLike[str]) -> dict[str, object]:
     output = sidecar.parent / record["mp4_filename"]
     if _file_sha256(bundle) != record["bundle_json_file_sha256"]:
         raise ValueError("render record bundle JSON bytes differ")
-    bundle_record, bundle_arrays = load_content_addressed_bundle(bundle)
+    bundle_record, bundle_arrays = load_content_addressed_bundle(bundle, gaia_asset_root=gaia_asset_root)
     if bundle_record["record_sha256"] != record["bundle_record_sha256"]:
         raise ValueError("render record bundle semantic identity differs")
     if record["source_frame_rate_hz"] != bundle_record["simulation"]["source_frame_rate_hz"]:
@@ -2215,8 +2710,10 @@ def label_panel(
     if method_index == 1 and frame_index > 0:
         accepted = arrays["mg_last_gate_accepted"][frame_index]
         gate_text = f"last atomic gates: {int(np.count_nonzero(accepted == 1))}/{accepted.size} accepted"
-        draw.rounded_rectangle((16, height - 82, width - 16, height - 44), radius=8, fill=(8, 13, 20, 205))
-        draw.text((28, height - 74), gate_text, font=small_font, fill=colors[method_index])
+        footer_height = 62 if _gaia_protocol_annotation(record.get("scene_key")) is not None else 34
+        badge_bottom = height - footer_height - 10
+        draw.rounded_rectangle((16, badge_bottom - 38, width - 16, badge_bottom), radius=8, fill=(8, 13, 20, 205))
+        draw.text((28, badge_bottom - 30), gate_text, font=small_font, fill=colors[method_index])
     return np.asarray(image.convert("RGB"))
 
 
@@ -2243,7 +2740,11 @@ def label_composite(
     if playback:
         left += f"  ·  {playback}"
     right = "* high-budget public VBD trajectory; numerical comparison, not Newton or ground truth"
-    draw.rectangle((0, height - 34, width, height), fill=(4, 7, 12, 230))
+    protocol = _gaia_protocol_annotation(record.get("scene_key"))
+    footer_height = 62 if protocol is not None else 34
+    draw.rectangle((0, height - footer_height, width, height), fill=(4, 7, 12, 230))
+    if protocol is not None:
+        draw.text((16, height - 55), protocol, font=font, fill=(170, 220, 255, 255))
     draw.text((16, height - 27), left, font=font, fill=(230, 235, 242, 255))
     right_box = draw.textbbox((0, 0), right, font=font)
     draw.text((width - (right_box[2] - right_box[0]) - 16, height - 27), right, font=font, fill=(255, 214, 92, 255))
@@ -2255,14 +2756,24 @@ def render_bundle(
     output_mp4: str | os.PathLike[str],
     *,
     fps: int | None = None,
+    gaia_asset_root: str | os.PathLike[str] | None = None,
 ) -> pathlib.Path:
-    """Render one verified trajectory bundle using a single fixed-camera viewer."""
+    """Render one verified trajectory bundle using a single fixed-camera viewer.
+
+    Args:
+        bundle_json: Content-addressed recording JSON path.
+        output_mp4: Destination MP4 path.
+        fps: Output frame rate. Uses the source rate when omitted.
+        gaia_asset_root: Optional Gaia checkout root. Packaged bundle assets
+            are used automatically when present.
+    """
     bundle = pathlib.Path(bundle_json).resolve()
-    record, arrays = load_content_addressed_bundle(bundle)
+    record, arrays = load_content_addressed_bundle(bundle, gaia_asset_root=gaia_asset_root)
     resolved_fps, playback_rate = _resolve_render_fps(record, fps)
     if record.get("method_order") != list(METHOD_IDS):
         raise ValueError("recording method order is not Reference | MG-VBD | VBD K4")
-    scene = build_recording_scene(str(record["scene_key"]))
+    resolved_gaia_root = _bundle_gaia_asset_root(record["scene_key"], bundle.parent, gaia_asset_root)
+    scene = build_recording_scene(str(record["scene_key"]), gaia_asset_root=resolved_gaia_root)
     if _scene_physical_sha256(scene) != record.get("scene_physical_sha256"):
         raise ValueError("current render scene physical content differs from the recording")
     positions = arrays["positions"]
@@ -2355,9 +2866,9 @@ def render_bundle(
 
 
 def _generate_command(args: argparse.Namespace) -> int:
-    scene = build_recording_scene(args.scene)
     static_reference = None
     if args.static_reference_json is not None:
+        scene = build_recording_scene(args.scene, gaia_asset_root=args.gaia_asset_root)
         static_reference = static_medium_reference_evidence(
             scene,
             args.static_reference_json,
@@ -2372,14 +2883,20 @@ def _generate_command(args: argparse.Namespace) -> int:
         panel_width=args.panel_width,
         panel_height=args.panel_height,
         static_reference=static_reference,
+        gaia_asset_root=args.gaia_asset_root,
     )
-    output = save_content_addressed_bundle(args.out_dir, metadata, arrays)
+    output = save_content_addressed_bundle(
+        args.out_dir,
+        metadata,
+        arrays,
+        gaia_asset_root=args.gaia_asset_root,
+    )
     print(output)
     return 0
 
 
 def _render_command(args: argparse.Namespace) -> int:
-    print(render_bundle(args.bundle, args.out, fps=args.fps))
+    print(render_bundle(args.bundle, args.out, fps=args.fps, gaia_asset_root=args.gaia_asset_root))
     return 0
 
 
@@ -2397,6 +2914,10 @@ def _build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--static-reference-npz")
     generate.add_argument("--static-reference-json-sha256")
     generate.add_argument("--static-reference-npz-sha256")
+    generate.add_argument(
+        "--gaia-asset-root",
+        help="root of the digest-pinned Gaia checkout; defaults to PSS_GAIA_ASSET_ROOT for Gaia scenes",
+    )
     generate.set_defaults(handler=_generate_command)
 
     render = commands.add_parser("render", help="render one verified bundle to MP4")
@@ -2407,6 +2928,10 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="output rate; defaults to the bundle's 60 Hz source rate, with explicit retiming labeled on-frame",
+    )
+    render.add_argument(
+        "--gaia-asset-root",
+        help="root of the digest-pinned Gaia checkout; defaults to PSS_GAIA_ASSET_ROOT for Gaia scenes",
     )
     render.set_defaults(handler=_render_command)
     return parser
