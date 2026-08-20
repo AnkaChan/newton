@@ -147,13 +147,25 @@ class TestHierarchyStatePreview(unittest.TestCase):
         self.assertEqual(asset["source_point_count"], 6)
         self.assertEqual(asset["dropped_unused_point_count"], 1)
         self.assertEqual(asset["source_sha256"], hashlib.sha256(self.fixture.read_bytes()).hexdigest())
-        self.assertIn("max_centered_displacement_fraction", asset["metrics"])
 
         html_text = (first_output / "index.html").read_text(encoding="utf-8")
         for reference in ("fixture_hierarchy.png", "fixture_state.png", "fixture_state.npz", "manifest.json"):
             self.assertIn(reference, html_text)
         self.assertIn("5 active vertices (1 unused source point dropped)", html_text)
-        self.assertIn("max centered displacement/L (mean translation removed)", html_text)
+        self.assertIn("Asset size means the diagonal of the original mesh bounding box", html_text)
+        self.assertIn("Maximum movement", html_text)
+        self.assertIn("% of asset size", html_text)
+        self.assertIn("Maximum speed", html_text)
+        self.assertIn("% of asset size per second", html_text)
+        self.assertIn("smallest local volume ratio", html_text)
+        self.assertIn("smallest directional stretch", html_text)
+        self.assertIn("safety threshold 0.35", html_text)
+        self.assertIn("reduced to 50% to keep tetrahedra valid", html_text)
+        self.assertIn("<details>", html_text)
+        self.assertNotIn("minimum determinant", html_text)
+        self.assertNotIn("minimum singular value", html_text)
+        self.assertNotIn("characteristic length", html_text)
+        self.assertNotIn("/L", html_text)
         self.assertIn(
             "velocity arrows uniformly rescaled for visibility; directions and relative lengths retained",
             html_text,
@@ -166,6 +178,35 @@ class TestHierarchyStatePreview(unittest.TestCase):
         self.assertEqual(struct.unpack(">II", hierarchy_png[16:24]), (1066, 546))
         self.assertEqual(struct.unpack(">II", state_png[16:24]), (2080, 572))
         self.assertGreater(asset["state_figure"]["velocity_display_scale_factor"], 0.0)
+        self.assertEqual(asset["state_figure"]["surface_style"], "per_face_depth_shading_with_visible_edges")
+        self.assertEqual(asset["state_figure"]["after_surface_color"], "displacement_magnitude_heatmap")
+        self.assertEqual(asset["state_figure"]["after_geometry"], "exact_deformed_positions")
+        self.assertEqual(asset["state_figure"]["after_heatmap_label"], "distance moved (asset units)")
+        self.assertEqual(asset["state_figure"]["headline"], "Generated initial state \N{EM DASH} not a simulation")
+        self.assertNotIn("after_displacement_display_magnification", asset["state_figure"])
+        self.assertNotIn("after_displacement_display_is_presentation_only", asset["state_figure"])
+        self.assertIn("distance-moved heatmap", html_text)
+        self.assertNotIn("magnification", html_text.lower())
+        self.assertIn("Original and deformed views use identical camera and bounds", html_text)
+        self.assertGreaterEqual(html_text.count('class="figure-scroll"'), 2)
+        self.assertIn(".hierarchy-strip { width: auto; max-width: none; }", html_text)
+        self.assertIn(".state-strip { width: auto; max-width: none; }", html_text)
+        self.assertNotIn(".hierarchy-strip { width: 1500px", html_text)
+        self.assertNotIn(".state-strip { width: 1200px", html_text)
+        self.assertIn(
+            '<p class="scroll-hint">Swipe horizontally to see all hierarchy levels &rarr;</p><div class="figure-scroll">',
+            html_text,
+        )
+        self.assertIn(
+            '<p class="scroll-hint">Swipe horizontally to see all four state panels &rarr;</p><div class="figure-scroll">',
+            html_text,
+        )
+        self.assertIn(".scroll-hint { display: none;", html_text)
+        self.assertIn(".scroll-hint { display: block;", html_text)
+        self.assertEqual(
+            asset["state_figure"]["after_heatmap_max_displacement_asset_units"],
+            asset["metrics"]["max_displacement_asset_units"],
+        )
 
         state_record = first["assets"][0]["outputs"]["state_npz"]
         self.assertEqual(
@@ -179,6 +220,10 @@ class TestHierarchyStatePreview(unittest.TestCase):
             np.testing.assert_array_equal(arrays["tet_indices"], [[0, 1, 2, 3], [0, 2, 1, 4]])
             self.assertEqual(arrays["deformed_positions"].shape, (5, 3))
             self.assertEqual(arrays["velocities"].shape, (5, 3))
+            stored_max_displacement = float(
+                np.linalg.norm(arrays["deformed_positions"] - arrays["rest_positions"], axis=1).max()
+            )
+            self.assertAlmostEqual(stored_max_displacement, asset["metrics"]["max_displacement_asset_units"])
 
 
 if __name__ == "__main__":

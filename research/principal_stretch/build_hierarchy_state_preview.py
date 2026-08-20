@@ -45,8 +45,11 @@ _MAX_RENDER_FACES = 30_000
 _MAX_RENDER_EDGES = 25_000
 _MAX_RENDER_NODES = 10_000
 _MAX_RENDER_ARROWS = 72
+_CAMERA_ELEVATION_DEGREES = 24.0
+_CAMERA_AZIMUTH_DEGREES = -58.0
 _NPY_VERSION = (2, 0)
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+_STATE_FIGURE_HEADLINE = "Generated initial state \N{EM DASH} not a simulation"
 _INITIAL_STATE_NOTICE = "These are procedurally generated initial states, not dynamics or simulated trajectories."
 
 
@@ -336,7 +339,7 @@ def _set_camera(ax, bounds: tuple[np.ndarray, np.ndarray, np.ndarray]) -> None:
     ax.set_ylim(float(lower[1]), float(upper[1]))
     ax.set_zlim(float(lower[2]), float(upper[2]))
     ax.set_box_aspect(tuple(float(value) for value in span))
-    ax.view_init(elev=24.0, azim=-58.0)
+    ax.view_init(elev=_CAMERA_ELEVATION_DEGREES, azim=_CAMERA_AZIMUTH_DEGREES)
     ax.set_axis_off()
 
 
@@ -347,25 +350,72 @@ def _cluster_colors(matplotlib, cluster_ids: np.ndarray, *, alpha: float) -> np.
     return colors
 
 
+def _depth_shaded_face_colors(
+    matplotlib,
+    triangles: np.ndarray,
+    colors: np.ndarray | str,
+    *,
+    alpha: float | None,
+) -> np.ndarray:
+    """Apply deterministic normal- and view-depth shading to triangle colors."""
+    if isinstance(colors, np.ndarray):
+        face_colors = np.array(colors, dtype=np.float64, copy=True)
+    else:
+        face_colors = np.broadcast_to(matplotlib.colors.to_rgba(colors), (triangles.shape[0], 4)).copy()
+    if face_colors.shape != (triangles.shape[0], 4):
+        raise ValueError("surface colors must provide one RGBA row per rendered face")
+    if alpha is not None:
+        face_colors[:, 3] = alpha
+
+    normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    normal_lengths = np.linalg.norm(normals, axis=1)
+    normals = np.divide(
+        normals,
+        normal_lengths[:, None],
+        out=np.zeros_like(normals),
+        where=normal_lengths[:, None] > 0.0,
+    )
+    elevation = math.radians(_CAMERA_ELEVATION_DEGREES)
+    azimuth = math.radians(_CAMERA_AZIMUTH_DEGREES)
+    view_direction = np.array(
+        [math.cos(elevation) * math.cos(azimuth), math.cos(elevation) * math.sin(azimuth), math.sin(elevation)]
+    )
+    light_direction = view_direction + np.array([0.15, -0.10, 0.75])
+    light_direction /= np.linalg.norm(light_direction)
+    diffuse = np.abs(normals @ light_direction)
+    depths = triangles.mean(axis=1) @ view_direction
+    depth_range = float(np.ptp(depths))
+    if depth_range > 0.0:
+        depth = (depths - float(depths.min())) / depth_range
+    else:
+        depth = np.full(depths.shape, 0.5)
+    brightness = 0.52 + 0.32 * diffuse + 0.16 * depth
+    face_colors[:, :3] = np.clip(face_colors[:, :3] * brightness[:, None], 0.0, 1.0)
+    return face_colors
+
+
 def _add_surface(
     ax,
+    matplotlib,
     Poly3DCollection,
     positions: np.ndarray,
     surface_faces: np.ndarray,
     *,
     colors: np.ndarray | str,
     alpha: float | None = None,
-    edgecolor: str = "none",
+    edgecolor: str = "#182230",
+    edge_alpha: float = 0.30,
+    linewidth: float = 0.16,
 ) -> None:
     face_sample = _even_sample(surface_faces.shape[0], _MAX_RENDER_FACES)
     triangles = positions[surface_faces[face_sample]]
-    face_colors = colors[face_sample] if isinstance(colors, np.ndarray) else colors
+    sampled_colors = colors[face_sample] if isinstance(colors, np.ndarray) else colors
+    face_colors = _depth_shaded_face_colors(matplotlib, triangles, sampled_colors, alpha=alpha)
     collection = Poly3DCollection(
         triangles,
         facecolors=face_colors,
-        edgecolors=edgecolor,
-        linewidths=0.08,
-        alpha=alpha,
+        edgecolors=matplotlib.colors.to_rgba(edgecolor, edge_alpha),
+        linewidths=linewidth,
         rasterized=True,
     )
     ax.add_collection3d(collection)
@@ -399,6 +449,7 @@ def _render_hierarchy_image(
         surface_cluster = fine_assignment[surface_owners]
         _add_surface(
             ax,
+            matplotlib,
             Poly3DCollection,
             mesh.rest_positions,
             surface_faces,
@@ -456,7 +507,11 @@ def _state_arrays(
     }
 
 
-def _state_metrics(state: HierarchyRandomState, arrays: Mapping[str, np.ndarray]) -> dict[str, float]:
+def _state_metrics(
+    state: HierarchyRandomState,
+    arrays: Mapping[str, np.ndarray],
+    config: HierarchyRandomStateConfig,
+) -> dict[str, float]:
     characteristic_length = float(state.characteristic_length)
     if not math.isfinite(characteristic_length) or characteristic_length <= 0.0:
         raise ValueError("generated state characteristic_length must be finite and positive")
@@ -466,6 +521,7 @@ def _state_metrics(state: HierarchyRandomState, arrays: Mapping[str, np.ndarray]
     return {
         "minimum_determinant": float(state.minimum_determinant),
         "minimum_singular_value": float(state.minimum_singular_value),
+        "minimum_directional_stretch_safety_threshold": config.minimum_singular_value,
         "characteristic_length": characteristic_length,
         "deformation_scale": float(state.deformation_scale),
         "core_max_displacement_fraction": float(state.max_displacement_fraction),
@@ -509,7 +565,7 @@ def _quiver(ax, origins: np.ndarray, vectors: np.ndarray, indices: np.ndarray, c
         v[:, 1],
         v[:, 2],
         color=color,
-        linewidth=0.8,
+        linewidth=1.05,
         arrow_length_ratio=0.24,
         normalize=False,
     )
@@ -520,16 +576,15 @@ def _render_state_image(
     mesh: LegacyVTKTetMesh,
     state: HierarchyRandomState,
     *,
-    deformation_seed: int,
-    velocity_seed: int,
     metrics: Mapping[str, float],
-) -> dict[str, int | float]:
-    _, plt, _, Poly3DCollection = _load_matplotlib()
+) -> dict[str, object]:
+    matplotlib, plt, _, Poly3DCollection = _load_matplotlib()
     arrays = _state_arrays(mesh, state)
     rest = arrays["rest_positions"]
     deformed = arrays["deformed_positions"]
     velocities = arrays["velocities"]
     displacement = deformed - rest
+    displacement_magnitude = np.linalg.norm(displacement, axis=1)
     velocity_display, velocity_display_scale = _scaled_velocity(velocities, deformed)
     displacement_indices = _sparse_vectors(displacement)
     velocity_indices = _sparse_vectors(velocities)
@@ -539,23 +594,75 @@ def _render_state_image(
     bounds = _common_bounds(*bounds_inputs)
     surface_faces, _ = _boundary_faces(mesh.tet_indices)
     figure = plt.figure(figsize=(16.0, 4.4))
-    figure.subplots_adjust(left=0.01, right=0.99, bottom=0.02, top=0.76, wspace=0.02)
+    figure.subplots_adjust(left=0.01, right=0.99, bottom=0.10, top=0.76, wspace=0.02)
     axes = [figure.add_subplot(1, 4, index + 1, projection="3d") for index in range(4)]
 
-    _add_surface(axes[0], Poly3DCollection, rest, surface_faces, colors="#4f81bd", alpha=0.78)
-    axes[0].set_title("Before")
-    _add_surface(axes[1], Poly3DCollection, deformed, surface_faces, colors="#ed7d31", alpha=0.78)
-    axes[1].set_title("After")
+    _add_surface(axes[0], matplotlib, Poly3DCollection, rest, surface_faces, colors="#4f81bd", alpha=0.88)
+    axes[0].set_title("Original (before)")
+    heatmap_maximum = max(float(displacement_magnitude.max(initial=0.0)), np.finfo(np.float64).eps)
+    heatmap_norm = matplotlib.colors.Normalize(vmin=0.0, vmax=heatmap_maximum)
+    heatmap = matplotlib.colormaps["magma"]
+    face_displacement = displacement_magnitude[surface_faces].mean(axis=1)
+    _add_surface(
+        axes[1],
+        matplotlib,
+        Poly3DCollection,
+        deformed,
+        surface_faces,
+        colors=heatmap(heatmap_norm(face_displacement)),
+        alpha=0.94,
+        edge_alpha=0.40,
+        linewidth=0.20,
+    )
+    axes[1].set_title(
+        "Deformed (after): exact geometry\ncolor = exact distance moved",
+        fontsize=9,
+    )
+    colorbar_axis = figure.add_axes((0.555, 0.070, 0.14, 0.018))
+    colorbar = matplotlib.colorbar.ColorbarBase(
+        colorbar_axis, cmap=heatmap, norm=heatmap_norm, orientation="horizontal"
+    )
+    colorbar.set_label("distance moved (asset units)", fontsize=7, labelpad=1)
+    colorbar.ax.tick_params(labelsize=6, length=2, pad=1)
 
-    _add_surface(axes[2], Poly3DCollection, rest, surface_faces, colors="#a7a7a7", alpha=0.38)
-    _add_surface(axes[2], Poly3DCollection, deformed, surface_faces, colors="#4f81bd", alpha=0.42)
-    _quiver(axes[2], rest, displacement, displacement_indices, "#b91c1c")
-    axes[2].set_title("Rest / deformed + displacement\n(arrows at actual scale)", fontsize=9)
+    _add_surface(
+        axes[2],
+        matplotlib,
+        Poly3DCollection,
+        rest,
+        surface_faces,
+        colors="#a7a7a7",
+        alpha=0.34,
+        edge_alpha=0.22,
+    )
+    _add_surface(
+        axes[2],
+        matplotlib,
+        Poly3DCollection,
+        deformed,
+        surface_faces,
+        colors=heatmap(heatmap_norm(face_displacement)),
+        alpha=0.52,
+        edge_alpha=0.28,
+    )
+    _quiver(axes[2], rest, displacement, displacement_indices, "#d00000")
+    axes[2].set_title(
+        "Gray original + exact deformed heatmap\n(movement arrows at actual scale)",
+        fontsize=8.5,
+    )
 
-    _add_surface(axes[3], Poly3DCollection, deformed, surface_faces, colors="#77aadd", alpha=0.68)
-    _quiver(axes[3], deformed, velocity_display, velocity_indices, "#13795b")
+    _add_surface(
+        axes[3],
+        matplotlib,
+        Poly3DCollection,
+        deformed,
+        surface_faces,
+        colors="#77aadd",
+        alpha=0.84,
+    )
+    _quiver(axes[3], deformed, velocity_display, velocity_indices, "#006d2c")
     axes[3].set_title(
-        "Deformed + independent velocity\n"
+        "Exact deformed + independent velocity\n"
         "velocity arrows uniformly rescaled for visibility\n"
         "(directions and relative lengths retained)",
         fontsize=8,
@@ -563,12 +670,10 @@ def _render_state_image(
     for ax in axes:
         _set_camera(ax, bounds)
     figure.suptitle(
-        "Generated initial state (not dynamics)\n"
-        f"d-seed {deformation_seed} · v-seed {velocity_seed} · "
-        f"min det {metrics['minimum_determinant']:.4g} · min singular {metrics['minimum_singular_value']:.4g} · "
-        "max centered displacement/L (mean translation removed) "
-        f"{metrics['max_centered_displacement_fraction']:.4g} · "
-        f"L {metrics['characteristic_length']:.4g} · deformation scale {metrics['deformation_scale']:.4g}",
+        f"{_STATE_FIGURE_HEADLINE}\n"
+        f"asset size {metrics['characteristic_length']:.4g} · "
+        f"minimum volume ratio {metrics['minimum_determinant']:.4g} · "
+        f"minimum directional stretch {metrics['minimum_singular_value']:.4g}",
         fontsize=9,
         y=0.98,
     )
@@ -577,6 +682,12 @@ def _render_state_image(
         "displacement_arrow_count": int(displacement_indices.size),
         "velocity_arrow_count": int(velocity_indices.size),
         "velocity_display_scale_factor": velocity_display_scale,
+        "surface_style": "per_face_depth_shading_with_visible_edges",
+        "after_surface_color": "displacement_magnitude_heatmap",
+        "after_geometry": "exact_deformed_positions",
+        "headline": _STATE_FIGURE_HEADLINE,
+        "after_heatmap_label": "distance moved (asset units)",
+        "after_heatmap_max_displacement_asset_units": metrics["max_displacement_asset_units"],
     }
 
 
@@ -694,14 +805,29 @@ def _render_index(asset_records: Sequence[Mapping[str, Any]]) -> str:
         metrics = asset["metrics"]
         dropped_point_count = int(asset["dropped_unused_point_count"])
         source_point_label = "point" if dropped_point_count == 1 else "points"
+        maximum_movement_percent = 100.0 * float(metrics["max_displacement_over_characteristic_length"])
+        maximum_speed_percent = 100.0 * float(metrics["max_speed_over_characteristic_length_per_s"])
+        centered_movement_percent = 100.0 * float(metrics["max_centered_displacement_fraction"])
+        retained_deformation_percent = 100.0 * float(metrics["deformation_scale"])
+        if retained_deformation_percent < 100.0:
+            deformation_explanation = (
+                f"The sampled deformation was reduced to {retained_deformation_percent:.3g}% to keep tetrahedra valid."
+            )
+        else:
+            deformation_explanation = (
+                "The sampled deformation stayed at 100% strength. A reported 50% means the sampled deformation "
+                "was reduced to 50% to keep tetrahedra valid."
+            )
         sections.append(
             f"""    <section>
       <h2>{name}</h2>
       <p>{asset["point_count"]:,} active vertices ({dropped_point_count:,} unused source {source_point_label} dropped), {asset["tet_count"]:,} tetrahedra, {level_count} actual hierarchy levels.</p>
-      <p>Deformation seed {asset["deformation_seed"]}; velocity seed {asset["velocity_seed"]}. Core validity metrics: minimum determinant {metrics["minimum_determinant"]:.5g}, minimum singular value {metrics["minimum_singular_value"]:.5g}, max centered displacement/L (mean translation removed) {metrics["max_centered_displacement_fraction"]:.5g}, characteristic length L={metrics["characteristic_length"]:.5g}, deformation scale {metrics["deformation_scale"]:.5g}. Maximum displacement/L={metrics["max_displacement_over_characteristic_length"]:.5g}; maximum speed/L per second={metrics["max_speed_over_characteristic_length_per_s"]:.5g}. Raw values are {metrics["max_displacement_asset_units"]:.5g} asset units and {metrics["max_speed_asset_units_per_s"]:.5g} asset units per second.</p>
+      <p>Asset size: {metrics["characteristic_length"]:.5g} asset units. <strong>Maximum movement:</strong> {metrics["max_displacement_asset_units"]:.5g} asset units ({maximum_movement_percent:.2f}% of asset size). <strong>Maximum speed:</strong> {metrics["max_speed_asset_units_per_s"]:.5g} asset units/s ({maximum_speed_percent:.2f}% of asset size per second).</p>
+      <p><strong>Validity:</strong> the smallest local volume ratio is {metrics["minimum_determinant"]:.5g}. The smallest directional stretch is {metrics["minimum_singular_value"]:.5g} (safety threshold {metrics["minimum_directional_stretch_safety_threshold"]:.2g}). {deformation_explanation}</p>
+      <details><summary>Reproducibility details</summary><p>Deformation seed {asset["deformation_seed"]}; velocity seed {asset["velocity_seed"]}. Maximum movement after removing overall mean translation: {centered_movement_percent:.2f}% of asset size. Exact arrays, hashes, and technical fields are in <a href="manifest.json">manifest.json</a>.</p></details>
       <div class="figures">
-        <figure><img src="{hierarchy_ref}" alt="{name} hierarchy levels"><figcaption>Physical-centroid graph at every actual level; the surface is colored by each fine tetrahedron's ancestor cluster.</figcaption></figure>
-        <figure><img src="{state_ref}" alt="{name} generated initial state"><figcaption>Before, after, and displacement overlay with displacement arrows at actual scale. Independent velocity: velocity arrows uniformly rescaled for visibility; directions and relative lengths retained. All panels share camera and bounds.</figcaption></figure>
+        <figure><p class="scroll-hint">Swipe horizontally to see all hierarchy levels &rarr;</p><div class="figure-scroll"><img class="hierarchy-strip" src="{hierarchy_ref}" alt="{name} hierarchy levels"></div><figcaption>Physical-centroid graph at every actual level; the surface is colored by each fine tetrahedron's ancestor cluster.</figcaption></figure>
+        <figure><p class="scroll-hint">Swipe horizontally to see all four state panels &rarr;</p><div class="figure-scroll"><img class="state-strip" src="{state_ref}" alt="{name} generated initial state"></div><figcaption>Original and deformed views use identical camera and bounds, deterministic per-face diffuse/depth shading, and visible mesh edges. The deformed panel uses exact generated positions and a zero-anchored perceptual distance-moved heatmap. The third panel overlays a gray original ghost, exact deformed heatmap, and actual-scale movement arrows. Independent velocity: velocity arrows uniformly rescaled for visibility; directions and relative lengths retained.</figcaption></figure>
       </div>
       <p><a href="{npz_ref}">Download deterministic generated state (.npz)</a></p>
     </section>"""
@@ -717,14 +843,23 @@ def _render_index(asset_records: Sequence[Mapping[str, Any]]) -> str:
     * {{ box-sizing: border-box; }}
     body {{ font: 16px/1.45 system-ui, sans-serif; margin: auto; max-width: 1500px; padding: 2rem; color: #172033; }}
     .notice {{ background: #fff7d6; border-left: 5px solid #d49b00; padding: .8rem 1rem; }}
-    .figures {{ display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); }}
+    .figures {{ display: grid; gap: 1.5rem; grid-template-columns: minmax(0, 1fr); }}
+    .figure-scroll {{ max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }}
+    .scroll-hint {{ display: none; margin: 0 0 .35rem; color: #526075; font-size: .9rem; }}
     figure {{ margin: 0; }} img {{ display: block; max-width: 100%; height: auto; }} figcaption {{ margin-top: .45rem; }}
     section {{ border-top: 1px solid #ccd3df; margin-top: 2rem; padding-top: 1rem; }}
+    @media (max-width: 640px) {{
+      body {{ padding: 1rem; }}
+      .scroll-hint {{ display: block; }}
+      .hierarchy-strip {{ width: auto; max-width: none; }}
+      .state-strip {{ width: auto; max-width: none; }}
+    }}
   </style>
 </head>
 <body>
   <h1>Hierarchy-aware generated initial states</h1>
   <p class="notice">{html.escape(_INITIAL_STATE_NOTICE)}</p>
+  <p>Asset size means the diagonal of the original mesh bounding box. Percentages below use that common scale so differently sized assets can be compared.</p>
   <p>This static preview uses no JavaScript, video, or time integration. See <a href="manifest.json">manifest.json</a> for seeds, hashes, shapes, and dtypes.</p>
 {sections_html}
 </body>
@@ -803,7 +938,7 @@ def build_preview(
             config=config,
         )
         state_arrays = _state_arrays(mesh, state)
-        metrics = _state_metrics(state, state_arrays)
+        metrics = _state_metrics(state, state_arrays, config)
         hierarchy_path = destination / f"{slug}_hierarchy.png"
         state_path = destination / f"{slug}_state.png"
         npz_path = destination / f"{slug}_state.npz"
@@ -812,8 +947,6 @@ def build_preview(
             state_path,
             mesh,
             state,
-            deformation_seed=deformation_seed,
-            velocity_seed=velocity_seed,
             metrics=metrics,
         )
         state_npz_sha256 = _write_deterministic_npz(npz_path, state_arrays)
