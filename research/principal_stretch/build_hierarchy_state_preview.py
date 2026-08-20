@@ -511,19 +511,23 @@ def _state_metrics(
     state: HierarchyRandomState,
     arrays: Mapping[str, np.ndarray],
     config: HierarchyRandomStateConfig,
-) -> dict[str, float]:
+) -> dict[str, object]:
     characteristic_length = float(state.characteristic_length)
     if not math.isfinite(characteristic_length) or characteristic_length <= 0.0:
         raise ValueError("generated state characteristic_length must be finite and positive")
     displacement = arrays["deformed_positions"] - arrays["rest_positions"]
     max_displacement = float(np.linalg.norm(displacement, axis=1).max())
     max_speed = float(np.linalg.norm(arrays["velocities"], axis=1).max())
+    deformation_level_scales = [float(scale) for scale in state.deformation_level_scales]
+    final_uniform_scale = float(state.deformation_scale)
     return {
         "minimum_determinant": float(state.minimum_determinant),
         "minimum_singular_value": float(state.minimum_singular_value),
         "minimum_directional_stretch_safety_threshold": config.minimum_singular_value,
         "characteristic_length": characteristic_length,
-        "deformation_scale": float(state.deformation_scale),
+        "deformation_level_scales": deformation_level_scales,
+        "deformation_scale": final_uniform_scale,
+        "effective_deformation_level_scales": [scale * final_uniform_scale for scale in deformation_level_scales],
         "core_max_displacement_fraction": float(state.max_displacement_fraction),
         "max_centered_displacement_fraction": float(state.max_centered_displacement_fraction),
         "core_max_velocity_fraction_per_second": float(state.max_velocity_fraction_per_second),
@@ -534,13 +538,18 @@ def _state_metrics(
     }
 
 
-def _sparse_vectors(vectors: np.ndarray) -> np.ndarray:
-    magnitudes = np.linalg.norm(vectors, axis=1)
+def _sparse_vectors(vectors: np.ndarray, *, candidate_indices: np.ndarray | None = None) -> np.ndarray:
+    candidates = (
+        np.arange(vectors.shape[0], dtype=np.int64)
+        if candidate_indices is None
+        else np.asarray(candidate_indices, dtype=np.int64)
+    )
+    magnitudes = np.linalg.norm(vectors[candidates], axis=1)
     if not magnitudes.size:
         return np.empty(0, dtype=np.int64)
     threshold = max(float(magnitudes.max()) * 1.0e-10, np.finfo(np.float64).tiny)
-    nonzero = np.flatnonzero(magnitudes > threshold)
-    return nonzero[_even_sample(nonzero.size, _MAX_RENDER_ARROWS)]
+    nonzero_candidates = candidates[np.flatnonzero(magnitudes > threshold)]
+    return nonzero_candidates[_even_sample(nonzero_candidates.size, _MAX_RENDER_ARROWS)]
 
 
 def _scaled_velocity(velocities: np.ndarray, positions: np.ndarray) -> tuple[np.ndarray, float]:
@@ -550,6 +559,18 @@ def _scaled_velocity(velocities: np.ndarray, positions: np.ndarray) -> tuple[np.
     extent = float(np.ptp(positions, axis=0).max())
     scale = 0.18 * max(extent, 1.0e-12) / maximum
     return velocities * scale, scale
+
+
+def _state_bounds_inputs(arrays: Mapping[str, np.ndarray], boundary_vertices: np.ndarray) -> list[np.ndarray]:
+    rest = arrays["rest_positions"]
+    deformed = arrays["deformed_positions"]
+    velocities = arrays["velocities"]
+    velocity_display, _ = _scaled_velocity(velocities, deformed)
+    velocity_indices = _sparse_vectors(velocities, candidate_indices=boundary_vertices)
+    positions = [rest, deformed]
+    if velocity_indices.size:
+        positions.append(deformed[velocity_indices] + velocity_display[velocity_indices])
+    return positions
 
 
 def _quiver(ax, origins: np.ndarray, vectors: np.ndarray, indices: np.ndarray, color: str) -> None:
@@ -576,7 +597,8 @@ def _render_state_image(
     mesh: LegacyVTKTetMesh,
     state: HierarchyRandomState,
     *,
-    metrics: Mapping[str, float],
+    metrics: Mapping[str, Any],
+    camera_bounds: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> dict[str, object]:
     matplotlib, plt, _, Poly3DCollection = _load_matplotlib()
     arrays = _state_arrays(mesh, state)
@@ -585,13 +607,13 @@ def _render_state_image(
     velocities = arrays["velocities"]
     displacement = deformed - rest
     velocity_display, velocity_display_scale = _scaled_velocity(velocities, deformed)
-    displacement_indices = _sparse_vectors(displacement)
-    velocity_indices = _sparse_vectors(velocities)
-    bounds_inputs = [rest, deformed]
-    if velocity_indices.size:
-        bounds_inputs.append(deformed[velocity_indices] + velocity_display[velocity_indices])
-    bounds = _common_bounds(*bounds_inputs)
     surface_faces, _ = _boundary_faces(mesh.tet_indices)
+    boundary_vertices = np.unique(surface_faces)
+    displacement_indices = _sparse_vectors(displacement, candidate_indices=boundary_vertices)
+    velocity_indices = _sparse_vectors(velocities, candidate_indices=boundary_vertices)
+    bounds = (
+        _common_bounds(*_state_bounds_inputs(arrays, boundary_vertices)) if camera_bounds is None else camera_bounds
+    )
     figure = plt.figure(figsize=(16.0, 4.4))
     figure.subplots_adjust(left=0.01, right=0.99, bottom=0.10, top=0.76, wspace=0.02)
     axes = [figure.add_subplot(1, 4, index + 1, projection="3d") for index in range(4)]
@@ -599,6 +621,8 @@ def _render_state_image(
     state_surface_material = "#4f81bd"
     overlay_deformed_surface_material = "#d97706"
     original_ghost_surface_material = "#a7a7a7"
+    velocity_reference_surface_alpha = 0.38
+    velocity_reference_edge_alpha = 0.10
     _add_surface(axes[0], matplotlib, Poly3DCollection, rest, surface_faces, colors=state_surface_material, alpha=0.88)
     axes[0].set_title("Original (before)")
     _add_surface(
@@ -645,13 +669,14 @@ def _render_state_image(
         deformed,
         surface_faces,
         colors="#77aadd",
-        alpha=0.84,
+        alpha=velocity_reference_surface_alpha,
+        edge_alpha=velocity_reference_edge_alpha,
     )
     _quiver(axes[3], deformed, velocity_display, velocity_indices, "#006d2c")
     axes[3].set_title(
-        "Exact deformed + independent velocity\n"
-        "velocity arrows uniformly rescaled for visibility\n"
-        "(directions and relative lengths retained)",
+        "Independent velocity\n"
+        "translucent exact-deformed reference surface\n"
+        "arrows rescaled; directions/relative lengths retained",
         fontsize=8,
     )
     for ax in axes:
@@ -668,7 +693,12 @@ def _render_state_image(
     return {
         "displacement_arrow_count": int(displacement_indices.size),
         "velocity_arrow_count": int(velocity_indices.size),
+        "arrow_candidate_scope": "boundary_surface_vertices",
+        "boundary_arrow_candidate_count": int(boundary_vertices.size),
         "velocity_display_scale_factor": velocity_display_scale,
+        "velocity_reference_surface": "translucent_exact_deformed_reference_surface",
+        "velocity_reference_surface_alpha": velocity_reference_surface_alpha,
+        "velocity_reference_edge_alpha": velocity_reference_edge_alpha,
         "surface_style": "per_face_depth_shading_with_visible_edges",
         "surface_color_mode": "uniform_solid_material",
         "original_surface_material": state_surface_material,
@@ -677,6 +707,13 @@ def _render_state_image(
         "overlay_deformed_surface_material": overlay_deformed_surface_material,
         "original_ghost_surface_material": original_ghost_surface_material,
         "after_geometry": "exact_deformed_positions",
+        "camera_bounds": {
+            "lower": bounds[0].tolist(),
+            "upper": bounds[1].tolist(),
+            "box_aspect_span": bounds[2].tolist(),
+        },
+        "camera_elevation_degrees": _CAMERA_ELEVATION_DEGREES,
+        "camera_azimuth_degrees": _CAMERA_AZIMUTH_DEGREES,
         "headline": _STATE_FIGURE_HEADLINE,
     }
 
@@ -776,6 +813,18 @@ def _asset_seeds(base_seed: int, asset_name: str, source_sha256: str) -> tuple[i
     return derive("deformation"), derive("velocity")
 
 
+def _sample_seeds(base_seed: int, asset_name: str, source_sha256: str, sample_index: int) -> tuple[int, int]:
+    """Derive role-separated seeds while retaining sample zero's legacy namespace."""
+    if sample_index == 0:
+        return _asset_seeds(base_seed, asset_name, source_sha256)
+    prefix = f"{base_seed}:{asset_name}:{source_sha256}:sample:{sample_index}"
+
+    def derive(role: str) -> int:
+        return int.from_bytes(hashlib.sha256(f"{prefix}:{role}".encode("ascii")).digest()[:4], "little")
+
+    return derive("deformation"), derive("velocity")
+
+
 def _asset_slug(name: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", name).strip("-").lower()
     if not slug:
@@ -787,39 +836,63 @@ def _render_index(asset_records: Sequence[Mapping[str, Any]]) -> str:
     sections: list[str] = []
     for asset in asset_records:
         name = html.escape(str(asset["name"]))
-        outputs = asset["outputs"]
-        hierarchy_ref = html.escape(str(outputs["hierarchy_png"]["path"]), quote=True)
-        state_ref = html.escape(str(outputs["state_png"]["path"]), quote=True)
-        npz_ref = html.escape(str(outputs["state_npz"]["path"]), quote=True)
+        hierarchy_ref = html.escape(str(asset["outputs"]["hierarchy_png"]["path"]), quote=True)
         level_count = len(asset["hierarchy"]["levels"])
-        metrics = asset["metrics"]
         dropped_point_count = int(asset["dropped_unused_point_count"])
         source_point_label = "point" if dropped_point_count == 1 else "points"
-        maximum_movement_percent = 100.0 * float(metrics["max_displacement_over_characteristic_length"])
-        maximum_speed_percent = 100.0 * float(metrics["max_speed_over_characteristic_length_per_s"])
-        centered_movement_percent = 100.0 * float(metrics["max_centered_displacement_fraction"])
-        retained_deformation_percent = 100.0 * float(metrics["deformation_scale"])
-        if retained_deformation_percent < 100.0:
-            deformation_explanation = (
-                f"The sampled deformation was reduced to {retained_deformation_percent:.3g}% to keep tetrahedra valid."
+        samples = asset["samples"]
+        sample_sections: list[str] = []
+        for sample in samples:
+            metrics = sample["metrics"]
+            outputs = sample["outputs"]
+            state_ref = html.escape(str(outputs["state_png"]["path"]), quote=True)
+            npz_ref = html.escape(str(outputs["state_npz"]["path"]), quote=True)
+            sample_index = int(sample["sample_index"])
+            maximum_movement_percent = 100.0 * float(metrics["max_displacement_over_characteristic_length"])
+            maximum_speed_percent = 100.0 * float(metrics["max_speed_over_characteristic_length_per_s"])
+            centered_movement_percent = 100.0 * float(metrics["max_centered_displacement_fraction"])
+            level_scales = [float(scale) for scale in metrics["deformation_level_scales"]]
+            effective_level_scales = [float(scale) for scale in metrics["effective_deformation_level_scales"]]
+            level_scale_labels: list[str] = []
+            effective_scale_labels: list[str] = []
+            for level_index, (level_scale, effective_scale) in enumerate(
+                zip(level_scales, effective_level_scales, strict=True)
+            ):
+                if len(level_scales) == 1:
+                    label = "fine/coarsest level 0"
+                elif level_index == 0:
+                    label = "fine level 0"
+                elif level_index == len(level_scales) - 1:
+                    label = f"coarsest level {level_index}"
+                else:
+                    label = f"level {level_index}"
+                level_scale_labels.append(f"{label}: {100.0 * level_scale:.3g}%")
+                effective_scale_labels.append(f"{label}: {100.0 * effective_scale:.3g}%")
+            level_scale_text = ", ".join(level_scale_labels)
+            effective_scale_text = ", ".join(effective_scale_labels)
+            final_uniform_percent = 100.0 * float(metrics["deformation_scale"])
+            sample_sections.append(
+                f"""        <article class="sample" data-sample-index="{sample_index}">
+          <h3>Sample {sample_index + 1} of {len(samples)}</h3>
+          <p>Asset size: {metrics["characteristic_length"]:.5g} asset units. <strong>Maximum movement:</strong> {metrics["max_displacement_asset_units"]:.5g} asset units ({maximum_movement_percent:.2f}% of asset size). <strong>Maximum speed:</strong> {metrics["max_speed_asset_units_per_s"]:.5g} asset units/s ({maximum_speed_percent:.2f}% of asset size per second).</p>
+          <p><strong>Validity:</strong> the smallest local volume ratio is {metrics["minimum_determinant"]:.5g}. The smallest directional stretch is {metrics["minimum_singular_value"]:.5g} (safety threshold {metrics["minimum_directional_stretch_safety_threshold"]:.2g}).</p>
+          <p><strong>Deformation safeguards:</strong> Per-level safety multipliers, from fine to coarsest: {level_scale_text}. After those checks, a final uniform cap/validity multiplier of {final_uniform_percent:.3g}% was applied to the combined deformation. The resulting effective multipliers are {effective_scale_text}.</p>
+          <details><summary>Reproducibility details</summary><p>Sample index {sample_index}; deformation seed {sample["deformation_seed"]}; velocity seed {sample["velocity_seed"]}. Maximum movement after removing overall mean translation: {centered_movement_percent:.2f}% of asset size. Exact arrays, hashes, and technical fields are in <a href="manifest.json">manifest.json</a>.</p></details>
+          <figure><p class="scroll-hint">Swipe horizontally to see all four state panels &rarr;</p><div class="figure-scroll"><img class="state-strip" src="{state_ref}" alt="{name} generated initial state sample {sample_index + 1}"></div><figcaption>Original and deformed views use the same uniform solid material, identical camera and bounds, deterministic per-face diffuse/depth shading, and visible mesh edges. The deformed panel uses exact generated positions. The third panel overlays a gray original ghost, a solid contrasting exact-deformed surface, and actual-scale movement arrows. Independent velocity: the fourth panel uses a translucent exact-deformed reference surface so boundary arrows remain visible; velocity arrows uniformly rescaled for visibility; directions and relative lengths retained.</figcaption></figure>
+          <p><a href="{npz_ref}">Download deterministic generated state (.npz)</a></p>
+        </article>"""
             )
-        else:
-            deformation_explanation = (
-                "The sampled deformation stayed at 100% strength. A reported 50% means the sampled deformation "
-                "was reduced to 50% to keep tetrahedra valid."
-            )
+        samples_html = "\n".join(sample_sections)
         sections.append(
             f"""    <section>
       <h2>{name}</h2>
       <p>{asset["point_count"]:,} active vertices ({dropped_point_count:,} unused source {source_point_label} dropped), {asset["tet_count"]:,} tetrahedra, {level_count} actual hierarchy levels.</p>
-      <p>Asset size: {metrics["characteristic_length"]:.5g} asset units. <strong>Maximum movement:</strong> {metrics["max_displacement_asset_units"]:.5g} asset units ({maximum_movement_percent:.2f}% of asset size). <strong>Maximum speed:</strong> {metrics["max_speed_asset_units_per_s"]:.5g} asset units/s ({maximum_speed_percent:.2f}% of asset size per second).</p>
-      <p><strong>Validity:</strong> the smallest local volume ratio is {metrics["minimum_determinant"]:.5g}. The smallest directional stretch is {metrics["minimum_singular_value"]:.5g} (safety threshold {metrics["minimum_directional_stretch_safety_threshold"]:.2g}). {deformation_explanation}</p>
-      <details><summary>Reproducibility details</summary><p>Deformation seed {asset["deformation_seed"]}; velocity seed {asset["velocity_seed"]}. Maximum movement after removing overall mean translation: {centered_movement_percent:.2f}% of asset size. Exact arrays, hashes, and technical fields are in <a href="manifest.json">manifest.json</a>.</p></details>
       <div class="figures">
         <figure><p class="scroll-hint">Swipe horizontally to see all hierarchy levels &rarr;</p><div class="figure-scroll"><img class="hierarchy-strip" src="{hierarchy_ref}" alt="{name} hierarchy levels"></div><figcaption>Physical-centroid graph at every actual level; the surface is colored by each fine tetrahedron's ancestor cluster.</figcaption></figure>
-        <figure><p class="scroll-hint">Swipe horizontally to see all four state panels &rarr;</p><div class="figure-scroll"><img class="state-strip" src="{state_ref}" alt="{name} generated initial state"></div><figcaption>Original and deformed views use the same uniform solid material, identical camera and bounds, deterministic per-face diffuse/depth shading, and visible mesh edges. The deformed panel uses exact generated positions. The third panel overlays a gray original ghost, a solid contrasting exact-deformed surface, and actual-scale movement arrows. Independent velocity: velocity arrows uniformly rescaled for visibility; directions and relative lengths retained.</figcaption></figure>
       </div>
-      <p><a href="{npz_ref}">Download deterministic generated state (.npz)</a></p>
+      <div class="sample-gallery" data-sample-count="{len(samples)}">
+{samples_html}
+      </div>
     </section>"""
         )
     sections_html = "\n".join(sections)
@@ -834,6 +907,8 @@ def _render_index(asset_records: Sequence[Mapping[str, Any]]) -> str:
     body {{ font: 16px/1.45 system-ui, sans-serif; margin: auto; max-width: 1500px; padding: 2rem; color: #172033; }}
     .notice {{ background: #fff7d6; border-left: 5px solid #d49b00; padding: .8rem 1rem; }}
     .figures {{ display: grid; gap: 1.5rem; grid-template-columns: minmax(0, 1fr); }}
+    .sample-gallery {{ display: grid; gap: 1.5rem; margin-top: 1.5rem; }}
+    .sample {{ border-top: 1px solid #e0e5ed; padding-top: .75rem; }}
     .figure-scroll {{ max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }}
     .scroll-hint {{ display: none; margin: 0 0 .35rem; color: #526075; font-size: .9rem; }}
     figure {{ margin: 0; }} img {{ display: block; max-width: 100%; height: auto; }} figcaption {{ margin-top: .45rem; }}
@@ -863,6 +938,7 @@ def build_preview(
     asset_paths: Sequence[str | pathlib.Path] | None = None,
     asset_dir: str | pathlib.Path | None = None,
     base_seed: int = DEFAULT_BASE_SEED,
+    samples_per_asset: int = 1,
     n_levels: int = 5,
     cluster_size: int = 8,
     max_points: int = DEFAULT_MAX_POINTS,
@@ -877,6 +953,7 @@ def build_preview(
         asset_dir: Directory holding the exact five pilot basenames.  Mutually
             exclusive with ``asset_paths``.
         base_seed: Deterministic seed namespace for per-asset seeds.
+        samples_per_asset: Number of independently seeded states per asset.
         n_levels: Maximum number of hierarchy coarsening levels.
         cluster_size: Aggregation target passed to :func:`build_hierarchy`.
         max_points: Parser point-count cap.
@@ -890,6 +967,7 @@ def build_preview(
         raise ValueError("asset_paths and asset_dir are mutually exclusive")
     if type(base_seed) is not int or not 0 <= base_seed < 2**32:
         raise ValueError("base_seed must be an integer in [0, 2**32)")
+    samples_per_asset = _positive_cap(samples_per_asset, "samples_per_asset")
     n_levels = _positive_cap(n_levels, "n_levels")
     cluster_size = _positive_cap(cluster_size, "cluster_size")
     max_points = _positive_cap(max_points, "max_points")
@@ -918,58 +996,104 @@ def build_preview(
             n_levels=n_levels,
             target=cluster_size,
         )
-        deformation_seed, velocity_seed = _asset_seeds(base_seed, source.stem, mesh.source_sha256)
-        state = generate_hierarchy_random_state(
-            mesh.rest_positions,
-            mesh.tet_indices,
-            hierarchy,
-            deformation_seed=deformation_seed,
-            velocity_seed=velocity_seed,
-            config=config,
-        )
-        state_arrays = _state_arrays(mesh, state)
-        metrics = _state_metrics(state, state_arrays, config)
         hierarchy_path = destination / f"{slug}_hierarchy.png"
-        state_path = destination / f"{slug}_state.png"
-        npz_path = destination / f"{slug}_state.npz"
         hierarchy_record = _render_hierarchy_image(hierarchy_path, mesh, hierarchy)
-        state_figure_record = _render_state_image(
-            state_path,
-            mesh,
-            state,
-            metrics=metrics,
+        hierarchy_output = _file_record(hierarchy_path, "hierarchy_png")
+        artifacts.append(hierarchy_output)
+        surface_faces, _ = _boundary_faces(mesh.tet_indices)
+        boundary_vertices = np.unique(surface_faces)
+
+        pending_samples: list[dict[str, Any]] = []
+        for sample_index in range(samples_per_asset):
+            deformation_seed, velocity_seed = _sample_seeds(base_seed, source.stem, mesh.source_sha256, sample_index)
+            state = generate_hierarchy_random_state(
+                mesh.rest_positions,
+                mesh.tet_indices,
+                hierarchy,
+                deformation_seed=deformation_seed,
+                velocity_seed=velocity_seed,
+                config=config,
+            )
+            state_arrays = _state_arrays(mesh, state)
+            pending_samples.append(
+                {
+                    "sample_index": sample_index,
+                    "deformation_seed": deformation_seed,
+                    "velocity_seed": velocity_seed,
+                    "state": state,
+                    "arrays": state_arrays,
+                    "metrics": _state_metrics(state, state_arrays, config),
+                }
+            )
+
+        shared_camera_bounds = _common_bounds(
+            *(
+                positions
+                for sample in pending_samples
+                for positions in _state_bounds_inputs(sample["arrays"], boundary_vertices)
+            )
         )
-        state_npz_sha256 = _write_deterministic_npz(npz_path, state_arrays)
-        outputs = {
-            "hierarchy_png": _file_record(hierarchy_path, "hierarchy_png"),
-            "state_png": _file_record(state_path, "state_png"),
-            "state_npz": {
-                **_file_record(npz_path, "generated_initial_state_npz"),
-                "sha256": state_npz_sha256,
-                "arrays": {name: _array_record(value) for name, value in sorted(state_arrays.items())},
-                "allow_pickle": False,
-                "npy_version": list(_NPY_VERSION),
-                "zip_timestamp": list(_ZIP_TIMESTAMP),
-            },
-        }
-        artifacts.extend(outputs.values())
+        sample_records: list[dict[str, object]] = []
+        for sample in pending_samples:
+            sample_index = int(sample["sample_index"])
+            state_stem = f"{slug}_state" if sample_index == 0 else f"{slug}_state_sample_{sample_index}"
+            state_path = destination / f"{state_stem}.png"
+            npz_path = destination / f"{state_stem}.npz"
+            state_arrays = sample["arrays"]
+            metrics = sample["metrics"]
+            state_figure_record = _render_state_image(
+                state_path,
+                mesh,
+                sample["state"],
+                metrics=metrics,
+                camera_bounds=shared_camera_bounds,
+            )
+            state_npz_sha256 = _write_deterministic_npz(npz_path, state_arrays)
+            sample_outputs = {
+                "state_png": _file_record(state_path, "state_png"),
+                "state_npz": {
+                    **_file_record(npz_path, "generated_initial_state_npz"),
+                    "sha256": state_npz_sha256,
+                    "arrays": {name: _array_record(value) for name, value in sorted(state_arrays.items())},
+                    "allow_pickle": False,
+                    "npy_version": list(_NPY_VERSION),
+                    "zip_timestamp": list(_ZIP_TIMESTAMP),
+                },
+            }
+            artifacts.extend(sample_outputs.values())
+            sample_records.append(
+                {
+                    "sample_index": sample_index,
+                    "deformation_seed": sample["deformation_seed"],
+                    "velocity_seed": sample["velocity_seed"],
+                    "state_kind": "generated_initial_state",
+                    "is_dynamics": False,
+                    "metrics": metrics,
+                    "state_figure": state_figure_record,
+                    "outputs": sample_outputs,
+                }
+            )
+
+        primary_sample = sample_records[0]
+        outputs = {"hierarchy_png": hierarchy_output, **primary_sample["outputs"]}
         asset_records.append(
             {
                 "name": source.stem,
                 "source_file": source.name,
                 "source_sha256": mesh.source_sha256,
-                "deformation_seed": deformation_seed,
-                "velocity_seed": velocity_seed,
+                "deformation_seed": primary_sample["deformation_seed"],
+                "velocity_seed": primary_sample["velocity_seed"],
                 "point_count": int(mesh.rest_positions.shape[0]),
                 "source_point_count": mesh.source_point_count,
                 "dropped_unused_point_count": mesh.dropped_unused_point_count,
                 "tet_count": int(mesh.tet_indices.shape[0]),
                 "state_kind": "generated_initial_state",
                 "is_dynamics": False,
-                "metrics": metrics,
+                "metrics": primary_sample["metrics"],
                 "hierarchy": hierarchy_record,
-                "state_figure": state_figure_record,
+                "state_figure": primary_sample["state_figure"],
                 "outputs": outputs,
+                "samples": sample_records,
             }
         )
 
@@ -983,6 +1107,7 @@ def build_preview(
         "is_dynamics": False,
         "asset_basenames": [path.stem for path in sources],
         "base_seed": base_seed,
+        "samples_per_asset": samples_per_asset,
         "hierarchy_config": {"n_levels": n_levels, "cluster_size": cluster_size},
         "state_config": _json_value(config),
         "caps": {"max_points": max_points, "max_tets": max_tets},
@@ -1003,6 +1128,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="directory holding the five .vtk assets (or set PSS_VTK_ASSET_DIR)",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_BASE_SEED, help="deterministic base seed")
+    parser.add_argument("--samples-per-asset", type=int, default=1, help="generated state samples per asset")
     parser.add_argument("--n-levels", type=int, default=5, help="maximum coarsening levels")
     parser.add_argument("--cluster-size", type=int, default=8, help="hierarchy aggregation target")
     parser.add_argument("--max-points", type=int, default=DEFAULT_MAX_POINTS, help="per-asset vertex cap")
@@ -1017,6 +1143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output_dir,
         asset_dir=args.asset_dir,
         base_seed=args.seed,
+        samples_per_asset=args.samples_per_asset,
         n_levels=args.n_levels,
         cluster_size=args.cluster_size,
         max_points=args.max_points,

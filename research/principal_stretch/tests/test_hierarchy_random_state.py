@@ -6,13 +6,16 @@ from __future__ import annotations
 
 import dataclasses
 import unittest
+from unittest import mock
 
 import numpy as np
 
+from research.principal_stretch import hierarchy_random_state as random_state_module
 from research.principal_stretch.hierarchy import build_hierarchy
 from research.principal_stretch.hierarchy_random_state import (
     HierarchyRandomStateConfig,
     _hierarchy_levels,
+    _level_weights,
     _prolong_affine_to_tets,
     generate_hierarchy_random_state,
 )
@@ -98,6 +101,105 @@ class TestHierarchyRandomState(unittest.TestCase):
             **kwargs,
         )
 
+    def _fine_only_vectors(self, _rng: np.random.Generator, count: int, maximum_norm: float) -> np.ndarray:
+        vectors = np.zeros((count, 3), dtype=np.float64)
+        if count == self.tet_indices.shape[0] and maximum_norm > 0.0:
+            vectors[:, 0] = np.linspace(-maximum_norm, maximum_norm, count)
+        return vectors
+
+    @staticmethod
+    def _zero_symmetric(_rng: np.random.Generator, count: int, _maximum_spectral_norm: float) -> np.ndarray:
+        return np.zeros((count, 3, 3), dtype=np.float64)
+
+    def test_default_weights_include_fine_level_with_gentle_decay(self):
+        config = HierarchyRandomStateConfig()
+        self.assertEqual(config.level_decay, 0.70)
+        weights = _level_weights(5, config.level_decay)
+        expected = np.array([0.70**4, 0.70**3, 0.70**2, 0.70, 1.0])
+        expected /= expected.sum()
+        np.testing.assert_allclose(weights, expected, rtol=0.0, atol=2.0e-17)
+        np.testing.assert_array_equal(np.round(100.0 * weights, decimals=2), [8.66, 12.37, 17.67, 25.24, 36.06])
+
+    def test_multilevel_deformation_has_direct_fine_tet_component(self):
+        self.assertEqual([level.c0.shape[0] for level in self.hierarchy.levels], [1])
+        config = HierarchyRandomStateConfig(
+            translation_fraction=0.05,
+            rotation_radians=0.0,
+            log_stretch=0.0,
+            max_displacement_fraction=0.50,
+            velocity_fraction_per_second=0.0,
+            angular_velocity_radians_per_second=0.0,
+            log_stretch_rate_per_second=0.0,
+            max_velocity_fraction_per_second=0.0,
+            minimum_singular_value=0.10,
+        )
+        with (
+            mock.patch.object(random_state_module, "_sample_vectors", side_effect=self._fine_only_vectors),
+            mock.patch.object(random_state_module, "_sample_symmetric_matrices", side_effect=self._zero_symmetric),
+        ):
+            result = self._generate(config=config)
+        self.assertGreater(float(np.linalg.norm(result.displacements, axis=1).max()), 0.0)
+        np.testing.assert_array_equal(result.velocities, np.zeros_like(result.velocities))
+
+    def test_multilevel_velocity_has_direct_fine_tet_component(self):
+        self.assertEqual([level.c0.shape[0] for level in self.hierarchy.levels], [1])
+        config = HierarchyRandomStateConfig(
+            translation_fraction=0.0,
+            rotation_radians=0.0,
+            log_stretch=0.0,
+            max_displacement_fraction=0.0,
+            velocity_fraction_per_second=0.05,
+            angular_velocity_radians_per_second=0.0,
+            log_stretch_rate_per_second=0.0,
+            max_velocity_fraction_per_second=0.50,
+        )
+        with (
+            mock.patch.object(random_state_module, "_sample_vectors", side_effect=self._fine_only_vectors),
+            mock.patch.object(random_state_module, "_sample_symmetric_matrices", side_effect=self._zero_symmetric),
+        ):
+            result = self._generate(config=config)
+        np.testing.assert_array_equal(result.displacements, np.zeros_like(result.displacements))
+        self.assertGreater(float(np.linalg.norm(result.velocities, axis=1).max()), 0.0)
+
+    def test_invalid_fine_mode_does_not_shrink_valid_coarse_endpoint(self):
+        characteristic_length = float(np.linalg.norm(np.ptp(self.rest_positions, axis=0)))
+
+        def fine_unstable_coarse_translation(_rng: np.random.Generator, count: int, maximum_norm: float) -> np.ndarray:
+            vectors = np.zeros((count, 3), dtype=np.float64)
+            if maximum_norm <= 0.0:
+                return vectors
+            if count == self.tet_indices.shape[0]:
+                vectors[:, 0] = np.linspace(-maximum_norm, maximum_norm, count)
+            else:
+                vectors[:, 1] = 0.05 * characteristic_length
+            return vectors
+
+        config = HierarchyRandomStateConfig(
+            translation_fraction=1.0,
+            rotation_radians=0.0,
+            log_stretch=0.0,
+            max_displacement_fraction=10.0,
+            velocity_fraction_per_second=0.0,
+            angular_velocity_radians_per_second=0.0,
+            log_stretch_rate_per_second=0.0,
+            max_velocity_fraction_per_second=0.0,
+            minimum_singular_value=0.80,
+        )
+        with (
+            mock.patch.object(random_state_module, "_sample_vectors", side_effect=fine_unstable_coarse_translation),
+            mock.patch.object(random_state_module, "_sample_symmetric_matrices", side_effect=self._zero_symmetric),
+        ):
+            result = self._generate(config=config)
+
+        mean_coarse_translation_fraction = float(result.displacements[:, 1].mean()) / characteristic_length
+        self.assertAlmostEqual(mean_coarse_translation_fraction, 0.05, places=12)
+        self.assertEqual(len(result.deformation_level_scales), 2)
+        self.assertTrue(all(type(scale) is float for scale in result.deformation_level_scales))
+        self.assertGreater(result.deformation_level_scales[0], 0.0)
+        self.assertLess(result.deformation_level_scales[0], 1.0)
+        self.assertEqual(result.deformation_level_scales[1], 1.0)
+        self.assertEqual(result.deformation_scale, 1.0)
+
     def test_deterministic_read_only_result_and_independent_seeds(self):
         first = self._generate()
         repeated = self._generate()
@@ -114,6 +216,9 @@ class TestHierarchyRandomState(unittest.TestCase):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             first.deformation_scale = 0.0
         np.testing.assert_array_equal(first.displacements, first.deformed_positions - first.rest_positions)
+        self.assertIsInstance(first.deformation_level_scales, tuple)
+        self.assertEqual(len(first.deformation_level_scales), 1 + len(self.hierarchy.levels))
+        self.assertTrue(all(type(scale) is float and 0.0 < scale <= 1.0 for scale in first.deformation_level_scales))
 
         np.testing.assert_array_equal(first.deformed_positions, velocity_changed.deformed_positions)
         np.testing.assert_array_equal(first.displacements, velocity_changed.displacements)
@@ -188,6 +293,7 @@ class TestHierarchyRandomState(unittest.TestCase):
         np.testing.assert_allclose(displacement, np.broadcast_to(displacement[0], displacement.shape), atol=1.0e-15)
         self.assertGreater(np.linalg.norm(displacement[0]), 0.0)
         np.testing.assert_array_equal(result.velocities, np.zeros_like(result.velocities))
+        self.assertEqual(result.deformation_level_scales, (1.0,))
 
     def test_characteristic_length_is_invariant_to_tet_refinement(self):
         lengths = []

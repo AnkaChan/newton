@@ -22,6 +22,7 @@ from ..build_hierarchy_state_preview import (
     _ZIP_TIMESTAMP,
     ASSET_BASENAMES,
     _parse_args,
+    _sparse_vectors,
     build_preview,
     default_asset_paths,
     load_legacy_vtk_tet_mesh,
@@ -118,7 +119,120 @@ class TestHierarchyStatePreview(unittest.TestCase):
         self.assertEqual(default_asset_paths(asset_root), expected)
         with mock.patch.dict(os.environ, {"PSS_VTK_ASSET_DIR": str(asset_root)}):
             self.assertEqual(default_asset_paths(), expected)
-        self.assertEqual(_parse_args(["--output-dir", str(self.root / "output")]).n_levels, 5)
+        default_args = _parse_args(["--output-dir", str(self.root / "output")])
+        self.assertEqual(default_args.n_levels, 5)
+        self.assertEqual(default_args.samples_per_asset, 1)
+        self.assertEqual(
+            _parse_args(["--output-dir", str(self.root / "output"), "--samples-per-asset", "3"]).samples_per_asset,
+            3,
+        )
+
+    def test_sparse_vectors_evenly_subsamples_only_boundary_candidates(self) -> None:
+        vectors = np.ones((160, 3), dtype=np.float64)
+        boundary_vertices = np.arange(1, 160, 2, dtype=np.int64)
+        selected = _sparse_vectors(vectors, candidate_indices=boundary_vertices)
+        expected = boundary_vertices[np.arange(72, dtype=np.int64) * boundary_vertices.size // 72]
+        np.testing.assert_array_equal(selected, expected)
+
+    def test_multi_sample_gallery_is_distinct_deterministic_and_builds_hierarchy_once(self) -> None:
+        first_output = self.root / "multi_first"
+        second_output = self.root / "multi_second"
+        with mock.patch.object(
+            preview_builder,
+            "build_hierarchy",
+            wraps=preview_builder.build_hierarchy,
+        ) as build_hierarchy_mock:
+            first = build_preview(
+                first_output,
+                asset_paths=[self.fixture],
+                base_seed=17,
+                cluster_size=2,
+                samples_per_asset=3,
+            )
+        self.assertEqual(build_hierarchy_mock.call_count, 1)
+        second = build_preview(
+            second_output,
+            asset_paths=[self.fixture],
+            base_seed=17,
+            cluster_size=2,
+            samples_per_asset=3,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["samples_per_asset"], 3)
+        asset = first["assets"][0]
+        samples = asset["samples"]
+        self.assertEqual([sample["sample_index"] for sample in samples], [0, 1, 2])
+        seed_pairs = [(sample["deformation_seed"], sample["velocity_seed"]) for sample in samples]
+        self.assertEqual(len(set(seed_pairs)), 3)
+        self.assertEqual(len({seed for pair in seed_pairs for seed in pair}), 6)
+        self.assertEqual(asset["deformation_seed"], samples[0]["deformation_seed"])
+        self.assertEqual(asset["velocity_seed"], samples[0]["velocity_seed"])
+        self.assertEqual(asset["metrics"], samples[0]["metrics"])
+        self.assertEqual(asset["outputs"]["state_png"], samples[0]["outputs"]["state_png"])
+        self.assertEqual(asset["outputs"]["state_npz"], samples[0]["outputs"]["state_npz"])
+
+        source_sha256 = hashlib.sha256(self.fixture.read_bytes()).hexdigest()
+
+        def expected_seed(sample_index: int, role: str) -> int:
+            prefix = f"17:fixture:{source_sha256}"
+            if sample_index:
+                prefix = f"{prefix}:sample:{sample_index}"
+            return int.from_bytes(hashlib.sha256(f"{prefix}:{role}".encode("ascii")).digest()[:4], "little")
+
+        for sample in samples:
+            sample_index = sample["sample_index"]
+            self.assertTrue(
+                {"sample_index", "deformation_seed", "velocity_seed", "metrics", "outputs"} <= sample.keys()
+            )
+            self.assertEqual(sample["deformation_seed"], expected_seed(sample_index, "deformation"))
+            self.assertEqual(sample["velocity_seed"], expected_seed(sample_index, "velocity"))
+            level_scales = sample["metrics"]["deformation_level_scales"]
+            effective_scales = sample["metrics"]["effective_deformation_level_scales"]
+            uniform_scale = sample["metrics"]["deformation_scale"]
+            self.assertEqual(len(level_scales), len(asset["hierarchy"]["levels"]))
+            self.assertTrue(all(type(scale) is float and 0.0 < scale <= 1.0 for scale in level_scales))
+            np.testing.assert_allclose(effective_scales, np.asarray(level_scales) * uniform_scale)
+            self.assertEqual(
+                sample["state_figure"]["original_surface_material"],
+                sample["state_figure"]["after_surface_material"],
+            )
+
+        camera_bounds = [sample["state_figure"]["camera_bounds"] for sample in samples]
+        self.assertEqual(camera_bounds, [camera_bounds[0]] * 3)
+        expected_names = {
+            "fixture_hierarchy.png",
+            "fixture_state.png",
+            "fixture_state.npz",
+            "fixture_state_sample_1.png",
+            "fixture_state_sample_1.npz",
+            "fixture_state_sample_2.png",
+            "fixture_state_sample_2.npz",
+            "index.html",
+            "manifest.json",
+        }
+        self.assertEqual({path.name for path in first_output.iterdir()}, expected_names)
+        self.assertEqual({record["path"] for record in first["artifact_inventory"]}, expected_names - {"manifest.json"})
+        for name in expected_names:
+            self.assertEqual((first_output / name).read_bytes(), (second_output / name).read_bytes())
+
+        html_text = (first_output / "index.html").read_text(encoding="utf-8")
+        self.assertIn('class="sample-gallery" data-sample-count="3"', html_text)
+        self.assertEqual(html_text.count('class="state-strip"'), 3)
+        for sample_index in range(3):
+            self.assertIn(f'data-sample-index="{sample_index}"', html_text)
+        manifest_text = (first_output / "manifest.json").read_text(encoding="utf-8").lower()
+        render_source = inspect.getsource(preview_builder._render_state_image).lower()
+        for forbidden_rendering in ("heatmap", "magma", "colorbar"):
+            self.assertNotIn(forbidden_rendering, render_source)
+            self.assertNotIn(forbidden_rendering, html_text.lower())
+            self.assertNotIn(forbidden_rendering, manifest_text)
+
+    def test_samples_per_asset_requires_positive_builtin_int(self) -> None:
+        for invalid in (True, 0, -1, 1.5):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "samples_per_asset must be a positive integer"):
+                    build_preview(self.root / "invalid", asset_paths=[self.fixture], samples_per_asset=invalid)
 
     def test_builder_writes_referenced_static_inventory_and_deterministic_manifest(self) -> None:
         first_output = self.root / "first"
@@ -142,9 +256,12 @@ class TestHierarchyStatePreview(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertFalse(first["is_dynamics"])
         self.assertIn("not dynamics", first["notice"])
+        self.assertEqual(first["samples_per_asset"], 1)
         self.assertEqual(first["hierarchy_config"]["n_levels"], 5)
-        self.assertEqual(first["state_config"]["level_decay"], 0.10)
+        self.assertEqual(first["state_config"]["level_decay"], 0.70)
         asset = first["assets"][0]
+        self.assertEqual(len(asset["samples"]), 1)
+        self.assertEqual(asset["samples"][0]["sample_index"], 0)
         self.assertEqual(asset["point_count"], 5)
         self.assertEqual(asset["source_point_count"], 6)
         self.assertEqual(asset["dropped_unused_point_count"], 1)
@@ -162,7 +279,10 @@ class TestHierarchyStatePreview(unittest.TestCase):
         self.assertIn("smallest local volume ratio", html_text)
         self.assertIn("smallest directional stretch", html_text)
         self.assertIn("safety threshold 0.35", html_text)
-        self.assertIn("reduced to 50% to keep tetrahedra valid", html_text)
+        self.assertIn("Per-level safety multipliers, from fine to coarsest", html_text)
+        self.assertIn("final uniform cap/validity multiplier", html_text)
+        self.assertIn("resulting effective multipliers", html_text)
+        self.assertNotIn("sampled deformation stayed at 100% strength", html_text.lower())
         self.assertIn("<details>", html_text)
         self.assertNotIn("minimum determinant", html_text)
         self.assertNotIn("minimum singular value", html_text)
@@ -181,6 +301,15 @@ class TestHierarchyStatePreview(unittest.TestCase):
         self.assertEqual(struct.unpack(">II", state_png[16:24]), (2080, 572))
         self.assertGreater(asset["state_figure"]["velocity_display_scale_factor"], 0.0)
         self.assertEqual(asset["state_figure"]["surface_style"], "per_face_depth_shading_with_visible_edges")
+        self.assertEqual(
+            asset["state_figure"]["velocity_reference_surface"],
+            "translucent_exact_deformed_reference_surface",
+        )
+        self.assertEqual(asset["state_figure"]["velocity_reference_surface_alpha"], 0.38)
+        self.assertEqual(asset["state_figure"]["velocity_reference_edge_alpha"], 0.10)
+        self.assertIn("translucent exact-deformed reference surface", html_text)
+        self.assertEqual(asset["state_figure"]["arrow_candidate_scope"], "boundary_surface_vertices")
+        self.assertEqual(asset["state_figure"]["boundary_arrow_candidate_count"], 5)
         render_source = inspect.getsource(preview_builder._render_state_image).lower()
         for forbidden_rendering in ("heatmap", "magma", "colorbar"):
             self.assertNotIn(forbidden_rendering, render_source)

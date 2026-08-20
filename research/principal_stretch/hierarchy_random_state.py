@@ -30,7 +30,7 @@ class HierarchyRandomStateConfig:
     angular_velocity_radians_per_second: float = 0.75
     log_stretch_rate_per_second: float = 0.35
     max_velocity_fraction_per_second: float = 0.50
-    level_decay: float = 0.10
+    level_decay: float = 0.70
     minimum_singular_value: float = 0.35
     validity_scale_decay: float = 0.50
     max_rescale_steps: int = 16
@@ -106,8 +106,10 @@ class HierarchyRandomState:
     max_velocity_fraction_per_second: float
     minimum_determinant: float
     minimum_singular_value: float
+    deformation_level_scales: tuple[float, ...]
+    """Accepted per-level deformation multipliers, ordered fine to root."""
     deformation_scale: float
-    """Accepted multiplier on the initially sampled deformation field."""
+    """Final uniform cap and validity multiplier applied after per-level acceptance."""
 
 
 def _require_seed(name: str, value: int) -> None:
@@ -346,11 +348,8 @@ def _sample_deformation(
     config: HierarchyRandomStateConfig,
     vertex_count: int,
 ) -> np.ndarray:
-    displacement = np.zeros((vertex_count, 3), dtype=np.float64)
-    if hierarchy_levels:
-        scale_centroids = [level[0] for level in hierarchy_levels]
-    else:
-        scale_centroids = [tet_centroids]
+    level_displacements = []
+    scale_centroids = [tet_centroids, *(level[0] for level in hierarchy_levels)]
     for scale_index, (centroids, weight) in enumerate(zip(scale_centroids, weights, strict=True)):
         node_count = centroids.shape[0]
         translations = _sample_vectors(rng, node_count, config.translation_fraction * characteristic_length * weight)
@@ -358,17 +357,19 @@ def _sample_deformation(
         log_stretches = _sample_symmetric_matrices(rng, node_count, config.log_stretch * weight)
         transforms = rotations @ _symmetric_matrix_exponential(log_stretches)
         linear = transforms - np.eye(3)[None, :, :]
-        if hierarchy_levels:
+        if scale_index > 0:
             tet_linear, tet_center_displacement = _prolong_affine_to_tets(
-                linear, translations, tet_centroids, hierarchy_levels, scale_index
+                linear, translations, tet_centroids, hierarchy_levels, scale_index - 1
             )
         else:
             tet_linear = linear
             tet_center_displacement = translations
         relative = rest_corners - tet_centroids[:, None, :]
         tet_displacement = tet_center_displacement[:, None, :] + np.einsum("tij,tkj->tki", tet_linear, relative)
-        displacement += _volume_average_to_vertices(tet_displacement, tet_indices, tet_volumes, vertex_count)
-    return displacement
+        level_displacements.append(
+            _volume_average_to_vertices(tet_displacement, tet_indices, tet_volumes, vertex_count)
+        )
+    return np.stack(level_displacements, axis=0)
 
 
 def _sample_velocity(
@@ -384,10 +385,7 @@ def _sample_velocity(
     vertex_count: int,
 ) -> np.ndarray:
     velocity = np.zeros((vertex_count, 3), dtype=np.float64)
-    if hierarchy_levels:
-        scale_centroids = [level[0] for level in hierarchy_levels]
-    else:
-        scale_centroids = [tet_centroids]
+    scale_centroids = [tet_centroids, *(level[0] for level in hierarchy_levels)]
     for scale_index, (centroids, weight) in enumerate(zip(scale_centroids, weights, strict=True)):
         node_count = centroids.shape[0]
         translations = _sample_vectors(
@@ -396,9 +394,9 @@ def _sample_velocity(
         angular = _sample_vectors(rng, node_count, config.angular_velocity_radians_per_second * weight)
         stretch_rates = _sample_symmetric_matrices(rng, node_count, config.log_stretch_rate_per_second * weight)
         linear = _skew_matrices(angular) + stretch_rates
-        if hierarchy_levels:
+        if scale_index > 0:
             tet_linear, tet_center_velocity = _prolong_affine_to_tets(
-                linear, translations, tet_centroids, hierarchy_levels, scale_index
+                linear, translations, tet_centroids, hierarchy_levels, scale_index - 1
             )
         else:
             tet_linear = linear
@@ -462,15 +460,16 @@ def generate_hierarchy_random_state(
 ) -> HierarchyRandomState:
     """Generate one bounded deformation and an independently seeded velocity.
 
-    Each coarsened hierarchy scale samples node translation, rotation, and
-    symmetric log-stretch fields. Affine coefficients and values at node
-    centroids are recursively partition-of-unity prolonged to tetrahedra; the
-    normalized scale contributions are summed and rest-volume averaged onto
-    vertices. Raw tet-node noise is intentionally omitted when coarsening
-    levels exist, with tet nodes used only as the empty-hierarchy fallback.
-    Velocity repeats that construction with independent translation, angular,
-    and symmetric stretch-rate fields evaluated on rest geometry. Vertices not
-    referenced by any tetrahedron remain at rest with zero velocity.
+    The fine tet level and every coarsened hierarchy level independently sample
+    node translation, rotation, and symmetric log-stretch fields. Coarse affine
+    coefficients and values at node centroids are recursively
+    partition-of-unity prolonged to tetrahedra; all normalized scale
+    contributions are rest-volume averaged onto vertices. Deformation levels
+    are accepted from root to fine with deterministic per-level safety backoff,
+    then summed and globally capped. Velocity sums all levels using independent
+    translation, angular, and symmetric stretch-rate fields evaluated on rest
+    geometry. Vertices not referenced by any tetrahedron remain at rest with
+    zero velocity.
 
     Args:
         rest_positions: Rest vertex positions [m], shape [vertex_count, 3].
@@ -498,12 +497,12 @@ def generate_hierarchy_random_state(
     )
     pins = _validate_pins(pinned_indices, rest.shape[0])
     hierarchy_levels = _hierarchy_levels(hierarchy, tets.shape[0])
-    weights = _level_weights(max(1, len(hierarchy_levels)), config.level_decay)
+    weights = _level_weights(1 + len(hierarchy_levels), config.level_decay)
     tet_volumes = np.asarray(hierarchy.tet_vol, dtype=np.float64)
     tet_centroids = np.asarray(hierarchy.tet_c0, dtype=np.float64)
 
     deformation_rng = np.random.default_rng(deformation_seed)
-    sampled_displacement = _sample_deformation(
+    sampled_level_displacements = _sample_deformation(
         deformation_rng,
         rest_corners,
         tets,
@@ -515,28 +514,53 @@ def generate_hierarchy_random_state(
         config,
         rest.shape[0],
     )
-    sampled_displacement[pins] = 0.0
-    capped_displacement, cap_scale = _cap_vector_field(
-        sampled_displacement, config.max_displacement_fraction * characteristic_length
-    )
+    sampled_level_displacements[:, pins] = 0.0
 
+    displacement = np.zeros_like(rest)
+    deformation_level_scales = [1.0] * sampled_level_displacements.shape[0]
+    for level_index in range(sampled_level_displacements.shape[0] - 1, -1, -1):
+        level_scale = 1.0
+        for _ in range(config.max_rescale_steps + 1):
+            candidate_displacement = displacement + level_scale * sampled_level_displacements[level_index]
+            candidate_displacement[pins] = 0.0
+            candidate_deformed = rest + candidate_displacement
+            candidate_deformed[pins] = rest[pins]
+            metrics = _deformation_metrics(rest_matrices, candidate_deformed, tets)
+            if metrics is not None:
+                minimum_determinant, minimum_singular_value = metrics
+                if minimum_determinant > 0.0 and minimum_singular_value >= config.minimum_singular_value:
+                    displacement = candidate_displacement
+                    displacement[pins] = 0.0
+                    deformation_level_scales[level_index] = float(level_scale)
+                    break
+            level_scale *= config.validity_scale_decay
+        else:
+            raise RuntimeError(
+                f"unable to generate a valid deformation: level {level_index} could not be accepted "
+                "within max_rescale_steps "
+                f"(required minimum_singular_value={config.minimum_singular_value})"
+            )
+
+    capped_displacement, cap_scale = _cap_vector_field(
+        displacement, config.max_displacement_fraction * characteristic_length
+    )
     accepted: tuple[np.ndarray, float, float, float] | None = None
     validity_scale = 1.0
     for _ in range(config.max_rescale_steps + 1):
-        displacement = capped_displacement * validity_scale
-        displacement[pins] = 0.0
-        deformed = rest + displacement
-        deformed[pins] = rest[pins]
-        metrics = _deformation_metrics(rest_matrices, deformed, tets)
+        candidate_displacement = capped_displacement * validity_scale
+        candidate_displacement[pins] = 0.0
+        candidate_deformed = rest + candidate_displacement
+        candidate_deformed[pins] = rest[pins]
+        metrics = _deformation_metrics(rest_matrices, candidate_deformed, tets)
         if metrics is not None:
             minimum_determinant, minimum_singular_value = metrics
             if minimum_determinant > 0.0 and minimum_singular_value >= config.minimum_singular_value:
-                accepted = (deformed, minimum_determinant, minimum_singular_value, validity_scale)
+                accepted = (candidate_deformed, minimum_determinant, minimum_singular_value, validity_scale)
                 break
         validity_scale *= config.validity_scale_decay
     if accepted is None:
         raise RuntimeError(
-            "unable to generate a valid deformation within max_rescale_steps "
+            "unable to generate a valid globally capped deformation within max_rescale_steps "
             f"(required minimum_singular_value={config.minimum_singular_value})"
         )
     deformed, minimum_determinant, minimum_singular_value, validity_scale = accepted
@@ -582,5 +606,6 @@ def generate_hierarchy_random_state(
         max_velocity_fraction_per_second=maximum_velocity / characteristic_length,
         minimum_determinant=minimum_determinant,
         minimum_singular_value=minimum_singular_value,
-        deformation_scale=cap_scale * validity_scale,
+        deformation_level_scales=tuple(deformation_level_scales),
+        deformation_scale=float(cap_scale * validity_scale),
     )
