@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import pathlib
@@ -16,6 +17,7 @@ from unittest import mock
 
 import numpy as np
 
+from .. import build_hierarchy_state_preview as preview_builder
 from ..build_hierarchy_state_preview import (
     _ZIP_TIMESTAMP,
     ASSET_BASENAMES,
@@ -179,15 +181,26 @@ class TestHierarchyStatePreview(unittest.TestCase):
         self.assertEqual(struct.unpack(">II", state_png[16:24]), (2080, 572))
         self.assertGreater(asset["state_figure"]["velocity_display_scale_factor"], 0.0)
         self.assertEqual(asset["state_figure"]["surface_style"], "per_face_depth_shading_with_visible_edges")
-        self.assertEqual(asset["state_figure"]["after_surface_color"], "displacement_magnitude_heatmap")
+        render_source = inspect.getsource(preview_builder._render_state_image).lower()
+        for forbidden_rendering in ("heatmap", "magma", "colorbar"):
+            self.assertNotIn(forbidden_rendering, render_source)
+            self.assertNotIn(forbidden_rendering, html_text.lower())
+        self.assertEqual(
+            asset["state_figure"]["original_surface_material"],
+            asset["state_figure"]["after_surface_material"],
+        )
+        self.assertEqual(asset["state_figure"]["surface_color_mode"], "uniform_solid_material")
+        self.assertEqual(asset["state_figure"]["overlay_surface_color_mode"], "uniform_solid_material")
+        self.assertNotEqual(
+            asset["state_figure"]["overlay_deformed_surface_material"],
+            asset["state_figure"]["original_ghost_surface_material"],
+        )
         self.assertEqual(asset["state_figure"]["after_geometry"], "exact_deformed_positions")
-        self.assertEqual(asset["state_figure"]["after_heatmap_label"], "distance moved (asset units)")
         self.assertEqual(asset["state_figure"]["headline"], "Generated initial state \N{EM DASH} not a simulation")
         self.assertNotIn("after_displacement_display_magnification", asset["state_figure"])
         self.assertNotIn("after_displacement_display_is_presentation_only", asset["state_figure"])
-        self.assertIn("distance-moved heatmap", html_text)
         self.assertNotIn("magnification", html_text.lower())
-        self.assertIn("Original and deformed views use identical camera and bounds", html_text)
+        self.assertIn("same uniform solid material, identical camera and bounds", html_text)
         self.assertGreaterEqual(html_text.count('class="figure-scroll"'), 2)
         self.assertIn(".hierarchy-strip { width: auto; max-width: none; }", html_text)
         self.assertIn(".state-strip { width: auto; max-width: none; }", html_text)
@@ -203,11 +216,6 @@ class TestHierarchyStatePreview(unittest.TestCase):
         )
         self.assertIn(".scroll-hint { display: none;", html_text)
         self.assertIn(".scroll-hint { display: block;", html_text)
-        self.assertEqual(
-            asset["state_figure"]["after_heatmap_max_displacement_asset_units"],
-            asset["metrics"]["max_displacement_asset_units"],
-        )
-
         state_record = first["assets"][0]["outputs"]["state_npz"]
         self.assertEqual(
             set(state_record["arrays"]),

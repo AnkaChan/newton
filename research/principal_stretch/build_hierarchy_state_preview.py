@@ -584,7 +584,6 @@ def _render_state_image(
     deformed = arrays["deformed_positions"]
     velocities = arrays["velocities"]
     displacement = deformed - rest
-    displacement_magnitude = np.linalg.norm(displacement, axis=1)
     velocity_display, velocity_display_scale = _scaled_velocity(velocities, deformed)
     displacement_indices = _sparse_vectors(displacement)
     velocity_indices = _sparse_vectors(velocities)
@@ -597,33 +596,21 @@ def _render_state_image(
     figure.subplots_adjust(left=0.01, right=0.99, bottom=0.10, top=0.76, wspace=0.02)
     axes = [figure.add_subplot(1, 4, index + 1, projection="3d") for index in range(4)]
 
-    _add_surface(axes[0], matplotlib, Poly3DCollection, rest, surface_faces, colors="#4f81bd", alpha=0.88)
+    state_surface_material = "#4f81bd"
+    overlay_deformed_surface_material = "#d97706"
+    original_ghost_surface_material = "#a7a7a7"
+    _add_surface(axes[0], matplotlib, Poly3DCollection, rest, surface_faces, colors=state_surface_material, alpha=0.88)
     axes[0].set_title("Original (before)")
-    heatmap_maximum = max(float(displacement_magnitude.max(initial=0.0)), np.finfo(np.float64).eps)
-    heatmap_norm = matplotlib.colors.Normalize(vmin=0.0, vmax=heatmap_maximum)
-    heatmap = matplotlib.colormaps["magma"]
-    face_displacement = displacement_magnitude[surface_faces].mean(axis=1)
     _add_surface(
         axes[1],
         matplotlib,
         Poly3DCollection,
         deformed,
         surface_faces,
-        colors=heatmap(heatmap_norm(face_displacement)),
-        alpha=0.94,
-        edge_alpha=0.40,
-        linewidth=0.20,
+        colors=state_surface_material,
+        alpha=0.88,
     )
-    axes[1].set_title(
-        "Deformed (after): exact geometry\ncolor = exact distance moved",
-        fontsize=9,
-    )
-    colorbar_axis = figure.add_axes((0.555, 0.070, 0.14, 0.018))
-    colorbar = matplotlib.colorbar.ColorbarBase(
-        colorbar_axis, cmap=heatmap, norm=heatmap_norm, orientation="horizontal"
-    )
-    colorbar.set_label("distance moved (asset units)", fontsize=7, labelpad=1)
-    colorbar.ax.tick_params(labelsize=6, length=2, pad=1)
+    axes[1].set_title("Deformed (after): exact geometry", fontsize=9)
 
     _add_surface(
         axes[2],
@@ -631,7 +618,7 @@ def _render_state_image(
         Poly3DCollection,
         rest,
         surface_faces,
-        colors="#a7a7a7",
+        colors=original_ghost_surface_material,
         alpha=0.34,
         edge_alpha=0.22,
     )
@@ -641,13 +628,13 @@ def _render_state_image(
         Poly3DCollection,
         deformed,
         surface_faces,
-        colors=heatmap(heatmap_norm(face_displacement)),
-        alpha=0.52,
+        colors=overlay_deformed_surface_material,
+        alpha=0.72,
         edge_alpha=0.28,
     )
     _quiver(axes[2], rest, displacement, displacement_indices, "#d00000")
     axes[2].set_title(
-        "Gray original + exact deformed heatmap\n(movement arrows at actual scale)",
+        "Gray original + solid exact deformed\n(movement arrows at actual scale)",
         fontsize=8.5,
     )
 
@@ -683,11 +670,14 @@ def _render_state_image(
         "velocity_arrow_count": int(velocity_indices.size),
         "velocity_display_scale_factor": velocity_display_scale,
         "surface_style": "per_face_depth_shading_with_visible_edges",
-        "after_surface_color": "displacement_magnitude_heatmap",
+        "surface_color_mode": "uniform_solid_material",
+        "original_surface_material": state_surface_material,
+        "after_surface_material": state_surface_material,
+        "overlay_surface_color_mode": "uniform_solid_material",
+        "overlay_deformed_surface_material": overlay_deformed_surface_material,
+        "original_ghost_surface_material": original_ghost_surface_material,
         "after_geometry": "exact_deformed_positions",
         "headline": _STATE_FIGURE_HEADLINE,
-        "after_heatmap_label": "distance moved (asset units)",
-        "after_heatmap_max_displacement_asset_units": metrics["max_displacement_asset_units"],
     }
 
 
@@ -827,7 +817,7 @@ def _render_index(asset_records: Sequence[Mapping[str, Any]]) -> str:
       <details><summary>Reproducibility details</summary><p>Deformation seed {asset["deformation_seed"]}; velocity seed {asset["velocity_seed"]}. Maximum movement after removing overall mean translation: {centered_movement_percent:.2f}% of asset size. Exact arrays, hashes, and technical fields are in <a href="manifest.json">manifest.json</a>.</p></details>
       <div class="figures">
         <figure><p class="scroll-hint">Swipe horizontally to see all hierarchy levels &rarr;</p><div class="figure-scroll"><img class="hierarchy-strip" src="{hierarchy_ref}" alt="{name} hierarchy levels"></div><figcaption>Physical-centroid graph at every actual level; the surface is colored by each fine tetrahedron's ancestor cluster.</figcaption></figure>
-        <figure><p class="scroll-hint">Swipe horizontally to see all four state panels &rarr;</p><div class="figure-scroll"><img class="state-strip" src="{state_ref}" alt="{name} generated initial state"></div><figcaption>Original and deformed views use identical camera and bounds, deterministic per-face diffuse/depth shading, and visible mesh edges. The deformed panel uses exact generated positions and a zero-anchored perceptual distance-moved heatmap. The third panel overlays a gray original ghost, exact deformed heatmap, and actual-scale movement arrows. Independent velocity: velocity arrows uniformly rescaled for visibility; directions and relative lengths retained.</figcaption></figure>
+        <figure><p class="scroll-hint">Swipe horizontally to see all four state panels &rarr;</p><div class="figure-scroll"><img class="state-strip" src="{state_ref}" alt="{name} generated initial state"></div><figcaption>Original and deformed views use the same uniform solid material, identical camera and bounds, deterministic per-face diffuse/depth shading, and visible mesh edges. The deformed panel uses exact generated positions. The third panel overlays a gray original ghost, a solid contrasting exact-deformed surface, and actual-scale movement arrows. Independent velocity: velocity arrows uniformly rescaled for visibility; directions and relative lengths retained.</figcaption></figure>
       </div>
       <p><a href="{npz_ref}">Download deterministic generated state (.npz)</a></p>
     </section>"""
