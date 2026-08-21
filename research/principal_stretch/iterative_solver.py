@@ -941,6 +941,7 @@ def _validate_problem_identity(
     ):
         if not torch.equal(projected, common):
             raise ValueError(f"projection and common-objective {name} differ")
+    validate_projection_objective_volume_binding(projection_state, objective)
     _validate_translation_gauge_objective_binding(projection_state, objective)
 
 

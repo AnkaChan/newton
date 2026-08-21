@@ -80,6 +80,17 @@ def _require_sha256(value: object, name: str) -> str:
     return value
 
 
+def _require_portable_source_c_contiguous(
+    rest_q: np.ndarray,
+    tet_indices: np.ndarray,
+    tet_poses: np.ndarray,
+) -> None:
+    """Reject non-C source layouts before portable-policy canonicalization."""
+    for name, value in (("rest_q", rest_q), ("tet_indices", tet_indices), ("tet_poses", tet_poses)):
+        if not np.asarray(value).flags.c_contiguous:
+            raise ValueError(f"portable operator source {name} must be exact C-contiguous")
+
+
 def _determinant_3x3_float64_scalar(matrix: tuple[tuple[float, float, float], ...]) -> float:
     """Evaluate one 3x3 determinant in a fixed binary64 scalar order."""
     a, b, c = matrix[0]
@@ -159,6 +170,7 @@ def canonical_operator_volume(
     """Build portable ordered determinants and volumes from source arrays."""
     if operator_geometry_policy != OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME:
         raise ValueError("canonical operator volume requires the portable operator geometry policy")
+    _require_portable_source_c_contiguous(rest_q, tet_indices, tet_poses)
     rest = np.ascontiguousarray(np.asarray(rest_q))
     tets = np.ascontiguousarray(np.asarray(tet_indices))
     poses = np.ascontiguousarray(np.asarray(tet_poses))
@@ -214,6 +226,8 @@ def operator_geometry_sha256(
     """
     if type(policy) is not str or policy not in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES:
         raise ValueError("operator geometry policy is not an authenticated v5 policy")
+    if policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME:
+        _require_portable_source_c_contiguous(rest_q, tet_indices, tet_poses)
     rest = np.ascontiguousarray(np.asarray(rest_q))
     tets = np.ascontiguousarray(np.asarray(tet_indices))
     poses = np.ascontiguousarray(np.asarray(tet_poses))
@@ -1158,6 +1172,8 @@ def build_solver(
     else:
         canonical_operator_policy = operator_geometry_policy
 
+    if canonical_operator_policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME:
+        _require_portable_source_c_contiguous(rest_q, tet_indices, tet_poses)
     source_rest_array_exact = np.ascontiguousarray(np.asarray(rest_q))
     source_tet_indices_array = np.ascontiguousarray(np.asarray(tet_indices))
     source_tet_poses_array = np.ascontiguousarray(np.asarray(tet_poses))

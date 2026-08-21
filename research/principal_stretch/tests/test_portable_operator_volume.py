@@ -11,8 +11,24 @@ import numpy as np
 import torch
 
 from .. import torch_solver as ts
-from ..iterative_solver import validate_projection_objective_volume_binding
+from ..graph_transformer import GraphTransformerConfig
+from ..iterative_solver import (
+    IterativeSolverConfig,
+    PhysicalStepContext,
+    solve_iterative_principal_stretch,
+    validate_projection_objective_volume_binding,
+)
+from ..predictor import StretchPredictor, build_stretch_predictor
+from ..v5_ablation import (
+    AttestedVBDK1Start,
+    V5AblationConfig,
+    VBDK1MethodRecord,
+    pin_binding_sha256,
+    run_v5_identical_corrector_ablation,
+)
+from ..v5_corrector import CorrectorConfig, FixedPCGConfig
 from ..v5_objective import CommonObjectiveContext
+from .test_graph_transformer import _chain_mesh, _tet_poses
 from .test_v5_operator_geometry import _structured_zero_inverse
 
 
@@ -34,6 +50,127 @@ def _portable_state(device: torch.device) -> ts.SolverState:
         device,
         dtype=torch.float64,
         operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
+    )
+
+
+def _portable_chain_source() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rest, tets = _chain_mesh(2)
+    source_rest = np.array(rest, dtype=np.float32, order="C", copy=True)
+    source_tets = np.array(tets, dtype=np.int64, order="C", copy=True)
+    source_poses = np.array(_tet_poses(source_rest, source_tets), dtype=np.float32, order="C", copy=True)
+    return source_rest, source_tets, source_poses
+
+
+def _strided_last_axis(value: np.ndarray) -> np.ndarray:
+    padded_shape = (*value.shape[:-1], 2 * value.shape[-1])
+    padded = np.empty(padded_shape, dtype=value.dtype)
+    view = padded[..., ::2]
+    view[...] = value
+    assert not view.flags.c_contiguous
+    return view
+
+
+def _portable_execution_problem() -> tuple[
+    ts.SolverState,
+    StretchPredictor,
+    PhysicalStepContext,
+    dict[str, object],
+]:
+    rest, tets, poses = _portable_chain_source()
+    state = ts.build_solver(
+        rest,
+        tets,
+        poses,
+        np.asarray([0, 1, 2], dtype=np.int64),
+        torch.device("cpu"),
+        dtype=torch.float64,
+        operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
+    )
+    predictor = build_stretch_predictor(
+        "graph-transformer",
+        rest,
+        tets,
+        torch.device("cpu"),
+        torch.float64,
+        residual=True,
+        graph_config=GraphTransformerConfig(
+            hidden_dim=8,
+            num_heads=2,
+            n_levels=2,
+            cluster_size=2,
+            max_hencky_update=0.01,
+            max_rotation_update=0.015,
+            architecture_version=5,
+        ),
+    )
+    predictor.eval()
+    positions = state.rest_q.clone()
+    mu = torch.full((state.n_tets,), 17.0, dtype=torch.float64)
+    lam = torch.full((state.n_tets,), 31.0, dtype=torch.float64)
+    physical_step = PhysicalStepContext(
+        x_current=positions,
+        x_previous=positions,
+        force=torch.zeros_like(positions),
+        gravity=torch.zeros(3, dtype=torch.float64),
+        mu=mu,
+        lam=lam,
+        pin=torch.isin(state.tets, state.pinned).any(dim=-1).to(torch.float64),
+        pinned_targets=positions[state.pinned],
+    )
+    objective_fields = {
+        "tets": state.tets,
+        "J": state.J,
+        "volume": state.w,
+        "mass": torch.ones(state.n_verts, dtype=torch.float64),
+        "mu": mu,
+        "lam": lam,
+        "inertial_target": positions,
+        "pinned": state.pinned,
+        "dt": 1.0,
+    }
+    return state, predictor, physical_step, objective_fields
+
+
+def _portable_objective(state: ts.SolverState, fields: dict[str, object], binding: str) -> CommonObjectiveContext:
+    if binding == "unbound":
+        return CommonObjectiveContext(**fields)
+    if binding == "matched":
+        return CommonObjectiveContext(
+            **fields,
+            operator_geometry_sha256=state.operator_geometry_sha256,
+            operator_volume_policy=state.operator_volume_policy,
+            operator_volume_sha256=state.operator_volume_sha256,
+        )
+    if binding != "mismatched":
+        raise AssertionError(f"unknown test binding {binding!r}")
+    relabeled_geometry = "0" * 64
+    relabeled_volume = ts.operator_volume_sha256(
+        relabeled_geometry,
+        state.w.detach().cpu().numpy(),
+        policy=state.operator_volume_policy,
+    )
+    return CommonObjectiveContext(
+        **fields,
+        operator_geometry_sha256=relabeled_geometry,
+        operator_volume_policy=state.operator_volume_policy,
+        operator_volume_sha256=relabeled_volume,
+    )
+
+
+def _portable_vbd_k1(
+    state: ts.SolverState,
+    objective: CommonObjectiveContext,
+    physical_step: PhysicalStepContext,
+) -> AttestedVBDK1Start:
+    return AttestedVBDK1Start(
+        positions=physical_step.x_current,
+        physical_step_sha256=physical_step.physical_step_sha256,
+        common_objective_sha256=objective.common_objective_sha256,
+        static_mesh_sha256=state.static_mesh_sha256,
+        operator_geometry_sha256=state.operator_geometry_sha256,
+        projection_state_sha256=state.projection_state_sha256,
+        pin_binding_sha256=pin_binding_sha256(state.pinned, physical_step.pinned_targets),
+        method_record=VBDK1MethodRecord(source_run_sha256="a" * 64),
     )
 
 
@@ -59,6 +196,86 @@ def _little_endian_bytes(value: torch.Tensor) -> bytes:
 
 
 class TestPortableOperatorVolume(unittest.TestCase):
+    def test_portable_source_arrays_require_exact_c_contiguity_at_every_entry(self) -> None:
+        """Reject Fortran and strided sources before portable canonicalization."""
+        rest, tets, poses = _portable_chain_source()
+        variants = {
+            "rest_q-fortran": (np.asfortranarray(rest), tets, poses, "rest_q"),
+            "rest_q-strided": (_strided_last_axis(rest), tets, poses, "rest_q"),
+            "tet_indices-fortran": (rest, np.asfortranarray(tets), poses, "tet_indices"),
+            "tet_indices-strided": (rest, _strided_last_axis(tets), poses, "tet_indices"),
+            "tet_poses-fortran": (rest, tets, np.asfortranarray(poses), "tet_poses"),
+            "tet_poses-strided": (rest, tets, _strided_last_axis(poses), "tet_poses"),
+        }
+        for label, (source_rest, source_tets, source_poses, source_name) in variants.items():
+            with self.subTest(layout=label):
+                self.assertFalse(
+                    {
+                        "rest_q": source_rest,
+                        "tet_indices": source_tets,
+                        "tet_poses": source_poses,
+                    }[source_name].flags.c_contiguous
+                )
+                with self.assertRaisesRegex(ValueError, rf"{source_name}.*C-contiguous"):
+                    ts.canonical_operator_volume(
+                        source_rest,
+                        source_tets,
+                        source_poses,
+                        operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
+                    )
+                with self.assertRaisesRegex(ValueError, rf"{source_name}.*C-contiguous"):
+                    ts.operator_geometry_sha256(
+                        source_rest,
+                        source_tets,
+                        source_poses,
+                        policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
+                    )
+                with self.assertRaisesRegex(ValueError, rf"{source_name}.*C-contiguous"):
+                    ts.build_solver(
+                        source_rest,
+                        source_tets,
+                        source_poses,
+                        np.asarray([0, 1, 2], dtype=np.int64),
+                        torch.device("cpu"),
+                        dtype=torch.float64,
+                        operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
+                    )
+
+    def test_nonportable_source_policy_preserves_layout_canonicalization(self) -> None:
+        """Keep legacy promoted-policy acceptance and identities unchanged."""
+        rest, tets, poses = _portable_chain_source()
+        expected_geometry = ts.operator_geometry_sha256(
+            rest,
+            tets,
+            poses,
+            policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+        )
+        source_rest = np.asfortranarray(rest)
+        source_tets = np.asfortranarray(tets)
+        source_poses = np.asfortranarray(poses)
+        self.assertFalse(source_rest.flags.c_contiguous)
+        self.assertFalse(source_tets.flags.c_contiguous)
+        self.assertFalse(source_poses.flags.c_contiguous)
+        self.assertEqual(
+            ts.operator_geometry_sha256(
+                source_rest,
+                source_tets,
+                source_poses,
+                policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+            ),
+            expected_geometry,
+        )
+        state = ts.build_solver(
+            source_rest,
+            source_tets,
+            source_poses,
+            np.asarray([0, 1, 2], dtype=np.int64),
+            torch.device("cpu"),
+            dtype=torch.float64,
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+        )
+        self.assertEqual(state.operator_geometry_sha256, expected_geometry)
+
     def test_scalar_order_preserves_structural_zeros_and_canonical_little_endian_bytes(self) -> None:
         """Preserve the registered scalar order and canonical byte representation."""
         rest, tets, poses = _structural_zero_geometry()
@@ -77,9 +294,9 @@ class TestPortableOperatorVolume(unittest.TestCase):
         self.assertTrue(payload.source_rest_determinant.flags.c_contiguous)
         self.assertTrue(payload.source_tet_pose_determinant.flags.c_contiguous)
         self.assertTrue(payload.rest_volume.flags.c_contiguous)
-        self.assertFalse(payload.source_rest_determinant.flags.writeable)
-        self.assertFalse(payload.source_tet_pose_determinant.flags.writeable)
-        self.assertFalse(payload.rest_volume.flags.writeable)
+        self.assertFalse(payload.source_rest_determinant.flags["W"])
+        self.assertFalse(payload.source_tet_pose_determinant.flags["W"])
+        self.assertFalse(payload.rest_volume.flags["W"])
         self.assertEqual(payload.source_rest_determinant.tobytes().hex(), "5a88cfb9f0872f3f")
         self.assertEqual(payload.source_tet_pose_determinant.tobytes().hex(), "7f86b84bec3cb040")
         self.assertEqual(payload.rest_volume.tobytes().hex(), "b555600a4b05053f")
@@ -140,7 +357,9 @@ class TestPortableOperatorVolume(unittest.TestCase):
 
         self.assertEqual(state.operator_volume_policy, payload.policy)
         self.assertEqual(state.operator_volume_sha256, payload.operator_volume_sha256)
-        self.assertEqual(_little_endian_bytes(state.source_rest_determinants), payload.source_rest_determinant.tobytes())
+        self.assertEqual(
+            _little_endian_bytes(state.source_rest_determinants), payload.source_rest_determinant.tobytes()
+        )
         self.assertEqual(
             _little_endian_bytes(state.source_tet_pose_determinants),
             payload.source_tet_pose_determinant.tobytes(),
@@ -268,6 +487,88 @@ class TestPortableOperatorVolume(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "identities differ"):
             validate_projection_objective_volume_binding(state, relabeled)
 
+    def test_public_solver_rejects_unbound_and_mismatched_portable_objectives(self) -> None:
+        """Enforce the volume binding at the exact public solve boundary."""
+        state, predictor, physical_step, fields = _portable_execution_problem()
+        expected_errors = {
+            "unbound": "requires a bound",
+            "mismatched": "identities differ",
+        }
+        for binding, error in expected_errors.items():
+            with self.subTest(binding=binding), self.assertRaisesRegex(ValueError, error):
+                solve_iterative_principal_stretch(
+                    predictor=predictor,
+                    projection_state=state,
+                    objective=_portable_objective(state, fields, binding),
+                    physical_step=physical_step,
+                    expected_physical_step_sha256=physical_step.physical_step_sha256,
+                    config=IterativeSolverConfig(
+                        iterations=1,
+                        objective_policy="record",
+                        residual_policy="record",
+                        head_mode="zero",
+                    ),
+                )
+
+    def test_public_solver_and_ablation_accept_matching_portable_objective(self) -> None:
+        """Execute both public boundaries with one matching portable identity."""
+        state, predictor, physical_step, fields = _portable_execution_problem()
+        objective = _portable_objective(state, fields, "matched")
+        result = solve_iterative_principal_stretch(
+            predictor=predictor,
+            projection_state=state,
+            objective=objective,
+            physical_step=physical_step,
+            expected_physical_step_sha256=physical_step.physical_step_sha256,
+            config=IterativeSolverConfig(
+                iterations=1,
+                objective_policy="record",
+                residual_policy="record",
+                head_mode="zero",
+            ),
+        )
+        self.assertEqual(len(result.trace), 1)
+        self.assertTrue(torch.isfinite(result.positions).all())
+
+        ablation = run_v5_identical_corrector_ablation(
+            predictor=predictor,
+            projection_state=state,
+            objective=objective,
+            physical_step=physical_step,
+            expected_physical_step_sha256=physical_step.physical_step_sha256,
+            corrector_config=CorrectorConfig(
+                pcg=FixedPCGConfig(iterations=1),
+                candidate_alphas=(0.0,),
+            ),
+            vbd_k1=_portable_vbd_k1(state, objective, physical_step),
+            config=V5AblationConfig(iterations=1, head_permutation=(1, 0)),
+        )
+        self.assertEqual(len(ablation.arms), 6)
+
+    def test_public_ablation_rejects_unbound_and_mismatched_portable_objectives(self) -> None:
+        """Enforce the volume binding at the exact public ablation boundary."""
+        state, predictor, physical_step, fields = _portable_execution_problem()
+        expected_errors = {
+            "unbound": "requires a bound",
+            "mismatched": "identities differ",
+        }
+        for binding, error in expected_errors.items():
+            objective = _portable_objective(state, fields, binding)
+            with self.subTest(binding=binding), self.assertRaisesRegex(ValueError, error):
+                run_v5_identical_corrector_ablation(
+                    predictor=predictor,
+                    projection_state=state,
+                    objective=objective,
+                    physical_step=physical_step,
+                    expected_physical_step_sha256=physical_step.physical_step_sha256,
+                    corrector_config=CorrectorConfig(
+                        pcg=FixedPCGConfig(iterations=1),
+                        candidate_alphas=(0.0,),
+                    ),
+                    vbd_k1=_portable_vbd_k1(state, objective, physical_step),
+                    config=V5AblationConfig(iterations=1, head_permutation=(1, 0)),
+                )
+
     @unittest.skipUnless(
         os.environ.get("PSS_RUN_CUDA_PARITY") == "1" and torch.cuda.is_available(),
         "set PSS_RUN_CUDA_PARITY=1 after claiming a GPU",
@@ -285,7 +586,9 @@ class TestPortableOperatorVolume(unittest.TestCase):
             "source_tet_volumes",
             "w",
         ):
-            self.assertEqual(_little_endian_bytes(getattr(cpu_state, name)), _little_endian_bytes(getattr(cuda_state, name)))
+            self.assertEqual(
+                _little_endian_bytes(getattr(cpu_state, name)), _little_endian_bytes(getattr(cuda_state, name))
+            )
         self.assertEqual(cpu_state.operator_geometry_sha256, cuda_state.operator_geometry_sha256)
         self.assertEqual(cpu_state.operator_volume_sha256, cuda_state.operator_volume_sha256)
         self.assertEqual(cpu_context.common_objective_sha256, cuda_context.common_objective_sha256)
