@@ -27,6 +27,7 @@ from .iterative_solver import (
     PhysicalStepContext,
     SolverVBDStagedFloat32Evidence,
     validate_physical_objective_integration,
+    validate_projection_objective_volume_binding,
 )
 from .reference_sequence_dataset import (
     ReferenceSequenceDataset,
@@ -34,11 +35,13 @@ from .reference_sequence_dataset import (
     ReferenceTransitionKey,
 )
 from .torch_solver import (
+    OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
     OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
     TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
     SolverState,
     build_solver,
     compute_F,
+    operator_geometry_sha256,
     projection_state_sha256,
     validate_authenticated_operator_geometry,
 )
@@ -150,6 +153,58 @@ class ReferenceV5MaterializedSample:
 class _AssetContext:
     identities: ReferenceV5AssetIdentities
     projection_state: SolverState
+
+
+@dataclasses.dataclass(frozen=True)
+class _PortableAssetContext:
+    asset_source_sha256: str
+    static_npz_sha256: str
+    producer_topology_sha256: str
+    producer_operator_sha256: str
+    producer_material_sha256: str
+    projection_state: SolverState
+
+
+@dataclasses.dataclass(frozen=True)
+class ReferencePortableObjectiveContext:
+    """Portable projection/objective binding without a current v5 sample record."""
+
+    transition_key: ReferenceTransitionKey
+    source_transition_sha256: str
+    projection_state: SolverState
+    common_objective: CommonObjectiveContext
+
+    def __post_init__(self) -> None:
+        if type(self.transition_key) is not ReferenceTransitionKey:
+            raise TypeError("transition_key must be a canonical ReferenceTransitionKey")
+        _sha256(self.source_transition_sha256, "source_transition_sha256")
+        if type(self.projection_state) is not SolverState:
+            raise TypeError("projection_state must be a canonical SolverState")
+        if type(self.common_objective) is not CommonObjectiveContext:
+            raise TypeError("common_objective must be a canonical CommonObjectiveContext")
+        self.validate_immutable()
+
+    def validate_immutable(self) -> None:
+        """Reauthenticate the portable state and its objective-only bridge binding."""
+        state = self.projection_state
+        objective = self.common_objective
+        validate_authenticated_operator_geometry(state)
+        if state.projection_state_sha256 != projection_state_sha256(state):
+            raise ValueError("portable bridge projection state failed self-authentication")
+        objective.validate_immutable()
+        validate_projection_objective_volume_binding(state, objective)
+        for name, projected, common in (
+            ("tets", state.tets, objective._owned_tensor("tets")),
+            ("J", state.J, objective._owned_tensor("J")),
+            ("volume", state.w, objective._owned_tensor("volume")),
+            ("pinned", state.pinned, objective._owned_tensor("pinned")),
+        ):
+            if not torch.equal(projected, common):
+                raise ValueError(f"portable bridge projection and objective {name} differ")
+        weights = state.center_of_mass_weights
+        mass = objective._owned_tensor("mass")
+        if weights is None or not torch.equal(weights, mass / mass.sum()):
+            raise ValueError("portable bridge center-of-mass weights differ from objective mass")
 
 
 def _trajectory_id(key: ReferenceTransitionKey) -> str:
@@ -445,7 +500,119 @@ class ReferenceSequenceV5Bridge:
         )
 
 
+class ReferenceSequencePortableObjectiveBridge:
+    """Materialize portable objective foundations without emitting v5 records.
+
+    This bridge intentionally stops before :class:`TrajectorySampleRecord` or
+    :class:`V5TrainingSample` construction. A later dataset/sample schema must
+    carry the operator-volume policy and SHA-256 before these contexts can be
+    admitted to training, schedules, checkpoints, or split manifests.
+    """
+
+    def __init__(self, dataset: ReferenceSequenceDataset, *, device: str | torch.device = "cpu") -> None:
+        if type(dataset) is not ReferenceSequenceDataset:
+            raise TypeError("dataset must be a canonical ReferenceSequenceDataset")
+        self.dataset = dataset
+        self.device = torch.device(device)
+        self._asset_contexts: dict[str, _PortableAssetContext] = {}
+
+    @property
+    def cached_asset_count(self) -> int:
+        """Return the number of constructed portable projection states."""
+        return len(self._asset_contexts)
+
+    def materialize(self, key: ReferenceTransitionKey) -> ReferencePortableObjectiveContext:
+        """Build one portable projection/objective context without a v5 record."""
+        if type(key) is not ReferenceTransitionKey:
+            raise TypeError("key must be a canonical ReferenceTransitionKey")
+        transition = self.dataset.transition(key)
+        asset_context = self._asset_context(transition)
+        state = asset_context.projection_state
+        common_objective = CommonObjectiveContext(
+            tets=state.tets,
+            J=state.J,
+            volume=state.w,
+            mass=_floating(transition.static.mass, self.device),
+            mu=_floating(transition.static.tet_materials[:, 0], self.device),
+            lam=_floating(transition.static.tet_materials[:, 1], self.device),
+            inertial_target=_floating(transition.inertial_target, self.device),
+            pinned=torch.empty((0,), dtype=torch.int64, device=self.device),
+            dt=float(transition.execution_dt_seconds),
+            operator_geometry_sha256=state.operator_geometry_sha256,
+            operator_volume_policy=state.operator_volume_policy,
+            operator_volume_sha256=state.operator_volume_sha256,
+        )
+        return ReferencePortableObjectiveContext(
+            transition_key=key,
+            source_transition_sha256=_source_transition_sha256(self.dataset, transition),
+            projection_state=state,
+            common_objective=common_objective,
+        )
+
+    def _asset_context(self, transition: ReferenceTransition) -> _PortableAssetContext:
+        static = transition.static
+        if (
+            transition.topology_sha256 != static.topology_sha256
+            or transition.operator_sha256 != static.operator_sha256
+            or transition.material_sha256 != static.material_sha256
+        ):
+            raise ValueError("transition producer identities differ from its authenticated static shard")
+        cached = self._asset_contexts.get(transition.key.asset_id)
+        if cached is not None:
+            if (
+                cached.asset_source_sha256 != transition.asset_source_sha256
+                or cached.static_npz_sha256 != static.static_npz_sha256
+                or cached.producer_topology_sha256 != transition.topology_sha256
+                or cached.producer_operator_sha256 != transition.operator_sha256
+                or cached.producer_material_sha256 != transition.material_sha256
+            ):
+                raise ValueError("one asset_id resolved to conflicting portable static identities")
+            return cached
+
+        rest = np.array(static.v5_source_rest_q, dtype=np.float32, order="C", copy=True)
+        tets = np.array(static.v5_source_tet_indices, dtype=np.int64, order="C", copy=True)
+        poses = np.array(static.v5_source_tet_poses, dtype=np.float32, order="C", copy=True)
+        legacy_operator_sha256 = operator_geometry_sha256(
+            rest,
+            tets,
+            poses,
+            policy=OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+        )
+        if legacy_operator_sha256 != static.v5_operator_geometry_sha256:
+            raise ValueError("portable bridge source arrays differ from the authenticated v5 static shard")
+        state = build_solver(
+            rest,
+            tets,
+            poses,
+            np.empty((0,), dtype=np.int64),
+            self.device,
+            dtype=torch.float64,
+            tikhonov=0.0,
+            projection_backend="dense",
+            operator_geometry_policy=OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
+            translation_gauge_policy=TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
+            vertex_masses=np.array(static.mass, dtype=np.float64, order="C", copy=True),
+        )
+        validate_authenticated_operator_geometry(state)
+        if state.static_mesh_sha256 != static.v5_topology_sha256:
+            raise ValueError("portable bridge topology differs from the authenticated static shard")
+        if state.projection_state_sha256 != projection_state_sha256(state):
+            raise ValueError("portable bridge projection state failed self-authentication")
+        context = _PortableAssetContext(
+            asset_source_sha256=transition.asset_source_sha256,
+            static_npz_sha256=static.static_npz_sha256,
+            producer_topology_sha256=transition.topology_sha256,
+            producer_operator_sha256=transition.operator_sha256,
+            producer_material_sha256=transition.material_sha256,
+            projection_state=state,
+        )
+        self._asset_contexts[transition.key.asset_id] = context
+        return context
+
+
 __all__ = [
+    "ReferencePortableObjectiveContext",
+    "ReferenceSequencePortableObjectiveBridge",
     "ReferenceSequenceV5Bridge",
     "ReferenceV5AssetIdentities",
     "ReferenceV5MaterializedSample",

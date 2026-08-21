@@ -131,6 +131,37 @@ class TestAuthenticatedOperatorGeometry(unittest.TestCase):
                 operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
             )
 
+    def test_existing_authenticated_operator_and_projection_hashes_remain_golden(self) -> None:
+        """Preserve existing promoted and canonical operator identities exactly."""
+        promoted = self._build_promoted()
+        rest64 = self.rest32.astype(np.float64)
+        canonical = ts.build_solver(
+            rest64,
+            self.tets,
+            _pose(rest64, self.tets),
+            self.pinned,
+            torch.device("cpu"),
+            dtype=torch.float64,
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+        )
+
+        self.assertEqual(
+            promoted.operator_geometry_sha256,
+            "4daa11e18929843060f99e1259d5b141aace89fdfea38183853588e99f347bdf",
+        )
+        self.assertEqual(
+            promoted.projection_state_sha256,
+            "08ad2e1f1a0af1634db1d29b6124a1fa5c57025f77464dfa5d263637d0e7810d",
+        )
+        self.assertEqual(
+            canonical.operator_geometry_sha256,
+            "1ef0b28668b5c2d9b840353efa9b4d6d6f5abfccb9a024c8f961658ea57e292a",
+        )
+        self.assertEqual(
+            canonical.projection_state_sha256,
+            "0d7580f239de7ef1ad3580b1f68ea00743527739b8564be6ad8c1804497b0bbb",
+        )
+
     def test_source_mutation_and_policy_relabel_fail_closed(self) -> None:
         state = self._build_promoted()
         state.source_tet_poses[0, 0, 0] = torch.nextafter(

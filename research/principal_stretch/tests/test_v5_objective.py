@@ -113,6 +113,16 @@ def _existing_residual(context: CommonObjectiveContext, positions: torch.Tensor)
 
 
 class TestV5CommonObjective(unittest.TestCase):
+    def test_unbound_common_objective_hash_remains_golden(self) -> None:
+        """Preserve the existing unbound objective identity exactly."""
+        rest, tets = _single_tet()
+        context = _context(rest, tets)
+
+        self.assertEqual(
+            context.common_objective_sha256,
+            "ee96547e4a041ac5512b5492a12ce46914771ca35bc63708ce0e78ba3aadce53",
+        )
+
     def test_small_lambda_preserves_the_authenticated_vbd_alpha_floor(self):
         rest, tets = _single_tet()
         J, volume = _shape_data(rest, tets)

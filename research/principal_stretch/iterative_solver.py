@@ -985,6 +985,39 @@ def _exact_float32_image(name: str, value: torch.Tensor) -> np.ndarray:
     return np.array(source, dtype=np.float32, order="C", copy=True)
 
 
+def validate_projection_objective_volume_binding(
+    projection_state: SolverState,
+    objective: CommonObjectiveContext,
+) -> None:
+    """Require one exact portable volume identity across projection and objective."""
+    if type(projection_state) is not SolverState:
+        raise TypeError("projection_state must be a canonical SolverState")
+    if type(objective) is not CommonObjectiveContext:
+        raise TypeError("objective must be a canonical CommonObjectiveContext")
+    portable_projection = (
+        projection_state.operator_geometry_policy
+        == torch_solver.OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME
+    )
+    objective_binding = (
+        objective.operator_geometry_sha256,
+        objective.operator_volume_policy,
+        objective.operator_volume_sha256,
+    )
+    bound_objective = all(value is not None for value in objective_binding)
+    if portable_projection:
+        if not bound_objective:
+            raise ValueError("portable projection requires a bound common-objective volume identity")
+        expected = (
+            projection_state.operator_geometry_sha256,
+            projection_state.operator_volume_policy,
+            projection_state.operator_volume_sha256,
+        )
+        if objective_binding != expected:
+            raise ValueError("projection and common-objective portable volume identities differ")
+    elif any(value is not None for value in objective_binding):
+        raise ValueError("non-portable projection cannot be paired with a portable objective volume identity")
+
+
 def validate_physical_objective_integration(
     projection_state: SolverState,
     objective: CommonObjectiveContext,
@@ -1015,6 +1048,7 @@ def validate_physical_objective_integration(
     ):
         if not torch.equal(projected, common):
             raise ValueError(f"projection and common-objective {name} differ")
+    validate_projection_objective_volume_binding(projection_state, objective)
     _validate_translation_gauge_objective_binding(projection_state, objective)
     _validate_physical_objective_integration_trusted(projection_state, objective, physical_step)
 
@@ -1889,4 +1923,5 @@ __all__ = [
     "SolverVBDStagedFloat32Evidence",
     "solve_iterative_principal_stretch",
     "validate_physical_objective_integration",
+    "validate_projection_objective_volume_binding",
 ]

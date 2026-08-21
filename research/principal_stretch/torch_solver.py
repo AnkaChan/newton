@@ -36,10 +36,13 @@ _TRANSLATION_GAUGE_NONE = "none"
 TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS = "mass-weighted-center-of-mass"
 OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE = "canonical-rest-inverse"
 OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED = "source-tet-poses-promoted"
+OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME = "source-tet-poses-portable-volume"
+OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT = "host-float64-scalar-pose-determinant-v1"
 _LEGACY_OPERATOR_GEOMETRY_POLICY = "legacy-unverified"
 _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES = (
     OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
     OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+    OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
 )
 
 
@@ -69,6 +72,130 @@ def _update_source_array_digest(digest, name: str, value: np.ndarray) -> None:
     raw = memoryview(array).cast("B")
     digest.update(len(raw).to_bytes(8, "big"))
     digest.update(raw)
+
+
+def _require_sha256(value: object, name: str) -> str:
+    if type(value) is not str or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _determinant_3x3_float64_scalar(matrix: tuple[tuple[float, float, float], ...]) -> float:
+    """Evaluate one 3x3 determinant in a fixed binary64 scalar order."""
+    a, b, c = matrix[0]
+    d, e, f = matrix[1]
+    g, h, i = matrix[2]
+    return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+
+
+def _canonical_source_determinants(
+    rest_q: np.ndarray,
+    tet_indices: np.ndarray,
+    tet_poses: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ordered rest and inverse-pose determinants as canonical ``<f8``."""
+    rest_determinants = np.empty(tet_indices.shape[0], dtype="<f8")
+    pose_determinants = np.empty(tet_indices.shape[0], dtype="<f8")
+    for tet_index, (i0, i1, i2, i3) in enumerate(tet_indices):
+        p0 = tuple(float(rest_q[int(i0), axis]) for axis in range(3))
+        p1 = tuple(float(rest_q[int(i1), axis]) for axis in range(3))
+        p2 = tuple(float(rest_q[int(i2), axis]) for axis in range(3))
+        p3 = tuple(float(rest_q[int(i3), axis]) for axis in range(3))
+        rest_matrix = (
+            (p1[0] - p0[0], p2[0] - p0[0], p3[0] - p0[0]),
+            (p1[1] - p0[1], p2[1] - p0[1], p3[1] - p0[1]),
+            (p1[2] - p0[2], p2[2] - p0[2], p3[2] - p0[2]),
+        )
+        pose = tuple(tuple(float(tet_poses[tet_index, row, column]) for column in range(3)) for row in range(3))
+        rest_determinants[tet_index] = _determinant_3x3_float64_scalar(rest_matrix)
+        pose_determinants[tet_index] = _determinant_3x3_float64_scalar(pose)
+    return rest_determinants, pose_determinants
+
+
+@dataclasses.dataclass(frozen=True)
+class CanonicalOperatorVolume:
+    """Canonical host determinant and volume payload for one source operator."""
+
+    policy: str
+    operator_geometry_sha256: str
+    source_rest_determinant: np.ndarray
+    source_tet_pose_determinant: np.ndarray
+    rest_volume: np.ndarray
+    operator_volume_sha256: str
+
+
+def operator_volume_sha256(
+    operator_geometry_sha256: str,
+    volume: np.ndarray,
+    *,
+    policy: str,
+) -> str:
+    """Hash canonical rest-volume bytes under one portable volume policy."""
+    if policy != OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT:
+        raise ValueError("operator volume policy is not the registered portable policy")
+    geometry_sha256 = _require_sha256(operator_geometry_sha256, "operator_geometry_sha256")
+    source_volume = np.asarray(volume)
+    if source_volume.dtype.kind != "f" or source_volume.dtype.itemsize != 8:
+        raise ValueError("operator volume must have exact float64 dtype")
+    canonical_volume = np.array(source_volume, dtype="<f8", order="C", copy=True)
+    if canonical_volume.ndim != 1:
+        raise ValueError("operator volume must have shape (T,)")
+    if not np.isfinite(canonical_volume).all() or (canonical_volume <= 0.0).any():
+        raise ValueError("operator volume must be finite and strictly positive")
+    digest = hashlib.sha256(b"principal-stretch-operator-volume-v1\0")
+    digest.update(policy.encode("ascii") + b"\0")
+    digest.update(geometry_sha256.encode("ascii") + b"\0")
+    _update_source_array_digest(digest, "rest_volume", canonical_volume)
+    return digest.hexdigest()
+
+
+def canonical_operator_volume(
+    rest_q: np.ndarray,
+    tet_indices: np.ndarray,
+    tet_poses: np.ndarray,
+    *,
+    operator_geometry_policy: str,
+) -> CanonicalOperatorVolume:
+    """Build portable ordered determinants and volumes from source arrays."""
+    if operator_geometry_policy != OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME:
+        raise ValueError("canonical operator volume requires the portable operator geometry policy")
+    rest = np.ascontiguousarray(np.asarray(rest_q))
+    tets = np.ascontiguousarray(np.asarray(tet_indices))
+    poses = np.ascontiguousarray(np.asarray(tet_poses))
+    geometry_sha256 = operator_geometry_sha256(
+        rest,
+        tets,
+        poses,
+        policy=operator_geometry_policy,
+    )
+    rest_determinant, pose_determinant = _canonical_source_determinants(rest, tets, poses)
+    if (
+        not np.isfinite(rest_determinant).all()
+        or not np.isfinite(pose_determinant).all()
+        or (rest_determinant <= 0.0).any()
+        or (pose_determinant <= 0.0).any()
+    ):
+        raise ValueError("authenticated source tetrahedra must have finite positive orientation")
+    volume = np.empty(pose_determinant.shape, dtype="<f8")
+    for tet_index, determinant in enumerate(pose_determinant):
+        volume[tet_index] = 1.0 / (6.0 * float(determinant))
+    if not np.isfinite(volume).all() or (volume <= 0.0).any():
+        raise ValueError("portable source tet_poses produce invalid rest volumes")
+    volume_sha256 = operator_volume_sha256(
+        geometry_sha256,
+        volume,
+        policy=OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT,
+    )
+    for value in (rest_determinant, pose_determinant, volume):
+        value.setflags(write=False)
+    return CanonicalOperatorVolume(
+        policy=OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT,
+        operator_geometry_sha256=geometry_sha256,
+        source_rest_determinant=rest_determinant,
+        source_tet_pose_determinant=pose_determinant,
+        rest_volume=volume,
+        operator_volume_sha256=volume_sha256,
+    )
 
 
 def operator_geometry_sha256(
@@ -161,8 +288,11 @@ def _validate_authenticated_source_geometry(
         ),
         axis=-1,
     )
-    rest_det = np.linalg.det(rest_matrix)
-    inverse_det = np.linalg.det(tet_poses)
+    if policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME:
+        rest_det, inverse_det = _canonical_source_determinants(rest_q, tet_indices, tet_poses)
+    else:
+        rest_det = np.linalg.det(rest_matrix)
+        inverse_det = np.linalg.det(tet_poses)
     if (
         not np.isfinite(rest_det).all()
         or not np.isfinite(inverse_det).all()
@@ -170,9 +300,12 @@ def _validate_authenticated_source_geometry(
         or (inverse_det <= 0.0).any()
     ):
         raise ValueError("authenticated source tetrahedra must have finite positive orientation")
-    source_volume = np.asarray(1.0, dtype=expected_float_dtype) / (
-        np.asarray(6.0, dtype=expected_float_dtype) * inverse_det
-    )
+    if policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME:
+        source_volume = np.asarray([1.0 / (6.0 * float(value)) for value in inverse_det], dtype="<f8")
+    else:
+        source_volume = np.asarray(1.0, dtype=expected_float_dtype) / (
+            np.asarray(6.0, dtype=expected_float_dtype) * inverse_det
+        )
     if not np.isfinite(source_volume).all() or (source_volume <= 0.0).any():
         raise ValueError("authenticated source tet_poses produce invalid rest volumes")
     _require_inverse_backward_error_numpy(rest_matrix, tet_poses)
@@ -301,6 +434,11 @@ class SolverState:
     static_mesh_sha256: str
     operator_geometry_policy: str = _LEGACY_OPERATOR_GEOMETRY_POLICY
     operator_geometry_sha256: str | None = None
+    operator_volume_policy: str | None = None
+    operator_volume_sha256: str | None = None
+    source_rest_determinants: torch.Tensor | None = None  # (T,) exact canonical host values
+    source_tet_pose_determinants: torch.Tensor | None = None  # (T,) exact canonical host values
+    source_tet_volumes: torch.Tensor | None = None  # (T,) exact canonical host values
     projection_state_sha256: str = ""
     tikhonov: float = 0.0
     projection_backend: str = _DENSE_BACKEND
@@ -359,7 +497,22 @@ def projection_state_sha256(state: SolverState) -> str:
     if has_center_of_mass_gauge != (state.center_of_mass_weights is not None):
         raise ValueError("projection state translation gauge policy and mass weights disagree")
     authenticated_operator = state.operator_geometry_policy in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES
-    if has_center_of_mass_gauge:
+    portable_volume = state.operator_geometry_policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME
+    volume_binding = (
+        state.operator_volume_policy,
+        state.operator_volume_sha256,
+        state.source_rest_determinants,
+        state.source_tet_pose_determinants,
+        state.source_tet_volumes,
+    )
+    if portable_volume:
+        if any(value is None for value in volume_binding):
+            raise ValueError("portable projection state is missing its operator-volume binding")
+    elif any(value is not None for value in volume_binding):
+        raise ValueError("non-portable projection state must not carry a portable volume binding")
+    if portable_volume:
+        digest = hashlib.sha256(b"principal-stretch-projection-state-v5\0")
+    elif has_center_of_mass_gauge:
         digest = hashlib.sha256(b"principal-stretch-projection-state-v4\0")
     else:
         digest = hashlib.sha256(
@@ -386,6 +539,13 @@ def projection_state_sha256(state: SolverState) -> str:
                 "operator_geometry_sha256": state.operator_geometry_sha256,
             }
         )
+    if portable_volume:
+        metadata.update(
+            {
+                "operator_volume_policy": state.operator_volume_policy,
+                "operator_volume_sha256": state.operator_volume_sha256,
+            }
+        )
     if has_center_of_mass_gauge:
         metadata["translation_gauge_policy"] = state.translation_gauge_policy
     digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
@@ -407,6 +567,9 @@ def projection_state_sha256(state: SolverState) -> str:
         _update_projection_tensor_digest(digest, name, getattr(state, name))
     if authenticated_operator:
         for name in ("source_rest_q_exact", "source_tet_indices", "source_tet_poses"):
+            _update_projection_tensor_digest(digest, name, getattr(state, name))
+    if portable_volume:
+        for name in ("source_rest_determinants", "source_tet_pose_determinants", "source_tet_volumes"):
             _update_projection_tensor_digest(digest, name, getattr(state, name))
     if has_center_of_mass_gauge:
         _update_projection_tensor_digest(digest, "center_of_mass_weights", state.center_of_mass_weights)
@@ -440,6 +603,21 @@ def validate_authenticated_operator_geometry(state: SolverState) -> str:
     policy = state.operator_geometry_policy
     if type(policy) is not str or policy not in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES:
         raise ValueError("solver state has no authenticated v5 operator geometry")
+    portable_volume = policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME
+    volume_binding = (
+        state.operator_volume_policy,
+        state.operator_volume_sha256,
+        state.source_rest_determinants,
+        state.source_tet_pose_determinants,
+        state.source_tet_volumes,
+    )
+    if portable_volume:
+        if any(value is None for value in volume_binding):
+            raise ValueError("portable solver state is missing its portable volume binding")
+        if state.operator_volume_policy != OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT:
+            raise ValueError("solver state operator volume policy is not the registered portable policy")
+    elif any(value is not None for value in volume_binding):
+        raise ValueError("non-portable solver state must not carry a portable volume binding")
     for name in ("source_rest_q_exact", "source_tet_indices", "source_tet_poses"):
         value = getattr(state, name)
         if not isinstance(value, torch.Tensor) or value.layout != torch.strided or value.device != state.rest_q.device:
@@ -462,25 +640,64 @@ def validate_authenticated_operator_geometry(state: SolverState) -> str:
         raise ValueError("solver state runtime tetrahedra differ from exact source connectivity")
     if not state.rest_q.is_floating_point() or state.rest_q.dtype not in (torch.float32, torch.float64):
         raise ValueError("solver state runtime geometry must use float32 or float64")
-    if policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED and state.rest_q.dtype != torch.float64:
-        raise ValueError("source-tet-poses-promoted requires float64 execution")
+    if (
+        policy
+        in (
+            OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+            OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
+        )
+        and state.rest_q.dtype != torch.float64
+    ):
+        raise ValueError(f"{policy} requires float64 execution")
     if not torch.equal(state.rest_q, state.source_rest_q_exact.to(dtype=state.rest_q.dtype)):
         raise ValueError("solver state runtime rest_q is not the exact contracted source cast")
     expected_dm_inv = state.source_tet_poses.to(dtype=state.rest_q.dtype)
     if not torch.equal(state.Dm_inv, expected_dm_inv):
         raise ValueError("solver state Dm_inv is not the exact contracted source-pose cast")
     expected_j = _build_J(expected_dm_inv)
-    expected_det = torch.linalg.det(expected_dm_inv)
-    expected_volume = 1.0 / (6.0 * expected_det)
-    if (
-        not torch.isfinite(expected_det).all()
-        or not torch.isfinite(expected_volume).all()
-        or (expected_det <= 0.0).any()
-        or (expected_volume <= 0.0).any()
-    ):
-        raise ValueError("solver state runtime source operator has invalid orientation or volume")
-    if not torch.equal(state.J, expected_j) or not torch.equal(state.w, expected_volume):
-        raise ValueError("solver state J or volume is not the exact source-pose-derived runtime operator")
+    if portable_volume:
+        payload = canonical_operator_volume(
+            rest_source,
+            tet_source,
+            pose_source,
+            operator_geometry_policy=policy,
+        )
+        if payload.operator_geometry_sha256 != expected_sha256:
+            raise ValueError("portable volume payload differs from the authenticated source operator")
+        if state.operator_volume_sha256 != payload.operator_volume_sha256:
+            raise ValueError("solver state operator-volume SHA-256 verification failed")
+        for name, source in (
+            ("source_rest_determinants", payload.source_rest_determinant),
+            ("source_tet_pose_determinants", payload.source_tet_pose_determinant),
+            ("source_tet_volumes", payload.rest_volume),
+        ):
+            value = getattr(state, name)
+            if (
+                not isinstance(value, torch.Tensor)
+                or value.layout != torch.strided
+                or value.device != state.rest_q.device
+                or value.dtype != torch.float64
+                or value.shape != (state.n_tets,)
+                or value.requires_grad
+            ):
+                raise ValueError(f"solver state {name} has incompatible portable volume metadata")
+            expected = torch.as_tensor(np.array(source, dtype=np.float64, order="C", copy=True), device=value.device)
+            if not torch.equal(value, expected):
+                raise ValueError(f"solver state {name} differs from its canonical host volume payload")
+        if not torch.equal(state.J, expected_j) or not torch.equal(state.w, state.source_tet_volumes):
+            raise ValueError("solver state J or volume differs from its canonical host volume operator")
+    else:
+        expected_det = torch.linalg.det(expected_dm_inv)
+        expected_volume = 1.0 / (6.0 * expected_det)
+        if (
+            not torch.isfinite(expected_det).all()
+            or not torch.isfinite(expected_volume).all()
+            or (expected_det <= 0.0).any()
+            or (expected_volume <= 0.0).any()
+        ):
+            raise ValueError("solver state runtime source operator has invalid orientation or volume")
+        if not torch.equal(state.J, expected_j) or not torch.equal(state.w, expected_volume):
+            raise ValueError("solver state J or volume is not the exact source-pose-derived runtime operator")
     return expected_sha256
 
 
@@ -935,6 +1152,7 @@ def build_solver(
     elif type(operator_geometry_policy) is not str or operator_geometry_policy not in (
         OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
         OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+        OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
     ):
         raise ValueError("operator_geometry_policy must name an explicit authenticated v5 policy or be omitted")
     else:
@@ -944,15 +1162,32 @@ def build_solver(
     source_tet_indices_array = np.ascontiguousarray(np.asarray(tet_indices))
     source_tet_poses_array = np.ascontiguousarray(np.asarray(tet_poses))
     authenticated_operator_sha256 = None
+    portable_volume_payload = None
     if canonical_operator_policy in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES:
-        if canonical_operator_policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED and dtype != torch.float64:
-            raise ValueError("source-tet-poses-promoted requires torch.float64 execution")
-        authenticated_operator_sha256 = operator_geometry_sha256(
-            source_rest_array_exact,
-            source_tet_indices_array,
-            source_tet_poses_array,
-            policy=canonical_operator_policy,
-        )
+        if (
+            canonical_operator_policy
+            in (
+                OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+                OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
+            )
+            and dtype != torch.float64
+        ):
+            raise ValueError(f"{canonical_operator_policy} requires torch.float64 execution")
+        if canonical_operator_policy == OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME:
+            portable_volume_payload = canonical_operator_volume(
+                source_rest_array_exact,
+                source_tet_indices_array,
+                source_tet_poses_array,
+                operator_geometry_policy=canonical_operator_policy,
+            )
+            authenticated_operator_sha256 = portable_volume_payload.operator_geometry_sha256
+        else:
+            authenticated_operator_sha256 = operator_geometry_sha256(
+                source_rest_array_exact,
+                source_tet_indices_array,
+                source_tet_poses_array,
+                policy=canonical_operator_policy,
+            )
 
     source_rest_q = torch.as_tensor(np.asarray(rest_q, dtype=np.float64), dtype=torch.float64, device=device).clone()
     if authenticated_operator_sha256 is None:
@@ -974,6 +1209,26 @@ def build_solver(
         else source_tet_poses.to(dtype=dtype).clone()
     )
     pinned = torch.as_tensor(pinned_indices, dtype=torch.int64, device=device)
+
+    source_rest_determinants = None
+    source_tet_pose_determinants = None
+    source_tet_volumes = None
+    if portable_volume_payload is not None:
+        source_rest_determinants = torch.as_tensor(
+            np.array(portable_volume_payload.source_rest_determinant, dtype=np.float64, order="C", copy=True),
+            dtype=torch.float64,
+            device=device,
+        ).clone()
+        source_tet_pose_determinants = torch.as_tensor(
+            np.array(portable_volume_payload.source_tet_pose_determinant, dtype=np.float64, order="C", copy=True),
+            dtype=torch.float64,
+            device=device,
+        ).clone()
+        source_tet_volumes = torch.as_tensor(
+            np.array(portable_volume_payload.rest_volume, dtype=np.float64, order="C", copy=True),
+            dtype=torch.float64,
+            device=device,
+        ).clone()
 
     n_verts = rest_q_t.shape[0]
     n_tets = tets.shape[0]
@@ -1019,13 +1274,17 @@ def build_solver(
             raise ValueError("pinned_indices contains an out-of-range vertex")
         _validate_sparse_components(np.asarray(tet_indices), pinned_np, n_verts)
 
-    det_inv = torch.linalg.det(Dm_inv)
-    w = 1.0 / (6.0 * det_inv)
-    invalid_volume = (w <= 0).any()
-    if authenticated_operator_sha256 is not None:
-        invalid_volume = (
-            invalid_volume | ~torch.isfinite(det_inv).all() | ~torch.isfinite(w).all() | (det_inv <= 0.0).any()
-        )
+    if portable_volume_payload is not None:
+        w = source_tet_volumes.clone()
+        invalid_volume = ~torch.isfinite(w).all() | (w <= 0.0).any()
+    else:
+        det_inv = torch.linalg.det(Dm_inv)
+        w = 1.0 / (6.0 * det_inv)
+        invalid_volume = (w <= 0).any()
+        if authenticated_operator_sha256 is not None:
+            invalid_volume = (
+                invalid_volume | ~torch.isfinite(det_inv).all() | ~torch.isfinite(w).all() | (det_inv <= 0.0).any()
+            )
     if invalid_volume:
         raise ValueError("non-positive rest volumes — check tet orientation")
 
@@ -1103,6 +1362,13 @@ def build_solver(
         static_mesh_sha256=static_mesh_sha256(rest_q, tet_indices),
         operator_geometry_policy=canonical_operator_policy,
         operator_geometry_sha256=authenticated_operator_sha256,
+        operator_volume_policy=None if portable_volume_payload is None else portable_volume_payload.policy,
+        operator_volume_sha256=(
+            None if portable_volume_payload is None else portable_volume_payload.operator_volume_sha256
+        ),
+        source_rest_determinants=source_rest_determinants,
+        source_tet_pose_determinants=source_tet_pose_determinants,
+        source_tet_volumes=source_tet_volumes,
         tikhonov=float(tikhonov),
         projection_backend=projection_backend,
         L_ff_sparse=L_ff_sparse,

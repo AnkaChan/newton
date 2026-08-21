@@ -16,7 +16,7 @@ from ..iterative_solver import (
     validate_physical_objective_integration,
 )
 from ..reference_sequence_dataset import ReferenceSequenceDataset, ReferenceTransitionKey
-from ..reference_sequence_v5_bridge import ReferenceSequenceV5Bridge
+from ..reference_sequence_v5_bridge import ReferenceSequencePortableObjectiveBridge, ReferenceSequenceV5Bridge
 from ..torch_solver import (
     OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
     TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
@@ -51,7 +51,8 @@ class TestReferenceSequenceV5Bridge(unittest.TestCase):
         ]
         return ReferenceSequenceDataset.load(_write_index(root, records))
 
-    def test_materializes_authenticated_free_body_v5_sample_and_keeps_identity_domains_separate(self):
+    def test_materializes_authenticated_free_body_v5_sample_and_keeps_identity_domains_separate(self) -> None:
+        """Preserve legacy v5 materialization and every established identity domain."""
         with tempfile.TemporaryDirectory() as directory:
             dataset = self._dataset(Path(directory))
             bridge = ReferenceSequenceV5Bridge(dataset, device="cpu")
@@ -106,6 +107,42 @@ class TestReferenceSequenceV5Bridge(unittest.TestCase):
                 source.reference_state_float64_sha256,
                 sample.producer_attested_reference_positions_sha256,
             )
+            self.assertEqual(
+                state.operator_geometry_sha256,
+                "96dd502257504fba191b31ff3c6d2d01ce81ea8cd285ffeb0a54a5517d072947",
+            )
+            self.assertEqual(
+                state.projection_state_sha256,
+                "588ceb6d5219c40c6e30e97a61804c11b8b8496ee69288efcf4c8a1cef042906",
+            )
+            self.assertEqual(
+                objective.common_objective_sha256,
+                "63bce0d69bfe565d2ac2f5dc4913cca95483a83dabe657bd687be6aad09eecdf",
+            )
+            self.assertEqual(
+                sample.sample_record.sample_sha256,
+                "df38817d96b00bb40c036ac2de0928fb4087a98ff738730bd06aa34e61fefdbe",
+            )
+
+    def test_portable_bridge_stops_before_current_v5_record_materialization(self) -> None:
+        """Expose a bound portable objective without emitting a current v5 record."""
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = self._dataset(Path(directory))
+            bridge = ReferenceSequencePortableObjectiveBridge(dataset, device="cpu")
+            key = ReferenceTransitionKey("alpha", "sample-000", 1)
+
+            context = bridge.materialize(key)
+
+            self.assertEqual(context.transition_key, key)
+            self.assertFalse(hasattr(context, "training_sample"))
+            self.assertEqual(
+                context.projection_state.operator_volume_sha256, context.common_objective.operator_volume_sha256
+            )
+            self.assertEqual(
+                context.projection_state.operator_geometry_sha256,
+                context.common_objective.operator_geometry_sha256,
+            )
+            context.validate_immutable()
 
     def test_reuses_one_solver_and_predictor_static_graph_per_asset_but_not_transition_payloads(self):
         with tempfile.TemporaryDirectory() as directory:

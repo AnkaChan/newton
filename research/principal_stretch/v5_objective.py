@@ -17,6 +17,11 @@ import numbers
 
 import torch
 
+from .torch_solver import (
+    OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT,
+    operator_volume_sha256,
+)
+
 _OBJECTIVE_TENSOR_FIELDS = ("tets", "J", "volume", "mass", "mu", "lam", "inertial_target", "pinned")
 
 
@@ -40,7 +45,22 @@ def _require_finite_output(name: str, value: torch.Tensor) -> None:
 
 
 def _objective_digest(context: CommonObjectiveContext) -> str:
-    digest = hashlib.sha256(b"pr2901-v5-common-objective-context-v2\0")
+    bound_volume = object.__getattribute__(context, "operator_volume_policy") is not None
+    digest = hashlib.sha256(
+        b"pr2901-v5-common-objective-context-v3\0" if bound_volume else b"pr2901-v5-common-objective-context-v2\0"
+    )
+    if bound_volume:
+        binding_metadata = json.dumps(
+            {
+                "operator_geometry_sha256": object.__getattribute__(context, "operator_geometry_sha256"),
+                "operator_volume_policy": object.__getattribute__(context, "operator_volume_policy"),
+                "operator_volume_sha256": object.__getattribute__(context, "operator_volume_sha256"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest.update(len(binding_metadata).to_bytes(8, "big"))
+        digest.update(binding_metadata)
     scalar_metadata = json.dumps(
         {
             "dt_float_hex": object.__getattribute__(context, "dt").hex(),
@@ -97,6 +117,11 @@ class CommonObjectiveContext:
             ``[V, 3]``.
         pinned: Dirichlet vertex indices, shape ``[P]``.
         dt: Implicit substep duration [s].
+        operator_geometry_sha256: Optional authenticated source-operator
+            identity for a portable volume binding.
+        operator_volume_policy: Optional portable volume policy. This and both
+            SHA-256 fields must be supplied together.
+        operator_volume_sha256: Optional canonical volume identity.
     """
 
     tets: torch.Tensor
@@ -108,6 +133,9 @@ class CommonObjectiveContext:
     inertial_target: torch.Tensor
     pinned: torch.Tensor
     dt: float
+    operator_geometry_sha256: str | None = None
+    operator_volume_policy: str | None = None
+    operator_volume_sha256: str | None = None
     residual_scale: float = dataclasses.field(init=False)
     _inverse_dt_squared: float = dataclasses.field(init=False, repr=False)
     common_objective_sha256: str = dataclasses.field(init=False)
@@ -120,6 +148,27 @@ class CommonObjectiveContext:
         return value
 
     def __post_init__(self) -> None:
+        volume_binding = (
+            self.operator_geometry_sha256,
+            self.operator_volume_policy,
+            self.operator_volume_sha256,
+        )
+        bound_volume = all(value is not None for value in volume_binding)
+        if any(value is not None for value in volume_binding) and not bound_volume:
+            raise ValueError("operator geometry and volume identity fields must all be provided together")
+        if bound_volume:
+            for name, value in (
+                ("operator_geometry_sha256", self.operator_geometry_sha256),
+                ("operator_volume_sha256", self.operator_volume_sha256),
+            ):
+                if (
+                    type(value) is not str
+                    or len(value) != 64
+                    or any(character not in "0123456789abcdef" for character in value)
+                ):
+                    raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+            if self.operator_volume_policy != OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT:
+                raise ValueError("operator volume policy is not the registered portable policy")
         tensor_fields = ("tets", "J", "volume", "mass", "mu", "lam", "inertial_target", "pinned")
         for name in tensor_fields:
             value = getattr(self, name)
@@ -164,6 +213,8 @@ class CommonObjectiveContext:
             value = getattr(self, name)
             if not value.is_floating_point() or value.dtype != dtype:
                 raise ValueError("all floating common-objective tensors must share one floating dtype")
+        if bound_volume and dtype != torch.float64:
+            raise ValueError("portable operator-volume binding requires torch.float64 execution")
 
         for name in ("J", "volume", "mass", "mu", "lam", "inertial_target"):
             if not torch.isfinite(getattr(self, name)).all():
@@ -200,6 +251,14 @@ class CommonObjectiveContext:
         for name in tensor_fields:
             object.__setattr__(self, name, getattr(self, name).detach().clone())
         object.__setattr__(self, "dt", float(self.dt))
+        if bound_volume:
+            actual_volume_sha256 = operator_volume_sha256(
+                self.operator_geometry_sha256,
+                self.volume.detach().contiguous().cpu().numpy(),
+                policy=self.operator_volume_policy,
+            )
+            if actual_volume_sha256 != self.operator_volume_sha256:
+                raise ValueError("common-objective operator-volume SHA-256 verification failed")
 
         inverse_dt_squared_execution = torch.tensor(inverse_dt_squared, dtype=dtype, device=device)
         _require_execution_finite(
@@ -298,6 +357,26 @@ class CommonObjectiveContext:
         """Reauthenticate the sealed context against its canonical bytes."""
         if not self._sealed:
             raise RuntimeError("common-objective context is not sealed")
+        volume_binding = tuple(
+            object.__getattribute__(self, name)
+            for name in ("operator_geometry_sha256", "operator_volume_policy", "operator_volume_sha256")
+        )
+        if any(value is not None for value in volume_binding):
+            if not all(value is not None for value in volume_binding):
+                raise RuntimeError("common-objective portable volume binding changed after authentication")
+            geometry_sha256, policy, expected_volume_sha256 = volume_binding
+            if policy != OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT:
+                raise RuntimeError("common-objective portable volume policy changed after authentication")
+            try:
+                actual_volume_sha256 = operator_volume_sha256(
+                    geometry_sha256,
+                    object.__getattribute__(self, "volume").detach().contiguous().cpu().numpy(),
+                    policy=policy,
+                )
+            except ValueError as exc:
+                raise RuntimeError("common-objective portable volume binding changed after authentication") from exc
+            if actual_volume_sha256 != expected_volume_sha256:
+                raise RuntimeError("common-objective portable volume identity changed after authentication")
         expected_inverse = 1.0 / (self.dt * self.dt)
         if self._inverse_dt_squared != expected_inverse:
             raise RuntimeError("common-objective derived timestep state changed after authentication")
