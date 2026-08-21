@@ -78,6 +78,12 @@ _SEQUENCE_ARRAY_NAMES = frozenset(
         "step_ids",
     )
 )
+_REGISTERED_DYNAMIC_PROMOTIONS = MappingProxyType(
+    {
+        "external_force": (np.dtype(np.float32), np.dtype(np.float64)),
+        "pinned_indices": (np.dtype(np.int32), np.dtype(np.int64)),
+    }
+)
 _SEQUENCE_RECORD_KEYS = frozenset(
     (
         "role",
@@ -514,6 +520,33 @@ def _producer_array_record(value: np.ndarray) -> dict[str, object]:
         "shape": list(canonical.shape),
         "nbytes": int(canonical.nbytes),
         "sha256": digest.hexdigest(),
+    }
+
+
+def _runtime_dynamic_array_record(
+    value: np.ndarray,
+    *,
+    name: str,
+    dtype: np.dtype,
+    shape: tuple[int, ...],
+) -> dict[str, object]:
+    source = np.asarray(value)
+    if source.shape != shape:
+        raise ValueError(f"dynamic source {name} must have shape {shape}, got {source.shape}")
+    if source.dtype == dtype:
+        runtime = source
+    else:
+        promotion = _REGISTERED_DYNAMIC_PROMOTIONS.get(name)
+        if promotion != (source.dtype, dtype):
+            raise ValueError(
+                f"dynamic source {name} must already have runtime dtype {dtype.name}; "
+                f"the {source.dtype.name}-to-{dtype.name} promotion is not registered"
+            )
+        runtime = source.astype(dtype)
+    return {
+        "dtype": runtime.dtype.name,
+        "shape": list(runtime.shape),
+        "sha256": _producer_array_record(runtime)["sha256"],
     }
 
 
@@ -1238,17 +1271,47 @@ def _load_sequence(record: ReferenceSequenceRecord, vertex_count: int) -> dict[s
         array_records = dynamic_scene.get("arrays") if isinstance(dynamic_scene, Mapping) else None
         if not isinstance(array_records, Mapping):
             raise ValueError("producer dynamic scene is missing its array inventory")
-        dynamic_hashes = {
-            "external_force": _producer_array_record(external_force[step_id])["sha256"],
-            "pin_targets": _producer_array_record(pin_targets[step_id])["sha256"],
-            "pinned_indices": _producer_array_record(pinned)["sha256"],
-            "vbd_inertial_target": _producer_array_record(inertial_target[step_id])["sha256"],
-            "velocity": _producer_array_record(qd[step_id])["sha256"],
-            "x_current": _producer_array_record(q[step_id])["sha256"],
+        dynamic_records = {
+            "external_force": _runtime_dynamic_array_record(
+                external_force[step_id],
+                name="external_force",
+                dtype=np.dtype(np.float64),
+                shape=(vertex_count, 3),
+            ),
+            "pin_targets": _runtime_dynamic_array_record(
+                pin_targets[step_id],
+                name="pin_targets",
+                dtype=np.dtype(np.float64),
+                shape=(pinned.shape[0], 3),
+            ),
+            "pinned_indices": _runtime_dynamic_array_record(
+                pinned,
+                name="pinned_indices",
+                dtype=np.dtype(np.int64),
+                shape=(pinned.shape[0],),
+            ),
+            "vbd_inertial_target": _runtime_dynamic_array_record(
+                inertial_target[step_id],
+                name="vbd_inertial_target",
+                dtype=np.dtype(np.float64),
+                shape=(vertex_count, 3),
+            ),
+            "velocity": _runtime_dynamic_array_record(
+                qd[step_id],
+                name="velocity",
+                dtype=np.dtype(np.float64),
+                shape=(vertex_count, 3),
+            ),
+            "x_current": _runtime_dynamic_array_record(
+                q[step_id],
+                name="x_current",
+                dtype=np.dtype(np.float64),
+                shape=(vertex_count, 3),
+            ),
         }
-        for name, expected in dynamic_hashes.items():
+        for name, expected in dynamic_records.items():
             array_record = array_records.get(name)
-            if not isinstance(array_record, Mapping) or array_record.get("sha256") != expected:
+            if not isinstance(array_record, Mapping) or not _exact_json_equal(_thaw_json(array_record), expected):
                 raise ValueError(f"producer dynamic scene does not bind {name} at step {step_id}")
 
     for step_id, expected in zip(record.step_ids, record.reference_state_float64_sha256, strict=True):

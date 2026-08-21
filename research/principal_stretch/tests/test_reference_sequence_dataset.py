@@ -135,6 +135,15 @@ def _self_hashed(payload: dict[str, object], field: str) -> dict[str, object]:
     return result
 
 
+def _runtime_array_record(value: np.ndarray, dtype: np.dtype) -> dict[str, object]:
+    array = np.asarray(value, dtype=dtype)
+    return {
+        "dtype": array.dtype.name,
+        "shape": list(array.shape),
+        "sha256": rollout_module._array_digest(array),
+    }
+
+
 def _accepted_rollout(
     *,
     asset_id: str,
@@ -171,12 +180,12 @@ def _accepted_rollout(
     steps: list[ReferenceStepEvidence] = []
     for step_id in range(step_count):
         dynamic_arrays = {
-            "external_force": rollout_module._array_record(sequence["external_force"][step_id]),
-            "pin_targets": rollout_module._array_record(sequence["pin_targets"][step_id]),
-            "pinned_indices": rollout_module._array_record(sequence["pinned_indices"]),
-            "vbd_inertial_target": rollout_module._array_record(sequence["inertial_target"][step_id]),
-            "velocity": rollout_module._array_record(sequence["qd"][step_id]),
-            "x_current": rollout_module._array_record(sequence["q"][step_id]),
+            "external_force": _runtime_array_record(sequence["external_force"][step_id], np.dtype(np.float64)),
+            "pin_targets": _runtime_array_record(sequence["pin_targets"][step_id], np.dtype(np.float64)),
+            "pinned_indices": _runtime_array_record(sequence["pinned_indices"], np.dtype(np.int64)),
+            "vbd_inertial_target": _runtime_array_record(sequence["inertial_target"][step_id], np.dtype(np.float64)),
+            "velocity": _runtime_array_record(sequence["qd"][step_id], np.dtype(np.float64)),
+            "x_current": _runtime_array_record(sequence["q"][step_id], np.dtype(np.float64)),
         }
         dynamic_scene = _self_hashed(
             {"contract": "synthetic-dynamic-scene-v1", "arrays": dynamic_arrays},
@@ -318,6 +327,40 @@ def _rewrite_sequence_npz(root: Path, record: dict[str, object], mutate) -> None
     record["producer_manifest_json_sha256"] = _file_sha256(manifest_path)
 
 
+def _rewrite_dynamic_array_record(
+    root: Path,
+    record: dict[str, object],
+    *,
+    array_name: str,
+    mutate,
+) -> None:
+    manifest_path = root / record["producer_manifest_json"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    evidence_record = manifest["files"]["evidence_json"]
+    evidence_path = manifest_path.parent / evidence_record["path"]
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    step = evidence["steps"][0]
+    dynamic_scene = step["dynamic_scene_manifest"]
+    mutate(dynamic_scene["arrays"][array_name])
+    dynamic_scene.pop("scene_sha256")
+    dynamic_scene["scene_sha256"] = rollout_module._canonical_json_digest(dynamic_scene)
+    step["dynamic_scene_sha256"] = dynamic_scene["scene_sha256"]
+    objective = step["objective_manifest"]
+    objective["scene_sha256"] = dynamic_scene["scene_sha256"]
+    objective.pop("objective_instance_sha256")
+    objective["objective_instance_sha256"] = rollout_module._canonical_json_digest(objective)
+    step["objective_instance_sha256"] = objective["objective_instance_sha256"]
+
+    contents = rollout_module._json_bytes(evidence)
+    evidence_path.write_bytes(contents)
+    evidence_record.update({"bytes": len(contents), "sha256": hashlib.sha256(contents).hexdigest()})
+    manifest["inventory_sha256"] = rollout_module._canonical_json_digest(
+        {"files": manifest["files"], "identities": manifest["identities"]}
+    )
+    manifest_path.write_bytes(rollout_module._json_bytes(manifest))
+    record["producer_manifest_json_sha256"] = _file_sha256(manifest_path)
+
+
 class TestReferenceSequenceDataset(unittest.TestCase):
     def test_provenance_anchor_exposes_only_authenticated_relocation_stable_identities(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -397,6 +440,12 @@ class TestReferenceSequenceDataset(unittest.TestCase):
             key = ReferenceTransitionKey(asset_id="zeta", sequence_id="sample-001", step_id=1)
             transition = dataset.transition(key)
             manifest = json.loads((root / records[0]["producer_manifest_json"]).read_text(encoding="utf-8"))
+            evidence_path = root / "zeta" / manifest["files"]["evidence_json"]["path"]
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            runtime_arrays = evidence["steps"][0]["dynamic_scene_manifest"]["arrays"]
+            self.assertEqual(runtime_arrays["external_force"]["dtype"], "float64")
+            self.assertEqual(runtime_arrays["pinned_indices"]["dtype"], "int64")
+            self.assertEqual(set(runtime_arrays["external_force"]), {"dtype", "shape", "sha256"})
             sequence_path = root / "zeta" / manifest["files"]["sequence_npz"]["path"]
             with np.load(sequence_path, allow_pickle=False) as source:
                 expected_previous = (
@@ -531,6 +580,33 @@ class TestReferenceSequenceDataset(unittest.TestCase):
                         step_id=0,
                     )
                 )
+
+    def test_dynamic_scene_rejects_wrong_runtime_dtype_shape_and_hash(self):
+        mutations = {
+            "wrong-dtype": lambda array_record: array_record.__setitem__("dtype", "float32"),
+            "wrong-shape": lambda array_record: array_record.__setitem__("shape", [12]),
+            "wrong-hash": lambda array_record: array_record.__setitem__(
+                "sha256", hashlib.sha256(b"tampered-dynamic-array").hexdigest()
+            ),
+        }
+        for asset_id, mutate in mutations.items():
+            with self.subTest(asset_id=asset_id), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                record = _write_sequence_record(
+                    root,
+                    role=DatasetRole.TRAIN,
+                    asset_id=asset_id,
+                    sequence_id="sample-000",
+                )
+                _rewrite_dynamic_array_record(
+                    root,
+                    record,
+                    array_name="x_current",
+                    mutate=mutate,
+                )
+                dataset = ReferenceSequenceDataset.load(_write_index(root, [record]))
+                with self.assertRaisesRegex(ValueError, "dynamic scene does not bind x_current"):
+                    dataset.transition(ReferenceTransitionKey(asset_id=asset_id, sequence_id="sample-000", step_id=0))
 
 
 if __name__ == "__main__":
