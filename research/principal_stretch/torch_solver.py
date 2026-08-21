@@ -99,17 +99,23 @@ def operator_geometry_sha256(
 
 
 def _require_inverse_backward_error_numpy(source_matrix: np.ndarray, inverse: np.ndarray) -> None:
-    """Require a fixed contribution-scaled two-sided inverse residual."""
+    """Require a fixed locally floored contribution-scaled inverse residual."""
     identity = np.broadcast_to(np.eye(3, dtype=inverse.dtype), inverse.shape)
     epsilon = np.finfo(inverse.dtype).eps
     gamma = 3.0 * epsilon / (1.0 - 3.0 * epsilon)
     for left, right in ((source_matrix, inverse), (inverse, source_matrix)):
         product = left @ right
         contribution_scale = np.abs(left) @ np.abs(right)
-        bound = np.asarray(128.0 * gamma, dtype=inverse.dtype) * contribution_scale
+        local_scale = np.max(contribution_scale, axis=(-2, -1), keepdims=True)
+        effective_scale = np.maximum(
+            contribution_scale,
+            np.asarray(epsilon, dtype=inverse.dtype) * local_scale,
+        )
+        bound = np.asarray(128.0 * gamma, dtype=inverse.dtype) * effective_scale
         if (
             not np.isfinite(product).all()
             or not np.isfinite(contribution_scale).all()
+            or not np.isfinite(effective_scale).all()
             or not np.isfinite(bound).all()
             or not np.all(np.abs(product - identity) <= bound)
         ):

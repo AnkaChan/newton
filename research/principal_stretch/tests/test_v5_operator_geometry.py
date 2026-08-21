@@ -25,6 +25,30 @@ def _pose(rest: np.ndarray, tets: np.ndarray) -> np.ndarray:
     return np.linalg.inv(matrix).astype(rest.dtype, copy=False)
 
 
+def _structured_zero_inverse() -> tuple[np.ndarray, np.ndarray]:
+    source = np.asarray(
+        [
+            [
+                [float.fromhex("0x0.0p+0"), float.fromhex("0x0.0p+0"), -float.fromhex("0x1.279a74p-4")],
+                [-float.fromhex("0x1.d8f720p-5"), -float.fromhex("0x1.d8f720p-5"), -float.fromhex("0x1.d8f720p-6")],
+                [-float.fromhex("0x1.d8f71cp-5"), float.fromhex("0x0.0p+0"), -float.fromhex("0x1.d8f718p-6")],
+            ]
+        ],
+        dtype=np.float32,
+    )
+    inverse = np.asarray(
+        [
+            [
+                [float.fromhex("0x1.bb67acp+2"), float.fromhex("0x1.754da2p-50"), -float.fromhex("0x1.1520d0p+4")],
+                [float.fromhex("0x1.e00006p-21"), -float.fromhex("0x1.1520cep+4"), float.fromhex("0x1.1520d0p+4")],
+                [-float.fromhex("0x1.bb67b0p+3"), -float.fromhex("0x0.0p+0"), -float.fromhex("0x0.0p+0")],
+            ]
+        ],
+        dtype=np.float32,
+    )
+    return source, inverse
+
+
 class TestAuthenticatedOperatorGeometry(unittest.TestCase):
     def setUp(self) -> None:
         self.rest32 = np.asarray(
@@ -131,6 +155,18 @@ class TestAuthenticatedOperatorGeometry(unittest.TestCase):
         self.assertEqual(first.static_mesh_sha256, second.static_mesh_sha256)
         self.assertNotEqual(first.operator_geometry_sha256, second.operator_geometry_sha256)
         self.assertFalse(torch.equal(first.Dm_inv, second.Dm_inv))
+
+    def test_structural_zero_roundoff_authenticates(self) -> None:
+        source, inverse = _structured_zero_inverse()
+
+        ts._require_inverse_backward_error_numpy(source, inverse)
+
+    def test_structural_zero_roundoff_does_not_hide_pose_tampering(self) -> None:
+        source, inverse = _structured_zero_inverse()
+        inverse[0, 0, 1] += np.float32(1.0e-8)
+
+        with self.assertRaisesRegex(ValueError, "backward-error bound"):
+            ts._require_inverse_backward_error_numpy(source, inverse)
 
     def test_nonfinite_contribution_scale_cannot_authenticate(self) -> None:
         huge = np.finfo(np.float32).max
