@@ -79,7 +79,10 @@ def _canonical_array(value: np.ndarray) -> np.ndarray:
     array = np.asarray(value)
     dtype = array.dtype
     canonical_dtype = dtype if dtype.byteorder == "|" else dtype.newbyteorder("<")
-    return np.ascontiguousarray(array, dtype=canonical_dtype)
+    # ``np.ascontiguousarray`` promotes a scalar from shape ``()`` to ``(1,)``.
+    # Preserve the producer schema's scalar dt and seeds while still owning a
+    # C-order, little-endian copy for every non-scalar payload.
+    return np.array(array, dtype=canonical_dtype, order="C", copy=True)
 
 
 def _array_digest(value: np.ndarray) -> str:

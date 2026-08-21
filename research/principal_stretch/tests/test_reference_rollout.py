@@ -436,6 +436,9 @@ class TestReferenceShard(unittest.TestCase):
                 self.assertEqual(arrays["qd"].dtype, np.float64)
                 self.assertEqual(arrays["inertial_target"].dtype, np.float64)
                 self.assertEqual(arrays["dt"].dtype, np.float32)
+                self.assertEqual(arrays["dt"].shape, ())
+                self.assertEqual(arrays["deformation_seed"].shape, ())
+                self.assertEqual(arrays["velocity_seed"].shape, ())
                 self.assertEqual(arrays["pinned_indices"].shape, (0,))
                 self.assertEqual(arrays["pin_targets"].shape, (1, 0, 3))
 
