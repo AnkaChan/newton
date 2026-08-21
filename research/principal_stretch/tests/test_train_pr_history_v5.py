@@ -21,6 +21,7 @@ from ..iterative_solver import (
 from ..train_pr_history_v5 import (
     TRAINER_EXECUTION_CONTRACT_SHA256,
     SharedTopologyPredictorBank,
+    V5EvaluationSnapshot,
     V5TrainingSample,
     _optimizer_options,
     build_v5_adamw_optimizer_contract,
@@ -43,6 +44,8 @@ from ..v5_checkpoint import (
 )
 from ..v5_dataset import (
     DataAccessLedger,
+    DataAccessPurpose,
+    DataAccessScope,
     DatasetRole,
     NumericContentIdentity,
     SplitManifest,
@@ -422,6 +425,126 @@ class TestExecutableV5Trainer(unittest.TestCase):
         self.assertEqual(rng_snapshot["training_run_record"], result.training_run_record)
         self.assertEqual(rng_snapshot["model_initialization_torch_seed"], 7)
         self.assertEqual(rng_snapshot["numpy_pcg64_sampling_schedule_seed"], schedule.seed)
+
+    def test_evaluation_snapshots_cover_initialized_stage_and_final_boundaries(self):
+        manifest, schedule, contract, payloads = self._fixture(steps=8, representation_end=4)
+        control = train_pr_history_v5(
+            solver_contract=contract,
+            sampling_schedule=schedule,
+            access_ledger=DataAccessLedger(manifest),
+            payloads=payloads,
+            seed=23,
+        )
+        result = train_pr_history_v5(
+            solver_contract=contract,
+            sampling_schedule=schedule,
+            access_ledger=DataAccessLedger(manifest),
+            payloads=payloads,
+            seed=23,
+            evaluation_snapshot_updates=(0, 4, 8),
+        )
+
+        self.assertEqual(
+            tuple(snapshot.completed_updates for snapshot in result.evaluation_snapshots),
+            (0, 4, 8),
+        )
+        for snapshot in result.evaluation_snapshots:
+            self.assertIs(type(snapshot), V5EvaluationSnapshot)
+            verified = verify_v5_checkpoint(snapshot.checkpoint)
+            self.assertEqual(verified, snapshot.verified_checkpoint)
+            self.assertEqual(verified.completed_updates, snapshot.completed_updates)
+            continuation = snapshot.checkpoint["metadata"]["continuation_snapshot"]
+            self.assertEqual(continuation["completed_updates"], snapshot.completed_updates)
+            self.assertEqual(continuation["next_batch_index"], snapshot.completed_updates)
+            self.assertFalse(continuation["resume_capability"])
+            run_record = snapshot.checkpoint["rng_state"]["training_run_record"]
+            self.assertEqual(canonical_json_sha256(run_record), snapshot.checkpoint["rng_state"]["training_run_sha256"])
+            self.assertEqual(run_record["completed_updates"], snapshot.completed_updates)
+            self.assertEqual(run_record["next_batch_index"], snapshot.completed_updates)
+            self.assertEqual(len(run_record["updates"]), snapshot.completed_updates)
+            self.assertFalse(run_record["resume_capability"])
+
+        self.assertEqual(
+            tuple(
+                len(snapshot.checkpoint["rng_state"]["training_run_record"]["final_access_ledger"]["accesses"])
+                for snapshot in result.evaluation_snapshots
+            ),
+            (1, 2, 2),
+        )
+
+        initialized, stage, final = result.evaluation_snapshots
+        first_access = initialized.checkpoint["rng_state"]["training_run_record"]["final_access_ledger"]["accesses"][0]
+        self.assertEqual(first_access["trajectory_id"], schedule.batches[0].samples[0].trajectory_id)
+        self.assertEqual(first_access["purpose"], DataAccessPurpose.TRAINING.value)
+        self.assertEqual(first_access["scope"], DataAccessScope.PAYLOAD.value)
+        self.assertNotEqual(
+            initialized.verified_checkpoint.learned_state_sha256, stage.verified_checkpoint.learned_state_sha256
+        )
+        self.assertNotEqual(
+            stage.verified_checkpoint.learned_state_sha256, final.verified_checkpoint.learned_state_sha256
+        )
+        self.assertIs(final.checkpoint, result.checkpoint)
+        self.assertIs(final.verified_checkpoint, result.verified_checkpoint)
+        for name in (
+            "checkpoint_payload_sha256",
+            "learned_state_sha256",
+            "optimizer_state_sha256",
+            "rng_state_sha256",
+            "batch_stream_sha256",
+        ):
+            self.assertEqual(getattr(control.verified_checkpoint, name), getattr(result.verified_checkpoint, name))
+
+    def test_evaluation_snapshot_boundaries_must_be_canonical(self):
+        manifest, schedule, contract, payloads = self._fixture(steps=8, representation_end=4)
+        invalid = (
+            ([], "exact tuple"),
+            ((0, True), "exact integers"),
+            ((0, np.int64(4)), "exact integers"),
+            ((4, 0), "strictly increasing"),
+            ((0, 0), "strictly increasing"),
+            ((-1,), "between zero and sampling steps"),
+            ((schedule.steps + 1,), "between zero and sampling steps"),
+        )
+        for snapshot_updates, message in invalid:
+            with self.subTest(snapshot_updates=snapshot_updates):
+                with self.assertRaisesRegex((TypeError, ValueError), message):
+                    train_pr_history_v5(
+                        solver_contract=contract,
+                        sampling_schedule=schedule,
+                        access_ledger=DataAccessLedger(manifest),
+                        payloads=payloads,
+                        seed=23,
+                        evaluation_snapshot_updates=snapshot_updates,
+                    )
+
+    def test_empty_evaluation_snapshot_request_preserves_legacy_result(self):
+        manifest, schedule, contract, payloads = self._fixture(steps=8, representation_end=4)
+        common = {
+            "solver_contract": contract,
+            "sampling_schedule": schedule,
+            "access_ledger": DataAccessLedger(manifest),
+            "payloads": payloads,
+            "seed": 29,
+        }
+        legacy = train_pr_history_v5(**common)
+        explicit_empty = train_pr_history_v5(**common, evaluation_snapshot_updates=())
+
+        self.assertEqual(legacy.evaluation_snapshots, ())
+        self.assertEqual(explicit_empty.evaluation_snapshots, ())
+        self.assertEqual(legacy.updates, explicit_empty.updates)
+        self.assertEqual(legacy.access_ledger.as_dict(), explicit_empty.access_ledger.as_dict())
+        self.assertEqual(legacy.training_run_record, explicit_empty.training_run_record)
+        self.assertEqual(legacy.training_run_sha256, explicit_empty.training_run_sha256)
+        for name in (
+            "checkpoint_payload_sha256",
+            "learned_state_sha256",
+            "optimizer_state_sha256",
+            "rng_state_sha256",
+            "batch_stream_sha256",
+        ):
+            self.assertEqual(
+                getattr(legacy.verified_checkpoint, name), getattr(explicit_empty.verified_checkpoint, name)
+            )
 
     def test_cross_topology_contexts_share_parameter_objects(self):
         _manifest, schedule, contract, payloads = self._fixture(steps=8, representation_end=4)

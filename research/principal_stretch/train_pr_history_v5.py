@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -898,6 +899,33 @@ class V5TrainingUpdate:
     gradient_norms: Mapping[str, float]
 
 
+@dataclasses.dataclass(frozen=True)
+class V5EvaluationSnapshot:
+    """One verified, evaluation-only checkpoint at a completed-update boundary."""
+
+    completed_updates: int
+    checkpoint: dict[str, object]
+    verified_checkpoint: VerifiedV5Checkpoint
+
+    def __post_init__(self) -> None:
+        if type(self.completed_updates) is not int:
+            raise TypeError("evaluation snapshot completed_updates must be an exact integer")
+        if self.completed_updates < 0:
+            raise ValueError("evaluation snapshot completed_updates must be non-negative")
+        if type(self.checkpoint) is not dict:
+            raise TypeError("evaluation snapshot checkpoint must be an exact dict")
+        if type(self.verified_checkpoint) is not VerifiedV5Checkpoint:
+            raise TypeError("evaluation snapshot verification must be a VerifiedV5Checkpoint")
+        verified = verify_v5_checkpoint(self.checkpoint)
+        if verified != self.verified_checkpoint:
+            raise ValueError("evaluation snapshot verification differs from its checkpoint")
+        if verified.completed_updates != self.completed_updates:
+            raise ValueError("evaluation snapshot completed_updates differs from its checkpoint")
+        continuation = self.checkpoint["metadata"]["continuation_snapshot"]
+        if continuation["resume_capability"] is not False:
+            raise ValueError("evaluation snapshots must remain explicitly non-resumable")
+
+
 @dataclasses.dataclass
 class V5TrainingResult:
     """Completed foundation run, shared model contexts, and verified checkpoint."""
@@ -913,6 +941,19 @@ class V5TrainingResult:
     completed_updates: int
     next_batch_index: int
     optimizer_parameter_names: tuple[str, ...]
+    evaluation_snapshots: tuple[V5EvaluationSnapshot, ...] = ()
+
+
+def _evaluation_snapshot_updates(value: object, *, sampling_steps: int) -> tuple[int, ...]:
+    if type(value) is not tuple:
+        raise TypeError("evaluation_snapshot_updates must be an exact tuple")
+    if any(type(update) is not int for update in value):
+        raise TypeError("evaluation_snapshot_updates entries must be exact integers")
+    if any(update < 0 or update > sampling_steps for update in value):
+        raise ValueError("evaluation snapshot updates must be between zero and sampling steps")
+    if any(left >= right for left, right in itertools.pairwise(value)):
+        raise ValueError("evaluation snapshot updates must be strictly increasing")
+    return value
 
 
 def _stage_for_update(stages: Sequence[TrainingStage], update_index: int) -> TrainingStage:
@@ -1025,6 +1066,47 @@ def _training_run_record(
     }
 
 
+def _build_evaluation_snapshot(
+    *,
+    contract: V5SolverContract,
+    schedule: SamplingSchedule,
+    ledger: DataAccessLedger,
+    updates: Sequence[V5TrainingUpdate],
+    bank: SharedTopologyPredictorBank,
+    optimizer: torch.optim.AdamW,
+    model_initialization_seed: int,
+) -> V5EvaluationSnapshot:
+    training_run_record = _training_run_record(
+        contract=contract,
+        schedule=schedule,
+        ledger=ledger,
+        updates=updates,
+        parameter_names=bank.parameter_names,
+    )
+    training_run_sha256 = canonical_json_sha256(training_run_record)
+    checkpoint = build_v5_checkpoint(
+        bank.master.model.state_dict(),
+        solver_contract=contract,
+        optimizer_state=_optimizer_snapshot(optimizer, bank),
+        rng_state=_rng_snapshot(
+            model_initialization_seed,
+            schedule.seed,
+            bank,
+            training_run_record,
+            training_run_sha256,
+        ),
+        batch_stream=schedule,
+        completed_updates=len(updates),
+        parent_lineage=ParentLineage.root(),
+    )
+    verified = verify_v5_checkpoint(checkpoint)
+    return V5EvaluationSnapshot(
+        completed_updates=len(updates),
+        checkpoint=checkpoint,
+        verified_checkpoint=verified,
+    )
+
+
 def train_pr_history_v5(
     *,
     solver_contract: V5SolverContract,
@@ -1033,17 +1115,24 @@ def train_pr_history_v5(
     payloads: dict[tuple[str, str], V5TrainingSample],
     seed: int = 0,
     checkpoint_path: str | pathlib.Path | None = None,
+    evaluation_snapshot_updates: tuple[int, ...] = (),
 ) -> V5TrainingResult:
     """Train one architecture-v5 model over the exact authenticated schedule.
 
     The function always starts a new root run.  It intentionally exposes no
     resume argument because the current checkpoint contract authenticates an
     optimizer/RNG snapshot but does not prove exact next-update replay.
+    Optional evaluation snapshots are verified integrity records at exact
+    completed-update boundaries; they remain explicitly non-resumable.
     """
     if type(seed) is not int or seed < 0:
         raise ValueError("seed must be a non-negative integer")
     contract = _canonical_contract(solver_contract)
     schedule = _canonical_schedule(sampling_schedule, contract)
+    snapshot_updates = _evaluation_snapshot_updates(
+        evaluation_snapshot_updates,
+        sampling_steps=schedule.steps,
+    )
     _validate_manifest_payload_membership(schedule, payloads)
     ledger = _validated_ledger(access_ledger, schedule)
     if contract.projection.backend != "dense":
@@ -1057,6 +1146,34 @@ def train_pr_history_v5(
     optimizer: torch.optim.AdamW | None = None
     accessed_trajectories: set[str] = set()
     updates: list[V5TrainingUpdate] = []
+    snapshots_by_update: dict[int, V5EvaluationSnapshot] = {}
+    if snapshot_updates and snapshot_updates[0] == 0:
+        initial_batch = schedule.batches[0]
+        initial_reference = initial_batch.samples[0]
+        ledger = ledger.record_access(
+            initial_reference.trajectory_id,
+            purpose=DataAccessPurpose.TRAINING,
+            scope=DataAccessScope.PAYLOAD,
+            payload_names=_OPENED_PAYLOAD_NAMES,
+        )
+        accessed_trajectories.add(initial_reference.trajectory_id)
+        initial_sample = payloads[(initial_reference.trajectory_id, initial_reference.sample_id)]
+        initial_sample.validate_immutable()
+        _validate_sample_against_solver_contract(initial_sample, contract)
+        _reference_matches(initial_reference, initial_sample)
+        if initial_sample.sample_record.static_layout_sha256 != initial_batch.static_layout_sha256:
+            raise ValueError("initial evaluation snapshot payload differs from the static-layout schedule")
+        bank.ensure(initial_sample)
+        optimizer = _make_optimizer(bank, contract.optimizer)
+        snapshots_by_update[0] = _build_evaluation_snapshot(
+            contract=contract,
+            schedule=schedule,
+            ledger=ledger,
+            updates=updates,
+            bank=bank,
+            optimizer=optimizer,
+            model_initialization_seed=seed,
+        )
     for update_index, batch in enumerate(schedule.batches):
         for reference in batch.samples:
             if reference.trajectory_id not in accessed_trajectories:
@@ -1106,6 +1223,17 @@ def train_pr_history_v5(
                 gradient_norms=gradient_norms,
             )
         )
+        completed_updates = len(updates)
+        if completed_updates in snapshot_updates and completed_updates != schedule.steps:
+            snapshots_by_update[completed_updates] = _build_evaluation_snapshot(
+                contract=contract,
+                schedule=schedule,
+                ledger=ledger,
+                updates=updates,
+                bank=bank,
+                optimizer=optimizer,
+                model_initialization_seed=seed,
+            )
     if optimizer is None:
         raise RuntimeError("canonical sampling schedule unexpectedly contained no updates")
     bank._validate_shared_parameter_identity()
@@ -1130,6 +1258,12 @@ def train_pr_history_v5(
     verified = verify_v5_checkpoint(checkpoint)
     if verified.completed_updates != len(updates):
         raise RuntimeError("verified checkpoint completed-update count differs from schedule consumption")
+    if schedule.steps in snapshot_updates:
+        snapshots_by_update[schedule.steps] = V5EvaluationSnapshot(
+            completed_updates=schedule.steps,
+            checkpoint=checkpoint,
+            verified_checkpoint=verified,
+        )
     if checkpoint_path is not None:
         save_verified_v5_checkpoint(checkpoint, checkpoint_path)
     return V5TrainingResult(
@@ -1144,6 +1278,7 @@ def train_pr_history_v5(
         completed_updates=len(updates),
         next_batch_index=len(updates),
         optimizer_parameter_names=bank.parameter_names,
+        evaluation_snapshots=tuple(snapshots_by_update[update] for update in snapshot_updates),
     )
 
 
@@ -1176,6 +1311,7 @@ __all__ = [
     "TRAINER_EXECUTION_CONTRACT_SHA256",
     "SharedTopologyPredictorBank",
     "V5BatchLoss",
+    "V5EvaluationSnapshot",
     "V5TrainingResult",
     "V5TrainingSample",
     "V5TrainingUpdate",
