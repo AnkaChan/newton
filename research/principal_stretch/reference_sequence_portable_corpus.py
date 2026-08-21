@@ -27,7 +27,10 @@ from .reference_sequence_dataset import (
     ReferenceSequenceRecord,
     ReferenceTransitionKey,
 )
-from .reference_sequence_v5_bridge import ReferenceSequencePortableDatasetBridge
+from .reference_sequence_v5_bridge import (
+    ReferencePortableAssetIdentities,
+    ReferenceSequencePortableDatasetBridge,
+)
 from .v5_checkpoint import canonical_json_sha256
 from .v5_dataset import DatasetRole
 
@@ -335,10 +338,13 @@ class ReferenceSequencePortableCorpus:
                 ):
                     raise ValueError("portable trajectory metadata differs from its reference-sequence provenance")
                 for sample in trajectory.samples:
+                    source = sample.source_transition
+                    if source is None:
+                        raise ValueError("portable corpus sample lacks its sealed source transition")
                     expected[(trajectory.trajectory_id, sample.sample_id)] = ReferenceTransitionKey(
-                        asset_id=provenance.asset_id,
-                        sequence_id=provenance.sequence_id,
-                        step_id=sample.ordinal,
+                        asset_id=source.asset_id,
+                        sequence_id=source.sequence_id,
+                        step_id=source.step_id,
                     )
         bindings = dict(self.transition_keys_by_sample)
         if bindings != expected:
@@ -480,16 +486,98 @@ def _build_trajectory(
     record: ReferenceSequenceRecord,
     transition_bindings: dict[tuple[str, str], ReferenceTransitionKey],
 ) -> PortableDatasetTrajectoryRecord:
-    provenance = PortableReferenceSequenceProvenance(**dataclasses.asdict(dataset.provenance_anchor(record)))
+    provenance = PortableReferenceSequenceProvenance(
+        **dataclasses.asdict(dataset.provenance_anchor(record)),
+        producer_topology_sha256=record.topology_sha256,
+        producer_operator_sha256=record.operator_sha256,
+        producer_material_sha256=record.material_sha256,
+        accepted_reference_state_sha256=record.reference_state_float64_sha256,
+    )
     trajectory_id = _trajectory_id(record.asset_id, record.sequence_id)
     sample_records = []
     static_identity: tuple[str, str, str, str, str, str] | None = None
+    materialized_asset_identity: ReferencePortableAssetIdentities | None = None
+    sequence_source_identity: tuple[str, ...] | None = None
     for step_id in record.step_ids:
         transition_key = ReferenceTransitionKey(record.asset_id, record.sequence_id, step_id)
         materialized = bridge.materialize(transition_key)
         sample = materialized.sample_record
-        if materialized.key[0] != trajectory_id or sample.ordinal != step_id:
+        if (
+            materialized.transition_key != transition_key
+            or materialized.key != (trajectory_id, f"step-{step_id:08d}")
+            or sample.ordinal != step_id
+        ):
             raise ValueError("portable bridge identity differs from the sequence record")
+        source = materialized.source_transition
+        expected_source = (
+            dataset.index_sha256,
+            record.asset_id,
+            record.asset_source_sha256,
+            record.sequence_id,
+            step_id,
+            provenance.static_bundle_sha256,
+            provenance.sequence_bundle_sha256,
+            record.protocol_sha256,
+            record.topology_sha256,
+            record.operator_sha256,
+            record.material_sha256,
+            record.reference_state_float64_sha256[step_id],
+        )
+        observed_source = (
+            source.reference_sequence_index_sha256,
+            source.asset_id,
+            source.asset_source_sha256,
+            source.sequence_id,
+            source.step_id,
+            source.static_npz_sha256,
+            source.sequence_npz_sha256,
+            source.protocol_sha256,
+            source.producer_topology_sha256,
+            source.producer_operator_sha256,
+            source.producer_material_sha256,
+            source.accepted_reference_state_sha256,
+        )
+        if observed_source != expected_source:
+            raise ValueError("materialized source transition differs from authenticated sequence metadata")
+        expected_asset_identity = ReferencePortableAssetIdentities(
+            asset_id=source.asset_id,
+            reference_sequence_index_sha256=source.reference_sequence_index_sha256,
+            asset_source_sha256=source.asset_source_sha256,
+            static_npz_sha256=source.static_npz_sha256,
+            producer_topology_sha256=source.producer_topology_sha256,
+            producer_operator_sha256=source.producer_operator_sha256,
+            producer_material_sha256=source.producer_material_sha256,
+            portable_topology_sha256=source.portable_topology_sha256,
+            operator_geometry_policy=source.operator_geometry_policy,
+            operator_geometry_sha256=source.operator_geometry_sha256,
+            operator_volume_policy=source.operator_volume_policy,
+            operator_volume_sha256=source.operator_volume_sha256,
+            portable_material_sha256=source.portable_material_sha256,
+            portable_pin_signature_sha256=source.portable_pin_signature_sha256,
+        )
+        if materialized.identities != expected_asset_identity:
+            raise ValueError("materialized asset identities differ from the authenticated source transition")
+        if materialized_asset_identity is None:
+            materialized_asset_identity = materialized.identities
+        elif materialized.identities != materialized_asset_identity:
+            raise ValueError("one sequence resolved to non-constant materialized asset identities")
+        current_sequence_source = (
+            source.reference_sequence_index_sha256,
+            source.asset_id,
+            source.asset_source_sha256,
+            source.sequence_id,
+            source.static_npz_sha256,
+            source.sequence_npz_sha256,
+            source.protocol_sha256,
+            source.producer_topology_sha256,
+            source.producer_operator_sha256,
+            source.producer_material_sha256,
+        )
+        if sequence_source_identity is None:
+            sequence_source_identity = current_sequence_source
+        elif current_sequence_source != sequence_source_identity:
+            raise ValueError("one sequence resolved to non-constant source identities")
+        materialized.validate_immutable()
         current_static = (
             sample.topology_sha256,
             sample.operator_geometry_policy,

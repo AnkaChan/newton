@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from .. import reference_sequence_portable_corpus as corpus_contract
 from ..reference_sequence_dataset import ReferenceSequenceDataset
 from ..reference_sequence_portable_corpus import (
     ReferenceSequencePortableConsumerView,
@@ -225,6 +226,70 @@ class TestReferenceSequencePortableCorpus(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "reference-sequence provenance"):
                 dataclasses.replace(corpus, split_manifest=relabelled_manifest)
+
+    def test_producer_rejects_materialized_source_identity_relabel(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = _dataset(Path(directory))
+            bridge = ReferenceSequencePortableDatasetBridge(dataset, device="cpu")
+            original_materialize = bridge.materialize
+
+            def tampered_materialize(key):
+                materialized = original_materialize(key)
+                object.__setattr__(
+                    materialized,
+                    "identities",
+                    dataclasses.replace(materialized.identities, static_npz_sha256="f" * 64),
+                )
+                return materialized
+
+            with (
+                mock.patch.object(bridge, "materialize", side_effect=tampered_materialize),
+                self.assertRaisesRegex(ValueError, "materialized.*source"),
+            ):
+                materialize_reference_sequence_portable_corpus(
+                    dataset,
+                    bridge,
+                    roles=(DatasetRole.TRAIN,),
+                )
+
+    def test_corpus_rejects_coherent_source_provenance_relabels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = _dataset(Path(directory))
+            corpus = materialize_reference_sequence_portable_corpus(
+                dataset,
+                ReferenceSequencePortableDatasetBridge(dataset, device="cpu"),
+                roles=(DatasetRole.TRAIN,),
+            )
+            trajectory = corpus.split_manifest.train[0]
+            cases = {
+                "asset source": {"asset_source_sha256": "f" * 64},
+                "static bundle": {"static_bundle_sha256": "e" * 64},
+                "producer topology": {"producer_topology_sha256": "d" * 64},
+                "accepted reference": {
+                    "accepted_reference_state_sha256": (
+                        "c" * 64,
+                        *trajectory.provenance.accepted_reference_state_sha256[1:],
+                    )
+                },
+            }
+            for label, changes in cases.items():
+                relabelled_provenance = dataclasses.replace(trajectory.provenance, **changes)
+                with self.subTest(label=label), self.assertRaisesRegex(ValueError, "source transition"):
+                    relabelled_trajectory = dataclasses.replace(
+                        trajectory,
+                        provenance=relabelled_provenance,
+                        load_program_sha256=corpus_contract.canonical_json_sha256(
+                            corpus_contract._load_program_payload(relabelled_provenance)
+                        ),
+                        source_chain_sha256=corpus_contract.canonical_json_sha256(
+                            corpus_contract._source_chain_payload(relabelled_provenance)
+                        ),
+                    )
+                    relabelled_manifest = dataclasses.replace(
+                        corpus.split_manifest,
+                        train=(relabelled_trajectory,),
+                    )
+                    dataclasses.replace(corpus, split_manifest=relabelled_manifest)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ from .iterative_solver import (
 from .portable_dataset import (
     PortableDatasetSampleRecord,
     PortableNumericContentIdentity,
+    PortableReferenceSourceTransitionIdentity,
     canonical_portable_training_tensor_sha256,
 )
 from .reference_sequence_dataset import (
@@ -62,8 +63,6 @@ from .v5_pr_history_loader import (
 
 _SOURCE_TRANSITION_CONTRACT = "pss-reference-sequence-v5-source-transition-v1"
 _NUMERIC_IDENTIFIER_PREFIX = "reference-sequence-v5"
-_PORTABLE_SOURCE_TRANSITION_CONTRACT = "pss-reference-sequence-portable-volume-source-transition-v1"
-_PORTABLE_NUMERIC_IDENTIFIER_PREFIX = "reference-sequence-portable-volume-v1"
 
 
 def _sha256(value: object, name: str) -> str:
@@ -204,7 +203,7 @@ class ReferencePortableMaterializedSample:
 
     transition_key: ReferenceTransitionKey
     identities: ReferencePortableAssetIdentities
-    source_transition_sha256: str
+    source_transition: PortableReferenceSourceTransitionIdentity
     sample_record: PortableDatasetSampleRecord
     physical_step: PhysicalStepContext
     common_objective: CommonObjectiveContext
@@ -217,7 +216,8 @@ class ReferencePortableMaterializedSample:
             raise TypeError("transition_key must be a canonical ReferenceTransitionKey")
         if type(self.identities) is not ReferencePortableAssetIdentities:
             raise TypeError("identities must be canonical ReferencePortableAssetIdentities")
-        _sha256(self.source_transition_sha256, "source_transition_sha256")
+        if type(self.source_transition) is not PortableReferenceSourceTransitionIdentity:
+            raise TypeError("source_transition must be a canonical PortableReferenceSourceTransitionIdentity")
         if type(self.sample_record) is not PortableDatasetSampleRecord:
             raise TypeError("sample_record must be a canonical PortableDatasetSampleRecord")
         if type(self.physical_step) is not PhysicalStepContext:
@@ -247,9 +247,15 @@ class ReferencePortableMaterializedSample:
         """Return the stable corpus lookup key."""
         return _trajectory_id(self.transition_key), self.sample_record.sample_id
 
+    @property
+    def source_transition_sha256(self) -> str:
+        """Return the sealed source-transition preimage identity."""
+        return self.source_transition.source_transition_sha256
+
     def validate_immutable(self) -> None:
         """Reauthenticate the successor record and every consumed tensor."""
         PortableDatasetSampleRecord.from_dict(self.sample_record.as_dict())
+        PortableReferenceSourceTransitionIdentity.from_dict(self.source_transition.as_dict())
         self.physical_step.validate_immutable()
         self.common_objective.validate_immutable()
         state = self.projection_state
@@ -264,10 +270,39 @@ class ReferencePortableMaterializedSample:
             raise ValueError("portable sample identity differs from its reference transition")
         if record.ordinal != self.transition_key.step_id:
             raise ValueError("portable sample ordinal differs from its reference transition")
+        source = self.source_transition
+        if (source.asset_id, source.sequence_id, source.step_id) != (
+            self.transition_key.asset_id,
+            self.transition_key.sequence_id,
+            self.transition_key.step_id,
+        ):
+            raise ValueError("portable transition key differs from its sealed source transition")
+        if self.identities.reference_sequence_index_sha256 != source.reference_sequence_index_sha256:
+            raise ValueError("portable cached reference-sequence index differs from the sealed source transition")
+        source_identities = ReferencePortableAssetIdentities(
+            asset_id=source.asset_id,
+            reference_sequence_index_sha256=source.reference_sequence_index_sha256,
+            asset_source_sha256=source.asset_source_sha256,
+            static_npz_sha256=source.static_npz_sha256,
+            producer_topology_sha256=source.producer_topology_sha256,
+            producer_operator_sha256=source.producer_operator_sha256,
+            producer_material_sha256=source.producer_material_sha256,
+            portable_topology_sha256=source.portable_topology_sha256,
+            operator_geometry_policy=source.operator_geometry_policy,
+            operator_geometry_sha256=source.operator_geometry_sha256,
+            operator_volume_policy=source.operator_volume_policy,
+            operator_volume_sha256=source.operator_volume_sha256,
+            portable_material_sha256=source.portable_material_sha256,
+            portable_pin_signature_sha256=source.portable_pin_signature_sha256,
+        )
+        if self.identities != source_identities:
+            raise ValueError("portable cached identities differ from the sealed source transition")
+        if record.source_transition != source:
+            raise ValueError("portable sample record differs from the sealed source transition")
         evidence = self.physical_step.source_evidence
         if (
             type(evidence) is not SolverVBDStagedFloat32Evidence
-            or evidence.source_transition_sha256 != self.source_transition_sha256
+            or evidence.source_transition_sha256 != source.source_transition_sha256
             or evidence.evidence_sha256 != record.source_integration_evidence_sha256
         ):
             raise ValueError("portable physical source evidence differs from its transition")
@@ -320,6 +355,8 @@ class ReferencePortableMaterializedSample:
         x_current, _x_previous, _force, _gravity, _mu, _lam, _pin, _targets = self.physical_step._owned_tensors()
         input_state = x_current
         reference_state = self.producer_attested_reference_positions
+        if canonical_training_tensor_sha256(reference_state) != source.accepted_reference_state_sha256:
+            raise ValueError("portable accepted reference state differs from its sealed source transition")
         tensors = {
             "observed_f": compute_F(x_current, state.tets, state.J),
             "input_f": compute_F(input_state, state.tets, state.J),
@@ -333,11 +370,7 @@ class ReferencePortableMaterializedSample:
             raise ValueError("portable reference deformation gradient differs from reference positions")
         for name, tensor in tensors.items():
             identity = getattr(record, name)
-            expected_identifier = (
-                f"{_PORTABLE_NUMERIC_IDENTIFIER_PREFIX}:"
-                f"{self.identities.reference_sequence_index_sha256}:"
-                f"{self.source_transition_sha256}:{name}"
-            )
+            expected_identifier = source.numeric_identifier(name)
             if identity.identifier != expected_identifier:
                 raise ValueError(f"portable training tensor {name} identifier differs from its transition")
             if canonical_portable_training_tensor_sha256(tensor) != identity.sha256:
@@ -456,37 +489,35 @@ def _source_transition_sha256(dataset: ReferenceSequenceDataset, transition: Ref
     )
 
 
-def _portable_source_transition_sha256(
+def _portable_source_transition_identity(
     dataset: ReferenceSequenceDataset,
     transition: ReferenceTransition,
     identities: ReferencePortableAssetIdentities,
-) -> str:
-    """Bind accepted producer evidence to the successor portable operator."""
+) -> PortableReferenceSourceTransitionIdentity:
+    """Seal the complete successor source-transition preimage."""
     if identities.reference_sequence_index_sha256 != dataset.index_sha256:
         raise ValueError("portable asset identity differs from the reference-sequence index")
     key = transition.key
-    return canonical_json_sha256(
-        {
-            "contract": _PORTABLE_SOURCE_TRANSITION_CONTRACT,
-            "reference_sequence_index_sha256": dataset.index_sha256,
-            "asset_id": key.asset_id,
-            "asset_source_sha256": transition.asset_source_sha256,
-            "sequence_id": key.sequence_id,
-            "step_id": key.step_id,
-            "sequence_npz_sha256": transition.sequence_npz_sha256,
-            "protocol_sha256": transition.protocol_sha256,
-            "producer_topology_sha256": transition.topology_sha256,
-            "producer_operator_sha256": transition.operator_sha256,
-            "producer_material_sha256": transition.material_sha256,
-            "accepted_reference_state_sha256": transition.reference_state_float64_sha256,
-            "portable_topology_sha256": identities.portable_topology_sha256,
-            "operator_geometry_policy": identities.operator_geometry_policy,
-            "operator_geometry_sha256": identities.operator_geometry_sha256,
-            "operator_volume_policy": identities.operator_volume_policy,
-            "operator_volume_sha256": identities.operator_volume_sha256,
-            "portable_material_sha256": identities.portable_material_sha256,
-            "portable_pin_signature_sha256": identities.portable_pin_signature_sha256,
-        }
+    return PortableReferenceSourceTransitionIdentity(
+        reference_sequence_index_sha256=dataset.index_sha256,
+        asset_id=key.asset_id,
+        asset_source_sha256=transition.asset_source_sha256,
+        sequence_id=key.sequence_id,
+        step_id=key.step_id,
+        static_npz_sha256=transition.static.static_npz_sha256,
+        sequence_npz_sha256=transition.sequence_npz_sha256,
+        protocol_sha256=transition.protocol_sha256,
+        producer_topology_sha256=transition.topology_sha256,
+        producer_operator_sha256=transition.operator_sha256,
+        producer_material_sha256=transition.material_sha256,
+        accepted_reference_state_sha256=transition.reference_state_float64_sha256,
+        portable_topology_sha256=identities.portable_topology_sha256,
+        operator_geometry_policy=identities.operator_geometry_policy,
+        operator_geometry_sha256=identities.operator_geometry_sha256,
+        operator_volume_policy=identities.operator_volume_policy,
+        operator_volume_sha256=identities.operator_volume_sha256,
+        portable_material_sha256=identities.portable_material_sha256,
+        portable_pin_signature_sha256=identities.portable_pin_signature_sha256,
     )
 
 
@@ -503,13 +534,12 @@ def _numeric_identity(
 
 
 def _portable_numeric_identity(
-    dataset: ReferenceSequenceDataset,
-    source_transition_sha256: str,
+    source_transition: PortableReferenceSourceTransitionIdentity,
     name: str,
     tensor: torch.Tensor,
 ) -> PortableNumericContentIdentity:
     return PortableNumericContentIdentity(
-        identifier=(f"{_PORTABLE_NUMERIC_IDENTIFIER_PREFIX}:{dataset.index_sha256}:{source_transition_sha256}:{name}"),
+        identifier=source_transition.numeric_identifier(name),
         sha256=canonical_portable_training_tensor_sha256(tensor),
     )
 
@@ -934,7 +964,7 @@ class ReferenceSequencePortableDatasetBridge(ReferenceSequencePortableObjectiveB
         lam = _floating(static.tet_materials[:, 1], self.device)
         pinned = torch.empty((0,), dtype=torch.int64, device=self.device)
         identities = self._portable_asset_identity(transition, state, mass, mu, lam, pinned)
-        source_transition_sha256 = _portable_source_transition_sha256(self.dataset, transition, identities)
+        source_transition = _portable_source_transition_identity(self.dataset, transition, identities)
         common_objective = CommonObjectiveContext(
             tets=state.tets,
             J=state.J,
@@ -953,7 +983,7 @@ class ReferenceSequencePortableDatasetBridge(ReferenceSequencePortableObjectiveB
         x_current = _floating(transition.x_current, self.device)
         x_previous = _floating(transition.x_previous, self.device)
         source_evidence = SolverVBDStagedFloat32Evidence(
-            source_transition_sha256=source_transition_sha256,
+            source_transition_sha256=source_transition.source_transition_sha256,
             dt_seconds=float(transition.execution_dt_seconds),
             pre_event_positions=_source_float32(transition.x_current, self.device, "pre-event positions"),
             velocity=_source_float32(transition.velocity, self.device, "velocity"),
@@ -985,8 +1015,7 @@ class ReferenceSequencePortableDatasetBridge(ReferenceSequencePortableObjectiveB
             "reference_state": reference_state,
         }
         numeric = {
-            name: _portable_numeric_identity(self.dataset, source_transition_sha256, name, tensor)
-            for name, tensor in tensors.items()
+            name: _portable_numeric_identity(source_transition, name, tensor) for name, tensor in tensors.items()
         }
         record = PortableDatasetSampleRecord(
             sample_id=_sample_id(key),
@@ -1002,6 +1031,7 @@ class ReferenceSequencePortableDatasetBridge(ReferenceSequencePortableObjectiveB
             physical_step_sha256=physical_step.physical_step_sha256,
             physical_integration_policy=physical_step.integration_policy,
             source_integration_evidence_sha256=source_evidence.evidence_sha256,
+            source_transition=source_transition,
             common_objective_sha256=common_objective.common_objective_sha256,
             observed_f=numeric["observed_f"],
             input_f=numeric["input_f"],
@@ -1013,7 +1043,7 @@ class ReferenceSequencePortableDatasetBridge(ReferenceSequencePortableObjectiveB
         return ReferencePortableMaterializedSample(
             transition_key=key,
             identities=identities,
-            source_transition_sha256=source_transition_sha256,
+            source_transition=source_transition,
             sample_record=record,
             physical_step=physical_step,
             common_objective=common_objective,

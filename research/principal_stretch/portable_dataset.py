@@ -42,6 +42,8 @@ _OBJECTIVE_COMPONENTS = ("physical_step", "common_objective")
 _PAYLOAD_COMPONENTS = (*_NUMERIC_COMPONENTS, *_OBJECTIVE_COMPONENTS)
 
 _NUMERIC_IDENTITY_CONTRACT = "pss-portable-volume-numeric-content-v1"
+_REFERENCE_SOURCE_TRANSITION_CONTRACT = "pss-portable-volume-reference-source-transition-preimage-v1"
+_REFERENCE_NUMERIC_IDENTIFIER_PREFIX = "reference-sequence-portable-volume-v1"
 _REFERENCE_SEQUENCE_PROVENANCE_CONTRACT = "pss-portable-volume-reference-sequence-provenance-v1"
 _SAMPLE_CONTRACT = "pss-portable-volume-dataset-sample-v1"
 _STATIC_LAYOUT_CONTRACT = "pss-portable-volume-dataset-static-layout-v1"
@@ -285,6 +287,204 @@ class PortableNumericContentIdentity:
 
 
 @dataclasses.dataclass(frozen=True)
+class PortableReferenceSourceTransitionIdentity:
+    """Sealed preimage for one authenticated reference transition."""
+
+    reference_sequence_index_sha256: str
+    asset_id: str
+    asset_source_sha256: str
+    sequence_id: str
+    step_id: int
+    static_npz_sha256: str
+    sequence_npz_sha256: str
+    protocol_sha256: str
+    producer_topology_sha256: str
+    producer_operator_sha256: str
+    producer_material_sha256: str
+    accepted_reference_state_sha256: str
+    portable_topology_sha256: str
+    operator_geometry_policy: str
+    operator_geometry_sha256: str
+    operator_volume_policy: str
+    operator_volume_sha256: str
+    portable_material_sha256: str
+    portable_pin_signature_sha256: str
+    source_transition_sha256: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        for name in ("asset_id", "sequence_id"):
+            _identifier(getattr(self, name), f"source transition {name}")
+        if type(self.step_id) is not int or self.step_id < 0:
+            raise ValueError("source transition step_id must be a non-negative integer")
+        if self.operator_geometry_policy != OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME:
+            raise ValueError("source transition must use the registered portable operator geometry policy")
+        if self.operator_volume_policy != OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT:
+            raise ValueError("source transition must use the registered portable operator volume policy")
+        for name in (
+            "reference_sequence_index_sha256",
+            "asset_source_sha256",
+            "static_npz_sha256",
+            "sequence_npz_sha256",
+            "protocol_sha256",
+            "producer_topology_sha256",
+            "producer_operator_sha256",
+            "producer_material_sha256",
+            "accepted_reference_state_sha256",
+            "portable_topology_sha256",
+            "operator_geometry_sha256",
+            "operator_volume_sha256",
+            "portable_material_sha256",
+            "portable_pin_signature_sha256",
+        ):
+            _sha256(getattr(self, name), f"source transition {name}")
+        object.__setattr__(self, "source_transition_sha256", _canonical_digest(self._payload()))
+
+    @property
+    def producer_static_identity(self) -> tuple[str, str, str]:
+        """Return producer topology, operator, and material identities."""
+        return (
+            self.producer_topology_sha256,
+            self.producer_operator_sha256,
+            self.producer_material_sha256,
+        )
+
+    @property
+    def portable_static_identity(self) -> tuple[str, str, str, str, str, str, str]:
+        """Return the complete portable runtime-static identity."""
+        return (
+            self.portable_topology_sha256,
+            self.operator_geometry_policy,
+            self.operator_geometry_sha256,
+            self.operator_volume_policy,
+            self.operator_volume_sha256,
+            self.portable_material_sha256,
+            self.portable_pin_signature_sha256,
+        )
+
+    def numeric_identifier(self, component: str) -> str:
+        """Return the only registered numeric identifier for one component."""
+        if component not in _NUMERIC_COMPONENTS:
+            raise ValueError(f"numeric component must be one of {_NUMERIC_COMPONENTS}")
+        return (
+            f"{_REFERENCE_NUMERIC_IDENTIFIER_PREFIX}:{self.reference_sequence_index_sha256}:"
+            f"{self.source_transition_sha256}:{component}"
+        )
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "schema_version": PORTABLE_DATASET_SCHEMA_VERSION,
+            "contract": _REFERENCE_SOURCE_TRANSITION_CONTRACT,
+            "reference_sequence_index_sha256": self.reference_sequence_index_sha256,
+            "transition_key": {
+                "asset_id": self.asset_id,
+                "sequence_id": self.sequence_id,
+                "step_id": self.step_id,
+            },
+            "source_artifacts": {
+                "asset_source_sha256": self.asset_source_sha256,
+                "static_npz_sha256": self.static_npz_sha256,
+                "sequence_npz_sha256": self.sequence_npz_sha256,
+                "protocol_sha256": self.protocol_sha256,
+                "accepted_reference_state_sha256": self.accepted_reference_state_sha256,
+            },
+            "producer_static": {
+                "topology_sha256": self.producer_topology_sha256,
+                "operator_sha256": self.producer_operator_sha256,
+                "material_sha256": self.producer_material_sha256,
+            },
+            "portable_static": {
+                "topology_sha256": self.portable_topology_sha256,
+                "operator_geometry": {
+                    "policy": self.operator_geometry_policy,
+                    "sha256": self.operator_geometry_sha256,
+                },
+                "operator_volume": {
+                    "policy": self.operator_volume_policy,
+                    "sha256": self.operator_volume_sha256,
+                },
+                "material_sha256": self.portable_material_sha256,
+                "pin_signature_sha256": self.portable_pin_signature_sha256,
+            },
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        """Return a self-checking JSON object."""
+        payload = self._payload()
+        payload["source_transition_sha256"] = self.source_transition_sha256
+        return payload
+
+    @classmethod
+    def from_dict(cls, value: object) -> PortableReferenceSourceTransitionIdentity:
+        """Strictly reconstruct one reference source-transition preimage."""
+        payload = _strict_mapping(
+            value,
+            {
+                "schema_version",
+                "contract",
+                "reference_sequence_index_sha256",
+                "transition_key",
+                "source_artifacts",
+                "producer_static",
+                "portable_static",
+                "source_transition_sha256",
+            },
+            "portable reference source transition",
+        )
+        if (payload["schema_version"], payload["contract"]) != (
+            PORTABLE_DATASET_SCHEMA_VERSION,
+            _REFERENCE_SOURCE_TRANSITION_CONTRACT,
+        ):
+            raise ValueError("portable reference source transition has an unregistered schema identity")
+        key = _strict_mapping(payload["transition_key"], {"asset_id", "sequence_id", "step_id"}, "transition_key")
+        source = _strict_mapping(
+            payload["source_artifacts"],
+            {
+                "asset_source_sha256",
+                "static_npz_sha256",
+                "sequence_npz_sha256",
+                "protocol_sha256",
+                "accepted_reference_state_sha256",
+            },
+            "source_artifacts",
+        )
+        producer = _strict_mapping(
+            payload["producer_static"],
+            {"topology_sha256", "operator_sha256", "material_sha256"},
+            "producer_static",
+        )
+        portable = _strict_mapping(
+            payload["portable_static"],
+            {"topology_sha256", "operator_geometry", "operator_volume", "material_sha256", "pin_signature_sha256"},
+            "portable_static",
+        )
+        geometry = _strict_mapping(portable["operator_geometry"], {"policy", "sha256"}, "operator_geometry")
+        volume = _strict_mapping(portable["operator_volume"], {"policy", "sha256"}, "operator_volume")
+        result = cls(
+            reference_sequence_index_sha256=payload["reference_sequence_index_sha256"],
+            asset_id=key["asset_id"],
+            asset_source_sha256=source["asset_source_sha256"],
+            sequence_id=key["sequence_id"],
+            step_id=key["step_id"],
+            static_npz_sha256=source["static_npz_sha256"],
+            sequence_npz_sha256=source["sequence_npz_sha256"],
+            protocol_sha256=source["protocol_sha256"],
+            producer_topology_sha256=producer["topology_sha256"],
+            producer_operator_sha256=producer["operator_sha256"],
+            producer_material_sha256=producer["material_sha256"],
+            accepted_reference_state_sha256=source["accepted_reference_state_sha256"],
+            portable_topology_sha256=portable["topology_sha256"],
+            operator_geometry_policy=geometry["policy"],
+            operator_geometry_sha256=geometry["sha256"],
+            operator_volume_policy=volume["policy"],
+            operator_volume_sha256=volume["sha256"],
+            portable_material_sha256=portable["material_sha256"],
+            portable_pin_signature_sha256=portable["pin_signature_sha256"],
+        )
+        _require_exact_round_trip(result.as_dict(), payload, "portable reference source transition")
+        return result
+
+
+@dataclasses.dataclass(frozen=True)
 class PortableReferenceSequenceProvenance:
     """Relocation-stable provenance for one authenticated sequence shard."""
 
@@ -292,6 +492,9 @@ class PortableReferenceSequenceProvenance:
     dataset_index_sha256: str
     asset_id: str
     asset_source_sha256: str
+    producer_topology_sha256: str
+    producer_operator_sha256: str
+    producer_material_sha256: str
     sequence_id: str
     producer_manifest_uri: str
     producer_manifest_sha256: str
@@ -306,6 +509,7 @@ class PortableReferenceSequenceProvenance:
     initial_velocity_field_sha256: str
     final_position_sha256: str
     final_velocity_field_sha256: str
+    accepted_reference_state_sha256: tuple[str, ...]
     deformation_seed: int
     velocity_seed: int
     source_transition_count: int
@@ -329,6 +533,9 @@ class PortableReferenceSequenceProvenance:
         for name in (
             "dataset_index_sha256",
             "asset_source_sha256",
+            "producer_topology_sha256",
+            "producer_operator_sha256",
+            "producer_material_sha256",
             "producer_manifest_sha256",
             "static_bundle_sha256",
             "sequence_bundle_sha256",
@@ -340,12 +547,20 @@ class PortableReferenceSequenceProvenance:
             "final_velocity_field_sha256",
         ):
             _sha256(getattr(self, name), name)
+        if type(self.source_transition_count) is not int or self.source_transition_count < 1:
+            raise ValueError("source_transition_count must be a positive integer")
+        if isinstance(self.accepted_reference_state_sha256, (str, bytes)):
+            raise ValueError("accepted_reference_state_sha256 must be a sequence of digests")
+        accepted = tuple(self.accepted_reference_state_sha256)
+        if len(accepted) != self.source_transition_count:
+            raise ValueError("accepted reference-state identities must align with every source transition")
+        for step_id, digest in enumerate(accepted):
+            _sha256(digest, f"accepted reference state {step_id} sha256")
+        object.__setattr__(self, "accepted_reference_state_sha256", accepted)
         for name in ("deformation_seed", "velocity_seed"):
             seed = getattr(self, name)
             if type(seed) is not int or not 0 <= seed < 2**32:
                 raise ValueError(f"{name} must be an integer in [0, 2**32)")
-        if type(self.source_transition_count) is not int or self.source_transition_count < 1:
-            raise ValueError("source_transition_count must be a positive integer")
         requested_dt = _positive_float64(self.requested_dt_seconds, "requested_dt_seconds")
         dt_seconds = _positive_float64(self.dt_seconds, "dt_seconds")
         expected_execution_dt = float(struct.unpack("<f", struct.pack("<f", requested_dt))[0])
@@ -366,6 +581,11 @@ class PortableReferenceSequenceProvenance:
             "dataset_index": {"uri": self.dataset_index_uri, "sha256": self.dataset_index_sha256},
             "asset_id": self.asset_id,
             "asset_source_sha256": self.asset_source_sha256,
+            "producer_static": {
+                "topology_sha256": self.producer_topology_sha256,
+                "operator_sha256": self.producer_operator_sha256,
+                "material_sha256": self.producer_material_sha256,
+            },
             "sequence_id": self.sequence_id,
             "producer_manifest": {
                 "uri": self.producer_manifest_uri,
@@ -387,6 +607,7 @@ class PortableReferenceSequenceProvenance:
                     "position_sha256": self.final_position_sha256,
                     "velocity_field_sha256": self.final_velocity_field_sha256,
                 },
+                "accepted_reference_state_sha256": list(self.accepted_reference_state_sha256),
             },
             "deformation_seed": self.deformation_seed,
             "velocity_seed": self.velocity_seed,
@@ -412,6 +633,7 @@ class PortableReferenceSequenceProvenance:
             "dataset_index",
             "asset_id",
             "asset_source_sha256",
+            "producer_static",
             "sequence_id",
             "producer_manifest",
             "artifacts",
@@ -441,7 +663,9 @@ class PortableReferenceSequenceProvenance:
         sequence_bundle = _strict_mapping(artifacts["sequence_bundle"], {"uri", "sha256"}, "sequence_bundle")
         evidence = _strict_mapping(artifacts["evidence"], {"uri", "sha256"}, "evidence")
         state_anchors = _strict_mapping(
-            payload["state_anchors"], {"digest_contract", "initial", "final"}, "state_anchors"
+            payload["state_anchors"],
+            {"digest_contract", "initial", "final", "accepted_reference_state_sha256"},
+            "state_anchors",
         )
         if state_anchors["digest_contract"] != _REFERENCE_SEQUENCE_ARRAY_DIGEST_CONTRACT:
             raise ValueError("state-anchor digest contract is not registered")
@@ -451,11 +675,22 @@ class PortableReferenceSequenceProvenance:
         final = _strict_mapping(
             state_anchors["final"], {"position_sha256", "velocity_field_sha256"}, "final state anchor"
         )
+        accepted = state_anchors["accepted_reference_state_sha256"]
+        if type(accepted) is not list:
+            raise ValueError("accepted_reference_state_sha256 must be a JSON list")
+        producer = _strict_mapping(
+            payload["producer_static"],
+            {"topology_sha256", "operator_sha256", "material_sha256"},
+            "producer_static",
+        )
         result = cls(
             dataset_index_uri=dataset_index["uri"],
             dataset_index_sha256=dataset_index["sha256"],
             asset_id=payload["asset_id"],
             asset_source_sha256=payload["asset_source_sha256"],
+            producer_topology_sha256=producer["topology_sha256"],
+            producer_operator_sha256=producer["operator_sha256"],
+            producer_material_sha256=producer["material_sha256"],
             sequence_id=payload["sequence_id"],
             producer_manifest_uri=producer_manifest["uri"],
             producer_manifest_sha256=producer_manifest["sha256"],
@@ -470,6 +705,7 @@ class PortableReferenceSequenceProvenance:
             initial_velocity_field_sha256=initial["velocity_field_sha256"],
             final_position_sha256=final["position_sha256"],
             final_velocity_field_sha256=final["velocity_field_sha256"],
+            accepted_reference_state_sha256=tuple(accepted),
             deformation_seed=payload["deformation_seed"],
             velocity_seed=payload["velocity_seed"],
             source_transition_count=payload["source_transition_count"],
@@ -498,6 +734,7 @@ class PortableDatasetSampleRecord:
     physical_step_sha256: str
     physical_integration_policy: str
     source_integration_evidence_sha256: str | None
+    source_transition: PortableReferenceSourceTransitionIdentity | None
     common_objective_sha256: str
     observed_f: PortableNumericContentIdentity
     input_f: PortableNumericContentIdentity
@@ -532,6 +769,28 @@ class PortableDatasetSampleRecord:
             self.source_integration_evidence_sha256,
             "sample",
         )
+        if self.physical_integration_policy == _PHYSICAL_INTEGRATION_POLICIES[0]:
+            if self.source_transition is not None:
+                raise ValueError("algebraic sample must not carry a reference source transition")
+        else:
+            if type(self.source_transition) is not PortableReferenceSourceTransitionIdentity:
+                raise ValueError("SolverVBD sample must carry a canonical reference source transition")
+            if self.source_transition.source_transition_sha256 != _canonical_digest(self.source_transition._payload()):
+                raise ValueError("sample reference source transition changed after authentication")
+            if self.source_transition.step_id != self.ordinal:
+                raise ValueError("sample ordinal differs from its reference source transition")
+            source_static = self.source_transition.portable_static_identity
+            sample_static = (
+                self.topology_sha256,
+                self.operator_geometry_policy,
+                self.operator_geometry_sha256,
+                self.operator_volume_policy,
+                self.operator_volume_sha256,
+                self.material_sha256,
+                self.pin_signature_sha256,
+            )
+            if source_static != sample_static:
+                raise ValueError("sample portable static identity differs from its reference source transition")
         dt_seconds = _positive_float64(self.dt_seconds, "sample dt_seconds")
         object.__setattr__(self, "dt_seconds", dt_seconds)
         object.__setattr__(self, "dt_float64_bits", _float64_bits(dt_seconds))
@@ -558,6 +817,10 @@ class PortableDatasetSampleRecord:
                 raise ValueError(f"{name} must be a canonical PortableNumericContentIdentity")
             if identity.identity_sha256 != _canonical_digest(identity._payload()):
                 raise ValueError(f"{name} identity changed after authentication")
+            if self.source_transition is not None and identity.identifier != self.source_transition.numeric_identifier(
+                name
+            ):
+                raise ValueError(f"{name} identifier differs from the reference source transition")
         object.__setattr__(self, "sample_sha256", _canonical_digest(self._payload()))
 
     @property
@@ -589,7 +852,11 @@ class PortableDatasetSampleRecord:
                 "sha256": self.physical_step_sha256,
                 "integration_policy": self.physical_integration_policy,
                 "source_integration_evidence_sha256": self.source_integration_evidence_sha256,
+                "source_transition_sha256": (
+                    None if self.source_transition is None else self.source_transition.source_transition_sha256
+                ),
             },
+            "source_transition": None if self.source_transition is None else self.source_transition.as_dict(),
             "common_objective": {
                 "contract": _COMMON_OBJECTIVE_BINDING_CONTRACT,
                 "sha256": self.common_objective_sha256,
@@ -623,6 +890,7 @@ class PortableDatasetSampleRecord:
             "dt_float64_bits",
             "static_layout_sha256",
             "physical_step",
+            "source_transition",
             "common_objective",
             "numeric_content",
             "sample_sha256",
@@ -637,9 +905,24 @@ class PortableDatasetSampleRecord:
         volume = _strict_mapping(payload["operator_volume"], {"policy", "sha256"}, "operator_volume")
         physical = _strict_mapping(
             payload["physical_step"],
-            {"sha256", "integration_policy", "source_integration_evidence_sha256"},
+            {
+                "sha256",
+                "integration_policy",
+                "source_integration_evidence_sha256",
+                "source_transition_sha256",
+            },
             "physical_step",
         )
+        source_transition = (
+            None
+            if payload["source_transition"] is None
+            else PortableReferenceSourceTransitionIdentity.from_dict(payload["source_transition"])
+        )
+        expected_source_transition_sha256 = (
+            None if source_transition is None else source_transition.source_transition_sha256
+        )
+        if physical["source_transition_sha256"] != expected_source_transition_sha256:
+            raise ValueError("portable physical step differs from its reference source transition")
         objective = _strict_mapping(
             payload["common_objective"],
             {
@@ -674,6 +957,7 @@ class PortableDatasetSampleRecord:
             physical_step_sha256=physical["sha256"],
             physical_integration_policy=physical["integration_policy"],
             source_integration_evidence_sha256=physical["source_integration_evidence_sha256"],
+            source_transition=source_transition,
             common_objective_sha256=objective["sha256"],
             **{name: PortableNumericContentIdentity.from_dict(numeric[name]) for name in _NUMERIC_COMPONENTS},
         )
@@ -738,6 +1022,39 @@ class PortableDatasetTrajectoryRecord:
         if self.provenance.source_transition_count != self.source_transition_count:
             raise ValueError("trajectory transition count differs from sequence provenance")
         for sample in samples:
+            source = sample.source_transition
+            if type(source) is not PortableReferenceSourceTransitionIdentity:
+                raise ValueError("portable reference trajectory sample lacks a canonical source transition")
+            expected_source = (
+                self.provenance.dataset_index_sha256,
+                self.provenance.asset_id,
+                self.provenance.asset_source_sha256,
+                self.provenance.sequence_id,
+                sample.ordinal,
+                self.provenance.static_bundle_sha256,
+                self.provenance.sequence_bundle_sha256,
+                self.provenance.protocol_sha256,
+                self.provenance.producer_topology_sha256,
+                self.provenance.producer_operator_sha256,
+                self.provenance.producer_material_sha256,
+                self.provenance.accepted_reference_state_sha256[sample.ordinal],
+            )
+            observed_source = (
+                source.reference_sequence_index_sha256,
+                source.asset_id,
+                source.asset_source_sha256,
+                source.sequence_id,
+                source.step_id,
+                source.static_npz_sha256,
+                source.sequence_npz_sha256,
+                source.protocol_sha256,
+                source.producer_topology_sha256,
+                source.producer_operator_sha256,
+                source.producer_material_sha256,
+                source.accepted_reference_state_sha256,
+            )
+            if observed_source != expected_source:
+                raise ValueError("sample source transition differs from reference-sequence provenance")
             expected_static = (
                 self.topology_sha256,
                 self.operator_geometry_policy,
@@ -891,8 +1208,22 @@ class PortableDatasetSplitManifest:
             canonical[role] = records
             object.__setattr__(self, role.value, records)
 
+        source_by_asset_id: dict[str, str] = {}
+        for records in canonical.values():
+            for record in records:
+                asset_id = record.provenance.asset_id
+                asset_source_sha256 = record.provenance.asset_source_sha256
+                previous = source_by_asset_id.setdefault(asset_id, asset_source_sha256)
+                if previous != asset_source_sha256:
+                    raise ValueError(f"asset_id {asset_id!r} maps to conflicting asset source SHA-256 values")
+
         checks = (
             ("trajectory overlap", lambda record: (record.trajectory_id,)),
+            ("reference asset_id overlap", lambda record: (record.provenance.asset_id,)),
+            (
+                "reference asset source overlap",
+                lambda record: (record.provenance.asset_source_sha256,),
+            ),
             (
                 "trajectory source overlap",
                 lambda record: (record.source_chain_sha256, record.provenance.provenance_sha256),
@@ -1021,6 +1352,9 @@ def _payload_identity_digest(
                 "sha256": sample.physical_step_sha256,
                 "integration_policy": sample.physical_integration_policy,
                 "source_integration_evidence_sha256": sample.source_integration_evidence_sha256,
+                "source_transition_sha256": (
+                    None if sample.source_transition is None else sample.source_transition.source_transition_sha256
+                ),
             }
         return {
             "sha256": sample.common_objective_sha256,
@@ -1746,6 +2080,7 @@ __all__ = [
     "PortableDatasetTrajectoryRecord",
     "PortableNumericContentIdentity",
     "PortableReferenceSequenceProvenance",
+    "PortableReferenceSourceTransitionIdentity",
     "build_portable_sampling_schedule",
     "canonical_portable_training_tensor_sha256",
 ]
