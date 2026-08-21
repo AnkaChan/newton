@@ -32,6 +32,8 @@ _DENSE_BACKEND = "dense"
 _SPARSE_PCG_BACKEND = "sparse_pcg"
 _JACOBI_PRECONDITIONER = "jacobi"
 _MULTIGRID_PRECONDITIONER = "multigrid"
+_TRANSLATION_GAUGE_NONE = "none"
+TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS = "mass-weighted-center-of-mass"
 OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE = "canonical-rest-inverse"
 OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED = "source-tet-poses-promoted"
 _LEGACY_OPERATOR_GEOMETRY_POLICY = "legacy-unverified"
@@ -304,6 +306,8 @@ class SolverState:
     pcg_raise_on_nonconvergence: bool = True
     pcg_preconditioner: str = _JACOBI_PRECONDITIONER
     multigrid_hierarchy: _MultigridHierarchy | None = None
+    translation_gauge_policy: str = _TRANSLATION_GAUGE_NONE
+    center_of_mass_weights: torch.Tensor | None = None  # (V,), normalized
 
 
 def _update_projection_tensor_digest(
@@ -322,7 +326,9 @@ def _update_projection_tensor_digest(
     }
     digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\0")
     if value.layout == torch.strided:
-        raw = value.detach().contiguous().view(torch.uint8).cpu().numpy().tobytes()
+        # Empty tensors can retain a zero last stride after ``contiguous``;
+        # viewing them as bytes then fails even though their payload is empty.
+        raw = b"" if value.numel() == 0 else value.detach().contiguous().view(torch.uint8).cpu().numpy().tobytes()
         digest.update(len(raw).to_bytes(8, "big"))
         digest.update(raw)
         return
@@ -338,12 +344,23 @@ def projection_state_sha256(state: SolverState) -> str:
     """Hash every tensor and policy that defines compatibility projection."""
     if not isinstance(state, SolverState):
         raise TypeError("state must be a SolverState")
+    if state.translation_gauge_policy not in (
+        _TRANSLATION_GAUGE_NONE,
+        TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
+    ):
+        raise ValueError("projection state has an unsupported translation gauge policy")
+    has_center_of_mass_gauge = state.translation_gauge_policy == TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS
+    if has_center_of_mass_gauge != (state.center_of_mass_weights is not None):
+        raise ValueError("projection state translation gauge policy and mass weights disagree")
     authenticated_operator = state.operator_geometry_policy in _AUTHENTICATED_OPERATOR_GEOMETRY_POLICIES
-    digest = hashlib.sha256(
-        b"principal-stretch-projection-state-v3\0"
-        if authenticated_operator
-        else b"principal-stretch-projection-state-v2\0"
-    )
+    if has_center_of_mass_gauge:
+        digest = hashlib.sha256(b"principal-stretch-projection-state-v4\0")
+    else:
+        digest = hashlib.sha256(
+            b"principal-stretch-projection-state-v3\0"
+            if authenticated_operator
+            else b"principal-stretch-projection-state-v2\0"
+        )
     metadata = {
         "n_verts": state.n_verts,
         "n_tets": state.n_tets,
@@ -363,6 +380,8 @@ def projection_state_sha256(state: SolverState) -> str:
                 "operator_geometry_sha256": state.operator_geometry_sha256,
             }
         )
+    if has_center_of_mass_gauge:
+        metadata["translation_gauge_policy"] = state.translation_gauge_policy
     digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
     for name in (
         "tets",
@@ -383,6 +402,8 @@ def projection_state_sha256(state: SolverState) -> str:
     if authenticated_operator:
         for name in ("source_rest_q_exact", "source_tet_indices", "source_tet_poses"):
             _update_projection_tensor_digest(digest, name, getattr(state, name))
+    if has_center_of_mass_gauge:
+        _update_projection_tensor_digest(digest, "center_of_mass_weights", state.center_of_mass_weights)
     hierarchy = state.multigrid_hierarchy
     if hierarchy is None:
         digest.update(b"multigrid_hierarchy\0none\0")
@@ -707,6 +728,45 @@ def _validate_sparse_components(tet_indices: np.ndarray, pinned_indices: np.ndar
         raise ValueError("sparse projection requires every connected component and unused vertex to be pinned")
 
 
+def _validate_center_of_mass_gauge_component(tet_indices: np.ndarray, n_verts: int) -> None:
+    """Require the one translation mode fixed by a single center-of-mass gauge."""
+    tets = np.asarray(tet_indices, dtype=np.int64)
+    if tets.ndim != 2 or tets.shape[1] != 4:
+        raise ValueError(f"tet_indices must have shape (T, 4), got {tets.shape}")
+    if n_verts <= 0 or tets.shape[0] == 0:
+        raise ValueError("center-of-mass gauge requires one connected component with no unused vertices")
+    if (tets < 0).any() or (tets >= n_verts).any():
+        raise ValueError("tet_indices contains an out-of-range vertex")
+
+    parents = np.arange(n_verts, dtype=np.int64)
+
+    def find(vertex: int) -> int:
+        root = vertex
+        while parents[root] != root:
+            root = int(parents[root])
+        while parents[vertex] != vertex:
+            next_vertex = int(parents[vertex])
+            parents[vertex] = root
+            vertex = next_vertex
+        return root
+
+    def union(a: int, b: int) -> None:
+        root_a = find(a)
+        root_b = find(b)
+        if root_a != root_b:
+            parents[root_b] = root_a
+
+    used = np.zeros(n_verts, dtype=bool)
+    for tet in tets:
+        used[tet] = True
+        union(int(tet[0]), int(tet[1]))
+        union(int(tet[0]), int(tet[2]))
+        union(int(tet[0]), int(tet[3]))
+    roots = {find(int(vertex)) for vertex in np.flatnonzero(used)}
+    if not used.all() or len(roots) != 1:
+        raise ValueError("center-of-mass gauge requires one connected component with no unused vertices")
+
+
 def _assemble_sparse_reduced_system(
     K: torch.Tensor,
     tets: torch.Tensor,
@@ -787,6 +847,8 @@ def build_solver(
     multigrid_smoothing_steps: int = 1,
     multigrid_smoother_damping: float = 0.8,
     operator_geometry_policy: str | None = None,
+    translation_gauge_policy: str | None = None,
+    vertex_masses: np.ndarray | None = None,
 ) -> SolverState:
     r"""Build the fixed linear system used by the stretch decoder.
 
@@ -826,6 +888,12 @@ def build_solver(
         operator_geometry_policy: Explicit authenticated v5 source-operator
             policy, or ``None`` for the backward-compatible but deliberately
             unauthenticated legacy path. V5 consumers reject legacy states.
+        translation_gauge_policy: Optional translation gauge for an unpinned
+            full-gradient projection. The only supported policy is
+            ``"mass-weighted-center-of-mass"``. ``None`` preserves the
+            physical-pin-only factorization.
+        vertex_masses: Non-negative vertex masses [kg], shape ``[V]``. Required
+            by the mass-weighted center-of-mass gauge and otherwise rejected.
 
     Returns:
         Precomputed solver state.
@@ -845,6 +913,17 @@ def build_solver(
         )
     elif pcg_preconditioner != _JACOBI_PRECONDITIONER:
         raise ValueError("pcg_preconditioner applies only to projection_backend='sparse_pcg'")
+    if translation_gauge_policy is None:
+        canonical_translation_gauge_policy = _TRANSLATION_GAUGE_NONE
+    elif (
+        type(translation_gauge_policy) is not str
+        or translation_gauge_policy != TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS
+    ):
+        raise ValueError("translation_gauge_policy must be 'mass-weighted-center-of-mass' or be omitted")
+    else:
+        canonical_translation_gauge_policy = translation_gauge_policy
+    if canonical_translation_gauge_policy == _TRANSLATION_GAUGE_NONE and vertex_masses is not None:
+        raise ValueError("vertex_masses requires an explicit translation_gauge_policy")
     if operator_geometry_policy is None:
         canonical_operator_policy = _LEGACY_OPERATOR_GEOMETRY_POLICY
     elif type(operator_geometry_policy) is not str or operator_geometry_policy not in (
@@ -893,6 +972,39 @@ def build_solver(
     n_verts = rest_q_t.shape[0]
     n_tets = tets.shape[0]
 
+    center_of_mass_weights = None
+    if canonical_translation_gauge_policy == TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS:
+        if projection_backend != _DENSE_BACKEND:
+            raise ValueError("mass-weighted center-of-mass gauge currently requires projection_backend='dense'")
+        if tikhonov != 0.0:
+            raise ValueError("mass-weighted center-of-mass gauge requires zero tikhonov")
+        pinned_np = np.asarray(pinned_indices, dtype=np.int64)
+        if pinned_np.ndim != 1:
+            raise ValueError("pinned_indices must be one-dimensional")
+        if pinned_np.size != 0:
+            raise ValueError("center-of-mass gauge is separate from physical pins and requires no physical pins")
+        if vertex_masses is None:
+            raise ValueError("mass-weighted center-of-mass gauge requires vertex_masses")
+        mass_array = np.asarray(vertex_masses, dtype=np.float64)
+        if mass_array.shape != (n_verts,):
+            raise ValueError(f"vertex_masses must have shape ({n_verts},), got {mass_array.shape}")
+        if not np.isfinite(mass_array).all():
+            raise ValueError("vertex_masses must be finite")
+        if (mass_array < 0.0).any():
+            raise ValueError("vertex_masses must be non-negative")
+        if float(mass_array.sum(dtype=np.float64)) <= 0.0:
+            raise ValueError("vertex_masses must have positive total mass")
+        _validate_center_of_mass_gauge_component(np.asarray(tet_indices), n_verts)
+        mass_tensor = torch.as_tensor(mass_array, dtype=dtype, device=device)
+        execution_mass = mass_tensor.sum()
+        if (
+            not bool(torch.isfinite(mass_tensor).all().item())
+            or not bool(torch.isfinite(execution_mass).item())
+            or not bool((execution_mass > 0.0).item())
+        ):
+            raise ValueError("vertex_masses must remain finite in the solver execution dtype")
+        center_of_mass_weights = (mass_tensor / execution_mass).clone()
+
     if projection_backend == _SPARSE_PCG_BACKEND:
         pinned_np = np.asarray(pinned_indices, dtype=np.int64)
         if pinned_np.ndim != 1 or len(np.unique(pinned_np)) != len(pinned_np):
@@ -932,6 +1044,8 @@ def build_solver(
         L.index_put_((rows.reshape(-1), cols.reshape(-1)), K.reshape(-1), accumulate=True)
 
         L_ff = L[free][:, free]
+        if center_of_mass_weights is not None:
+            L_ff = L_ff + center_of_mass_weights[:, None] * center_of_mass_weights[None, :]
         if tikhonov > 0.0:
             L_ff = L_ff + tikhonov * torch.eye(free.numel(), dtype=dtype, device=device)
         L_fp = L[free][:, pinned]
@@ -993,6 +1107,8 @@ def build_solver(
         pcg_raise_on_nonconvergence=bool(pcg_raise_on_nonconvergence),
         pcg_preconditioner=pcg_preconditioner,
         multigrid_hierarchy=multigrid_hierarchy,
+        translation_gauge_policy=canonical_translation_gauge_policy,
+        center_of_mass_weights=center_of_mass_weights,
     )
     if authenticated_operator_sha256 is not None:
         validate_authenticated_operator_geometry(state)
@@ -1251,6 +1367,8 @@ def project_deformation_gradient(
     F_target: torch.Tensor,
     pinned_targets: torch.Tensor,
     *,
+    center_of_mass_positions: torch.Tensor | None = None,
+    center_of_mass_target: torch.Tensor | None = None,
     relative_tolerance: float | None = None,
     absolute_tolerance: float | None = None,
     max_iterations: int | None = None,
@@ -1272,10 +1390,20 @@ def project_deformation_gradient(
     floating-point minimizer with one prefactored Cholesky factor solve.  Sparse
     states approximate it to the declared normal-equation residual tolerance
     with conjugate gradients and the state's fixed Jacobi or symmetric
-    Galerkin-multigrid preconditioner.  Sparse convergence is diagnostics-bound
-    and fails closed by default.  Both paths preserve pins exactly and have no
-    polar or local fixed-point step.  Leading batch dimensions are broadcast
-    and preserved.
+    Galerkin-multigrid preconditioner. Sparse convergence is diagnostics-bound
+    and fails closed by default. Both paths preserve pins exactly and have no
+    polar or local fixed-point step. Leading batch dimensions are broadcast and
+    preserved.
+
+    An unpinned dense state built with the mass-weighted center-of-mass gauge
+    instead enforces ``sum_i w_i x_i = c``, where the normalized mass weights
+    are fixed in the state. The caller supplies ``c`` directly or supplies
+    positions from which it is computed; the rest pose is never an implicit
+    translation target. The state prefactors ``L + w w^T``, so the per-call
+    work remains one Cholesky solve. Per-call validation checks cheap tensor
+    invariants; as with the state's matrix and factor tensors, trusted consumers
+    reauthenticate factor/weight consistency with
+    :func:`projection_state_sha256` before execution.
 
     The multigrid path is currently inference-only and rejects gradient-bearing
     inputs.  Its tolerance-terminated unrolled PCG backward is not an implicit
@@ -1286,6 +1414,11 @@ def project_deformation_gradient(
         state: Precomputed decoder state for the shared tetrahedral mesh.
         F_target: Full target deformation gradients, ``(..., T, 3, 3)``.
         pinned_targets: Pinned world positions [m], ``(..., P, 3)``.
+        center_of_mass_positions: Optional positions [m], ``(..., V, 3)``,
+            whose mass-weighted center is the translation-gauge target.
+        center_of_mass_target: Optional explicit mass-weighted center [m],
+            ``(..., 3)``. A center-of-mass-gauge state requires exactly one of
+            this argument and ``center_of_mass_positions``.
         relative_tolerance: Optional per-call sparse relative residual
             tolerance override.
         absolute_tolerance: Optional per-call sparse absolute residual
@@ -1313,6 +1446,75 @@ def project_deformation_gradient(
         raise ValueError(f"F_target must end in ({state.n_tets}, 3, 3), got {tuple(F_target.shape)}")
     if pinned_targets.shape[-2:] != (state.pinned.numel(), 3):
         raise ValueError(f"pinned_targets must end in ({state.pinned.numel()}, 3), got {tuple(pinned_targets.shape)}")
+
+    translation_gauge_policy = state.translation_gauge_policy
+    if translation_gauge_policy not in (
+        _TRANSLATION_GAUGE_NONE,
+        TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
+    ):
+        raise ValueError("solver state has an unsupported translation gauge policy")
+    has_center_of_mass_gauge = translation_gauge_policy == TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS
+    center = None
+    if has_center_of_mass_gauge:
+        if state.projection_backend != _DENSE_BACKEND:
+            raise ValueError("mass-weighted center-of-mass gauge currently supports only dense projection")
+        if state.pinned.numel() != 0:
+            raise ValueError("center-of-mass gauge is separate from physical pins and requires no physical pins")
+        weights = state.center_of_mass_weights
+        if weights is None or weights.shape != (state.n_verts,):
+            raise ValueError("center-of-mass-gauge solver state is missing its normalized mass weights")
+        if weights.dtype != dtype or weights.device != device:
+            raise ValueError("center-of-mass weights must match the solver state dtype and device")
+        weights_are_finite = torch.isfinite(weights).all()
+        weights_are_non_negative = (weights >= 0.0).all()
+        weights_are_normalized = torch.isclose(
+            weights.sum(),
+            weights.new_tensor(1.0),
+            rtol=0.0,
+            atol=32.0 * torch.finfo(dtype).eps,
+        )
+        if (center_of_mass_positions is None) == (center_of_mass_target is None):
+            raise ValueError(
+                "center-of-mass-gauge projection requires exactly one of "
+                "center_of_mass_positions and center_of_mass_target"
+            )
+        if center_of_mass_positions is not None:
+            center_of_mass_positions = center_of_mass_positions.to(dtype=dtype, device=device)
+            if center_of_mass_positions.shape[-2:] != (state.n_verts, 3):
+                raise ValueError(
+                    f"center_of_mass_positions must end in ({state.n_verts}, 3), "
+                    f"got {tuple(center_of_mass_positions.shape)}"
+                )
+            gauge_input_is_finite = torch.isfinite(center_of_mass_positions).all()
+            center = torch.einsum("v,...vd->...d", weights, center_of_mass_positions)
+        else:
+            center = center_of_mass_target.to(dtype=dtype, device=device)
+            if center.shape[-1:] != (3,):
+                raise ValueError(f"center_of_mass_target must end in (3,), got {tuple(center.shape)}")
+            gauge_input_is_finite = torch.isfinite(center).all()
+        center_is_finite = torch.isfinite(center).all()
+        gauge_is_valid = (
+            weights_are_finite
+            & weights_are_non_negative
+            & weights_are_normalized
+            & gauge_input_is_finite
+            & center_is_finite
+        )
+        if not bool(gauge_is_valid.item()):
+            if not bool(weights_are_finite.item()):
+                raise ValueError("center-of-mass weights must be finite")
+            if not bool(weights_are_non_negative.item()):
+                raise ValueError("center-of-mass weights must be non-negative")
+            if not bool(weights_are_normalized.item()):
+                raise ValueError("center-of-mass weights must be normalized to sum to one")
+            if not bool(gauge_input_is_finite.item()):
+                if center_of_mass_positions is not None:
+                    raise ValueError("center_of_mass_positions must be finite")
+                raise ValueError("center_of_mass_target must be finite")
+            raise ValueError("mass-weighted center computed from positions must be finite")
+    elif center_of_mass_positions is not None or center_of_mass_target is not None:
+        raise ValueError("center-of-mass target requires a solver state built with its translation gauge policy")
+
     if initial_positions is not None:
         initial_positions = initial_positions.to(dtype=dtype, device=device)
         if initial_positions.shape[-2:] != (state.n_verts, 3):
@@ -1329,10 +1531,15 @@ def project_deformation_gradient(
         )
 
     initial_batch = () if initial_positions is None else initial_positions.shape[:-2]
-    batch = torch.broadcast_shapes(F_target.shape[:-3], pinned_targets.shape[:-2], initial_batch)
+    center_batch = () if center is None else center.shape[:-1]
+    batch = torch.broadcast_shapes(F_target.shape[:-3], pinned_targets.shape[:-2], initial_batch, center_batch)
     F_target = F_target.expand(*batch, state.n_tets, 3, 3)
     pinned_targets = pinned_targets.expand(*batch, state.pinned.numel(), 3)
+    if center is not None:
+        center = center.expand(*batch, 3)
     b = _projection_rhs(state, F_target, pinned_targets)
+    if center is not None:
+        b = b + weights[:, None] * center[..., None, :]
     flat_b = b.reshape(-1, *b.shape[-2:])
     b_columns = flat_b.permute(1, 0, 2).reshape(flat_b.shape[1], -1)
     if state.projection_backend == _DENSE_BACKEND:
@@ -1400,6 +1607,13 @@ def project_deformation_gradient(
     x = torch.zeros(*batch, state.n_verts, 3, dtype=dtype, device=device)
     x[..., state.free, :] = x_free
     x[..., state.pinned, :] = pinned_targets
+    if center is not None:
+        # Correct only roundoff in the null direction. This does not change any
+        # deformation gradient and makes the caller's gauge exact to working
+        # precision even if assembled normal-equation contributions do not sum
+        # to bitwise zero.
+        actual_center = torch.einsum("v,...vd->...d", weights, x)
+        x = x + (center - actual_center)[..., None, :]
     if return_diagnostics:
         return x, diagnostics
     return x
@@ -1427,6 +1641,8 @@ def solve(
             dominates the result at any practical ``n_iters``.
         n_iters: number of unrolled local-global iterations.
     """
+    if state.translation_gauge_policy != _TRANSLATION_GAUGE_NONE:
+        raise ValueError("translation gauges are supported only by project_deformation_gradient")
     if state.L_ff_chol is None:
         raise ValueError(
             "local-global solve requires projection_backend='dense'; "

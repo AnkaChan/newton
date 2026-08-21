@@ -125,7 +125,7 @@ def _array_digest(array: np.ndarray) -> str:
     digest = hashlib.sha256()
     digest.update(contiguous.dtype.str.encode("ascii"))
     digest.update(json.dumps(contiguous.shape, separators=(",", ":")).encode("ascii"))
-    digest.update(memoryview(contiguous).cast("B"))
+    digest.update(contiguous.tobytes(order="C"))
     return digest.hexdigest()
 
 
