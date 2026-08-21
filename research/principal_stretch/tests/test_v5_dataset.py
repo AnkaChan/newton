@@ -21,6 +21,7 @@ from ..v5_dataset import (
     DataAccessScope,
     DatasetRole,
     NumericContentIdentity,
+    ReferenceSequenceProvenance,
     SplitManifest,
     TrajectoryProvenance,
     TrajectoryRecord,
@@ -78,6 +79,41 @@ def _provenance(
         coordinate_range_sha256=_digest(f"coordinate-range:{namespace}"),
         dt_seconds=dt_seconds,
         generation_seed=generation_seed,
+    )
+
+
+def _reference_sequence_provenance(
+    namespace: str,
+    *,
+    requested_dt_seconds: float = 1.0 / 300.0,
+    dt_seconds: float = float(np.float32(1.0 / 300.0)),
+    execution_dt_float32_bits: str = "0x3b5a740e",
+) -> ReferenceSequenceProvenance:
+    return ReferenceSequenceProvenance(
+        dataset_index_uri=f"artifact://reference-sequence/{namespace}/index.json",
+        dataset_index_sha256=_digest(f"dataset-index:{namespace}"),
+        asset_id=f"asset-{namespace}",
+        asset_source_sha256=_digest(f"asset-source:{namespace}"),
+        sequence_id=f"sequence-{namespace}",
+        producer_manifest_uri=f"artifact://reference-sequence/{namespace}/manifest.json",
+        producer_manifest_sha256=_digest(f"producer-manifest:{namespace}"),
+        static_bundle_uri=f"artifact://reference-sequence/{namespace}/static.npz",
+        static_bundle_sha256=_digest(f"static-bundle:{namespace}"),
+        sequence_bundle_uri=f"artifact://reference-sequence/{namespace}/sequence.npz",
+        sequence_bundle_sha256=_digest(f"sequence-bundle:{namespace}"),
+        evidence_uri=f"artifact://reference-sequence/{namespace}/evidence.json",
+        evidence_sha256=_digest(f"evidence:{namespace}"),
+        protocol_sha256=_digest(f"protocol:{namespace}"),
+        initial_position_sha256=_digest(f"initial-position:{namespace}"),
+        initial_velocity_field_sha256=_digest(f"initial-velocity-field:{namespace}"),
+        final_position_sha256=_digest(f"final-position:{namespace}"),
+        final_velocity_field_sha256=_digest(f"final-velocity-field:{namespace}"),
+        deformation_seed=101,
+        velocity_seed=211,
+        source_transition_count=8,
+        requested_dt_seconds=requested_dt_seconds,
+        dt_seconds=dt_seconds,
+        execution_dt_float32_bits=execution_dt_float32_bits,
     )
 
 
@@ -156,6 +192,59 @@ def _trajectory(
 
 
 class TestTrajectoryProvenance(unittest.TestCase):
+    def test_legacy_payload_hashes_remain_byte_for_byte_stable(self):
+        provenance = _provenance("legacy-hash-snapshot")
+        trajectory = _trajectory("legacy-hash-snapshot", provenance=provenance)
+        manifest = SplitManifest(train=(trajectory,), validation=(), confirmation=())
+
+        self.assertEqual(
+            provenance.provenance_sha256,
+            "8268ce166069e0af290f1992dc0fb2eaa63ad522c14866d58834865ea7439ecd",
+        )
+        self.assertEqual(
+            trajectory.trajectory_sha256,
+            "6f67ea98991e902bd444bd1ac7acceded243f69aca57ecaadcafe4b8b1391da6",
+        )
+        self.assertEqual(
+            manifest.manifest_sha256,
+            "c6e40b66e2806930ec87f7f94cda5b0d87132a7aae3ed87b8845efa54ccbec42",
+        )
+
+    def test_reference_sequence_provenance_binds_field_velocity_and_float32_execution_dt(self):
+        provenance = _reference_sequence_provenance("native")
+        sample = _sample("native", 0, dt_seconds=provenance.dt_seconds)
+        trajectory = _trajectory("native", samples=(sample,), provenance=provenance)
+
+        self.assertEqual(provenance.dt_float64_bits, sample.dt_float64_bits)
+        self.assertEqual(trajectory.provenance, provenance)
+        self.assertEqual(
+            provenance.as_dict()["state_anchors"]["digest_contract"],
+            "numpy-little-endian-dtype-shape-c-order-sha256-v1",
+        )
+        self.assertNotIn("initial_velocity_m_s", provenance.as_dict())
+        adjacent = dataclasses.replace(
+            provenance,
+            final_velocity_field_sha256=_digest("different-final-velocity-field"),
+        )
+        self.assertNotEqual(adjacent.provenance_sha256, provenance.provenance_sha256)
+
+    def test_reference_sequence_provenance_rejects_inconsistent_dt_bits_and_tampering(self):
+        with self.assertRaisesRegex(ValueError, "execution_dt_float32_bits disagrees"):
+            _reference_sequence_provenance("wrong-bits", execution_dt_float32_bits="0x00000000")
+        with self.assertRaisesRegex(ValueError, "float32 execution of requested_dt_seconds"):
+            _reference_sequence_provenance("wrong-dt", dt_seconds=1.0 / 300.0)
+        with self.assertRaisesRegex(ValueError, "deformation_seed must be an integer"):
+            dataclasses.replace(_reference_sequence_provenance("bad-seed"), deformation_seed=True)
+
+        provenance = _reference_sequence_provenance("tampered-native")
+        object.__setattr__(provenance, "evidence_sha256", _digest("tampered-evidence"))
+        with self.assertRaisesRegex(ValueError, "trajectory provenance changed after authentication"):
+            _trajectory(
+                "tampered-native",
+                samples=(_sample("tampered-native", 0, dt_seconds=provenance.dt_seconds),),
+                provenance=provenance,
+            )
+
     def test_exact_float64_bits_and_id_hashes_are_bound(self):
         provenance = _provenance("exact-bits")
         trajectory = _trajectory("canonical-id", provenance=provenance)

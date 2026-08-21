@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import collections
+import dataclasses
 import hashlib
 import json
 import tempfile
@@ -26,6 +27,7 @@ from ..reference_rollout import (
 from ..reference_sequence_dataset import (
     REFERENCE_EXECUTION_DT_SECONDS,
     ReferenceSequenceDataset,
+    ReferenceSequenceProvenanceAnchor,
     ReferenceTransitionKey,
     canonical_reference_state_float64_sha256,
     reference_sequence_index_header,
@@ -74,14 +76,20 @@ def _static_arrays(offset: float = 0.0) -> dict[str, np.ndarray]:
     }
 
 
-def _sequence_arrays(rest_q: np.ndarray, *, step_count: int = 3) -> dict[str, np.ndarray]:
+def _sequence_arrays(
+    rest_q: np.ndarray,
+    *,
+    step_count: int = 3,
+    deformation_phase: float = 0.0,
+    deformation_scale: float = 1.0,
+) -> dict[str, np.ndarray]:
     dt = REFERENCE_EXECUTION_DT_SECONDS
     staged_q = np.empty((step_count + 1, *rest_q.shape), dtype=np.float32)
     staged_qd = np.empty_like(staged_q)
     vertex_scale = np.arange(rest_q.shape[0], dtype=np.float32)[:, None]
-    direction = np.asarray((0.01, -0.02, 0.03), dtype=np.float32)[None, :]
+    direction = np.float32(deformation_scale) * np.asarray((0.01, -0.02, 0.03), dtype=np.float32)[None, :]
     for frame in range(step_count + 1):
-        staged_q[frame] = rest_q + np.float32(frame) * vertex_scale * direction
+        staged_q[frame] = rest_q + np.float32(deformation_phase + frame) * vertex_scale * direction
     staged_qd[0] = np.asarray((0.2, -0.1, 0.05), dtype=np.float32)
     for frame in range(1, step_count + 1):
         staged_qd[frame] = np.asarray(
@@ -234,9 +242,15 @@ def _write_sequence_record(
     offset: float = 0.0,
     source_label: str | None = None,
     inertial_target_offset: float = 0.0,
+    deformation_phase: float = 0.0,
+    deformation_scale: float = 1.0,
 ) -> dict[str, object]:
     static = _static_arrays(offset)
-    sequence = _sequence_arrays(static["rest_q"])
+    sequence = _sequence_arrays(
+        static["rest_q"],
+        deformation_phase=deformation_phase,
+        deformation_scale=deformation_scale,
+    )
     sequence["inertial_target"] = np.add(
         sequence["inertial_target"].astype(np.float32),
         np.float32(inertial_target_offset),
@@ -305,6 +319,51 @@ def _rewrite_sequence_npz(root: Path, record: dict[str, object], mutate) -> None
 
 
 class TestReferenceSequenceDataset(unittest.TestCase):
+    def test_provenance_anchor_exposes_only_authenticated_relocation_stable_identities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record_payload = _write_sequence_record(
+                root,
+                role=DatasetRole.TRAIN,
+                asset_id="alpha",
+                sequence_id="sample-000",
+            )
+            dataset = ReferenceSequenceDataset.load(_write_index(root, [record_payload]))
+            record = dataset.records(DatasetRole.TRAIN)[0]
+            anchor = dataset.provenance_anchor(record)
+
+            self.assertIs(type(anchor), ReferenceSequenceProvenanceAnchor)
+            self.assertEqual(anchor.dataset_index_sha256, dataset.index_sha256)
+            self.assertEqual(anchor.asset_id, record.asset_id)
+            self.assertEqual(anchor.sequence_id, record.sequence_id)
+            self.assertEqual(anchor.source_transition_count, len(record.step_ids))
+            self.assertEqual(anchor.deformation_seed, 101)
+            self.assertEqual(anchor.velocity_seed, 211)
+            self.assertNotIn(str(root), anchor.dataset_index_uri)
+            self.assertNotIn(str(root), anchor.producer_manifest_uri)
+
+            manifest_path = root / record_payload["producer_manifest_json"]
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            evidence_path = manifest_path.parent / manifest["files"]["evidence_json"]["path"]
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            self.assertEqual(anchor.producer_manifest_sha256, _file_sha256(manifest_path))
+            self.assertEqual(anchor.static_bundle_sha256, manifest["files"]["static_npz"]["sha256"])
+            self.assertEqual(anchor.sequence_bundle_sha256, manifest["files"]["sequence_npz"]["sha256"])
+            self.assertEqual(anchor.evidence_sha256, manifest["files"]["evidence_json"]["sha256"])
+            self.assertEqual(anchor.initial_position_sha256, evidence["steps"][0]["input_position_sha256"])
+            self.assertEqual(
+                anchor.initial_velocity_field_sha256,
+                evidence["steps"][0]["input_velocity_sha256"],
+            )
+            self.assertEqual(anchor.final_position_sha256, evidence["steps"][-1]["output_position_sha256"])
+            self.assertEqual(
+                anchor.final_velocity_field_sha256,
+                evidence["steps"][-1]["output_velocity_sha256"],
+            )
+
+            with self.assertRaisesRegex(ValueError, "must be one exact record owned by this dataset"):
+                dataset.provenance_anchor(dataclasses.replace(record))
+
     def test_writer_integration_transition_and_stateless_sampling_preserve_identities(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

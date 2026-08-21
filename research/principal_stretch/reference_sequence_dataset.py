@@ -20,6 +20,7 @@ import re
 import struct
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
+from urllib.parse import quote
 
 import numpy as np
 import torch
@@ -294,6 +295,81 @@ class _ProducerShard:
     evidence_steps: tuple[Mapping[str, object], ...]
     deformation_seed: int
     velocity_seed: int
+
+
+@dataclasses.dataclass(frozen=True)
+class ReferenceSequenceProvenanceAnchor:
+    """Public immutable view of authenticated sequence producer identities.
+
+    The four state hashes use the producer array-digest algorithm over dtype,
+    shape, and C-order bytes.  Calling :meth:`ReferenceSequenceDataset.provenance_anchor`
+    does not materialize either NPZ shard.
+    """
+
+    dataset_index_uri: str
+    dataset_index_sha256: str
+    asset_id: str
+    asset_source_sha256: str
+    sequence_id: str
+    producer_manifest_uri: str
+    producer_manifest_sha256: str
+    static_bundle_uri: str
+    static_bundle_sha256: str
+    sequence_bundle_uri: str
+    sequence_bundle_sha256: str
+    evidence_uri: str
+    evidence_sha256: str
+    protocol_sha256: str
+    initial_position_sha256: str
+    initial_velocity_field_sha256: str
+    final_position_sha256: str
+    final_velocity_field_sha256: str
+    deformation_seed: int
+    velocity_seed: int
+    source_transition_count: int
+    requested_dt_seconds: float
+    dt_seconds: float
+    execution_dt_float32_bits: str
+
+    def __post_init__(self) -> None:
+        for name in ("asset_id", "sequence_id"):
+            _identifier(getattr(self, name), f"provenance anchor {name}")
+        for name in (
+            "dataset_index_sha256",
+            "asset_source_sha256",
+            "producer_manifest_sha256",
+            "static_bundle_sha256",
+            "sequence_bundle_sha256",
+            "evidence_sha256",
+            "protocol_sha256",
+            "initial_position_sha256",
+            "initial_velocity_field_sha256",
+            "final_position_sha256",
+            "final_velocity_field_sha256",
+        ):
+            _sha256(getattr(self, name), f"provenance anchor {name}")
+        for name in (
+            "dataset_index_uri",
+            "producer_manifest_uri",
+            "static_bundle_uri",
+            "sequence_bundle_uri",
+            "evidence_uri",
+        ):
+            value = getattr(self, name)
+            if type(value) is not str or not value.startswith("artifact://reference-sequence/"):
+                raise ValueError(f"provenance anchor {name} must be a logical reference-sequence artifact URI")
+        for name in ("deformation_seed", "velocity_seed"):
+            value = getattr(self, name)
+            if type(value) is not int or not 0 <= value < 2**32:
+                raise ValueError(f"provenance anchor {name} must be an integer in [0, 2**32)")
+        if type(self.source_transition_count) is not int or self.source_transition_count < 1:
+            raise ValueError("provenance anchor source_transition_count must be positive")
+        if (
+            self.requested_dt_seconds != REFERENCE_REQUESTED_DT_SECONDS
+            or self.dt_seconds != float(REFERENCE_EXECUTION_DT_SECONDS)
+            or self.execution_dt_float32_bits != REFERENCE_EXECUTION_DT_FLOAT32_BITS
+        ):
+            raise ValueError("provenance anchor timestep differs from the registered sequence contract")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1253,6 +1329,46 @@ class ReferenceSequenceDataset:
         canonical_role = _dataset_role(role)
         return tuple(record for record in self._records if record.role is canonical_role)
 
+    def provenance_anchor(self, record: ReferenceSequenceRecord) -> ReferenceSequenceProvenanceAnchor:
+        """Return relocation-stable producer identities for one owned record."""
+        if type(record) is not ReferenceSequenceRecord or not any(record is value for value in self._records):
+            raise ValueError("record must be one exact record owned by this dataset")
+        root = self.index_path.parent
+
+        def artifact_uri(path: pathlib.Path) -> str:
+            relative = path.relative_to(root).as_posix()
+            encoded = quote(relative, safe="/-._~")
+            return f"artifact://reference-sequence/{self.index_sha256}/{encoded}"
+
+        first_step = record._producer.evidence_steps[0]
+        final_step = record._producer.evidence_steps[-1]
+        return ReferenceSequenceProvenanceAnchor(
+            dataset_index_uri=f"artifact://reference-sequence/{self.index_sha256}/index.json",
+            dataset_index_sha256=self.index_sha256,
+            asset_id=record.asset_id,
+            asset_source_sha256=record.asset_source_sha256,
+            sequence_id=record.sequence_id,
+            producer_manifest_uri=artifact_uri(record._producer.manifest_path),
+            producer_manifest_sha256=record._producer.manifest_sha256,
+            static_bundle_uri=artifact_uri(record._producer.static.path),
+            static_bundle_sha256=record._producer.static.sha256,
+            sequence_bundle_uri=artifact_uri(record._producer.sequence.path),
+            sequence_bundle_sha256=record._producer.sequence.sha256,
+            evidence_uri=artifact_uri(record._producer.evidence.path),
+            evidence_sha256=record._producer.evidence.sha256,
+            protocol_sha256=record.protocol_sha256,
+            initial_position_sha256=str(first_step["input_position_sha256"]),
+            initial_velocity_field_sha256=str(first_step["input_velocity_sha256"]),
+            final_position_sha256=str(final_step["output_position_sha256"]),
+            final_velocity_field_sha256=str(final_step["output_velocity_sha256"]),
+            deformation_seed=record._producer.deformation_seed,
+            velocity_seed=record._producer.velocity_seed,
+            source_transition_count=len(record.step_ids),
+            requested_dt_seconds=REFERENCE_REQUESTED_DT_SECONDS,
+            dt_seconds=float(REFERENCE_EXECUTION_DT_SECONDS),
+            execution_dt_float32_bits=REFERENCE_EXECUTION_DT_FLOAT32_BITS,
+        )
+
     def sample_keys(
         self,
         role: DatasetRole | str,
@@ -1390,6 +1506,7 @@ __all__ = [
     "REFERENCE_SEQUENCE_SAMPLING_GENERATOR",
     "REFERENCE_SEQUENCE_SAMPLING_ORDER",
     "ReferenceSequenceDataset",
+    "ReferenceSequenceProvenanceAnchor",
     "ReferenceSequenceRecord",
     "ReferenceStaticData",
     "ReferenceTransition",

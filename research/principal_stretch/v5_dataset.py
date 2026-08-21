@@ -40,6 +40,8 @@ _PAYLOAD_COMPONENTS = (*_NUMERIC_COMPONENTS, *_OBJECTIVE_COMPONENTS)
 _SAMPLE_CONTRACT = "pss-v5-dataset-sample-v3"
 _STATIC_LAYOUT_CONTRACT = "pss-v5-dataset-static-layout-v2"
 _PROVENANCE_CONTRACT = "pss-v5-dataset-trajectory-provenance-v1"
+_REFERENCE_SEQUENCE_PROVENANCE_CONTRACT = "pss-v5-reference-sequence-provenance-v1"
+_REFERENCE_SEQUENCE_ARRAY_DIGEST_CONTRACT = "numpy-little-endian-dtype-shape-c-order-sha256-v1"
 _TRAJECTORY_CONTRACT = "pss-v5-dataset-trajectory-v3"
 _SPLIT_CONTRACT = "pss-v5-dataset-split-v3"
 _ACCESS_CONTRACT = "pss-v5-dataset-access-ledger-v1"
@@ -358,6 +360,145 @@ class TrajectoryProvenance:
 
 
 @dataclasses.dataclass(frozen=True)
+class ReferenceSequenceProvenance:
+    """Authenticated sequence-shard provenance without PR-history fields.
+
+    Position and velocity anchors are the producer's canonical array digests:
+    SHA-256 over the little-endian dtype spelling, canonical JSON shape, and
+    C-order bytes.  Velocity is therefore bound as a complete per-vertex
+    field rather than misrepresented as one three-component vector.
+    """
+
+    dataset_index_uri: str
+    dataset_index_sha256: str
+    asset_id: str
+    asset_source_sha256: str
+    sequence_id: str
+    producer_manifest_uri: str
+    producer_manifest_sha256: str
+    static_bundle_uri: str
+    static_bundle_sha256: str
+    sequence_bundle_uri: str
+    sequence_bundle_sha256: str
+    evidence_uri: str
+    evidence_sha256: str
+    protocol_sha256: str
+    initial_position_sha256: str
+    initial_velocity_field_sha256: str
+    final_position_sha256: str
+    final_velocity_field_sha256: str
+    deformation_seed: int
+    velocity_seed: int
+    source_transition_count: int
+    requested_dt_seconds: float
+    dt_seconds: float
+    execution_dt_float32_bits: str
+    dt_float64_bits: str = dataclasses.field(init=False)
+    provenance_sha256: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        for name in (
+            "dataset_index_uri",
+            "producer_manifest_uri",
+            "static_bundle_uri",
+            "sequence_bundle_uri",
+            "evidence_uri",
+        ):
+            _canonical_uri(getattr(self, name), name)
+        for name in ("asset_id", "sequence_id"):
+            _identifier(getattr(self, name), name)
+        for name in (
+            "dataset_index_sha256",
+            "asset_source_sha256",
+            "producer_manifest_sha256",
+            "static_bundle_sha256",
+            "sequence_bundle_sha256",
+            "evidence_sha256",
+            "protocol_sha256",
+            "initial_position_sha256",
+            "initial_velocity_field_sha256",
+            "final_position_sha256",
+            "final_velocity_field_sha256",
+        ):
+            _sha256(getattr(self, name), name)
+        for name in ("deformation_seed", "velocity_seed"):
+            value = getattr(self, name)
+            if type(value) is not int or not 0 <= value < 2**32:
+                raise ValueError(f"{name} must be an integer in [0, 2**32)")
+        if type(self.source_transition_count) is not int or self.source_transition_count < 1:
+            raise ValueError("source_transition_count must be a positive integer")
+
+        requested_dt = _positive_float64(self.requested_dt_seconds, "requested_dt_seconds")
+        dt_seconds = _positive_float64(self.dt_seconds, "dt_seconds")
+        expected_execution_dt = float(struct.unpack("<f", struct.pack("<f", requested_dt))[0])
+        if dt_seconds != expected_execution_dt:
+            raise ValueError("dt_seconds must be the exact float32 execution of requested_dt_seconds")
+        expected_float32_bits = f"0x{struct.unpack('<I', struct.pack('<f', dt_seconds))[0]:08x}"
+        if self.execution_dt_float32_bits != expected_float32_bits:
+            raise ValueError("execution_dt_float32_bits disagrees with dt_seconds")
+
+        object.__setattr__(self, "requested_dt_seconds", requested_dt)
+        object.__setattr__(self, "dt_seconds", dt_seconds)
+        object.__setattr__(self, "dt_float64_bits", _float64_bits(dt_seconds))
+        object.__setattr__(self, "provenance_sha256", _canonical_digest(self._payload()))
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "contract": _REFERENCE_SEQUENCE_PROVENANCE_CONTRACT,
+            "dataset_index": {
+                "uri": self.dataset_index_uri,
+                "sha256": self.dataset_index_sha256,
+            },
+            "asset_id": self.asset_id,
+            "asset_source_sha256": self.asset_source_sha256,
+            "sequence_id": self.sequence_id,
+            "producer_manifest": {
+                "uri": self.producer_manifest_uri,
+                "sha256": self.producer_manifest_sha256,
+            },
+            "artifacts": {
+                "static_bundle": {
+                    "uri": self.static_bundle_uri,
+                    "sha256": self.static_bundle_sha256,
+                },
+                "sequence_bundle": {
+                    "uri": self.sequence_bundle_uri,
+                    "sha256": self.sequence_bundle_sha256,
+                },
+                "evidence": {
+                    "uri": self.evidence_uri,
+                    "sha256": self.evidence_sha256,
+                },
+            },
+            "protocol_sha256": self.protocol_sha256,
+            "state_anchors": {
+                "digest_contract": _REFERENCE_SEQUENCE_ARRAY_DIGEST_CONTRACT,
+                "initial": {
+                    "position_sha256": self.initial_position_sha256,
+                    "velocity_field_sha256": self.initial_velocity_field_sha256,
+                },
+                "final": {
+                    "position_sha256": self.final_position_sha256,
+                    "velocity_field_sha256": self.final_velocity_field_sha256,
+                },
+            },
+            "deformation_seed": self.deformation_seed,
+            "velocity_seed": self.velocity_seed,
+            "source_transition_count": self.source_transition_count,
+            "requested_dt_seconds": self.requested_dt_seconds,
+            "dt_seconds": self.dt_seconds,
+            "execution_dt_float32_bits": self.execution_dt_float32_bits,
+            "dt_float64_bits": self.dt_float64_bits,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        """Return a self-checking JSON-compatible provenance record."""
+        payload = self._payload()
+        payload["provenance_sha256"] = self.provenance_sha256
+        return payload
+
+
+@dataclasses.dataclass(frozen=True)
 class NumericContentIdentity:
     """Logical identifier and byte-level hash for one numeric payload."""
 
@@ -502,7 +643,7 @@ class TrajectoryRecord:
     topology_sha256: str
     operator_geometry_sha256: str
     material_sha256: str
-    provenance: TrajectoryProvenance
+    provenance: TrajectoryProvenance | ReferenceSequenceProvenance
     source_transition_count: int
     samples: tuple[TrajectorySampleRecord, ...]
     selection_contract: str = _COMPLETE_TRAJECTORY_SELECTION
@@ -522,8 +663,8 @@ class TrajectoryRecord:
             "material_sha256",
         ):
             _sha256(getattr(self, name), name)
-        if type(self.provenance) is not TrajectoryProvenance:
-            raise ValueError("provenance must be a canonical TrajectoryProvenance")
+        if type(self.provenance) not in (TrajectoryProvenance, ReferenceSequenceProvenance):
+            raise ValueError("provenance must be a canonical trajectory provenance")
         if self.provenance.provenance_sha256 != _canonical_digest(self.provenance._payload()):
             raise ValueError("trajectory provenance changed after authentication")
         if type(self.source_transition_count) is not int or self.source_transition_count < 1:
