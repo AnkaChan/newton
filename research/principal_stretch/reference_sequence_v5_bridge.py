@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
-"""Lazy authenticated bridge from reference sequences to v5 training samples.
+"""Lazy authenticated bridges from reference sequences to runtime samples.
 
 The durable loader in :mod:`reference_sequence_dataset` owns file and
 producer-evidence authentication.  This module is the next trust boundary: it
@@ -8,7 +8,7 @@ converts one authenticated transition at a time into the exact runtime
 contexts consumed by the v5 trainer.  Static dense projection state is cached
 once per asset, while dynamic transition tensors are deliberately not cached.
 
-Producer identities and v5 runtime identities remain separate.  In
+Producer, v5, and portable-volume identities remain separate. In
 particular, the producer operator covers a broader static inventory and its
 material identity covers the stored SolverVBD arrays; neither is substituted
 for the v5 source-pose operator or runtime mass/material identity.
@@ -29,6 +29,11 @@ from .iterative_solver import (
     validate_physical_objective_integration,
     validate_projection_objective_volume_binding,
 )
+from .portable_dataset import (
+    PortableDatasetSampleRecord,
+    PortableNumericContentIdentity,
+    canonical_portable_training_tensor_sha256,
+)
 from .reference_sequence_dataset import (
     ReferenceSequenceDataset,
     ReferenceTransition,
@@ -37,6 +42,7 @@ from .reference_sequence_dataset import (
 from .torch_solver import (
     OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME,
     OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+    OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT,
     TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
     SolverState,
     build_solver,
@@ -56,6 +62,8 @@ from .v5_pr_history_loader import (
 
 _SOURCE_TRANSITION_CONTRACT = "pss-reference-sequence-v5-source-transition-v1"
 _NUMERIC_IDENTIFIER_PREFIX = "reference-sequence-v5"
+_PORTABLE_SOURCE_TRANSITION_CONTRACT = "pss-reference-sequence-portable-volume-source-transition-v1"
+_PORTABLE_NUMERIC_IDENTIFIER_PREFIX = "reference-sequence-portable-volume-v1"
 
 
 def _sha256(value: object, name: str) -> str:
@@ -147,6 +155,193 @@ class ReferenceV5MaterializedSample:
     def key(self) -> tuple[str, str]:
         """Return the exact lookup key consumed by the v5 trainer."""
         return self.training_sample.key
+
+
+@dataclasses.dataclass(frozen=True, order=True)
+class ReferencePortableAssetIdentities:
+    """Producer and successor portable identities for one cached asset."""
+
+    asset_id: str
+    reference_sequence_index_sha256: str
+    asset_source_sha256: str
+    static_npz_sha256: str
+    producer_topology_sha256: str
+    producer_operator_sha256: str
+    producer_material_sha256: str
+    portable_topology_sha256: str
+    operator_geometry_policy: str
+    operator_geometry_sha256: str
+    operator_volume_policy: str
+    operator_volume_sha256: str
+    portable_material_sha256: str
+    portable_pin_signature_sha256: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.asset_id, "asset_id")
+        if self.operator_geometry_policy != OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PORTABLE_VOLUME:
+            raise ValueError("asset identity must use the portable operator geometry policy")
+        if self.operator_volume_policy != OPERATOR_VOLUME_POLICY_HOST_FLOAT64_SCALAR_POSE_DETERMINANT:
+            raise ValueError("asset identity must use the portable operator volume policy")
+        for name in (
+            "reference_sequence_index_sha256",
+            "asset_source_sha256",
+            "static_npz_sha256",
+            "producer_topology_sha256",
+            "producer_operator_sha256",
+            "producer_material_sha256",
+            "portable_topology_sha256",
+            "operator_geometry_sha256",
+            "operator_volume_sha256",
+            "portable_material_sha256",
+            "portable_pin_signature_sha256",
+        ):
+            _sha256(getattr(self, name), name)
+
+
+@dataclasses.dataclass(frozen=True)
+class ReferencePortableMaterializedSample:
+    """One lazy successor sample with bound portable runtime contexts."""
+
+    transition_key: ReferenceTransitionKey
+    identities: ReferencePortableAssetIdentities
+    source_transition_sha256: str
+    sample_record: PortableDatasetSampleRecord
+    physical_step: PhysicalStepContext
+    common_objective: CommonObjectiveContext
+    projection_state: SolverState
+    producer_attested_reference_positions: torch.Tensor
+    producer_attested_reference_deformation_gradient: torch.Tensor
+
+    def __post_init__(self) -> None:
+        if type(self.transition_key) is not ReferenceTransitionKey:
+            raise TypeError("transition_key must be a canonical ReferenceTransitionKey")
+        if type(self.identities) is not ReferencePortableAssetIdentities:
+            raise TypeError("identities must be canonical ReferencePortableAssetIdentities")
+        _sha256(self.source_transition_sha256, "source_transition_sha256")
+        if type(self.sample_record) is not PortableDatasetSampleRecord:
+            raise TypeError("sample_record must be a canonical PortableDatasetSampleRecord")
+        if type(self.physical_step) is not PhysicalStepContext:
+            raise TypeError("physical_step must be a canonical PhysicalStepContext")
+        if type(self.common_objective) is not CommonObjectiveContext:
+            raise TypeError("common_objective must be a canonical CommonObjectiveContext")
+        if type(self.projection_state) is not SolverState:
+            raise TypeError("projection_state must be a canonical SolverState")
+        if not isinstance(self.producer_attested_reference_positions, torch.Tensor) or not isinstance(
+            self.producer_attested_reference_deformation_gradient, torch.Tensor
+        ):
+            raise TypeError("producer-attested references must be torch tensors")
+        object.__setattr__(
+            self,
+            "producer_attested_reference_positions",
+            self.producer_attested_reference_positions.detach().clone(),
+        )
+        object.__setattr__(
+            self,
+            "producer_attested_reference_deformation_gradient",
+            self.producer_attested_reference_deformation_gradient.detach().clone(),
+        )
+        self.validate_immutable()
+
+    @property
+    def key(self) -> tuple[str, str]:
+        """Return the stable corpus lookup key."""
+        return _trajectory_id(self.transition_key), self.sample_record.sample_id
+
+    def validate_immutable(self) -> None:
+        """Reauthenticate the successor record and every consumed tensor."""
+        PortableDatasetSampleRecord.from_dict(self.sample_record.as_dict())
+        self.physical_step.validate_immutable()
+        self.common_objective.validate_immutable()
+        state = self.projection_state
+        record = self.sample_record
+        actual_operator_sha256 = validate_authenticated_operator_geometry(state)
+        if state.projection_state_sha256 != projection_state_sha256(state):
+            raise ValueError("portable materialized projection state failed self-authentication")
+        validate_projection_objective_volume_binding(state, self.common_objective)
+        validate_physical_objective_integration(state, self.common_objective, self.physical_step)
+
+        if self.key != (_trajectory_id(self.transition_key), _sample_id(self.transition_key)):
+            raise ValueError("portable sample identity differs from its reference transition")
+        if record.ordinal != self.transition_key.step_id:
+            raise ValueError("portable sample ordinal differs from its reference transition")
+        evidence = self.physical_step.source_evidence
+        if (
+            type(evidence) is not SolverVBDStagedFloat32Evidence
+            or evidence.source_transition_sha256 != self.source_transition_sha256
+            or evidence.evidence_sha256 != record.source_integration_evidence_sha256
+        ):
+            raise ValueError("portable physical source evidence differs from its transition")
+        if self.physical_step.physical_step_sha256 != record.physical_step_sha256:
+            raise ValueError("portable physical-step identity differs from its sample record")
+        objective = self.common_objective
+        if objective.common_objective_sha256 != record.common_objective_sha256:
+            raise ValueError("portable common-objective identity differs from its sample record")
+        material_sha256 = canonical_runtime_material_sha256(
+            objective._owned_tensor("mass"),
+            objective._owned_tensor("mu"),
+            objective._owned_tensor("lam"),
+        )
+        pin_sha256 = canonical_runtime_pin_signature_sha256(
+            objective._owned_tensor("pinned"),
+            state.tets,
+            state.n_verts,
+        )
+        static_identity = (
+            state.static_mesh_sha256,
+            state.operator_geometry_policy,
+            actual_operator_sha256,
+            state.operator_volume_policy,
+            state.operator_volume_sha256,
+            material_sha256,
+            pin_sha256,
+        )
+        if static_identity != (
+            record.topology_sha256,
+            record.operator_geometry_policy,
+            record.operator_geometry_sha256,
+            record.operator_volume_policy,
+            record.operator_volume_sha256,
+            record.material_sha256,
+            record.pin_signature_sha256,
+        ):
+            raise ValueError("portable asset/runtime identities differ from the sample record")
+        if (
+            self.identities.asset_id != self.transition_key.asset_id
+            or self.identities.portable_topology_sha256 != state.static_mesh_sha256
+            or self.identities.operator_geometry_policy != state.operator_geometry_policy
+            or self.identities.operator_geometry_sha256 != state.operator_geometry_sha256
+            or self.identities.operator_volume_policy != state.operator_volume_policy
+            or self.identities.operator_volume_sha256 != state.operator_volume_sha256
+            or self.identities.portable_material_sha256 != material_sha256
+            or self.identities.portable_pin_signature_sha256 != pin_sha256
+        ):
+            raise ValueError("portable cached asset identities differ from runtime state")
+
+        x_current, _x_previous, _force, _gravity, _mu, _lam, _pin, _targets = self.physical_step._owned_tensors()
+        input_state = x_current
+        reference_state = self.producer_attested_reference_positions
+        tensors = {
+            "observed_f": compute_F(x_current, state.tets, state.J),
+            "input_f": compute_F(input_state, state.tets, state.J),
+            "reference_f": self.producer_attested_reference_deformation_gradient,
+            "observed_state": x_current,
+            "input_state": input_state,
+            "reference_state": reference_state,
+        }
+        expected_reference_f = compute_F(reference_state, state.tets, state.J)
+        if not torch.equal(expected_reference_f, self.producer_attested_reference_deformation_gradient):
+            raise ValueError("portable reference deformation gradient differs from reference positions")
+        for name, tensor in tensors.items():
+            identity = getattr(record, name)
+            expected_identifier = (
+                f"{_PORTABLE_NUMERIC_IDENTIFIER_PREFIX}:"
+                f"{self.identities.reference_sequence_index_sha256}:"
+                f"{self.source_transition_sha256}:{name}"
+            )
+            if identity.identifier != expected_identifier:
+                raise ValueError(f"portable training tensor {name} identifier differs from its transition")
+            if canonical_portable_training_tensor_sha256(tensor) != identity.sha256:
+                raise ValueError(f"portable training tensor {name} differs from its sample identity")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -261,6 +456,40 @@ def _source_transition_sha256(dataset: ReferenceSequenceDataset, transition: Ref
     )
 
 
+def _portable_source_transition_sha256(
+    dataset: ReferenceSequenceDataset,
+    transition: ReferenceTransition,
+    identities: ReferencePortableAssetIdentities,
+) -> str:
+    """Bind accepted producer evidence to the successor portable operator."""
+    if identities.reference_sequence_index_sha256 != dataset.index_sha256:
+        raise ValueError("portable asset identity differs from the reference-sequence index")
+    key = transition.key
+    return canonical_json_sha256(
+        {
+            "contract": _PORTABLE_SOURCE_TRANSITION_CONTRACT,
+            "reference_sequence_index_sha256": dataset.index_sha256,
+            "asset_id": key.asset_id,
+            "asset_source_sha256": transition.asset_source_sha256,
+            "sequence_id": key.sequence_id,
+            "step_id": key.step_id,
+            "sequence_npz_sha256": transition.sequence_npz_sha256,
+            "protocol_sha256": transition.protocol_sha256,
+            "producer_topology_sha256": transition.topology_sha256,
+            "producer_operator_sha256": transition.operator_sha256,
+            "producer_material_sha256": transition.material_sha256,
+            "accepted_reference_state_sha256": transition.reference_state_float64_sha256,
+            "portable_topology_sha256": identities.portable_topology_sha256,
+            "operator_geometry_policy": identities.operator_geometry_policy,
+            "operator_geometry_sha256": identities.operator_geometry_sha256,
+            "operator_volume_policy": identities.operator_volume_policy,
+            "operator_volume_sha256": identities.operator_volume_sha256,
+            "portable_material_sha256": identities.portable_material_sha256,
+            "portable_pin_signature_sha256": identities.portable_pin_signature_sha256,
+        }
+    )
+
+
 def _numeric_identity(
     dataset: ReferenceSequenceDataset,
     source_transition_sha256: str,
@@ -270,6 +499,18 @@ def _numeric_identity(
     return NumericContentIdentity(
         identifier=f"{_NUMERIC_IDENTIFIER_PREFIX}:{dataset.index_sha256}:{source_transition_sha256}:{name}",
         sha256=canonical_training_tensor_sha256(tensor),
+    )
+
+
+def _portable_numeric_identity(
+    dataset: ReferenceSequenceDataset,
+    source_transition_sha256: str,
+    name: str,
+    tensor: torch.Tensor,
+) -> PortableNumericContentIdentity:
+    return PortableNumericContentIdentity(
+        identifier=(f"{_PORTABLE_NUMERIC_IDENTIFIER_PREFIX}:{dataset.index_sha256}:{source_transition_sha256}:{name}"),
+        sha256=canonical_portable_training_tensor_sha256(tensor),
     )
 
 
@@ -503,10 +744,10 @@ class ReferenceSequenceV5Bridge:
 class ReferenceSequencePortableObjectiveBridge:
     """Materialize portable objective foundations without emitting v5 records.
 
-    This bridge intentionally stops before :class:`TrajectorySampleRecord` or
-    :class:`V5TrainingSample` construction. A later dataset/sample schema must
-    carry the operator-volume policy and SHA-256 before these contexts can be
-    admitted to training, schedules, checkpoints, or split manifests.
+    This compatibility bridge intentionally stops before any dataset record.
+    Use :class:`ReferenceSequencePortableDatasetBridge` when the successor
+    portable-volume sample identity is required. Neither bridge emits a
+    :class:`TrajectorySampleRecord` or :class:`V5TrainingSample`.
     """
 
     def __init__(self, dataset: ReferenceSequenceDataset, *, device: str | torch.device = "cpu") -> None:
@@ -610,8 +851,183 @@ class ReferenceSequencePortableObjectiveBridge:
         return context
 
 
+class ReferenceSequencePortableDatasetBridge(ReferenceSequencePortableObjectiveBridge):
+    """Lazily materialize successor portable records on one device.
+
+    The bridge retains only static projection contexts. Dynamic transition
+    payloads are loaded on demand and returned to the caller without caching.
+    It does not construct a :class:`TrajectorySampleRecord` or
+    :class:`V5TrainingSample`.
+    """
+
+    def __init__(self, dataset: ReferenceSequenceDataset, *, device: str | torch.device = "cpu") -> None:
+        super().__init__(dataset, device=device)
+        self._portable_asset_identities: dict[str, ReferencePortableAssetIdentities] = {}
+
+    @property
+    def cached_asset_identities(self) -> tuple[ReferencePortableAssetIdentities, ...]:
+        """Return cached portable asset identities in asset-id order."""
+        return tuple(self._portable_asset_identities[asset_id] for asset_id in sorted(self._portable_asset_identities))
+
+    def _portable_asset_identity(
+        self,
+        transition: ReferenceTransition,
+        state: SolverState,
+        mass: torch.Tensor,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        pinned: torch.Tensor,
+    ) -> ReferencePortableAssetIdentities:
+        static = transition.static
+        candidate = ReferencePortableAssetIdentities(
+            asset_id=transition.key.asset_id,
+            reference_sequence_index_sha256=self.dataset.index_sha256,
+            asset_source_sha256=transition.asset_source_sha256,
+            static_npz_sha256=static.static_npz_sha256,
+            producer_topology_sha256=transition.topology_sha256,
+            producer_operator_sha256=transition.operator_sha256,
+            producer_material_sha256=transition.material_sha256,
+            portable_topology_sha256=state.static_mesh_sha256,
+            operator_geometry_policy=state.operator_geometry_policy,
+            operator_geometry_sha256=state.operator_geometry_sha256,
+            operator_volume_policy=state.operator_volume_policy,
+            operator_volume_sha256=state.operator_volume_sha256,
+            portable_material_sha256=canonical_runtime_material_sha256(mass, mu, lam),
+            portable_pin_signature_sha256=canonical_runtime_pin_signature_sha256(pinned, state.tets, state.n_verts),
+        )
+        cached = self._portable_asset_identities.get(transition.key.asset_id)
+        if cached is not None and cached != candidate:
+            raise ValueError("one asset_id resolved to conflicting portable successor identities")
+        if cached is None:
+            self._portable_asset_identities[transition.key.asset_id] = candidate
+        return candidate if cached is None else cached
+
+    def sample_keys(
+        self,
+        role: DatasetRole | str,
+        *,
+        count: int,
+        seed: int,
+    ) -> tuple[ReferenceTransitionKey, ...]:
+        """Replay the durable dataset's stateless sampler without loading arrays."""
+        return self.dataset.sample_keys(role, count=count, seed=seed)
+
+    def iter_materialized(
+        self,
+        keys: Iterable[ReferenceTransitionKey],
+    ) -> Iterator[ReferencePortableMaterializedSample]:
+        """Yield successor samples one at a time without retaining payloads."""
+        for key in keys:
+            yield self.materialize(key)
+
+    def materialize(self, key: ReferenceTransitionKey) -> ReferencePortableMaterializedSample:
+        """Authenticate and construct one successor portable transition."""
+        if type(key) is not ReferenceTransitionKey:
+            raise TypeError("key must be a canonical ReferenceTransitionKey")
+        transition = self.dataset.transition(key)
+        asset_context = self._asset_context(transition)
+        state = asset_context.projection_state
+        static = transition.static
+        dtype = torch.float64
+        mass = _floating(static.mass, self.device)
+        mu = _floating(static.tet_materials[:, 0], self.device)
+        lam = _floating(static.tet_materials[:, 1], self.device)
+        pinned = torch.empty((0,), dtype=torch.int64, device=self.device)
+        identities = self._portable_asset_identity(transition, state, mass, mu, lam, pinned)
+        source_transition_sha256 = _portable_source_transition_sha256(self.dataset, transition, identities)
+        common_objective = CommonObjectiveContext(
+            tets=state.tets,
+            J=state.J,
+            volume=state.w,
+            mass=mass,
+            mu=mu,
+            lam=lam,
+            inertial_target=_floating(transition.inertial_target, self.device),
+            pinned=pinned,
+            dt=float(transition.execution_dt_seconds),
+            operator_geometry_sha256=state.operator_geometry_sha256,
+            operator_volume_policy=state.operator_volume_policy,
+            operator_volume_sha256=state.operator_volume_sha256,
+        )
+
+        x_current = _floating(transition.x_current, self.device)
+        x_previous = _floating(transition.x_previous, self.device)
+        source_evidence = SolverVBDStagedFloat32Evidence(
+            source_transition_sha256=source_transition_sha256,
+            dt_seconds=float(transition.execution_dt_seconds),
+            pre_event_positions=_source_float32(transition.x_current, self.device, "pre-event positions"),
+            velocity=_source_float32(transition.velocity, self.device, "velocity"),
+            mass=_source_float32(static.mass, self.device, "mass"),
+            inverse_mass=_source_float32(static.particle_inv_mass, self.device, "inverse mass"),
+        )
+        physical_step = PhysicalStepContext(
+            x_current=x_current,
+            x_previous=x_previous,
+            force=_floating(transition.external_force, self.device),
+            gravity=_floating(transition.gravity, self.device),
+            mu=mu,
+            lam=lam,
+            pin=torch.zeros((state.n_tets,), dtype=dtype, device=self.device),
+            pinned_targets=torch.empty((0, 3), dtype=dtype, device=self.device),
+            integration_policy=PHYSICAL_INTEGRATION_POLICY_SOLVER_VBD_STAGED_FLOAT32,
+            source_evidence=source_evidence,
+        )
+        validate_physical_objective_integration(state, common_objective, physical_step)
+
+        input_state = x_current.clone()
+        reference_state = _floating(transition.reference_positions, self.device)
+        tensors = {
+            "observed_f": compute_F(x_current, state.tets, state.J),
+            "input_f": compute_F(input_state, state.tets, state.J),
+            "reference_f": compute_F(reference_state, state.tets, state.J),
+            "observed_state": x_current,
+            "input_state": input_state,
+            "reference_state": reference_state,
+        }
+        numeric = {
+            name: _portable_numeric_identity(self.dataset, source_transition_sha256, name, tensor)
+            for name, tensor in tensors.items()
+        }
+        record = PortableDatasetSampleRecord(
+            sample_id=_sample_id(key),
+            ordinal=key.step_id,
+            topology_sha256=identities.portable_topology_sha256,
+            operator_geometry_policy=identities.operator_geometry_policy,
+            operator_geometry_sha256=identities.operator_geometry_sha256,
+            operator_volume_policy=identities.operator_volume_policy,
+            operator_volume_sha256=identities.operator_volume_sha256,
+            material_sha256=identities.portable_material_sha256,
+            pin_signature_sha256=identities.portable_pin_signature_sha256,
+            dt_seconds=float(transition.execution_dt_seconds),
+            physical_step_sha256=physical_step.physical_step_sha256,
+            physical_integration_policy=physical_step.integration_policy,
+            source_integration_evidence_sha256=source_evidence.evidence_sha256,
+            common_objective_sha256=common_objective.common_objective_sha256,
+            observed_f=numeric["observed_f"],
+            input_f=numeric["input_f"],
+            reference_f=numeric["reference_f"],
+            observed_state=numeric["observed_state"],
+            input_state=numeric["input_state"],
+            reference_state=numeric["reference_state"],
+        )
+        return ReferencePortableMaterializedSample(
+            transition_key=key,
+            identities=identities,
+            source_transition_sha256=source_transition_sha256,
+            sample_record=record,
+            physical_step=physical_step,
+            common_objective=common_objective,
+            projection_state=state,
+            producer_attested_reference_positions=reference_state,
+            producer_attested_reference_deformation_gradient=tensors["reference_f"],
+        )
+
+
 __all__ = [
+    "ReferencePortableAssetIdentities",
+    "ReferencePortableMaterializedSample",
     "ReferencePortableObjectiveContext",
+    "ReferenceSequencePortableDatasetBridge",
     "ReferenceSequencePortableObjectiveBridge",
     "ReferenceSequenceV5Bridge",
     "ReferenceV5AssetIdentities",
