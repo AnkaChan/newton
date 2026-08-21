@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Portable-volume corpus metadata for authenticated reference sequences.
 
-The producer entry point is explicitly preparation-only: it materializes the
-requested roles and records those roles in its receipt. Training consumers
-must load the resulting authenticated JSON metadata and derive a
-TRAIN/VALIDATION view; that path opens no sequence arrays. Runtime payloads
-remain lazy and are loaded one transition at a time by the bridge.
+The producer entry point is explicitly preparation-only. Its receipt covers
+complete output metadata under an exact source-index inventory; it is not
+proof that payloads were opened. Training consumers derive a TRAIN/VALIDATION
+view without opening sequence arrays and authenticate a serialized view
+against a corpus digest obtained out of band. A view self-hash proves only
+consistency, not origin. Runtime payloads remain lazy and are loaded one
+transition at a time by the bridge.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from .reference_sequence_dataset import (
     ReferenceSequenceDataset,
     ReferenceSequenceRecord,
     ReferenceTransitionKey,
+    reference_sequence_index_header,
 )
 from .reference_sequence_v5_bridge import (
     ReferencePortableAssetIdentities,
@@ -34,11 +37,13 @@ from .reference_sequence_v5_bridge import (
 from .v5_checkpoint import canonical_json_sha256
 from .v5_dataset import DatasetRole
 
-_CORPUS_CONTRACT = "pss-reference-sequence-portable-volume-corpus-v1"
-_MATERIALIZATION_RECEIPT_CONTRACT = "pss-reference-sequence-portable-volume-producer-materialization-v1"
-_MATERIALIZATION_CLAIM_SCOPE = "producer-preparation-roles-materialized-not-consumer-access-control"
-_CONSUMER_VIEW_CONTRACT = "pss-reference-sequence-portable-volume-consumer-view-v1"
-_CONSUMER_VIEW_CLAIM_SCOPE = "metadata-only-train-validation-view-no-payload-access-proof"
+_CORPUS_CONTRACT = "pss-reference-sequence-portable-volume-corpus-v2"
+_PREPARATION_RECEIPT_CONTRACT = "pss-reference-sequence-portable-volume-producer-preparation-v2"
+_PREPARATION_CLAIM_SCOPE = "complete-requested-role-metadata-not-proof-of-payload-opens-or-access-control"
+_SOURCE_SEQUENCE_INVENTORY_CONTRACT = "pss-reference-sequence-portable-volume-source-sequence-inventory-v1"
+_SOURCE_ROLE_INVENTORY_CONTRACT = "pss-reference-sequence-portable-volume-source-role-inventory-v1"
+_CONSUMER_VIEW_CONTRACT = "pss-reference-sequence-portable-volume-consumer-view-v2"
+_CONSUMER_VIEW_CLAIM_SCOPE = "self-consistency-only-external-corpus-root-required-for-origin"
 _SOURCE_CHAIN_CONTRACT = "pss-reference-sequence-portable-volume-source-chain-v1"
 _LOAD_PROGRAM_CONTRACT = "pss-reference-sequence-portable-volume-dynamics-program-v1"
 
@@ -49,6 +54,12 @@ _CONSUMER_ROLES = frozenset((DatasetRole.TRAIN, DatasetRole.VALIDATION))
 def _sha256(value: object, name: str) -> str:
     if type(value) is not str or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
         raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _identifier(value: object, name: str) -> str:
+    if type(value) is not str or not value or value != value.strip():
+        raise ValueError(f"{name} must be a non-empty canonical string")
     return value
 
 
@@ -147,9 +158,340 @@ def _source_chain_payload(provenance: PortableReferenceSequenceProvenance) -> di
     }
 
 
+@dataclasses.dataclass(frozen=True, order=True)
+class _SourceSequenceInventory:
+    """Authenticated source-index identity for one sequence."""
+
+    source_index_sha256: str
+    role: DatasetRole
+    asset_id: str
+    asset_source_sha256: str
+    sequence_id: str
+    producer_topology_sha256: str
+    producer_operator_sha256: str
+    producer_material_sha256: str
+    protocol_sha256: str
+    producer_manifest_json: str
+    producer_manifest_json_sha256: str
+    accepted_reference_state_sha256: tuple[str, ...]
+    source_transition_count: int
+    inventory_sha256: str = dataclasses.field(init=False, compare=False)
+
+    def __post_init__(self) -> None:
+        _sha256(self.source_index_sha256, "source sequence index sha256")
+        try:
+            role = DatasetRole(self.role)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("source sequence role is not registered") from exc
+        object.__setattr__(self, "role", role)
+        for name in ("asset_id", "sequence_id", "producer_manifest_json"):
+            _identifier(getattr(self, name), f"source sequence {name}")
+        for name in (
+            "asset_source_sha256",
+            "producer_topology_sha256",
+            "producer_operator_sha256",
+            "producer_material_sha256",
+            "protocol_sha256",
+            "producer_manifest_json_sha256",
+        ):
+            _sha256(getattr(self, name), f"source sequence {name}")
+        if type(self.source_transition_count) is not int or self.source_transition_count < 1:
+            raise ValueError("source sequence transition count must be positive")
+        if isinstance(self.accepted_reference_state_sha256, (str, bytes)):
+            raise ValueError("source sequence accepted-reference identities must be a sequence")
+        accepted = tuple(self.accepted_reference_state_sha256)
+        if len(accepted) != self.source_transition_count:
+            raise ValueError("source sequence accepted-reference identities must cover every transition")
+        for step_id, digest in enumerate(accepted):
+            _sha256(digest, f"source sequence accepted reference {step_id} sha256")
+        object.__setattr__(self, "accepted_reference_state_sha256", accepted)
+        object.__setattr__(self, "inventory_sha256", canonical_json_sha256(self._payload()))
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "schema_version": PORTABLE_DATASET_SCHEMA_VERSION,
+            "contract": _SOURCE_SEQUENCE_INVENTORY_CONTRACT,
+            "source_index_sha256": self.source_index_sha256,
+            "role": self.role.value,
+            "asset_id": self.asset_id,
+            "asset_source_sha256": self.asset_source_sha256,
+            "sequence_id": self.sequence_id,
+            "producer_static": {
+                "topology_sha256": self.producer_topology_sha256,
+                "operator_sha256": self.producer_operator_sha256,
+                "material_sha256": self.producer_material_sha256,
+            },
+            "protocol_sha256": self.protocol_sha256,
+            "producer_manifest": {
+                "json": self.producer_manifest_json,
+                "json_sha256": self.producer_manifest_json_sha256,
+            },
+            "accepted_reference_state_sha256": list(self.accepted_reference_state_sha256),
+            "source_transition_count": self.source_transition_count,
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        """Return one strict source-sequence inventory record."""
+        payload = self._payload()
+        payload["inventory_sha256"] = self.inventory_sha256
+        return payload
+
+    def index_record(self) -> dict[str, object]:
+        """Return the exact source-index record preimage."""
+        return {
+            "role": self.role.value,
+            "asset_id": self.asset_id,
+            "asset_source_sha256": self.asset_source_sha256,
+            "sequence_id": self.sequence_id,
+            "topology_sha256": self.producer_topology_sha256,
+            "operator_sha256": self.producer_operator_sha256,
+            "material_sha256": self.producer_material_sha256,
+            "protocol_sha256": self.protocol_sha256,
+            "producer_manifest_json": self.producer_manifest_json,
+            "producer_manifest_json_sha256": self.producer_manifest_json_sha256,
+            "step_ids": list(range(self.source_transition_count)),
+            "reference_state_float64_sha256": list(self.accepted_reference_state_sha256),
+        }
+
+    @property
+    def materialized_identity(self) -> tuple[object, ...]:
+        """Return fields independently preserved by portable trajectories."""
+        return (
+            self.role.value,
+            self.asset_id,
+            self.asset_source_sha256,
+            self.sequence_id,
+            self.producer_topology_sha256,
+            self.producer_operator_sha256,
+            self.producer_material_sha256,
+            self.protocol_sha256,
+            self.producer_manifest_json_sha256,
+            self.accepted_reference_state_sha256,
+            self.source_transition_count,
+        )
+
+    @classmethod
+    def from_dict(cls, value: object) -> _SourceSequenceInventory:
+        """Strictly reconstruct one source-sequence inventory record."""
+        payload = _strict_mapping(
+            value,
+            {
+                "schema_version",
+                "contract",
+                "source_index_sha256",
+                "role",
+                "asset_id",
+                "asset_source_sha256",
+                "sequence_id",
+                "producer_static",
+                "protocol_sha256",
+                "producer_manifest",
+                "accepted_reference_state_sha256",
+                "source_transition_count",
+                "inventory_sha256",
+            },
+            "source sequence inventory",
+        )
+        if (payload["schema_version"], payload["contract"]) != (
+            PORTABLE_DATASET_SCHEMA_VERSION,
+            _SOURCE_SEQUENCE_INVENTORY_CONTRACT,
+        ):
+            raise ValueError("source sequence inventory has an unregistered schema identity")
+        producer = _strict_mapping(
+            payload["producer_static"],
+            {"topology_sha256", "operator_sha256", "material_sha256"},
+            "source sequence producer_static",
+        )
+        producer_manifest = _strict_mapping(
+            payload["producer_manifest"],
+            {"json", "json_sha256"},
+            "source sequence producer manifest",
+        )
+        accepted = payload["accepted_reference_state_sha256"]
+        if type(accepted) is not list:
+            raise ValueError("source sequence accepted-reference identities must be a JSON list")
+        result = cls(
+            source_index_sha256=payload["source_index_sha256"],
+            role=payload["role"],
+            asset_id=payload["asset_id"],
+            asset_source_sha256=payload["asset_source_sha256"],
+            sequence_id=payload["sequence_id"],
+            producer_topology_sha256=producer["topology_sha256"],
+            producer_operator_sha256=producer["operator_sha256"],
+            producer_material_sha256=producer["material_sha256"],
+            protocol_sha256=payload["protocol_sha256"],
+            producer_manifest_json=producer_manifest["json"],
+            producer_manifest_json_sha256=producer_manifest["json_sha256"],
+            accepted_reference_state_sha256=tuple(accepted),
+            source_transition_count=payload["source_transition_count"],
+        )
+        if not _exact_json_equal(result.as_dict(), payload):
+            raise ValueError("source sequence inventory is not the exact canonical record")
+        return result
+
+
+@dataclasses.dataclass(frozen=True)
+class _SourceRoleInventory:
+    """Complete authenticated source-index inventory for one role."""
+
+    source_index_sha256: str
+    role: DatasetRole
+    sequences: tuple[_SourceSequenceInventory, ...]
+    trajectory_count: int = dataclasses.field(init=False)
+    source_transition_count: int = dataclasses.field(init=False)
+    inventory_sha256: str = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        _sha256(self.source_index_sha256, "source role index sha256")
+        try:
+            role = DatasetRole(self.role)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("source inventory role is not registered") from exc
+        object.__setattr__(self, "role", role)
+        sequences = tuple(self.sequences)
+        if any(type(sequence) is not _SourceSequenceInventory for sequence in sequences):
+            raise ValueError("source role inventory contains a non-canonical sequence")
+        sequences = tuple(sorted(sequences, key=lambda item: (item.asset_id, item.sequence_id)))
+        if len({(item.asset_id, item.sequence_id) for item in sequences}) != len(sequences):
+            raise ValueError("source role inventory sequence identities must be unique")
+        for sequence in sequences:
+            if sequence.source_index_sha256 != self.source_index_sha256 or sequence.role is not role:
+                raise ValueError("source sequence inventory differs from its role inventory")
+            if sequence.inventory_sha256 != canonical_json_sha256(sequence._payload()):
+                raise ValueError("source sequence inventory changed after authentication")
+        object.__setattr__(self, "sequences", sequences)
+        object.__setattr__(self, "trajectory_count", len(sequences))
+        object.__setattr__(
+            self,
+            "source_transition_count",
+            sum(sequence.source_transition_count for sequence in sequences),
+        )
+        object.__setattr__(self, "inventory_sha256", canonical_json_sha256(self._payload()))
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "schema_version": PORTABLE_DATASET_SCHEMA_VERSION,
+            "contract": _SOURCE_ROLE_INVENTORY_CONTRACT,
+            "source_index_sha256": self.source_index_sha256,
+            "role": self.role.value,
+            "trajectory_count": self.trajectory_count,
+            "source_transition_count": self.source_transition_count,
+            "sequences": [sequence.as_dict() for sequence in self.sequences],
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        """Return one strict source-role inventory record."""
+        payload = self._payload()
+        payload["inventory_sha256"] = self.inventory_sha256
+        return payload
+
+    @classmethod
+    def from_dict(cls, value: object) -> _SourceRoleInventory:
+        """Strictly reconstruct one source-role inventory record."""
+        payload = _strict_mapping(
+            value,
+            {
+                "schema_version",
+                "contract",
+                "source_index_sha256",
+                "role",
+                "trajectory_count",
+                "source_transition_count",
+                "sequences",
+                "inventory_sha256",
+            },
+            "source role inventory",
+        )
+        if (payload["schema_version"], payload["contract"]) != (
+            PORTABLE_DATASET_SCHEMA_VERSION,
+            _SOURCE_ROLE_INVENTORY_CONTRACT,
+        ):
+            raise ValueError("source role inventory has an unregistered schema identity")
+        sequences = payload["sequences"]
+        if type(sequences) is not list:
+            raise ValueError("source role inventory sequences must be a JSON list")
+        result = cls(
+            source_index_sha256=payload["source_index_sha256"],
+            role=payload["role"],
+            sequences=tuple(_SourceSequenceInventory.from_dict(item) for item in sequences),
+        )
+        if not _exact_json_equal(result.as_dict(), payload):
+            raise ValueError("source role inventory is not the exact canonical record")
+        return result
+
+
+def _source_sequence_from_record(
+    source_index_sha256: str,
+    record: ReferenceSequenceRecord,
+) -> _SourceSequenceInventory:
+    return _SourceSequenceInventory(
+        source_index_sha256=source_index_sha256,
+        role=record.role,
+        asset_id=record.asset_id,
+        asset_source_sha256=record.asset_source_sha256,
+        sequence_id=record.sequence_id,
+        producer_topology_sha256=record.topology_sha256,
+        producer_operator_sha256=record.operator_sha256,
+        producer_material_sha256=record.material_sha256,
+        protocol_sha256=record.protocol_sha256,
+        producer_manifest_json=record.producer_manifest_json,
+        producer_manifest_json_sha256=record.producer_manifest_json_sha256,
+        accepted_reference_state_sha256=record.reference_state_float64_sha256,
+        source_transition_count=len(record.step_ids),
+    )
+
+
+def _materialized_sequence_identity(
+    role: DatasetRole,
+    trajectory: PortableDatasetTrajectoryRecord,
+) -> tuple[object, ...]:
+    provenance = trajectory.provenance
+    return (
+        role.value,
+        provenance.asset_id,
+        provenance.asset_source_sha256,
+        provenance.sequence_id,
+        provenance.producer_topology_sha256,
+        provenance.producer_operator_sha256,
+        provenance.producer_material_sha256,
+        provenance.protocol_sha256,
+        provenance.producer_manifest_sha256,
+        provenance.accepted_reference_state_sha256,
+        trajectory.source_transition_count,
+    )
+
+
+def _source_role_from_records(
+    dataset: ReferenceSequenceDataset,
+    role: DatasetRole,
+) -> _SourceRoleInventory:
+    return _SourceRoleInventory(
+        source_index_sha256=dataset.index_sha256,
+        role=role,
+        sequences=tuple(_source_sequence_from_record(dataset.index_sha256, record) for record in dataset.records(role)),
+    )
+
+
+def _materialized_role_identity(
+    role: DatasetRole,
+    trajectories: Sequence[PortableDatasetTrajectoryRecord],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        sorted(
+            (_materialized_sequence_identity(role, trajectory) for trajectory in trajectories),
+            key=lambda item: (item[1], item[3]),
+        )
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class ReferenceSequencePortableConsumerView:
-    """Metadata-only TRAIN/VALIDATION projection of one sealed corpus."""
+    """Metadata-only TRAIN/VALIDATION projection of one sealed corpus.
+
+    ``view_sha256`` proves only internal consistency. Origin authentication
+    requires an out-of-band trusted corpus SHA-256 and exact projection
+    validation against that corpus.
+    """
 
     source_corpus_sha256: str
     source_manifest_sha256: str
@@ -166,31 +508,83 @@ class ReferenceSequencePortableConsumerView:
         if set(records_source) != set(roles):
             raise ValueError("consumer-view record roles differ from selected roles")
         canonical_records: dict[DatasetRole, tuple[PortableDatasetTrajectoryRecord, ...]] = {}
-        selected_trajectory_ids: set[str] = set()
         for role in roles:
             records = tuple(records_source[role])
             if any(type(record) is not PortableDatasetTrajectoryRecord for record in records):
                 raise ValueError("consumer view contains a non-canonical portable trajectory")
             records = tuple(sorted(records, key=lambda record: record.trajectory_id))
-            selected_trajectory_ids.update(record.trajectory_id for record in records)
             canonical_records[role] = records
+        PortableDatasetSplitManifest(
+            train=canonical_records.get(DatasetRole.TRAIN, ()),
+            validation=canonical_records.get(DatasetRole.VALIDATION, ()),
+            confirmation=(),
+            consumed_regression=(),
+        )
         bindings = dict(self.transition_keys_by_sample)
-        expected_keys = {
-            (record.trajectory_id, sample.sample_id)
-            for records in canonical_records.values()
-            for record in records
-            for sample in record.samples
-        }
-        if set(bindings) != expected_keys:
-            raise ValueError("consumer-view transition-key bindings differ from selected metadata")
         if any(type(value) is not ReferenceTransitionKey for value in bindings.values()):
             raise ValueError("consumer-view transition values must be canonical keys")
-        if any(trajectory_id not in selected_trajectory_ids for trajectory_id, _sample_id in bindings):
-            raise ValueError("consumer-view transition key names an excluded trajectory")
+        expected_bindings: dict[tuple[str, str], ReferenceTransitionKey] = {}
+        for records in canonical_records.values():
+            for record in records:
+                for sample in record.samples:
+                    source = sample.source_transition
+                    if source is None:
+                        raise ValueError("consumer-view sample lacks its sealed source transition")
+                    lookup = (record.trajectory_id, sample.sample_id)
+                    if lookup in expected_bindings:
+                        raise ValueError("consumer-view sample lookup identities must be unique")
+                    expected_bindings[lookup] = ReferenceTransitionKey(
+                        asset_id=source.asset_id,
+                        sequence_id=source.sequence_id,
+                        step_id=source.step_id,
+                    )
+        if bindings != expected_bindings:
+            raise ValueError("consumer-view transition-key bindings differ from selected metadata")
         object.__setattr__(self, "roles", roles)
         object.__setattr__(self, "records_by_role", MappingProxyType(canonical_records))
         object.__setattr__(self, "transition_keys_by_sample", MappingProxyType(dict(sorted(bindings.items()))))
         object.__setattr__(self, "view_sha256", canonical_json_sha256(self._payload()))
+
+    def validate_authenticated_projection(
+        self,
+        source_corpus: ReferenceSequencePortableCorpus,
+        *,
+        trusted_source_corpus_sha256: str,
+    ) -> None:
+        """Validate exact inclusion under an out-of-band authenticated root.
+
+        Args:
+            source_corpus: Canonical metadata corpus authenticated by the
+                caller.
+            trusted_source_corpus_sha256: Corpus digest obtained independently
+                of this view and its serialized source-corpus field.
+        """
+        trusted = _sha256(trusted_source_corpus_sha256, "trusted source corpus sha256")
+        if type(source_corpus) is not ReferenceSequencePortableCorpus:
+            raise TypeError("source_corpus must be a canonical ReferenceSequencePortableCorpus")
+        if source_corpus.corpus_sha256 != canonical_json_sha256(source_corpus._payload()):
+            raise ValueError("authenticated source corpus changed after authentication")
+        if source_corpus.corpus_sha256 != trusted:
+            raise ValueError("source corpus differs from the externally authenticated root")
+        if (
+            self.source_corpus_sha256 != trusted
+            or self.source_manifest_sha256 != source_corpus.split_manifest.manifest_sha256
+        ):
+            raise ValueError("consumer view source roots differ from the authenticated corpus")
+        if any(role not in source_corpus.prepared_roles for role in self.roles):
+            raise ValueError("consumer view selects a role absent from authenticated producer preparation")
+        expected_records = {role: source_corpus.split_manifest.records(role) for role in self.roles}
+        if dict(self.records_by_role) != expected_records:
+            raise ValueError("consumer-view records are not an exact authenticated corpus projection")
+        lookups = {
+            (record.trajectory_id, sample.sample_id)
+            for records in expected_records.values()
+            for record in records
+            for sample in record.samples
+        }
+        expected_bindings = {lookup: source_corpus.transition_keys_by_sample[lookup] for lookup in sorted(lookups)}
+        if dict(self.transition_keys_by_sample) != expected_bindings:
+            raise ValueError("consumer-view bindings are not an exact authenticated corpus projection")
 
     def records(self, role: DatasetRole | str) -> tuple[PortableDatasetTrajectoryRecord, ...]:
         """Return metadata for one selected role."""
@@ -231,8 +625,14 @@ class ReferenceSequencePortableConsumerView:
         return json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False)
 
     @classmethod
-    def from_dict(cls, value: object) -> ReferenceSequencePortableConsumerView:
-        """Strictly reconstruct one metadata-only consumer view."""
+    def from_dict(
+        cls,
+        value: object,
+        *,
+        authenticated_source_corpus: ReferenceSequencePortableCorpus,
+        trusted_source_corpus_sha256: str,
+    ) -> ReferenceSequencePortableConsumerView:
+        """Strictly reconstruct and origin-authenticate one consumer view."""
         payload = _strict_mapping(
             value,
             {
@@ -294,12 +694,26 @@ class ReferenceSequencePortableConsumerView:
         )
         if not _exact_json_equal(result.as_dict(), payload):
             raise ValueError("portable consumer view is not the exact canonical record")
+        result.validate_authenticated_projection(
+            authenticated_source_corpus,
+            trusted_source_corpus_sha256=trusted_source_corpus_sha256,
+        )
         return result
 
     @classmethod
-    def from_json(cls, value: str | bytes) -> ReferenceSequencePortableConsumerView:
-        """Strictly deserialize one metadata-only consumer view."""
-        return cls.from_dict(_read_json(value, "portable consumer view"))
+    def from_json(
+        cls,
+        value: str | bytes,
+        *,
+        authenticated_source_corpus: ReferenceSequencePortableCorpus,
+        trusted_source_corpus_sha256: str,
+    ) -> ReferenceSequencePortableConsumerView:
+        """Strictly deserialize and origin-authenticate one consumer view."""
+        return cls.from_dict(
+            _read_json(value, "portable consumer view"),
+            authenticated_source_corpus=authenticated_source_corpus,
+            trusted_source_corpus_sha256=trusted_source_corpus_sha256,
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -309,7 +723,8 @@ class ReferenceSequencePortableCorpus:
     split_manifest: PortableDatasetSplitManifest
     transition_keys_by_sample: Mapping[tuple[str, str], ReferenceTransitionKey]
     source_index_sha256: str
-    materialized_roles: tuple[DatasetRole, ...]
+    source_role_inventories: Mapping[DatasetRole, _SourceRoleInventory]
+    prepared_roles: tuple[DatasetRole, ...]
     corpus_sha256: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -318,10 +733,40 @@ class ReferenceSequencePortableCorpus:
         if PortableDatasetSplitManifest.from_dict(self.split_manifest.as_dict()) != self.split_manifest:
             raise ValueError("portable split manifest failed self-authentication")
         _sha256(self.source_index_sha256, "source_index_sha256")
-        roles = _canonical_roles(self.materialized_roles)
-        roles_with_records = {role for role in _ROLE_ORDER if self.split_manifest.records(role)}
-        if not roles_with_records.issubset(roles):
-            raise ValueError("producer materialization receipt omits a role present in the portable manifest")
+        roles = _canonical_roles(self.prepared_roles)
+        inventory_source = dict(self.source_role_inventories)
+        if set(inventory_source) != set(_ROLE_ORDER):
+            raise ValueError("source role inventories must cover every dataset role")
+        inventories: dict[DatasetRole, _SourceRoleInventory] = {}
+        for role in _ROLE_ORDER:
+            inventory = inventory_source[role]
+            if type(inventory) is not _SourceRoleInventory:
+                raise ValueError("source role inventory must be a canonical inventory record")
+            if (
+                inventory.role is not role
+                or inventory.source_index_sha256 != self.source_index_sha256
+                or inventory.inventory_sha256 != canonical_json_sha256(inventory._payload())
+            ):
+                raise ValueError("source role inventory differs from the corpus source index or role")
+            materialized_identity = _materialized_role_identity(
+                role,
+                self.split_manifest.records(role),
+            )
+            source_identity = tuple(sequence.materialized_identity for sequence in inventory.sequences)
+            if role in roles:
+                if materialized_identity != source_identity:
+                    raise ValueError(
+                        "producer preparation materialization does not cover the complete source role inventory"
+                    )
+            elif materialized_identity:
+                raise ValueError("portable manifest contains an unrequested producer preparation role")
+            inventories[role] = inventory
+        source_index_preimage = reference_sequence_index_header()
+        source_index_preimage["splits"] = {
+            role.value: [sequence.index_record() for sequence in inventories[role].sequences] for role in _ROLE_ORDER
+        }
+        if canonical_json_sha256(source_index_preimage) != self.source_index_sha256:
+            raise ValueError("source role inventories do not reconstruct the authenticated source index")
 
         expected: dict[tuple[str, str], ReferenceTransitionKey] = {}
         for role in _ROLE_ORDER:
@@ -351,7 +796,8 @@ class ReferenceSequencePortableCorpus:
             raise ValueError("transition-key bindings differ from the complete portable split manifest")
         if any(type(value) is not ReferenceTransitionKey for value in bindings.values()):
             raise ValueError("transition-key values must be canonical ReferenceTransitionKey values")
-        object.__setattr__(self, "materialized_roles", roles)
+        object.__setattr__(self, "source_role_inventories", MappingProxyType(inventories))
+        object.__setattr__(self, "prepared_roles", roles)
         object.__setattr__(self, "transition_keys_by_sample", MappingProxyType(dict(sorted(bindings.items()))))
         object.__setattr__(self, "corpus_sha256", canonical_json_sha256(self._payload()))
 
@@ -360,10 +806,13 @@ class ReferenceSequencePortableCorpus:
             "schema_version": PORTABLE_DATASET_SCHEMA_VERSION,
             "contract": _CORPUS_CONTRACT,
             "source_index_sha256": self.source_index_sha256,
-            "producer_materialization": {
-                "contract": _MATERIALIZATION_RECEIPT_CONTRACT,
-                "claim_scope": _MATERIALIZATION_CLAIM_SCOPE,
-                "roles": [role.value for role in self.materialized_roles],
+            "source_role_inventories": {
+                role.value: self.source_role_inventories[role].as_dict() for role in _ROLE_ORDER
+            },
+            "producer_preparation": {
+                "contract": _PREPARATION_RECEIPT_CONTRACT,
+                "claim_scope": _PREPARATION_CLAIM_SCOPE,
+                "prepared_roles": [role.value for role in self.prepared_roles],
             },
             "split_manifest": self.split_manifest.as_dict(),
             "transition_keys": [
@@ -397,7 +846,8 @@ class ReferenceSequencePortableCorpus:
                 "schema_version",
                 "contract",
                 "source_index_sha256",
-                "producer_materialization",
+                "source_role_inventories",
+                "producer_preparation",
                 "split_manifest",
                 "transition_keys",
                 "corpus_sha256",
@@ -410,15 +860,23 @@ class ReferenceSequencePortableCorpus:
         ):
             raise ValueError("portable corpus has an unregistered schema identity")
         receipt = _strict_mapping(
-            payload["producer_materialization"], {"contract", "claim_scope", "roles"}, "materialization receipt"
+            payload["producer_preparation"],
+            {"contract", "claim_scope", "prepared_roles"},
+            "producer preparation receipt",
         )
         if (receipt["contract"], receipt["claim_scope"]) != (
-            _MATERIALIZATION_RECEIPT_CONTRACT,
-            _MATERIALIZATION_CLAIM_SCOPE,
+            _PREPARATION_RECEIPT_CONTRACT,
+            _PREPARATION_CLAIM_SCOPE,
         ):
-            raise ValueError("portable corpus materialization receipt is not registered")
-        if type(receipt["roles"]) is not list:
-            raise ValueError("materialization receipt roles must be a JSON list")
+            raise ValueError("portable corpus preparation receipt is not registered")
+        if type(receipt["prepared_roles"]) is not list:
+            raise ValueError("producer preparation roles must be a JSON list")
+        inventory_payloads = _strict_mapping(
+            payload["source_role_inventories"],
+            {role.value for role in _ROLE_ORDER},
+            "source role inventories",
+        )
+        inventories = {role: _SourceRoleInventory.from_dict(inventory_payloads[role.value]) for role in _ROLE_ORDER}
         key_payloads = payload["transition_keys"]
         if type(key_payloads) is not list:
             raise ValueError("portable corpus transition_keys must be a JSON list")
@@ -441,7 +899,8 @@ class ReferenceSequencePortableCorpus:
             split_manifest=PortableDatasetSplitManifest.from_dict(payload["split_manifest"]),
             transition_keys_by_sample=bindings,
             source_index_sha256=payload["source_index_sha256"],
-            materialized_roles=tuple(receipt["roles"]),
+            source_role_inventories=inventories,
+            prepared_roles=tuple(receipt["prepared_roles"]),
         )
         if not _exact_json_equal(result.as_dict(), payload):
             raise ValueError("portable corpus is not the exact canonical record")
@@ -459,25 +918,32 @@ class ReferenceSequencePortableCorpus:
         """Build a metadata-only TRAIN/VALIDATION view.
 
         This method does not own a dataset or bridge and therefore cannot load
-        a static or dynamic array. Its claim is limited to metadata selection;
-        payload access still requires a separate branch-local ledger and lazy
-        bridge call.
+        a static or dynamic array. The returned self-hash proves consistency,
+        not origin. After crossing a serialization boundary, callers must use
+        :meth:`ReferenceSequencePortableConsumerView.from_json` with a corpus
+        and trusted corpus SHA-256 obtained outside the view. Payload access
+        still requires a separate branch-local ledger and lazy bridge call.
         """
         selected = _canonical_roles(roles, consumer=True)
+        if any(role not in self.prepared_roles for role in selected):
+            raise ValueError("consumer view may select only prepared corpus roles")
         records_by_role = {role: self.split_manifest.records(role) for role in selected}
-        selected_trajectories = {record.trajectory_id for records in records_by_role.values() for record in records}
-        bindings = {
-            key: transition
-            for key, transition in self.transition_keys_by_sample.items()
-            if key[0] in selected_trajectories
+        lookups = {
+            (record.trajectory_id, sample.sample_id)
+            for records in records_by_role.values()
+            for record in records
+            for sample in record.samples
         }
-        return ReferenceSequencePortableConsumerView(
+        bindings = {lookup: self.transition_keys_by_sample[lookup] for lookup in sorted(lookups)}
+        result = ReferenceSequencePortableConsumerView(
             source_corpus_sha256=self.corpus_sha256,
             source_manifest_sha256=self.split_manifest.manifest_sha256,
             roles=selected,
             records_by_role=records_by_role,
             transition_keys_by_sample=bindings,
         )
+        result.validate_authenticated_projection(self, trusted_source_corpus_sha256=self.corpus_sha256)
+        return result
 
 
 def _build_trajectory(
@@ -625,10 +1091,12 @@ def materialize_reference_sequence_portable_corpus(
 ) -> ReferenceSequencePortableCorpus:
     """Producer-only materialization of requested portable metadata roles.
 
-    This preparation API opens every transition in ``roles``. Its returned
-    receipt states exactly which roles it materialized, but is not proof of a
-    global embargo. Training consumers should deserialize the sealed result
-    with :meth:`ReferenceSequencePortableCorpus.from_json`, call
+    This preparation API opens every transition in ``roles``. Its receipt
+    proves that output metadata completely covers each requested role under
+    the stored source-index inventory; it is not independent proof that a
+    payload was opened and is not global access control. Training consumers
+    should deserialize the sealed result with
+    :meth:`ReferenceSequencePortableCorpus.from_json`, call
     :meth:`ReferenceSequencePortableCorpus.consumer_view`, and materialize
     only scheduled TRAIN/VALIDATION transitions on demand.
     """
@@ -639,6 +1107,7 @@ def materialize_reference_sequence_portable_corpus(
     if bridge.dataset is not dataset:
         raise ValueError("bridge must own the exact dataset")
     selected = _canonical_roles(roles)
+    source_role_inventories = {role: _source_role_from_records(dataset, role) for role in _ROLE_ORDER}
     bindings: dict[tuple[str, str], ReferenceTransitionKey] = {}
     records_by_role: dict[DatasetRole, tuple[PortableDatasetTrajectoryRecord, ...]] = {}
     for role in _ROLE_ORDER:
@@ -657,7 +1126,8 @@ def materialize_reference_sequence_portable_corpus(
         split_manifest=manifest,
         transition_keys_by_sample=bindings,
         source_index_sha256=dataset.index_sha256,
-        materialized_roles=selected,
+        source_role_inventories=source_role_inventories,
+        prepared_roles=selected,
     )
 
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from .. import reference_sequence_portable_corpus as corpus_contract
-from ..reference_sequence_dataset import ReferenceSequenceDataset
+from ..reference_sequence_dataset import ReferenceSequenceDataset, ReferenceTransitionKey
 from ..reference_sequence_portable_corpus import (
     ReferenceSequencePortableConsumerView,
     ReferenceSequencePortableCorpus,
@@ -65,18 +65,22 @@ class TestReferenceSequencePortableCorpus(unittest.TestCase):
             corpus = materialize_reference_sequence_portable_corpus(dataset, bridge)
 
             self.assertIs(type(corpus), ReferenceSequencePortableCorpus)
-            self.assertEqual(corpus.materialized_roles, tuple(DatasetRole))
+            self.assertEqual(corpus.prepared_roles, tuple(DatasetRole))
             self.assertEqual(len(corpus.split_manifest.train), 1)
             self.assertEqual(len(corpus.split_manifest.validation), 1)
             self.assertEqual(len(corpus.split_manifest.confirmation), 1)
             self.assertEqual(len(corpus.transition_keys_by_sample), 9)
             self.assertNotIn("materialized_sample", vars(corpus))
             self.assertNotIn("bridge", vars(corpus))
-            receipt = corpus.as_dict()["producer_materialization"]
-            self.assertEqual(receipt["roles"], [role.value for role in DatasetRole])
+            receipt = corpus.as_dict()["producer_preparation"]
+            self.assertEqual(receipt["prepared_roles"], [role.value for role in DatasetRole])
             self.assertEqual(
                 receipt["claim_scope"],
-                "producer-preparation-roles-materialized-not-consumer-access-control",
+                "complete-requested-role-metadata-not-proof-of-payload-opens-or-access-control",
+            )
+            self.assertEqual(
+                corpus.source_role_inventories[DatasetRole.CONSUMED_REGRESSION].source_transition_count,
+                0,
             )
 
     def test_consumer_reconstructs_full_metadata_and_train_validation_view_without_confirmation_load(self) -> None:
@@ -88,6 +92,7 @@ class TestReferenceSequencePortableCorpus(unittest.TestCase):
                 ReferenceSequencePortableDatasetBridge(producer_dataset, device="cpu"),
             )
             sealed_json = producer.to_json()
+            trusted_corpus_sha256 = producer.corpus_sha256
 
             loaded_roles: list[DatasetRole] = []
             original_transition = ReferenceSequenceDataset.transition
@@ -109,7 +114,14 @@ class TestReferenceSequencePortableCorpus(unittest.TestCase):
             self.assertEqual(len(view.transition_keys_by_sample), 6)
             self.assertEqual(len(consumer_corpus.split_manifest.confirmation), 1)
             self.assertNotIn(DatasetRole.CONFIRMATION, loaded_roles)
-            self.assertEqual(ReferenceSequencePortableConsumerView.from_json(view.to_json()), view)
+            self.assertEqual(
+                ReferenceSequencePortableConsumerView.from_json(
+                    view.to_json(),
+                    authenticated_source_corpus=consumer_corpus,
+                    trusted_source_corpus_sha256=trusted_corpus_sha256,
+                ),
+                view,
+            )
 
             with self.assertRaisesRegex(ValueError, "consumer view may contain only train and validation"):
                 consumer_corpus.consumer_view((DatasetRole.TRAIN, DatasetRole.CONFIRMATION))
@@ -138,6 +150,86 @@ class TestReferenceSequencePortableCorpus(unittest.TestCase):
             self.assertEqual(loaded_roles, [DatasetRole.TRAIN])
             self.assertNotIn(DatasetRole.CONFIRMATION, loaded_roles)
 
+    def test_consumer_view_rejects_transition_value_relabel(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = _dataset(Path(directory))
+            corpus = materialize_reference_sequence_portable_corpus(
+                dataset,
+                ReferenceSequencePortableDatasetBridge(dataset, device="cpu"),
+                roles=(DatasetRole.TRAIN,),
+            )
+            view = corpus.consumer_view((DatasetRole.TRAIN,))
+            bindings = dict(view.transition_keys_by_sample)
+            lookup = next(key for key in bindings if key[1] == "step-00000000")
+            source = bindings[lookup]
+            bindings[lookup] = ReferenceTransitionKey(source.asset_id, source.sequence_id, 1)
+
+            with self.assertRaisesRegex(ValueError, "transition-key bindings"):
+                dataclasses.replace(view, transition_keys_by_sample=bindings)
+
+    def test_consumer_view_rejects_cross_role_asset_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = _dataset(Path(directory))
+            corpus = materialize_reference_sequence_portable_corpus(
+                dataset,
+                ReferenceSequencePortableDatasetBridge(dataset, device="cpu"),
+            )
+            view = corpus.consumer_view()
+            train = view.records(DatasetRole.TRAIN)
+            train_lookups = {
+                sample_lookup
+                for sample_lookup in view.transition_keys_by_sample
+                if sample_lookup[0] == train[0].trajectory_id
+            }
+            bindings = {
+                lookup: key for lookup, key in view.transition_keys_by_sample.items() if lookup in train_lookups
+            }
+
+            with self.assertRaisesRegex(ValueError, "across roles"):
+                dataclasses.replace(
+                    view,
+                    records_by_role={
+                        DatasetRole.TRAIN: train,
+                        DatasetRole.VALIDATION: train,
+                    },
+                    transition_keys_by_sample=bindings,
+                )
+
+    def test_consumer_view_requires_authenticated_exact_source_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = _dataset(Path(directory))
+            corpus = materialize_reference_sequence_portable_corpus(
+                dataset,
+                ReferenceSequencePortableDatasetBridge(dataset, device="cpu"),
+            )
+            view = corpus.consumer_view((DatasetRole.TRAIN,))
+
+            with self.assertRaisesRegex(ValueError, "externally authenticated root"):
+                ReferenceSequencePortableConsumerView.from_json(
+                    view.to_json(),
+                    authenticated_source_corpus=corpus,
+                    trusted_source_corpus_sha256="f" * 64,
+                )
+
+            validation_record = corpus.split_manifest.validation[0]
+            validation_lookups = {
+                (validation_record.trajectory_id, sample.sample_id) for sample in validation_record.samples
+            }
+            forged = ReferenceSequencePortableConsumerView(
+                source_corpus_sha256=corpus.corpus_sha256,
+                source_manifest_sha256=corpus.split_manifest.manifest_sha256,
+                roles=(DatasetRole.TRAIN,),
+                records_by_role={DatasetRole.TRAIN: (validation_record,)},
+                transition_keys_by_sample={
+                    lookup: corpus.transition_keys_by_sample[lookup] for lookup in validation_lookups
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "exact authenticated corpus projection"):
+                forged.validate_authenticated_projection(
+                    corpus,
+                    trusted_source_corpus_sha256=corpus.corpus_sha256,
+                )
+
     def test_role_filtered_preparation_never_opens_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             dataset = _dataset(Path(directory))
@@ -156,11 +248,42 @@ class TestReferenceSequencePortableCorpus(unittest.TestCase):
                     roles=(DatasetRole.TRAIN, DatasetRole.VALIDATION),
                 )
 
-            self.assertEqual(corpus.materialized_roles, (DatasetRole.TRAIN, DatasetRole.VALIDATION))
+            self.assertEqual(corpus.prepared_roles, (DatasetRole.TRAIN, DatasetRole.VALIDATION))
             self.assertEqual(set(loaded_roles), {DatasetRole.TRAIN, DatasetRole.VALIDATION})
             self.assertNotIn(DatasetRole.CONFIRMATION, loaded_roles)
             self.assertEqual(corpus.split_manifest.confirmation, ())
             self.assertEqual(corpus.consumer_view().roles, (DatasetRole.TRAIN, DatasetRole.VALIDATION))
+
+    def test_preparation_preserves_legitimate_requested_empty_role(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = _dataset(Path(directory))
+            corpus = materialize_reference_sequence_portable_corpus(
+                dataset,
+                ReferenceSequencePortableDatasetBridge(dataset, device="cpu"),
+                roles=(DatasetRole.TRAIN, DatasetRole.CONSUMED_REGRESSION),
+            )
+
+            self.assertEqual(corpus.prepared_roles, (DatasetRole.TRAIN, DatasetRole.CONSUMED_REGRESSION))
+            self.assertEqual(corpus.split_manifest.consumed_regression, ())
+            self.assertEqual(
+                corpus.source_role_inventories[DatasetRole.CONSUMED_REGRESSION].trajectory_count,
+                0,
+            )
+
+    def test_receipt_cannot_overstate_nonempty_unmaterialized_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = _dataset(Path(directory))
+            corpus = materialize_reference_sequence_portable_corpus(
+                dataset,
+                ReferenceSequencePortableDatasetBridge(dataset, device="cpu"),
+                roles=(DatasetRole.TRAIN,),
+            )
+
+            with self.assertRaisesRegex(ValueError, "materialization"):
+                dataclasses.replace(
+                    corpus,
+                    prepared_roles=(DatasetRole.TRAIN, DatasetRole.VALIDATION, DatasetRole.CONFIRMATION),
+                )
 
     def test_strict_corpus_deserialization_rejects_extra_duplicate_and_tampered_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -170,7 +293,7 @@ class TestReferenceSequencePortableCorpus(unittest.TestCase):
                 ReferenceSequencePortableDatasetBridge(dataset, device="cpu"),
                 roles=(DatasetRole.TRAIN,),
             )
-            self.assertEqual(corpus.materialized_roles, (DatasetRole.TRAIN,))
+            self.assertEqual(corpus.prepared_roles, (DatasetRole.TRAIN,))
             payload = corpus.as_dict()
             payload["extra"] = True
             with self.assertRaisesRegex(ValueError, "keys must be exactly"):
@@ -182,10 +305,27 @@ class TestReferenceSequencePortableCorpus(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "transition-key bindings"):
                 ReferenceSequencePortableCorpus.from_dict(tampered)
 
+            inventories = dict(corpus.source_role_inventories)
+            train_inventory = inventories[DatasetRole.TRAIN]
+            changed_sequence = dataclasses.replace(
+                train_inventory.sequences[0],
+                producer_manifest_json="different-manifest.json",
+            )
+            inventories[DatasetRole.TRAIN] = dataclasses.replace(
+                train_inventory,
+                sequences=(changed_sequence,),
+            )
+            with self.assertRaisesRegex(ValueError, "authenticated source index"):
+                dataclasses.replace(corpus, source_role_inventories=inventories)
+
             view_payload = corpus.consumer_view((DatasetRole.TRAIN,)).as_dict()
             view_payload["records"]["train"][0]["operator_volume"]["sha256"] = "0" * 64
             with self.assertRaisesRegex(ValueError, "portable static identity"):
-                ReferenceSequencePortableConsumerView.from_dict(view_payload)
+                ReferenceSequencePortableConsumerView.from_dict(
+                    view_payload,
+                    authenticated_source_corpus=corpus,
+                    trusted_source_corpus_sha256=corpus.corpus_sha256,
+                )
 
     def test_corpus_identity_is_filesystem_relocation_stable(self) -> None:
         with tempfile.TemporaryDirectory() as first_directory, tempfile.TemporaryDirectory() as second_directory:
