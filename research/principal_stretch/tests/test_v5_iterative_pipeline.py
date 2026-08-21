@@ -1934,6 +1934,123 @@ class TestV5IterativeSolver(unittest.TestCase):
         )
         self.assertIs(projection.call_args_list[1].kwargs["initial_positions"], result.trace[0].positions)
 
+    def test_free_body_projection_uses_the_objective_inertial_center_on_both_return_paths(self):
+        predictor = self._predictor()
+        masses = torch.linspace(0.7, 1.9, self.rest.shape[0], dtype=torch.float64)
+        state = ts.build_solver(
+            self.rest,
+            self.tets,
+            _tet_poses(self.rest, self.tets),
+            np.empty(0, dtype=np.int64),
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+            translation_gauge_policy=ts.TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
+            vertex_masses=masses.numpy(),
+        )
+        current = self.inputs[0]
+        shift = torch.tensor([0.031, -0.017, 0.023], dtype=torch.float64)
+        inertial_target = current + shift
+        physical_step = PhysicalStepContext(
+            x_current=current,
+            x_previous=current - shift,
+            force=torch.zeros_like(current),
+            gravity=torch.zeros(3, dtype=torch.float64),
+            mu=self.inputs[4].double(),
+            lam=self.inputs[5].double(),
+            pin=torch.zeros(self.tets.shape[0], dtype=torch.float64),
+            pinned_targets=torch.empty(0, 3, dtype=torch.float64),
+        )
+        objective = CommonObjectiveContext(
+            tets=state.tets,
+            J=state.J,
+            volume=state.w,
+            mass=masses,
+            mu=self.inputs[4].double(),
+            lam=self.inputs[5].double(),
+            inertial_target=inertial_target,
+            pinned=torch.empty(0, dtype=torch.int64),
+            dt=1.0 / 60.0,
+        )
+
+        for return_diagnostics in (False, True):
+            with self.subTest(return_diagnostics=return_diagnostics):
+                with mock.patch(
+                    "research.principal_stretch.iterative_solver.torch_solver.project_deformation_gradient",
+                    wraps=ts.project_deformation_gradient,
+                ) as projection:
+                    result = solve_iterative_principal_stretch(
+                        predictor=predictor,
+                        projection_state=state,
+                        objective=objective,
+                        physical_step=physical_step,
+                        expected_physical_step_sha256=physical_step.physical_step_sha256,
+                        config=IterativeSolverConfig(
+                            iterations=1,
+                            objective_policy="record",
+                            residual_policy="record",
+                            return_projection_diagnostics=return_diagnostics,
+                        ),
+                    )
+
+                self.assertIs(
+                    projection.call_args.kwargs["center_of_mass_positions"],
+                    objective._owned_tensor("inertial_target"),
+                )
+                weights = state.center_of_mass_weights
+                expected_center = torch.einsum("v,vd->d", weights, inertial_target)
+                actual_center = torch.einsum("v,vd->d", weights, result.positions)
+                torch.testing.assert_close(actual_center, expected_center, rtol=0.0, atol=2.0e-14)
+
+    def test_free_body_projection_requires_exact_objective_mass_weights(self):
+        predictor = self._predictor()
+        gauge_masses = torch.linspace(0.7, 1.9, self.rest.shape[0], dtype=torch.float64)
+        state = ts.build_solver(
+            self.rest,
+            self.tets,
+            _tet_poses(self.rest, self.tets),
+            np.empty(0, dtype=np.int64),
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+            translation_gauge_policy=ts.TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
+            vertex_masses=gauge_masses.numpy(),
+        )
+        objective_masses = gauge_masses.clone()
+        objective_masses[[0, 1]] = objective_masses[[1, 0]]
+        current = self.inputs[0]
+        objective = CommonObjectiveContext(
+            tets=state.tets,
+            J=state.J,
+            volume=state.w,
+            mass=objective_masses,
+            mu=self.inputs[4].double(),
+            lam=self.inputs[5].double(),
+            inertial_target=current,
+            pinned=torch.empty(0, dtype=torch.int64),
+            dt=1.0 / 60.0,
+        )
+        physical_step = PhysicalStepContext(
+            x_current=current,
+            x_previous=current,
+            force=torch.zeros_like(current),
+            gravity=torch.zeros(3, dtype=torch.float64),
+            mu=self.inputs[4].double(),
+            lam=self.inputs[5].double(),
+            pin=torch.zeros(self.tets.shape[0], dtype=torch.float64),
+            pinned_targets=torch.empty(0, 3, dtype=torch.float64),
+        )
+
+        with self.assertRaisesRegex(ValueError, "center-of-mass weights.*common-objective mass"):
+            solve_iterative_principal_stretch(
+                predictor=predictor,
+                projection_state=state,
+                objective=objective,
+                physical_step=physical_step,
+                expected_physical_step_sha256=physical_step.physical_step_sha256,
+                config=IterativeSolverConfig(iterations=1),
+            )
+
     def test_zero_head_ablation_executes_both_heads_at_identical_work(self):
         predictor = self._predictor()
         with torch.no_grad():

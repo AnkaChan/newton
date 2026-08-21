@@ -941,6 +941,39 @@ def _validate_problem_identity(
     ):
         if not torch.equal(projected, common):
             raise ValueError(f"projection and common-objective {name} differ")
+    _validate_translation_gauge_objective_binding(projection_state, objective)
+
+
+def _validate_translation_gauge_objective_binding(
+    projection_state: SolverState,
+    objective: CommonObjectiveContext,
+) -> None:
+    """Bind a free-body projection's translation gauge to objective mass."""
+    if projection_state.translation_gauge_policy != torch_solver.TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS:
+        if projection_state.center_of_mass_weights is not None:
+            raise ValueError("projection translation gauge policy and center-of-mass weights disagree")
+        return
+
+    weights = projection_state.center_of_mass_weights
+    if (
+        projection_state.projection_backend != "dense"
+        or projection_state.tikhonov != 0.0
+        or projection_state.pinned.numel() != 0
+        or weights is None
+        or weights.layout != torch.strided
+        or weights.shape != (projection_state.n_verts,)
+        or weights.device != objective.device
+        or weights.dtype != objective.dtype
+        or not weights.is_floating_point()
+    ):
+        raise ValueError("mass-weighted center-of-mass projection state is not canonical")
+    expected_free = torch.arange(projection_state.n_verts, dtype=torch.int64, device=objective.device)
+    if not torch.equal(projection_state.free, expected_free):
+        raise ValueError("mass-weighted center-of-mass projection must keep every vertex free")
+    mass = objective._owned_tensor("mass")
+    expected_weights = mass / mass.sum()
+    if not torch.equal(weights, expected_weights):
+        raise ValueError("projection center-of-mass weights differ from normalized common-objective mass")
 
 
 def _exact_float32_image(name: str, value: torch.Tensor) -> np.ndarray:
@@ -982,6 +1015,7 @@ def validate_physical_objective_integration(
     ):
         if not torch.equal(projected, common):
             raise ValueError(f"projection and common-objective {name} differ")
+    _validate_translation_gauge_objective_binding(projection_state, objective)
     _validate_physical_objective_integration_trusted(projection_state, objective, physical_step)
 
 
@@ -1541,6 +1575,8 @@ def solve_iterative_principal_stretch(
         projection_kwargs: dict[str, object] = {}
         if projection_state.projection_backend != "dense":
             projection_kwargs["initial_positions"] = iteration_positions
+        if projection_state.translation_gauge_policy == torch_solver.TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS:
+            projection_kwargs["center_of_mass_positions"] = objective._owned_tensor("inertial_target")
         projection_diagnostics: ProjectionDiagnostics | None = None
         if config.return_projection_diagnostics:
             proposed, projection_diagnostics = torch_solver.project_deformation_gradient(

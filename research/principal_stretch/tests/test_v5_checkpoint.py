@@ -266,6 +266,8 @@ class TestV5CheckpointContract(unittest.TestCase):
         learned_parameter_dtype: str = "torch.float64",
         training_split: SplitManifest | None = None,
         sampling_schedule: SamplingSchedule | None = None,
+        projection: ProjectionContract | None = None,
+        safeguards: SafeguardContract | None = None,
     ) -> V5SolverContract:
         if graph_config is None:
             graph_config = self.predictor.checkpoint_config()["graph_transformer"]
@@ -325,7 +327,8 @@ class TestV5CheckpointContract(unittest.TestCase):
                 max_hencky_update=0.25,
                 max_rotation_update=0.5,
             ),
-            projection=ProjectionContract(
+            projection=projection
+            or ProjectionContract(
                 backend="sparse_pcg",
                 relative_tolerance=1.0e-6,
                 absolute_tolerance=0.0,
@@ -353,7 +356,8 @@ class TestV5CheckpointContract(unittest.TestCase):
                 preconditioner_calls=0,
                 line_search_candidates=0,
             ),
-            safeguards=SafeguardContract(
+            safeguards=safeguards
+            or SafeguardContract(
                 minimum_determinant=0.0,
                 minimum_singular_value=0.0,
                 objective_policy="require-nonincreasing",
@@ -379,11 +383,18 @@ class TestV5CheckpointContract(unittest.TestCase):
         *,
         training_split: SplitManifest | None = None,
         sampling_schedule: SamplingSchedule | None = None,
+        projection: ProjectionContract | None = None,
+        safeguards: SafeguardContract | None = None,
     ) -> V6SolverContract:
         direct = (
             self.contract
-            if training_split is None and sampling_schedule is None
-            else self._contract(training_split=training_split, sampling_schedule=sampling_schedule)
+            if training_split is None and sampling_schedule is None and projection is None and safeguards is None
+            else self._contract(
+                training_split=training_split,
+                sampling_schedule=sampling_schedule,
+                projection=projection,
+                safeguards=safeguards,
+            )
         )
         return V6SolverContract.build(
             graph_config=direct.graph_config,
@@ -520,6 +531,72 @@ class TestV5CheckpointContract(unittest.TestCase):
         manifest = SplitManifest(train=(self.train,), validation=(), confirmation=(held_out,))
         schedule = build_sampling_schedule(manifest, steps=8, batch_size=1, seed=1701)
         return physical_step, objective, source_evidence, held_out, manifest, schedule
+
+    def _center_of_mass_runtime_inputs(self):
+        masses = torch.tensor([0.7, 1.1, 1.9, 2.6], dtype=torch.float64)
+        projection = ts.build_solver(
+            self.rest,
+            self.tets,
+            self.pose,
+            np.empty(0, dtype=np.int64),
+            torch.device("cpu"),
+            dtype=torch.float64,
+            projection_backend="dense",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+            translation_gauge_policy=ts.TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
+            vertex_masses=masses.numpy(),
+        )
+        shift = torch.tensor([0.013, -0.009, 0.017], dtype=torch.float64)
+        inertial_target = self.positions + shift
+        physical_step = PhysicalStepContext(
+            x_current=self.positions,
+            x_previous=self.positions - shift,
+            force=torch.zeros_like(self.positions),
+            gravity=torch.zeros(3, dtype=torch.float64),
+            mu=self.mu,
+            lam=self.lam,
+            pin=torch.zeros(1, dtype=torch.float64),
+            pinned_targets=torch.empty(0, 3, dtype=torch.float64),
+        )
+        objective = CommonObjectiveContext(
+            tets=projection.tets,
+            J=projection.J,
+            volume=projection.w,
+            mass=masses,
+            mu=self.mu,
+            lam=self.lam,
+            inertial_target=inertial_target,
+            pinned=torch.empty(0, dtype=torch.int64),
+            dt=1.0 / 120.0,
+        )
+        held_out = _trajectory(
+            "center-of-mass-held-out",
+            projection.static_mesh_sha256,
+            operator_geometry_sha256=projection.operator_geometry_sha256,
+            physical_step_sha256=physical_step.physical_step_sha256,
+            common_objective_sha256=objective.common_objective_sha256,
+        )
+        manifest = SplitManifest(train=(self.train,), validation=(), confirmation=(held_out,))
+        schedule = build_sampling_schedule(manifest, steps=8, batch_size=1, seed=1701)
+        projection_contract = ProjectionContract(
+            backend="dense",
+            relative_tolerance=None,
+            absolute_tolerance=None,
+            max_iterations=0,
+            warm_start="not-applicable",
+            raise_on_nonconvergence=True,
+            preconditioner="none",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+        )
+        return (
+            projection,
+            physical_step,
+            objective,
+            held_out,
+            manifest,
+            schedule,
+            projection_contract,
+        )
 
     def test_roundtrip_and_deterministic_tensor_hash(self):
         expected_hash = learned_state_sha256(self.state)
@@ -1455,6 +1532,68 @@ class TestV5CheckpointContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dense compatibility operator"):
             checkpoint_contract._verify_projection_operator(forged, contract)
 
+    def test_center_of_mass_rank_one_factor_and_replay_rhs_are_independently_verified(self):
+        masses = np.asarray([0.7, 1.1, 1.9, 2.6], dtype=np.float64)
+        state = ts.build_solver(
+            self.rest,
+            self.tets,
+            self.pose,
+            np.empty(0, dtype=np.int64),
+            torch.device("cpu"),
+            dtype=torch.float64,
+            projection_backend="dense",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+            translation_gauge_policy=ts.TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
+            vertex_masses=masses,
+        )
+        contract = ProjectionContract(
+            backend="dense",
+            relative_tolerance=None,
+            absolute_tolerance=None,
+            max_iterations=0,
+            warm_start="not-applicable",
+            raise_on_nonconvergence=True,
+            preconditioner="none",
+            operator_geometry_policy=ts.OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
+        )
+
+        checkpoint_contract._verify_projection_operator(state, contract)
+        expected_operator = state.L + state.center_of_mass_weights[:, None] * state.center_of_mass_weights[None, :]
+        torch.testing.assert_close(
+            state.L_ff_chol @ state.L_ff_chol.transpose(0, 1),
+            expected_operator,
+            rtol=3.0e-15,
+            atol=3.0e-15,
+        )
+
+        positions = torch.as_tensor(self.rest, dtype=torch.float64) + torch.tensor(
+            [0.19, -0.07, 0.23], dtype=torch.float64
+        )
+        positions[3] += torch.tensor([0.02, -0.01, 0.03], dtype=torch.float64)
+        target = ts.compute_F(positions, state.tets, state.J)
+        projected = ts.project_deformation_gradient(
+            state,
+            target,
+            torch.empty(0, 3, dtype=torch.float64),
+            center_of_mass_positions=positions,
+        )
+        residual_norm, rhs_norm = checkpoint_contract._projection_residual_metrics(
+            state,
+            target,
+            torch.empty(0, 3, dtype=torch.float64),
+            projected,
+            center_of_mass_positions=positions,
+        )
+        self.assertTrue(bool((residual_norm <= 2.0e-12 * rhs_norm).all()))
+
+        forged_factor = state.L_ff_chol.clone()
+        forged_factor[0, 0] *= 1.01
+        with self.assertRaisesRegex(ValueError, "dense factored operator"):
+            checkpoint_contract._verify_projection_operator(
+                dataclasses.replace(state, L_ff_chol=forged_factor),
+                contract,
+            )
+
     def test_dense_factor_allows_only_locally_scaled_cholesky_cancellation(self):
         rest = np.asarray(
             [
@@ -1852,6 +1991,149 @@ class TestV5CheckpointContract(unittest.TestCase):
                 physical_dt_seconds=1.0 / 120.0,
                 residual_scale=self.objective.residual_scale,
             )
+
+    def test_center_of_mass_runtime_replays_under_legacy_v5_and_v6_contracts(self):
+        (
+            projection,
+            physical_step,
+            objective,
+            held_out,
+            manifest,
+            schedule,
+            projection_contract,
+        ) = self._center_of_mass_runtime_inputs()
+        constraint = IdentityConstraintHook()
+        ledger = DataAccessLedger(manifest).record_access(
+            held_out.trajectory_id,
+            purpose="confirmation_evaluation",
+            scope="payload",
+            payload_names=("common_objective", "physical_step", "reference_state"),
+        )
+        safeguards = dataclasses.replace(
+            self.contract.safeguards,
+            objective_increase_tolerance=1.0e-12,
+            normalized_residual_increase_tolerance=1.0e-12,
+        )
+
+        for schema_version in (5, 6):
+            with self.subTest(schema_version=schema_version):
+                proposal_safeguard = (
+                    None if schema_version == 5 else ProposalSafeguardConfig(candidate_step_fractions=(1.0, 0.5, 0.0))
+                )
+                config = IterativeSolverConfig(
+                    iterations=3,
+                    minimum_determinant=0.0,
+                    minimum_singular_value=0.0,
+                    objective_policy="require-nonincreasing",
+                    residual_policy="require-nonincreasing",
+                    objective_increase_tolerance=1.0e-12,
+                    normalized_residual_increase_tolerance=1.0e-12,
+                    initializer_policy="persistence",
+                    return_projection_diagnostics=True,
+                    head_mode="learned",
+                    proposal_safeguard=proposal_safeguard,
+                )
+                result = solve_iterative_principal_stretch(
+                    predictor=self.predictor,
+                    projection_state=projection,
+                    objective=objective,
+                    physical_step=physical_step,
+                    expected_physical_step_sha256=physical_step.physical_step_sha256,
+                    config=config,
+                    constraint=constraint,
+                )
+
+                if schema_version == 5:
+                    contract = self._contract(
+                        training_split=manifest,
+                        sampling_schedule=schedule,
+                        projection=projection_contract,
+                        safeguards=safeguards,
+                    )
+                    checkpoint = build_v5_checkpoint(
+                        self.state,
+                        solver_contract=contract,
+                        optimizer_state=self.optimizer_state,
+                        rng_state=self.rng_state,
+                        batch_stream=schedule,
+                        completed_updates=7,
+                        parent_lineage=ParentLineage.root(),
+                    )
+                    binding = build_v5_evaluation_binding(
+                        checkpoint,
+                        held_out_trajectory=held_out,
+                        split_manifest=manifest,
+                        access_ledger=ledger,
+                        projection_state=projection,
+                        predictor=self.predictor,
+                        selected_sample_ids=(held_out.samples[0].sample_id,),
+                        physical_dt_seconds=objective.dt,
+                        residual_scale=objective.residual_scale,
+                    )
+                    verified = verify_v5_runtime_compatibility(
+                        checkpoint,
+                        evaluation_binding=binding,
+                        held_out_trajectory=held_out,
+                        split_manifest=manifest,
+                        access_ledger=ledger,
+                        predictor=self.predictor,
+                        solver_config=config,
+                        projection_state=projection,
+                        constraint=constraint,
+                        objective=objective,
+                        physical_step=physical_step,
+                        result=result,
+                    )
+                else:
+                    contract = self._v6_contract(
+                        training_split=manifest,
+                        sampling_schedule=schedule,
+                        projection=projection_contract,
+                        safeguards=safeguards,
+                    )
+                    checkpoint = build_v6_checkpoint(
+                        self.state,
+                        solver_contract=contract,
+                        optimizer_state=self.optimizer_state,
+                        rng_state=self.rng_state,
+                        batch_stream=schedule,
+                        completed_updates=7,
+                        parent_lineage=ParentLineage.root(),
+                    )
+                    binding = build_v6_evaluation_binding(
+                        checkpoint,
+                        held_out_trajectory=held_out,
+                        split_manifest=manifest,
+                        access_ledger=ledger,
+                        projection_state=projection,
+                        predictor=self.predictor,
+                        selected_sample_ids=(held_out.samples[0].sample_id,),
+                        physical_dt_seconds=objective.dt,
+                        residual_scale=objective.residual_scale,
+                    )
+                    verified = verify_v6_runtime_compatibility(
+                        checkpoint,
+                        evaluation_binding=binding,
+                        held_out_trajectory=held_out,
+                        split_manifest=manifest,
+                        access_ledger=ledger,
+                        predictor=self.predictor,
+                        solver_config=config,
+                        projection_state=projection,
+                        constraint=constraint,
+                        objective=objective,
+                        physical_step=physical_step,
+                        result=result,
+                    )
+
+                self.assertEqual(verified.iterations, 3)
+                expected_center = torch.einsum(
+                    "v,vd->d",
+                    projection.center_of_mass_weights,
+                    objective._owned_tensor("inertial_target"),
+                )
+                observed_center = torch.einsum("v,vd->d", projection.center_of_mass_weights, result.positions)
+                torch.testing.assert_close(observed_center, expected_center, rtol=0.0, atol=2.0e-14)
 
     def test_runtime_verifier_binds_concrete_execution_and_rejects_mismatches(self):
         self.predictor.model.eval()

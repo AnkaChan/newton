@@ -54,6 +54,7 @@ from .predictor import StretchPredictor, predictor_architecture_version
 from .torch_solver import (
     OPERATOR_GEOMETRY_POLICY_CANONICAL_REST_INVERSE,
     OPERATOR_GEOMETRY_POLICY_SOURCE_TET_POSES_PROMOTED,
+    TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS,
     ProjectionDiagnostics,
     SolverState,
     compute_F,
@@ -2788,6 +2789,34 @@ def _verify_projection_operator(state: SolverState, contract: ProjectionContract
     if not torch.equal(state.free, expected_free):
         raise ValueError("evaluation projection free-vertex ordering is noncanonical")
 
+    has_center_of_mass_gauge = state.translation_gauge_policy == TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS
+    if state.translation_gauge_policy == "none":
+        if state.center_of_mass_weights is not None:
+            raise ValueError("evaluation projection translation gauge policy and mass weights disagree")
+    elif has_center_of_mass_gauge:
+        weights = state.center_of_mass_weights
+        if (
+            contract.backend != "dense"
+            or state.pinned.numel() != 0
+            or weights is None
+            or weights.layout != torch.strided
+            or not weights.is_floating_point()
+            or weights.shape != (state.n_verts,)
+            or weights.dtype != rest.dtype
+            or weights.device != rest.device
+            or not torch.isfinite(weights).all()
+            or (weights < 0.0).any()
+            or not torch.isclose(
+                weights.sum(),
+                weights.new_tensor(1.0),
+                rtol=0.0,
+                atol=32.0 * torch.finfo(weights.dtype).eps,
+            )
+        ):
+            raise ValueError("evaluation mass-weighted center-of-mass projection state is invalid")
+    else:
+        raise ValueError("evaluation projection has an unsupported translation gauge policy")
+
     expected_dm_inv = state.source_tet_poses.to(dtype=rest.dtype)
     if not torch.equal(state.Dm_inv, expected_dm_inv):
         raise ValueError("evaluation projection Dm_inv differs from the exact source-pose promotion")
@@ -2833,13 +2862,19 @@ def _verify_projection_operator(state: SolverState, contract: ProjectionContract
         )
         if not torch.equal(state.L_ff_chol, torch.tril(state.L_ff_chol)) or (state.L_ff_chol.diagonal() <= 0.0).any():
             raise ValueError("evaluation dense compatibility factor is not canonical lower Cholesky form")
+        expected_factored_operator = expected_l[state.free][:, state.free]
+        if has_center_of_mass_gauge:
+            free_weights = state.center_of_mass_weights[state.free]
+            expected_factored_operator = expected_factored_operator + free_weights[:, None] * free_weights[None, :]
         _require_cholesky_product(
             "evaluation projection state dense factored operator",
             state.L_ff_chol,
-            state.L[state.free][:, state.free],
+            expected_factored_operator,
         )
         return
 
+    if has_center_of_mass_gauge:
+        raise ValueError("sparse compatibility projection does not support the center-of-mass translation gauge")
     if (
         state.L is not None
         or state.L_ff_chol is not None
@@ -3864,10 +3899,28 @@ def _projection_residual_metrics(
     target_f: torch.Tensor,
     pinned_targets: torch.Tensor,
     positions: torch.Tensor,
+    *,
+    center_of_mass_positions: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     contrib = torch.einsum("tdc,tac->tad", target_f, state.J) * state.w[:, None, None]
     rhs = torch.zeros(state.n_verts, 3, dtype=state.rest_q.dtype, device=state.rest_q.device)
     rhs.index_add_(0, state.tets.reshape(-1), contrib.reshape(-1, 3))
+    if state.translation_gauge_policy == TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS:
+        weights = state.center_of_mass_weights
+        if (
+            weights is None
+            or center_of_mass_positions is None
+            or center_of_mass_positions.layout != torch.strided
+            or center_of_mass_positions.shape != (state.n_verts, 3)
+            or center_of_mass_positions.dtype != state.rest_q.dtype
+            or center_of_mass_positions.device != state.rest_q.device
+            or not torch.isfinite(center_of_mass_positions).all()
+        ):
+            raise ValueError("runtime center-of-mass replay positions are invalid")
+        center = torch.einsum("v,vd->d", weights, center_of_mass_positions)
+        rhs = rhs + weights[:, None] * center[None, :]
+    elif center_of_mass_positions is not None:
+        raise ValueError("runtime center-of-mass replay requires its translation gauge policy")
     if state.projection_backend == "dense":
         boundary_rhs = torch.einsum("fp,pd->fd", state.L_fp, pinned_targets)
         if state.L_ff_chol is None:
@@ -4346,6 +4399,8 @@ def verify_v5_runtime_compatibility(
         projection_kwargs: dict[str, object] = {}
         if projection.backend == "sparse_pcg":
             projection_kwargs["initial_positions"] = previous_positions
+        if projection_state.translation_gauge_policy == TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS:
+            projection_kwargs["center_of_mass_positions"] = objective._owned_tensor("inertial_target")
         replay_projection = project_deformation_gradient(
             projection_state,
             trace.target_deformation_gradient,
@@ -4410,6 +4465,11 @@ def verify_v5_runtime_compatibility(
             trace.target_deformation_gradient,
             targets,
             trace.proposed_positions,
+            center_of_mass_positions=(
+                objective._owned_tensor("inertial_target")
+                if projection_state.translation_gauge_policy == TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS
+                else None
+            ),
         )
         if projection.backend == "sparse_pcg":
             threshold = projection.absolute_tolerance + projection.relative_tolerance * rhs_norm
@@ -4890,6 +4950,8 @@ def verify_v6_runtime_compatibility(
         projection_kwargs: dict[str, object] = {}
         if projection.backend == "sparse_pcg":
             projection_kwargs["initial_positions"] = iteration_positions
+        if projection_state.translation_gauge_policy == TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS:
+            projection_kwargs["center_of_mass_positions"] = objective._owned_tensor("inertial_target")
         replay_projection = project_deformation_gradient(
             projection_state,
             replay_target,
@@ -4952,6 +5014,11 @@ def verify_v6_runtime_compatibility(
             replay_target,
             targets,
             replay_proposed,
+            center_of_mass_positions=(
+                objective._owned_tensor("inertial_target")
+                if projection_state.translation_gauge_policy == TRANSLATION_GAUGE_MASS_WEIGHTED_CENTER_OF_MASS
+                else None
+            ),
         )
         if projection.backend == "sparse_pcg":
             threshold = projection.absolute_tolerance + projection.relative_tolerance * rhs_norm
