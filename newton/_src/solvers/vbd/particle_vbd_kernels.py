@@ -39,9 +39,6 @@ from .tri_mesh_collision import (
     get_vertex_colliding_triangles_count,
 )
 
-_VERSION = "self_contact_owner_row_guard_v1"
-print(f"[particle_vbd_kernels] version: {_VERSION}")
-
 # TODO: Grab changes from Warp that has fixed the backward pass
 wp.set_module_options({"enable_backward": False})
 

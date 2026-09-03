@@ -20,9 +20,6 @@ from ...geometry.kernels import (
 from ...sim import Model
 from ...utils.mesh import MeshAdjacency
 
-_VERSION = "self_contact_adaptive_block_size_v2"
-print(f"[tri_mesh_collision] version: {_VERSION}")
-
 _DEFAULT_COLLISION_DETECTION_BLOCK_SIZE = 8
 _MIN_COLLISION_DETECTION_BLOCKS_PER_SM = 8
 

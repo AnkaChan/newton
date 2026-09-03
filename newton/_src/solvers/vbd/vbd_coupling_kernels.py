@@ -20,9 +20,6 @@ from .tri_mesh_collision import (
     get_vertex_colliding_triangles_count,
 )
 
-_VERSION = "self_contact_count_bounds_v1"
-print(f"[vbd_coupling_kernels] version: {_VERSION}")
-
 wp.set_module_options({"enable_backward": False})
 
 

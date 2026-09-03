@@ -19,9 +19,6 @@ from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionInfo
 from newton._src.solvers.vbd.vbd_coupling_kernels import _harvest_vbd_proxy_particle_self_contact_forces_kernel
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-_VERSION = "self_contact_count_bounds_test_v1"
-print(f"[test_vbd_self_contact_buffers] version: {_VERSION}")
-
 
 @wp.kernel
 def _reset_self_contact_outputs(

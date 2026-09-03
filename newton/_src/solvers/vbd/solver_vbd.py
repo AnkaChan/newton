@@ -94,9 +94,6 @@ from .vbd_coupling_kernels import (
 
 __all__ = ["SolverVBD"]
 
-_VERSION = "self_contact_uncapped_force_launch_v1"
-print(f"[solver_vbd] version: {_VERSION}")
-
 _SOFT_CONTACT_BLOCK_DIM = 256
 _SOFT_CONTACT_BLOCKS_PER_SM = 2
 _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128

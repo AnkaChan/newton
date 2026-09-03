@@ -11,9 +11,6 @@ from .types import (
     GeoType,
 )
 
-_VERSION = "self_contact_minkowski_broad_phase_v2"
-print(f"[geometry.kernels] version: {_VERSION}")
-
 _USE_BVH_RADIUS_QUERIES = hasattr(wp, "BvhQuerySphere") and hasattr(wp, "BvhQueryCapsule")
 
 
