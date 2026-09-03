@@ -11,6 +11,7 @@ from .types import (
     GeoType,
 )
 
+
 @wp.func
 def resolve_mesh_sign_method(mesh_properties: int):
     """Resolve the runtime mesh sign method for a shape from its mesh properties.

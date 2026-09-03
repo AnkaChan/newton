@@ -3412,6 +3412,9 @@ def test_edge_face_passes_box(test, device):
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
         n_particle_pairs=0,
+        # Zero-length AABB arrays disable the broad-phase cull for the isolated kernel test.
+        shape_aabb_lower=wp.empty(0, dtype=wp.vec3, device=device),
+        shape_aabb_upper=wp.empty(0, dtype=wp.vec3, device=device),
     )
 
     total = int(contacts.soft_contact_count.numpy()[0])
@@ -3487,6 +3490,9 @@ def test_edge_face_respect_shape_margin(test, device):
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
         n_particle_pairs=0,
+        # Zero-length AABB arrays disable the broad-phase cull for the isolated kernel test.
+        shape_aabb_lower=wp.empty(0, dtype=wp.vec3, device=device),
+        shape_aabb_upper=wp.empty(0, dtype=wp.vec3, device=device),
     )
 
     # Sanity: the gap really is beyond the threshold without the shape margin, so any record
@@ -4352,6 +4358,9 @@ def test_end_to_end_no_false_pos_neg(test, device):
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
         n_particle_pairs=0,
+        # Zero-length AABB arrays disable the broad-phase cull for the isolated kernel test.
+        shape_aabb_lower=wp.empty(0, dtype=wp.vec3, device=device),
+        shape_aabb_upper=wp.empty(0, dtype=wp.vec3, device=device),
     )
 
     total = int(contacts.soft_contact_count.numpy()[0])
