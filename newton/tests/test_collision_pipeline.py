@@ -25,7 +25,7 @@ from newton._src.geometry.soft_contacts_sdf import (
     SDF_FACE_ITERS,
     SDF_LS_ITERS,
     _is_analytic,
-    _shape_frames,
+    _shape_world_frame,
     _soft_feature_aabb_misses_shape,
     eval_shape_sdf,
     eval_shape_sdf_grad,
@@ -4106,7 +4106,7 @@ def _brute_face_min_kernel(
     sdf_idx = shape_sdf_index[shape_index]
     if (not _is_analytic(geo)) and sdf_idx < 0:
         return
-    _X_bs, _X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
+    X_sw = wp.transform_inverse(_shape_world_frame(shape_body, body_q, shape_transform[shape_index], shape_index))
     a = wp.transform_point(X_sw, particle_q[tri_indices[t, 0]])
     b = wp.transform_point(X_sw, particle_q[tri_indices[t, 1]])
     c = wp.transform_point(X_sw, particle_q[tri_indices[t, 2]])
@@ -4149,7 +4149,7 @@ def _brute_edge_min_kernel(
     sdf_idx = shape_sdf_index[shape_index]
     if (not _is_analytic(geo)) and sdf_idx < 0:
         return
-    _X_bs, _X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
+    X_sw = wp.transform_inverse(_shape_world_frame(shape_body, body_q, shape_transform[shape_index], shape_index))
     p = wp.transform_point(X_sw, particle_q[edge_indices[e, 2]])
     q = wp.transform_point(X_sw, particle_q[edge_indices[e, 3]])
     scale = shape_scale[shape_index]
@@ -4287,6 +4287,8 @@ def _soft_ef_contact_multiset(contacts):
 def _launch_soft_ef_multiset(pipeline, state, *, use_shape_aabbs: bool):
     contacts = pipeline.contacts()
     contacts.soft_contact_count.zero_()
+    # Zero-length AABB arrays disable the broad rejection inside the cull function.
+    no_cull = wp.empty(0, dtype=wp.vec3, device=pipeline.device)
     launch_soft_ef_contacts(
         model=pipeline.model,
         state=state,
@@ -4296,8 +4298,8 @@ def _launch_soft_ef_multiset(pipeline, state, *, use_shape_aabbs: bool):
         edge_pairs=pipeline.soft_edge_rigid_pairs,
         face_pairs=pipeline.soft_face_rigid_pairs,
         n_particle_pairs=0,
-        shape_aabb_lower=pipeline.narrow_phase.shape_aabb_lower if use_shape_aabbs else None,
-        shape_aabb_upper=pipeline.narrow_phase.shape_aabb_upper if use_shape_aabbs else None,
+        shape_aabb_lower=pipeline.narrow_phase.shape_aabb_lower if use_shape_aabbs else no_cull,
+        shape_aabb_upper=pipeline.narrow_phase.shape_aabb_upper if use_shape_aabbs else no_cull,
     )
     return _soft_ef_contact_multiset(contacts)
 

@@ -1246,6 +1246,11 @@ def texture_sample_sdf_grad(
     derivatives of the trilinear interpolant for the gradient. Most
     accurate path; use it in stress-integration code (hydroelastic).
 
+    Must stay in sync with the split samplers
+    :func:`texture_sample_sdf_value_only` and
+    :func:`texture_sample_sdf_grad_only`; the bit-exact split tests in
+    test_collision_pipeline.py enforce this.
+
     Args:
         sdf: texture SDF data
         local_pos: query position in local SDF space [m]

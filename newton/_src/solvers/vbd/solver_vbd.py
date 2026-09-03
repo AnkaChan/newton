@@ -1208,7 +1208,13 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._particle_contact_adjacency_initialized = False
 
     def _active_soft_contact_launch_dim(self, soft_contact_max: int) -> int:
-        """Return a bounded launch size for grid-stride traversal of active soft contacts."""
+        """Return a bounded launch size for grid-stride traversal of active soft contacts.
+
+        On CUDA the floor that matters is enough threads to saturate the device
+        (sm_count * blocks-per-SM * block size). ``particle_count`` is only a
+        same-magnitude fallback so CPU runs and tiny devices get a nonzero,
+        capacity-independent grid; it has no semantic tie to contact counts.
+        """
         if soft_contact_max <= 0 or self.model.particle_count <= 0:
             return 0
 

@@ -221,7 +221,10 @@ def compute_shape_aabbs(
 
     margin = shape_margin[shape_id]
 
-    # Enlarge AABB by per-shape effective gap for contact detection
+    # Enlarge AABB by per-shape effective gap for contact detection.
+    # The soft-contact AABB pre-cull (_soft_feature_aabb_misses_shape in
+    # geometry/soft_contacts_sdf.py) relies on exactly this margin + gap
+    # inflation; keep the two formulas in sync.
     effective_gap = margin + shape_gap[shape_id]
     margin_vec = wp.vec3(effective_gap, effective_gap, effective_gap)
 

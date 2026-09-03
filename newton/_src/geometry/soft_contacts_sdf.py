@@ -83,6 +83,10 @@ def eval_shape_sdf(
     the unit outward gradient. Analytic primitives evaluate closed-form (Z-up, matching
     ``create_soft_contacts``); shapes with a provisioned volume SDF (``shape_sdf_index >= 0``) sample
     the texture SDF with query-time scaling.
+
+    Must stay in sync with the split evaluators :func:`eval_shape_sdf_lower` and
+    :func:`eval_shape_sdf_grad`; the bit-exact split tests in
+    test_collision_pipeline.py enforce this.
     """
     if geo == GeoType.SPHERE:
         p = sdf_sphere(x_local, scale[0])
@@ -146,7 +150,12 @@ def eval_shape_sdf_lower(
     shape_sdf_index: wp.int32,
     texture_sdf_table: wp.array[TextureSDFData],
 ) -> float:
-    """Return only the conservative SDF lower bound used for search and culling."""
+    """Return only the conservative SDF lower bound used for search and culling.
+
+    Must stay in sync with :func:`eval_shape_sdf` (the ``phi_lower`` component) and
+    :func:`eval_shape_sdf_grad`; the bit-exact split tests in
+    test_collision_pipeline.py enforce this.
+    """
     if geo == GeoType.SPHERE:
         return sdf_sphere(x_local, scale[0])
     if geo == GeoType.BOX:
@@ -177,7 +186,12 @@ def eval_shape_sdf_grad(
     shape_sdf_index: wp.int32,
     texture_sdf_table: wp.array[TextureSDFData],
 ) -> wp.vec3:
-    """Return only the shape-local SDF gradient used by Frank-Wolfe."""
+    """Return only the shape-local SDF gradient used by Frank-Wolfe.
+
+    Must stay in sync with :func:`eval_shape_sdf` (the ``grad`` component) and
+    :func:`eval_shape_sdf_lower`; the bit-exact split tests in
+    test_collision_pipeline.py enforce this.
+    """
     if geo == GeoType.SPHERE:
         return sdf_sphere_grad(x_local, scale[0])
     if geo == GeoType.BOX:
@@ -311,24 +325,6 @@ def optimize_face_sdf(
 
 
 @wp.func
-def _shape_frames(
-    shape_body: wp.array[wp.int32],
-    body_q: wp.array[wp.transform],
-    shape_transform: wp.array[wp.transform],
-    shape_index: wp.int32,
-):
-    """Return (X_bs, X_ws, X_sw): shape-local->body, shape-local->world, world->shape-local."""
-    rigid_body = shape_body[shape_index]
-    X_wb = wp.transform_identity()
-    if rigid_body >= 0:
-        X_wb = body_q[rigid_body]
-    X_bs = shape_transform[shape_index]
-    X_ws = wp.transform_multiply(X_wb, X_bs)
-    X_sw = wp.transform_inverse(X_ws)
-    return X_bs, X_ws, X_sw
-
-
-@wp.func
 def _shape_world_frame(
     shape_body: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
@@ -355,35 +351,17 @@ def _soft_feature_aabb_misses_shape(
     margin: float,
     radius: float,
 ) -> bool:
-    """Return whether an expanded soft-feature AABB is disjoint from the rigid-shape AABB."""
+    """Return whether an expanded soft-feature AABB is disjoint from the rigid-shape AABB.
+
+    The stored rigid AABBs come from ``compute_shape_aabbs`` (sim/collide.py), already
+    inflated by ``shape_margin + shape_gap``. The contact accept threshold is
+    ``margin + shape_margin + radius``, so expanding the feature box by
+    ``margin + radius + max(0, -gap)`` keeps the test conservative: ``max(0, -gap)``
+    restores the deficit when a negative gap shrinks the stored box below
+    ``tight + shape_margin``. Keep both formulas in sync. Planes are never culled:
+    their stored AABB is a bounding-sphere fallback, not a bound on the surface.
+    """
     if shape_aabb_lower.shape[0] == 0 or shape_type[shape_index] == GeoType.PLANE:
-        return False
-
-    return _soft_feature_aabb_misses_analytic_shape(
-        shape_index,
-        shape_gap,
-        shape_aabb_lower,
-        shape_aabb_upper,
-        feature_lower,
-        feature_upper,
-        margin,
-        radius,
-    )
-
-
-@wp.func
-def _soft_feature_aabb_misses_analytic_shape(
-    shape_index: wp.int32,
-    shape_gap: wp.array[float],
-    shape_aabb_lower: wp.array[wp.vec3],
-    shape_aabb_upper: wp.array[wp.vec3],
-    feature_lower: wp.vec3,
-    feature_upper: wp.vec3,
-    margin: float,
-    radius: float,
-) -> bool:
-    """Analytic non-plane variant of :func:`_soft_feature_aabb_misses_shape`."""
-    if shape_aabb_lower.shape[0] == 0:
         return False
 
     gap = shape_gap[shape_index]
@@ -553,6 +531,9 @@ def create_soft_face_contacts(
     )
     if phi < threshold:
         y = x - phi * grad
+        # Deliberately recompute X_ws and re-read the triangle indices instead of keeping
+        # them live across the optimizer loop: contacts are rare, so trading a redundant
+        # load on the hit path for lower register pressure in the loop is a net win.
         X_bs = shape_transform[shape_index]
         X_ws = _shape_world_frame(shape_body, body_q, X_bs, shape_index)
         out_a_idx = tri_indices[t, 0]
@@ -677,6 +658,9 @@ def create_soft_edge_contacts(
     u, x, phi, grad = optimize_edge_sdf(geo, scale, p_s, q_s, sdf_idx, texture_sdf_table, sdf_edge_iters)
     if phi < threshold:
         y = x - phi * grad
+        # Deliberately recompute X_ws and re-read the edge endpoints instead of keeping
+        # them live across the optimizer loop: contacts are rare, so trading a redundant
+        # load on the hit path for lower register pressure in the loop is a net win.
         X_bs = shape_transform[shape_index]
         X_ws = _shape_world_frame(shape_body, body_q, X_bs, shape_index)
         out_v0 = edge_indices[e, 2]
@@ -714,8 +698,8 @@ def launch_soft_ef_contacts(
     edge_pairs,
     face_pairs,
     n_particle_pairs,
-    shape_aabb_lower=None,
-    shape_aabb_upper=None,
+    shape_aabb_lower,
+    shape_aabb_upper,
 ):
     """Launch the soft EDGE and FACE passes (the soft-particle pass is the legacy kernel).
 
@@ -734,14 +718,6 @@ def launch_soft_ef_contacts(
     n_face_pairs = int(face_pairs.shape[0])
     if n_edge_pairs == 0 and n_face_pairs == 0:
         return
-
-    if (shape_aabb_lower is None) != (shape_aabb_upper is None):
-        raise ValueError("shape_aabb_lower and shape_aabb_upper must be provided together")
-    if shape_aabb_lower is None:
-        # Isolated kernel tests can intentionally disable the broad rejection. Production collision
-        # always supplies the current narrow-phase AABBs, so graph capture never allocates here.
-        shape_aabb_lower = wp.empty(0, dtype=wp.vec3, device=device)
-        shape_aabb_upper = wp.empty(0, dtype=wp.vec3, device=device)
 
     shape_args = [
         model.shape_body,
@@ -769,7 +745,7 @@ def launch_soft_ef_contacts(
         contacts.soft_contact_normal,
     ]
 
-    if n_edge_pairs:
+    if n_edge_pairs > 0:
         wp.launch(
             create_soft_edge_contacts,
             dim=n_edge_pairs,
@@ -787,7 +763,7 @@ def launch_soft_ef_contacts(
             outputs=outputs,
             device=device,
         )
-    if n_face_pairs:
+    if n_face_pairs > 0:
         wp.launch(
             create_soft_face_contacts,
             dim=n_face_pairs,

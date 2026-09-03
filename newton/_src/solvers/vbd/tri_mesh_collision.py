@@ -49,6 +49,10 @@ class TriMeshCollisionInfo:
     edge_colliding_edges_min_dist: wp.array[float]
 
 
+# The detection kernels write each row contiguously from slot 0, so every entry below
+# the clamped count returned by these helpers is valid data from the current pass.
+# Consumers do not need -1 sentinel checks inside count-bounded loops (the buffers are
+# no longer pre-filled); any remaining ones are defensive only.
 @wp.func
 def get_vertex_colliding_triangles_count(col_info: TriMeshCollisionInfo, v: int):
     return wp.min(col_info.vertex_colliding_triangles_count[v], col_info.vertex_colliding_triangles_buffer_sizes[v])
