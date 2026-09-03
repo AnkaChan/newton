@@ -11,9 +11,6 @@ from .types import (
     GeoType,
 )
 
-_USE_BVH_RADIUS_QUERIES = hasattr(wp, "BvhQuerySphere") and hasattr(wp, "BvhQueryCapsule")
-
-
 @wp.func
 def resolve_mesh_sign_method(mesh_properties: int):
     """Resolve the runtime mesh sign method for a shape from its mesh properties.
@@ -1299,49 +1296,6 @@ def _resolve_edge_query_segment(start: wp.vec3, end: wp.vec3):
     return direction, max_dist
 
 
-# The public query types signal a Warp build with the completed sphere/capsule
-# API. Keep AABB constructors for Newton's supported earlier Warp versions.
-if _USE_BVH_RADIUS_QUERIES:
-
-    @wp.func
-    def _bvh_query_vertex_radius(bvh_id: wp.uint64, center: wp.vec3, radius: float, root: int):
-        return wp.bvh_query_sphere(bvh_id, center, radius, root)
-
-    @wp.func
-    def _bvh_query_edge_radius(
-        bvh_id: wp.uint64,
-        start: wp.vec3,
-        end: wp.vec3,
-        direction: wp.vec3,
-        radius: float,
-        root: int,
-    ):
-        return wp.bvh_query_capsule(bvh_id, start, direction, radius, root)
-
-else:
-
-    @wp.func
-    def _bvh_query_vertex_radius(bvh_id: wp.uint64, center: wp.vec3, radius: float, root: int):
-        lower = wp.vec3(center[0] - radius, center[1] - radius, center[2] - radius)
-        upper = wp.vec3(center[0] + radius, center[1] + radius, center[2] + radius)
-        return wp.bvh_query_aabb(bvh_id, lower, upper, root)
-
-    @wp.func
-    def _bvh_query_edge_radius(
-        bvh_id: wp.uint64,
-        start: wp.vec3,
-        end: wp.vec3,
-        direction: wp.vec3,
-        radius: float,
-        root: int,
-    ):
-        lower = wp.min(start, end)
-        upper = wp.max(start, end)
-        lower = wp.vec3(lower[0] - radius, lower[1] - radius, lower[2] - radius)
-        upper = wp.vec3(upper[0] + radius, upper[1] + radius, upper[2] + radius)
-        return wp.bvh_query_aabb(bvh_id, lower, upper, root)
-
-
 @wp.func
 def tri_is_neighbor(a_1: wp.int32, a_2: wp.int32, a_3: wp.int32, b_1: wp.int32, b_2: wp.int32, b_3: wp.int32):
     tri_is_neighbor = (
@@ -1495,9 +1449,9 @@ def vertex_triangle_collision_detection_kernel(
 
         if run_query:
             if query_all:
-                query = _bvh_query_vertex_radius(bvh_id, v, max_query_radius, -1)
+                query = wp.bvh_query_sphere(bvh_id, v, max_query_radius, -1)
             else:
-                query = _bvh_query_vertex_radius(bvh_id, v, max_query_radius, group_root)
+                query = wp.bvh_query_sphere(bvh_id, v, max_query_radius, group_root)
 
             tri_index = wp.int32(0)
             while wp.bvh_query_next(query, tri_index):
@@ -1669,11 +1623,9 @@ def edge_colliding_edges_detection_kernel(
 
         if run_query:
             if query_all:
-                query = _bvh_query_edge_radius(bvh_id, e0_v0_pos, e0_v1_pos, query_direction, max_query_radius, -1)
+                query = wp.bvh_query_capsule(bvh_id, e0_v0_pos, query_direction, max_query_radius, -1)
             else:
-                query = _bvh_query_edge_radius(
-                    bvh_id, e0_v0_pos, e0_v1_pos, query_direction, max_query_radius, group_root
-                )
+                query = wp.bvh_query_capsule(bvh_id, e0_v0_pos, query_direction, max_query_radius, group_root)
 
             colliding_edge_index = wp.int32(0)
             while wp.bvh_query_next(query, colliding_edge_index, query_max_dist):

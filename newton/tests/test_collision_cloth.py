@@ -12,9 +12,6 @@ import newton
 from newton import Mesh
 from newton._src.geometry.bvh import compute_bvh_group_roots
 from newton._src.geometry.kernels import (
-    _USE_BVH_RADIUS_QUERIES,
-    _bvh_query_edge_radius,
-    _bvh_query_vertex_radius,
     _resolve_edge_query_segment,
     init_triangle_collision_data_kernel,
     triangle_closest_point,
@@ -40,7 +37,7 @@ def query_vertex_radius_candidates(
     root: int,
     candidates: wp.array[wp.int32],
 ):
-    query = _bvh_query_vertex_radius(bvh_id, center, radius, root)
+    query = wp.bvh_query_sphere(bvh_id, center, radius, root)
     candidate = wp.int32(0)
     while wp.bvh_query_next(query, candidate):
         candidates[candidate] = 1
@@ -56,7 +53,7 @@ def query_edge_radius_candidates(
     candidates: wp.array[wp.int32],
 ):
     direction, max_dist = _resolve_edge_query_segment(start, end)
-    query = _bvh_query_edge_radius(bvh_id, start, end, direction, radius, root)
+    query = wp.bvh_query_capsule(bvh_id, start, direction, radius, root)
     candidate = wp.int32(0)
     while wp.bvh_query_next(query, candidate, max_dist):
         candidates[candidate] = 1
@@ -1000,9 +997,10 @@ def test_self_contact_broad_phase_query_geometry(test, device):
         device=device,
     )
 
-    broad_corner = 0 if _USE_BVH_RADIUS_QUERIES else 1
-    assert_np_equal(vertex_group_candidates.numpy(), np.array([1, broad_corner, 0], dtype=np.int32))
-    assert_np_equal(vertex_all_candidates.numpy(), np.array([1, broad_corner, 1], dtype=np.int32))
+    # Sphere queries are tighter than the old padded AABBs: the corner box at
+    # (0.8, 0.8, 0) sits outside radius 1 and must not be a candidate.
+    assert_np_equal(vertex_group_candidates.numpy(), np.array([1, 0, 0], dtype=np.int32))
+    assert_np_equal(vertex_all_candidates.numpy(), np.array([1, 0, 1], dtype=np.int32))
 
     edge_centers = np.array(
         [
@@ -1044,9 +1042,10 @@ def test_self_contact_broad_phase_query_geometry(test, device):
         device=device,
     )
 
-    broad_edge = 0 if _USE_BVH_RADIUS_QUERIES else 1
-    assert_np_equal(edge_group_candidates.numpy(), np.array([1, broad_edge, 0, 1], dtype=np.int32))
-    assert_np_equal(edge_all_candidates.numpy(), np.array([1, broad_edge, 1, 1], dtype=np.int32))
+    # Capsule queries are tighter than the old padded AABBs: the off-diagonal box
+    # at (0, 1, 0) is farther than radius 0.1 from the segment and must miss.
+    assert_np_equal(edge_group_candidates.numpy(), np.array([1, 0, 0, 1], dtype=np.int32))
+    assert_np_equal(edge_all_candidates.numpy(), np.array([1, 0, 1, 1], dtype=np.int32))
 
     point_centers = np.array([[0.05, 0.05, 0.0], [0.2, 0.0, 0.0]], dtype=np.float32)
     point_lowers = wp.array(point_centers - half_extent, dtype=wp.vec3, device=device)
