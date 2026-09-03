@@ -3,6 +3,7 @@
 
 """Tests for the VBD solver."""
 
+import math
 import unittest
 import warnings
 
