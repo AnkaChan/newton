@@ -1,0 +1,1 @@
+Add experimental particle elasticity ALM to `SolverVBD` for tetrahedra, springs, and dihedral bending, with pressure-only tet mode, persistent stress history, masked reset, and CUDA graph capture support.

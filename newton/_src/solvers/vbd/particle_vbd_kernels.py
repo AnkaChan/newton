@@ -39,6 +39,7 @@ from ...utils.mesh import (
     get_vertex_num_adjacent_faces,
     get_vertex_num_adjacent_tets,
 )
+from .particle_alm_kernels import ParticleElasticityAlmState, particle_alm_coefficients
 
 # TODO: Grab changes from Warp that has fixed the backward pass
 wp.set_module_options({"enable_backward": False})
@@ -169,7 +170,7 @@ def assemble_tet_vertex_force_and_hessian(
 
 
 @wp.func
-def evaluate_volumetric_neo_hookean_force_and_hessian(
+def evaluate_volumetric_neo_hookean_force_and_hessian_alm(
     tet_id: int,
     v_order: int,
     pos_prev: wp.array[wp.vec3],
@@ -180,7 +181,11 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
     lmbd: float,
     damping: float,
     dt: float,
+    elasticity_alm: ParticleElasticityAlmState,
 ) -> tuple[wp.vec3, wp.mat33]:
+    if elasticity_alm.enabled != 0 and mu == 0.0 and lmbd == 0.0:
+        return wp.vec3(0.0), wp.mat33(0.0)
+
     # ============ Get Vertices ============
     v0 = pos[tet_indices[tet_id, 0]]
     v1 = pos[tet_indices[tet_id, 1]]
@@ -234,15 +239,44 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
     )
 
     # ============ Stress ============
-    s = lmbd_nh * (J - alpha)
-    P_vec = rest_volume * (mu_nh * f + s * cof_vec)
+    mu_effective = mu_nh
+    pressure_effective = lmbd_nh
+    if elasticity_alm.enabled != 0:
+        pressure_scale, pressure_effective, _ = particle_alm_coefficients(
+            lmbd_nh, elasticity_alm.tet_rho_pressure[tet_id]
+        )
+        # Keep the rest-pressure offset when 1 + mu / K rounds to 1.
+        pressure = (
+            pressure_effective * (J - 1.0)
+            - pressure_effective * (mu_nh / lmbd_safe)
+            + pressure_scale * elasticity_alm.tet_lambda_pressure[tet_id]
+        )
+        P_mu = mu_nh * F
+        if elasticity_alm.deviatoric != 0:
+            mu_scale, mu_effective, _ = particle_alm_coefficients(mu_nh, elasticity_alm.tet_rho_mu[tet_id])
+            P_mu = mu_effective * F + mu_scale * elasticity_alm.tet_lambda_mu[tet_id]
+        P_mu_vec = vec9(
+            P_mu[0, 0],
+            P_mu[1, 0],
+            P_mu[2, 0],
+            P_mu[0, 1],
+            P_mu[1, 1],
+            P_mu[2, 1],
+            P_mu[0, 2],
+            P_mu[1, 2],
+            P_mu[2, 2],
+        )
+        P_vec = rest_volume * (P_mu_vec + pressure * cof_vec)
+    else:
+        s = lmbd_nh * (J - alpha)
+        P_vec = rest_volume * (mu_nh * f + s * cof_vec)
 
     # ============ Hessian ============
     # The full elastic Hessian also has an s * d^2 J / dF^2 term, but its
     # contribution to VBD's per-vertex 3x3 block is identically zero:
     # the Levi-Civita tensor in d^2 J / dF^2 contracts against (m^a x m^a),
     # which vanishes. Drop it; the remaining two terms are SPD by inspection.
-    H = mu_nh * wp.identity(n=9, dtype=float) + lmbd_nh * wp.outer(cof_vec, cof_vec)
+    H = mu_effective * wp.identity(n=9, dtype=float) + pressure_effective * wp.outer(cof_vec, cof_vec)
     H = rest_volume * H
 
     # ============ Assemble Pointwise Force ============
@@ -313,6 +347,34 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
         )
 
     return force, hessian
+
+
+@wp.func
+def evaluate_volumetric_neo_hookean_force_and_hessian(
+    tet_id: int,
+    v_order: int,
+    pos_prev: wp.array[wp.vec3],
+    pos: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    Dm_inv: wp.mat33,
+    mu: float,
+    lmbd: float,
+    damping: float,
+    dt: float,
+) -> tuple[wp.vec3, wp.mat33]:
+    return evaluate_volumetric_neo_hookean_force_and_hessian_alm(
+        tet_id,
+        v_order,
+        pos_prev,
+        pos,
+        tet_indices,
+        Dm_inv,
+        mu,
+        lmbd,
+        damping,
+        dt,
+        ParticleElasticityAlmState(),
+    )
 
 
 # ============ Helper Functions ============
@@ -685,7 +747,7 @@ def compute_angle_derivative(
 
 
 @wp.func
-def evaluate_dihedral_angle_based_bending_force_hessian(
+def evaluate_dihedral_angle_based_bending_force_hessian_alm(
     bending_index: int,
     v_order: int,
     pos: wp.array[wp.vec3],
@@ -696,6 +758,7 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     stiffness: float,
     damping: float,
     dt: float,
+    elasticity_alm: ParticleElasticityAlmState,
 ):
     # Skip invalid edges (boundary edges with missing opposite vertices)
     if edge_indices[bending_index, 0] == -1 or edge_indices[bending_index, 1] == -1:
@@ -741,7 +804,11 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     theta = wp.atan2(sin_theta, cos_theta)
 
     k = stiffness * edge_rest_length[bending_index]
-    dE_dtheta = k * (theta - edge_rest_angle[bending_index])
+    if elasticity_alm.enabled != 0:
+        scale, k, _ = particle_alm_coefficients(k, elasticity_alm.bend_rho[bending_index])
+        dE_dtheta = k * (theta - edge_rest_angle[bending_index]) + scale * elasticity_alm.bend_lambda[bending_index]
+    else:
+        dE_dtheta = k * (theta - edge_rest_angle[bending_index])
 
     # Pre-compute skew matrices (shared across all angle derivative computations)
     skew_e = wp.skew(e)
@@ -837,6 +904,34 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
         bending_hessian = bending_hessian + damping_hessian
 
     return bending_force, bending_hessian
+
+
+@wp.func
+def evaluate_dihedral_angle_based_bending_force_hessian(
+    bending_index: int,
+    v_order: int,
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angle: wp.array[float],
+    edge_rest_length: wp.array[float],
+    stiffness: float,
+    damping: float,
+    dt: float,
+):
+    return evaluate_dihedral_angle_based_bending_force_hessian_alm(
+        bending_index,
+        v_order,
+        pos,
+        pos_anchor,
+        edge_indices,
+        edge_rest_angle,
+        edge_rest_length,
+        stiffness,
+        damping,
+        dt,
+        ParticleElasticityAlmState(),
+    )
 
 
 @wp.func
@@ -1608,7 +1703,7 @@ def evaluate_spring_force_and_hessian(
 
 
 @wp.func
-def evaluate_spring_force_and_hessian_both_vertices(
+def evaluate_spring_force_and_hessian_both_vertices_alm(
     spring_idx: int,
     dt: float,
     pos: wp.array[wp.vec3],
@@ -1617,6 +1712,7 @@ def evaluate_spring_force_and_hessian_both_vertices(
     spring_rest_length: wp.array[float],
     spring_stiffness: wp.array[float],
     spring_damping: wp.array[float],
+    elasticity_alm: ParticleElasticityAlmState,
 ):
     """Evaluate spring force and hessian for both vertices of a spring.
 
@@ -1631,13 +1727,23 @@ def evaluate_spring_force_and_hessian_both_vertices(
     spring_length = wp.max(spring_length, 1e-8)
     l0 = spring_rest_length[spring_idx]
 
-    # Base spring force for v0 (v1 gets the opposite)
-    base_force = spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
-
-    structural = wp.identity(3, float) - (l0 / spring_length) * (
-        wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length)
-    )
-    spring_hessian = spring_stiffness[spring_idx] * structural
+    if elasticity_alm.enabled != 0:
+        scale, stiffness, _ = particle_alm_coefficients(
+            spring_stiffness[spring_idx], elasticity_alm.spring_rho[spring_idx]
+        )
+        tension = stiffness * (spring_length - l0) + scale * elasticity_alm.spring_lambda[spring_idx]
+        direction = diff / spring_length
+        axial = wp.outer(direction, direction)
+        base_force = -tension * direction
+        # The geometric term can remain negative under compression, as in legacy VBD.
+        spring_hessian = stiffness * axial + (tension / spring_length) * (wp.identity(3, float) - axial)
+    else:
+        # Base spring force for v0 (v1 gets the opposite)
+        base_force = spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
+        structural = wp.identity(3, float) - (l0 / spring_length) * (
+            wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length)
+        )
+        spring_hessian = spring_stiffness[spring_idx] * structural
 
     spring_direction = diff / spring_length
     diff_anchor = pos_anchor[v0] - pos_anchor[v1]
@@ -1655,6 +1761,30 @@ def evaluate_spring_force_and_hessian_both_vertices(
     return v0, v1, force_v0, force_v1, hessian_total
 
 
+@wp.func
+def evaluate_spring_force_and_hessian_both_vertices(
+    spring_idx: int,
+    dt: float,
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    spring_indices: wp.array[int],
+    spring_rest_length: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
+):
+    return evaluate_spring_force_and_hessian_both_vertices_alm(
+        spring_idx,
+        dt,
+        pos,
+        pos_anchor,
+        spring_indices,
+        spring_rest_length,
+        spring_stiffness,
+        spring_damping,
+        ParticleElasticityAlmState(),
+    )
+
+
 @wp.kernel
 def accumulate_spring_force_and_hessian(
     # inputs
@@ -1669,6 +1799,7 @@ def accumulate_spring_force_and_hessian(
     spring_rest_length: wp.array[float],
     spring_stiffness: wp.array[float],
     spring_damping: wp.array[float],
+    elasticity_alm: ParticleElasticityAlmState,
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -1689,7 +1820,7 @@ def accumulate_spring_force_and_hessian(
 
         # Only evaluate if at least one vertex has the current color
         if c_v0 == current_color or c_v1 == current_color:
-            _, _, force_v0, force_v1, hessian = evaluate_spring_force_and_hessian_both_vertices(
+            _, _, force_v0, force_v1, hessian = evaluate_spring_force_and_hessian_both_vertices_alm(
                 spring_idx,
                 dt,
                 pos,
@@ -1698,6 +1829,7 @@ def accumulate_spring_force_and_hessian(
                 spring_rest_length,
                 spring_stiffness,
                 spring_damping,
+                elasticity_alm,
             )
 
             # Only add to vertices with the current color
@@ -2275,7 +2407,9 @@ def gather_particle_body_contact_force_and_hessian(
 
 
 @functools.cache
-def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_particles_per_warp: bool):
+def make_solve_elasticity_tile(
+    include_triangles: bool, include_tets: bool, two_particles_per_warp: bool, include_alm: bool = False
+):
     """Build the tiled per-particle elasticity kernel, specialized at code generation.
 
     One kernel source serves every tiled variant: ``include_triangles`` / ``include_tets``
@@ -2283,7 +2417,8 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
     code is absent from the generated kernel, matching a hand-specialized one), and
     ``two_particles_per_warp`` packs two independent 16-lane particle solves into one
     32-thread warp, reducing with :func:`_warp_half_reduce_sum` to preserve the legacy
-    16-lane reduction order bit for bit. Variants are memoized per flag combination.
+    16-lane reduction order bit for bit. ``include_alm`` selects structural ALM
+    history reads. Variants are memoized per flag combination.
     """
 
     # _warp_half_reduce_sum hardcodes a width-16 shuffle ladder.
@@ -2312,6 +2447,7 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
         particle_adjacency: MeshAdjacencyData,
         particle_forces: wp.array[wp.vec3],
         particle_hessians: wp.array[wp.mat33],
+        elasticity_alm: ParticleElasticityAlmState,
         # output
         particle_displacements: wp.array[wp.vec3],
     ):
@@ -2400,18 +2536,33 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                             particle_adjacency, particle_index, adj_edge_counter
                         )
                         if edge_bending_properties[nei_edge_index, 0] > 0.0:
-                            f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
-                                nei_edge_index,
-                                vertex_order_on_edge,
-                                pos,
-                                pos_prev,
-                                edge_indices,
-                                edge_rest_angles,
-                                edge_rest_length,
-                                edge_bending_properties[nei_edge_index, 0],
-                                edge_bending_properties[nei_edge_index, 1],
-                                dt,
-                            )
+                            if wp.static(include_alm):
+                                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian_alm(
+                                    nei_edge_index,
+                                    vertex_order_on_edge,
+                                    pos,
+                                    pos_prev,
+                                    edge_indices,
+                                    edge_rest_angles,
+                                    edge_rest_length,
+                                    edge_bending_properties[nei_edge_index, 0],
+                                    edge_bending_properties[nei_edge_index, 1],
+                                    dt,
+                                    elasticity_alm,
+                                )
+                            else:
+                                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                                    nei_edge_index,
+                                    vertex_order_on_edge,
+                                    pos,
+                                    pos_prev,
+                                    edge_indices,
+                                    edge_rest_angles,
+                                    edge_rest_length,
+                                    edge_bending_properties[nei_edge_index, 0],
+                                    edge_bending_properties[nei_edge_index, 1],
+                                    dt,
+                                )
 
                             f += f_edge
                             h += h_edge
@@ -2427,18 +2578,33 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                             particle_adjacency, particle_index, adj_tet_counter
                         )
                         if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
-                            f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
-                                nei_tet_index,
-                                vertex_order_on_tet,
-                                pos_prev,
-                                pos,
-                                tet_indices,
-                                tet_poses[nei_tet_index],
-                                tet_materials[nei_tet_index, 0],
-                                tet_materials[nei_tet_index, 1],
-                                tet_materials[nei_tet_index, 2],
-                                dt,
-                            )
+                            if wp.static(include_alm):
+                                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian_alm(
+                                    nei_tet_index,
+                                    vertex_order_on_tet,
+                                    pos_prev,
+                                    pos,
+                                    tet_indices,
+                                    tet_poses[nei_tet_index],
+                                    tet_materials[nei_tet_index, 0],
+                                    tet_materials[nei_tet_index, 1],
+                                    tet_materials[nei_tet_index, 2],
+                                    dt,
+                                    elasticity_alm,
+                                )
+                            else:
+                                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
+                                    nei_tet_index,
+                                    vertex_order_on_tet,
+                                    pos_prev,
+                                    pos,
+                                    tet_indices,
+                                    tet_poses[nei_tet_index],
+                                    tet_materials[nei_tet_index, 0],
+                                    tet_materials[nei_tet_index, 1],
+                                    tet_materials[nei_tet_index, 2],
+                                    dt,
+                                )
 
                             f += f_tet
                             h += h_tet
@@ -2518,6 +2684,7 @@ def solve_elasticity(
     particle_adjacency: MeshAdjacencyData,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
+    elasticity_alm: ParticleElasticityAlmState,
     # output
     particle_displacements: wp.array[wp.vec3],
 ):
@@ -2587,9 +2754,10 @@ def solve_elasticity(
             nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(particle_adjacency, particle_index, i_adj_edge)
             # vertex is on the edge; otherwise it only effects the bending energy n
             if edge_bending_properties[nei_edge_index, 0] > 0.0:
-                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
+                f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian_alm(
                     nei_edge_index, vertex_order_on_edge, pos, pos_prev, edge_indices, edge_rest_angles, edge_rest_length,
-                    edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt
+                    edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt,
+                    elasticity_alm,
                 )
 
                 f = f + f_edge
@@ -2603,7 +2771,7 @@ def solve_elasticity(
                 particle_adjacency, particle_index, adj_tet_counter
             )
             if tet_materials[nei_tet_index, 0] > 0.0 or tet_materials[nei_tet_index, 1] > 0.0:
-                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian(
+                f_tet, h_tet = evaluate_volumetric_neo_hookean_force_and_hessian_alm(
                     nei_tet_index,
                     vertex_order_on_tet,
                     pos_prev,
@@ -2614,6 +2782,7 @@ def solve_elasticity(
                     tet_materials[nei_tet_index, 1],
                     tet_materials[nei_tet_index, 2],
                     dt,
+                    elasticity_alm,
                 )
 
                 f += f_tet

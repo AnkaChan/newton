@@ -36,7 +36,13 @@ from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
-from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
+from . import particle_alm_kernels, particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
+from .particle_alm_kernels import (
+    create_particle_elasticity_alm_state,
+    prepare_particle_elasticity_alm,
+    reset_particle_elasticity_alm,
+    update_particle_elasticity_alm,
+)
 from .particle_vbd_kernels import (
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     # Topological filtering helper functions
@@ -327,6 +333,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_collision_detection_interval: int | None = None,
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
+        particle_elasticity_alm: bool = False,
+        particle_elasticity_alm_deviatoric: bool = False,
+        particle_elasticity_alm_rho_scale: float = 1.0,
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -408,6 +417,29 @@ class SolverVBD(SolverBase, CouplingInterface):
                 The tiled kernel is specialized once at construction from the model's element
                 materials (e.g. a tetrahedra-only model compiles without triangle/edge code paths);
                 rebuild the solver after changing triangle or edge stiffness.
+            particle_elasticity_alm: Enable experimental compliant ALM for tetrahedral
+                elasticity, spring stretch, and dihedral bending. Triangle membrane,
+                damping, contacts, and penetration-free truncation retain their current
+                formulations. Element stress history persists across steps; call
+                :meth:`reset` after discontinuous state edits. Rebuild the solver after
+                changing element topology or material coefficients. Repeated-interval
+                proxy coupling is unsupported with this option.
+
+                .. experimental::
+                    The ``particle_elasticity_alm``,
+                    ``particle_elasticity_alm_deviatoric``, and
+                    ``particle_elasticity_alm_rho_scale`` parameters may change
+                    without the normal deprecation period.
+
+            particle_elasticity_alm_deviatoric: Include tetrahedral deviatoric stress in
+                ALM. Defaults to ``False``: only tet pressure uses ALM; spring and bending ALM
+                remain enabled. The full mode stores stress in world coordinates and
+                can produce transient forces during rotation at finite iteration counts.
+                Pressure-only mode avoids this matrix-history effect.
+            particle_elasticity_alm_rho_scale: Positive finite multiplier for the
+                inertia-derived ALM penalty metric. Spring metrics additionally have a
+                floor of nine times their material stiffness. Does not change converged
+                material stiffness. Only used when ``particle_elasticity_alm=True``.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -753,6 +785,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                 },
                 module=particle_vbd_kernels,
             )
+            if particle_elasticity_alm:
+                self._set_module_options(
+                    {"deterministic": effective_deterministic, "deterministic_max_records": 0},
+                    module=particle_alm_kernels,
+                )
         self._set_module_options(
             {
                 "deterministic": effective_deterministic,
@@ -782,6 +819,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._integrates_rigid_bodies = integrates_rigid_bodies
 
         # Initialize particle system
+        self.particle_elasticity_alm = bool(particle_elasticity_alm)
+        self._particle_elasticity_alm_state = create_particle_elasticity_alm_state(
+            model, self.particle_elasticity_alm, particle_elasticity_alm_deviatoric, particle_elasticity_alm_rho_scale
+        )
         self._init_particle_system(
             model,
             particle_enable_self_contact,
@@ -892,7 +933,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             include_triangles = not _is_tet_only_elasticity_model(model)
             two_particles_per_warp = not include_tets
             self._tiled_elasticity_kernel = make_solve_elasticity_tile(
-                include_triangles, include_tets, two_particles_per_warp
+                include_triangles, include_tets, two_particles_per_warp, include_alm=self.particle_elasticity_alm
             )
             self._tiled_elasticity_particles_per_block = 2 if two_particles_per_warp else 1
         if particle_enable_self_contact:
@@ -1320,6 +1361,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         """Convert input body pose updates into VBD-compatible history updates."""
         self._apply_module_options()
         flags = int(flags)
+
+        if iteration_restart and self.particle_elasticity_alm and self.model.particle_count > 0:
+            raise ValueError("Particle elasticity ALM does not support repeated-interval proxy coupling.")
 
         if (
             not (flags & StateFlags.BODY_Q)
@@ -2444,7 +2488,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
     ) -> None:
-        """Reset rigid solver history and optional body and particle state for selected worlds.
+        """Reset solver history and optional body and particle state for selected worlds.
 
         Body fields selected by *flags* are copied from the model defaults.
         Joint penalty is restored to its minimum; joint C0 and AVBD dual history
@@ -2473,11 +2517,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         globals only through its final entry). One path covers both cloth and
         volumetric (tet) soft bodies, and it runs even when an external solver
         integrates the bodies or the model has none. A requested particle field is
-        skipped if its *state* array is ``None``. Particle and body-particle solver
-        history is intentionally left untouched: ``particle_q_prev`` is rebaselined
+        skipped if its *state* array is ``None``. ``particle_q_prev`` is rebaselined
         from the incoming state at the start of the next :meth:`step`, self-contact
-        and body-particle contacts rebuild per step, and tet/cloth elasticity is
-        stateless, so no particle history cold-start is required. Reset does not
+        and body-particle contacts rebuild per step. When particle elasticity ALM
+        is enabled, selected element stress history is reinitialized from the next
+        step's incoming pose regardless of *flags*, including intervening pose edits.
+        Reset does not
         refresh the particle self-contact BVH; the next :meth:`step` refits it from
         the incoming positions. After a large reset displacement, call
         :meth:`rebuild_bvh` to restore acceleration-structure quality. Both reset
@@ -2582,6 +2627,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     outputs=[particle_q, particle_qd],
                     device=self.device,
                 )
+
+        reset_particle_elasticity_alm(model, world_mask, self._particle_elasticity_alm_state)
 
         if not self._integrates_rigid_bodies:
             return
@@ -2732,6 +2779,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Early exit if no particles
         if model.particle_count == 0:
             return
+
+        prepare_particle_elasticity_alm(model, state_in.particle_q, dt, self._particle_elasticity_alm_state)
 
         # Collision detection before initialization to compute conservative bounds
         if self.particle_enable_self_contact and self._sc_mode_this_step != SolverBase.CollisionFrequencyType.NONE:
@@ -3358,6 +3407,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.model.spring_rest_length,
                         self.model.spring_stiffness,
                         self.model.spring_damping,
+                        self._particle_elasticity_alm_state,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
                     dim=model.spring_count,
@@ -3419,6 +3469,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.particle_adjacency,
                         self.particle_forces,
                         self.particle_hessians,
+                        self._particle_elasticity_alm_state,
                     ],
                     outputs=[
                         self.particle_displacements,
@@ -3451,6 +3502,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.particle_adjacency,
                         self.particle_forces,
                         self.particle_hessians,
+                        self._particle_elasticity_alm_state,
                     ],
                     outputs=[
                         self.particle_displacements,
@@ -3459,6 +3511,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 )
             self._penetration_free_truncation(state_in.particle_q)
 
+        update_particle_elasticity_alm(model, state_in.particle_q, self._particle_elasticity_alm_state)
         wp.copy(state_out.particle_q, state_in.particle_q)
 
     def _solve_rigid_body_iteration(

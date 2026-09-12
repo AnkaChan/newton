@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.vbd.particle_alm_kernels import ParticleElasticityAlmState
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     build_particle_body_contact_adjacency_active,
@@ -4525,6 +4526,7 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            ParticleElasticityAlmState(),
         ],
         outputs=[legacy_displacements],
         device=device,
@@ -4541,6 +4543,7 @@ def _two_particle_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            ParticleElasticityAlmState(),
         ],
         outputs=[packed_displacements],
         device=device,
@@ -4694,6 +4697,7 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            ParticleElasticityAlmState(),
         ],
         outputs=[legacy_displacements],
         device=device,
@@ -4724,6 +4728,7 @@ def _tet_only_tile_solve_matches_legacy_bits(test, device):
             model.soft_mesh_adjacency_device,
             forces_device,
             hessians_device,
+            ParticleElasticityAlmState(),
         ],
         outputs=[specialized_displacements],
         device=device,
