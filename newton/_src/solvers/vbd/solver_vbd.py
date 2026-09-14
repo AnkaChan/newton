@@ -32,7 +32,10 @@ from ..xpbd.kernels import apply_joint_forces
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
+    NUM_THREADS_PER_COLLISION_PRIMITIVE_WIDE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+    _accumulate_self_contact_force_and_hessian_wide,
+    _apply_planar_truncation_parallel_by_collision_wide,
     # Topological filtering helper functions
     accumulate_particle_body_contact_force_and_hessian,
     accumulate_self_contact_force_and_hessian,
@@ -94,7 +97,7 @@ from .vbd_coupling_kernels import (
 
 __all__ = ["SolverVBD"]
 
-_VERSION = "self_contact_uncapped_force_launch_v1"
+_VERSION = "self_contact_wide_cuda_launch_v1"
 print(f"[solver_vbd] version: {_VERSION}")
 
 _SOFT_CONTACT_BLOCK_DIM = 256
@@ -460,9 +463,28 @@ class SolverVBD(SolverBase, CouplingInterface):
         super().__init__(model)
 
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
-        self._use_particle_contact_gather = (
+        use_nondeterministic_cuda = (
             self.device.is_cuda and effective_deterministic == wp.DeterministicMode.NOT_GUARANTEED
         )
+        self._use_particle_contact_gather = use_nondeterministic_cuda
+        # Preserve CPU and deterministic accumulation order, which depends on logical thread IDs.
+        self._self_contact_threads_per_primitive = (
+            NUM_THREADS_PER_COLLISION_PRIMITIVE_WIDE
+            if use_nondeterministic_cuda
+            else NUM_THREADS_PER_COLLISION_PRIMITIVE
+        )
+        self._self_contact_force_kernel = (
+            _accumulate_self_contact_force_and_hessian_wide
+            if use_nondeterministic_cuda
+            else accumulate_self_contact_force_and_hessian
+        )
+        self._self_contact_truncation_kernel = (
+            _apply_planar_truncation_parallel_by_collision_wide
+            if use_nondeterministic_cuda
+            else apply_planar_truncation_parallel_by_collision
+        )
+        self._self_contact_force_block_dim = 128 if use_nondeterministic_cuda else 256
+        self._self_contact_truncation_block_dim = 64 if use_nondeterministic_cuda else 256
         particle_deterministic_max_records = 0
         coupling_deterministic_max_records = 0
         if particle_enable_self_contact and effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
@@ -635,12 +657,15 @@ class SolverVBD(SolverBase, CouplingInterface):
                 [self.trimesh_collision_detector.collision_info], dtype=TriMeshCollisionInfo, device=self.device
             )
 
-            self.particle_self_contact_evaluation_kernel_launch_size = max(
-                self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
-                self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+            primitive_count = max(self.model.particle_count, self.model.edge_count)
+            # Proxy harvesting keeps its original four-thread traversal.
+            self.particle_self_contact_evaluation_kernel_launch_size = (
+                primitive_count * NUM_THREADS_PER_COLLISION_PRIMITIVE
             )
+            self._self_contact_evaluation_launch_size = primitive_count * self._self_contact_threads_per_primitive
         else:
             self.particle_self_contact_evaluation_kernel_launch_size = None
+            self._self_contact_evaluation_launch_size = None
 
         # Particle force and hessian storage
         self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
@@ -2135,7 +2160,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             ##  parallel by collision and atomic operation
             self.truncation_ts.fill_(1.0)
             wp.launch(
-                kernel=apply_planar_truncation_parallel_by_collision,
+                kernel=self._self_contact_truncation_kernel,
                 inputs=[
                     self.pos_prev_collision_detection,  # pos_prev_collision_detection: wp.array[wp.vec3],
                     self.particle_displacements,  # particle_displacements: wp.array[wp.vec3],
@@ -2148,7 +2173,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 outputs=[
                     self.truncation_ts,
                 ],
-                dim=self.particle_self_contact_evaluation_kernel_launch_size,
+                dim=self._self_contact_evaluation_launch_size,
+                block_dim=self._self_contact_truncation_block_dim,
                 device=self.device,
             )
 
@@ -2771,8 +2797,9 @@ class SolverVBD(SolverBase, CouplingInterface):
 
             if self.particle_enable_self_contact:
                 wp.launch(
-                    kernel=accumulate_self_contact_force_and_hessian,
-                    dim=self.particle_self_contact_evaluation_kernel_launch_size,
+                    kernel=self._self_contact_force_kernel,
+                    dim=self._self_contact_evaluation_launch_size,
+                    block_dim=self._self_contact_force_block_dim,
                     inputs=[
                         dt,
                         color,

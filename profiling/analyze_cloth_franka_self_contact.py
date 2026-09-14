@@ -38,6 +38,8 @@ PERFORMANCE_CONFIGURATION_FIELDS = {
     "self_contact_force_launch_override",
     "self_contact_force_max_blocks",
     "self_contact_force_max_blocks_resolved",
+    "self_contact_threads_per_primitive",
+    "self_contact_truncation_block_dim",
 }
 
 PREFIX_COMPONENTS = {
@@ -317,6 +319,7 @@ def _read_events(connection: sqlite3.Connection) -> list[KernelEvent]:
 
 
 def _prefix_components(name: str) -> set[str]:
+    name = name.rsplit("__locals__", 1)[-1]
     result = set()
     for component, prefixes in PREFIX_COMPONENTS.items():
         if name.startswith(prefixes):

@@ -423,7 +423,14 @@ def main() -> None:
         finally:
             Example.capture = capture
 
-    force_block_dim = args.self_contact_force_block_dim or 256
+    force_kernel = getattr(
+        example.cloth_solver,
+        "_self_contact_force_kernel",
+        particle_vbd_kernels.accumulate_self_contact_force_and_hessian,
+    )
+    force_block_dim = args.self_contact_force_block_dim or getattr(
+        example.cloth_solver, "_self_contact_force_block_dim", 256
+    )
     force_max_blocks_mode = args.self_contact_force_max_blocks or "production"
     sm_count = example.model.device.sm_count
     force_max_blocks = {
@@ -478,7 +485,7 @@ def main() -> None:
                 collision_detection_launch_override and kernel is geometry_kernels.edge_colliding_edges_detection_kernel
             ):
                 launch_kwargs["block_dim"] = edge_edge_collision_detection_block_size
-            elif kernel is particle_vbd_kernels.accumulate_self_contact_force_and_hessian and force_launch_override:
+            elif kernel is force_kernel and force_launch_override:
                 launch_kwargs["block_dim"] = force_block_dim
                 if force_max_blocks is not None:
                     launch_kwargs["max_blocks"] = force_max_blocks
@@ -563,6 +570,14 @@ def main() -> None:
             "edge_edge_collision_detection_block_size_resolved": edge_edge_collision_detection_block_size,
             "collision_detection_launch_override": collision_detection_launch_override,
             "self_contact_force_block_dim": force_block_dim,
+            "self_contact_threads_per_primitive": getattr(
+                example.cloth_solver,
+                "_self_contact_threads_per_primitive",
+                particle_vbd_kernels.NUM_THREADS_PER_COLLISION_PRIMITIVE,
+            ),
+            "self_contact_truncation_block_dim": getattr(
+                example.cloth_solver, "_self_contact_truncation_block_dim", 256
+            ),
             "self_contact_force_max_blocks": force_max_blocks_mode,
             "self_contact_force_max_blocks_resolved": force_max_blocks,
             "self_contact_force_launch_override": force_launch_override,
