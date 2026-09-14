@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Neo-Hookean → 9 + 1 → SVD · ALM derivation</title><style>:root{color-scheme:light;--ink:#19313c;--muted:#526773;--green:#087568;--line:#d8e4df}
+*{box-sizing:border-box}body{margin:0;background:#f3f6f4;color:var(--ink);font:17px/1.75 system-ui,sans-serif;overflow-wrap:break-word}
+main{max-width:1100px;margin:auto;padding:48px 38px 80px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(30px,4.5vw,47px);margin:24px 0}h2{font-size:28px;margin:54px 0 24px;padding-top:26px;border-top:1px solid var(--line)}h3{font-size:21px;margin-top:34px}p{margin:0 0 20px}.lead{font-size:22px;color:var(--muted)}.eyebrow{font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--green);font-weight:700}
+a{color:var(--green);text-underline-offset:3px}nav{display:flex;flex-wrap:wrap;gap:8px 24px;font-size:13px;margin-top:14px}.route{display:flex;align-items:center;gap:10px;margin:26px 0;font-size:14px;line-height:1.5}.route span{flex:1;padding:17px 13px;background:#e3f2ec;border:1px solid #c3ddd1;border-radius:10px;font-weight:650}.route small{font-weight:400}.route b{color:var(--green)}
+.note{border-left:4px solid var(--green);background:#e3f2ec;padding:20px 24px;border-radius:0 10px 10px 0;margin:24px 0}details{margin:24px 0;padding:18px 23px;background:white;border:1px solid var(--line);border-radius:10px}summary{cursor:pointer;color:var(--green);font-weight:650}details[open]>summary{margin-bottom:20px}.toc{font-size:14px}.toc ul{padding-left:20px}.toc li{margin:6px 0}.toc>ul>li>ul{padding-left:0;list-style:none}.toc>ul>li>ul>li>ul{display:none}
+.equation{display:flex;align-items:center;gap:12px;margin:24px 0;padding:23px 20px;background:white;border:1px solid var(--line);border-radius:12px}.math-scroll{min-width:0;overflow-x:auto;flex:1;padding:4px 0 8px}.equation img{display:block;max-width:none;height:auto;margin:0 auto}.equation figcaption{font:13px system-ui,sans-serif;color:var(--muted);flex-shrink:0}
+code{font:.88em ui-monospace,monospace;background:#e8eeeb;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}table{display:block;overflow-x:auto;border-collapse:collapse;width:100%;font-size:14px;background:white;margin:25px 0}th,td{text-align:left;vertical-align:top;padding:14px;border-bottom:1px solid var(--line);min-width:145px}th{background:#e5efe9}a:focus-visible,summary:focus-visible,.math-scroll:focus-visible{outline:3px solid #bd7b20;outline-offset:3px}
+@media(max-width:700px){main{padding:28px 16px 50px}body{font-size:16px}.lead{font-size:19px}h2{font-size:24px}.route{display:grid;grid-template-columns:1fr}.route b{line-height:1;text-align:center;transform:rotate(90deg)}.route span{text-align:center;padding:13px}.equation{padding:17px 10px;gap:7px}.equation img{margin-left:0}.equation figcaption{font-size:11px}details{padding:15px}h3{font-size:20px}}
+@media print{body{background:white;font-size:11pt}main{max-width:none;padding:0}.equation{break-inside:avoid}.equation img{max-width:100%;height:auto}.math-scroll{overflow:visible}details{break-inside:avoid}nav,.toc{display:none}h2{break-after:avoid}.route{font-size:10pt}}
+</style></head><body><main><div class="eyebrow">Newton / VBD · Elasticity derivation · 14 September 2026</div><nav><a href="../alm-svd-exploration-20260914/index.html">SVD exploration</a><a href="derivation.md">Download Markdown and LaTeX source</a></nav><h1 id="neo-hookean-9-1-rows-svd-stretch">Neo-Hookean → 9 + 1 rows → SVD stretch</h1><details><summary>Contents</summary><div class="toc">
+<ul>
+<li><a href="#neo-hookean-9-1-rows-svd-stretch">Neo-Hookean → 9 + 1 rows → SVD stretch</a><ul>
+<li><a href="#hydrostatic-term-the-one-scalar-volume-constraint">Hydrostatic term: the one scalar volume constraint</a><ul>
+<li><a href="#hydrostatic-alm-explicitly">Hydrostatic ALM, explicitly</a></li>
+</ul>
+</li>
+<li><a href="#1-start-with-the-original-material-energy">1. Start with the original material energy</a><ul>
+<li><a href="#the-quadratic-volume-model-used-by-our-code">The quadratic volume model used by our code</a></li>
+</ul>
+</li>
+<li><a href="#2-complete-the-square-obtain-9-1-scalar-rows">2. Complete the square: obtain 9 + 1 scalar rows</a><ul>
+<li><a href="#why-the-targets-are-f-0-and-j-rather-than-f-i-and-j-1">Why the targets are F = 0 and J = α, rather than F = I and J = 1</a></li>
+</ul>
+</li>
+<li><a href="#3-turn-each-energy-row-into-a-compliant-alm-constraint">3. Turn each energy row into a compliant ALM constraint</a><ul>
+<li><a href="#why-this-recovers-the-original-material">Why this recovers the original material</a></li>
+</ul>
+</li>
+<li><a href="#4-apply-that-derivation-to-the-current-9-1-scheme">4. Apply that derivation to the current 9 + 1 scheme</a><ul>
+<li><a href="#the-reason-to-explore-svd-old-matrix-history-remembers-rotation">The reason to explore SVD: old matrix history remembers rotation</a></li>
+</ul>
+</li>
+<li><a href="#5-use-svd-9-stretch-entries-become-3-principal-stretches">5. Use SVD: 9 stretch entries become 3 principal stretches</a><ul>
+<li><a href="#why-three-sorted-histories-are-not-our-final-recommendation">Why three sorted histories are not our final recommendation</a></li>
+</ul>
+</li>
+<li><a href="#6-svd-supplies-a-stretch-tensor-the-recommended-6-1-rows">6. SVD supplies a stretch tensor: the recommended 6 + 1 rows</a></li>
+<li><a href="#7-derive-the-force-of-the-stretch-constraint">7. Derive the force of the stretch constraint</a><ul>
+<li><a href="#differentiate-the-square-root-identity">Differentiate the square-root identity</a></li>
+<li><a href="#verify-the-original-force-is-recovered">Verify the original μ force is recovered</a></li>
+</ul>
+</li>
+<li><a href="#8-what-changes-in-the-solve-and-what-stays-the-same">8. What changes in the solve, and what stays the same</a></li>
+<li><a href="#source-and-scope">Source and scope</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</details>
+<p class="lead">The derivation of our elasticity ALM, starting from the material energy and ending at the proposed stretch constraint.</p>
+
+<div class="route"><span>Neo-Hookean energy</span><b>→</b><span>9 matrix + 1 volume rows</span><b>→</b><span>3 principal stretches + 1 volume row</span><b>→</b><span>6 tensor components + 1 volume row<br><small>recommended history representation</small></span></div>
+
+<p><strong>What is exact?</strong> Rewriting the current solver’s energy in matrix, singular-value, or stretch-tensor form is exact, up to constants. The first step below—from classical logarithmic Neo-Hookean to the current solver’s quadratic volume model—is an approximation near rest and a continuation to inverted configurations.</p>
+<p>This page derives the proposal. The production stage-1 code still uses pressure-only ALM by default when elasticity ALM is enabled; its optional full mode uses matrix history. The SVD/stretch mode remains an exploration. <a href="../alm-stage1-code-walkthrough-246fb405-20260914/index.html">Code walkthrough</a> · <a href="../alm-svd-exploration-20260914/index.html">SVD experiments</a></p>
+<h2 id="hydrostatic-term-the-one-scalar-volume-constraint">Hydrostatic term: the one scalar volume constraint</h2>
+<p><strong>This is the +1 in both 9 + 1 and the SVD formulation.</strong> It depends only on signed volume J = det F. SVD changes the stretch rows; this row stays the same.</p>
+<p>The current material’s volume-dependent energy density is:</p>
+<figure class="equation" id="hydro-energy-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 1"><img src="hydro-energy.svg" style="width:472.6px" alt="The hydrostatic energy density is minus mu times J minus one plus K p over two times J minus one squared."></div><figcaption>(1)</figcaption></figure>
+
+<p>Complete the square to obtain one scalar residual:</p>
+<figure class="equation" id="hydro-constraint-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 2"><img src="hydro-constraint.svg" style="width:477.1px" alt="The hydrostatic constraint is C p equals J minus alpha, where alpha equals one plus mu over K p."></div><figcaption>(2)</figcaption></figure>
+
+<p>The constant has no effect on forces. For a tet, multiply this density by rest volume V₀. <strong>Do not replace this row with J − 1 while dropping the −μ term:</strong> that would remove the stress that balances the μ stretch term at rest.</p>
+<h3 id="hydrostatic-alm-explicitly">Hydrostatic ALM, explicitly</h3>
+<p>Introduce a scalar material variable z<sub>p</sub> and enforce <strong>C<sub>p</sub> = z<sub>p</sub></strong>. With scalar multiplier ℓ<sub>p</sub> and penalty ρ<sub>p</sub>, use:</p>
+<figure class="equation" id="hydro-lagrangian-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 3"><img src="hydro-lagrangian.svg" style="width:390.9px" alt="Hydrostatic augmented Lagrangian is K p over two z p squared plus ell p times C p minus z p plus rho p over two times C p minus z p squared."></div><figcaption>(3)</figcaption></figure>
+
+<p>Minimizing over z<sub>p</sub> gives its exact local solution:</p>
+<figure class="equation" id="hydro-slack-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 4"><img src="hydro-slack.svg" style="width:452.5px" alt="Optimal hydrostatic material variable is ell p plus rho p C p divided by K p plus rho p."></div><figcaption>(4)</figcaption></figure>
+
+<p>The resulting scalar stress coefficient during the position solve, and the multiplier update after a full sweep, are:</p>
+<figure class="equation" id="hydro-alm-update-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 5"><img src="hydro-alm-update.svg" style="width:626.1px" alt="Hydrostatic stress coefficient is k p C p plus s p ell p. Next multiplier equals this coefficient evaluated after the sweep."></div><figcaption>(5)</figcaption></figure>
+
+<p>The first Piola stress contribution is p<sub>eval</sub> cof F. Converting it to Cauchy stress shows why it is hydrostatic:</p>
+<figure class="equation" id="hydro-stress-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 6"><img src="hydro-stress.svg" style="width:504.0px" alt="First Piola hydrostatic stress is p eval cofactor F. For invertible F, its Cauchy stress is p eval identity."></div><figcaption>(6)</figcaption></figure>
+
+<p>Here positive p<sub>eval</sub> means tensile mean stress; conventional compression-positive pressure has the opposite sign. The cofactor form remains evaluable at J = 0 even though Cauchy stress does not.</p>
+<p>At a converged multiplier, the original volume response is recovered:</p>
+<figure class="equation" id="hydro-fixed-point-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 7"><img src="hydro-fixed-point.svg" style="width:572.3px" alt="At equilibrium the hydrostatic coefficient equals K p C p, or K p times J minus one minus mu. At rest it equals minus mu."></div><figcaption>(7)</figcaption></figure>
+
+<p>Thus rest has <strong>−μI from the hydrostatic term and +μI from the stretch term</strong>, giving zero total stress. This is a finite-stiffness elastic equality; its multiplier can have either sign. It has no nonnegative contact-pressure clamp.</p>
+<h2 id="1-start-with-the-original-material-energy">1. Start with the original material energy</h2>
+<p>For one tetrahedron, <strong>F</strong> is its 3 × 3 deformation gradient, <strong>J</strong> is its signed volume ratio, and <strong>V₀</strong> is its rest volume. Energy density is energy per rest volume. We omit damping and inertia while deriving the elastic terms.</p>
+<figure class="equation" id="geometry-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 8"><img src="geometry.svg" style="width:454.7px" alt="F equals current edge matrix times inverse rest edge matrix; J is determinant F; tet energy equals rest volume times energy density."></div><figcaption>(8)</figcaption></figure>
+
+<p>One common compressible Neo-Hookean model is:</p>
+<figure class="equation" id="classical-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 9"><img src="classical.svg" style="width:395.4px" alt="Classical logarithmic Neo-Hookean density: mu over two times squared Frobenius norm F minus three, minus mu log J, plus lambda L over two times log J squared."></div><figcaption>(9)</figcaption></figure>
+
+<p>Here <strong>μ</strong> is the shear modulus and <strong>λ<sub>L</sub></strong> is the first Lamé parameter. The subscript distinguishes the material parameter from ALM multipliers. This logarithmic energy requires J &gt; 0. <a href="https://www.tkim.graphics/NEO/StableNeoHookean2018.pdf#page=3">Smith, de Goes &amp; Kim (2018), Eq. 5</a>.</p>
+<h3 id="the-quadratic-volume-model-used-by-our-code">The quadratic volume model used by our code</h3>
+<p>Let <strong>q = J − 1</strong> be the volume change from rest. Expanding only the logarithmic volume contribution to second order gives:</p>
+<figure class="equation" id="taylor-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 10"><img src="taylor.svg" style="width:573.4px" alt="Near J equals one, the logarithmic volume energy is minus mu q plus one half lambda L plus mu times q squared, plus terms of order q cubed."></div><figcaption>(10)</figcaption></figure>
+
+<p>Define the volume-row stiffness <strong>K<sub>p</sub> = λ<sub>L</sub> + μ</strong> and retain that quadratic polynomial:</p>
+<figure class="equation" id="code-energy-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 11"><img src="code-energy.svg" style="width:395.4px" alt="The code density is mu over two times squared norm F minus three, minus mu times J minus one, plus K p over two times J minus one squared."></div><figcaption>(11)</figcaption></figure>
+
+<p>This is the stable quadratic-determinant model implemented in this worktree. It matches the classical model’s linear elastic response near rest, but gives a different material response at finite volume change. It stays finite at J = 0 and J &lt; 0. It corresponds to the paper’s <strong>Eq. 13 with the reparameterization discussed in §3.4</strong>; the paper’s final Eq. 14 adds another term that our code does not use. <a href="https://www.tkim.graphics/NEO/StableNeoHookean2018.pdf#page=4">Original derivation</a>.</p>
+<div class="note">K<sub>p</sub> is the stiffness of this volume row. It is <strong>not</strong> the physical bulk modulus, which is λ<sub>L</sub> + 2μ/3 in three dimensions. The derivation assumes μ > 0 and K<sub>p</sub> > 0; zero-stiffness rows should be disabled.</div>
+
+<h2 id="2-complete-the-square-obtain-9-1-scalar-rows">2. Complete the square: obtain 9 + 1 scalar rows</h2>
+<p>The linear volume term can be absorbed into a shifted volume target. Set:</p>
+<figure class="equation" id="alpha-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 12"><img src="alpha.svg" style="width:500.6px" alt="Alpha equals one plus mu over K p; C mu is vectorized F in nine dimensions; C p equals J minus alpha."></div><figcaption>(12)</figcaption></figure>
+
+<p>Expanding the square on the right verifies the equality:</p>
+<figure class="equation" id="complete-square-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 13"><img src="complete-square.svg" style="width:406.6px" alt="The volume part equals K p over two times J minus alpha squared, minus mu squared over two K p."></div><figcaption>(13)</figcaption></figure>
+
+<p>Therefore:</p>
+<figure class="equation" id="nine-plus-one-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 14"><img src="nine-plus-one.svg" style="width:324.8px" alt="Density equals mu over two times squared norm of the nine mu rows, plus K p over two times the pressure row squared, minus a constant."></div><figcaption>(14)</figcaption></figure>
+
+<p><strong>This is the 9 + 1 formulation:</strong> nine entries of F describe the stretch energy, and one determinant residual describes the volume energy. These are ten scalar energy rows, not ten independent geometric degrees of freedom: J is already determined by F.</p>
+<h3 id="why-the-targets-are-f-0-and-j-rather-than-f-i-and-j-1">Why the targets are F = 0 and J = α, rather than F = I and J = 1</h3>
+<p>Each energy term has its own preferred state. The μ term alone wants to shrink F. The shifted volume term counteracts that shrinkage. Their <strong>combined</strong> stress vanishes at rest:</p>
+<figure class="equation" id="physical-stress-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 15"><img src="physical-stress.svg" style="width:486.1px" alt="Physical first Piola stress equals mu F plus K p times J minus alpha times cofactor F. At identity, the mu and pressure stresses cancel."></div><figcaption>(15)</figcaption></figure>
+
+<p>Replacing the μ row with F − I, or later with singular values minus one, would change the material law. Also, ALM here will <strong>not</strong> impose F = 0 as a hard constraint. The next step explains what the equality constraint actually means.</p>
+<details><summary>Which term is deviatoric, and which is hydrostatic?</summary>
+<p>The μ part is the stretch term; the determinant part is the volume/pressure term. The μ part is often called “deviatoric” in solver code, but it is not a strictly volume-preserving energy: uniform scaling changes its value too.</p>
+<p>For invertible F, converting the pressure contribution to Cauchy stress gives pI, with p = K<sub>p</sub>(J − α), so that contribution is purely hydrostatic. The μ contribution is μFFᵀ/J and generally has both shear and hydrostatic parts. Their cancellation at rest is essential.</p>
+</details>
+
+<h2 id="3-turn-each-energy-row-into-a-compliant-alm-constraint">3. Turn each energy row into a compliant ALM constraint</h2>
+<p>Take any row vector <strong>C(x)</strong> with material stiffness <strong>K</strong>. It can be one scalar volume row or the whole μ block. Introduce an auxiliary material variable <strong>z</strong>, and require it to equal the value computed from vertex positions <strong>x</strong>:</p>
+<figure class="equation" id="lift-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 16"><img src="lift.svg" style="width:442.4px" alt="Minimize K over two times norm z squared, subject to z equals C of x."></div><figcaption>(16)</figcaption></figure>
+
+<p>Substituting z = C(x) recovers the original row energy exactly. In a simulation, this row sits alongside all other elastic rows and the inertial objective. <strong>The equality ties geometry to a deformable material variable. It does not require C(x) = 0.</strong></p>
+<p>Using multiplier <strong>ℓ</strong> and penalty <strong>ρ &gt; 0</strong>, the augmented Lagrangian density is:</p>
+<figure class="equation" id="lagrangian-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 17"><img src="lagrangian.svg" style="width:361.8px" alt="Augmented Lagrangian is K over two norm z squared plus multiplier dotted with C minus z plus rho over two norm C minus z squared."></div><figcaption>(17)</figcaption></figure>
+
+<p>For fixed positions and multiplier, solve for z analytically:</p>
+<figure class="equation" id="eliminate-z-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 18"><img src="eliminate-z.svg" style="width:275.5px" alt="The derivative with respect to z is zero when K plus rho times z equals multiplier plus rho C."></div><figcaption>(18)</figcaption></figure>
+
+<figure class="equation" id="z-star-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 19"><img src="z-star.svg" style="width:402.1px" alt="Optimal z equals multiplier plus rho C over K plus rho. Define s as K over K plus rho and effective stiffness as K rho over K plus rho."></div><figcaption>(19)</figcaption></figure>
+
+<p>Substitute z* back into the Lagrangian. This produces the objective used during the position solve, with the multiplier held fixed:</p>
+<figure class="equation" id="reduced-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 20"><img src="reduced.svg" style="width:324.8px" alt="Reduced density is effective stiffness over two norm C squared plus s multiplier dotted C minus norm multiplier squared over two K plus rho."></div><figcaption>(20)</figcaption></figure>
+
+<p>The last term is constant with respect to vertex positions. Differentiating the other two terms gives an effective row stress <strong>t</strong>. The dual update has exactly the same expression:</p>
+<figure class="equation" id="dual-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 21"><img src="dual.svg" style="width:521.9px" alt="Effective row stress and next multiplier both equal s times the old multiplier plus effective stiffness times C."></div><figcaption>(21)</figcaption></figure>
+
+<p>In our VBD scheme, evaluate the force using the current C and frozen history throughout a full color sweep; update the stored multiplier after that sweep. Eliminate z during each evaluation. Holding an old z fixed instead would produce a different primal curvature, ρ.</p>
+<h3 id="why-this-recovers-the-original-material">Why this recovers the original material</h3>
+<p>At a fixed point of the multiplier update:</p>
+<figure class="equation" id="fixed-point-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 22"><img src="fixed-point.svg" style="width:476.0px" alt="A fixed multiplier equals s times itself plus effective stiffness times C, which implies multiplier equals K C and effective stress equals K C."></div><figcaption>(22)</figcaption></figure>
+
+<p>Thus the row has the original material stress at a fixed point, while its temporary solve can use a smaller stiffness. Finite iterations produce a different response; fixed-point consistency alone does not prove convergence.</p>
+<h2 id="4-apply-that-derivation-to-the-current-9-1-scheme">4. Apply that derivation to the current 9 + 1 scheme</h2>
+<p>Use a matrix multiplier <strong>Λ<sub>F</sub></strong> for the nine μ rows, and scalar multiplier <strong>ℓ<sub>p</sub></strong> for the pressure row. Compute separate s and k coefficients using K = μ or K = K<sub>p</sub>, respectively.</p>
+<figure class="equation" id="matrix-alm-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 23"><img src="matrix-alm.svg" style="width:414.4px" alt="Current matrix ALM stress is effective mu stiffness times F plus s mu times Lambda F, plus the effective pressure times cofactor F."></div><figcaption>(23)</figcaption></figure>
+
+<figure class="equation" id="matrix-updates-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 24"><img src="matrix-updates.svg" style="width:453.6px" alt="After the sweep, update Lambda F from F and update the pressure multiplier from J minus alpha."></div><figcaption>(24)</figcaption></figure>
+
+<p>At equilibrium Λ<sub>F</sub> = μF and ℓ<sub>p</sub> = K<sub>p</sub>(J − α), so the original stress is recovered. All multipliers and penalties here use energy-density units; multiply the complete material contribution by V₀ when assembling tet energy and vertex forces.</p>
+<h3 id="the-reason-to-explore-svd-old-matrix-history-remembers-rotation">The reason to explore SVD: old matrix history remembers rotation</h3>
+<p>Start at rest with Λ<sub>F</sub> = μI and ℓ<sub>p</sub> = −μ. Rotate the tet to F = R while keeping history fixed for the next primal solve. J is still one. The pressure contribution becomes −μR, but the matrix history term still points along I:</p>
+<figure class="equation" id="rotation-artifact-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 25"><img src="rotation-artifact.svg" style="width:386.4px" alt="At rotated rest with old matrix history, total stress is s mu times mu times identity minus R, which is generally nonzero."></div><figcaption>(25)</figcaption></figure>
+
+<p>That is an artificial force under a rigid rotation at finite ALM iteration count. The material energy itself is rotation-invariant; the temporary matrix-history objective is not. We want a history variable that does not change when the body rotates.</p>
+<h2 id="5-use-svd-9-stretch-entries-become-3-principal-stretches">5. Use SVD: 9 stretch entries become 3 principal stretches</h2>
+<p>Factor F using an ordinary SVD:</p>
+<figure class="equation" id="svd-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 26"><img src="svd.svg" style="width:443.5px" alt="F equals U times diagonal singular values times V transpose; its squared Frobenius norm is the sum of the three squared singular values."></div><figcaption>(26)</figcaption></figure>
+
+<p>Left and right multiplication by orthogonal matrices preserves the Frobenius norm. Therefore the same target energy can use only three μ rows:</p>
+<figure class="equation" id="three-plus-one-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 27"><img src="three-plus-one.svg" style="width:404.3px" alt="SVD mu constraint is the vector of three singular values; pressure constraint remains determinant F minus alpha."></div><figcaption>(27)</figcaption></figure>
+
+<figure class="equation" id="svd-energy-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 28"><img src="svd-energy.svg" style="width:414.4px" alt="Density is mu over two times the sum of squared singular values plus K p over two times determinant F minus alpha squared plus the previous constant."></div><figcaption>(28)</figcaption></figure>
+
+<p>This is the exact <strong>3 + 1 energy representation</strong>. The singular values themselves are the rows, <strong>not σ − 1</strong>. Keep the pressure row’s signed determinant: an ordinary SVD has nonnegative singular values, whose product is |J|. Warp can use a signed final singular value; evaluating det F directly avoids relying on that convention.</p>
+<p>Away from repeated or zero singular values, the μ stress with three retained scalar multipliers is:</p>
+<figure class="equation" id="scalar-svd-stress-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 29"><img src="scalar-svd-stress.svg" style="width:493.9px" alt="The scalar SVD ALM stress is U times diagonal effective stiffness sigma i plus s mu multiplier i times V transpose."></div><figcaption>(29)</figcaption></figure>
+
+<p>At equilibrium ℓᵢ = μσᵢ, giving P<sub>μ</sub> = μF. It removes the rotated-rest problem when the scalar histories agree.</p>
+<h3 id="why-three-sorted-histories-are-not-our-final-recommendation">Why three sorted histories are not our final recommendation</h3>
+<p>Suppose two principal stretches cross. “Largest singular value” switches from one material direction to another. If those sorted slots carry different multipliers, their stored stresses switch directions too. The resulting force can jump even though the target material energy is smooth. Equal singular values also admit arbitrary basis choices.</p>
+<p>The remedy we explored is to retain the <strong>whole symmetric stretch-history tensor in material coordinates</strong>. Its eigenvalues still come from SVD, but its history does not attach to an arbitrary sorted slot.</p>
+<h2 id="6-svd-supplies-a-stretch-tensor-the-recommended-6-1-rows">6. SVD supplies a stretch tensor: the recommended 6 + 1 rows</h2>
+<p>The right stretch tensor is the positive-semidefinite square root of FᵀF. To make its derivative well-defined at collapsed configurations too, use a fixed positive regularization <strong>ε</strong>:</p>
+<figure class="equation" id="stretch-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 30"><img src="stretch.svg" style="width:350.6px" alt="Regularized right stretch is the square root of F transpose F plus epsilon squared identity; SVD evaluates it as V diagonal r V transpose."></div><figcaption>(30)</figcaption></figure>
+
+<figure class="equation" id="regularized-values-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 31"><img src="regularized-values.svg" style="width:401.0px" alt="Each r i is square root of sigma i squared plus epsilon squared; the squared norm of S epsilon equals squared norm of F plus three epsilon squared."></div><figcaption>(31)</figcaption></figure>
+
+<p>The second equality follows by taking the trace of S<sub>ε</sub>². <strong>Fixed ε adds only a constant to the target μ energy</strong>, so its physical force stays exactly μF. This remains true for inverted F; it does not depend on the sign convention of the SVD.</p>
+<p>A symmetric 3 × 3 matrix has six independent components. To turn its Frobenius norm into the ordinary norm of a six-vector, give the off-diagonal entries a √2 weight:</p>
+<figure class="equation" id="mandel-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 32"><img src="mandel.svg" style="width:449.1px" alt="The six mu rows are S11, S22, S33, square root two S12, square root two S13, and square root two S23."></div><figcaption>(32)</figcaption></figure>
+
+<p>Here S abbreviates S<sub>ε</sub>. The weights count each symmetric off-diagonal pair twice, as the full matrix norm does. A full symmetric <code>mat33</code> using Frobenius inner products already does this correctly.</p>
+<figure class="equation" id="six-plus-one-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 33"><img src="six-plus-one.svg" style="width:474.9px" alt="The proposed constraints are the six Mandel components of regularized S and one determinant residual; their energy equals the old energy plus a constant."></div><figcaption>(33)</figcaption></figure>
+
+<p>This is <strong>6 + 1 independent stored tensor components</strong>, rather than the 3 + 1 scalar-slot representation. We retain material directions in the history. A prototype can reuse the existing nine-float matrix allocation while enforcing symmetry.</p>
+<p>Under any superposed rigid rotation Q, (QF)ᵀ(QF) = FᵀF. Consequently S is unchanged. Reordering the SVD columns also leaves the reconstructed S unchanged.</p>
+<h2 id="7-derive-the-force-of-the-stretch-constraint">7. Derive the force of the stretch constraint</h2>
+<p>Use a symmetric material multiplier <strong>Λ</strong>. Applying the same compliant ALM elimination from Section 3 gives:</p>
+<figure class="equation" id="stretch-reduced-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 34"><img src="stretch-reduced.svg" style="width:364.0px" alt="The stretch reduced density is k mu over two times squared norm S plus s mu times the Frobenius inner product of Lambda and S plus a position-independent constant."></div><figcaption>(34)</figcaption></figure>
+
+<figure class="equation" id="stretch-update-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 35"><img src="stretch-update.svg" style="width:340.5px" alt="Seed Lambda as mu S. After each full sweep, update it as s mu Lambda plus k mu S."></div><figcaption>(35)</figcaption></figure>
+
+<p>The colon means the sum of corresponding matrix-entry products. The first energy term differentiates directly to k<sub>μ</sub>F because ‖S‖² and ‖F‖² differ only by a constant. The history term needs the derivative of S.</p>
+<h3 id="differentiate-the-square-root-identity">Differentiate the square-root identity</h3>
+<p>Differentiate S² = FᵀF + ε²I, holding ε fixed:</p>
+<figure class="equation" id="stretch-differential-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 36"><img src="stretch-differential.svg" style="width:293.4px" alt="S times differential S plus differential S times S equals F transpose differential F plus differential F transpose F."></div><figcaption>(36)</figcaption></figure>
+
+<p>Introduce the symmetric matrix <strong>X</strong> satisfying a local Sylvester equation:</p>
+<figure class="equation" id="sylvester-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 37"><img src="sylvester.svg" style="width:140.0px" alt="S X plus X S equals Lambda."></div><figcaption>(37)</figcaption></figure>
+
+<p>Then move the differential through the Frobenius product:</p>
+<figure class="equation" id="chain-rule-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 38"><img src="chain-rule.svg" style="width:390.9px" alt="Lambda colon differential S equals X colon S differential S plus differential S S, which equals two F X colon differential F."></div><figcaption>(38)</figcaption></figure>
+
+<p>So the exact first Piola stress for the frozen-history stretch objective is:</p>
+<figure class="equation" id="stretch-stress-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 39"><img src="stretch-stress.svg" style="width:190.4px" alt="Stretch ALM stress equals effective mu stiffness times F plus two s mu times F X."></div><figcaption>(39)</figcaption></figure>
+
+<p><strong>X does not require a global solve.</strong> In the SVD basis, the Sylvester equation is just entrywise division:</p>
+<figure class="equation" id="local-solve-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 40"><img src="local-solve.svg" style="width:420.0px" alt="Transform Lambda into the V basis, divide each entry by r i plus r j, and transform back to obtain X."></div><figcaption>(40)</figcaption></figure>
+
+<p>The denominators are <strong>sums</strong>, so repeated positive stretches cause no singularity. Positive ε also protects zero stretches. The force derives from S itself and is independent of the arbitrary SVD basis. The square-root differential is standard; the ALM substitution and stress above are our derivation. <a href="https://comptes-rendus.academie-sciences.fr/mathematique/item/10.5802/crmath.692.pdf">Bisson &amp; Pennec, stretch differential</a>.</p>
+<h3 id="verify-the-original-force-is-recovered">Verify the original μ force is recovered</h3>
+<p>At an ALM fixed point, Λ = μS. Substituting into the Sylvester equation gives X = μI/2:</p>
+<figure class="equation" id="stretch-fixed-point-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 41"><img src="stretch-fixed-point.svg" style="width:576.8px" alt="At equilibrium Lambda equals mu S, X equals mu identity over two, and P mu equals k mu plus s mu times mu times F, which equals mu F."></div><figcaption>(41)</figcaption></figure>
+
+<p>With the pressure row included, the complete stress is:</p>
+<figure class="equation" id="full-stretch-stress-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 42"><img src="full-stretch-stress.svg" style="width:434.6px" alt="Full stress is k mu F plus two s mu F X plus k p times J minus alpha plus s p pressure multiplier times cofactor F."></div><figcaption>(42)</figcaption></figure>
+
+<p>At equilibrium this is precisely the stress from Section 2. For a rigidly rotated rest state with equilibrium history, it gives zero total stress. With arbitrary fixed material history, it remains objective: rotating F rotates P in the same way. This does not remove physical torques caused by real deformation.</p>
+<h2 id="8-what-changes-in-the-solve-and-what-stays-the-same">8. What changes in the solve, and what stays the same</h2>
+<table>
+<thead>
+<tr>
+<th>Representation</th>
+<th>μ rows / history</th>
+<th>Target μ energy</th>
+<th>Finite-iteration issue</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Matrix ALM</td>
+<td>9 entries of F</td>
+<td>Original</td>
+<td>Retained spatial history produces the rotated-rest artifact.</td>
+</tr>
+<tr>
+<td>Scalar SVD ALM</td>
+<td>3 singular values</td>
+<td>Original</td>
+<td>Unequal sorted histories can jump between material directions.</td>
+</tr>
+<tr>
+<td>Proposed stretch ALM</td>
+<td>6 independent entries of S<sub>ε</sub></td>
+<td>Original plus a constant</td>
+<td>Smooth objective history; additional local derivative work and stiff behavior near collapse need testing.</td>
+</tr>
+</tbody>
+</table>
+<p>All three use the same scalar pressure row C<sub>p</sub> = J − α. None introduces a new global linear system or a new coloring. The proposed mode computes SVD and local matrix operations per tet evaluation and retains the existing sweep/dual-update schedule.</p>
+<p><strong>Same target material does not mean the same temporary Hessian.</strong> During a primal solve Λ is fixed. Do not substitute Λ = μS(F) before taking derivatives: that would incorrectly let the history move with a trial vertex displacement.</p>
+<details><summary>Exact local tangent for implementation</summary>
+
+<p>For a trial deformation-gradient change A, differentiate S and X with the multiplier fixed:</p>
+
+<figure class="equation" id="tangent-stretch-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 43"><img src="tangent-stretch.svg" style="width:408.8px" alt="S H plus H S equals F transpose A plus A transpose F."></div><figcaption>(43)</figcaption></figure>
+
+<figure class="equation" id="tangent-x-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 44"><img src="tangent-x.svg" style="width:424.5px" alt="S Z plus Z S equals minus H X plus X H."></div><figcaption>(44)</figcaption></figure>
+
+<figure class="equation" id="tangent-stress-formula"><div class="math-scroll" tabindex="0" aria-label="Equation 45"><img src="tangent-stress.svg" style="width:323.7px" alt="Derivative of P mu in direction A is k mu A plus two s mu times A X plus F Z."></div><figcaption>(45)</figcaption></figure>
+
+<p>Both Sylvester solves reuse the current SVD basis and the same positive denominators. For vertex a, let w<sub>a</sub> be its rest shape-function gradient. A trial displacement u gives A = uw<sub>a</sub>ᵀ. The force is −V₀Pw<sub>a</sub>, and the elastic energy Hessian action is V₀DP[A]w<sub>a</sub>.</p>
+<p>The exact frozen-history block can be indefinite, and small ε can make it stiff near collapse. The prototype therefore needs a suitable local-block stabilization and finite-iteration simulation checks. SVD alone does not settle those choices.</p>
+
+</details>
+
+<h2 id="source-and-scope">Source and scope</h2>
+<p>This derivation follows the stage-1 code in <code>newton/_src/solvers/vbd/particle_vbd_kernels.py</code>, especially <code>evaluate_volumetric_neo_hookean_force_and_hessian_alm</code>, and the multiplier lifecycle in <code>particle_alm_kernels.py</code>, at implementation commit <code>246fb405</code>. The document uses density conventions consistently and omits damping, inertial terms, and unrelated contact constraints. It describes the material equations with numerical denominator guards inactive; the current code floors the denominator in the pressure offset at 10⁻⁶, which changes that offset for exceptionally small positive Kₚ.</p>
+<p>The coefficient conversion and classical/stable material distinction are grounded in <a href="https://www.tkim.graphics/NEO/StableNeoHookean2018.pdf">Smith, de Goes &amp; Kim, <em>Stable Neo-Hookean Flesh Simulation</em> (2018), Eqs. 5, 13 and §3.4</a>. The ALM lifting, history comparison, and regularized stretch proposal are derived here. Existing numerical evidence is in the <a href="../alm-svd-exploration-20260914/index.html">SVD exploration report</a>.</p></main></body></html>
