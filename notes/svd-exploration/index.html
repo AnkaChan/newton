@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SVD exploration · Elasticity ALM</title>
+<style>
+:root{color-scheme:light;--ink:#19313c;--muted:#526773;--green:#087568;--line:#d8e4df}*{box-sizing:border-box}body{margin:0;background:#f3f6f4;color:var(--ink);font:16px/1.7 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:48px 30px 70px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(30px,5vw,49px);max-width:850px}h2{font-size:26px;margin:0 0 22px}h3{font-size:19px}p{margin:0 0 17px}.eyebrow{font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--green);font-weight:700}.lead{font-size:20px;color:var(--muted)}.note{border-left:4px solid var(--green);background:#e3f2ec;padding:19px 23px;border-radius:0 10px 10px 0;margin:23px 0}.caution{border-color:#b4792e;background:#fff1d9}.section{margin-top:38px;padding:30px;background:white;border:1px solid var(--line);border-radius:14px}a{color:var(--green);text-underline-offset:3px}code{font:.9em ui-monospace,monospace;background:#edf2ef;border-radius:4px;padding:2px 5px;overflow-wrap:anywhere}pre{font:13px/1.8 ui-monospace,monospace;background:#162d36;color:#e9f4ed;border-radius:10px;padding:21px;overflow:auto}pre code{background:none;color:inherit;padding:0;overflow-wrap:normal}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top}th{background:#edf3ef;font-size:12px}.table{overflow:auto;margin:20px 0}.small{font-size:13px;color:var(--muted)}.figure{overflow:auto}img{width:100%;min-width:660px;height:auto}nav{display:flex;flex-wrap:wrap;gap:10px 20px;font-size:13px}summary{cursor:pointer;color:var(--green);font-weight:600}details{margin:22px 0}.pill{display:inline-block;border:1px solid var(--line);border-radius:20px;padding:4px 12px;font-size:12px;background:#fff;margin:0 5px 7px 0}li{margin:8px 0}.footer{font-size:12px;color:var(--muted);margin-top:25px}a:focus-visible,summary:focus-visible{outline:3px solid #d28b36;outline-offset:4px}@media(max-width:650px){main{padding:26px 16px 40px}.section{padding:22px 17px}.lead{font-size:17px}pre{font-size:12px;padding:15px}h2{font-size:23px}.note{padding:16px}}@media print{body{background:white}.section{break-inside:avoid}main{padding:0}.figure{overflow:visible}img{min-width:0}pre{white-space:pre-wrap}}
+</style>
+</head>
+<body><main>
+<div class="eyebrow">Newton / VBD · Feasibility study · 14 September 2026</div>
+<h1>SVD can remove the rotation artifact.<br>The history representation matters.</h1>
+<p class="lead">The promising candidate stores a symmetric stretch-history matrix in material coordinates. SVD computes the stretch, while the history remains attached to the material through rotations and changes in the ordering of principal stretches.</p>
+<span class="pill">Exploration only</span><span class="pill">Float64 reference checks</span><span class="pill">Warp CPU + CUDA probes</span><span class="pill">Solver unchanged</span>
+<nav aria-label="Report sections"><a href="#choice">Choice</a><a href="#evidence">Measured behavior</a><a href="#formula">Formula</a><a href="#hessian">Local Hessian</a><a href="#implementation">Implementation implications</a><a href="#reproduce">Reproduce</a></nav>
+
+<section class="section" id="choice"><h2>1. What should the history remember?</h2>
+<div class="table"><table><thead><tr><th>Representation</th><th>Rigid rotation with retained history</th><th>Equal / crossing positive stretches</th></tr></thead><tbody>
+<tr><td>Current full matrix: history of <code>F</code></td><td>Old spatial stress can produce artificial forces.</td><td>No singular-value labels, but rotation is already a problem.</td></tr>
+<tr><td>Three scalar histories in sorted SVD slots</td><td>Fixes the rotated-rest example when all three histories agree.</td><td>Unequal histories can swap physical directions and make stress jump.</td></tr>
+<tr><td>Symmetric material matrix: history of <code>S</code></td><td>Force rotates with the material; rest remains balanced.</td><td>The complete tensor is independent of the arbitrary SVD basis.</td></tr>
+</tbody></table></div>
+<p>In the three-scalar version, slot 1 means “the largest stretch now.” When the x and y stretches exchange order, slot 1 changes direction. If it carries a larger stored stress, that stress changes direction too. This is a force issue, not just a Hessian issue. Tracking directions instead of sorting can postpone this swap, but equal stretches still require a choice about directional history.</p>
+<div class="note"><strong>Recommendation:</strong> prototype material-frame stretch ALM with a fixed regularization. A symmetric 3×3 matrix has six independent components; the existing <code>mat33</code> allocation can hold it during the experiment.</div>
+</section>
+
+<section class="section" id="evidence"><h2>2. What the probes actually show</h2>
+<p>The following are constitutive calculations with frozen history, using <code>mu = 10,000 Pa</code> and <code>rho = 1,000 Pa</code>. They are not an integrated simulation or a speed comparison.</p>
+<div class="figure"><img src="stress_comparison.svg" width="1100" height="410" alt="Left: stress jumps as two positive stretches cross with sorted scalar histories, while material tensor stress stays continuous. Right: regularized tensor stress passes continuously through a flat configuration, whereas the unregularized stress has opposite nonzero limits."></div>
+<p class="small">Left: scalar history is mu × [1.5, 0.5, 0.4]; tensor history is mu × diag(0.5, 1.5, 0.4), matching the initial material directions. Right: retained tensor history is mu × diag(1, 1, 0.8). <a href="stress_comparison.png">Download the figure</a>.</p>
+<div class="table"><table><thead><tr><th>Check</th><th>Observed result</th></tr></thead><tbody>
+<tr><td>Rotate rest by 0.2 rad without reseeding</td><td>Total stress norm: current matrix ≈ 2,567 Pa; stretch tensor ≈ 1.9 × 10<sup>−12</sup> Pa.</td></tr>
+<tr><td>Crossing interval shrinks from ±0.01 to ±10<sup>−8</sup></td><td>Sorted stress difference approaches 12,856 Pa. Tensor difference shrinks from 25.7 Pa to 0.0000257 Pa.</td></tr>
+<tr><td>Energy gradient / exact vertex Hessian versus finite differences</td><td>Relative errors ≈ 1.2 × 10<sup>−9</sup> / 1.1 × 10<sup>−9</sup> in the tested full-rank configuration.</td></tr>
+<tr><td>Rotate a deformed tet with fixed material history</td><td>Stress covariance error ≈ 5.1 × 10<sup>−16</sup>; spatial stress remains symmetric.</td></tr>
+<tr><td>Change the arbitrary basis of a repeated stretch</td><td>Ten basis changes leave stress unchanged to about 10<sup>−15</sup> relative error.</td></tr>
+<tr><td>Seed equilibrium history at positive, flat and inverted poses</td><td>Regularized mu stress equals <code>mu * F</code> to float64 rounding in the tested cases.</td></tr>
+</tbody></table></div>
+<p class="small">These use a different fixed rho from the earlier whole-solver rotation diagnostic. Stress norms here cannot be read as the earlier vertex-displacement measurement. <a href="numpy_results.json">Raw constitutive results</a>.</p>
+</section>
+
+<section class="section" id="formula"><h2>3. The proposed formula, without LaTeX</h2>
+<p><code>F</code> maps a tet’s rest geometry to its current geometry. <code>S</code> describes stretch in the original material coordinates. A rigid rotation changes <code>F</code> but leaves <code>S</code> unchanged. <code>Lambda</code> is the stored symmetric stress-like multiplier.</p>
+<pre><code>S = sqrt(transpose(F) * F + epsilon² * I)
+
+s     = mu / (mu + rho)
+k_eff = mu * rho / (mu + rho)
+
+Seed:                  Lambda = mu * S
+After each full sweep: Lambda = k_eff * S + s * Lambda</code></pre>
+<p>Keep <code>epsilon</code> fixed. The probe uses <code>epsilon = 0.001</code> for flattening; that is a diagnostic value, not a tuned solver default. Positive epsilon makes the derivative defined at flat and inverted states. The ALM row uses <code>S</code> itself, not <code>S − I</code>, to preserve the existing mu energy and its cancellation with resting pressure.</p>
+<h3>How SVD supplies S</h3>
+<pre><code>U, sigma, V = svd(F)
+r_i = sqrt(sigma_i² + epsilon²)
+S = V * diag(r) * transpose(V)</code></pre>
+<p>The exact force must differentiate this stretch. Simply rotating the matrix multiplier back is generally wrong when its directions differ from the current stretch directions.</p>
+<pre><code># X is a temporary symmetric 3×3 matrix, computed locally per tet.
+S * X + X * S = Lambda
+
+# This is just entrywise division in the current SVD basis:
+Lhat = transpose(V) * Lambda * V
+Xhat[i,j] = Lhat[i,j] / (r_i + r_j)
+X = V * Xhat * transpose(V)
+
+P_mu = k_eff * F + 2 * s * F * X</code></pre>
+<p>There is no global solve here. Equal positive stretches cause no division by a zero difference: the denominators are <strong>sums</strong>. The standard stretch differential has this Sylvester-equation structure; the ALM stress above is our derivation using it. <a href="https://comptes-rendus.academie-sciences.fr/mathematique/item/10.5802/crmath.692.pdf">Bisson &amp; Pennec, differential of the stretch tensor</a>.</p>
+<details><summary>Why the original material law is preserved</summary>
+<pre><code>At an ALM fixed point:
+Lambda = mu * S
+X      = (mu / 2) * I
+P_mu   = (k_eff + s * mu) * F = mu * F
+
+Also:
+||S||² = ||F||² + 3 * epsilon²</code></pre>
+<p>Thus the target mu energy changes only by a constant. This remains true through inversion when epsilon is positive. The complete stable Neo-Hookean stress is recovered when the existing pressure ALM row also reaches its fixed point. This establishes consistency of the fixed point, not a convergence guarantee.</p>
+</details>
+</section>
+
+<section class="section" id="hessian"><h2>4. Smooth force still needs a suitable local Hessian</h2>
+<p>The retained tensor makes the temporary energy depend on direction. Even with positive material stiffness and positive-definite history, its frozen-history Hessian can be indefinite. The exact Hessian therefore differs from the current full-matrix mode’s simple <code>k_eff * I</code>.</p>
+<details><summary>Exact derivative and the vertex block</summary>
+<p>For a trial deformation change <code>A</code>, compute two more local Sylvester solves using the same SVD:</p>
+<pre><code>S * dS + dS * S = transpose(F) * A + transpose(A) * F
+S * dX + dX * S = -(dS * X + X * dS)
+
+dP_mu = k_eff * A + 2 * s * (A * X + F * dX)
+
+# For vertex displacement direction u and inverse-rest weight w:
+A = u * transpose(w)
+H_vertex * u = rest_volume * dP_mu * w</code></pre>
+<p>Use three basis directions to form the symmetric 3×3 block. Add the existing pressure block, inertia and other terms. A prototype can floor negative/small eigenvalues of this assembled local block to obtain a descent direction. It still needs finite-iteration stability testing; SPD alone does not guarantee that a full VBD step decreases the objective.</p>
+</details>
+<div class="note caution"><strong>Flattening is the difficult case.</strong> At <code>F = diag(1,1,0)</code>, the probe’s <code>dP33/dF33</code> is about 7.27 MPa with epsilon = 0.001. This is a constitutive tangent, not a particle stiffness. Regularization removes the discontinuity, but retained stress divided by a small epsilon can still create a stiff local problem.</div>
+<p>A cheap positive-definite upper bound is available, but at equilibrium it recovers the original mu stiffness. Using that bound everywhere would discard much of the softening we wanted from ALM. I favor testing the exact local block with correction only where needed.</p>
+<p class="small">The exact derivative contains cancellation of large terms near small stretches. Start with float64 intermediate calculations as a reference; assess a cancellation-resistant float32 formula before treating performance or robustness as settled.</p>
+</section>
+
+<section class="section" id="implementation"><h2>5. How this fits the current code</h2>
+<div class="table"><table><thead><tr><th>Part</th><th>Proposed change</th></tr></thead><tbody>
+<tr><td>Persistent state</td><td>Reuse <code>tet_lambda_mu: mat33</code>, but give it material-stretch semantics in a separate experimental mode. Six independent values; symmetry must be retained. Existing full-mode allocation stays 52 bytes per tet if mat33 is reused.</td></tr>
+<tr><td>Prepare</td><td>Compute incoming S, seed pending history with mu*S. A positive scalar rho is sufficient for consistency; initially hold the policy fixed for a controlled comparison, then assess stretch-based metric scaling.</td></tr>
+<tr><td>Primal evaluation</td><td>Compute current SVD inside the shared tet evaluator; use the exact stress and local block. Both scalar and tiled paths call it. Do not cache one decomposition across all colors, because geometry changes.</td></tr>
+<tr><td>Dual update / reset</td><td>Update Lambda from S after the full sweep; preserve the current pending/reseed and selected-world reset lifecycle. A mode change must invalidate old F-history.</td></tr>
+<tr><td>Scheduling</td><td>No new coloring and no global solve. Buffers and launch counts can remain fixed for capture.</td></tr>
+</tbody></table></div>
+<p>Inline evaluation costs up to <strong>four SVDs per active tet per full color sweep</strong>, plus one for the tet dual update and preparation work. This follows from the current four-vertex visitation pattern. Whether the reduced iteration count pays for that work needs an integrated benchmark.</p>
+<h3>What was verified in Warp</h3>
+<p>On installed Warp 1.17.0, a standalone SVD kernel ran on CPU and a claimed L40 GPU. Three warmed CUDA graph replays matched eager output bitwise for float32 and float64. This verifies capture of the primitive, not the proposed ALM solver.</p>
+<p>Warp may return a signed final singular value for inverted F. The proposed <code>sqrt(sigma² + epsilon²)</code> handles that convention. Its float32 implementation uses four Jacobi sweeps and an absolute QR tolerance; float64 uses eight sweeps. <a href="https://github.com/NVIDIA/warp/blob/v1.17.0/warp/native/svd.h">NVIDIA Warp 1.17 SVD implementation</a>.</p>
+<p>Across 1,000 sampled random matrices, GPU float32 reconstruction error had median 3.1 × 10<sup>−7</sup> and maximum 3.78 × 10<sup>−4</sup>; float64 maximum was about 5 × 10<sup>−15</sup>. Uniformly tiny input also exposes the absolute tolerance. These are decomposition errors, not measured force errors. Scaling and precision need testing before integration.</p>
+<p><strong>Next implementation experiment:</strong> a separate stretch-tensor mode, fixed epsilon, exact local derivatives with float64 reference checks, and correction of the assembled 3×3 block when needed. Compare true material residual at equal GPU time against pressure-only ALM, including continuous rotation, shear, stretch crossings and flattening. Keep contact work separate.</p>
+</section>
+
+<section class="section" id="reproduce"><h2>6. Reproduce or inspect the exploration</h2>
+<p>All files are under <code>notes/svd-exploration/</code> in the isolated <code>alm-dat-design</code> worktree. These are exploratory references and diagnostics; no production solver code changed.</p>
+<pre><code>uv run --no-sync python notes/svd-exploration/numpy_probe.py
+uv run --no-sync python notes/svd-exploration/build_report.py
+
+# CPU:
+uv run --no-sync python notes/svd-exploration/warp_probe.py --device cpu
+
+# After the workspace GPU-claim step:
+uv run --no-sync python notes/svd-exploration/warp_probe.py --device cuda --capture</code></pre>
+<nav aria-label="Diagnostic downloads"><a href="numpy_probe.py">Float64 reference</a><a href="numpy_results.json">Constitutive results</a><a href="warp_probe.py">Warp probe</a><a href="warp_cpu_results.json">CPU results</a><a href="warp_cuda_results.json">CUDA results</a></nav>
+</section>
+<p class="footer">Assessment of stage-1 code at 246fb405. Mathematical derivations and numerical experiments are separate from an integrated implementation. Existing pressure-only ALM remains the current default.</p>
+</main></body></html>

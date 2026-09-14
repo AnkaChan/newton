@@ -1,0 +1,184 @@
+{
+  "scope": "Float64 constitutive probes, fixed history; no solver integration or scene speedup measurement",
+  "mu_pa": 10000.0,
+  "rho_pa": 1000.0,
+  "tensor_energy_gradient_relative_error": 1.1650326039782892e-09,
+  "tensor_vertex_hessian_relative_error": 1.0760090226890493e-09,
+  "tensor_vertex_hessian_symmetry_relative_error": 1.2673752625756874e-16,
+  "objectivity_relative_error": 5.144508500663896e-16,
+  "stress_torque_symmetry_relative_error": 7.731318575082114e-17,
+  "rotate_history_shortcut_stress_relative_error": 0.007960498845197589,
+  "rotate_history_shortcut_torque_error_relative": 0.015707793956290277,
+  "rest_rotation_total_stress_norm_pa": {
+    "0.0": {
+      "old_matrix": 0.0,
+      "sorted_svd": 0.0,
+      "stretch_tensor": 0.0
+    },
+    "0.2": {
+      "old_matrix": 2567.014032727059,
+      "sorted_svd": 6.431098710768743e-13,
+      "stretch_tensor": 1.8749713606747085e-12
+    },
+    "1.0": {
+      "old_matrix": 12327.456342583448,
+      "sorted_svd": 0.0,
+      "stretch_tensor": 0.0
+    },
+    "2.5": {
+      "old_matrix": 24401.216712293437,
+      "sorted_svd": 9.094947017729282e-13,
+      "stretch_tensor": 0.0
+    }
+  },
+  "stretch_crossing_stress_jump_pa": [
+    {
+      "half_interval": 0.01,
+      "sorted_svd": 12882.199904525827,
+      "stretch_tensor": 25.7129738613307
+    },
+    {
+      "half_interval": 0.0001,
+      "sorted_svd": 12856.744060403113,
+      "stretch_tensor": 0.25712973861305616
+    },
+    {
+      "half_interval": 1e-06,
+      "sorted_svd": 12856.489501961885,
+      "stretch_tensor": 0.002571297384844342
+    },
+    {
+      "half_interval": 1e-08,
+      "sorted_svd": 12856.486956377476,
+      "stretch_tensor": 2.571297449798442e-05
+    }
+  ],
+  "repeated_stretch_basis_stress_error_relative": [
+    6.333834112602382e-16,
+    5.705985207468616e-16,
+    3.3576205352511743e-16,
+    1.0714146713156379e-15,
+    7.086472526788594e-16,
+    2.1950324339159258e-16,
+    7.343876439153573e-16,
+    7.224501319539315e-16,
+    4.964347177765328e-16,
+    4.58519246001541e-16
+  ],
+  "rank_crossing": [
+    {
+      "signed_thickness": -0.01,
+      "unregularized_P33_pa": -7281.818181818181,
+      "regularized_P33_pa": -7245.725019709011
+    },
+    {
+      "signed_thickness": -0.0001,
+      "unregularized_P33_pa": -7272.818181818182,
+      "regularized_P33_pa": -723.7543201527194
+    },
+    {
+      "signed_thickness": -1e-06,
+      "unregularized_P33_pa": -7272.728181818181,
+      "regularized_P33_pa": -7.273632727275454
+    },
+    {
+      "signed_thickness": 0.0,
+      "unregularized_P33_pa": null,
+      "regularized_P33_pa": 0.0
+    },
+    {
+      "signed_thickness": 1e-06,
+      "unregularized_P33_pa": 7272.728181818181,
+      "regularized_P33_pa": 7.273632727275454
+    },
+    {
+      "signed_thickness": 0.0001,
+      "unregularized_P33_pa": 7272.818181818182,
+      "regularized_P33_pa": 723.7543201527194
+    },
+    {
+      "signed_thickness": 0.01,
+      "unregularized_P33_pa": 7281.818181818181,
+      "regularized_P33_pa": 7245.725019709011
+    }
+  ],
+  "regularized_equilibrium_stress_error_relative": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "regularized_hessian_fd_error_relative": [
+    1.6694395923150515e-08,
+    3.752103701216716e-09,
+    4.9993750728447865e-09,
+    3.752103701216716e-09,
+    1.6694395923150515e-08
+  ],
+  "regularized_collapse_H3333_pa": 7273636.363636363,
+  "random_vertex_hessian_scan": {
+    "count": 200,
+    "minimum_exact_eigenvalue": -274070.1262008719,
+    "minimum_upper_eigenvalue": 338.1710260554523,
+    "minimum_upper_minus_exact_eigenvalue": 56.31557043716237,
+    "negative_curvature_case": {
+      "F": [
+        [
+          0.7480910762786737,
+          0.054210867005162165,
+          -0.38036121904284326
+        ],
+        [
+          0.11105673927569605,
+          1.0254452279505293,
+          0.2267819688931644
+        ],
+        [
+          0.1794803042486352,
+          -0.15365630927782775,
+          0.9512093043860945
+        ]
+      ],
+      "history_pa": [
+        [
+          8272.686340543345,
+          -16158.155911413323,
+          1397.6017095845373
+        ],
+        [
+          -16158.155911413323,
+          117018.03170869539,
+          -15578.703831411065
+        ],
+        [
+          1397.6017095845373,
+          -15578.703831411065,
+          2543.7812317793177
+        ]
+      ],
+      "weight": [
+        2.61844858828946,
+        0.025484192036510433,
+        1.3718689039837255
+      ],
+      "hessian": [
+        [
+          30871.560257330446,
+          67471.7742758698,
+          -44248.91706948539
+        ],
+        [
+          67471.77427586979,
+          -169064.60215141234,
+          142514.50858461036
+        ],
+        [
+          -44248.91706948538,
+          142514.5085846104,
+          -10125.986418610466
+        ]
+      ]
+    }
+  }
+}
