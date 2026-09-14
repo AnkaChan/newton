@@ -33,14 +33,14 @@ is assumed to be solved automatically.
 For each supported primitive pair, let the normal point from side A to side B:
 
 $$
-g(\mathbf{x})=\mathbf{n}^{\mathsf{T}}\left(\sum_{j\in B}\beta_j\mathbf{x}_j-\sum_{i\in A}\alpha_i\mathbf{x}_i\right)-d_{\mathrm{hard}}\geq 0
+C(\mathbf{x})=\mathbf{n}^{\mathsf{T}}\left(\sum_{j\in B}\beta_j\mathbf{x}_j-\sum_{i\in A}\alpha_i\mathbf{x}_i\right)-d_{\mathrm{hard}}\geq 0
 $$
 
 The weights are nonnegative barycentric coordinates and sum to one on each side.
 A vertex has weight one;
 an edge has two weights; a triangle has three. `hard_gap` includes the desired
-thickness offset. Positive `g` means separation along the chosen orientation;
-negative `g` means a violation of this witness constraint.
+thickness offset. Positive `C` means separation along the chosen orientation;
+negative `C` means a violation of this witness constraint.
 
 **Agreed evaluation policy:** recompute barycentrics before contact evaluation,
 then treat them as fixed during the local solve. Hold the selected normal fixed
@@ -63,7 +63,7 @@ targets for the normal-refresh policy.
 that does certify separation of the two convex primitives is:
 
 ```text
-g_support = min_j(dot(n, x_Bj)) - max_i(dot(n, x_Ai)) - hard_gap
+C_support = min_j(dot(n, x_Bj)) - max_i(dot(n, x_Ai)) - hard_gap
 ```
 
 A positive barycentric gap can coexist with another primitive vertex crossing
@@ -77,28 +77,28 @@ slack gap `z` with:
 ```text
 psi(z) = 0.5 * K * max(activation_gap - z, 0)^2
 
-enforce:  g = z
+enforce:  C = z
           z >= 0
 ```
 
-At equilibrium, the cushion supplies `K * (activation_gap - g)` for
-`0 < g < activation_gap`; it releases outside the activation range. At `g = 0`,
+At equilibrium, the cushion supplies `K * (activation_gap - C)` for
+`0 < C < activation_gap`; it releases outside the activation range. At `C = 0`,
 the hard-boundary reaction can exceed `K * activation_gap`. It is not capped at
 the cushion force.
 
-ALM allows the temporary signed witness gap `g` to be negative while `z` remains
+ALM allows the temporary signed witness gap `C` to be negative while `z` remains
 nonnegative. With positive compressive multiplier `p` and metric `rho > 0`, use
-the augmented term `p*(z-g) + 0.5*rho*(z-g)^2`. The local slack solve is explicit:
+the augmented term `p*(z-C) + 0.5*rho*(z-C)^2`. The local slack solve is explicit:
 
 ```text
-y = g - p / rho
+y = C - p / rho
 
 if y >= activation_gap:
     z = y
 else:
     z = max(0, (rho*y + K*activation_gap) / (rho + K))
 
-p_eval = p + rho*(z - g)
+p_eval = p + rho*(z - C)
 ```
 
 This yields three regimes:
@@ -106,15 +106,15 @@ This yields three regimes:
 | Regime | Transmitted normal force | Local gap stiffness |
 | --- | --- | --- |
 | Released | `p_eval = 0` | `0` |
-| Cushion | `p_eval = s*p + k_eff*(activation_gap-g)` | `k_eff` |
-| Hard boundary active | `p_eval = p-rho*g` | `rho` |
+| Cushion | `p_eval = s*p + k_eff*(activation_gap-C)` | `k_eff` |
+| Hard boundary active | `p_eval = p-rho*C` | `rho` |
 
 ```text
 s = K / (K + rho)
 k_eff = K*rho / (K + rho)
 ```
 
-In hard mode, penetration increases the separating force because `g < 0`.
+In hard mode, penetration increases the separating force because `C < 0`.
 Use the raw signed gap so separation can also release unsupported history.
 The formulas above define the sign convention; they correct the slack-sign
 ambiguity in the original formula reference.
@@ -129,7 +129,121 @@ regime's gap stiffness times `weight^2 * n * transpose(n)`. A rigid-body path mu
 also account for its pose parameterization. The proposed slack solves remain
 local; no global linear system is introduced.
 
-## 4. Updating normals after penetration
+## 4. Friction: tangential slip and a Coulomb disk
+
+Add an ideal Coulomb friction row to the same barycentric contact. Let
+`mu_f >= 0` be the friction coefficient, distinct from the elasticity coefficient
+`mu`. The initial proposal uses one coefficient for both sticking and sliding.
+Its force budget uses the current compressive normal force, including the
+cushion contribution.
+
+### Tangential constraint
+
+Let `delta_x_i = x_i - start_x_i` be displacement from the accepted pose at the
+start of the timestep. Use the current barycentric weights on **both** time
+levels, so merely changing a witness does not get counted as particle motion.
+With unit normal `n`, the tangent projector and relative slip are:
+
+$$
+\mathbf{C}_t=(\mathbf{I}-\mathbf{n}\mathbf{n}^{\mathsf{T}})\left(\sum_{j\in B}\beta_j\Delta\mathbf{x}_j-\sum_{i\in A}\alpha_i\Delta\mathbf{x}_i\right)
+$$
+
+`C_t = 0` is the sticking condition. Sliding permits nonzero slip while the
+friction force reaches its Coulomb bound. This is not an unconditional zero-slip
+constraint. Inside ALM, evaluate `C_t` at the current candidate pose.
+
+### Force evaluation and multiplier update
+
+Store a tangential resistance vector `lambda_t` with force units and a positive
+numerical metric `rho_t` with stiffness units. A world-space `vec3` constrained
+to the tangent plane avoids requiring a stored arbitrary tangent basis.
+Evaluate the normal row first to obtain `p_eval`, then project the tangential
+trial onto the disk of radius `mu_f * p_eval`:
+
+$$
+\boldsymbol{\lambda}_t^{\mathrm{eval}}=\Pi_{\mathcal{D}(\mu_f p_{\mathrm{eval}})}\left(\boldsymbol{\lambda}_t+\rho_t\mathbf{C}_t\right)
+$$
+
+Here `D(r)` contains tangent vectors of length at most `r`. With the incoming
+history already projected into the current tangent plane, the disk projection
+is a local clamp:
+
+```text
+radius = mu_f * p_eval
+trial  = lambda_t + rho_t * C_t
+
+if radius == 0:
+    lambda_eval = 0
+elif length(trial) <= radius:
+    lambda_eval = trial
+else:
+    lambda_eval = radius * trial / length(trial)
+```
+
+**No compliance retention factor `s` multiplies this update.** Ideal friction
+has no authored tangent spring whose compliant relaxation should decay the
+stored sticking force. `rho_t` is a numerical metric, not a material friction
+stiffness.
+
+The vector above is a resistance multiplier; its physical forces are:
+
+$$
+\mathbf{f}_{Ai}^{\mathrm{fric}}=+\alpha_i\boldsymbol{\lambda}_t^{\mathrm{eval}},\qquad\mathbf{f}_{Bj}^{\mathrm{fric}}=-\beta_j\boldsymbol{\lambda}_t^{\mathrm{eval}}
+$$
+
+These forces sum to zero and oppose relative motion of B with respect to A at
+a sliding fixed point. At convergence, an interior disk solution has `C_t=0`;
+a sliding solution lies on the disk boundary and has
+`-dot(lambda_t, C_t) <= 0`. Retained history does not guarantee dissipative work
+at every unconverged iterate.
+
+Read persistent normal and tangent multipliers during each color solve. After
+the full sweep, compute `p_new` once, then compute the tangent update using the
+new radius `mu_f * p_new`, and store `lambda_t <- lambda_eval` once. Do not run
+normal ascent a second time after updating `p` just to obtain the friction budget.
+
+### Local derivative and capture
+
+Freeze the normal, weights, and normal-force budget for the local tangential
+block. With `P_t = I - n*transpose(n)`, a suitable block uses the derivative of
+the disk projection:
+
+```text
+Released, radius = 0:   J_t = 0
+Inside the disk:        J_t = rho_t * P_t
+Outside the disk:       J_t = rho_t * radius / length(trial)
+                             * (P_t - u*transpose(u))
+                       u = trial / length(trial)
+
+Per-particle contribution: weight^2 * J_t
+```
+
+These are positive-semidefinite local block approximations to the coupled
+contact problem. They omit derivatives of the normal-force budget and refreshed
+geometry. At the nondifferentiable disk boundary, the prototype can take the
+interior branch; handle zero radius first. A rigid-body path contracts the same
+tangent block through its contact-point Jacobian.
+
+Only fixed-size vectors, matrices, and local projections are needed: no extra
+coloring or global solve is introduced. Select and validate `rho_t` against the
+pair's tangential mobility; its tuning remains a numerical choice.
+
+### Contact changes and accepted motion
+
+On a matched contact whose normal changes, project the retained vector into the
+new tangent plane and clamp it to the new normal-force budget. Initialize
+unmatched tangent history to zero, and clear it when the normal contact releases.
+Simple projection is a baseline transfer rule, not a complete objective transport
+law for arbitrarily rotating contact frames; large frame changes and feature
+switches need explicit validation.
+
+After final truncation, recompute tangential slip from the **accepted** motion.
+Trial multipliers were learned from the candidate motion, so transferring them
+requires checking the accepted normal budget and tangent cone as well. Partial
+clipping does not automatically make those multipliers consistent with the
+accepted slip. The reconciliation policy is discussed in section 9.
+
+## 5. Updating normals after penetration
 
 An unsigned closest-point distance at a penetrated pose can lose which side of
 the contact should be considered feasible. Retain the orientation established
@@ -156,7 +270,7 @@ starting pose. Otherwise retain the original certificate.
 Open choices: refresh cadence, behavior at degenerate features, limits on normal
 rotation, and multiplier transfer when the contact direction changes substantially.
 
-## 5. Initial spherical queries and motion coverage
+## 6. Initial spherical queries and motion coverage
 
 Start with the existing distance-neighborhood approach rather than swept AABB
 candidate detection. This decision requires conservative motion budgets.
@@ -181,7 +295,7 @@ dropping pairs is not acceptable.
 
 Swept AABB detection and solving newly encountered pairs remain future work.
 
-## 6. Final truncation without a global QP or new coloring
+## 7. Final truncation without a global QP or new coloring
 
 Use planes that separate the accepted starting configuration. For a plane
 `dot(n,x)=b`, reserve the thickness margin on the two sides. Let `side_i` be `+1`
@@ -233,7 +347,7 @@ violates coverage or the plane certificate, flag/reject the step or apply an
 explicitly defined kinematic-motion policy. This is required for the safety
 claim to include moving obstacles.
 
-## 7. Solver flow and proposed data
+## 8. Solver flow and proposed data
 
 ```text
 At construction:
@@ -249,9 +363,9 @@ At step start:
 For each configured VBD sweep:
     refresh force geometry according to the chosen policy
     for each existing particle/body color:
-        evaluate ALM contact and elasticity
+        evaluate the normal contact row, then its friction row, and elasticity
         solve local systems; allow penetrating trial positions
-    update each contact multiplier once
+    update each normal multiplier once, then its friction multiplier
 
 At step end:
     compute candidate displacement from accepted starting pose
@@ -267,7 +381,8 @@ At step end:
 | Primitive indices and endpoint incidence / CSR | Gather and distribute contact contributions using the refactored representation. |
 | Barycentric witnesses, force normal, pair-local safe reference | Geometry for force evaluation and oriented normal refresh. |
 | Normal multiplier, rho, cushion stiffness and activation gap | Local contact response and history. |
-| Optional tangential history | Friction extension; reproject after normal changes and use the updated normal-force budget. |
+| Tangential multiplier (vec3), rho_t and mu_f | Coulomb friction history, numerical tangent metric and friction coefficient. |
+| Previous contact normal and accepted starting positions | Tangent-history transfer and consistent two-time-level slip evaluation. |
 | Start-valid safety planes and assigned sides | Full-primitive final-motion certificate. |
 | Accepted starting pose and candidate displacement | Define the motion being truncated. |
 | Per-vertex/body fractions and motion budgets | Atomic-min reduction and neighborhood coverage. |
@@ -284,7 +399,7 @@ Rollback must include structural ALM history because elasticity duals also
 change during the candidate solve. Preserve reset invalidation when rolling
 back: never resurrect history from before a selected-world reset.
 
-## 8. History after truncation and friction
+## 9. History after truncation
 
 Final clipping changes the pose from which ALM learned its trial multipliers.
 Do not silently treat trial history as equilibrated at the accepted pose.
@@ -293,12 +408,14 @@ trial multipliers with an accepted-pose update and measure the resulting
 residual, chatter and truncation frequency. A complete rejected step requires
 rollback; partial clipping is a separate case.
 
-Compute velocities and tangential slip from accepted motion. A friction extension
-should update the normal budget first, reproject tangential history when normals
-change, and enforce the Coulomb bound. Its detailed contact-transition policy is
-not settled by the normal-contact design.
+Compute velocities and tangential slip from accepted motion. Check the carried
+tangent multiplier against the accepted normal-force budget, tangent plane and
+Coulomb bound. Clamping enforces the bound but alone does not guarantee that the
+multiplier opposes the accepted slip. Measure accepted frictional work when
+clipping changes the relative motion. Detailed history reconciliation and
+contact-frame transport remain open policies.
 
-## 9. Validation and meeting decisions
+## 10. Validation and meeting decisions
 
 Before claiming collision safety, test the certificate and candidate coverage
 independently of ALM convergence. Include a primitive whose barycentric witness
@@ -308,6 +425,12 @@ moving obstacles, rigid rotation, zero clearance, and candidate overflow.
 For the force law, verify release, cushion, wall accumulation, signed-gap
 unwinding, and endpoint force balance. Exercise penetrating iterates and normal
 refresh across feature changes. Measure accepted and trial residuals separately.
+
+For friction, test zero normal load, zero friction coefficient, sticking below
+the Coulomb limit, sliding at the limit, release, reversing slip, changing contact
+normals, witness changes, and final truncation that alters relative slip. Check
+force signs and disk bounds, verify the fixed-budget local block with finite
+differences away from the rim, and measure accepted frictional work.
 
 For the complete solver, compare equal GPU time against current VBD/DAT on
 resting contact, stacking, sliding, self-contact and large proposed motion.
@@ -319,7 +442,7 @@ transfer through feature changes; motion-budget/query-radius policy; history
 reconciliation after clipping; and whether conservative plane caps provide
 enough progress before considering a coupled optimization or swept queries.
 
-## 10. Relation to the elasticity work
+## 11. Relation to the elasticity work
 
 The contact and elasticity rows share the ALM/VBD schedule, but their constraints
 and feasibility requirements differ. Optional pressure, spring and hinge ALM
