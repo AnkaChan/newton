@@ -32,14 +32,12 @@ is assumed to be solved automatically.
 
 For each supported primitive pair, let the normal point from side A to side B:
 
-```text
-a = sum_i(alpha_i * x_Ai)       sum_i alpha_i = 1
-b = sum_j(beta_j  * x_Bj)       sum_j beta_j  = 1
+$$
+g(\mathbf{x})=\mathbf{n}^{\mathsf{T}}\left(\sum_{j\in B}\beta_j\mathbf{x}_j-\sum_{i\in A}\alpha_i\mathbf{x}_i\right)-d_{\mathrm{hard}}\geq 0
+$$
 
-g = dot(n, b - a) - hard_gap
-```
-
-The weights are nonnegative barycentric coordinates. A vertex has weight one;
+The weights are nonnegative barycentric coordinates and sum to one on each side.
+A vertex has weight one;
 an edge has two weights; a triangle has three. `hard_gap` includes the desired
 thickness offset. Positive `g` means separation along the chosen orientation;
 negative `g` means a violation of this witness constraint.

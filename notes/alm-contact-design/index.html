@@ -3,6 +3,9 @@
 :root{color-scheme:light;--ink:#19313c;--muted:#526773;--green:#087568;--line:#d8e4df}*{box-sizing:border-box}body{margin:0;background:#f3f6f4;color:var(--ink);font:16px/1.7 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:48px 30px 70px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(30px,5vw,49px);max-width:850px}h2{font-size:26px;margin:0 0 22px}h3{font-size:19px}p{margin:0 0 17px}.eyebrow{font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--green);font-weight:700}.lead{font-size:20px;color:var(--muted)}.note{border-left:4px solid var(--green);background:#e3f2ec;padding:19px 23px;border-radius:0 10px 10px 0;margin:23px 0}.caution{border-color:#b4792e;background:#fff1d9}.section{margin-top:38px;padding:30px;background:white;border:1px solid var(--line);border-radius:14px}a{color:var(--green);text-underline-offset:3px}code{font:.9em ui-monospace,monospace;background:#edf2ef;border-radius:4px;padding:2px 5px;overflow-wrap:anywhere}pre{font:13px/1.8 ui-monospace,monospace;background:#162d36;color:#e9f4ed;border-radius:10px;padding:21px;overflow:auto}pre code{background:none;color:inherit;padding:0;overflow-wrap:normal}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top}th{background:#edf3ef;font-size:12px}.table{overflow:auto;margin:20px 0}.small{font-size:13px;color:var(--muted)}.figure{overflow:auto}img{width:100%;min-width:660px;height:auto}nav{display:flex;flex-wrap:wrap;gap:10px 20px;font-size:13px}summary{cursor:pointer;color:var(--green);font-weight:600}details{margin:22px 0}.pill{display:inline-block;border:1px solid var(--line);border-radius:20px;padding:4px 12px;font-size:12px;background:#fff;margin:0 5px 7px 0}li{margin:8px 0}.footer{font-size:12px;color:var(--muted);margin-top:25px}a:focus-visible,summary:focus-visible{outline:3px solid #d28b36;outline-offset:4px}@media(max-width:650px){main{padding:26px 16px 40px}.section{padding:22px 17px}.lead{font-size:17px}pre{font-size:12px;padding:15px}h2{font-size:23px}.note{padding:16px}}@media print{body{background:white}.section{break-inside:avoid}main{padding:0}.figure{overflow:visible}img{min-width:0}pre{white-space:pre-wrap}}
 
 h2{margin-top:42px;padding-top:24px;border-top:1px solid var(--line)}h3{margin-top:28px}.toc{font-size:14px;padding:16px 22px;background:white;border:1px solid var(--line);border-radius:12px}main>p,main>ul,main>ol{max-width:920px}table{background:white}pre{max-width:100%}table{display:block;overflow-x:auto}h1{font-size:clamp(30px,4.6vw,44px)}.source{display:inline-block;margin-bottom:18px}body{overflow-wrap:break-word}
+
+.contact-equation{margin:22px 0;padding:24px 16px;background:white;border:1px solid var(--line);border-radius:12px;overflow-x:auto;font-size:1.28rem}.contact-equation math{margin:0;white-space:nowrap}@media(max-width:650px){.contact-equation{padding:20px 8px;font-size:.88rem}}
+.contact-equation img{display:block;width:100%;max-width:760px;min-width:0;height:auto;margin:auto}
 </style></head><body><main><div class="eyebrow">Newton / VBD · Contact design</div><a class="source" href="design.md">Download Markdown source</a><h1 id="alm-contact-with-final-only-truncation">ALM contact with final-only truncation</h1><details><summary>Jump to a section</summary><div class="toc">
 <ul>
 <li><a href="#alm-contact-with-final-only-truncation">ALM contact with final-only truncation</a><ul>
@@ -47,12 +50,8 @@ Neither finite-iteration ALM convergence nor arbitrary initial interpenetration
 is assumed to be solved automatically.</p>
 <h2 id="2-contact-constraint-and-barycentric-witnesses">2. Contact constraint and barycentric witnesses</h2>
 <p>For each supported primitive pair, let the normal point from side A to side B:</p>
-<pre><code class="language-text">a = sum_i(alpha_i * x_Ai)       sum_i alpha_i = 1
-b = sum_j(beta_j  * x_Bj)       sum_j beta_j  = 1
-
-g = dot(n, b - a) - hard_gap
-</code></pre>
-<p>The weights are nonnegative barycentric coordinates. A vertex has weight one;
+<div class="contact-equation" id="contact-constraint-formula" aria-label="Signed barycentric contact gap must be nonnegative"><img src="contact-constraint.svg" alt="g(x) = n transpose times (sum over B of beta j x j minus sum over A of alpha i x i) minus d hard, greater than or equal to zero"></div>
+<p>The weights are nonnegative barycentric coordinates and sum to one on each side. A vertex has weight one;
 an edge has two weights; a triangle has three. <code>hard_gap</code> includes the desired
 thickness offset. Positive <code>g</code> means separation along the chosen orientation;
 negative <code>g</code> means a violation of this witness constraint.</p>
