@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ALM contact design · VBD</title><style>
+:root{color-scheme:light;--ink:#19313c;--muted:#526773;--green:#087568;--line:#d8e4df}*{box-sizing:border-box}body{margin:0;background:#f3f6f4;color:var(--ink);font:16px/1.7 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:48px 30px 70px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(30px,5vw,49px);max-width:850px}h2{font-size:26px;margin:0 0 22px}h3{font-size:19px}p{margin:0 0 17px}.eyebrow{font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--green);font-weight:700}.lead{font-size:20px;color:var(--muted)}.note{border-left:4px solid var(--green);background:#e3f2ec;padding:19px 23px;border-radius:0 10px 10px 0;margin:23px 0}.caution{border-color:#b4792e;background:#fff1d9}.section{margin-top:38px;padding:30px;background:white;border:1px solid var(--line);border-radius:14px}a{color:var(--green);text-underline-offset:3px}code{font:.9em ui-monospace,monospace;background:#edf2ef;border-radius:4px;padding:2px 5px;overflow-wrap:anywhere}pre{font:13px/1.8 ui-monospace,monospace;background:#162d36;color:#e9f4ed;border-radius:10px;padding:21px;overflow:auto}pre code{background:none;color:inherit;padding:0;overflow-wrap:normal}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top}th{background:#edf3ef;font-size:12px}.table{overflow:auto;margin:20px 0}.small{font-size:13px;color:var(--muted)}.figure{overflow:auto}img{width:100%;min-width:660px;height:auto}nav{display:flex;flex-wrap:wrap;gap:10px 20px;font-size:13px}summary{cursor:pointer;color:var(--green);font-weight:600}details{margin:22px 0}.pill{display:inline-block;border:1px solid var(--line);border-radius:20px;padding:4px 12px;font-size:12px;background:#fff;margin:0 5px 7px 0}li{margin:8px 0}.footer{font-size:12px;color:var(--muted);margin-top:25px}a:focus-visible,summary:focus-visible{outline:3px solid #d28b36;outline-offset:4px}@media(max-width:650px){main{padding:26px 16px 40px}.section{padding:22px 17px}.lead{font-size:17px}pre{font-size:12px;padding:15px}h2{font-size:23px}.note{padding:16px}}@media print{body{background:white}.section{break-inside:avoid}main{padding:0}.figure{overflow:visible}img{min-width:0}pre{white-space:pre-wrap}}
+
+h2{margin-top:42px;padding-top:24px;border-top:1px solid var(--line)}h3{margin-top:28px}.toc{font-size:14px;padding:16px 22px;background:white;border:1px solid var(--line);border-radius:12px}main>p,main>ul,main>ol{max-width:920px}table{background:white}pre{max-width:100%}table{display:block;overflow-x:auto}h1{font-size:clamp(30px,4.6vw,44px)}.source{display:inline-block;margin-bottom:18px}body{overflow-wrap:break-word}
+</style></head><body><main><div class="eyebrow">Newton / VBD · Contact design</div><a class="source" href="design.md">Download Markdown source</a><h1 id="alm-contact-with-final-only-truncation">ALM contact with final-only truncation</h1><details><summary>Jump to a section</summary><div class="toc">
+<ul>
+<li><a href="#alm-contact-with-final-only-truncation">ALM contact with final-only truncation</a><ul>
+<li><a href="#1-main-idea">1. Main idea</a></li>
+<li><a href="#2-contact-constraint-and-barycentric-witnesses">2. Contact constraint and barycentric witnesses</a></li>
+<li><a href="#3-soft-cushion-plus-hard-boundary">3. Soft cushion plus hard boundary</a></li>
+<li><a href="#4-updating-normals-after-penetration">4. Updating normals after penetration</a></li>
+<li><a href="#5-initial-spherical-queries-and-motion-coverage">5. Initial spherical queries and motion coverage</a></li>
+<li><a href="#6-final-truncation-without-a-global-qp-or-new-coloring">6. Final truncation without a global QP or new coloring</a><ul>
+<li><a href="#rigid-bodies">Rigid bodies</a></li>
+</ul>
+</li>
+<li><a href="#7-solver-flow-and-proposed-data">7. Solver flow and proposed data</a></li>
+<li><a href="#8-history-after-truncation-and-friction">8. History after truncation and friction</a></li>
+<li><a href="#9-validation-and-meeting-decisions">9. Validation and meeting decisions</a></li>
+<li><a href="#10-relation-to-the-elasticity-work">10. Relation to the elasticity work</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</details>
+<p>Discussion draft for the VBD group meeting · 14 September 2026</p>
+<p><strong>Status:</strong> This is the proposed contact stage, not an implemented solver. The
+current stage-1 code implements optional elasticity ALM and retains the existing
+contact and per-color DAT behavior. This document records the contact decisions
+from our discussion, with remaining choices identified explicitly.</p>
+<h2 id="1-main-idea">1. Main idea</h2>
+<p>Build oriented contact constraints from a known separated configuration. Let
+ALM/VBD iterates penetrate while their multipliers accumulate separating force.
+After the solve, conservatively truncate the proposed motion before committing
+the next state.</p>
+<pre><code class="language-text">Accepted separated pose
+  -&gt; initial spherical queries + motion budgets
+  -&gt; match contact history and build separation certificates
+  -&gt; ALM/VBD sweeps; internal poses may penetrate
+  -&gt; final displacement caps
+  -&gt; accepted positions, velocities and retained history
+</code></pre>
+<p>The force constraint and the final safety certificate have different jobs.
+The first drives the solve; the second bounds the entire primitive motion.
+Neither finite-iteration ALM convergence nor arbitrary initial interpenetration
+is assumed to be solved automatically.</p>
+<h2 id="2-contact-constraint-and-barycentric-witnesses">2. Contact constraint and barycentric witnesses</h2>
+<p>For each supported primitive pair, let the normal point from side A to side B:</p>
+<pre><code class="language-text">a = sum_i(alpha_i * x_Ai)       sum_i alpha_i = 1
+b = sum_j(beta_j  * x_Bj)       sum_j beta_j  = 1
+
+g = dot(n, b - a) - hard_gap
+</code></pre>
+<p>The weights are nonnegative barycentric coordinates. A vertex has weight one;
+an edge has two weights; a triangle has three. <code>hard_gap</code> includes the desired
+thickness offset. Positive <code>g</code> means separation along the chosen orientation;
+negative <code>g</code> means a violation of this witness constraint.</p>
+<p><strong>Agreed evaluation policy:</strong> recompute barycentrics before contact evaluation,
+then treat them as fixed during the local solve. Hold the selected normal fixed
+within that solve as well. Its refresh schedule is a separate choice.</p>
+<p>For compressive normal force magnitude <code>p &gt;= 0</code>:</p>
+<pre><code class="language-text">force_Ai = -p * alpha_i * n
+force_Bj = +p * beta_j  * n
+</code></pre>
+<p>The two sides receive equal and opposite total forces. Fixed weights simplify
+the local derivatives; they do not guarantee smoothness across witness-feature
+changes, nor does a frozen normal guarantee angular-momentum consistency when
+the current witnesses are no longer aligned with it. These are evaluation
+targets for the normal-refresh policy.</p>
+<p><strong>A witness gap is not a full-primitive certificate.</strong> The gap along a normal
+that does certify separation of the two convex primitives is:</p>
+<pre><code class="language-text">g_support = min_j(dot(n, x_Bj)) - max_i(dot(n, x_Ai)) - hard_gap
+</code></pre>
+<p>A positive barycentric gap can coexist with another primitive vertex crossing
+the plane. The final safety pass must therefore constrain all primitive vertices.</p>
+<h2 id="3-soft-cushion-plus-hard-boundary">3. Soft cushion plus hard boundary</h2>
+<p>Keep the intended pre-contact cushion and a nonpenetration boundary. Introduce a
+slack gap <code>z</code> with:</p>
+<pre><code class="language-text">psi(z) = 0.5 * K * max(activation_gap - z, 0)^2
+
+enforce:  g = z
+          z &gt;= 0
+</code></pre>
+<p>At equilibrium, the cushion supplies <code>K * (activation_gap - g)</code> for
+<code>0 &lt; g &lt; activation_gap</code>; it releases outside the activation range. At <code>g = 0</code>,
+the hard-boundary reaction can exceed <code>K * activation_gap</code>. It is not capped at
+the cushion force.</p>
+<p>ALM allows the temporary signed witness gap <code>g</code> to be negative while <code>z</code> remains
+nonnegative. With positive compressive multiplier <code>p</code> and metric <code>rho &gt; 0</code>, use
+the augmented term <code>p*(z-g) + 0.5*rho*(z-g)^2</code>. The local slack solve is explicit:</p>
+<pre><code class="language-text">y = g - p / rho
+
+if y &gt;= activation_gap:
+    z = y
+else:
+    z = max(0, (rho*y + K*activation_gap) / (rho + K))
+
+p_eval = p + rho*(z - g)
+</code></pre>
+<p>This yields three regimes:</p>
+<table>
+<thead>
+<tr>
+<th>Regime</th>
+<th>Transmitted normal force</th>
+<th>Local gap stiffness</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Released</td>
+<td><code>p_eval = 0</code></td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td>Cushion</td>
+<td><code>p_eval = s*p + k_eff*(activation_gap-g)</code></td>
+<td><code>k_eff</code></td>
+</tr>
+<tr>
+<td>Hard boundary active</td>
+<td><code>p_eval = p-rho*g</code></td>
+<td><code>rho</code></td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-text">s = K / (K + rho)
+k_eff = K*rho / (K + rho)
+</code></pre>
+<p>In hard mode, penetration increases the separating force because <code>g &lt; 0</code>.
+Use the raw signed gap so separation can also release unsupported history.
+The formulas above define the sign convention; they correct the slack-sign
+ambiguity in the original formula reference.</p>
+<p>Within a color solve, read persistent <code>p</code> and evaluate <code>p_eval</code> from the current
+local geometry. After a complete color sweep, evaluate the same update at the
+resulting pose and write <code>p &lt;- p_eval</code> once per contact. Do not update an element's
+persistent multiplier separately for every visited endpoint.</p>
+<p>With frozen barycentrics and normal, the particle Hessian contribution is the
+regime's gap stiffness times <code>weight^2 * n * transpose(n)</code>. A rigid-body path must
+also account for its pose parameterization. The proposed slack solves remain
+local; no global linear system is introduced.</p>
+<h2 id="4-updating-normals-after-penetration">4. Updating normals after penetration</h2>
+<p>An unsigned closest-point distance at a penetrated pose can lose which side of
+the contact should be considered feasible. Retain the orientation established
+from safe geometry.</p>
+<p>The proposed refresh uses a pair-local safe surrogate:</p>
+<ol>
+<li>Keep a previously certified separated configuration for this pair.</li>
+<li>Conservatively truncate this pair's motion toward its current candidate to
+   obtain another separated configuration.</li>
+<li>Recompute an oriented normal and witness geometry there, and use the selected
+   normal for subsequent force evaluations.</li>
+</ol>
+<p>This local truncation changes the geometry used to refresh the contact. It does
+not truncate the global ALM iterate or make that iterate collision-free. The
+pair-local path needs a valid separation test or conservative bound; an endpoint
+distance check alone is insufficient.</p>
+<p>Keep <strong>force normals</strong> distinct from <strong>planes used for final safety</strong>. A plane
+constructed at a later pair-local surrogate need not separate the accepted
+starting pose. Only replace a final safety plane after validating it at that
+starting pose. Otherwise retain the original certificate.</p>
+<p>Open choices: refresh cadence, behavior at degenerate features, limits on normal
+rotation, and multiplier transfer when the contact direction changes substantially.</p>
+<h2 id="5-initial-spherical-queries-and-motion-coverage">5. Initial spherical queries and motion coverage</h2>
+<p>Start with the existing distance-neighborhood approach rather than swept AABB
+candidate detection. This decision requires conservative motion budgets.</p>
+<p>For a pair whose two sides can move by at most <code>B_A</code> and <code>B_B</code>, the initial query
+must cover the corresponding possible approach. A sufficient distance threshold
+for finding every pair that could enter the activation region is:</p>
+<pre><code class="language-text">query_reach &gt;= hard_gap + activation_gap + B_A + B_B
+</code></pre>
+<p>This assumes the initial query is complete within that threshold for the
+supported primitive types. Bound motion of every point on each primitive; for
+linear simplex motion, bounds on every vertex suffice. Apply final motion caps
+so the committed trajectory respects the declared budgets, even if intermediate
+ALM iterates travel farther.</p>
+<p>The bounds prevent an excluded pair from reaching contact during committed
+motion. An overflowing candidate buffer invalidates the certificate; silently
+dropping pairs is not acceptable.</p>
+<p>Swept AABB detection and solving newly encountered pairs remain future work.</p>
+<h2 id="6-final-truncation-without-a-global-qp-or-new-coloring">6. Final truncation without a global QP or new coloring</h2>
+<p>Use planes that separate the accepted starting configuration. For a plane
+<code>dot(n,x)=b</code>, reserve the thickness margin on the two sides. Let <code>side_i</code> be <code>+1</code>
+for vertices assigned to the positive side and <code>-1</code> for the negative side.</p>
+<pre><code class="language-text">clearance_i = side_i * (dot(n, start_x_i) - b) - hard_gap/2
+approach_i  = max(0, -side_i * dot(n, candidate_dx_i))
+
+if approach_i &gt; 0:
+    t_i &lt;= safety_factor * clearance_i / approach_i
+
+t_i = min(1, all incident plane caps, neighborhood motion cap)
+accepted_x_i = start_x_i + t_i * candidate_dx_i
+</code></pre>
+<p>Each initial clearance must be nonnegative. <code>0 &lt; safety_factor &lt; 1</code> preserves a
+fraction of existing clearance. Zero approach adds no plane cap; zero clearance
+and positive approach stop that vertex. Numerical tolerance must be represented
+in the initial margins and feasibility checks.</p>
+<p>Every vertex stays on its assigned side throughout its linear motion. Therefore
+the convex primitive stays on that side too. The proof applies to independent
+vertex fractions; the fractions need not be equal. Combined with candidate
+coverage, this gives the intended final safety certificate under the stated
+geometric assumptions.</p>
+<p>Per-pair kernels can reduce caps with atomic minima into fixed per-vertex arrays.
+This needs neither another coloring nor a global QP. It is deliberately
+conservative: a side moving away cannot automatically donate its clearance to
+the other side. This can reduce sliding progress or cause stalls even when a
+less restricted collision-free motion exists.</p>
+<h3 id="rigid-bodies">Rigid bodies</h3>
+<p>Use one fraction per body so truncation preserves rigidity. Specify a continuous
+rotation path, such as scaling a fixed rotation increment by <code>t_body</code>. Bound the
+motion of every relevant body point, including rotation. For radius <code>r</code> and
+rotation-angle magnitude <code>theta</code>, <code>r*theta</code> bounds rotational path length over
+the full increment. Combine it with translation and scale the bound by the body
+fraction. Endpoint separation alone does not certify the rotational trajectory.</p>
+<p>An optimal coupled choice of fractions could improve progress, but is outside
+the first implementation.</p>
+<p>Prescribed kinematic geometry must also obey the certified trajectory and motion
+budgets. Its commanded motion cannot be silently truncated. If that trajectory
+violates coverage or the plane certificate, flag/reject the step or apply an
+explicitly defined kinematic-motion policy. This is required for the safety
+claim to include moving obstacles.</p>
+<h2 id="7-solver-flow-and-proposed-data">7. Solver flow and proposed data</h2>
+<pre><code class="language-text">At construction:
+    allocate bounded candidate, history, incidence and cap buffers
+
+At step start:
+    validate accepted pose and initialize motion budgets
+    query nearby primitive pairs
+    canonicalize pair keys and match previous history
+    build start-valid safety planes for candidate pairs
+    initialize working history; seed or clear unmatched rows
+
+For each configured VBD sweep:
+    refresh force geometry according to the chosen policy
+    for each existing particle/body color:
+        evaluate ALM contact and elasticity
+        solve local systems; allow penetrating trial positions
+    update each contact multiplier once
+
+At step end:
+    compute candidate displacement from accepted starting pose
+    reduce all plane and neighborhood caps
+    construct accepted positions/body poses
+    compute velocities and friction slip from accepted motion
+    validate status and publish state plus reconciled history
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Buffer / field</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Canonical primitive-pair keys, row types, validity mask</td>
+<td>Stable matching across detector reorderings; array slot alone is not identity.</td>
+</tr>
+<tr>
+<td>Primitive indices and endpoint incidence / CSR</td>
+<td>Gather and distribute contact contributions using the refactored representation.</td>
+</tr>
+<tr>
+<td>Barycentric witnesses, force normal, pair-local safe reference</td>
+<td>Geometry for force evaluation and oriented normal refresh.</td>
+</tr>
+<tr>
+<td>Normal multiplier, rho, cushion stiffness and activation gap</td>
+<td>Local contact response and history.</td>
+</tr>
+<tr>
+<td>Optional tangential history</td>
+<td>Friction extension; reproject after normal changes and use the updated normal-force budget.</td>
+</tr>
+<tr>
+<td>Start-valid safety planes and assigned sides</td>
+<td>Full-primitive final-motion certificate.</td>
+</tr>
+<tr>
+<td>Accepted starting pose and candidate displacement</td>
+<td>Define the motion being truncated.</td>
+</tr>
+<tr>
+<td>Per-vertex/body fractions and motion budgets</td>
+<td>Atomic-min reduction and neighborhood coverage.</td>
+</tr>
+<tr>
+<td>Device counts, overflow/status flags, reset generation</td>
+<td>Capture-safe bounded execution and invalid-step handling.</td>
+</tr>
+<tr>
+<td>Committed and working history, or equivalent rollback storage</td>
+<td>Avoid publishing history from a rejected step.</td>
+</tr>
+</tbody>
+</table>
+<p>Allocation sizes, kernels and iteration counts must be fixed for CUDA capture.
+Device counts and masks guard inactive work; no host readback or allocation
+belongs inside replay. Capacity growth can happen outside capture. If capacity
+or certificate validation fails, preserve the accepted state and expose a
+device-visible invalid-step status.</p>
+<p>Rollback must include structural ALM history because elasticity duals also
+change during the candidate solve. Preserve reset invalidation when rolling
+back: never resurrect history from before a selected-world reset.</p>
+<h2 id="8-history-after-truncation-and-friction">8. History after truncation and friction</h2>
+<p>Final clipping changes the pose from which ALM learned its trial multipliers.
+Do not silently treat trial history as equilibrated at the accepted pose.
+The carry/reconcile policy remains an implementation decision. Compare retained
+trial multipliers with an accepted-pose update and measure the resulting
+residual, chatter and truncation frequency. A complete rejected step requires
+rollback; partial clipping is a separate case.</p>
+<p>Compute velocities and tangential slip from accepted motion. A friction extension
+should update the normal budget first, reproject tangential history when normals
+change, and enforce the Coulomb bound. Its detailed contact-transition policy is
+not settled by the normal-contact design.</p>
+<h2 id="9-validation-and-meeting-decisions">9. Validation and meeting decisions</h2>
+<p>Before claiming collision safety, test the certificate and candidate coverage
+independently of ALM convergence. Include a primitive whose barycentric witness
+is separated while another vertex crosses, a pair just outside query range,
+moving obstacles, rigid rotation, zero clearance, and candidate overflow.</p>
+<p>For the force law, verify release, cushion, wall accumulation, signed-gap
+unwinding, and endpoint force balance. Exercise penetrating iterates and normal
+refresh across feature changes. Measure accepted and trial residuals separately.</p>
+<p>For the complete solver, compare equal GPU time against current VBD/DAT on
+resting contact, stacking, sliding, self-contact and large proposed motion.
+Report penetration, final truncation fractions, convergence, jitter, stalls,
+and capture/replay equivalence including selected-world reset.</p>
+<p><strong>Decisions for the group:</strong> normal-refresh cadence; matching and history
+transfer through feature changes; motion-budget/query-radius policy; history
+reconciliation after clipping; and whether conservative plane caps provide
+enough progress before considering a coupled optimization or swept queries.</p>
+<h2 id="10-relation-to-the-elasticity-work">10. Relation to the elasticity work</h2>
+<p>The contact and elasticity rows share the ALM/VBD schedule, but their constraints
+and feasibility requirements differ. Optional pressure, spring and hinge ALM
+are already implemented. Full spatial matrix mu history has a rotation artifact.</p>
+<p>The SVD proposal instead stores symmetric material stretch history with
+<code>S = sqrt(transpose(F)*F + epsilon^2*I)</code>. It preserves the target mu stress
+<code>mu*F</code> at convergence, with fixed regularization. It has reference and kernel
+probes; integrated performance and stability are still open.</p>
+<p><a href="https://entertainment-atlantic-mats-randy.trycloudflare.com./artifacts/alm-svd-exploration-20260914/index.html">SVD exploration and plots</a></p>
+<p><a href="https://entertainment-atlantic-mats-randy.trycloudflare.com./artifacts/alm-stage1-code-walkthrough-246fb405-20260914/index.html">Current stage-1 code walkthrough</a></p></main></body></html>
