@@ -95,6 +95,7 @@ def _make_self_contact_buffer_data(device):
 
     return {
         "particle_count": particle_count,
+        "proxy_count": 1,
         "capacity": capacity,
         "positions": positions,
         "particle_colors": wp.zeros(particle_count, dtype=wp.int32, device=device),
@@ -133,10 +134,32 @@ def _make_self_contact_outputs(data, device):
         "forces": wp.zeros(particle_count, dtype=wp.vec3, device=device),
         "hessians": wp.zeros(particle_count, dtype=wp.mat33, device=device),
         "truncation": wp.ones(particle_count, dtype=float, device=device),
-        "harvested_forces": wp.zeros(1, dtype=wp.vec3, device=device),
+        "harvested_forces": wp.zeros(data["proxy_count"], dtype=wp.vec3, device=device),
         "combined_forces": wp.zeros(particle_count, dtype=wp.vec3, device=device),
         "combined_hessians": wp.zeros(particle_count, dtype=wp.mat33, device=device),
     }
+
+
+def _make_edge_contact_buffer_data(device):
+    data = _make_self_contact_buffer_data(device)
+    data["positions"].assign(
+        np.array([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.05], [0.0, 1.0, 0.05]], dtype=np.float32)
+    )
+    data["edge_indices"] = wp.array([[0, 0, 0, 1], [0, 0, 2, 3]], dtype=wp.int32, ndim=2, device=device)
+    collision_info = data["collision_info_host"]
+    collision_info.edge_colliding_edges = wp.array([0, 1, 0, 1, 1, 0, 1, 0], dtype=wp.int32, device=device)
+    collision_info.edge_colliding_edges_offsets = wp.array([0, 2, 4], dtype=wp.int32, device=device)
+    collision_info.edge_colliding_edges_buffer_sizes = wp.full(2, data["capacity"], dtype=wp.int32, device=device)
+    collision_info.edge_colliding_edges_count = wp.zeros(2, dtype=wp.int32, device=device)
+    collision_info.edge_colliding_edges_min_dist = wp.zeros(2, dtype=float, device=device)
+    data["edge_counts"] = collision_info.edge_colliding_edges_count
+    data["collision_info"] = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=device)
+    data["proxy_count"] = 2
+    data["particle_to_proxy"].assign(np.array([-1, -1, 0, 1], dtype=np.int32))
+    data["particle_flags"].assign(
+        np.array([newton.ParticleFlags.ACTIVE] * 2 + [newton.ParticleFlags.PROXY] * 2, dtype=np.int32)
+    )
+    return data
 
 
 def _launch_self_contact_consumers(data, outputs, device):
@@ -318,6 +341,38 @@ def test_self_contact_consumers_capture_replays_device_counts(test, device):
         _assert_self_contact_count_contract(test, results)
 
 
+def test_edge_contact_consumers_ignore_stale_tails(test, device):
+    """Clamp directed edge-edge rows without consuming stale duplicate contacts."""
+    with wp.ScopedDevice(device):
+        data = _make_edge_contact_buffer_data(device)
+        outputs = _make_self_contact_outputs(data, device)
+        results = {}
+        for raw_count in (0, 1, 2, 3):
+            data["edge_counts"].fill_(raw_count)
+            _launch_self_contact_consumers(data, outputs, device)
+            results[raw_count] = _snapshot_self_contact_outputs(outputs)
+
+        _assert_self_contact_count_contract(test, results)
+
+
+def test_edge_contact_consumers_capture_replays_device_counts(test, device):
+    """Honor growing and shrinking edge-edge counts during CUDA graph replay."""
+    with wp.ScopedDevice(device):
+        data = _make_edge_contact_buffer_data(device)
+        outputs = _make_self_contact_outputs(data, device)
+        _launch_self_contact_consumers(data, outputs, device)
+        with wp.ScopedCapture(device=device) as capture:
+            _launch_self_contact_consumers(data, outputs, device)
+
+        results = {}
+        for raw_count in (2, 0, 3, 1, 0, 2):
+            data["edge_counts"].fill_(raw_count)
+            wp.capture_launch(capture.graph)
+            results[raw_count] = _snapshot_self_contact_outputs(outputs)
+
+        _assert_self_contact_count_contract(test, results)
+
+
 class TestVBDSelfContactBuffers(unittest.TestCase):
     """Test segmented VBD self-contact buffers."""
 
@@ -337,6 +392,18 @@ add_function_test(
     TestVBDSelfContactBuffers,
     "test_self_contact_consumers_capture_replays_device_counts",
     test_self_contact_consumers_capture_replays_device_counts,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestVBDSelfContactBuffers,
+    "test_edge_contact_consumers_ignore_stale_tails",
+    test_edge_contact_consumers_ignore_stale_tails,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSelfContactBuffers,
+    "test_edge_contact_consumers_capture_replays_device_counts",
+    test_edge_contact_consumers_capture_replays_device_counts,
     devices=cuda_devices,
 )
 

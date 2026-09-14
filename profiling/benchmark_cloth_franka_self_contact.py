@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import ctypes.util
 import hashlib
 import json
 import os
@@ -324,7 +325,7 @@ def main() -> None:
         dest="edge_edge_collision_detection_block_size",
         type=int,
     )
-    parser.add_argument("--self-contact-force-block-dim", type=int, choices=(128, 256))
+    parser.add_argument("--self-contact-force-block-dim", type=int, choices=(4, 8, 16, 32, 64, 128, 256))
     parser.add_argument(
         "--self-contact-force-max-blocks",
         choices=("sm", "2sm", "uncapped"),
@@ -492,7 +493,10 @@ def main() -> None:
 
     profiler = None
     if args.cuda_profiler_api:
-        profiler = ctypes.CDLL("/usr/local/cuda/targets/x86_64-linux/lib/libcudart.so")
+        runtime_library = ctypes.util.find_library("cudart")
+        if runtime_library is None:
+            raise RuntimeError("CUDA runtime library not found for --cuda-profiler-api")
+        profiler = ctypes.CDLL(runtime_library)
         if profiler.cudaProfilerStart() != 0:
             raise RuntimeError("cudaProfilerStart() failed")
 
