@@ -1,5 +1,18 @@
 # Cloth self-contact sanitized evidence
 
+The 2026-09-14 follow-ups use separate pinned, 32-process comparisons against
+takeover revision `ce314e2a`, holding the custom Warp build constant:
+
+- [20260914-scheduling.json](20260914-scheduling.json) records the eight-thread
+  scheduling change, measured at `7a156e66`.
+- [20260914-fused.json](20260914-fused.json) records scheduling plus fused bound
+  initialization, measured at `58ed2eb7`. It includes separately attributed
+  truncation-bound fills and the exact reduction in graph kernel launches.
+
+See the [latest report](../CLOTH_SELF_CONTACT_FUSION_REPORT.md) for the result,
+validation, and Nsight Compute limitation. The files below describe the
+historical comparison.
+
 - `abba_runs.csv` contains every measured process from the final eight-block
   ABBA/BAAB comparison. The `result_path` values identify the original local
   evidence files; SHA-256 values are retained for integrity checks.

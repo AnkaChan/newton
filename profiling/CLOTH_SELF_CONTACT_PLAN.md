@@ -109,3 +109,13 @@ measured the full detector plus force/Hessian path at 186.279 to 133.168 ms per
 measured **1.135x** end-to-end throughput with a 95% block-bootstrap interval
 of **[1.132x, 1.138x]**; all eight blocks favored the candidate. Both original
 acceptance thresholds are therefore satisfied.
+
+The 2026-09-14 takeover follow-up retains two further changes: eight-thread
+CUDA contact rows and fused truncation-bound initialization. Against takeover
+revision `ce314e2a`, the combined final revision `58ed2eb7` measures
+**1.046259x** end-to-end throughput, 95% CI **[1.041374x, 1.051042x]**.
+The [follow-up report](CLOTH_SELF_CONTACT_FUSION_REPORT.md) records the complete
+32-process comparison, matched Systems traces, exact arithmetic checks, and
+regression validation. Nsight Compute remained unable to reserve a driver
+profiling resource, so hardware-counter analysis is the remaining external
+limitation. No further unvalidated optimization is retained.

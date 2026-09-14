@@ -1,5 +1,10 @@
 # Cloth Franka self-contact performance report
 
+The [2026-09-14 follow-up](CLOTH_SELF_CONTACT_FUSION_REPORT.md) measures another
+**4.63% end-to-end throughput improvement** over the takeover revision, using
+the same custom Warp build. The historical comparisons below retain their
+original baselines and should not be compounded with the follow-up.
+
 - Dates: 2026-08-17 through 2026-08-18
 - Baseline: `2ba7ffd608648b485ce145173985e9556523af4c`
 - Profiled candidate: `c84f62fb00d71ee000faf06476610d37bbd7751c`

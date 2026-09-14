@@ -28,8 +28,8 @@ observations are included.
 
 The [sanitized aggregate](cloth_self_contact_results/20260914-scheduling.json)
 records all 32 timings, source/native-library pins, trace totals, actual JIT
-resources, semantic diagnostics, and evidence hashes. No contact buffer
-overflows in the timed runs. These results compare against the already
+resources, semantic diagnostics, and evidence hashes. No final-frame contact-buffer
+rows overflowed in any timed run. These results compare against the already
 optimized takeover code; they are separate from the historical combined
 Newton/Warp endpoint comparison.
 
@@ -68,8 +68,8 @@ multiplicity, truncation minima, stale tails, capacities above eight, overflow,
 degeneracies, friction, damping, and changing counts in CUDA graphs. Integration
 tests execute contact and nonzero proxy-force launches while interleaving six
 explicit/inherited determinism configurations. Explicit and inherited
-deterministic rollouts agree bitwise. A separate comparison against the actual
-pre-change kernel module passes 450 bitwise checks on CPU and both deterministic
+deterministic rollouts agree exactly. A separate comparison against the actual
+pre-change kernel module passes 450 exact array comparisons on CPU and both deterministic
 CUDA modes, including captured replay and switching between kernel variants.
 
 Mutation checks fail when the eight-thread kernel receives the old undersized

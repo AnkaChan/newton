@@ -828,3 +828,54 @@ Evidence:
 Raw `.nsys-rep`, SQLite, process logs, and result records remain under `/tmp`
 because they can contain environment metadata. The sanitized combined endpoint
 aggregate is recorded in `profiling/cloth_franka_radius_query_results.json`.
+
+## 2026-09-14: Preserve arithmetic while improving scheduling and initialization
+
+The takeover control is `ce314e2a`; final measured Newton is `58ed2eb7`,
+including scheduling commit `7a156e66` and fused-bound commit `c1a3ff67`.
+Both endpoints use the same custom Warp `67621f80` and native binaries.
+The final 32-process, eight-block comparison measures **1.046259x** throughput,
+95% whole-block bootstrap interval **[1.041374x, 1.051042x]**. Median frame
+time changes from **14.541074 ms to 13.917116 ms**. All eight blocks favor
+the candidate; every observation is retained, including baseline ordinal 12,
+which the modified-z diagnostic flagged. Final-frame contact-buffer snapshots
+show no overflow in any timed process.
+
+Ordinary CUDA uses eight threads per contact row, 128-thread force blocks,
+and 64-thread truncation blocks. The force pass initializes every particle
+bound and removes the following redundant fill. Initialization and direct
+truncation calls retain their fills. CPU, deterministic CUDA, and proxy-force
+harvesting retain their existing paths and original kernel signatures.
+
+Matched Systems captures contain **63,870 to 56,370 graph kernels** over
+30 frames: exactly 7,500 per-color bound fills disappear. The extended
+self-contact pipeline plus separately attributed bound fills changes from
+**190.321148 ms to 173.618573 ms**, or **1.096203x**. This additional sum
+is explicitly separate from the analyzer's unchanged extended-pipeline
+definition. The traces locate work; the replicated suite estimates end-to-end
+performance.
+
+The fused kernel preserves all 694 floating arithmetic instructions and
+72 atomic sites, adds 18 integer/control/memory instructions, and retains
+128 actual driver-JIT registers per thread with no local memory. A shared
+Warp-function refactor changed floating-point contraction choices and was
+rejected. Active-row compaction and geometry-caching experiments also lacked
+sufficient measured benefit and were not retained.
+
+All 108 broader tests and seven scheduling/reset tests pass. A separate
+comparison with actual pre-change kernels passes 450 stored-bit array checks
+on CPU and both deterministic CUDA modes. Removing bound initialization
+produces 15 numerical regression failures. Changed-file hooks pass; the full
+pre-commit invocation still reports inherited unrelated profiling findings.
+
+Nsight Compute attempts could not reserve a driver profiling resource; no
+hardware-counter report was obtained. Systems and live driver queries supplied
+the successful profiling/resource evidence. No host monitoring configuration
+was changed.
+
+The [final report](CLOTH_SELF_CONTACT_FUSION_REPORT.md) and
+[sanitized aggregate](cloth_self_contact_results/20260914-fused.json) contain
+the protocol, measurements, and pins. Raw evidence is preserved in the ignored
+`profiling/cloth_self_contact/20260914/integrated/fused/` directory. The earlier
+[scheduling-only result](CLOTH_SELF_CONTACT_SCHEDULING_REPORT.md) is a separate
+comparison and must not be multiplied by this combined result.
