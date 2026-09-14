@@ -22,6 +22,7 @@ class TestSelfContactComponentNames(unittest.TestCase):
                 "planar_truncation"
             },
             "unrelated_accumulate_self_contact_force_and_hessian_123_cuda_kernel_forward": set(),
+            "_accumulate_self_contact_force_and_hessian_wide_with_truncation_reset_789_cuda_kernel_forward": {"force"},
         }
         for name, expected in cases.items():
             with self.subTest(name=name):

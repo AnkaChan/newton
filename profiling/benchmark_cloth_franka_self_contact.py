@@ -575,6 +575,9 @@ def main() -> None:
                 "_self_contact_threads_per_primitive",
                 particle_vbd_kernels.NUM_THREADS_PER_COLLISION_PRIMITIVE,
             ),
+            "self_contact_force_resets_truncation": getattr(
+                example.cloth_solver, "_self_contact_force_resets_truncation", False
+            ),
             "self_contact_truncation_block_dim": getattr(
                 example.cloth_solver, "_self_contact_truncation_block_dim", 256
             ),

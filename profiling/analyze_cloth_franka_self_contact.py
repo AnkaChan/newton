@@ -39,11 +39,15 @@ PERFORMANCE_CONFIGURATION_FIELDS = {
     "self_contact_force_max_blocks",
     "self_contact_force_max_blocks_resolved",
     "self_contact_threads_per_primitive",
+    "self_contact_force_resets_truncation",
     "self_contact_truncation_block_dim",
 }
 
 PREFIX_COMPONENTS = {
-    "force": ("accumulate_self_contact_force_and_hessian_",),
+    "force": (
+        "accumulate_self_contact_force_and_hessian_",
+        "_accumulate_self_contact_force_and_hessian_wide_with_truncation_reset_",
+    ),
     "vertex_triangle_traversal": ("vertex_triangle_collision_detection_kernel_",),
     "edge_edge_traversal": ("edge_colliding_edges_detection_kernel_",),
     "triangle_aabb": ("compute_tri_aabbs_",),

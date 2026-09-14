@@ -34,7 +34,7 @@ from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     NUM_THREADS_PER_COLLISION_PRIMITIVE_WIDE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-    _accumulate_self_contact_force_and_hessian_wide,
+    _accumulate_self_contact_force_and_hessian_wide_with_truncation_reset,
     _apply_planar_truncation_parallel_by_collision_wide,
     # Topological filtering helper functions
     accumulate_particle_body_contact_force_and_hessian,
@@ -97,7 +97,7 @@ from .vbd_coupling_kernels import (
 
 __all__ = ["SolverVBD"]
 
-_VERSION = "self_contact_wide_cuda_launch_v1"
+_VERSION = "self_contact_fused_bound_reset_v1"
 print(f"[solver_vbd] version: {_VERSION}")
 
 _SOFT_CONTACT_BLOCK_DIM = 256
@@ -474,10 +474,11 @@ class SolverVBD(SolverBase, CouplingInterface):
             else NUM_THREADS_PER_COLLISION_PRIMITIVE
         )
         self._self_contact_force_kernel = (
-            _accumulate_self_contact_force_and_hessian_wide
+            _accumulate_self_contact_force_and_hessian_wide_with_truncation_reset
             if use_nondeterministic_cuda
             else accumulate_self_contact_force_and_hessian
         )
+        self._self_contact_force_resets_truncation = use_nondeterministic_cuda
         self._self_contact_truncation_kernel = (
             _apply_planar_truncation_parallel_by_collision_wide
             if use_nondeterministic_cuda
@@ -2133,10 +2134,14 @@ class SolverVBD(SolverBase, CouplingInterface):
             device=self.device,
         )
 
-    def _penetration_free_truncation(self, particle_q_out=None):
-        """
-        Modify displacements_in in-place, also modify particle_q if its not None
+    def _penetration_free_truncation(
+        self, particle_q_out: wp.array[wp.vec3] | None = None, *, bounds_initialized: bool = False
+    ):
+        """Limit particle displacements and optionally update particle positions.
 
+        Args:
+            particle_q_out: Output particle positions, if requested.
+            bounds_initialized: Whether the preceding force pass initialized every bound to one.
         """
         if not self.particle_enable_self_contact:
             self.truncation_ts.fill_(1.0)
@@ -2158,7 +2163,8 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         else:
             ##  parallel by collision and atomic operation
-            self.truncation_ts.fill_(1.0)
+            if not bounds_initialized:
+                self.truncation_ts.fill_(1.0)
             wp.launch(
                 kernel=self._self_contact_truncation_kernel,
                 inputs=[
@@ -2796,6 +2802,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 )
 
             if self.particle_enable_self_contact:
+                self_contact_outputs = [self.particle_forces, self.particle_hessians]
+                if self._self_contact_force_resets_truncation:
+                    self_contact_outputs.append(self.truncation_ts)
                 wp.launch(
                     kernel=self._self_contact_force_kernel,
                     dim=self._self_contact_evaluation_launch_size,
@@ -2817,7 +2826,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         self.friction_epsilon,
                         self.trimesh_collision_detector.edge_edge_parallel_epsilon,
                     ],
-                    outputs=[self.particle_forces, self.particle_hessians],
+                    outputs=self_contact_outputs,
                     device=self.device,
                 )
             if self.use_particle_tile_solve:
@@ -2945,7 +2954,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                     ],
                     device=self.device,
                 )
-            self._penetration_free_truncation(state_in.particle_q)
+            self._penetration_free_truncation(
+                state_in.particle_q, bounds_initialized=self._self_contact_force_resets_truncation
+            )
 
         wp.copy(state_out.particle_q, state_in.particle_q)
 

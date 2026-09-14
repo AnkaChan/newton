@@ -21,7 +21,7 @@ from newton._src.solvers.vbd.tri_mesh_collision import (
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-_VERSION = "self_contact_scheduling_test_v1"
+_VERSION = "self_contact_scheduling_test_v2"
 print(f"[test_vbd_self_contact_scheduling] version: {_VERSION}")
 
 
@@ -220,7 +220,7 @@ def _outputs(data, device):
     }
 
 
-def _launch(data, outputs, color, wide, device, launch_lanes=None):
+def _launch(data, outputs, color, wide, device, launch_lanes=None, *, reset_bounds=False):
     lanes = 8 if wide else 4
     if launch_lanes is None:
         launch_lanes = lanes
@@ -232,6 +232,12 @@ def _launch(data, outputs, color, wide, device, launch_lanes=None):
         if wide
         else kernels.accumulate_self_contact_force_and_hessian
     )
+    force_outputs = [outputs["forces"], outputs["hessians"]]
+    if reset_bounds:
+        # A missing reset must fail even for empty rows that never contribute a minimum.
+        outputs["truncation"].fill_(0.0)
+        force = kernels._accumulate_self_contact_force_and_hessian_wide_with_truncation_reset
+        force_outputs.append(outputs["truncation"])
     truncation = (
         kernels._apply_planar_truncation_parallel_by_collision_wide
         if wide
@@ -242,7 +248,7 @@ def _launch(data, outputs, color, wide, device, launch_lanes=None):
         force,
         dimension,
         [0.01, color, *common, 0.1, 10.0, 0.3, 0.2, 0.01, 1e-5],
-        [outputs["forces"], outputs["hessians"]],
+        force_outputs,
         device=device,
         block_dim=128 if wide else 256,
     )
@@ -274,7 +280,9 @@ def _assert_outputs(test, reference, candidate):
     snapshots = {name: array.numpy() for name, array in reference.items()}
     for name, expected in snapshots.items():
         with test.subTest(output=name):
-            np.testing.assert_array_equal(expected, candidate[name].numpy())
+            actual = candidate[name].numpy()
+            np.testing.assert_array_equal(expected, actual)
+            np.testing.assert_array_equal(expected.view(np.uint8), actual.view(np.uint8), err_msg="stored bits")
             test.assertTrue(np.isfinite(expected).all())
     hits = snapshots["hits"]
     test.assertTrue(np.all((hits == 0) | (hits == 1)))
@@ -305,22 +313,37 @@ def test_self_contact_scheduling(test, device):
                 _assert_outputs(test, reference, candidate)
 
 
-def test_self_contact_scheduling_graph(test, device):
-    """Read changed active counts when a captured graph replays wider contact rows."""
+def test_self_contact_reset_scheduling(test, device):
+    """Preserve contributions and final minima when the force pass resets poisoned bounds."""
     data = _fixture(device)
     reference = _outputs(data, device)
     candidate = _outputs(data, device)
-    _set_counts(data, 0)
-    _launch(data, reference, 0, False, device)
-    _launch(data, candidate, 0, True, device)
-    with wp.ScopedCapture(device=device) as capture:
-        _launch(data, reference, 0, False, device)
-        _launch(data, candidate, 0, True, device)
-    for phase in (4, 1, 3, 0):
+    for phase in range(5):
         _set_counts(data, phase)
-        wp.capture_launch(capture.graph)
-        with test.subTest(phase=phase):
-            _assert_outputs(test, reference, candidate)
+        for color in range(3):
+            _launch(data, reference, color, True, device)
+            _launch(data, candidate, color, True, device, reset_bounds=True)
+            with test.subTest(phase=phase, color=color):
+                _assert_outputs(test, reference, candidate)
+
+
+def test_self_contact_scheduling_graph(test, device):
+    """Read changed active counts when graphs replay wider rows and fused bound resets."""
+    data = _fixture(device)
+    reference = _outputs(data, device)
+    candidate = _outputs(data, device)
+    for reset_bounds in (False, True):
+        _set_counts(data, 0)
+        _launch(data, reference, 0, False, device)
+        _launch(data, candidate, 0, True, device, reset_bounds=reset_bounds)
+        with wp.ScopedCapture(device=device) as capture:
+            _launch(data, reference, 0, False, device)
+            _launch(data, candidate, 0, True, device, reset_bounds=reset_bounds)
+        for phase in (4, 1, 3, 0):
+            _set_counts(data, phase)
+            wp.capture_launch(capture.graph)
+            with test.subTest(phase=phase, reset_bounds=reset_bounds):
+                _assert_outputs(test, reference, candidate)
 
 
 def _check_solver_scheduling(device):
@@ -342,6 +365,8 @@ def _check_solver_scheduling(device):
     builder.color()
     model = builder.finalize(device=device)
     primitive_count = max(model.particle_count, model.edge_count)
+    crossing_displacements = np.zeros((model.particle_count, 3), dtype=np.float32)
+    crossing_displacements[:, 2] = np.where(model.particle_q.numpy()[:, 2] < 0.025, 0.2, -0.2)
     mapping = wp.array(np.arange(model.particle_count, dtype=np.int32), device=device)
     proxy_forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
     modes = wp.DeterministicMode
@@ -374,7 +399,7 @@ def _check_solver_scheduling(device):
 
     force_kernels = (
         kernels.accumulate_self_contact_force_and_hessian,
-        kernels._accumulate_self_contact_force_and_hessian_wide,
+        kernels._accumulate_self_contact_force_and_hessian_wide_with_truncation_reset,
     )
     truncation_kernels = (
         kernels.apply_planar_truncation_parallel_by_collision,
@@ -390,12 +415,27 @@ def _check_solver_scheduling(device):
             wide = device.is_cuda and mode == modes.NOT_GUARANTEED
             lanes = 8 if wide else 4
             calls = {"force": 0, "truncation": 0, "harvest": 0}
+            computed_bounds = []
 
-            def record_launch(kernel, *args, wide=wide, lanes=lanes, calls=calls, mode=mode, **kwargs):
-                if kernel in force_kernels:
+            def record_launch(
+                kernel,
+                *args,
+                wide=wide,
+                lanes=lanes,
+                calls=calls,
+                mode=mode,
+                solver=solver,
+                computed_bounds=computed_bounds,
+                **kwargs,
+            ):
+                if kernel in (*force_kernels, kernels._accumulate_self_contact_force_and_hessian_wide):
                     kind, expected_kernel, block = "force", force_kernels[wide], 128 if wide else 256
+                    test.assertEqual(len(kwargs["outputs"]), 3 if wide else 2)
+                    if wide:
+                        test.assertIs(kwargs["outputs"][-1], solver.truncation_ts)
                 elif kernel in truncation_kernels:
                     kind, expected_kernel, block = "truncation", truncation_kernels[wide], 64 if wide else 256
+                    np.testing.assert_array_equal(solver.truncation_ts.numpy(), np.ones(model.particle_count))
                 elif kernel is harvest_kernel:
                     kind, expected_kernel, block = "harvest", harvest_kernel, None
                 else:
@@ -408,15 +448,26 @@ def _check_solver_scheduling(device):
                 options = wp.get_module_options(module=vbd_coupling_kernels if kind == "harvest" else kernels)
                 test.assertEqual(options["deterministic"], mode)
                 test.assertEqual(options["deterministic_max_records"] > 0, mode != modes.NOT_GUARANTEED)
-                return launch(kernel, *args, **kwargs)
+                result = launch(kernel, *args, **kwargs)
+                if kind == "truncation":
+                    computed_bounds.append(solver.truncation_ts.numpy())
+                return result
 
             state_in, state_out = states[index]
             with test.subTest(device=str(device), explicit=explicit, inherited=inherited):
                 test.assertEqual(solver._self_contact_evaluation_launch_size, primitive_count * lanes)
                 test.assertEqual(solver.particle_self_contact_evaluation_kernel_launch_size, primitive_count * 4)
                 # Another solver has changed shared module options since this instance was initialized.
-                with mock.patch.object(wp, "launch", side_effect=record_launch):
+                with (
+                    mock.patch.object(wp, "launch", side_effect=record_launch),
+                    mock.patch.object(solver.truncation_ts, "fill_", wraps=solver.truncation_ts.fill_) as bound_fills,
+                ):
                     solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+                    expected_fills = 1 if wide else 1 + solver.iterations * len(model.particle_color_groups)
+                    test.assertEqual(bound_fills.call_args_list, [mock.call(1.0)] * expected_fills)
+                    np.testing.assert_array_equal(
+                        computed_bounds[-1].view(np.uint8), solver.truncation_ts.numpy().view(np.uint8)
+                    )
                     solver.coupling_harvest_proxy_particle_forces(
                         mapping,
                         proxy_forces,
@@ -426,6 +477,19 @@ def _check_solver_scheduling(device):
                         contacts=None,
                         dt=1.0 / 240.0,
                     )
+                    # A direct call must initialize bounds even for a solver whose force pass can reset them.
+                    previous_displacements = solver.particle_displacements.numpy()
+                    # Drive the two layers toward one another so retained minima cannot all equal one.
+                    solver.particle_displacements.assign(crossing_displacements)
+                    solver.truncation_ts.fill_(0.0)
+                    bound_fills.reset_mock()
+                    solver._penetration_free_truncation()
+                    bound_fills.assert_called_once_with(1.0)
+                    test.assertTrue(np.any(computed_bounds[-1] < 1.0))
+                    np.testing.assert_array_equal(
+                        computed_bounds[-1].view(np.uint8), solver.truncation_ts.numpy().view(np.uint8)
+                    )
+                    solver.particle_displacements.assign(previous_displacements)
                 test.assertTrue(all(count > 0 for count in calls.values()), calls)
                 test.assertGreater(np.count_nonzero(proxy_forces.numpy()), 0)
                 test.assertTrue(np.isfinite(state_out.particle_q.numpy()).all())
@@ -457,6 +521,12 @@ class TestVBDSelfContactScheduling(unittest.TestCase):
 devices = get_test_devices()
 add_function_test(
     TestVBDSelfContactScheduling, "test_self_contact_scheduling", test_self_contact_scheduling, devices=devices
+)
+add_function_test(
+    TestVBDSelfContactScheduling,
+    "test_self_contact_reset_scheduling",
+    test_self_contact_reset_scheduling,
+    devices=devices,
 )
 add_function_test(
     TestVBDSelfContactScheduling,
