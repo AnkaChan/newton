@@ -69,6 +69,113 @@ C_support = min_j(dot(n, x_Bj)) - max_i(dot(n, x_Ai)) - hard_gap
 A positive barycentric gap can coexist with another primitive vertex crossing
 the plane. The final safety pass must therefore constrain all primitive vertices.
 
+### 2.1 Proof: the conservative softmax separates every point
+
+**Yes: satisfying the unnormalized softmax constraint certifies separation of
+the entire two convex primitives, not just their interpolated witnesses.**
+This is a mathematical property of the alternative constraint below; it does
+not mean a finite ALM solve will always satisfy it.
+
+Let A and B be triangles, edges, vertices, or other convex hulls of the included
+vertices. Use a unit normal n, sharpness β > 0, and required gap d ≥ 0. Define
+two smooth support bounds, an upper bound U for side A and a lower bound L for
+side B:
+
+$$
+U=\frac{1}{\beta}\log\sum_i e^{\beta\mathbf{n}^{T}\mathbf{a}_i},\qquad L=-\frac{1}{\beta}\log\sum_j e^{-\beta\mathbf{n}^{T}\mathbf{b}_j}
+$$
+
+The proposed conservative constraint is:
+
+$$
+C_{\mathrm{soft}}=L-U-d\geq0
+$$
+
+**Step 1: U bounds every A vertex.** The exponential sum includes the term for
+each vertex i. Since log is increasing and β is positive:
+
+$$
+\sum_k e^{\beta\mathbf{n}^{T}\mathbf{a}_k}\geq e^{\beta\mathbf{n}^{T}\mathbf{a}_i}\quad\Longrightarrow\quad U\geq\mathbf{n}^{T}\mathbf{a}_i\qquad\mathrm{for\ every}\ i
+$$
+
+**Step 2: L bounds every B vertex from below.** Apply the same argument to the
+negative projections. Multiplication by −1/β reverses the inequality:
+
+$$
+\sum_k e^{-\beta\mathbf{n}^{T}\mathbf{b}_k}\geq e^{-\beta\mathbf{n}^{T}\mathbf{b}_j}\quad\Longrightarrow\quad L\leq\mathbf{n}^{T}\mathbf{b}_j\qquad\mathrm{for\ every}\ j
+$$
+
+**Step 3: the bounds extend to every point inside each primitive.** Any point
+a in a triangle or edge is a convex combination of its vertices. Its weights
+are nonnegative and sum to one, so averaging quantities bounded by U cannot
+exceed U. Likewise every point b on side B has projection at least L:
+
+$$
+\mathbf{a}=\sum_i u_i\mathbf{a}_i\ \Longrightarrow\ \mathbf{n}^{T}\mathbf{a}\leq\sum_i u_i U=U,\qquad\mathbf{n}^{T}\mathbf{b}\geq L
+$$
+
+**Step 4: C ≥ 0 puts these whole primitives on opposite sides.** Combining
+the bounds, for every a in A and every b in B:
+
+$$
+\mathbf{n}^{T}(\mathbf{b}-\mathbf{a})\geq L-U=C_{\mathrm{soft}}+d\geq d
+$$
+
+An explicit separating plane has offset c = (U + L)/2. Every point of A stays
+on its A side and every point of B stays on its B side:
+
+$$
+c=\frac{U+L}{2},\qquad\mathbf{n}^{T}\mathbf{a}\leq c-\frac{d}{2},\qquad\mathbf{n}^{T}\mathbf{b}\geq c+\frac{d}{2}
+$$
+
+For d > 0 this gives strict separation and Euclidean distance at least d,
+because a projection onto a unit direction cannot exceed the full distance.
+For d = 0 the inequalities permit boundary contact but forbid crossing the
+separating plane. The plane is the one constructed above, not necessarily the
+previous DAT plane with its old offset.
+
+Equivalently, the soft constraint is always a lower bound on the true support
+gap along n:
+
+$$
+C_{\mathrm{soft}}\leq\min_j\mathbf{n}^{T}\mathbf{b}_j-\max_i\mathbf{n}^{T}\mathbf{a}_i-d=C_{\mathrm{support}}
+$$
+
+**The implication is one-way.** C<sub>soft</sub> ≥ 0 proves separation;
+C<sub>soft</sub> < 0 does not prove intersection. Smoothing can require extra
+clearance, and a particular normal can fail even when another normal separates
+the primitives.
+
+### Conditions that matter for the guarantee
+
+- Use **sums**, not averages, inside the logarithms. Dividing by the vertex
+  count, or inserting normalized barycentric weights without a conservative
+  correction, loses the upper/lower-bound proof. For example, in one dimension
+  A = [0, 2], B = {1.5}, and β = 1: the averaged-log soft maximum of A is about
+  1.434, falsely giving a positive gap about 0.066 even though B lies inside A.
+- Include every vertex defining each primitive. A point sampled from a curved
+  shape does not automatically bound the unsampled shape. For a triangle, the
+  three vertices suffice because every triangle point is their convex combination.
+- Evaluate the actual conservative gap. Softmax-weighted average witness
+  positions alone are not equivalent to the log-sum-exp support bounds.
+- The proof is valid for **any** unit normal that satisfies the inequality,
+  including one obtained by the proposed local normal optimization. That
+  optimization need not reach its optimum to validate the certificate.
+- This certifies this pair at this pose. A finite ALM iterate with C < 0 has no
+  such certificate. For moving or rotating normals/bodies, endpoint checks alone
+  do not generally certify the path; final conservative truncation still has a
+  job. With a single fixed n and affine vertex paths, satisfying this same
+  constraint at both endpoints does certify the intervening segment.
+- The equations are exact-arithmetic statements. The implementation needs
+  stable shifted log-sum-exp evaluation and a numerical safety margin consistent
+  with its error bounds; a rounded value near zero is not itself a rigorous
+  floating-point certificate.
+
+This proves the geometry of the softmax alternative. Replacing the normal
+witness row also requires its own derivatives and a decision about how friction
+uses the resulting force distribution; the barycentric formulas elsewhere on
+this page remain the earlier design baseline.
+
 ## 3. Soft cushion plus hard boundary
 
 Keep the intended pre-contact cushion and a nonpenetration boundary. Introduce a

@@ -4,12 +4,16 @@
 h2{margin-top:42px;padding-top:24px;border-top:1px solid var(--line)}h3{margin-top:28px}.toc{font-size:14px;padding:16px 22px;background:white;border:1px solid var(--line);border-radius:12px}main>p,main>ul,main>ol{max-width:920px}table{background:white}pre{max-width:100%}table{display:block;overflow-x:auto}h1{font-size:clamp(30px,4.6vw,44px)}.source{display:inline-block;margin-bottom:18px}body{overflow-wrap:break-word}
 
 .contact-equation{margin:22px 0;padding:24px 16px;background:white;border:1px solid var(--line);border-radius:12px;overflow-x:auto;font-size:1.28rem}@media(max-width:650px){.contact-equation{padding:20px 8px;font-size:.88rem}}
-.contact-equation img{display:block;width:100%;max-width:760px;min-width:0;height:auto;margin:auto}
+.contact-equation img{display:block;width:auto;max-width:min(100%,760px);min-width:0;height:auto;margin:auto}
 </style></head><body><main><div class="eyebrow">Newton / VBD · Contact design</div><a class="source" href="design.md">Download Markdown source</a><h1 id="alm-contact-with-final-only-truncation">ALM contact with final-only truncation</h1><details><summary>Jump to a section</summary><div class="toc">
 <ul>
 <li><a href="#alm-contact-with-final-only-truncation">ALM contact with final-only truncation</a><ul>
 <li><a href="#1-main-idea">1. Main idea</a></li>
-<li><a href="#2-contact-constraint-and-barycentric-witnesses">2. Contact constraint and barycentric witnesses</a></li>
+<li><a href="#2-contact-constraint-and-barycentric-witnesses">2. Contact constraint and barycentric witnesses</a><ul>
+<li><a href="#21-proof-the-conservative-softmax-separates-every-point">2.1 Proof: the conservative softmax separates every point</a></li>
+<li><a href="#conditions-that-matter-for-the-guarantee">Conditions that matter for the guarantee</a></li>
+</ul>
+</li>
 <li><a href="#3-soft-cushion-plus-hard-boundary">3. Soft cushion plus hard boundary</a></li>
 <li><a href="#4-friction-tangential-slip-and-a-coulomb-disk">4. Friction: tangential slip and a Coulomb disk</a><ul>
 <li><a href="#tangential-constraint">Tangential constraint</a></li>
@@ -81,6 +85,84 @@ that does certify separation of the two convex primitives is:</p>
 </code></pre>
 <p>A positive barycentric gap can coexist with another primitive vertex crossing
 the plane. The final safety pass must therefore constrain all primitive vertices.</p>
+<h3 id="21-proof-the-conservative-softmax-separates-every-point">2.1 Proof: the conservative softmax separates every point</h3>
+<p><strong>Yes: satisfying the unnormalized softmax constraint certifies separation of
+the entire two convex primitives, not just their interpolated witnesses.</strong>
+This is a mathematical property of the alternative constraint below; it does
+not mean a finite ALM solve will always satisfy it.</p>
+<p>Let A and B be triangles, edges, vertices, or other convex hulls of the included
+vertices. Use a unit normal n, sharpness β &gt; 0, and required gap d ≥ 0. Define
+two smooth support bounds, an upper bound U for side A and a lower bound L for
+side B:</p>
+<div class="contact-equation" id="softmax-supports-formula"><img src="softmax-supports.svg" alt="Unnormalized log-sum-exp gives upper support U for A and lower support L for B"></div>
+
+<p>The proposed conservative constraint is:</p>
+<div class="contact-equation" id="softmax-gap-formula"><img src="softmax-gap.svg" alt="Conservative softmax constraint C soft equals L minus U minus d and must be nonnegative"></div>
+
+<p><strong>Step 1: U bounds every A vertex.</strong> The exponential sum includes the term for
+each vertex i. Since log is increasing and β is positive:</p>
+<div class="contact-equation" id="softmax-upper-proof-formula"><img src="softmax-upper-proof.svg" alt="The sum contains every A vertex exponential, so U bounds each A projection from above"></div>
+
+<p><strong>Step 2: L bounds every B vertex from below.</strong> Apply the same argument to the
+negative projections. Multiplication by −1/β reverses the inequality:</p>
+<div class="contact-equation" id="softmax-lower-proof-formula"><img src="softmax-lower-proof.svg" alt="The negative-exponential sum contains every B vertex, so L bounds each B projection below"></div>
+
+<p><strong>Step 3: the bounds extend to every point inside each primitive.</strong> Any point
+a in a triangle or edge is a convex combination of its vertices. Its weights
+are nonnegative and sum to one, so averaging quantities bounded by U cannot
+exceed U. Likewise every point b on side B has projection at least L:</p>
+<div class="contact-equation" id="softmax-convex-proof-formula"><img src="softmax-convex-proof.svg" alt="Convex combinations preserve the projection bounds for all points of each primitive"></div>
+
+<p><strong>Step 4: C ≥ 0 puts these whole primitives on opposite sides.</strong> Combining
+the bounds, for every a in A and every b in B:</p>
+<div class="contact-equation" id="softmax-all-points-formula"><img src="softmax-all-points.svg" alt="Every point pair has projected separation at least L minus U, hence at least d"></div>
+
+<p>An explicit separating plane has offset c = (U + L)/2. Every point of A stays
+on its A side and every point of B stays on its B side:</p>
+<div class="contact-equation" id="softmax-plane-formula"><img src="softmax-plane.svg" alt="Plane offset halfway between U and L separates all primitive points with half-gap margins"></div>
+
+<p>For d &gt; 0 this gives strict separation and Euclidean distance at least d,
+because a projection onto a unit direction cannot exceed the full distance.
+For d = 0 the inequalities permit boundary contact but forbid crossing the
+separating plane. The plane is the one constructed above, not necessarily the
+previous DAT plane with its old offset.</p>
+<p>Equivalently, the soft constraint is always a lower bound on the true support
+gap along n:</p>
+<div class="contact-equation" id="softmax-conservative-formula"><img src="softmax-conservative.svg" alt="The softmax gap is always at most the hard support gap"></div>
+
+<p><strong>The implication is one-way.</strong> C<sub>soft</sub> ≥ 0 proves separation;
+C<sub>soft</sub> &lt; 0 does not prove intersection. Smoothing can require extra
+clearance, and a particular normal can fail even when another normal separates
+the primitives.</p>
+<h3 id="conditions-that-matter-for-the-guarantee">Conditions that matter for the guarantee</h3>
+<ul>
+<li>Use <strong>sums</strong>, not averages, inside the logarithms. Dividing by the vertex
+  count, or inserting normalized barycentric weights without a conservative
+  correction, loses the upper/lower-bound proof. For example, in one dimension
+  A = [0, 2], B = {1.5}, and β = 1: the averaged-log soft maximum of A is about
+  1.434, falsely giving a positive gap about 0.066 even though B lies inside A.</li>
+<li>Include every vertex defining each primitive. A point sampled from a curved
+  shape does not automatically bound the unsampled shape. For a triangle, the
+  three vertices suffice because every triangle point is their convex combination.</li>
+<li>Evaluate the actual conservative gap. Softmax-weighted average witness
+  positions alone are not equivalent to the log-sum-exp support bounds.</li>
+<li>The proof is valid for <strong>any</strong> unit normal that satisfies the inequality,
+  including one obtained by the proposed local normal optimization. That
+  optimization need not reach its optimum to validate the certificate.</li>
+<li>This certifies this pair at this pose. A finite ALM iterate with C &lt; 0 has no
+  such certificate. For moving or rotating normals/bodies, endpoint checks alone
+  do not generally certify the path; final conservative truncation still has a
+  job. With a single fixed n and affine vertex paths, satisfying this same
+  constraint at both endpoints does certify the intervening segment.</li>
+<li>The equations are exact-arithmetic statements. The implementation needs
+  stable shifted log-sum-exp evaluation and a numerical safety margin consistent
+  with its error bounds; a rounded value near zero is not itself a rigorous
+  floating-point certificate.</li>
+</ul>
+<p>This proves the geometry of the softmax alternative. Replacing the normal
+witness row also requires its own derivatives and a decision about how friction
+uses the resulting force distribution; the barycentric formulas elsewhere on
+this page remain the earlier design baseline.</p>
 <h2 id="3-soft-cushion-plus-hard-boundary">3. Soft cushion plus hard boundary</h2>
 <p>Keep the intended pre-contact cushion and a nonpenetration boundary. Introduce a
 slack gap <code>z</code> with:</p>

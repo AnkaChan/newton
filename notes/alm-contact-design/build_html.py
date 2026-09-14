@@ -14,6 +14,17 @@ import markdown
 
 EQUATIONS = (
     ("contact-constraint", "Normal contact constraint: signed barycentric gap C is nonnegative"),
+    ("softmax-supports", "Unnormalized log-sum-exp gives upper support U for A and lower support L for B"),
+    ("softmax-gap", "Conservative softmax constraint C soft equals L minus U minus d and must be nonnegative"),
+    ("softmax-upper-proof", "The sum contains every A vertex exponential, so U bounds each A projection from above"),
+    (
+        "softmax-lower-proof",
+        "The negative-exponential sum contains every B vertex, so L bounds each B projection below",
+    ),
+    ("softmax-convex-proof", "Convex combinations preserve the projection bounds for all points of each primitive"),
+    ("softmax-all-points", "Every point pair has projected separation at least L minus U, hence at least d"),
+    ("softmax-plane", "Plane offset halfway between U and L separates all primitive points with half-gap margins"),
+    ("softmax-conservative", "The softmax gap is always at most the hard support gap"),
     ("friction-slip", "Tangential slip C t is the tangent projection of relative barycentric displacement"),
     ("friction-projection", "Tangential trial multiplier is projected onto the Coulomb disk"),
     ("friction-forces", "Friction forces on A and B distribute the resistance multiplier with opposite signs"),
