@@ -3,4 +3,4 @@
 h2{margin-top:42px;padding-top:24px;border-top:1px solid var(--line)}h3{margin-top:28px}.toc{font-size:14px;padding:16px 22px;background:white;border:1px solid var(--line);border-radius:12px}main>p,main>ul,main>ol{max-width:920px}table{background:white}pre{max-width:100%}table{display:block;overflow-x:auto}h1{font-size:clamp(30px,4.6vw,44px)}.source{display:inline-block;margin-bottom:18px}body{overflow-wrap:break-word}
 
 .contact-equation{margin:22px 0;padding:24px 16px;background:white;border:1px solid var(--line);border-radius:12px;overflow-x:auto;font-size:1.28rem}@media(max-width:650px){.contact-equation{padding:20px 8px;font-size:.88rem}}
-.contact-equation img{display:block;width:100%;max-width:760px;min-width:0;height:auto;margin:auto}
+.contact-equation img{display:block;width:auto;max-width:min(100%,760px);min-width:0;height:auto;margin:auto}
