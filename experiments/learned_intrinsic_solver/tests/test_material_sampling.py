@@ -29,16 +29,19 @@ class TestMaterialSampling(unittest.TestCase):
 
     def test_seed_changes_independent_material_draws(self):
         """Change Young's modulus, Poisson's ratio, and density with the seed."""
-        ranges = MaterialRanges(poissons_ratio=(0.2, 0.45))
+        ranges = MaterialRanges()
         first, second = sample_material(73, ranges=ranges), sample_material(74, ranges=ranges)
         self.assertNotEqual(first.youngs_modulus, second.youngs_modulus)
-        self.assertNotEqual(first.poissons_ratio, second.poissons_ratio)
+        self.assertNotAlmostEqual(first.poissons_ratio, second.poissons_ratio)
         self.assertNotEqual(first.density, second.density)
 
     def test_standard_lame_conversion_and_inverse_properties(self):
         """Derive standard Lamé parameters and recover Young's modulus and ratio."""
         self.assertEqual(lame_from_youngs_modulus(1000.0, 0.25), (400.0, 400.0))
         self.assertEqual(lame_from_youngs_modulus(1000.0, 0.0), (0.0, 500.0))
+        upper_lambda, upper_mu = lame_from_youngs_modulus(2980.0, 0.49)
+        self.assertAlmostEqual(upper_lambda, 49000.0)
+        self.assertAlmostEqual(upper_mu, 1000.0)
         sample = MaterialSample(*lame_from_youngs_modulus(1000.0, 0.25), density=1234.0)
         self.assertAlmostEqual(sample.youngs_modulus, 1000.0)
         self.assertAlmostEqual(sample.poissons_ratio, 0.25)
@@ -47,11 +50,11 @@ class TestMaterialSampling(unittest.TestCase):
 
     def test_known_rng_draws_map_to_log_and_linear_ranges(self):
         """Map seeded modulus and density log draws and the linear ratio draw."""
-        ranges = MaterialRanges(youngs_modulus=(10.0, 100.0), poissons_ratio=(0.2, 0.45), density=(1.0, 1000.0))
+        ranges = MaterialRanges(youngs_modulus=(10.0, 100.0), poissons_ratio=(0.2, 0.49), density=(1.0, 1000.0))
         draws = np.random.default_rng(31).random(3)
         sampled = sample_material(31, ranges=ranges)
         expected_e = math.exp(math.log(10.0) + float(draws[0]) * math.log(10.0))
-        expected_nu = 0.2 + float(draws[1]) * 0.25
+        expected_nu = 0.2 + float(draws[1]) * 0.29
         expected_rho = math.exp(math.log(1.0) + float(draws[2]) * math.log(1000.0))
         expected_lam, expected_mu = lame_from_youngs_modulus(expected_e, expected_nu)
         self.assertAlmostEqual(sampled.lame_lambda, expected_lam, places=12)
@@ -64,13 +67,14 @@ class TestMaterialSampling(unittest.TestCase):
         """Bound every component over distinct deterministic trajectory seeds."""
         ranges = MaterialRanges()
         self.assertEqual(ranges.youngs_modulus, (1e3, 1e6))
-        self.assertEqual(ranges.poissons_ratio, (0.3, 0.3))
+        self.assertEqual(ranges.poissons_ratio, (0.2, 0.49))
         self.assertEqual(ranges.density, (100.0, 10000.0))
         for seed in range(100):
             sample = sample_material(seed)
             self.assertGreaterEqual(sample.youngs_modulus, ranges.youngs_modulus[0])
             self.assertLessEqual(sample.youngs_modulus, ranges.youngs_modulus[1])
-            self.assertAlmostEqual(sample.poissons_ratio, 0.3)
+            self.assertGreaterEqual(sample.poissons_ratio, ranges.poissons_ratio[0])
+            self.assertLessEqual(sample.poissons_ratio, ranges.poissons_ratio[1])
             self.assertGreaterEqual(sample.density, ranges.density[0])
             self.assertLessEqual(sample.density, ranges.density[1])
 

@@ -1316,3 +1316,17 @@ trainer still uses its old fixed material until the V2 integration is done.
 All 36 focused data tests passed, including known conversion values,
 reproducible draws, parameter ranges, reset provenance and shape/velocity
 compatibility. No new training campaign was started.
+
+## 36. Vary Poisson's ratio from 0.2 to 0.49 — 2026-09-24
+
+The user selected a varying Poisson's ratio and corrected its upper bound to
+0.49. Sample it uniformly from 0.2 to 0.49, independently of Young's modulus
+and density. This supersedes the provisional fixed ratio of 0.3 in section 35.
+
+Keep Young's modulus log-uniform from 1,000 to 1,000,000 Pa and density
+log-uniform from 100 to 10,000 kg/m³. Derive lambda and mu from the sampled
+Young's modulus and Poisson's ratio using the formulas in section 35. The
+network and native model inputs remain lambda, mu and density, and the sampled
+material stays fixed over its trajectory.
+
+Training remains stopped; this material choice does not launch a new campaign.

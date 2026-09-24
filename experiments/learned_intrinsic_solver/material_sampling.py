@@ -20,7 +20,7 @@ class MaterialRanges:
     youngs_modulus: tuple[float, float] = (1e3, 1e6)
     """Log-uniform Young's modulus bounds [Pa]."""
 
-    poissons_ratio: tuple[float, float] = (0.3, 0.3)
+    poissons_ratio: tuple[float, float] = (0.2, 0.49)
     """Linear-uniform Poisson's ratio bounds; equal values fix the ratio."""
 
     density: tuple[float, float] = (100.0, 10000.0)

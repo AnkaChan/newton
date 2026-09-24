@@ -28,8 +28,9 @@ loss policy. Source iteration count and loss settings are recorded separately.
 
 Material sampling is deterministic: `sample_material(seed)` independently
 samples Young's modulus log-uniformly from 1,000 to 1,000,000 Pa, and density
-log-uniformly from 100 to 10,000 kg/m³. Poisson's ratio is configurable and
-defaults to 0.3. Derive mu as `E / (2 * (1 + nu))` and lambda as
+log-uniformly from 100 to 10,000 kg/m³. The user-selected Poisson's ratio range
+is uniform from 0.2 to 0.49, sampled independently. Derive mu as
+`E / (2 * (1 + nu))` and lambda as
 `E * nu / ((1 + nu) * (1 - 2 * nu))`. The returned material still contains
 lambda, mu and density, ready for the native model. Sample once per object,
 then use that material for the whole trajectory. A trajectory cannot switch

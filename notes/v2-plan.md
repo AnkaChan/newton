@@ -95,7 +95,7 @@ in logarithmic space, then derives the Lamé parameters:
 | Quantity | Sampling |
 |---|---|
 | Young's modulus, E | Log-uniform from 1,000–1,000,000 Pa |
-| Poisson's ratio, nu | Configurable; default fixed at 0.3 |
+| Poisson's ratio, nu | Uniform from 0.2–0.49 |
 | Density | Log-uniform from 100–10,000 kg/m³ |
 
 Young's modulus alone is insufficient to determine both Lamé parameters. Use:
@@ -105,10 +105,11 @@ mu     = E / (2 * (1 + nu))
 lambda = E * nu / ((1 + nu) * (1 - 2 * nu))
 ```
 
-The default ratio of 0.3 is a provisional implementation choice, not a user
-decision. A nonzero configured ratio range is sampled uniformly; this solver
-supports `0 <= nu < 0.5`. The network and physical energy still receive lambda
-and mu. They are derived together, not drawn independently. Initial-state
+The user selected a varying Poisson's ratio, sampled uniformly from 0.2 to
+0.49 independently of Young's modulus and density. This replaces the provisional
+fixed ratio of 0.3. The configurable sampler supports `0 <= nu < 0.5`.
+The network and physical energy still receive lambda and mu. They are derived
+together, not drawn independently. Initial-state
 metadata records both forms and the generation version is `initial_state_v3`;
 the changed material mapping preserves the shape/velocity and density streams.
 
