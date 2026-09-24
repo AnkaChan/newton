@@ -937,3 +937,16 @@ Validation before launch: all 150 experiment tests passed, including CUDA and
 checkpoint-resume checks. Repository pre-commit checks passed. The validation
 fallback additionally handles per-query device transfer failures and retains
 them in the complete-population failure count.
+
+The larger campaign was launched as `generated/training/large_001` in tmux
+session `learned-intrinsic-training`, using trainer commit `67f30ad4`. First
+epoch: all 8,192 training states visited, 128 Adam updates, no invalid outputs.
+Held-out one-step validation improved all 512/512 cases; normalized mean energy
+change was -0.122199 and mean raw energy went from 91.9870 J to 81.6291 J.
+The epoch took 229.8 seconds after preparation. Peak allocated memory on rank
+zero was 10.68 GiB. This is an initial measurement, not convergence; epoch two
+was running when recorded. Automatic scheduling/stopping and live publication
+continue in the persistent process. The first-epoch report and published latest
+and best checkpoints were verified against local files. Snapshot:
+[large-training-start.json](results/large-training-start.json). Live results:
+[training-large](https://ankachen.com/artifacts/learned-intrinsic-solver/training-large/index.html).

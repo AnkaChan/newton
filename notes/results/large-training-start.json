@@ -1,0 +1,91 @@
+{
+  "kind": "first_epoch_snapshot_not_final_result",
+  "training_commit": "67f30ad4",
+  "run_directory": "generated/training/large_001",
+  "tmux_session": "learned-intrinsic-training",
+  "public_report": "https://ankachen.com/artifacts/learned-intrinsic-solver/training-large/index.html",
+  "config": {
+    "updates": 64,
+    "cell_counts": [
+      10,
+      10,
+      40
+    ],
+    "cell_size": 0.025,
+    "lame_lambda": 288461.53846,
+    "lame_mu": 192307.69231,
+    "density": 1000.0,
+    "time_step": 0.0033333333333333335,
+    "gravity": [
+      0.0,
+      -9.81,
+      0.0
+    ],
+    "learning_rate": 0.0001,
+    "max_step_size": 0.05,
+    "hidden_dim": 128,
+    "edge_hidden_dim": 64,
+    "num_heads": 4,
+    "hops": [
+      1,
+      1,
+      1
+    ],
+    "query_chunk_size": 128,
+    "train_count": 8192,
+    "validation_count": 512,
+    "train_seed_start": 0,
+    "validation_seed_start": 10000,
+    "seed": 73,
+    "validation_interval": 8,
+    "checkpoint_interval": 16,
+    "cpu_threads": 2,
+    "device": "cuda",
+    "verbose": true,
+    "batch_size": 16,
+    "min_epochs": 30,
+    "max_epochs": 200
+  },
+  "world_size": 4,
+  "global_batch_size": 64,
+  "parameter_count": 865942,
+  "validation_initial": {
+    "mean_normalized_loss": 0.0,
+    "mean_before_joule": 91.98701095581055,
+    "mean_after_joule": 91.98701095581055,
+    "descent_rate": 0.0,
+    "failed_count": 0,
+    "valid_count": 512,
+    "sample_count": 512,
+    "failures": []
+  },
+  "first_epoch": {
+    "epoch": 1,
+    "optimizer_updates": 128,
+    "learning_rate": 0.0001,
+    "next_learning_rate": 0.0001,
+    "train": {
+      "mean_normalized_loss": -0.01765360742300004,
+      "mean_before_joule": 88.4408997669816,
+      "mean_after_joule": 86.19818746298552,
+      "descent_rate": 0.7060546875,
+      "failed_count": 0,
+      "valid_count": 8192,
+      "sample_count": 8192
+    },
+    "validation": {
+      "mean_normalized_loss": -0.12219863943755627,
+      "mean_before_joule": 91.98701095581055,
+      "mean_after_joule": 81.62905752658844,
+      "descent_rate": 1.0,
+      "failed_count": 0,
+      "valid_count": 512,
+      "sample_count": 512,
+      "failures": []
+    },
+    "elapsed_seconds": 558.8466724455357,
+    "epoch_seconds": 229.81789653003216
+  },
+  "rank0_peak_allocated_bytes": 11465474560,
+  "status_at_capture": "running"
+}
