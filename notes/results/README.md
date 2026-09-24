@@ -40,3 +40,11 @@ contains plots and checkpoint downloads; the
 links the other visualizations. Generated media, datasets, caches, and binary
 model checkpoints are excluded from Git. Artifact links depend on the current
 hosting deployment; the compact measurements above are preserved in this branch.
+
+
+The later [four-GPU summary](four-gpu-summary.json) and
+[independent reference](four-gpu-reference.json) record a separate 64-query,
+three-update numerical diagnostic on four L40s. This is not the larger epoch
+campaign. See [the browser report](https://ankachen.com/artifacts/learned-intrinsic-solver/multi-gpu/index.html)
+and decision 25 for the default-NCCL timeout, working transport setting,
+checkpoint/failure checks, and preliminary timing interpretation.

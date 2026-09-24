@@ -73,3 +73,7 @@ geometry feature; compare with a shared point encoder and area-weighted pooling.
 Use one main network for boundary and interior cells, with explicit masks,
 material volume, and connectivity. Optimizer-gradient/history inputs are also
 future experiments, not part of the current packed baseline.
+
+The four-GPU computation path has now passed a separate bounded diagnostic,
+including an independent gradient comparison and exact checkpoint continuation.
+See decision 25 for measurements and the required NCCL setting on this VM.

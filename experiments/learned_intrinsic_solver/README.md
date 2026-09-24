@@ -579,3 +579,57 @@ configuration, and CPU/selected-device CUDA RNG state. Resume with the same
 configuration and `--resume <checkpoint.pt>`; `--updates` specifies the desired
 total completed weight updates. CPU is supported for small tests. This is a
 bounded training experiment, not evidence of convergence on arbitrary states.
+
+## Four-GPU numerical diagnostic
+
+`distributed_probe.py` tests the full learned step under PyTorch DistributedDataParallel:
+one process per GPU, batch 16 per process, 64 distinct physical queries, and three
+Adam updates. The fixed queries repeat across updates to allow exact checkpoint
+replay and comparison with a serial reference. This is a numerical diagnostic;
+it does not implement the planned epoch trainer or establish learned convergence.
+
+The launcher claims each GPU exclusively through the workspace GPU-claim script,
+assigns rank metadata, and captures per-rank logs. Each process sees its own GPU
+as `cuda:0`; no physical GPU index is hardcoded. The launcher stops the whole
+worker group on failure or timeout and rejects existing output directories.
+
+On this VM, default NCCL peer-to-peer transport stalled during startup collectives.
+The same four-GPU test completed with `NCCL_P2P_DISABLE=1`; NCCL selected shared
+host memory transport. Apply this setting to the invocation, not globally:
+
+```bash
+NCCL_P2P_DISABLE=1 uv run --no-sync python -u \
+  -m experiments.learned_intrinsic_solver.launch_distributed_probe \
+  --workers 4 --output generated/distributed_probe/my_new_run \
+  --batch-size 16 --updates 3 --cells 10 10 40
+```
+
+The complete `LearnedHexSolverStep` is wrapped in DDP, including feature construction,
+fusion, and physical loss evaluation. Equal per-rank mean losses produce the global
+batch-mean gradient. Network, frames, energy, and Adam run on CUDA in float32 with
+TF32 and AMP disabled. Each process keeps its own fixed CPU SciPy fusion factor.
+
+The probe checks prescribed corners, finite energies and gradients, byte-identical
+replica weights after every update, and exact continuation from a serialized
+first-update checkpoint. It stores the actual input tensors, original Y, frozen
+first-update frames, gradients, weights, Adam state, and hardware identifiers.
+Run the independent reference on one exclusively claimed GPU:
+
+```bash
+source /home/horde/Code/AI-Docs/Envs/scripts/gpu-claim.sh learned-intrinsic-ddp-reference occupy
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 uv run --no-sync python -u \
+  -m experiments.learned_intrinsic_solver.distributed_reference \
+  --probe generated/distributed_probe/my_new_run
+```
+
+The reference sequentially processes the four saved batches, accumulates their
+equally weighted gradients without distributed Torch, and compares the first
+gradient and Adam update. It also compares later updates and final checkpoint
+inference, and records serial timing. It requires the distributed run and its
+checkpoint replay to have passed before reporting numerical success.
+
+To exercise coordinated failure handling, use a fresh output with
+`--cells 2 2 3 --batch-size 2 --fail-rank 2 --fail-update 2`. The expected result
+is a nonzero exit, all four reports naming the same failure before backward,
+only one completed Adam update, and all GPU claims released. This deliberately
+failed run must not be used as a passing numerical reference.

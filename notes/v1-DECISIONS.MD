@@ -839,3 +839,55 @@ valid trajectories and sustained energy improvement before expanding training
 unrolls. Put the full unroll inside one DDP forward and remeasure batch memory.
 Increasing K changes the experiment and must be logged; it does not occur
 merely because an epoch number has been reached.
+
+
+## 25. Four-GPU path validation — 2026-09-24
+
+The bounded distributed diagnostic is now implemented and tested. It wraps
+`LearnedHexSolverStep` in PyTorch DistributedDataParallel, with four processes
+on four distinct, exclusively claimed NVIDIA L40s. Each GPU processes 16
+complete 10×10×40 objects, giving a global batch of 64. The 64 distinct physical
+queries remain fixed across three Adam updates for numerical replay; this is
+not the 8,192-state epoch campaign or a convergence result.
+
+All three updates completed with finite outputs and gradients, exact pins,
+and byte-identical parameter replicas. Serialized first-update checkpoints
+were reloaded and updates two and three repeated: every rank reproduced the
+weights, Adam state, and losses exactly. An independent single-GPU reference
+accumulated the same four local batches with the global-mean loss weighting.
+Its first gradient had relative L2 error 5.50616e-08;
+the first Adam update had relative error 7.61026e-07.
+Final checkpoint energy replay had zero absolute difference. First and final
+Adam moment comparisons also passed. Working precision remains float32 with
+TF32 and AMP disabled; each rank retains its CPU SciPy sparse solves.
+
+Default NCCL peer-to-peer transport stalled in startup collectives on this
+machine. The launcher timed out after 180 seconds and stopped all ranks.
+Setting `NCCL_P2P_DISABLE=1` for the invocation made the same four-GPU path
+work; NCCL logs selected shared host-memory transport. This is a measured
+machine-specific workaround, not evidence that default P2P transport passed.
+No global NCCL configuration was changed.
+
+Peak allocated memory was 10.42 GiB per GPU.
+Across updates two and three, the slowest-rank full iteration averaged
+0.662 seconds; the equivalent single-GPU
+serial accumulation averaged 2.482 seconds,
+a 3.75× short-test speedup. Setup, warmup, and checkpoint
+replay are excluded. These two timed updates are preliminary throughput
+measurements, not a sustained epoch-training benchmark.
+
+An intentional rank-2 failure during update two was reported by every rank
+before backward. Only the first Adam update was applied, the launcher exited
+without timeout, and all GPU reservations were released. The independent
+reference rejects this failed probe instead of publishing a passing result.
+The launcher also has real-process tests for timeout, worker failure,
+SIGTERM-resistant descendants, and output-directory preservation.
+
+All 133 experiment tests, including CUDA checks, passed. Reproduction commands
+are in the [experiment README](../experiments/learned_intrinsic_solver/README.md#four-gpu-numerical-diagnostic).
+Compact results are [four-gpu-summary.json](results/four-gpu-summary.json) and
+[four-gpu-reference.json](results/four-gpu-reference.json); full local inputs,
+checkpoints, and rank logs are under `generated/distributed_probe/full_001/`.
+The [browser report](https://ankachen.com/artifacts/learned-intrinsic-solver/multi-gpu/index.html)
+joins the existing project pages. Epoch sampling, validation, scheduling, and
+the larger training campaign remain the next implementation step.

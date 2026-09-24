@@ -1,0 +1,53 @@
+{
+  "passed": true,
+  "date": "2026-09-24",
+  "gpus": 4,
+  "gpu_model": "NVIDIA L40",
+  "cells_per_object": [
+    10,
+    10,
+    40
+  ],
+  "cells": 4000,
+  "corners": 4961,
+  "local_batch": 16,
+  "global_batch": 64,
+  "distinct_physical_states": 64,
+  "optimizer_updates": 3,
+  "solver_iterations_per_query": 1,
+  "parameters": 865942,
+  "dtype": "float32",
+  "tf32": false,
+  "amp": false,
+  "nccl_p2p_disable": true,
+  "default_transport": "Initial collectives timed out after 180 seconds; all workers terminated",
+  "working_transport": "NCCL with P2P disabled; NCCL INFO logs identify shared host memory",
+  "peak_allocated_bytes_per_gpu": [
+    11185257472,
+    11185257472,
+    11185257472,
+    11185257472
+  ],
+  "first_gradient_relative_l2_error": 5.506162856328701e-08,
+  "first_adam_update_relative_l2_error": 7.610256396925258e-07,
+  "final_cumulative_update_relative_l2_error": 1.406345019227604e-06,
+  "replicas_exact": true,
+  "serialized_resume_exact": true,
+  "reloaded_energy_max_absolute_error": 0.0,
+  "intentional_failure_caught_before_backward": true,
+  "failed_update_was_applied": false,
+  "four_gpu_steady_step_seconds": [
+    0.6646192334592342,
+    0.6590179279446602
+  ],
+  "four_gpu_steady_mean_step_seconds": 0.6618185807019472,
+  "single_gpu_steady_step_seconds": [
+    2.479025185108185,
+    2.485516529530287
+  ],
+  "single_gpu_steady_mean_step_seconds": 2.482270857319236,
+  "short_probe_speedup": 3.7506817271380553,
+  "timing_scope": "Mean of updates 2 and 3 only; setup, first-step warmup, checkpoint replay excluded. DDP full iteration includes validity and synchronization checks. Serial reference accumulates four 16-object microbatches before each Adam step.",
+  "scope": "Fixed 64 physical queries reused over three weight updates. This is a distributed numerical diagnostic, not the 8192-state epoch campaign or evidence of learned convergence.",
+  "tests_passed": 133
+}
