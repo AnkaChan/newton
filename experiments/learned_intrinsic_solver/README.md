@@ -564,6 +564,10 @@ fixed only within a physical timestep. The live mixed-batch scheduler and its
 distributed integration remain pending; the production epoch trainer is still
 K=1. See [the V2 plan](../../notes/v2-plan.md).
 
+Explore the [interactive pool illustration](https://ankachen.com/artifacts/learned-intrinsic-solver/pool/index.html)
+to see ready instances replace those preparing a timestep or reset. Its
+self-contained source is [pool_demo_web/index.html](pool_demo_web/index.html).
+
 Run the complete inference/backward probe with:
 
 ```bash

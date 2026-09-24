@@ -145,6 +145,10 @@ mixture is historical, not a decided V2 initial-state mixture.
 
 ## Consecutive optimizer iterations and physical timesteps
 
+The [interactive pool illustration](https://ankachen.com/artifacts/learned-intrinsic-solver/pool/index.html)
+shows four batch slots fed by twelve active instances. It illustrates the
+proposed schedule, not measured training or GPU performance.
+
 Each initial state samples K, the number of optimizer iterations per physical
 timestep, and independently samples H, the number of physical timesteps before
 reset. Sample both once at trajectory creation. Every physical step of that
