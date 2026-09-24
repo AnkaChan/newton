@@ -6,6 +6,10 @@ the training plan are required before launching another campaign.** Implemented
 helpers, proposed changes, and remaining integration work are distinguished
 below.
 
+Latest data-policy revision: generate intermediate states on the fly and
+reproduce initial conditions with a seeded augmenter reset. Intermediate-state
+disk replay is optional diagnostic tooling, not the training baseline.
+
 ## Physical problem and representation
 
 Start with a canonical 10×10×40 grid of cubic hexahedral cells. The cell edge
@@ -74,22 +78,26 @@ The implemented material sampler draws independently in logarithmic space:
 | Shear modulus, mu | 1,000–1,000,000 Pa |
 | Density | 100–10,000 kg/m³ |
 
-Sample one uniform material per object, keep it fixed along that trajectory,
-and restore the exact material during replay. The sampler and replay format
-support this; the old production dataset and trainer still use their original
-fixed material until the new training pipeline is integrated.
+Sample one uniform material per object and keep it fixed along that trajectory.
+The same reset seed and augmentation configuration reproduce the initial
+shape, velocity and material. The old production dataset and trainer still
+use their original fixed material until the new training pipeline is integrated.
 
 The current physical solver uses one material context per batch. Initially,
-group replay minibatches by context and switch physical models between such
-batches; arbitrary mixtures of materials in one batch are not implemented.
+group trajectory minibatches by compatible material and switch physical models
+between such batches; arbitrary mixtures of materials in one batch are not
+implemented. Independent continuous material draws will usually be unique,
+so grouping alone does not provide large batches. Before training, choose
+either a material draw shared across each batch or extend the physical energy
+and fusion path to handle different materials within a batch.
 Across GPU ranks, synchronize learned parameters and gradients while keeping
 each rank's physical material and mass buffers local. This needs explicit
 verification in the new distributed trainer.
 
-Retain the previous scale of 8,192 fresh training starts and 512 fixed held-out
-starts as a proposed starting point. The retained-state archive grows beyond
-that seed count as trajectories advance. The old 50/35/10/5 candidate mixture
-is historical, not a decided V2 live/replay/rest mixture.
+Use the previous scale of 8,192 training starts per logical epoch and 512 fixed
+held-out seeds as a proposed starting point. These describe seed schedules,
+not a stored collection of intermediate states. The old 50/35/10/5 candidate
+mixture is historical, not a decided V2 continuation/reset/rest mixture.
 
 ## Consecutive optimizer iterations and physical timesteps
 
@@ -108,8 +116,10 @@ earlier physical steps after a weight update.
 Generate these trajectories live, so they change as the solver learns.
 Eight physical steps is a proposed training segment length, not a maximum
 trajectory lifetime: some trajectories must continue into later motion and
-settling. Mix those continuations with fresh augmented starts and replayed
-states. The exact sampling mixture is still a training-plan choice for review.
+settling. Mix those continuations with fresh seeded resets and near-equilibrium
+starts. The exact sampling mixture is still a training-plan choice for review.
+Do not archive every intermediate state or sample a historical replay buffer
+in this baseline.
 
 For the new one-layer model, the proposed curriculum is:
 
@@ -129,28 +139,52 @@ stage stalls, report it; never silently train only one iteration for the whole
 campaign. The reusable K≤32 unroll and per-timestep gradient boundaries are
 implemented, but the production epoch trainer is not yet wired to this loop.
 
-## Disk retention and replay — implemented
+## On-demand generation and reset
 
-Keep all collected timestep-start states in per-rank SQLite files. Store
-float32 positions and velocities, loads, prescribed positions, source step and
-checkpoint/update metadata. Store shared rest geometry, materials, native
-masses and timestep in deduplicated physical contexts. Commit each batch
-before solving it, including inputs whose subsequent solve fails. Do not
-store autograd graphs or treat historical outputs as target labels.
+`InitialStateAugmenter.reset(seed)` regenerates the compatible shared-corner
+shape, smooth velocity field and material from the canonical rest grid.
+`reset()` repeats the most recently selected seed. An explicit new seed starts
+a different case. Reset never perturbs the last simulated shape; returned
+arrays are independent copies. Prescribed corners return to rest and their
+velocities are zero. No intermediate-state archive is opened or written.
 
-Read only sampled states into memory. Seeded sampling uses a fixed compact
-index until explicitly refreshed. Replay reconstructs the physical problem
-and runs the current network. A trajectory cannot change material/context
-halfway through, and a record cannot be paired with the wrong context.
-Changing the replay iteration count or loss policy is allowed explicitly.
+Use the existing multiresolution deformation generator. Keep the material
+random stream separate so adding material sampling does not change the
+existing shape/velocity sequence. Preserve float32 output and screen geometry
+after conversion, evaluating determinants in float64 on those quantized
+coordinates. This is a geometry screen, not a simulation stability proof.
+A small configuration/seed record, including the generator
+version, identifies an initial case; the seed alone does not identify changes
+to grid size, augmentation ranges or implementation.
 
-There is no automatic eviction. Raw positions plus velocities occupy about
-119 kB per full-grid state; one million states need about 119 GB before loads,
-contexts and database overhead. Disk usage must be monitored during the future
-campaign. Write failures must not silently discard records. Exact sampling
-continuation after trainer restart still needs its snapshot and sampler state
-linked to the training checkpoint. See [DISK-REPLAY.MD](DISK-REPLAY.MD) for APIs,
-usage and backup requirements.
+```python
+from experiments.learned_intrinsic_solver.initial_state import InitialStateAugmenter
+
+augmenter = InitialStateAugmenter(rest, master_seed=73, time_step=1 / 300)
+initial = augmenter.reset(seed=42)
+# Advance the current physical state with the current network.
+# At the next reset, regenerate from rest rather than storing its history.
+same_initial = augmenter.reset()
+different_initial = augmenter.reset(seed=43)
+```
+
+Keep only active trajectory positions and velocities in memory during normal
+training. Train on each live step, detach its output, and carry it forward.
+Reset selected trajectories when starting a new episode; do not reset every
+short training segment or settling states will be underrepresented.
+
+A seed reproduces an initial condition, not a trajectory generated while
+network weights were changing. Regeneration with newer weights intentionally
+produces newer trajectories. For exact training resume, the proposed checkpoint
+includes the small active trajectory pool, in addition to weights, optimizer,
+random states and seed schedule. This saves the current state at checkpoint
+time, not all intermediate training states. Alternatively, restarting from
+seeds is a trajectory reset and must be identified as such.
+
+The existing disk-retention framework remains available for explicit debugging
+or selected failure records. It is not invoked by the reset augmenter or the
+ordinary physical rollout. No existing artifacts are deleted. Its optional
+API is documented in [DISK-REPLAY.MD](DISK-REPLAY.MD).
 
 ## Loss and settling
 
@@ -205,9 +239,10 @@ positive cell-center determinant alone does not establish a valid hex.
 ## Validation, checkpoints and launch criteria
 
 Use frozen network weights for an entire validation trajectory. Reuse held-out
-initial shapes, velocities and materials across checkpoints; changing motion
-then measures solver improvement. Also retain fixed-state validation queries
-so loss comparisons are not obscured by changing live training trajectories.
+initial shapes, velocities and materials across checkpoints by regenerating
+the same held-out seeds; changing motion then measures solver improvement.
+Also regenerate fixed initial-state validation queries so loss comparisons
+are not obscured by changing live training trajectories.
 
 Report mean, median and maximum relative energy through 100 optimizer
 iterations, together with invalid-state counts. Treat near-zero initial
@@ -217,9 +252,9 @@ speed, resting drift and fixed-corner accuracy. Failed cases must remain
 visible rather than disappearing from aggregate curves.
 
 Maintain epoch/update loss curves, curriculum stage, actual K and physical
-step counts, data-source counts, material distribution and disk growth. Save
+step counts, continuation/reset counts and material distribution. Save
 latest/best/periodic resumable checkpoints including optimizer, random states,
-trajectory positions/velocities, archive identity and sampling population.
+generator configuration/version, seed schedule and active trajectory states.
 An initial budget of up to 500 epochs is a proposal, with convergence-based
 stopping and explicit reporting of plateaus.
 
@@ -230,7 +265,9 @@ feature and energy operations run on GPU; the existing differentiable sparse
 fusion uses its CPU solve with an adjoint backward pass. Do not assume that
 the previous four-GPU single-iteration run proves this new training loop.
 
-The disk framework, material sampler and rollout adapter passed focused
-tests; the complete experiment suite passed 200 tests on CPU/CUDA. These are
-verification results, not evidence that a new model has been trained or that
-inversion recovery is implemented.
+The complete experiment suite passed 207 tests on CPU/CUDA after adding seeded
+reset. Seven reset tests cover reproducibility, mutation isolation, legacy
+shape/velocity parity, separate material draws, pins, RNG isolation and
+unrepresentable float32 geometry. One full-grid reset took 0.24 seconds on
+CPU and repeated exactly. These are implementation checks, not evidence that
+a new model has been trained or that inversion recovery is implemented.

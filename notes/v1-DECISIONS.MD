@@ -1224,3 +1224,41 @@ recovery examples remain proposals. None of these physics changes is part of
 the disk archive implementation.
 
 Usage and storage contract: [DISK-REPLAY.MD](DISK-REPLAY.MD).
+
+## 33. Generate intermediate states live; reset initial conditions — 2026-09-24
+
+The user revised the data policy: intermediate physical states are cheap to
+produce and should be generated on the fly rather than retained as the
+baseline training dataset. The disk archive remains an optional diagnostic
+utility. Do not delete existing archives or change the stopped campaign.
+
+Add `InitialStateAugmenter.reset(seed)` around the compatible multiresolution
+shape generator, smooth initial velocity sampling, and the agreed material
+sampler. Regenerate from a private canonical rest snapshot on every reset.
+The same seed and configuration reproduce the same float32 initial shape,
+velocity and material; `reset()` repeats the most recently selected seed.
+Returned arrays must be independent of earlier outputs and the caller's rest
+grid. Preserve fixed corners and zero their velocities. Keep material draws
+on a separate random stream so shape/velocity draws retain their existing
+seed meaning. Check geometry after float32 conversion.
+
+During training, carry only the active states forward in memory, with the
+previously selected gradient boundary after each physical timestep. Reset
+trajectories deliberately to start new episodes; a short training segment
+must not always force a reset, because later settling states also matter.
+The initial-state seed does not reproduce a historical trajectory after the
+network weights change. Exact training resume may checkpoint the bounded
+active trajectory pool, rather than every historical timestep; that trainer
+integration remains proposed. No new training campaign is authorized.
+
+The revised [v2-plan.md](v2-plan.md) supersedes section 32's default archive
+policy while preserving the optional storage implementation.
+
+A full 10×10×40 seed-42 reset took 0.24 seconds on CPU in a single check.
+Repeating that seed exactly reproduced float32 positions, velocities and
+material; all 121 fixed corners were restored and their velocities were zero.
+The screened minimum sampled Jacobian was 0.8112. Screening evaluates the
+quantized positions with float64 determinants and is not a stability proof.
+Seven focused reset tests and the full 207-test CPU/CUDA experiment suite
+passed, including exact compatibility with the existing shape/velocity seed
+stream. The independent review found no blocking issue.

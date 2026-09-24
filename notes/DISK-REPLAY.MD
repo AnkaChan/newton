@@ -1,5 +1,10 @@
 # Retaining physical training states on disk
 
+**Optional tooling.** The current [V2 plan](v2-plan.md) generates intermediate
+states on the fly and recreates initial conditions with a seeded augmenter
+reset. The archive described here is retained for explicit diagnostics; it is
+not the default training data path. Existing archives are preserved.
+
 The archive keeps every collected physical timestep input. A replayed input is
 solved again with the current network and the physical energy; an earlier
 network prediction is never a ground-truth target. No training run is started
