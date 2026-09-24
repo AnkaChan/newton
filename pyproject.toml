@@ -334,6 +334,8 @@ showcontent = true
 
 [tool.typos]
 files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf", "*.js"]
+# Intentional user-selected workspace and branch spelling.
+default.extend-ignore-re = ["learned-instrinic-solver"]
 
 [tool.typos.default.extend-words]
 arange = "arange"

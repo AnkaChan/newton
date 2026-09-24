@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Global shape round trip · cell frames</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Learned intrinsic solver · geometry experiment</p>
+    <h1>Global shape → local frames → global shape</h1>
+    <p class="intro">An actual shared-corner mesh is encoded into cell origins, polar frames R, and local axes U. The right-hand mesh is reconstructed using those stored quantities, the rest topology, and the fixed end.</p>
+  </header>
+  <div class="pipeline" aria-label="Round-trip pipeline">
+    <div><b>1. Global shape</b><span id="grid-summary">Current shared corner positions</span></div>
+    <i>→</i><div><b>2. Extract local data</b><span>Origin = mean corners · F = face differences / h<br>Polar frame R · local axes U = RᵀF</span></div>
+    <i>→</i><div><b>3. Reconstruct shape</b><span>Decode F = RU · shared-corner least squares<br>No original free-corner positions supplied</span></div>
+  </div>
+  <div class="controls">
+    <label>Original shape<select id="case"></select></label>
+    <label>Stored data used<select id="decoder"><option value="centers_axes">Origins + R + U + fixed end</option><option value="axes">R + U + fixed end</option></select></label>
+    <label class="gain">Display error gain <output id="gain-value">1×</output><input id="gain" type="range" min="1" max="50" step="1" value="1"></label>
+    <button id="reset-view" type="button">Reset view</button>
+  </div>
+  <p id="description" class="description"></p>
+  <div class="metrics" aria-live="polite">
+    <div><span>Corner RMS error</span><strong id="corner-rms"></strong></div>
+    <div><span>Largest corner error</span><strong id="corner-max"></strong></div>
+    <div><span>Max center error</span><strong id="center-max"></strong></div>
+    <div><span>Max F entry residual</span><strong id="f-max"></strong></div>
+    <div><span>Fixed-end error</span><strong id="boundary-max"></strong></div>
+  </div>
+  <div class="views">
+    <section class="view-panel"><h2><i class="dot original"></i>Original global shape</h2><div id="original-view" class="scene" aria-label="Original global shape, draggable 3D view"></div></section>
+    <section class="view-panel"><h2><i class="dot recovered"></i>Reconstructed global shape <span id="gain-note"></span></h2><div id="recovered-view" class="scene" aria-label="Recovered shared-corner shape, draggable 3D view"></div></section>
+  </div>
+  <div class="view-footer"><span>Drag to orbit both views · scroll to zoom · orange points mark the supplied fixed end</span><span class="legend">True corner error <i></i> <span id="legend-max"></span></span></div>
+  <p class="display-note" id="display-note">Geometry is shown at its measured coordinates. Colors show unscaled recovery error.</p>
+  <p id="sample-result" class="result"></p>
+  <details class="method" open>
+    <summary>What the reconstruction actually receives</summary>
+    <div class="method-grid">
+      <section><h3>Stored representation</h3><p>Each cell stores its corner-average origin, its proper polar rotation R, and all nine entries of U. R and U are computed from the actual shared-corner shape. Multiplying them recovers the cell-center gradient F to floating-point precision; U retains stretch and shear.</p><p>The canonical grid supplies cell connectivity and rest spacing. The material z-min face supplies explicit global boundary positions. This report does not reconstruct from R alone.</p></section>
+      <section><h3>Shared-corner solve</h3><p>The decoder solves for displacement from the canonical rest grid with zero-start, undamped LSQR. Fixed corners are eliminated exactly. It receives no original free corners, original-shape initial guess, hidden anchors, or smoothing regularizer.</p><p>Gradient rows use the exact opposite-face-centroid formula. When origins are included, center residuals are divided by h and assigned the same dimensionless weight as gradient residuals. LSQR tolerances are 10⁻¹³.</p></section>
+    </div>
+    <p><b>Small residuals and shape recovery are different checks.</b> The corner errors compare reconstructed corners against the original only after solving. The F and center residuals measure how well the reconstructed mesh reproduces the stored data. All metrics use actual coordinates, regardless of the display gain.</p>
+  </details>
+  <section class="results-table">
+    <h2>Measured round trips</h2>
+    <p>The table uses the primary decoder: stored origins + R + U + the fixed end. Select any row to compare its meshes.</p>
+    <div class="table-wrap"><table><thead><tr><th>Original shape</th><th>Corner RMS (mm)</th><th>Corner max (mm)</th><th>Max F residual</th><th>Max center error (m)</th><th>Fixed end (m)</th></tr></thead><tbody id="results"></tbody></table></div>
+  </section>
+  <details class="method">
+    <summary>Secondary diagnostic: why exact general recovery is not guaranteed</summary>
+    <p>A cell-center gradient does not retain every corner-warping mode. The final diagnostic adds <code>δx(i,j,k) = 0.001 (−1)^(i+j) k/nz</code> to the canonical shape. This changes corners by up to 1 mm while leaving every stored center, gradient, polar frame, and local-axis matrix unchanged to roundoff. It also leaves the fixed face unchanged.</p>
+    <p>The minimum-displacement decoder selects the canonical shape for that case. Even adding the frame origins cannot identify the missing mode. With h = 0.025 m, this constructed trilinear map has determinant at least 0.92 throughout each cell, so folding is not the cause.</p>
+    <p>The affine example is also informative: a minimum-displacement choice need not preserve an affine shape on an odd 11-by-11 corner cross section. Its invisible checkerboard component is removed. A different prior could choose a different representative; it would be an additional assumption.</p>
+    <p id="rank-audit"></p>
+  </details>
+  <footer><a href="report.json">All metrics and solver diagnostics</a><a id="download-state" href="data/multiscale_0.npz" download>Selected exact NPZ</a><a href="reproduce.md">Reproduction notes</a><a href="source/round_trip.py" download>Decoder source</a><span>No VBD simulation is run in this experiment.</span></footer>
+</main>
+<script src="data.js"></script>
+<script type="module" src="main.js"></script>
+</body>
+</html>

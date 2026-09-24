@@ -1,0 +1,185 @@
+{
+  "description": "Hex implicit Euler -> network axis update -> incremental hex fusion -> backward",
+  "working_dtype": "float32",
+  "reference_dtype": "float64 (diagnostics only)",
+  "device": "CPU",
+  "relative_error_definition": "abs(autograd-FD)/max(abs(autograd),abs(FD),1e-12)",
+  "gradient_comparison_definition": "norm(gradient32-gradient64)/norm(gradient64)",
+  "float32": {
+    "hex_energy_positions": [
+      {
+        "epsilon_m": 0.001,
+        "autograd": -0.0081374142318964,
+        "central_difference": -0.008158385753631592,
+        "absolute_error": 2.0971521735191345e-05,
+        "relative_error": 0.0025705479452054793
+      },
+      {
+        "epsilon_m": 0.0003,
+        "autograd": -0.0081374142318964,
+        "central_difference": -0.008079610764980316,
+        "absolute_error": 5.780346691608429e-05,
+        "relative_error": 0.00710341949774546
+      },
+      {
+        "epsilon_m": 0.0001,
+        "autograd": -0.0081374142318964,
+        "central_difference": -0.008168863132596016,
+        "absolute_error": 3.144890069961548e-05,
+        "relative_error": 0.0038498503634031636
+      }
+    ],
+    "fusion_targets": [
+      {
+        "epsilon_dimensionless": 0.01,
+        "autograd": -0.010150955989956856,
+        "central_difference": -0.01015046052634716,
+        "absolute_error": 4.954636096954346e-07,
+        "relative_error": 4.8809551552152915e-05
+      },
+      {
+        "epsilon_dimensionless": 0.003,
+        "autograd": -0.010150955989956856,
+        "central_difference": -0.010150600224733353,
+        "absolute_error": 3.557652235031128e-07,
+        "relative_error": 3.504745994910228e-05
+      },
+      {
+        "epsilon_dimensionless": 0.001,
+        "autograd": -0.010150955989956856,
+        "central_difference": -0.010147885419428349,
+        "absolute_error": 3.0705705285072327e-06,
+        "relative_error": 0.0003024907734350529
+      }
+    ],
+    "network_through_fusion_and_energy": [
+      {
+        "epsilon_parameter": 0.003,
+        "autograd": -0.0735965371131897,
+        "central_difference": -0.07359939627349377,
+        "absolute_error": 2.859160304069519e-06,
+        "relative_error": 3.8847605399437534e-05
+      },
+      {
+        "epsilon_parameter": 0.001,
+        "autograd": -0.0735965371131897,
+        "central_difference": -0.07358542643487453,
+        "absolute_error": 1.1110678315162659e-05,
+        "relative_error": 0.00015096740622557695
+      },
+      {
+        "epsilon_parameter": 0.0003,
+        "autograd": -0.0735965371131897,
+        "central_difference": -0.07363657156626384,
+        "absolute_error": 4.0034453074141996e-05,
+        "relative_error": 0.0005436762225970274
+      }
+    ],
+    "small_gradient_descent_check": {
+      "before_joule": 0.006783188320696354,
+      "after_joule": 0.0065887304954230785,
+      "decreased": true
+    }
+  },
+  "float64_reference": {
+    "hex_energy_positions": [
+      {
+        "epsilon_m": 1e-05,
+        "autograd": -0.00813703562124246,
+        "central_difference": -0.008137035957729057,
+        "absolute_error": 3.3648659726603913e-10,
+        "relative_error": 4.135247761150957e-08
+      },
+      {
+        "epsilon_m": 3e-06,
+        "autograd": -0.00813703562124246,
+        "central_difference": -0.00813703565913255,
+        "absolute_error": 3.789009037080682e-11,
+        "relative_error": 4.656498012059357e-09
+      },
+      {
+        "epsilon_m": 1e-06,
+        "autograd": -0.00813703562124246,
+        "central_difference": -0.008137035622341957,
+        "absolute_error": 1.099497229373192e-12,
+        "relative_error": 1.351225778530807e-10
+      }
+    ],
+    "fusion_targets": [
+      {
+        "epsilon_dimensionless": 0.0001,
+        "autograd": -0.01015095328886799,
+        "central_difference": -0.01015095328888898,
+        "absolute_error": 2.0990154059319366e-14,
+        "relative_error": 2.0678012657485823e-12
+      },
+      {
+        "epsilon_dimensionless": 1e-05,
+        "autograd": -0.01015095328886799,
+        "central_difference": -0.010150953288654743,
+        "absolute_error": 2.1324608745487694e-13,
+        "relative_error": 2.100749371871631e-11
+      },
+      {
+        "epsilon_dimensionless": 1e-06,
+        "autograd": -0.01015095328886799,
+        "central_difference": -0.010150953286525582,
+        "absolute_error": 2.3424075179523385e-12,
+        "relative_error": 2.3075739305402304e-10
+      }
+    ],
+    "network_through_fusion_and_energy": [
+      {
+        "epsilon_parameter": 0.0001,
+        "autograd": -0.07359655741122045,
+        "central_difference": -0.0735965574565154,
+        "absolute_error": 4.5294948347596176e-11,
+        "relative_error": 6.154492806862433e-10
+      },
+      {
+        "epsilon_parameter": 1e-05,
+        "autograd": -0.07359655741122045,
+        "central_difference": -0.07359655741462183,
+        "absolute_error": 3.4013764027562843e-12,
+        "relative_error": 4.621651504151082e-11
+      },
+      {
+        "epsilon_parameter": 1e-06,
+        "autograd": -0.07359655741122045,
+        "central_difference": -0.07359655740564464,
+        "absolute_error": 5.5758175854236924e-12,
+        "relative_error": 7.576193481807627e-11
+      }
+    ],
+    "small_gradient_descent_check": {
+      "before_joule": 0.006783137840732775,
+      "after_joule": 0.006588769643129878,
+      "decreased": true
+    }
+  },
+  "float32_vs_float64_gradient_relative_l2": {
+    "energy": 9.110462961977645e-06,
+    "fusion": 1.8249176250928155e-06,
+    "network": 7.458164708483002e-06
+  },
+  "passed": true,
+  "full_grid": {
+    "cell_counts": [
+      10,
+      10,
+      40
+    ],
+    "cell_count": 4000,
+    "corner_count": 4961,
+    "dtype": "torch.float32",
+    "elapsed_seconds": 1.9253491461277008,
+    "loss_joule": 671.6719360351562,
+    "elastic_joule": 671.395263671875,
+    "inertia_joule": 0.2766546308994293,
+    "all_parameter_gradients_finite": true,
+    "correction_head_gradient_norm": 14687.1044921875,
+    "edge_value_gradient_norm": 2.7346394062042236,
+    "fixed_corner_max_error_m": 0.0,
+    "cuda_initialized": false
+  }
+}

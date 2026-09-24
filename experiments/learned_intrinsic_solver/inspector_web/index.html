@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cell frame inspector · Learned intrinsic solver</title>
+  <link rel="icon" href="data:,"><link rel="stylesheet" href="style.css">
+  <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
+  <script src="data.js"></script>
+</head>
+<body>
+  <header class="page-header">
+    <div><p class="eyebrow">LEARNED INTRINSIC SOLVER · FIRST GEOMETRY TEST</p><h1>Inside a deformed cell</h1><p class="intro">Click the grid to inspect a cell. Its rotating frame stays on the deformed grid; its three deformation axes appear beside it.</p></div>
+    <div class="dataset-badge"><strong id="grid-dimensions">10 × 10 × 40</strong><span id="dataset-description">Canonical voxel grid</span></div>
+  </header>
+  <main>
+    <section class="grid-panel panel" aria-label="Deformed grid">
+      <div class="panel-heading"><div><p class="eyebrow">01 / DEFORMED GRID</p><h2>Local frame on the selected cell</h2></div><div class="toolbar"><button id="focus-cell">Focus cell</button><button id="reset-grid">Reset view</button></div></div>
+      <div id="grid-view" class="grid-view"><div class="view-overlay"><span class="status-dot"></span><span id="selection-label">Loading grid…</span></div><div class="view-hint">Drag to orbit · scroll to zoom · right-drag to pan</div><div class="axis-legend"><span class="axis-x">X</span><span class="axis-y">Y</span><span class="axis-z">Z</span><span>cell frame · equal-length, perpendicular axes</span></div></div>
+      <div class="grid-controls">
+        <div class="control-section"><label for="slice-axis">Reveal a layer</label><div class="slice-row"><select id="slice-axis"><option value="all">Whole grid</option><option value="0">X layer</option><option value="1">Y layer</option><option value="2">Z layer</option></select><input id="slice-layer" type="range" min="0" max="9" value="5" disabled aria-label="Layer index"><output id="slice-value">—</output></div><small>Slice through the grid to click interior cells.</small></div>
+        <form id="cell-picker" class="control-section"><label>Select any cell <span class="muted">(zero-based)</span></label><div class="cell-inputs"><label for="cell-i">i <input id="cell-i" type="number" min="0" max="9" value="5" required></label><label for="cell-j">j <input id="cell-j" type="number" min="0" max="9" value="5" required></label><label for="cell-k">k <input id="cell-k" type="number" min="0" max="39" value="20" required></label><button type="submit">Inspect</button></div><small id="visible-count">4,000 cells</small></form>
+      </div>
+    </section>
+    <section class="detail-panel panel" aria-label="Selected cell deformation axes">
+      <div class="panel-heading"><div><p class="eyebrow">02 / CELL DEFORMATION</p><h2 id="detail-title">Cell axes</h2></div><button id="open-detail" title="Open the linked axes view in another window">Open window ↗</button></div>
+      <div class="detail-space"><label for="axis-space">Show axes in</label><select id="axis-space"><option value="local">The cell’s own frame · U</option><option value="world">World coordinates · F</option></select></div>
+      <div id="axes-view" class="axes-view"></div>
+      <div class="detail-content"><p id="axes-explanation">Axis lengths preserve stretch, and angles preserve shear. Gray axes show the undeformed unit axes.</p><div id="axis-lengths" class="axis-lengths"></div><div class="metric-row"><span>Volume ratio <strong id="determinant">—</strong></span><span>Cell ID <strong id="cell-id">—</strong></span></div><p id="popup-status" class="small-note" aria-live="polite">The separate window follows the selected cell.</p><details><summary>View the numbers</summary><div id="matrix-values"></div></details></div>
+    </section>
+    <section class="explanation panel"><div><h3>Frame = orientation</h3><p>The red, green, and blue arrows on the grid are the cell’s orthonormal frame. Their origin is the actual deformed cell center.</p></div><div><h3>Axes = deformation</h3><p>The detail view keeps the three axis lengths and angles. In the cell’s own frame, they describe stretch and shear after removing the cell’s rotation.</p></div><div><h3>Measured from the shape</h3><p>Each axis comes from the difference between the two opposing face centers, divided by the rest cell size. For a warped cell this is the deformation gradient at its center.</p></div></section>
+  </main>
+  <footer><span id="generation-note"></span><span>Static geometry test · <a href="vendor/THREE-LICENSE.txt">Three.js r170 / MIT</a></span></footer>
+  <div id="error-message" class="error-message" hidden></div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

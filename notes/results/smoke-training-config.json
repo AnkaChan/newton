@@ -1,0 +1,39 @@
+{
+  "updates": 64,
+  "cell_counts": [
+    10,
+    10,
+    40
+  ],
+  "cell_size": 0.025,
+  "lame_lambda": 288461.53846,
+  "lame_mu": 192307.69231,
+  "density": 1000.0,
+  "time_step": 0.0033333333333333335,
+  "gravity": [
+    0.0,
+    -9.81,
+    0.0
+  ],
+  "learning_rate": 0.0001,
+  "max_step_size": 0.05,
+  "hidden_dim": 128,
+  "edge_hidden_dim": 64,
+  "num_heads": 4,
+  "hops": [
+    1,
+    1,
+    1
+  ],
+  "query_chunk_size": 128,
+  "train_count": 16,
+  "validation_count": 8,
+  "train_seed_start": 0,
+  "validation_seed_start": 10000,
+  "seed": 73,
+  "validation_interval": 8,
+  "checkpoint_interval": 16,
+  "cpu_threads": 2,
+  "device": "cuda",
+  "verbose": true
+}

@@ -1,0 +1,215 @@
+{
+  "cases": [
+    {
+      "batch_size": 1,
+      "status": "passed",
+      "device": "NVIDIA L40",
+      "parameter_count": 865942,
+      "iterations": 1,
+      "dtype": "float32",
+      "tf32": false,
+      "amp": false,
+      "peak_allocated_bytes": 718474240,
+      "peak_reserved_bytes": 786432000,
+      "total_memory_bytes": 50876841984,
+      "seconds_per_update": [
+        0.3415430933237076,
+        0.12873517721891403
+      ],
+      "samples_per_second": 7.767884595362005,
+      "losses": [
+        -0.019822318106889725,
+        -0.020711272954940796
+      ],
+      "process_seconds": 3.9122776463627815
+    },
+    {
+      "batch_size": 4,
+      "status": "passed",
+      "device": "NVIDIA L40",
+      "parameter_count": 865942,
+      "iterations": 1,
+      "dtype": "float32",
+      "tf32": false,
+      "amp": false,
+      "peak_allocated_bytes": 2769455104,
+      "peak_reserved_bytes": 3231711232,
+      "total_memory_bytes": 50876841984,
+      "seconds_per_update": [
+        0.42266319692134857,
+        0.2121645286679268
+      ],
+      "samples_per_second": 18.853292890729502,
+      "losses": [
+        0.0036147618666291237,
+        0.003586019854992628
+      ],
+      "process_seconds": 4.054922733455896
+    },
+    {
+      "batch_size": 8,
+      "status": "passed",
+      "device": "NVIDIA L40",
+      "parameter_count": 865942,
+      "iterations": 1,
+      "dtype": "float32",
+      "tf32": false,
+      "amp": false,
+      "peak_allocated_bytes": 5598722048,
+      "peak_reserved_bytes": 5886705664,
+      "total_memory_bytes": 50876841984,
+      "seconds_per_update": [
+        0.5632326118648052,
+        0.33060142770409584
+      ],
+      "samples_per_second": 24.198322601196946,
+      "losses": [
+        -0.002277286723256111,
+        -0.0021693387534469366
+      ],
+      "process_seconds": 4.212716583162546
+    },
+    {
+      "batch_size": 16,
+      "status": "passed",
+      "device": "NVIDIA L40",
+      "parameter_count": 865942,
+      "iterations": 1,
+      "dtype": "float32",
+      "tf32": false,
+      "amp": false,
+      "peak_allocated_bytes": 11162165760,
+      "peak_reserved_bytes": 11720982528,
+      "total_memory_bytes": 50876841984,
+      "seconds_per_update": [
+        0.8602520152926445,
+        0.6281698979437351
+      ],
+      "samples_per_second": 25.47081617946792,
+      "losses": [
+        -0.013491425663232803,
+        -0.013568742200732231
+      ],
+      "process_seconds": 4.832852501422167
+    },
+    {
+      "batch_size": 32,
+      "status": "passed",
+      "device": "NVIDIA L40",
+      "parameter_count": 865942,
+      "iterations": 1,
+      "dtype": "float32",
+      "tf32": false,
+      "amp": false,
+      "peak_allocated_bytes": 21773064192,
+      "peak_reserved_bytes": 22808625152,
+      "total_memory_bytes": 50876841984,
+      "seconds_per_update": [
+        1.4360178858041763,
+        1.2526634968817234
+      ],
+      "samples_per_second": 25.54556756835187,
+      "losses": [
+        -0.013491425663232803,
+        -0.013568743132054806
+      ],
+      "process_seconds": 6.094463173300028
+    },
+    {
+      "batch_size": 48,
+      "status": "passed",
+      "device": "NVIDIA L40",
+      "parameter_count": 865942,
+      "iterations": 1,
+      "dtype": "float32",
+      "tf32": false,
+      "amp": false,
+      "peak_allocated_bytes": 32882676736,
+      "peak_reserved_bytes": 34414264320,
+      "total_memory_bytes": 50876841984,
+      "seconds_per_update": [
+        2.054478146135807,
+        1.8946597278118134
+      ],
+      "samples_per_second": 25.3343644219621,
+      "losses": [
+        -0.013491424731910229,
+        -0.013568753376603127
+      ],
+      "process_seconds": 7.28979541733861
+    },
+    {
+      "batch_size": 64,
+      "status": "passed",
+      "device": "NVIDIA L40",
+      "parameter_count": 865942,
+      "iterations": 1,
+      "dtype": "float32",
+      "tf32": false,
+      "amp": false,
+      "peak_allocated_bytes": 43538529792,
+      "peak_reserved_bytes": 45554335744,
+      "total_memory_bytes": 50876841984,
+      "seconds_per_update": [
+        2.690418031066656,
+        2.5418111979961395
+      ],
+      "samples_per_second": 25.178896076331316,
+      "losses": [
+        -0.013491425663232803,
+        -0.013568743132054806
+      ],
+      "process_seconds": 8.644545666873455
+    },
+    {
+      "batch_size": 80,
+      "status": "out_of_memory",
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 136.00 MiB. GPU 0 has a total capacity of 47.38 GiB of which 106.88 MiB is free. Including non-PyTorch memory, this process has 47.27 GiB memory in use. Of the allocated memory 46.57 GiB is allocated by PyTorch, and 179.36 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+      "process_seconds": 3.8240429386496544
+    },
+    {
+      "batch_size": 72,
+      "status": "passed",
+      "device": "NVIDIA L40",
+      "parameter_count": 865942,
+      "iterations": 1,
+      "dtype": "float32",
+      "tf32": false,
+      "amp": false,
+      "peak_allocated_bytes": 49055339520,
+      "peak_reserved_bytes": 50228887552,
+      "total_memory_bytes": 50876841984,
+      "seconds_per_update": [
+        3.0481267869472504,
+        2.8759419433772564
+      ],
+      "samples_per_second": 25.035275891365686,
+      "losses": [
+        -0.012245412915945053,
+        -0.01228760089725256
+      ],
+      "process_seconds": 9.290775321424007
+    },
+    {
+      "batch_size": 76,
+      "status": "out_of_memory",
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 150.00 MiB. GPU 0 has a total capacity of 47.38 GiB of which 126.88 MiB is free. Including non-PyTorch memory, this process has 47.25 GiB memory in use. Of the allocated memory 46.22 GiB is allocated by PyTorch, and 521.04 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+      "process_seconds": 4.108144264668226
+    },
+    {
+      "batch_size": 74,
+      "status": "out_of_memory",
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 580.00 MiB. GPU 0 has a total capacity of 47.38 GiB of which 478.88 MiB is free. Including non-PyTorch memory, this process has 46.91 GiB memory in use. Of the allocated memory 45.99 GiB is allocated by PyTorch, and 397.46 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+      "process_seconds": 3.8910341411828995
+    },
+    {
+      "batch_size": 73,
+      "status": "out_of_memory",
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 572.00 MiB. GPU 0 has a total capacity of 47.38 GiB of which 426.88 MiB is free. Including non-PyTorch memory, this process has 46.96 GiB memory in use. Of the allocated memory 45.55 GiB is allocated by PyTorch, and 894.97 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+      "process_seconds": 6.940608598291874
+    }
+  ],
+  "largest_passed": 72,
+  "smallest_failed": 73,
+  "interpretation": "Two complete forward/backward/Adam steps per batch, isolated process. Float32, no AMP/TF32. One 4000-cell object per sample. Capacity is for one solver iteration on an otherwise idle GPU; not a multi-GPU scaling measurement."
+}

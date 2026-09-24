@@ -1,0 +1,11 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Cell deformation axes</title><link rel="icon" href="data:,"><link rel="stylesheet" href="style.css"><script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script></head>
+<body class="popup-body">
+  <header class="popup-header"><p class="eyebrow">LINKED CELL VIEW</p><h1 id="detail-title">Cell deformation axes</h1><p id="link-status">Waiting for a cell from the grid…</p></header>
+  <main class="popup-main"><section class="panel"><div class="detail-space"><label for="axis-space">Show axes in</label><select id="axis-space"><option value="local">The cell’s own frame · U</option><option value="world">World coordinates · F</option></select><button id="reset-axes">Reset view</button></div><div id="axes-view" class="axes-view popup-view"></div><div class="detail-content"><p id="axes-explanation"></p><div id="axis-lengths" class="axis-lengths"></div><div class="metric-row"><span>Volume ratio <strong id="determinant">—</strong></span><span>Cell ID <strong id="cell-id">—</strong></span></div><details><summary>View the numbers</summary><div id="matrix-values"></div></details></div></section></main>
+  <script type="module" src="detail.js"></script>
+</body>
+</html>
