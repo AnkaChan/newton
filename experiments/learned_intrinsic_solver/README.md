@@ -880,3 +880,23 @@ across runs or device assignments. See [verification evidence](../../notes/v2-im
 The existing epoch pipeline remains the launcher's default. Select
 `--pipeline mixed` explicitly for V2; legacy three-block checkpoint restoration
 continues through the existing trainers.
+
+
+### Absolute solid damping in the mixed trainer
+
+New mixed runs sample `damping_range=(10.0, 1000.0)` log-uniformly in Pa·s,
+independently of E/nu/rho and fixed for a whole trajectory. These are absolute
+VBD viscosities, not multipliers of mu. The standalone `MaterialRanges` default
+remains `(0, 0)` for legacy callers. Damped solvers need `previous_positions`
+from the physical timestep start, held fixed across optimization iterations.
+The objective adds eight-point metric damping; the inertial prediction and
+fusion matrix are unchanged. `HexLossTerms` has a fourth `damping` field; new
+energy results always provide a tensor (legacy three-argument construction
+sets it to None).
+
+`MixedTrainConfig.feature_schema_version=2` selects 86 state channels and 6
+conditioning channels. Version1 requires zero damping and retains 38/5.
+CLI resume recognizes older configurations as version 1 and does not silently
+add damping or resize checkpoint weights. New and legacy configurations cannot
+be interchanged on resume. The per-object damping sample and actual physical
+anchor are included in resumable active state.

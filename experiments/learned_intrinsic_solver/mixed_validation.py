@@ -32,6 +32,7 @@ def _record_iteration(step, batch, start, samples, energies):
                 positions,
                 batch["inertial_prediction"][near_zero].detach(),
                 tuple(batch["context_ids"][index] for index in near_zero),
+                previous_positions=batch["physical_positions"][near_zero].detach(),
             ).total
             gradient = torch.autograd.grad(physical_energy.sum(), positions)[0]
         gradient[:, step.fixed_indices] = 0
@@ -58,7 +59,12 @@ def _optimization(step, factory, seeds, samples, config, device):
             payloads.append(factory.reset(seed))
         batch = _batch(payloads, device)
         start = batch["candidate"].clone()
-        energies = step.energy(start, batch["inertial_prediction"], batch["context_ids"]).total
+        energies = step.energy(
+            start,
+            batch["inertial_prediction"],
+            batch["context_ids"],
+            previous_positions=batch["physical_positions"],
+        ).total
         _record_iteration(step, batch, start, samples, energies)
         for _ in range(config.validation_iterations):
             iteration += 1

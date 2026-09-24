@@ -85,7 +85,9 @@ class TestInitialStateAugmenter(unittest.TestCase):
         np.testing.assert_array_equal(different_material.velocities, state.velocities)
         sampled = different_material.material
         values = (sampled.youngs_modulus, sampled.poissons_ratio, sampled.density)
-        for value, bounds in zip(values, asdict(custom_ranges).values(), strict=True):
+        for value, bounds in zip(
+            values, (custom_ranges.youngs_modulus, custom_ranges.poissons_ratio, custom_ranges.density), strict=True
+        ):
             self.assertGreaterEqual(value, bounds[0])
             self.assertLessEqual(value, bounds[1])
 
@@ -164,6 +166,19 @@ class TestInitialStateAugmenter(unittest.TestCase):
         self.assertAlmostEqual(source["youngs_modulus"], 1000)
         self.assertAlmostEqual(source["poissons_ratio"], 0.25)
         self.assertEqual(state.metadata["material"], asdict(state.material))
+
+    def test_damping_reset_records_sample_without_changing_geometry(self):
+        """Repeat viscosity independently of shape, velocity, and elastic material."""
+        plain = self.augmenter.reset(7)
+        augmenter = InitialStateAugmenter(self.rest, material_ranges=MaterialRanges(damping=(10.0, 1000.0)))
+        damped = augmenter.reset(7)
+        np.testing.assert_array_equal(damped.positions, plain.positions)
+        np.testing.assert_array_equal(damped.velocities, plain.velocities)
+        self.assertEqual(damped.material.lame_mu, plain.material.lame_mu)
+        self.assertEqual(damped.material, augmenter.reset().material)
+        self.assertEqual(damped.metadata["generator_version"], "initial_state_v4")
+        self.assertEqual(damped.metadata["damping_seed_sequence"], [damped.metadata["material_seed"], 1709])
+        self.assertEqual(damped.metadata["material"]["damping"], damped.material.damping)
 
     def test_reset_does_not_advance_global_numpy_random_state(self):
         original = np.random.get_state()  # noqa: NPY002 -- Verify the legacy global RNG is untouched.

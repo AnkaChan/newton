@@ -188,6 +188,7 @@ class PhysicalRollout:
         solved = solve(
             initial,
             inertial,
+            previous_positions=positions,
             fixed_positions=fixed_positions,
             iterations=iterations,
             detach_energy_target=self.detach_energy_target,

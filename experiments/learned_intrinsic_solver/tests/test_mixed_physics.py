@@ -123,7 +123,9 @@ class TestMixedHexSolverStep(unittest.TestCase):
             self.assertFalse(
                 any(part in name for part in ("lame", "density", "lumped_mass", "conditioning", "fusion")), name
             )
-        self.assertEqual(json.loads(json.dumps(self.step.context_specs))["soft"], self.specs["soft"])
+        self.assertEqual(
+            json.loads(json.dumps(self.step.context_specs))["soft"], {**self.specs["soft"], "damping": 0.0}
+        )
         snapshot = self.step.context_specs
         snapshot["soft"]["density"] = -1
         self.assertEqual(self.step.context_specs["soft"]["density"], self.specs["soft"]["density"])

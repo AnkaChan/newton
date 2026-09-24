@@ -258,7 +258,7 @@ class TestUnrolledHexSolver(unittest.TestCase):
         second = torch.tensor([5.0], requires_grad=True)
         later_energies = iter((first, second))
 
-        def next_energy(current, prediction, fixed, *, detach_energy_target):
+        def next_energy(current, prediction, fixed, *, detach_energy_target, previous_positions=None):
             return current, next(later_energies)
 
         with (

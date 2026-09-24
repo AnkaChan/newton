@@ -23,7 +23,7 @@ class TestMaterialSampling(unittest.TestCase):
         first = sample_material(73)
         self.assertEqual(first, sample_material(73))
         self.assertIsInstance(first, MaterialSample)
-        self.assertEqual(set(asdict(first)), {"lame_lambda", "lame_mu", "density"})
+        self.assertEqual(set(asdict(first)), {"lame_lambda", "lame_mu", "density", "damping"})
         with self.assertRaises(FrozenInstanceError):
             first.density = 1000.0
 
@@ -83,6 +83,37 @@ class TestMaterialSampling(unittest.TestCase):
         ranges = MaterialRanges(youngs_modulus=(1000.0, 1000.0), poissons_ratio=(0.25, 0.25), density=(1200.0, 1200.0))
         self.assertEqual(sample_material(0, ranges=ranges), MaterialSample(400.0, 400.0, 1200.0))
         self.assertEqual(sample_material(1, ranges=ranges), sample_material(0, ranges=ranges))
+
+    def test_damping_is_independent_log_uniform_and_reproducible(self):
+        """Cover both decades without altering the existing elastic or density draws."""
+        ranges = MaterialRanges(damping=(10.0, 1000.0))
+        multipliers = []
+        for seed in range(1024):
+            legacy = sample_material(seed)
+            sampled = sample_material(seed, ranges=ranges)
+            self.assertEqual(sampled, sample_material(seed, ranges=ranges))
+            for name in ("lame_lambda", "lame_mu", "density"):
+                self.assertEqual(getattr(legacy, name), getattr(sampled, name))
+            self.assertEqual(legacy.damping, 0.0)
+            multiplier = sampled.damping / 100.0
+            self.assertGreaterEqual(multiplier, 0.1)
+            self.assertLessEqual(multiplier, 10.0)
+            multipliers.append(multiplier)
+            changed_stiffness = sample_material(
+                seed, ranges=MaterialRanges(youngs_modulus=(100.0, 100.0), damping=(10.0, 1000.0))
+            )
+            self.assertEqual(sampled.damping, changed_stiffness.damping)
+        # A linear-uniform sampler puts only ~9% below one instead of 50%.
+        self.assertGreater(np.mean(np.asarray(multipliers) < 1), 0.45)
+        self.assertLess(np.mean(np.asarray(multipliers) < 1), 0.55)
+
+    def test_damping_bounds_and_fixed_reference(self):
+        """Support zero and fixed coefficients while rejecting invalid log bounds."""
+        sampled = sample_material(73, ranges=MaterialRanges(damping=(100.0, 100.0)))
+        self.assertEqual(sampled.damping, 100.0)
+        for bounds in ((0.0, 1.0), (-1.0, 1.0), (10.0, 0.1), (0.1, math.inf)):
+            with self.subTest(bounds=bounds), self.assertRaises(ValueError):
+                MaterialRanges(damping=bounds)
 
     def test_invalid_seed_or_ranges_fail(self):
         """Reject ambiguous seeds and invalid modulus, ratio, or density domains."""

@@ -53,7 +53,14 @@ class TestMixedTrainingFailures(unittest.TestCase):
     def _step(self, config):
         rest = generate_cuboid(config.cell_counts, cell_size=config.cell_size)
         fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == 0)
-        network = IntrinsicSolverNetwork(rest.cell_counts, 38, hidden_dim=8, edge_hidden_dim=4, num_heads=2)
+        network = IntrinsicSolverNetwork(
+            rest.cell_counts,
+            config.state_feature_dim,
+            conditioning_dim=config.conditioning_dim,
+            hidden_dim=8,
+            edge_hidden_dim=4,
+            num_heads=2,
+        )
         step = MixedHexSolverStep(rest, fixed, network=network, time_step=config.time_step)
         self.addCleanup(step.close)
         return step, rest
@@ -114,6 +121,7 @@ class TestMixedTrainingFailures(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss.total).all())
         batch = {
             "candidate": positions,
+            "physical_positions": positions,
             "inertial_prediction": positions,
             "context_ids": ("case",),
             "fixed_positions": positions[:, step.fixed_indices],

@@ -57,7 +57,7 @@ class LearnedHexProblem(NamedTuple):
 
     def objective(self, positions: torch.Tensor) -> HexLossTerms:
         """Evaluate implicit-Euler energy [J] at a candidate [1,P,3] [m]."""
-        return self.optimizer.energy(positions, self.inertial_prediction)
+        return self.optimizer.energy(positions, self.inertial_prediction, previous_positions=self.previous_positions)
 
 
 class LearnedOptimizerUpdate(NamedTuple):
@@ -197,13 +197,25 @@ class SolverLearnedIntrinsic(SolverBase):
         self._lame_lambda = metadata.lame_lambda.numpy().copy()
         self._lame_mu = metadata.lame_mu.numpy().copy()
         self._density = metadata.density.numpy().copy()
+        self._damping = (
+            metadata.damping.numpy().copy() if hasattr(metadata, "damping") else np.zeros_like(self._lame_mu)
+        )
+        if (
+            self._damping.shape != self._lame_mu.shape
+            or not np.isfinite(self._damping).all()
+            or (self._damping < 0).any()
+        ):
+            raise ValueError("model damping must be finite and nonnegative with one value per hex")
         self._mass = torch.from_numpy(model.particle_mass.numpy().copy())
         if self._mass.dtype != torch.float32 or not torch.isfinite(self._mass).all() or (self._mass <= 0).any():
             raise ValueError("all physical corner masses must remain positive float32, including pins")
         self._fixed_tensor = torch.from_numpy(self._fixed)
         self.rigid_predictor = RigidPosePredictor(self._mass, gravity=tuple(self._gravity().tolist()))
         if self.network is None:
-            self.network = IntrinsicSolverNetwork(counts, 38)
+            has_damping = bool((self._damping > 0).any())
+            self.network = IntrinsicSolverNetwork(
+                counts, 86 if has_damping else 38, conditioning_dim=6 if has_damping else 5
+            )
         if self.network.cell_counts != counts:
             raise ValueError("network cell counts must match the model")
         self.learned_step = None
@@ -227,6 +239,7 @@ class SolverLearnedIntrinsic(SolverBase):
                 lame_lambda=self._lame_lambda,
                 lame_mu=self._lame_mu,
                 density=self._density,
+                damping=self._damping,
                 time_step=dt,
                 network=self.network,
             )
@@ -368,7 +381,11 @@ class SolverLearnedIntrinsic(SolverBase):
         if not torch.equal(candidate[:, problem.fixed_indices], problem.fixed_positions):
             raise ValueError("candidate must satisfy the problem's prescribed corners exactly")
         update = problem.optimizer(
-            candidate, problem.inertial_prediction, fixed_positions=problem.fixed_positions, frames=frames
+            candidate,
+            problem.inertial_prediction,
+            previous_positions=problem.previous_positions,
+            fixed_positions=problem.fixed_positions,
+            frames=frames,
         )
         return LearnedOptimizerUpdate(
             candidate,

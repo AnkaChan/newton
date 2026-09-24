@@ -8,6 +8,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 if importlib.util.find_spec("torch") is None:
@@ -70,6 +71,24 @@ class TestMixedTrainingReference(unittest.TestCase):
         self.assertGreater(report["parameters"]["element_count"], 0)
         self.assertEqual(report["optimizer"]["tensor_count"], 3 * report["parameters"]["tensor_count"])
         json.dumps(report, allow_nan=False)
+
+    def test_different_viscosities_are_heterogeneous_materials(self):
+        """Accept a real matching update whose only material variation is viscosity."""
+        config = replace(
+            MixedTrainConfig.from_checkpoint_config(self.initial["config"]),
+            youngs_modulus_range=(1e4, 1e4),
+            poissons_ratio_range=(0.3, 0.3),
+            density_range=(1000.0, 1000.0),
+            cpu_threads=2,
+        )
+        output = self.root / "damping-only"
+        run_training(output, config)
+        report = verify_first_update(output / "checkpoints/initial.pt", output / "checkpoints/latest.pt")
+        self.assertTrue(report["parameters"]["passed"], report)
+        self.assertTrue(report["optimizer"]["passed"], report)
+        self.assertEqual(report["distinct_material_count"], 2)
+        self.assertTrue(report["heterogeneous_materials"])
+        self.assertTrue(report["passed"], report)
 
     def test_concatenated_rank_batches_have_the_same_global_reference(self):
         """Treat two saved rank batches as one equally weighted global batch."""

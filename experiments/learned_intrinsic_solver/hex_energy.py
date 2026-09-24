@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 from torch import nn  # noqa: TID253 - Explicit optional module needs the nn.Module base class.
 
+from .damping import damping_metric_difference
 from .data import VoxelGridData
 
 if TYPE_CHECKING:
@@ -68,11 +69,16 @@ def hex_gauss_quadrature(cell_size: float, *, dtype: np.dtype = np.float32) -> H
 
 
 class HexLossTerms(NamedTuple):
-    """Return total, elastic, and inertia energies [J], each shape [B]."""
+    """Return physical energies [J], each shape [B].
+
+    Experimental. ``damping=None`` supports legacy three-argument construction;
+    :class:`HexImplicitEulerLoss` always returns a damping tensor, including zero.
+    """
 
     total: torch.Tensor
     elastic: torch.Tensor
     inertia: torch.Tensor
+    damping: torch.Tensor | None = None
 
 
 def _time_step_tensor(time_step, reference):
@@ -134,7 +140,7 @@ def make_inertial_prediction(
 
 
 class HexImplicitEulerLoss(nn.Module):
-    """Evaluate the physical inertia plus full-quadrature hex elastic energy.
+    """Evaluate physical inertia, elasticity, and VBD metric damping.
 
     Experimental. This module assumes the canonical cubic rest grid produced
     by generate_cuboid. It registers constant topology, material, quadrature,
@@ -143,7 +149,10 @@ class HexImplicitEulerLoss(nn.Module):
     parameter is inferred from a rigid fusion target.
 
     psi(F) = mu/2 (tr(F^T F)-3) - mu log(J) + lambda/2 log(J)^2,
-    J = det(F). Total = sum_q psi(F_q) w_q + sum_v m_v |X_v-Y_v|^2/(2 dt^2).
+    J = det(F). Total = sum_q psi(F_q) w_q + sum_v m_v |X_v-Y_v|^2/(2 dt^2)
+    + sum_q damping*w_q*||F_q^T F_q - F_n,q^T F_n,q||_F^2/(2 dt).
+    The final term matches Newton VBD solid damping, uses all nine metric
+    entries, and vanishes under finite rigid motion of the previous geometry.
     A cell contributes density*cell_size^3/8 to each shared-corner mass.
     Material parameters are scalar or shape [cell_count], and fixed at module
     construction. No boundary constraints are applied by this loss.
@@ -157,6 +166,9 @@ class HexImplicitEulerLoss(nn.Module):
         lame_mu: Positive shear modulus [Pa], scalar or per cell.
         density: Positive rest density [kg/m^3], scalar or per cell.
         time_step: Positive scalar time interval [s].
+        damping: Nonnegative viscosity [Pa s], scalar or per cell. Zero disables
+            damping and permits legacy checkpoints lacking this buffer to load
+            strictly. Such checkpoints cannot load into a damped configuration.
         dtype: PyTorch float32 (default when None) or float64.
     """
 
@@ -168,6 +180,7 @@ class HexImplicitEulerLoss(nn.Module):
         density,
         time_step: float,
         *,
+        damping=0.0,
         dtype: torch.dtype | None = None,
     ):
         import torch
@@ -208,18 +221,43 @@ class HexImplicitEulerLoss(nn.Module):
         material(lame_lambda, "lame_lambda", 0, lower_inclusive=True)
         mu = material(lame_mu, "lame_mu", 0)
         rho = material(density, "density", 0)
+        material(damping, "damping", 0, lower_inclusive=True)
         self.register_buffer("time_step", _time_step_tensor(time_step, mu).detach().clone())
         cell_mass_eighth = rho * self.quadrature_weights.sum() / 8
         mass = torch.zeros(self.particle_count, dtype=dtype)
         mass.index_add_(0, corners.reshape(-1), cell_mass_eighth[:, None].expand(-1, 8).reshape(-1))
         self.register_buffer("lumped_mass", mass)
 
-    def forward(self, positions: torch.Tensor, inertial_prediction: torch.Tensor) -> HexLossTerms:
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ):
+        damping_key = prefix + "damping"
+        if damping_key not in state_dict:
+            if (self.damping != 0).any().item():
+                error_msgs.append(f"Missing {damping_key}: a damped energy requires an explicit damping buffer")
+            else:
+                # Old undamped checkpoints predate this physical material field.
+                state_dict[damping_key] = self.damping.detach().clone()
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
+
+    def forward(
+        self,
+        positions: torch.Tensor,
+        inertial_prediction: torch.Tensor,
+        *,
+        previous_positions: torch.Tensor | None = None,
+    ) -> HexLossTerms:
         """Return per-object energies for positions and the physical Y [m].
 
         Args:
             positions: Current shared corners [m], shape [B,P,3].
             inertial_prediction: Unmodified physical predictor [m], same shape.
+            previous_positions: Physical substep start [m], same shape, dtype
+                and device. Required when damping is positive. Keep this anchor
+                unchanged through inner solver iterations; gradients through it
+                are preserved for differentiable physical rollouts.
 
         Raises:
             ValueError: An input is malformed/nonfinite, or any quadrature
@@ -232,7 +270,15 @@ class HexImplicitEulerLoss(nn.Module):
             raise ValueError("positions must have shape [B,particle_count,3]")
         if inertial_prediction.shape != positions.shape:
             raise ValueError("inertial_prediction must have the same shape as positions")
-        for value, name in ((positions, "positions"), (inertial_prediction, "inertial_prediction")):
+        damping_enabled = (self.damping > 0).any().item()
+        if previous_positions is None and damping_enabled:
+            raise ValueError("previous_positions is required when damping is positive")
+        inputs = [(positions, "positions"), (inertial_prediction, "inertial_prediction")]
+        if previous_positions is not None:
+            if previous_positions.shape != positions.shape:
+                raise ValueError("previous_positions must have the same shape as positions")
+            inputs.append((previous_positions, "previous_positions"))
+        for value, name in inputs:
             if value.dtype != self.lumped_mass.dtype or value.device != self.lumped_mass.device:
                 raise TypeError(f"{name} must match the module buffers dtype and device")
             if not torch.isfinite(value).all().item():
@@ -259,4 +305,16 @@ class HexImplicitEulerLoss(nn.Module):
             * (self.lumped_mass[None, :, None] * (positions - inertial_prediction).square()).sum(dim=(1, 2))
             / self.time_step.square()
         )
-        return HexLossTerms(elastic + inertia, elastic, inertia)
+        total = elastic + inertia
+        damping = torch.zeros_like(elastic)
+        if damping_enabled:
+            metric_difference = damping_metric_difference(
+                positions, previous_positions, self.cell_corner_indices, self.shape_gradients
+            )
+            damping = (
+                self.damping[None, :, None]
+                * self.quadrature_weights[None, None]
+                * metric_difference.square().sum(dim=(-1, -2))
+            ).sum(dim=(1, 2)) / (2 * self.time_step)
+            total = total + damping
+        return HexLossTerms(total, elastic, inertia, damping)

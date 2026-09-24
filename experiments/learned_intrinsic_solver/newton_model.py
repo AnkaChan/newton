@@ -30,6 +30,7 @@ def build_newton_hex_model(
     lame_lambda,
     lame_mu,
     density,
+    damping=0.0,
     gravity: tuple[float, float, float] = (0.0, 0.0, -9.81),
 ) -> newton.Model:
     """Build a standard Newton model for a canonical shared-corner hex grid.
@@ -44,7 +45,7 @@ def build_newton_hex_model(
     ``cell_counts`` (vec3i, ONCE), ``cell_size`` (float32, ONCE),
     ``rest_positions`` (vec3, PARTICLE), ``fixed`` (bool, PARTICLE),
     ``cell_corner_indices`` (8-component int32 vector, custom frequency hex),
-    and ``lame_lambda``, ``lame_mu``, ``density`` (float32, hex).
+    and ``lame_lambda``, ``lame_mu``, ``density``, ``damping`` (float32, hex).
     Hex corner indices have references="particle". The custom frequency count
     is available through model.get_custom_frequency_count("learned_intrinsic:hex").
     ONCE arrays have one element. No tetrahedra, springs, surfaces, collision
@@ -56,6 +57,7 @@ def build_newton_hex_model(
         lame_lambda: Nonnegative scalar or per-hex first Lamé parameter [Pa].
         lame_mu: Positive scalar or per-hex shear modulus [Pa].
         density: Positive scalar or per-hex physical density [kg/m^3].
+        damping: Nonnegative scalar or per-hex metric viscosity [Pa*s].
         gravity: Finite world-space acceleration [m/s^2], length three.
 
     Returns:
@@ -70,7 +72,7 @@ def build_newton_hex_model(
         raise ValueError("rest hex corner indices must use the canonical full-cuboid topology")
     # Reuse the physical law's canonical-geometry/material checks and its exact
     # lumped-mass construction; dt=1 is incidental and is not stored in Model.
-    physical = HexImplicitEulerLoss(rest, lame_lambda, lame_mu, density, 1.0)
+    physical = HexImplicitEulerLoss(rest, lame_lambda, lame_mu, density, 1.0, damping=damping)
     masses = physical.lumped_mass.numpy()
     if not np.isfinite(masses).all() or np.any(masses <= 0):
         raise ValueError("hex lumped masses must remain finite and positive in float32")
@@ -113,7 +115,7 @@ def build_newton_hex_model(
     register("rest_positions", wp.vec3, newton.Model.AttributeFrequency.PARTICLE)
     register("fixed", wp.bool, newton.Model.AttributeFrequency.PARTICLE)
     register("cell_corner_indices", vec8i, frequency, references="particle")
-    for name in ("lame_lambda", "lame_mu", "density"):
+    for name in ("lame_lambda", "lame_mu", "density", "damping"):
         register(name, wp.float32, frequency)
 
     positions = rest.corner_rest_positions.astype(np.float32).tolist()
@@ -134,6 +136,7 @@ def build_newton_hex_model(
     lam = physical.lame_lambda.numpy()
     mu = physical.lame_mu.numpy()
     rho = physical.density.numpy()
+    eta = physical.damping.numpy()
     builder.add_custom_values_batch(
         [
             {
@@ -141,6 +144,7 @@ def build_newton_hex_model(
                 f"{namespace}:lame_lambda": float(lam[cell]),
                 f"{namespace}:lame_mu": float(mu[cell]),
                 f"{namespace}:density": float(rho[cell]),
+                f"{namespace}:damping": float(eta[cell]),
             }
             for cell, corners in enumerate(rest.cell_corner_indices)
         ]

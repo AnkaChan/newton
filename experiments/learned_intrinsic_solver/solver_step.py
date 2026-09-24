@@ -16,6 +16,7 @@ from typing import NamedTuple
 import torch  # noqa: TID253 -- Explicit opt-in PyTorch nn.Module implementation.
 from torch import Tensor, nn  # noqa: TID253
 
+from .damping import damping_metric_difference, pack_damping_features
 from .data import VoxelGridData
 from .fusion import HexFusion
 from .hex_energy import HexImplicitEulerLoss, HexLossTerms
@@ -50,16 +51,19 @@ class LearnedHexSolverStep(nn.Module):
     """Propose one learned optimization update for a clamped hexahedral body.
 
     Experimental: this is an optimizer iteration, not a committed physical time
-    step or a converged simulation. Keep the physical inertial prediction fixed
-    across iterations within a time step. A candidate with a nonpositive Gauss
-    Jacobian is rejected by the energy; acceptance/line search and contact remain
-    outside this module. At least one corner must be prescribed.
+    step or a converged simulation. Keep the physical inertial prediction and
+    physical-start positions fixed across iterations within a time step. A
+    candidate with a nonpositive Gauss Jacobian is rejected by the energy;
+    acceptance/line search and contact remain outside this module. At least one
+    corner must be prescribed.
 
     The baseline packs 38 state features: eight receiver-frame inertial vectors
     divided by rest edge length (24), exposed faces (6), and fixed corners (8).
     The network adds the nine local axes. Five FiLM channels are
     log1p(lambda/1e5 Pa), log1p(mu/1e5 Pa), log(rho/1000 kg/m^3),
     log(h/0.025 m), log(dt/(1/60 s)).
+    Damped networks append 48 packed Gauss metric differences to the state and
+    log1p(damping/(mu*dt)) to conditioning. Their physical-start input is required.
 
     Args:
         rest: Canonical full cuboid with cubic cells and z-fast corner ordering.
@@ -68,9 +72,12 @@ class LearnedHexSolverStep(nn.Module):
         lame_mu: Positive scalar or per-cell shear modulus [Pa].
         density: Scalar or per-cell rest density [kg/m^3].
         time_step: Positive physical time step [s].
-        network: Optional network with 38 state, 24 edge, and 5 conditioning
-            inputs on CPU or CUDA in the chosen dtype. Its device determines
-            geometry, network, and energy execution. Default is the CPU one-block [1] baseline.
+        damping: Nonnegative scalar or per-cell metric viscosity [Pa*s].
+        network: Optional network with 38 state and 5 conditioning inputs for
+            zero damping, or 86 state and 6 conditioning inputs with damping
+            features. Both use 24 edge inputs, on CPU or CUDA in the chosen
+            dtype. Its device determines geometry, network, and energy
+            execution. Default is the CPU one-block [1] baseline.
         dtype: Working Torch dtype; float32 default, float64 reference only.
     """
 
@@ -83,11 +90,12 @@ class LearnedHexSolverStep(nn.Module):
         lame_mu,
         density,
         time_step: float,
+        damping=0.0,
         network: IntrinsicSolverNetwork | None = None,
         dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
-        self.energy = HexImplicitEulerLoss(rest, lame_lambda, lame_mu, density, time_step, dtype=dtype)
+        self.energy = HexImplicitEulerLoss(rest, lame_lambda, lame_mu, density, time_step, damping=damping, dtype=dtype)
         lam = self.energy.lame_lambda
         mu = self.energy.lame_mu
         rho = self.energy.density
@@ -99,14 +107,24 @@ class LearnedHexSolverStep(nn.Module):
         self.register_buffer("fusion_stiffness", fusion_stiffness)
         self.fusion = HexFusion(rest, fixed_indices, cell_weights=fusion_stiffness * rest.cell_size**3, dtype=dtype)
         self.cell_size = rest.cell_size
-        self.network = network if network is not None else IntrinsicSolverNetwork(rest.cell_counts, 38).to(dtype=dtype)
+        has_damping = bool((self.energy.damping > 0).any())
+        self.network = (
+            network
+            if network is not None
+            else IntrinsicSolverNetwork(
+                rest.cell_counts, 86 if has_damping else 38, conditioning_dim=6 if has_damping else 5
+            ).to(dtype=dtype)
+        )
+        schema = (self.network.state_feature_dim, self.network.conditioning_dim)
         if (
             self.network.cell_counts != rest.cell_counts
-            or self.network.state_feature_dim != 38
-            or self.network.conditioning_dim != 5
+            or schema not in ((38, 5), (86, 6))
             or self.network.edge_input_dim != 24
         ):
-            raise ValueError("network must match the grid and have 38 state, 5 conditioning, and 24 edge inputs")
+            raise ValueError("network must match the grid and have 38/5 or 86/6 state/conditioning and 24 edge inputs")
+        self._damping_features = schema == (86, 6)
+        if has_damping and not self._damping_features:
+            raise ValueError("nonzero damping requires a network with 86 state and 6 conditioning inputs")
         device = next(self.network.parameters()).device
         if device.type not in ("cpu", "cuda") or any(
             p.device != device or p.dtype != dtype for p in self.network.parameters()
@@ -134,6 +152,10 @@ class LearnedHexSolverStep(nn.Module):
             ),
             dim=-1,
         )
+        if self._damping_features:
+            conditioning = torch.cat(
+                (conditioning, (self.energy.damping / (mu * self.energy.time_step)).log1p()[:, None]), -1
+            )
         self.register_buffer("conditioning", conditioning)
         self.to(device=device)
 
@@ -157,13 +179,20 @@ class LearnedHexSolverStep(nn.Module):
             raise ValueError("frames and rigid rotations must have positive determinant")
 
     def prepare_inputs(
-        self, positions: Tensor, inertial_prediction: Tensor, *, frames: Tensor | None = None
+        self,
+        positions: Tensor,
+        inertial_prediction: Tensor,
+        *,
+        previous_positions: Tensor | None = None,
+        frames: Tensor | None = None,
     ) -> LearnedHexInputs:
         """Encode current corners and unchanged physical Y into network inputs.
 
         Args:
             positions: Candidate world corner positions [m], shape [B,P,3].
             inertial_prediction: Physical free-motion prediction [m], [B,P,3].
+            previous_positions: Physical-step start [m], [B,P,3], held fixed
+                across optimizer iterations. Required for damping features.
             frames: Optional precomputed rotations [B,C,3,3]. They are detached;
                 supply these to hold the same frame during geometry checks.
 
@@ -174,6 +203,13 @@ class LearnedHexSolverStep(nn.Module):
         self._check_positions(inertial_prediction, "inertial_prediction")
         if inertial_prediction.shape != positions.shape:
             raise ValueError("positions and inertial_prediction must share a batch shape")
+        if previous_positions is None:
+            if self._damping_features:
+                raise ValueError("previous_positions is required for damping features")
+        else:
+            self._check_positions(previous_positions, "previous_positions")
+            if previous_positions.shape != positions.shape:
+                raise ValueError("positions and previous_positions must share a batch shape")
         corners = positions[:, self.cell_corner_indices]
         deformation = torch.einsum("bcki,kj->bcij", corners - corners[:, :, :1], self.center_gradients)
         if frames is None:
@@ -191,6 +227,11 @@ class LearnedHexSolverStep(nn.Module):
         local_offsets = torch.einsum("bcij,bckj->bcki", frames.transpose(-1, -2), offsets) / self.cell_size
         batch = positions.shape[0]
         state = torch.cat((local_offsets.flatten(-2), self.boundary_features[None].expand(batch, -1, -1)), dim=-1)
+        if self._damping_features:
+            difference = damping_metric_difference(
+                positions, previous_positions, self.cell_corner_indices, self.energy.shape_gradients
+            )
+            state = torch.cat((state, pack_damping_features(difference)), dim=-1)
         edges = {
             hop: build_edge_features(
                 self.rest_centers, corners.mean(-2), frames, axes, self.cell_size, *self.network.neighborhood(hop)
@@ -204,6 +245,7 @@ class LearnedHexSolverStep(nn.Module):
         positions: Tensor,
         inertial_prediction: Tensor,
         *,
+        previous_positions: Tensor | None = None,
         fixed_positions: Tensor | None = None,
         frames: Tensor | None = None,
         rigid_delta_rotation: Tensor | None = None,
@@ -215,6 +257,7 @@ class LearnedHexSolverStep(nn.Module):
         Args:
             positions: Current candidate [m], shape [B,P,3].
             inertial_prediction: Unchanged physical Y [m], shape [B,P,3].
+            previous_positions: Unchanged physical-step start [m], [B,P,3].
             fixed_positions: Prescribed positions [m], [B,K,3]; defaults to rest.
             frames: Optional frozen input frames [B,C,3,3], otherwise extracted.
             rigid_delta_rotation: Optional world rotation [B,3,3] carrying the
@@ -222,9 +265,10 @@ class LearnedHexSolverStep(nn.Module):
             rigid_delta_translation: Optional world translation [m], [B,3], in
                 the same map x -> Q*x+t. Pins set the final translation in this
                 clamped baseline, so this t cancels from the exact minimizer.
-            detach_energy_target: Treat the inertial predictor as fixed only
-                in the physical energy. Its network-feature path remains
-                differentiable, including in consecutive physical steps.
+            detach_energy_target: Treat the inertial predictor and physical-start
+                positions as fixed only in the physical energy. Their network
+                feature paths remain differentiable, including in consecutive
+                physical steps.
 
         Returns:
             Proposed global positions and per-object physical energy terms.
@@ -232,7 +276,9 @@ class LearnedHexSolverStep(nn.Module):
         """
         if not isinstance(detach_energy_target, bool):
             raise TypeError("detach_energy_target must be boolean")
-        inputs = self.prepare_inputs(positions, inertial_prediction, frames=frames)
+        inputs = self.prepare_inputs(
+            positions, inertial_prediction, previous_positions=previous_positions, frames=frames
+        )
         prediction = self.network(inputs.local_axes, inputs.state_features, inputs.edge_features, inputs.conditioning)
         world_increment = inputs.frames @ (prediction.local_target_axes - inputs.local_axes)
         base = positions
@@ -254,7 +300,12 @@ class LearnedHexSolverStep(nn.Module):
             fixed_positions = self.rest_positions[self.fixed_indices][None].expand(batch, -1, -1)
         fused = self.fusion.fuse(base, world_increment, fixed_positions)
         energy_target = inertial_prediction.detach() if detach_energy_target else inertial_prediction
-        loss = self.energy(fused, energy_target)
+        energy_previous = (
+            previous_positions.detach()
+            if detach_energy_target and previous_positions is not None
+            else previous_positions
+        )
+        loss = self.energy(fused, energy_target, previous_positions=energy_previous)
         return LearnedHexStepOutput(
             fused, prediction.local_target_axes, prediction.axis_correction, prediction.step_size, inputs.frames, loss
         )

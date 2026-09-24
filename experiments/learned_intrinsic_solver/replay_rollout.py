@@ -43,12 +43,13 @@ def physical_context(rollout: PhysicalRollout) -> dict:
     density-derived mass can differ by float32 roundtrip through Model metadata.
     Network parameters and architecture are intentionally absent: a retained
     physical state can be re-solved with a different current network.
+    Schema 2 includes absolute per-cell damping [Pa*s].
     """
     step = rollout.unrolled.step
     rest = rollout.solver._rest
     return {
         "metadata": {
-            "schema_version": 1,
+            "schema_version": 2,
             "cell_counts": list(rest.cell_counts),
             "cell_size": float(rest.cell_size),
             "origin": [float(value) for value in rest.corner_rest_positions[0]],
@@ -61,16 +62,41 @@ def physical_context(rollout: PhysicalRollout) -> dict:
             "lame_lambda": _cpu_array(step.energy.lame_lambda),
             "lame_mu": _cpu_array(step.energy.lame_mu),
             "density": _cpu_array(step.energy.density),
+            "damping": _cpu_array(step.energy.damping),
             "lumped_mass": _cpu_array(step.energy.lumped_mass),
         },
     }
 
 
+def _context_damping(context: Mapping) -> np.ndarray:
+    """Read explicit viscosity, interpreting legacy context schema 1 as zero."""
+    metadata, arrays = context["metadata"], context["arrays"]
+    version = metadata.get("schema_version")
+    if version not in (1, 2):
+        raise ValueError("unsupported physical replay context schema")
+    if version == 2 and "damping" not in arrays:
+        raise ValueError("physical replay context schema 2 requires damping")
+    material = np.asarray(arrays["lame_mu"])
+    damping = np.asarray(arrays.get("damping", np.zeros_like(material)))
+    if (
+        damping.shape != material.shape
+        or damping.dtype.kind not in "fiu"
+        or not np.isfinite(damping).all()
+        or (damping < 0).any()
+    ):
+        raise ValueError("replay damping must be finite and nonnegative with one value per cell")
+    if version == 1 and (damping != 0).any():
+        raise ValueError("legacy replay context schema 1 only supports zero damping")
+    return damping
+
+
 def _verify_context(rollout: PhysicalRollout, context: Mapping) -> None:
     expected = physical_context(rollout)
     metadata = context["metadata"]
-    arrays = context["arrays"]
+    arrays = {**context["arrays"], "damping": _context_damping(context)}
     for key, value in expected["metadata"].items():
+        if key == "schema_version":
+            continue
         if metadata.get(key) != value:
             raise ValueError(f"replay context {key} differs from the supplied PhysicalRollout")
     for key, value in expected["arrays"].items():
@@ -182,10 +208,11 @@ def build_replay_rollout(
     may deliberately differ from the source; source policy is in each state.
     The saved native masses override rounding differences in density-derived
     mass after checking that they are physically consistent.
+    Schema 1 contexts without damping rebuild zero viscosity; schema 2 requires
+    an explicit per-cell coefficient and never supplies a missing default.
     """
     metadata, arrays = context["metadata"], context["arrays"]
-    if metadata.get("schema_version") != 1:
-        raise ValueError("unsupported physical replay context schema")
+    damping = _context_damping(context)
     rest = generate_cuboid(
         tuple(metadata["cell_counts"]),
         cell_size=float(metadata["cell_size"]),
@@ -201,6 +228,7 @@ def build_replay_rollout(
         lame_lambda=np.asarray(arrays["lame_lambda"], dtype=np.float32),
         lame_mu=np.asarray(arrays["lame_mu"], dtype=np.float32),
         density=np.asarray(arrays["density"], dtype=np.float32),
+        damping=np.asarray(damping, dtype=np.float32),
         gravity=tuple(gravity),
     )
     saved_mass = np.asarray(arrays["lumped_mass"], dtype=np.float32)

@@ -436,8 +436,8 @@ generator configuration/version, seed schedule and active trajectory and
 optimizer states, including sampled K/H and progress counters.
 The implemented epoch limit defaults to 500, with validation-based
 learning-rate reductions and explicit converged/stalled/epoch-limit statuses.
-This is a configurable implementation default, not authorization to run a
-500-epoch campaign. A training preparation or learned-proposal failure stops
+The user authorized a new four-GPU campaign on 2026-09-24 with this
+500-epoch cap and the existing validation-based stopping policy. A training preparation or learned-proposal failure stops
 the run and saves a per-rank failure diagnostic with active inputs, contexts,
 model and optimizer state; no sample is silently replaced to hide a failure.
 The normal live stream is not an intermediate-state archive.
@@ -487,6 +487,81 @@ Verified on 2026-09-24. See [commands, artifacts and limitations](v2-implementat
 | Batch capacity and timing | Batch 16 on one L40: peak 4.76 GiB, approximately 0.62 s forward/backward/Adam excluding setup, input preparation and validation; not a maximum-batch search |
 | Candidate probabilities, stage thresholds and campaign budget | Configurable provisional defaults remain subject to campaign review |
 
-No new training campaign has been launched. Bounded verification uses disposable
+The table above predates damping. Bounded verification uses disposable
 weights and does not demonstrate convergence, H=128 physical stability,
 inversion recovery or resting equilibrium.
+
+
+## Absolute VBD damping and authorized campaign (2026-09-24)
+
+Each new trajectory independently samples an absolute solid viscosity `eta`
+log-uniformly from **10 to 1,000 Pa·s**, fixed through all inner iterations and
+physical steps. This is 0.1–10 times our chosen reference of 100 Pa·s. Newton's
+builder default is zero; there is no universal nonzero default. The earlier
+proposal to multiply `0.002 seconds × mu` is superseded by absolute sampling.
+Changing Young's modulus, Poisson's ratio, or density does not change the
+sampled viscosity at a fixed seed. The separate stream is
+`[material_seed, 1709]`; the existing geometry, velocity and elastic draws are
+unchanged. Library sampling keeps zero damping by default for legacy callers;
+the new mixed trainer explicitly enables the absolute range.
+
+At each of eight hex Gauss points, compute `C = F.T @ F` at the candidate and
+`C_start` at the **physical timestep's starting shape**. Add to the objective:
+
+```
+damping_energy = sum(cell, point) volume_weight * eta / (2 * dt)
+                 * squared_Frobenius_norm(C - C_start)
+```
+
+Both off-diagonal copies count in the matrix norm. The closed-form stress is
+`2 * eta / dt * F @ (C - C_start)`. Its negative spatial energy gradient matches
+Newton VBD's solid damping force. VBD uses a Gauss–Newton Hessian approximation;
+we differentiate the energy and do not claim equality of exact Hessians.
+Damping vanishes for finite rigid motion of an already deformed shape. The
+physical anchor stays unchanged during an inner solve and advances exactly
+once per physical timestep. Original inertial prediction Y and CPU fusion
+factors are unchanged; there is no second explicit damping term in Y.
+
+The damped feature schema adds six packed entries of `C - C_start` at each
+Gauss point (diagonals, then sqrt(2) times xy/xz/yz), giving **48 extra state
+channels, 86 total**, with the same nine local axes. FiLM adds
+`log1p(eta / (mu * dt))`, giving **six conditioning channels**; this input
+normalization does not rescale the physical coefficient. Edge features,
+27-neighbor mask, one transformer layer [1], and hidden widths are unchanged.
+The new schema is fixed even for a zero-viscosity sample. Legacy checkpoints
+explicitly retain 38/5 inputs and zero damping; their weights and Adam state
+are never silently reshaped into the new network.
+
+Launch configuration remains four GPUs, batch 16 each (global 64), pool 64 per
+rank, 8,192 global queries per epoch, up to 500 epochs, K up to 32 and H up to 128
+under the existing curriculum. Float32, detached optimizer steps, PARDISO,
+held-out validation and failure retention remain as described above. Live
+progress includes within-epoch updates and phase, completed-epoch training
+loss, validation mean/median/max relative-energy curves, curriculum and failure
+status. Public publication excludes checkpoints and raw physical states.
+The campaign starts only after damping regression, gradient and four-GPU
+checks, with a recorded source commit and resumable checkpoints.
+
+
+Damping launch verification completed on 2026-09-24:
+
+- Complete experiment suite: **316 tests passed in 57.637 s**, on a claimed L40
+  with CPU and CUDA cases enabled. Includes seeded absolute sampling, native
+  Warp VBD force comparison, float64 gradient checks, single/mixed parameter
+  gradient parity, fixed physical anchors, strict legacy checkpoint migration,
+  exact CPU resume, damped replay, and public report isolation.
+- Four GPUs, full 10×10×40 grids, batch 16 per rank: one bounded Adam update plus
+  four held-out cases through 100 optimizer iterations and two physical steps;
+  no invalid validation cases. Peak allocated memory 4.79 GiB per rank.
+- Independent concatenated global batch 64 reference: maximum parameter error
+  `2.183e-11`, Adam-state relative L2 error `3.217e-7`; all ranks agree. The
+  update's nonzero gradient norm was 12.95. Valid geometry does not establish
+  descent: after only this one update the 100-iteration mean relative energy
+  was 346.3. The campaign must learn that behavior; curriculum gates remain.
+- Report page and bounded mirroring tests pass. Public URL (no hostname dot):
+  https://ankachen.com/artifacts/learned-intrinsic-training-v2/index.html
+
+Run output is `generated/training_v2_damping_20260924`; the complete launch
+configuration is `generated/training_v2_damping_config.json`. The private
+compact handoff is `generated/training_v2_handoff.md`. The campaign uses a new
+network and Adam state; the one-update verification weights are discarded.

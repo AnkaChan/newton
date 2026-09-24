@@ -33,12 +33,12 @@ class _AnalyticStep(torch.nn.Module):
         self.register_buffer("center_gradients", (2 * self.rest - 1) / 4)
         self.network = torch.nn.Linear(1, 1)
 
-    def energy(self, positions, inertial_prediction, context_ids):
+    def energy(self, positions, inertial_prediction, context_ids, *, previous_positions=None):
         free = positions[:, 7, 0] - 1
         pinned = positions[:, 0, 0] - self.pin_target
         return SimpleNamespace(total=free.square() + pinned.square())
 
-    def forward(self, positions, inertial_prediction, context_ids, *, fixed_positions):
+    def forward(self, positions, inertial_prediction, context_ids, *, fixed_positions, previous_positions=None):
         self.batch_sizes.append(len(context_ids))
         for identity in context_ids:
             context = self.contexts[identity]
@@ -73,6 +73,7 @@ class _Factory:
             "context_id": identity,
             "candidate": positions,
             "inertial_prediction": positions.clone(),
+            "physical_positions": positions.clone(),
             "fixed_positions": positions[self.step.fixed_indices].clone(),
         }
 

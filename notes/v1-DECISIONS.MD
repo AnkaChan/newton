@@ -1541,3 +1541,17 @@ Use the [V2 verification checklist](v2-plan.md#current-implementation-verificati
 and [implementation progress](v2-implementation-plan.md) for current results.
 Historical four-GPU or data-generator tests do not establish correctness or
 convergence of this new mixed pipeline. Campaign launch remains separate.
+
+
+## 40. Absolute VBD damping and new campaign authorization (2026-09-24)
+
+Use independent log-uniform absolute viscosity 10–1,000 Pa·s, held per trajectory.
+The reference 100 Pa·s is our sampling choice, not Newton's zero builder default.
+This supersedes the proposed `0.002s × mu` material-dependent sampler. Integrate
+VBD metric damping over all 8 hex Gauss points against the fixed physical-step
+start, preserving Y and the fusion matrix. Add 48 metric-difference features
+and one dimensionless damping conditioning channel (86 state/6 FiLM); explicitly
+retain legacy 38/5 zero-damping checkpoint behavior. The user authorized a new
+four-GPU campaign and a live progress webpage after a compact handoff. See
+[v2-plan.md](v2-plan.md#absolute-vbd-damping-and-authorized-campaign-2026-09-24)
+for the full law, sampling and launch contract.

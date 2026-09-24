@@ -11,9 +11,7 @@ ready queries; differentiable CPU fusion still synchronizes each proposal.
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
-import io
 import json
 import math
 import os
@@ -27,6 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from .material_sampling import MaterialRanges
+from .mixed_report import write_progress
 from .mixed_validation import validate as _validate
 from .mixed_validation import validation_chunk as _validation_chunk  # noqa: F401 -- Keep the existing test seam.
 
@@ -68,6 +67,10 @@ class MixedTrainConfig:
     youngs_modulus_range: tuple[float, float] = (1e3, 1e6)
     poissons_ratio_range: tuple[float, float] = (0.2, 0.49)
     density_range: tuple[float, float] = (100.0, 10000.0)
+    damping_range: tuple[float, float] = (10.0, 1000.0)
+    """Independent log-uniform absolute VBD viscosity [Pa·s]."""
+    feature_schema_version: int = 2
+    """One is legacy 38/5 inputs; two adds metric damping state (86/6)."""
     strength_range: tuple[float, float] = (0.02, 0.1)
     velocity_dt_range: tuple[float, float] = (0.0, 0.1)
     perturbation_scale_range: tuple[float, float] = (0.0, 1.0)
@@ -88,6 +91,7 @@ class MixedTrainConfig:
             "youngs_modulus_range",
             "poissons_ratio_range",
             "density_range",
+            "damping_range",
             "strength_range",
             "velocity_dt_range",
             "perturbation_scale_range",
@@ -148,10 +152,35 @@ class MixedTrainConfig:
             if len(bounds) != 2 or not all(math.isfinite(v) for v in bounds) or not 0 <= bounds[0] <= bounds[1]:
                 raise ValueError(f"invalid {name}")
         self.material_ranges()
+        if isinstance(self.feature_schema_version, bool) or self.feature_schema_version not in (1, 2):
+            raise ValueError("feature_schema_version must be 1 or 2")
+        if self.feature_schema_version == 1 and self.damping_range != (0.0, 0.0):
+            raise ValueError("legacy feature schema requires zero damping")
+
+    @property
+    def state_feature_dim(self):
+        """Return the fixed state width, independent of individual damping draws."""
+        return 86 if self.feature_schema_version == 2 else 38
+
+    @property
+    def conditioning_dim(self):
+        """Return the fixed FiLM width for the selected checkpoint schema."""
+        return 6 if self.feature_schema_version == 2 else 5
+
+    @classmethod
+    def from_checkpoint_config(cls, values):
+        """Interpret pre-damping checkpoints explicitly as legacy zero viscosity."""
+        values = dict(values)
+        if "feature_schema_version" not in values:
+            values["feature_schema_version"] = 1
+            values.setdefault("damping_range", (0.0, 0.0))
+        return cls(**values)
 
     def material_ranges(self):
-        """Return the independent E, nu, rho sampling bounds."""
-        return MaterialRanges(self.youngs_modulus_range, self.poissons_ratio_range, self.density_range)
+        """Return independent E, nu, rho, and absolute viscosity sampling bounds."""
+        return MaterialRanges(
+            self.youngs_modulus_range, self.poissons_ratio_range, self.density_range, self.damping_range
+        )
 
 
 def local_objective(after, initial, previous, *, increase_weight=1.0):
@@ -278,7 +307,7 @@ def _batch(records, device):
     payloads = [getattr(record, "payload", record) for record in records]
     values = {
         name: torch.stack([p[name].detach().to(device) for p in payloads])
-        for name in ("candidate", "inertial_prediction", "fixed_positions")
+        for name in ("candidate", "inertial_prediction", "fixed_positions", "physical_positions")
     }
     values["context_ids"] = tuple(p["context_id"] for p in payloads)
     return values
@@ -288,7 +317,11 @@ def _checked_forward(module, step, batch):
     import torch
 
     result = module(
-        batch["candidate"], batch["inertial_prediction"], batch["context_ids"], fixed_positions=batch["fixed_positions"]
+        batch["candidate"],
+        batch["inertial_prediction"],
+        batch["context_ids"],
+        fixed_positions=batch["fixed_positions"],
+        previous_positions=batch["physical_positions"],
     )
     if not torch.isfinite(result.loss.total).all() or not torch.isfinite(result.positions).all():
         raise ValueError("nonfinite learned proposal; trajectory retained as a failure")
@@ -305,44 +338,9 @@ def _checked_forward(module, step, batch):
 
 
 def _write_report(output, report):
-    from .train_smoke import _atomic_json  # noqa: PLC0415 -- Optional training boundary.
+    from .mixed_report import write_mixed_report  # noqa: PLC0415 -- Optional training boundary.
 
-    _atomic_json(output / "report.json", report)
-    for name, rows, columns in (
-        ("updates", report["updates"], ("update", "epoch", "loss", "before_joule", "after_joule")),
-        ("epochs", report["epochs"], ("epoch", "loss", "query_count", "seconds")),
-    ):
-        buffer = io.StringIO()
-        writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-        (output / f"{name}.csv").write_text(buffer.getvalue())
-    rows = report["epochs"]
-    values = [r["loss"] for r in rows]
-    lower, upper = (min(values), max(values)) if values else (-1, 1)
-    width = max(upper - lower, 1e-6)
-    points = " ".join(
-        f"{50 + 700 * i / max(len(values) - 1, 1):.2f},{250 - 200 * (v - lower) / width:.2f}"
-        for i, v in enumerate(values)
-    )
-    (output / "loss_curve.svg").write_text(
-        '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="300" viewBox="0 0 800 300">'
-        '<rect width="800" height="300" fill="white"/><text x="35" y="22">Mean local training loss vs epoch</text>'
-        f'<text x="5" y="55">{upper:.3g}</text><text x="5" y="255">{lower:.3g}</text>'
-        f'<polyline points="{points}" fill="none" stroke="#2468b0" stroke-width="2"/></svg>'
-    )
-    (output / "index.html").write_text("""<!doctype html><meta charset="utf-8"><title>V2 mixed-pool training</title>
-<style>body{font:16px system-ui;max-width:1000px;margin:3em auto;padding:0 1em}canvas{width:100%;height:320px}pre{white-space:pre-wrap}</style>
-<h1>V2 mixed-pool training</h1><p>One detached proposal per member, one Adam update per batch.
-Epochs count queries across all ranks, not unique initial states. Training curves mix different solver ages.
-Validation weights and initial seeds are fixed throughout each evaluated trajectory.</p>
-<img src="loss_curve.svg" style="width:100%"><h2>Validation relative energy</h2>
-<p>Latest epoch: mean (blue), median (green), maximum (red), through the configured optimizer iterations.
-Optimizer failures invalidate curves from the failed iteration onward; physical rollout failures and near-zero energies are reported separately.</p><canvas id="curve" width="1000" height="320"></canvas>
-<pre id="status"></pre><a href="report.json">Full metrics</a> · <a href="updates.csv">Update losses</a> · <a href="epochs.csv">Epoch losses</a>
-<script>fetch('report.json').then(r=>r.json()).then(r=>{let e=r.epochs.at(-1);document.querySelector('#status').textContent=JSON.stringify({status:r.status,updates:r.completed_updates,epoch:e},null,2);if(!e)return;
-let rows=e.validation.relative_energy,c=document.querySelector('canvas').getContext('2d'),v=rows.flatMap(r=>[r.mean,r.median,r.max]).filter(Number.isFinite),hi=Math.max(1,...v),lo=Math.min(0,...v);
-c.fillText('Relative energy',10,15);[['mean','#2468b0'],['median','#268b52'],['max','#b92d36']].forEach(([k,color])=>{c.beginPath();c.strokeStyle=color;let open=false;rows.forEach((r,i)=>{if(r[k]===null){open=false;return}let x=40+i*920/Math.max(1,rows.length-1),y=280-(r[k]-lo)*250/(hi-lo);if(open)c.lineTo(x,y);else c.moveTo(x,y);open=true});c.stroke()})})</script>""")
+    write_mixed_report(output, report)
 
 
 def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None = None):
@@ -372,7 +370,8 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         if saved.get("format") != "mixed_pool_v2" or saved["world_size"] != world_size:
             raise ValueError("incompatible checkpoint format or rank count")
         allowed = {"max_epochs", "verbose", "early_stopping"}
-        if any(saved["config"].get(k) != v for k, v in asdict(config).items() if k not in allowed):
+        saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
+        if any(saved_config.get(k) != v for k, v in asdict(config).items() if k not in allowed):
             raise ValueError("resume configuration differs from saved physical/training configuration")
         if config.max_epochs < saved["report"]["completed_epochs"]:
             raise ValueError("max_epochs precedes the checkpoint")
@@ -399,7 +398,8 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == rest.corner_rest_positions[:, 2].min())
     network = IntrinsicSolverNetwork(
         config.cell_counts,
-        38,
+        config.state_feature_dim,
+        conditioning_dim=config.conditioning_dim,
         hidden_dim=config.hidden_dim,
         edge_hidden_dim=config.edge_hidden_dim,
         num_heads=config.num_heads,
@@ -447,6 +447,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 torch.cuda.set_rng_state(state["cuda_rng"], device)
             report = saved["report"]
             report["config"] = asdict(config)
+            report["status"] = "running"
         else:
             counts = curriculum.available_counts
             pool = ActiveTrajectoryPool(
@@ -478,6 +479,14 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         )
         if rank == 0:
             (output / "checkpoints").mkdir(parents=True, exist_ok=True)
+            write_progress(
+                output,
+                report,
+                phase="initializing",
+                epoch=report["completed_epochs"] + 1,
+                available_K=curriculum.available_counts[0],
+                available_H=curriculum.available_counts[1],
+            )
 
         def checkpoint(name):
             checkpoint_error = None
@@ -522,12 +531,18 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
 
         if not saved:
             checkpoint("initial.pt")
+        if rank == 0:
+            _write_report(output, report)
         for epoch in range(report["completed_epochs"] + 1, config.max_epochs + 1):
             epoch_start = time.perf_counter()
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
             counts = curriculum.available_counts
             pool.set_available_counts(*counts)
+            if rank == 0:
+                write_progress(
+                    output, report, phase="training", epoch=epoch, available_K=counts[0], available_H=counts[1]
+                )
             totals = Counter()
             budgets, ages, steps, materials, perturbations = Counter(), Counter(), Counter(), [], []
             timings = Counter()
@@ -539,7 +554,10 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                     batch = _batch(records, device)
                     with torch.no_grad():
                         previous = step.energy(
-                            batch["candidate"], batch["inertial_prediction"], batch["context_ids"]
+                            batch["candidate"],
+                            batch["inertial_prediction"],
+                            batch["context_ids"],
+                            previous_positions=batch["physical_positions"],
                         ).total
                     initial = torch.stack(
                         [
@@ -605,7 +623,11 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                     ages[str(record.inner_iteration)] += 1
                     steps[str(record.physical_step)] += 1
                     materials.append(
-                        {**record.payload["context_spec"], **record.payload["metadata"]["material_parameters"]}
+                        {
+                            "damping": 0.0,
+                            **record.payload["context_spec"],
+                            **record.payload["metadata"]["material_parameters"],
+                        }
                     )
                     perturbations.append(record.payload["metadata"]["perturbation_scale"])
                     record.payload.update(
@@ -614,7 +636,15 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                         energy_previous=after[i].detach(),
                     )
                 pool.finish_batch(records)
+                if rank == 0 and report["completed_updates"] % 8 == 0:
+                    write_progress(
+                        output, report, phase="training", epoch=epoch, available_K=counts[0], available_H=counts[1]
+                    )
                 del result, loss, losses, records, batch, initial, previous, after
+            if rank == 0:
+                write_progress(
+                    output, report, phase="validation", epoch=epoch, available_K=counts[0], available_H=counts[1]
+                )
             validation = _validate(step, validation_factory, config, device, rank, world_size)
             curriculum_decision = curriculum.observe(validation)
             decision = controller.observe(
@@ -637,14 +667,16 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 ("youngs_modulus", config.youngs_modulus_range, True),
                 ("poissons_ratio", config.poissons_ratio_range, False),
                 ("density", config.density_range, True),
+                ("damping", config.damping_range, True),
             ):
-                edges = np.geomspace(*bounds, 11) if logarithmic else np.linspace(*bounds, 11)
                 # Constant configured materials still need nonzero histogram bins.
                 if bounds[0] == bounds[1]:
                     edges = np.linspace(bounds[0] - 0.5, bounds[1] + 0.5, 11)
+                else:
+                    edges = np.geomspace(*bounds, 11) if logarithmic else np.linspace(*bounds, 11)
                 diagnostics["material_histograms"][name] = {
                     "edges": edges.tolist(),
-                    "counts": np.histogram([m[name] for m in materials], bins=edges)[0].tolist(),
+                    "counts": np.histogram([m.get(name, 0.0) for m in materials], bins=edges)[0].tolist(),
                 }
             rank_diagnostics = [None] * world_size
             if world_size > 1:
@@ -690,6 +722,15 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             if decision["stop"]:
                 break
         checkpoint("final.pt")
+        if rank == 0:
+            write_progress(
+                output,
+                report,
+                phase="complete",
+                epoch=report["completed_epochs"],
+                available_K=curriculum.available_counts[0],
+                available_H=curriculum.available_counts[1],
+            )
         return report
     except BaseException as error:
         output.mkdir(parents=True, exist_ok=True)
@@ -715,6 +756,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             if "report" in locals():
                 report["status"] = "failed"
                 _write_report(output, report)
+                write_progress(output, report, phase="failed", epoch=locals().get("epoch", 0))
         raise
     finally:
         error_in_flight = sys.exc_info()[0] is not None
@@ -747,7 +789,11 @@ def _main():
     if args.resume:
         import torch
 
-        values = torch.load(args.resume, map_location="cpu", weights_only=False)["config"]
+        values = asdict(
+            MixedTrainConfig.from_checkpoint_config(
+                torch.load(args.resume, map_location="cpu", weights_only=False)["config"]
+            )
+        )
     if args.config:
         values.update(json.loads(args.config.read_text()))
     if args.max_epochs is not None:

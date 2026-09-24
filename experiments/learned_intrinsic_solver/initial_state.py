@@ -192,12 +192,13 @@ class InitialStateAugmenter:
         material = sample_material(material_seed, ranges=self.material_ranges)
         metadata = {
             "schema_version": 1,
-            "generator_version": _GENERATOR_VERSION,
+            "generator_version": "initial_state_v4" if material.damping else _GENERATOR_VERSION,
             "physical_seed": current,
             "master_seed": self.master_seed,
             "physical_seed_sequence": physical_stream,
             "material_seed_sequence": material_stream,
             "material_seed": material_seed,
+            "damping_seed_sequence": [material_seed, 1709],
             "perturbation_seed_sequence": perturbation_stream,
             "cell_counts": list(rest.cell_counts),
             "cell_size": rest.cell_size,

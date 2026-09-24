@@ -15,7 +15,7 @@ __all__ = ["MaterialRanges", "MaterialSample", "lame_from_youngs_modulus", "samp
 
 @dataclass(frozen=True)
 class MaterialRanges:
-    """Young's modulus [Pa], Poisson's ratio, and density [kg/m³] bounds."""
+    """Experimental elastic, density, and trajectory viscosity sampling bounds."""
 
     youngs_modulus: tuple[float, float] = (1e3, 1e6)
     """Log-uniform Young's modulus bounds [Pa]."""
@@ -26,9 +26,12 @@ class MaterialRanges:
     density: tuple[float, float] = (100.0, 10000.0)
     """Rest density bounds [kg/m³]."""
 
+    damping: tuple[float, float] = (0.0, 0.0)
+    """Log-uniform absolute viscosity bounds [Pa·s]; (0, 0) disables damping."""
+
     def __post_init__(self) -> None:
         """Reject bounds outside the compressible nonnegative-Lamé domain."""
-        for name in ("youngs_modulus", "poissons_ratio", "density"):
+        for name in ("youngs_modulus", "poissons_ratio", "density", "damping"):
             bounds = getattr(self, name)
             if (
                 not isinstance(bounds, tuple)
@@ -43,6 +46,8 @@ class MaterialRanges:
             if name == "poissons_ratio":
                 if bounds[0] < 0 or bounds[1] >= 0.5:
                     raise ValueError("poissons_ratio bounds must satisfy 0 <= lower <= upper < 0.5")
+            elif name == "damping" and bounds == (0.0, 0.0):
+                continue
             elif bounds[0] <= 0:
                 raise ValueError(f"{name} bounds must be positive")
 
@@ -59,6 +64,9 @@ class MaterialSample:
 
     density: float
     """Rest density [kg/m³]."""
+
+    damping: float = 0.0
+    """VBD solid viscosity η [Pa·s], held fixed throughout the trajectory."""
 
     @property
     def youngs_modulus(self) -> float:
@@ -107,7 +115,10 @@ def sample_material(seed: int, *, ranges: MaterialRanges = _DEFAULT_RANGES) -> M
     """Draw one reproducible material, held fixed over a physical trajectory.
 
     Young's modulus and density are log-uniform; Poisson's ratio is linear-
-    uniform. The derived Lamé scalars can be passed to ``build_newton_hex_model``.
+    uniform. Viscosity uses a separate ``[seed, 1709]`` stream, preserving the
+    existing elastic/density draws. It is independent of stiffness: the VBD
+    kernel consumes this absolute coefficient [Pa·s] directly. All sampled
+    fields can be passed to ``build_newton_hex_model``.
 
     Args:
         seed: Nonnegative trajectory material seed.
@@ -131,8 +142,13 @@ def sample_material(seed: int, *, ranges: MaterialRanges = _DEFAULT_RANGES) -> M
     lower_nu, upper_nu = ranges.poissons_ratio
     poissons_ratio = lower_nu + float(draws[1]) * (upper_nu - lower_nu)
     lame_lambda, lame_mu = lame_from_youngs_modulus(youngs_modulus, poissons_ratio)
+    damping = 0.0
+    if ranges.damping != (0.0, 0.0):
+        draw = np.random.default_rng(np.random.SeedSequence([seed, 1709])).random()
+        damping = log_uniform(ranges.damping, draw)
     return MaterialSample(
         lame_lambda=lame_lambda,
         lame_mu=lame_mu,
         density=log_uniform(ranges.density, draws[2]),
+        damping=damping,
     )

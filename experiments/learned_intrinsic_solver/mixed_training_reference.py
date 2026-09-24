@@ -178,6 +178,7 @@ def verify_first_update(
     from .data import generate_cuboid  # noqa: PLC0415 -- Keep optional execution imports local.
     from .mixed_physics import MixedHexSolverStep  # noqa: PLC0415
     from .network import IntrinsicSolverNetwork  # noqa: PLC0415
+    from .train_mixed import MixedTrainConfig  # noqa: PLC0415
 
     for value in (parameter_atol, parameter_rtol, moment_atol, moment_rtol):
         if not math.isfinite(value) or value < 0:
@@ -186,6 +187,7 @@ def verify_first_update(
     saved_after = torch.load(after, map_location="cpu", weights_only=False)
     records, specifications, rank_sizes, dispatches = _first_batches(saved_initial, saved_after)
     config = saved_initial["config"]
+    schema = MixedTrainConfig.from_checkpoint_config(config)
     target_device = torch.device(device)
     if target_device.type not in ("cpu", "cuda"):
         raise ValueError("reference device must be CPU or CUDA")
@@ -194,7 +196,8 @@ def verify_first_update(
         fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == rest.corner_rest_positions[:, 2].min())
         network = IntrinsicSolverNetwork(
             tuple(config["cell_counts"]),
-            38,
+            schema.state_feature_dim,
+            conditioning_dim=schema.conditioning_dim,
             hidden_dim=config["hidden_dim"],
             edge_hidden_dim=config["edge_hidden_dim"],
             num_heads=config["num_heads"],
@@ -216,15 +219,17 @@ def verify_first_update(
             for name, specification in specifications.items():
                 step.register_context(name, **specification)
             context_ids = tuple(record["context_id"] for record in records)
-            candidate, inertial, prescribed = (
+            candidate, inertial, prescribed, physical_start = (
                 torch.stack([record[name] for record in records]).to(target_device)
-                for name in ("candidate", "inertial_prediction", "fixed_positions")
+                for name in ("candidate", "inertial_prediction", "fixed_positions", "physical_positions")
             )
             optimizer = torch.optim.Adam(network.parameters(), lr=config["learning_rate"])
             with torch.no_grad():
-                original_energy = step.energy(candidate, inertial, context_ids).total
+                original_energy = step.energy(candidate, inertial, context_ids, previous_positions=physical_start).total
             with torch.autocast(device_type=target_device.type, enabled=False):
-                result = step(candidate, inertial, context_ids, fixed_positions=prescribed)
+                result = step(
+                    candidate, inertial, context_ids, fixed_positions=prescribed, previous_positions=physical_start
+                )
                 scale = original_energy.clamp_min(1.0)
                 # Independently state the first-update objective. E0 and previous
                 # energy coincide here, and neither has an autograd history.
@@ -278,7 +283,7 @@ def verify_first_update(
             moments["passed"] = moments["passed"] and moment_only["passed"]
             material_count = len(
                 {
-                    tuple(spec[name] for name in ("lame_lambda", "lame_mu", "density"))
+                    (*(spec[name] for name in ("lame_lambda", "lame_mu", "density")), spec.get("damping", 0.0))
                     for spec in specifications.values()
                 }
             )

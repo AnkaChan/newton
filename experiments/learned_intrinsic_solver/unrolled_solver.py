@@ -4,10 +4,10 @@
 """Differentiable inner learned-optimizer unroll for one physical objective.
 
 Experimental: every inner iteration uses the same original inertial predictor,
-prescribed corners, material, and timestep. This module does not advance a
-physical Newton State. Carried candidates are detached between iterations by
-default. ``backward_detached`` streams local backward passes on one device;
-its distributed trainer integration is separate work.
+physical-start positions, prescribed corners, material, and timestep. This
+module does not advance a physical Newton State. Carried candidates are detached
+between iterations by default. ``backward_detached`` streams local backward
+passes on one device; its distributed trainer integration is separate work.
 """
 
 from __future__ import annotations
@@ -92,11 +92,13 @@ class UnrolledHexSolver(nn.Module):
         inertial_prediction: Tensor,
         fixed_positions: Tensor,
         *,
+        previous_positions: Tensor | None,
         detach_energy_target: bool,
     ):
         result = self.step(
             positions,
             inertial_prediction,
+            previous_positions=previous_positions,
             fixed_positions=fixed_positions,
             detach_energy_target=detach_energy_target,
         )
@@ -107,6 +109,7 @@ class UnrolledHexSolver(nn.Module):
         positions: Tensor,
         inertial_prediction: Tensor,
         *,
+        previous_positions: Tensor | None = None,
         fixed_positions: Tensor | None = None,
         iterations: int = 1,
         detach_energy_target: bool = False,
@@ -120,11 +123,13 @@ class UnrolledHexSolver(nn.Module):
             positions: Initial candidate shared corners [m], [B,P,3].
             inertial_prediction: Original physical free-motion predictor [m],
                 [B,P,3], held unchanged throughout the unroll.
+            previous_positions: Original physical-step start [m], [B,P,3],
+                held unchanged throughout the unroll. Required with damping.
             fixed_positions: Prescribed corners [m], [B,F,3]; defaults to rest.
             iterations: Runtime learned proposal count in [1,max_iterations].
-            detach_energy_target: Detach Y only in physical energy terms while
-                retaining its network-feature path. The default preserves the
-                existing learned step's gradients.
+            detach_energy_target: Detach Y and previous_positions only in physical
+                energy terms while retaining their network-feature paths. The
+                default preserves the existing learned step's gradients.
 
         Raises:
             ValueError: Invalid count, shape, candidate, or physical energy.
@@ -132,6 +137,7 @@ class UnrolledHexSolver(nn.Module):
         return self._run(
             positions,
             inertial_prediction,
+            previous_positions=previous_positions,
             fixed_positions=fixed_positions,
             iterations=iterations,
             detach_energy_target=detach_energy_target,
@@ -143,6 +149,7 @@ class UnrolledHexSolver(nn.Module):
         positions: Tensor,
         inertial_prediction: Tensor,
         *,
+        previous_positions: Tensor | None = None,
         fixed_positions: Tensor | None = None,
         iterations: int = 1,
         detach_energy_target: bool = True,
@@ -166,6 +173,7 @@ class UnrolledHexSolver(nn.Module):
             positions: Initial shared corners [m], shape [B,P,3].
             inertial_prediction: Fixed original free-motion prediction [m],
                 shape [B,P,3]. Never recomputed between inner iterations.
+            previous_positions: Fixed physical-step start [m], [B,P,3].
             fixed_positions: Prescribed corners [m], shape [B,F,3].
             iterations: Proposal count in [1,max_iterations].
             detach_energy_target: Energy target policy, as in ``forward``.
@@ -181,6 +189,7 @@ class UnrolledHexSolver(nn.Module):
         return self._run(
             positions.detach(),
             inertial_prediction.detach(),
+            previous_positions=None if previous_positions is None else previous_positions.detach(),
             fixed_positions=None if fixed_positions is None else fixed_positions.detach(),
             iterations=iterations,
             detach_energy_target=detach_energy_target,
@@ -192,6 +201,7 @@ class UnrolledHexSolver(nn.Module):
         positions: Tensor,
         inertial_prediction: Tensor,
         *,
+        previous_positions: Tensor | None,
         fixed_positions: Tensor | None,
         iterations: int,
         detach_energy_target: bool,
@@ -208,7 +218,13 @@ class UnrolledHexSolver(nn.Module):
         if fixed_positions is None:
             fixed_positions = self.step.rest_positions[self.step.fixed_indices][None].expand(positions.shape[0], -1, -1)
         initial = self.step.energy(
-            positions, inertial_prediction.detach() if detach_energy_target else inertial_prediction
+            positions,
+            inertial_prediction.detach() if detach_energy_target else inertial_prediction,
+            previous_positions=(
+                previous_positions.detach()
+                if detach_energy_target and previous_positions is not None
+                else previous_positions
+            ),
         ).total
         reference = initial.detach()
         scale = reference.clamp_min(1.0)
@@ -219,16 +235,23 @@ class UnrolledHexSolver(nn.Module):
                 current = current.detach()
             if self.checkpoint_activations and torch.is_grad_enabled():
                 current, energy = checkpoint(
-                    lambda x, y, pins: self._one_step(x, y, pins, detach_energy_target=detach_energy_target),
+                    lambda x, y, pins, previous: self._one_step(
+                        x, y, pins, previous_positions=previous, detach_energy_target=detach_energy_target
+                    ),
                     current,
                     inertial_prediction,
                     fixed_positions,
+                    previous_positions,
                     use_reentrant=False,
                     preserve_rng_state=True,
                 )
             else:
                 current, energy = self._one_step(
-                    current, inertial_prediction, fixed_positions, detach_energy_target=detach_energy_target
+                    current,
+                    inertial_prediction,
+                    fixed_positions,
+                    previous_positions=previous_positions,
+                    detach_energy_target=detach_energy_target,
                 )
             if backward_each_iteration:
                 normalized = (energy - reference) / scale
