@@ -4,13 +4,11 @@
 """Differentiable physical windows around the fixed-Y learned inner unroll.
 
 Newton State and the CPU rigid proxy are deliberately outside the graph. Each
-physical step's X, V, inertial predictor Y, rigid-guided candidate, learned
-updates, and velocity advance otherwise stay connected inside a window. The
-default training policy freezes Y only when evaluating physical energy; Y is
-still an attached network feature. Windows detach X and V at their boundary so
-callers can backward each window and release its graph before asking for the
-next one. The default is one physical timestep per gradient window: train
-each solve independently on the physical state produced by the previous one.
+physical step keeps one inertial predictor Y. The inner solver detaches carried
+candidates by default; windows also detach X and V at physical boundaries.
+``backward_each_iteration=True`` streams local parameter gradients and returns
+detached diagnostics, ready for one caller-owned Adam update per timestep.
+Ordinary windows retain graphs for explicit backward and gradient comparisons.
 """
 
 from __future__ import annotations
@@ -161,6 +159,7 @@ class PhysicalRollout:
         gravity: Tensor,
         *,
         iterations: int,
+        backward_each_iteration: bool = False,
     ) -> PhysicalStep:
         step = self.unrolled.step
         acceleration = gravity + forces / step.energy.lumped_mass[None, :, None]
@@ -185,7 +184,8 @@ class PhysicalRollout:
         base = positions @ rotation.transpose(-1, -2) + translation[:, None, :]
         zero_increment = base.new_zeros((positions.shape[0], step.energy.cell_corner_indices.shape[0], 3, 3))
         initial = step.fusion.fuse(base, zero_increment, fixed_positions)
-        solved = self.unrolled(
+        solve = self.unrolled.backward_detached if backward_each_iteration else self.unrolled
+        solved = solve(
             initial,
             inertial,
             fixed_positions=fixed_positions,
@@ -219,6 +219,7 @@ class PhysicalRollout:
         forces: Tensor | None = None,
         fixed_positions: Tensor | None = None,
         on_step_start: Callable[[int, Tensor, Tensor, Tensor, Tensor, Tensor], None] | None = None,
+        backward_each_iteration: bool = False,
     ):
         """Yield consecutive differentiable windows, detaching X,V between them.
 
@@ -227,8 +228,16 @@ class PhysicalRollout:
         physical X unless supplied explicitly. Each step recomputes Y from its
         current X,V; every inner query within that step sees that same Y.
         The local objective is the mean over physical steps and batch samples.
-        By default, gradients stop at every physical timestep boundary while
-        all optimizer iterations inside that timestep remain connected.
+        By default, gradients stop at every physical timestep boundary; inner
+        candidates follow ``unrolled.detach_iterations`` (True by default).
+
+        With backward_each_iteration=True, each local loss/K is backpropagated
+        immediately. Only gradient_window=1 and detached inner iterations are
+        supported. Inputs are fixed physical data and outputs are detached
+        diagnostics. Zero parameter gradients before requesting a window,
+        then apply one optimizer step after it is yielded. Do not backward
+        its objective again. The iterator itself never updates weights.
+        This streaming mode is single-device; DDP integration is pending.
         Optional on_step_start receives (index, X, V, forces, pins, gravity)
         as detached, isolated tensor copies immediately before each solve.
         It can durably retain a failed solve's starting state without touching
@@ -236,10 +245,21 @@ class PhysicalRollout:
         """
         if on_step_start is not None and not callable(on_step_start):
             raise TypeError("on_step_start must be callable or None")
+        if not isinstance(backward_each_iteration, bool):
+            raise TypeError("backward_each_iteration must be boolean")
+        if backward_each_iteration:
+            if gradient_window != 1:
+                raise ValueError("streaming backward requires gradient_window=1")
+            if not self.unrolled.detach_iterations:
+                raise ValueError("streaming backward requires detach_iterations=True")
+            if not torch.is_grad_enabled():
+                raise RuntimeError("streaming backward requires grad mode")
         forces, pins = self._validate_inputs(
             positions, velocities, forces, fixed_positions, physical_steps, iterations, gradient_window
         )
         x, v = positions, velocities
+        if backward_each_iteration:
+            x, v, forces = x.detach(), v.detach(), forces.detach()
         del positions, velocities, fixed_positions
         for start in range(0, physical_steps, gradient_window):
             steps = []
@@ -256,7 +276,15 @@ class PhysicalRollout:
                         pins.detach().clone(),
                         gravity.detach().clone(),
                     )
-                result = self._advance(x, v, applied_forces, pins, gravity, iterations=iterations)
+                result = self._advance(
+                    x,
+                    v,
+                    applied_forces,
+                    pins,
+                    gravity,
+                    iterations=iterations,
+                    backward_each_iteration=backward_each_iteration,
+                )
                 steps.append(result)
                 x, v = result.positions, result.velocities
             per_sample = torch.stack([step.per_sample_objective for step in steps]).mean(dim=0)

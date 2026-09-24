@@ -526,6 +526,44 @@ fallback direction. Frozen-frame derivative checks replay the same recorded
 frame sequence in both perturbed unrolls, consistent with the chosen backward
 convention.
 
+### Detached training iterations
+
+The training helper `UnrolledHexSolver(step)` now defaults to
+`detach_iterations=True`: every inner update has its own network → fusion →
+energy gradient, while carried positions are detached before the next update.
+The ordinary `forward` returns an objective averaging all local losses; it
+retains their individual graphs until backward. Set `detach_iterations=False`
+explicitly for the connected comparison. The older `solver.solve()` diagnostic
+interface above retains its original connected behavior.
+
+For a single-device comparison that accumulates gradients across a whole
+physical solve, `unrolled.backward_detached(...)` immediately backpropagates
+each local loss divided by K and releases that iteration's saved activations.
+It treats input tensors as fixed physical data and returns detached diagnostics.
+It does not clear gradients or update weights. The caller owns Adam:
+
+```python
+optimizer.zero_grad(set_to_none=True)
+result = unrolled.backward_detached(current, inertial, fixed_positions=pins, iterations=K)
+optimizer.step()
+# result.objective is a detached report; do not backward it again.
+```
+
+The same optional whole-solve accumulation is available through
+`PhysicalRollout.windows(..., backward_each_iteration=True)`. It requires one
+physical timestep per window. Zero gradients before requesting a window, then
+step Adam and zero gradients after each yield. Positions and velocities carry
+forward without their gradient history. This mode is single-device; calling
+it through `DDP.module` bypasses distributed synchronization.
+
+The selected next trainer design instead mixes active states of different
+iteration depths in each batch and updates Adam after one proposal per member.
+Each seeded initial state samples its own K and physical horizon H from the
+available sets. Both stay fixed for that trajectory; its inertial target is
+fixed only within a physical timestep. The live mixed-batch scheduler and its
+distributed integration remain pending; the production epoch trainer is still
+K=1. See [the V2 plan](../../notes/v2-plan.md).
+
 Run the complete inference/backward probe with:
 
 ```bash

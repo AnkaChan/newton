@@ -9,9 +9,14 @@ below.
 Latest data-policy revision: generate intermediate states on the fly and
 reproduce initial conditions with a seeded augmenter reset. Intermediate-state
 disk replay is optional diagnostic tooling, not the training baseline.
-The latest rollout target is 128 consecutive physical timesteps, with up to
-32 optimizer iterations inside each timestep. Add one overall perturbation
-multiplier per initial case to cover quieter starting states.
+Each initial state independently samples an inner-iteration count K and a
+physical trajectory length H from the counts available at its curriculum
+stage. Keep those counts until H physical steps finish, then reset and sample
+again. The eventual proposed caps are K=32 and H=128. Add one overall
+perturbation multiplier per initial case to cover quieter starting states.
+The selected trainer advances each sample in a mixed batch by one detached
+network-and-fusion update, then makes one Adam update for that batch. Full
+connected unrolling remains an opt-in comparison.
 
 ## Physical problem and representation
 
@@ -118,13 +123,17 @@ The same reset seed and augmentation configuration reproduce the initial
 shape, velocity and material. The old production dataset and trainer still
 use their original fixed material until the new training pipeline is integrated.
 
-The current physical solver uses one material context per batch. Initially,
-group trajectory minibatches by compatible material and switch physical models
-between such batches; arbitrary mixtures of materials in one batch are not
-implemented. Independent continuous material draws will usually be unique,
-so grouping alone does not provide large batches. Before training, choose
-either a material draw shared across each batch or extend the physical energy
-and fusion path to handle different materials within a batch.
+The current `LearnedHexSolverStep` binds one physical context. The selected
+mixed-state trainer needs batched per-instance material, mass and energy
+inputs while keeping each object's material fixed for its K/H trajectory.
+Independent continuous material draws will usually be unique; grouping only
+identical materials does not supply the intended mixed batch. Keep one batched
+network forward over the fixed-shape grid queries, not Python network calls
+per object. Fusion may dispatch by physical operator/context and reuse cached
+factors only when the actual assembled matrices match. Prepare required
+factors before admitting instances to the ready pool. This heterogeneous
+physical-context support remains pending and is not implemented by the
+detached-iteration helper.
 Across GPU ranks, synchronize learned parameters and gradients while keeping
 each rank's physical material and mass buffers local. This needs explicit
 verification in the new distributed trainer.
@@ -132,39 +141,72 @@ verification in the new distributed trainer.
 Use the previous scale of 8,192 training starts per logical epoch and 512 fixed
 held-out seeds as a proposed starting point. These describe seed schedules,
 not a stored collection of intermediate states. The old 50/35/10/5 candidate
-mixture is historical, not a decided V2 continuation/reset/rest mixture.
+mixture is historical, not a decided V2 initial-state mixture.
 
 ## Consecutive optimizer iterations and physical timesteps
 
-These are different loops. Inside one physical timestep, hold the original
-inertial prediction fixed and run K consecutive network-and-fusion updates.
-Backpropagate through all K updates. Recompute the local frames as the shape
-changes, but detach their decomposition from the gradient graph. Network
-weights stay fixed throughout that inner solve and its backward pass.
+Each initial state samples K, the number of optimizer iterations per physical
+timestep, and independently samples H, the number of physical timesteps before
+reset. Sample both once at trajectory creation. Every physical step of that
+trajectory uses its sampled K, and its sampled H does not change midway.
+After H completed physical steps, perform a seeded reset and independently
+resample both counts for the next trajectory.
 
-Across physical timesteps, carry the resulting positions and velocities
-forward exactly, then detach both. Train each new timestep independently on
-the state produced by the preceding one. A weight update may occur after each
-physical solve. The next solve then uses the updated weights. Do not rerun
-earlier physical steps after a weight update.
+Maintain a pool of active trajectories at different inner-iteration and
+physical-step indices. Form a mixed batch from that pool. Each selected
+sample makes exactly one network-and-fusion proposal, evaluates its local
+loss, and carries the resulting positions forward detached. Backpropagate
+the mean local loss for the mixed batch, then make one Adam update. Clear
+parameter gradients once per mixed batch. Each local backward pass still
+differentiates through its network, fusion and energy; local frame
+decompositions remain detached.
 
-Generate these trajectories live, so they change as the solver learns.
-The final target is 128 consecutive physical steps per segment. At dt=1/300 s
-that covers about 0.427 seconds of physical time; it is not a maximum
-trajectory lifetime or a guarantee of settling. Some trajectories must continue
-into later motion and settling. Mix those continuations with fresh seeded resets and near-equilibrium
-starts. The exact sampling mixture is still a training-plan choice for review.
-Do not archive every intermediate state or sample a historical replay buffer
-in this baseline.
+Weights therefore may change between successive inner iterations of one
+physical solve. Hold that sample's original inertial prediction Y fixed for
+all K iterations of its physical timestep, even when the shared network
+weights change. Do not restart its solve or recompute Y after an Adam update.
+After its Kth iteration, commit the new physical positions and velocities,
+detach both, and begin its next physical timestep with a newly computed Y
+unless H is complete and the trajectory resets.
+Count H in completed physical timesteps, not optimizer proposals or batches.
 
-The gradient boundary is still one physical timestep. Process its loss and
-backward pass before advancing; 128 forward physical steps do not require a
-128-step gradient graph. The longer horizon increases total computation, not
-the intended gradient-window memory. Do not accumulate every window's graph.
+For the proposed implementation, keep a bounded active pool larger than the
+training batch: roughly 4B instances per GPU is a starting point for batch
+size B. Gather B ready queries, make exactly one proposal per member, average
+their local losses, update Adam once, and scatter detached results back to
+their instances. Do not pad shorter K/H schedules or wait for every
+trajectory to finish a common phase.
 
-For the new one-layer model, the proposed curriculum is:
+After an instance reaches K and still has physical steps remaining, prepare
+its next step once, including the new Y, frozen rigid target and initial
+candidate. Park instances awaiting
+preparation while other ready instances fill the next batch. At H, perform a
+seeded reset and independently resample K/H; prefetch initial states so reset
+work can overlap other batches. Use a bounded CPU preparation worker pool
+and prepare work outside the critical path where possible. Reuse cached
+PARDISO factorizations when the actual assembled matrix is the same, with
+native handles owned by their process; different matrices require their own
+factors. Do not refactor merely because an instance advances physical time.
+These are proposed trainer mechanisms, not an implemented scheduling system.
+The current CPU PARDISO solve inside
+each batch still blocks that path, so this design does not guarantee an
+always-busy GPU.
 
-| Stage | Optimizer updates per physical step | Physical steps per segment |
+Release each batch's graph after backward and retain only detached carried
+states and diagnostics. There is a gradient boundary after every inner
+iteration and every physical timestep. Peak graph memory need not grow with
+K or H; total computation and the active state's storage still matter.
+Generate intermediate states live with the current network. Do not archive
+every state or sample a historical replay buffer in this baseline. At
+dt=1/300 s, H=128 covers about 0.427 seconds; completing that trajectory does
+not establish that it has settled.
+
+The proposed available counts at the final stage are K in {1, 2, 4, 8, 16, 32}
+and H in {8, 16, 32, 64, 128}. Uniform independent sampling over the available
+sets is a proposal; exact probabilities are not finalized. Curriculum stages
+cap these sets rather than assign one fixed K/H pair to all samples:
+
+| Stage | Maximum available K | Maximum available H |
 |---|---:|---:|
 | Initial | 1 | 8 |
 | 2 | 2 | 16 |
@@ -173,12 +215,28 @@ For the new one-layer model, the proposed curriculum is:
 | 5 | 16 | 128 |
 | Final | 32 | 128 |
 
-Retain shorter solves after advancing. Use validation descent and trajectory
-stability to decide when to advance; numerical thresholds and patience remain
-to be selected before launch. Log actual counts and curriculum stage. If a
-stage stalls, report it; never silently train only one iteration for the whole
-campaign. The reusable K≤32 unroll and per-timestep gradient boundaries are
-implemented, but the production epoch trainer is not yet wired to this loop.
+For example, the stage with caps K=4 and H=32 permits independent draws from
+{1, 2, 4} and {8, 16, 32}. Retain shorter counts as the caps grow. A stage
+change affects new resets; active trajectories keep their previously sampled
+K and H until completion. Use validation descent and trajectory stability to
+decide when to advance; thresholds and patience remain to be selected before
+launch. Log sampled counts, progress and curriculum stage. If a stage stalls,
+report it; never silently train only one iteration for the whole campaign.
+
+The reusable inner solver now detaches carried positions by default. Its
+`backward_detached` method and
+`PhysicalRollout.windows(backward_each_iteration=True)` implement a different
+schedule: keep weights fixed for a whole physical solve, backpropagate each
+local loss divided by K immediately, accumulate gradients, and let the caller
+make one Adam update afterward. This whole-solve accumulation helper remains
+available, but it does not implement the selected mixed-state trainer.
+
+Full connected unrolling remains an opt-in comparison. Connecting groups of
+two to four inner updates is a future experiment with no demonstrated
+training benefit over the detached baseline. The production epoch trainer
+still uses K=1. The mixed active pool, per-trajectory K/H scheduling, live
+trajectories up to 128 steps, and updated multi-GPU trainer are not yet
+implemented or integrated. Training remains stopped.
 
 ## On-demand generation and reset
 
@@ -211,18 +269,21 @@ same_initial = augmenter.reset()
 different_initial = augmenter.reset(seed=43)
 ```
 
-Keep only active trajectory positions and velocities in memory during normal
-training. Train on each live step, detach its output, and carry it forward.
-Reset selected trajectories when starting a new episode; do not reset every
-short training segment or settling states will be underrepresented.
+Keep only active trajectory and optimizer states in memory during normal
+training. A sample retains its physical positions and velocities, current
+candidate, fixed Y and detached comparison energies for its current physical
+step, plus its sampled K/H and progress counters. Advance it by one proposal
+when selected into a mixed batch. Reset after its sampled H physical steps;
+an Adam update or logging boundary does not itself trigger a reset.
 
 A seed reproduces an initial condition, not a trajectory generated while
 network weights were changing. Regeneration with newer weights intentionally
 produces newer trajectories. For exact training resume, the proposed checkpoint
-includes the small active trajectory pool, in addition to weights, optimizer,
-random states and seed schedule. This saves the current state at checkpoint
-time, not all intermediate training states. Alternatively, restarting from
-seeds is a trajectory reset and must be identified as such.
+includes the small active trajectory pool and its per-sample K/H, progress,
+candidate and fixed Y, in addition to weights, optimizer, random states and
+seed schedule. This saves the current state at checkpoint time, not all
+intermediate training states. Alternatively, restarting from seeds is a
+trajectory reset and must be identified as such.
 
 The existing disk-retention framework remains available for explicit debugging
 or selected failure records. It is not invoked by the reset augmenter or the
@@ -232,12 +293,21 @@ API is documented in [DISK-REPLAY.MD](DISK-REPLAY.MD).
 ## Loss and settling
 
 The physical objective is the sum of hexahedral Neo-Hookean elastic energy and
-the unchanged implicit-Euler inertial energy. The implemented unroll averages
-the energy change after every inner update, normalized by the greater of the
-initial energy and 1 joule. It adds a penalty for increases relative to the
-preceding iterate. Starting energies, normalization scales and comparison
-energies are detached. This is self-supervised optimization; no target shape
-from a different solver is required.
+the unchanged implicit-Euler inertial energy. Keep the existing loss: energy
+change from the physical solve's initial energy after every inner update,
+normalized by the greater of that initial energy and 1 joule, plus the
+existing penalty for increases relative to the preceding iterate. Starting
+energies, normalization scales and comparison energies remain detached.
+The inertial prediction remains unchanged throughout the inner solve.
+
+For the selected mixed-state trainer, average the local losses from the one
+proposal per selected sample and update the weights once for that batch.
+Do not apply an additional 1/K weight to those mixed-batch local losses.
+Whole-solve loss/K accumulation belongs to the helper alternative described
+above. The local energy formula and increase-penalty weight are unchanged;
+no new physical loss term is introduced.
+This is self-supervised optimization; no target shape from a different solver
+is required.
 
 The old model drifts even from force-free rest: its first update moved corners
 by 0.060 mm RMS, and energy increased on all ten diagnostic updates. Reducing
@@ -294,18 +364,21 @@ their relative ratios can be misleading. Evaluate physical rollout survival,
 speed, resting drift and fixed-corner accuracy. Failed cases must remain
 visible rather than disappearing from aggregate curves.
 
-Maintain epoch/update loss curves, curriculum stage, actual K and physical
-step counts, continuation/reset counts, perturbation-scale distribution and
-material distribution. Save
+Maintain epoch/update loss curves, curriculum stage, sampled K/H distributions,
+actual inner-iteration and physical-step counts, reset counts,
+perturbation-scale distribution and material distribution. Save
 latest/best/periodic resumable checkpoints including optimizer, random states,
-generator configuration/version, seed schedule and active trajectory states.
+generator configuration/version, seed schedule and active trajectory and
+optimizer states, including sampled K/H and progress counters.
 An initial budget of up to 500 epochs is a proposal, with convergence-based
 stopping and explicit reporting of plateaus.
 
 After plan approval: finish the trainer/data integration, resolve the chosen
 settling and inversion changes, validate gradients, measure batch capacity
-with activation checkpointing, and verify the updated four-GPU path. Neural,
-feature and energy operations run on GPU; the existing differentiable sparse
+with the mixed batch's one-proposal graph, and verify the updated four-GPU path.
+Use activation checkpointing within an iteration if needed; measure connected
+unrolling separately when comparing it. Neural, feature and energy operations
+run on GPU; the existing differentiable sparse
 fusion uses a cached CPU PARDISO factorization with an adjoint backward pass.
 Factor once per fixed fusion matrix and reuse it across solver iterations and
 physical timesteps. Keep float32 for factorization and both solves; the

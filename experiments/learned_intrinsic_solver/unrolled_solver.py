@@ -5,8 +5,9 @@
 
 Experimental: every inner iteration uses the same original inertial predictor,
 prescribed corners, material, and timestep. This module does not advance a
-physical Newton State. Wrap this complete module, rather than its network, in
-DDP when training a multi-iteration objective.
+physical Newton State. Carried candidates are detached between iterations by
+default. ``backward_detached`` streams local backward passes on one device;
+its distributed trainer integration is separate work.
 """
 
 from __future__ import annotations
@@ -43,16 +44,17 @@ class UnrolledHexSolver(nn.Module):
     Both terms use the same detached initial scale ``max(E0, 1 J)``. The energy
     increase weight multiplies the nonnegative penalty. Polar frames are
     recomputed at every iteration under LearnedHexSolverStep's existing frozen
-    frame policy; fused positions and network outputs remain attached to the
-    full first-order graph.
+    frame policy. Each proposal's network, fusion and energy remain connected;
+    carried positions are detached before the next proposal by default.
 
     Args:
         step: Complete learned hex step containing network, fusion, and energy.
         max_iterations: Maximum allowed inner proposals, at most 32.
         energy_increase_weight: Nonnegative multiplier on mean per-step energy
-    increases, after normalization by the initial energy [J]. Each preceding
-    energy is detached as the comparison target, so minimizing the penalty
-    cannot raise an earlier iterate's energy to make a later increase smaller.
+            increases, after normalization by the initial energy [J]. Each
+            preceding energy is detached as the comparison target.
+        detach_iterations: Cut gradients through carried positions between
+            inner proposals. False retains the connected comparison mode.
         checkpoint_activations: Recompute each learned step during backward
             using non-reentrant Torch activation checkpointing to reduce saved
             activations. The CPU sparse forward/adjoint work is repeated.
@@ -64,6 +66,7 @@ class UnrolledHexSolver(nn.Module):
         *,
         max_iterations: int = 32,
         energy_increase_weight: float = 1.0,
+        detach_iterations: bool = True,
         checkpoint_activations: bool = False,
     ):
         super().__init__()
@@ -75,9 +78,12 @@ class UnrolledHexSolver(nn.Module):
             raise ValueError("energy_increase_weight must be finite and nonnegative")
         if not isinstance(checkpoint_activations, bool):
             raise TypeError("checkpoint_activations must be boolean")
+        if not isinstance(detach_iterations, bool):
+            raise TypeError("detach_iterations must be boolean")
         self.step = step
         self.max_iterations = max_iterations
         self.energy_increase_weight = float(energy_increase_weight)
+        self.detach_iterations = detach_iterations
         self.checkpoint_activations = checkpoint_activations
 
     def _one_step(
@@ -107,6 +113,9 @@ class UnrolledHexSolver(nn.Module):
     ) -> UnrolledStepOutput:
         """Return all K+1 energies and the Kth candidate without detaching it.
 
+        This forward-only API retains every local graph until the caller runs
+        backward. Use ``backward_detached`` to release activations as you go.
+
         Args:
             positions: Initial candidate shared corners [m], [B,P,3].
             inertial_prediction: Original physical free-motion predictor [m],
@@ -120,6 +129,74 @@ class UnrolledHexSolver(nn.Module):
         Raises:
             ValueError: Invalid count, shape, candidate, or physical energy.
         """
+        return self._run(
+            positions,
+            inertial_prediction,
+            fixed_positions=fixed_positions,
+            iterations=iterations,
+            detach_energy_target=detach_energy_target,
+            backward_each_iteration=False,
+        )
+
+    def backward_detached(
+        self,
+        positions: Tensor,
+        inertial_prediction: Tensor,
+        *,
+        fixed_positions: Tensor | None = None,
+        iterations: int = 1,
+        detach_energy_target: bool = True,
+    ) -> UnrolledStepOutput:
+        """Accumulate mean local parameter gradients and release each step's graph.
+
+        Experimental single-device training helper. Backward each local loss
+        divided by K immediately, without retaining its graph. All input
+        tensors are treated as fixed physical data; outside input graphs are
+        detached. Only parameter gradients are accumulated. Returned positions,
+        energies and objective are detached diagnostics, not another loss to
+        backward. Forward positions and loss values match ``forward``.
+
+        The caller zeros gradients before this call and makes one optimizer
+        update afterward. This method never clears gradients or changes weights.
+        Discard partial gradients if a later proposal raises an error. Do not
+        call this method through ``DDP.module``; that bypasses DDP's forward
+        synchronization. The distributed streaming path is not implemented.
+
+        Args:
+            positions: Initial shared corners [m], shape [B,P,3].
+            inertial_prediction: Fixed original free-motion prediction [m],
+                shape [B,P,3]. Never recomputed between inner iterations.
+            fixed_positions: Prescribed corners [m], shape [B,F,3].
+            iterations: Proposal count in [1,max_iterations].
+            detach_energy_target: Energy target policy, as in ``forward``.
+
+        Raises:
+            ValueError: Connected iteration policy or invalid physical input.
+            RuntimeError: Autograd is disabled.
+        """
+        if not self.detach_iterations:
+            raise ValueError("backward_detached requires detach_iterations=True")
+        if not torch.is_grad_enabled():
+            raise RuntimeError("backward_detached requires grad mode")
+        return self._run(
+            positions.detach(),
+            inertial_prediction.detach(),
+            fixed_positions=None if fixed_positions is None else fixed_positions.detach(),
+            iterations=iterations,
+            detach_energy_target=detach_energy_target,
+            backward_each_iteration=True,
+        )
+
+    def _run(
+        self,
+        positions: Tensor,
+        inertial_prediction: Tensor,
+        *,
+        fixed_positions: Tensor | None,
+        iterations: int,
+        detach_energy_target: bool,
+        backward_each_iteration: bool,
+    ) -> UnrolledStepOutput:
         if (
             isinstance(iterations, bool)
             or not isinstance(iterations, int)
@@ -133,9 +210,13 @@ class UnrolledHexSolver(nn.Module):
         initial = self.step.energy(
             positions, inertial_prediction.detach() if detach_energy_target else inertial_prediction
         ).total
+        reference = initial.detach()
+        scale = reference.clamp_min(1.0)
         energies = [initial]
         current = positions
-        for _ in range(iterations):
+        for index in range(iterations):
+            if index and self.detach_iterations:
+                current = current.detach()
             if self.checkpoint_activations and torch.is_grad_enabled():
                 current, energy = checkpoint(
                     lambda x, y, pins: self._one_step(x, y, pins, detach_energy_target=detach_energy_target),
@@ -149,10 +230,15 @@ class UnrolledHexSolver(nn.Module):
                 current, energy = self._one_step(
                     current, inertial_prediction, fixed_positions, detach_energy_target=detach_energy_target
                 )
+            if backward_each_iteration:
+                normalized = (energy - reference) / scale
+                increase = torch.relu(energy - energies[-1].detach()) / scale
+                local_objective = normalized + self.energy_increase_weight * increase
+                (local_objective.mean() / iterations).backward()
+                current, energy = current.detach(), energy.detach()
+                del normalized, increase, local_objective
             energies.append(energy)
         history = torch.stack(energies, dim=1)
-        reference = initial.detach()
-        scale = reference.clamp_min(1.0)
         normalized = (history[:, 1:] - reference[:, None]) / scale[:, None]
         increase = torch.relu(history[:, 1:] - history[:, :-1].detach()) / scale[:, None]
         normalized_per_sample = normalized.mean(dim=1)

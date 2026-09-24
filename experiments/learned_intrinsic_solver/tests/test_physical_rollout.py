@@ -119,6 +119,52 @@ class TestPhysicalRollout(unittest.TestCase):
         with self.assertRaises(StopIteration):
             next(iterator)
 
+    def test_streamed_training_matches_local_gradients_and_advances_after_adam(self):
+        """Accumulate each solve's local gradients before one Adam update and carry its state."""
+        expected = next(self.rollout.windows(self.x, self.v, physical_steps=1, iterations=4))
+        expected.objective.backward()
+        gradients = {
+            name: parameter.grad.clone()
+            for name, parameter in self.step.named_parameters()
+            if parameter.grad is not None
+        }
+        optimizer = torch.optim.Adam(self.step.parameters(), lr=1e-6)
+        optimizer.zero_grad(set_to_none=True)
+        iterator = self.rollout.windows(
+            self.x.clone().requires_grad_(),
+            self.v.clone().requires_grad_(),
+            physical_steps=2,
+            iterations=4,
+            backward_each_iteration=True,
+        )
+        first = next(iterator)
+        torch.testing.assert_close(first.objective, expected.objective, rtol=0, atol=0)
+        torch.testing.assert_close(first.final_positions, expected.final_positions, rtol=0, atol=0)
+        self.assertFalse(first.objective.requires_grad)
+        self.assertFalse(first.final_positions.requires_grad)
+        self.assertFalse(first.final_velocities.requires_grad)
+        for name, parameter in self.step.named_parameters():
+            if name in gradients:
+                torch.testing.assert_close(parameter.grad, gradients[name], rtol=2e-5, atol=1e-7)
+        self.assertEqual(len(optimizer.state), 0)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        second = next(iterator)
+        torch.testing.assert_close(second.steps[0].previous_positions, first.final_positions, rtol=0, atol=0)
+        torch.testing.assert_close(second.steps[0].previous_velocities, first.final_velocities, rtol=0, atol=0)
+        self.assertGreater(sum(p.grad.square().sum().item() for p in self.step.parameters() if p.grad is not None), 0)
+        optimizer.step()
+        self.assertTrue(all(state["step"].item() == 2 for state in optimizer.state.values()))
+        with self.assertRaises(StopIteration):
+            next(iterator)
+
+    def test_streamed_training_rejects_connected_physical_windows(self):
+        """Reject streaming backward across more than one physical timestep."""
+        with self.assertRaisesRegex(ValueError, "gradient_window"):
+            next(
+                self.rollout.windows(self.x, self.v, physical_steps=2, gradient_window=2, backward_each_iteration=True)
+            )
+
     def test_detached_energy_target_preserves_network_feature_path(self):
         x = self.x.clone().requires_grad_()
         v = self.v.clone().requires_grad_()

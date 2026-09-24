@@ -1361,3 +1361,74 @@ backpropagate through the sequence, then make one Adam update. The proposed
 curriculum begins at K=1 and grows toward 32. The production epoch trainer
 still needs integration with that helper and the live physical trajectories.
 Selecting PARDISO does not start a training campaign.
+
+## 38. Train mixed states with detached proposals and sampled horizons — 2026-09-24
+
+The user selected detached inner iterations and then refined their scheduling
+to mixed-state batches. This supersedes section 37's full connected backward
+and one-Adam-update-per-physical-solve policy, together with the earlier V2
+fixed K/H stage pairs. Historical decisions remain above.
+
+Each initial state independently samples K, its optimizer iterations per
+physical timestep, and H, its number of physical timesteps before reset.
+Sample both once and keep them fixed for that trajectory. After H completed
+physical steps, perform a seeded reset and independently resample K and H.
+Proposed final available sets are K={1,2,4,8,16,32} and H={8,16,32,64,128}.
+Curriculum stages cap the available sets; they do not assign the same pair
+to every sample. Uniform independent sampling is proposed, with exact
+probabilities still to be finalized. Stage changes affect subsequent resets,
+not the counts already assigned to active trajectories.
+
+Maintain active trajectories at different inner-iteration and physical-step
+indices. For each mixed batch, make one network-and-fusion proposal per
+selected sample, backpropagate the mean local loss, then make one Adam update.
+Carry candidate positions forward detached and release the batch's graph.
+Weights may therefore change between inner iterations of the same physical
+solve. Keep each sample's original inertial prediction Y fixed throughout
+its K iterations. After its Kth proposal, commit its physical positions and
+velocities and detach both. Compute a new Y for its next physical timestep,
+or perform the seeded reset if H is complete.
+Local frame decompositions remain detached as before.
+
+Keep the existing normalized energy-change loss and its energy-increase
+penalty. Starting energies, normalization scales and preceding comparison
+energies remain detached. Average local losses over the mixed batch without
+an additional 1/K weight. No new physical loss term is introduced. Retaining
+only detached active states and diagnostics means peak graph memory need not
+grow with K or H; the mixed batch still controls per-update activation memory.
+
+Propose a bounded pool larger than the batch, initially about 4B instances
+per GPU for batch size B. Gather B ready queries, perform one proposal each
+and one Adam update, then scatter detached results. Park instances awaiting
+CPU preparation and fill slots with other ready instances. At K, prepare
+the next physical step once if H is not complete, including Y and its frozen
+rigid target; at H,
+perform a seeded reset and independently resample K/H. Prefetch initial states
+and use bounded CPU preparation workers. Avoid padded K/H loops or waiting
+for all trajectories together. Cache factorizations by the actual assembled
+matrix in their owning process and prepare work outside the critical path
+where possible. The present CPU PARDISO solve still blocks each batch, so
+this proposed scheduling does not guarantee zero GPU idle time.
+
+The mixed fixed-shape batch must still use one batched network forward. Its
+physical inputs need per-instance material, mass and energy support because
+the current `LearnedHexSolverStep` binds one context. Keep each object's
+material fixed for its K/H trajectory. Fusion may dispatch by operator/context;
+different matrices need separate factors, prepared before ready-pool admission.
+This mixed-context support remains pending, not part of the detaching helper.
+
+The implemented default inner solver detaches carried positions. The
+`backward_detached` helper and
+`PhysicalRollout.windows(backward_each_iteration=True)` implement whole-solve
+gradient accumulation with fixed weights, local backward passes scaled by
+1/K, and a caller-owned Adam update afterward. They remain useful alternatives
+but do not implement the selected mixed active-pool trainer. Full connected
+unrolling remains an opt-in comparison; connecting groups of two to four
+iterations is an unproven future experiment.
+
+The production epoch trainer still uses K=1. The mixed pool, per-trajectory
+K/H sampling and reset schedule, live 128-step curriculum and updated
+multi-GPU trainer remain unimplemented or unintegrated. Exact resume must
+eventually checkpoint active candidates, fixed Y, sampled counts and progress
+as well as weights, optimizer and random state. This records the agreed
+trainer design without authorizing a training launch; training remains stopped.
