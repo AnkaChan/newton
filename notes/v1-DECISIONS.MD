@@ -891,3 +891,49 @@ checkpoints, and rank logs are under `generated/distributed_probe/full_001/`.
 The [browser report](https://ankachen.com/artifacts/learned-intrinsic-solver/multi-gpu/index.html)
 joins the existing project pages. Epoch sampling, validation, scheduling, and
 the larger training campaign remain the next implementation step.
+
+## 26. Larger epoch campaign implementation — 2026-09-24
+
+The approved section 24 campaign now has separate dataset, trainer, schedule,
+report, and launcher modules under `experiments/learned_intrinsic_solver/`.
+Each rank owns a contiguous disjoint physical seed shard, with one shared
+fusion factorization and immutable CPU dataset snapshot. Candidate randomness
+is a deterministic function of master seed, physical seed, and epoch; local
+shuffling visits each identity exactly once. Validation queries remain fixed.
+Resume verifies dataset hashes, configuration, and rank count before loading
+model, Adam, controller, and each rank's RNG state.
+
+Initial validation sets the scheduler's baseline. Per-epoch loss reduction and
+success rates include the full configured population; invalid validation loss
+is unavailable rather than averaged over only successful cases. Training
+coordinates input-transfer and forward failures before backward, and rejects
+nonfinite gradients before Adam. Rank replicas are checked after every epoch.
+A failure preserves the actual rank batches and a diagnostic checkpoint.
+
+The launch configuration is 8,192 training states, 512 validation states,
+10×10×40 cells, four GPUs, batch 16 per GPU, fresh seed-73 weights, and one
+learned iteration. The curve uses completed epochs on its horizontal axis.
+Reports and initial/latest/best/every-ten/final/failure checkpoints are atomic.
+CPU sparse fusion forward/transpose solves remain unchanged; CUDA handles the
+network, frames/features, energy, and Adam. Float32, TF32 off, no AMP.
+
+The full-grid epoch path passed a four-GPU two-epoch run and a separate
+one-epoch run resumed to epoch two. Each used 64 training and 16 validation
+states, batch 16 per rank. Both epochs visited every state exactly once, with
+finite proposals and gradients and equal replicas within each run. The two
+trajectories matched within float32 tolerance: maximum absolute weight
+difference 1.49e-08, relative update difference 1.65e-06, relative Adam-state
+difference 1.81e-09, and validation-loss difference 6.17e-09. Dataset hashes,
+controller state, and descent counts matched. Separate launches can have
+slightly different float32 collective reduction order; this is not a claim of
+bitwise replay across launches. CPU checkpoint resume is bitwise exact.
+Compact measurements are [epoch-resume-summary.json](results/epoch-resume-summary.json).
+
+The full campaign runs under a persistent session with automated plateau
+monitoring and a browser report refreshed after every completed epoch. Its
+runtime state and results are distinct from the previous 64-update smoke test.
+
+Validation before launch: all 150 experiment tests passed, including CUDA and
+checkpoint-resume checks. Repository pre-commit checks passed. The validation
+fallback additionally handles per-query device transfer failures and retains
+them in the complete-population failure count.

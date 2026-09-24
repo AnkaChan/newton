@@ -1,0 +1,21 @@
+{
+  "world_size": 4,
+  "completed_epochs": 2,
+  "optimizer_updates": 2,
+  "max_abs_weight_difference": 1.4901161193847656e-08,
+  "relative_weight_update_difference": 1.6478927407414576e-06,
+  "relative_adam_state_difference": 1.8131087575568507e-09,
+  "validation_loss_abs_difference": 6.170012056827545e-09,
+  "descent_rate_matches": true,
+  "immutable_data_hashes_match": true,
+  "controller_matches": true,
+  "train_queries_per_epoch": [
+    64,
+    64
+  ],
+  "validation_queries_per_epoch": [
+    16,
+    16
+  ],
+  "passed": true
+}

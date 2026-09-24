@@ -633,3 +633,51 @@ To exercise coordinated failure handling, use a fresh output with
 is a nonzero exit, all four reports naming the same failure before backward,
 only one completed Adam update, and all GPU claims released. This deliberately
 failed run must not be used as a passing numerical reference.
+
+### Larger epoch training
+
+The epoch trainer starts with fresh seeded network weights. Each epoch visits
+all 8,192 training physical states once and draws a new deterministic candidate
+for each visit. The 512 validation candidates remain fixed. Training uses one
+learned optimizer iteration, float32 without TF32/AMP, and the unchanged original
+implicit Euler objective. With four GPUs and batch 16 per GPU, there are 128
+Adam updates per epoch.
+
+```bash
+NCCL_P2P_DISABLE=1 uv run --no-sync python -m \
+  experiments.learned_intrinsic_solver.launch_training \
+  --output generated/training/large_001 --workers 4 --timeout 86400
+```
+
+The launcher obtains an exclusive claim for each GPU and supervises all ranks.
+The local VM needs `NCCL_P2P_DISABLE=1`; the launcher defaults to this setting
+unless the caller explicitly supplies another value. Logs are `logs/rank_N.log`.
+Immutable CPU dataset snapshots are `data/rank_N.pt`. Reports are `index.html`,
+`report.json`, `epochs.csv`, and `loss_curve.svg`/`.png`. Shared model/Adam
+checkpoints live in `checkpoints/`: initial, latest each epoch, best validation,
+every ten epochs, final, and diagnostic failure. Rank identities and RNG states
+are recorded in each checkpoint; dataset snapshots are not repeated in them.
+
+Resume from the same run's completed epoch checkpoint, preserving world size,
+batch size, physics, and sampling settings. Only the epoch cap and verbosity may
+change. Existing logs are retained in numbered directories:
+
+```bash
+NCCL_P2P_DISABLE=1 uv run --no-sync python -m \
+  experiments.learned_intrinsic_solver.launch_training \
+  --output generated/training/large_001 --workers 4 \
+  --resume generated/training/large_001/checkpoints/latest.pt --max-epochs 200
+```
+
+The initial learning rate is 1e-4. It halves after five validations without an
+absolute normalized-loss improvement of at least 1e-4, down to 1e-6. Plateau
+stopping requires at least 30 epochs, 15 non-improving validations, and two rate
+reductions. The last five validations must each have no invalid outputs, at
+least 95% descent, and lower raw mean energy to label this `plateau_converged`;
+otherwise it is `stalled`. The 200-epoch cap is a separate `epoch_limit` status.
+Invalid learned training outputs stop the campaign and preserve actual failing
+inputs; they are never repaired. Validation failures count against all 512 cases.
+
+A bounded full-grid epoch/resume check uses `--train-count 64 --validation-count
+16 --batch-size 16 --min-epochs 1 --max-epochs 2`. These reduced-count runs verify
+execution and checkpoint replay, not convergence.
