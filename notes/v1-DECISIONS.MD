@@ -950,3 +950,29 @@ continue in the persistent process. The first-epoch report and published latest
 and best checkpoints were verified against local files. Snapshot:
 [large-training-start.json](results/large-training-start.json). Live results:
 [training-large](https://ankachen.com/artifacts/learned-intrinsic-solver/training-large/index.html).
+
+## 27. Extend the current campaign to 500 epochs — 2026-09-24
+
+The user requested a full 200 epochs and then raised the target to 500. For
+`large_001`, set `max_epochs=500` and disable plateau early stopping. Retain
+the existing validation-driven learning-rate reductions, every-epoch
+validation, latest/best checkpoints, and every-ten-epoch archives. Invalid
+learned outputs or nonfinite training still stop with a diagnostic; reaching
+500 is a budget completion, not a convergence claim.
+
+Resume from the existing latest completed-epoch checkpoint, preserving model,
+Adam, scheduler history, RNG states, all epoch metrics, and immutable dataset
+hashes. Only the stopping policy and epoch cap change. The resume supervisor
+gets a 72-hour timeout because 500 epochs exceed the original 24-hour limit
+at the measured roughly 230 seconds per epoch. Four GPUs, global batch 64,
+float32 precision, K=1, physics, training data, and fixed validation stay the
+same. The live page reports the configured target and early-stopping policy.
+
+The policy switch preserved epoch 15 / 1,920 Adam updates in
+`checkpoints/before_500_epoch_0015.pt`. All four immutable dataset hashes matched
+the saved checkpoint. Sixteen relevant CPU tests passed, including exact legacy
+checkpoint resume with the stopping flag changed. A four-GPU full-grid smoke
+run resumed an old epoch-two checkpoint through epoch three with the flag
+disabled: all ranks exited successfully and validation had no invalid cases.
+Repository pre-commit checks passed. The production restart uses the same
+`large_001` directory and begins epoch 16 from the epoch-15 checkpoint.

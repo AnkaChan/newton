@@ -102,6 +102,36 @@ class TestEpochTraining(unittest.TestCase):
             for name in ("report.json", "epochs.csv", "loss_curve.svg", "index.html"):
                 self.assertTrue((root / "split" / name).is_file(), name)
 
+    def test_resume_disables_early_stopping_without_changing_data_or_updates(self):
+        """Resume a legacy checkpoint with new stopping controls and identical Adam steps."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            full_config = replace(self._config(3), early_stopping=False)
+            full_report = run_training(root / "full", full_config)
+            run_training(root / "split", self._config(1))
+            checkpoint_path = root / "split/checkpoints/final.pt"
+            checkpoint = torch.load(checkpoint_path, weights_only=False)
+            checkpoint["config"].pop("early_stopping")
+            torch.save(checkpoint, checkpoint_path)
+            dataset_path = root / "split/data/rank_0.pt"
+            dataset_before = dataset_path.read_bytes()
+            resumed = run_training(root / "split", full_config, resume=checkpoint_path)
+            full = torch.load(root / "full/checkpoints/final.pt", weights_only=False)
+            split = torch.load(checkpoint_path, weights_only=False)
+            self.assertEqual(resumed["completed_epochs"], 3)
+            self.assertEqual(resumed["optimizer_updates"], 6)
+            self.assertFalse(resumed["config"]["early_stopping"])
+            self.assertEqual(dataset_path.read_bytes(), dataset_before)
+            self.assertEqual(
+                split["rank_states"][0]["dataset_identity"], checkpoint["rank_states"][0]["dataset_identity"]
+            )
+            for uninterrupted, restarted in zip(full_report["history"], resumed["history"], strict=True):
+                self.assertEqual(uninterrupted["train"], restarted["train"])
+                self.assertEqual(uninterrupted["validation"], restarted["validation"])
+            _equal_states(self, full["step_state"], split["step_state"])
+            _equal_states(self, full["optimizer_state"], split["optimizer_state"])
+            self.assertEqual(full["controller_state"], split["controller_state"])
+
     def test_resume_mismatch_preserves_existing_artifacts(self):
         """Reject incompatible material before changing a completed checkpoint."""
         with tempfile.TemporaryDirectory() as directory:

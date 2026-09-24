@@ -40,8 +40,8 @@ class PlateauController:
         self.last_epoch = 0
         self.recent_good = []
 
-    def observe(self, epoch: int, validation: dict) -> dict:
-        """Consume one full validation epoch and return the next training action."""
+    def observe(self, epoch: int, validation: dict, *, allow_early_stop: bool = True) -> dict:
+        """Consume validation, retaining learning-rate reductions when stopping is disabled."""
         if epoch != self.last_epoch + 1:
             raise ValueError("validation epochs must be consecutive and start at one")
         self.last_epoch = epoch
@@ -71,7 +71,12 @@ class PlateauController:
         )
         self.recent_good = [*self.recent_good, bool(good)][-5:]
         status = "running"
-        if epoch >= self.min_epochs and self.bad_epochs >= self.stop_patience and self.reductions >= 2:
+        if (
+            allow_early_stop
+            and epoch >= self.min_epochs
+            and self.bad_epochs >= self.stop_patience
+            and self.reductions >= 2
+        ):
             status = "plateau_converged" if len(self.recent_good) == 5 and all(self.recent_good) else "stalled"
         elif epoch >= self.max_epochs:
             status = "epoch_limit"

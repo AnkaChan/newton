@@ -659,7 +659,7 @@ every ten epochs, final, and diagnostic failure. Rank identities and RNG states
 are recorded in each checkpoint; dataset snapshots are not repeated in them.
 
 Resume from the same run's completed epoch checkpoint, preserving world size,
-batch size, physics, and sampling settings. Only the epoch cap and verbosity may
+batch size, physics, and sampling settings. The epoch cap, early-stopping flag, and verbosity may
 change. Existing logs are retained in numbered directories:
 
 ```bash
@@ -681,3 +681,19 @@ inputs; they are never repaired. Validation failures count against all 512 cases
 A bounded full-grid epoch/resume check uses `--train-count 64 --validation-count
 16 --batch-size 16 --min-epochs 1 --max-epochs 2`. These reduced-count runs verify
 execution and checkpoint replay, not convergence.
+
+The active larger campaign was subsequently extended to **500 total epochs**
+with plateau early stopping disabled. Resume this policy using:
+
+```bash
+NCCL_P2P_DISABLE=1 uv run --no-sync python -m \
+  experiments.learned_intrinsic_solver.launch_training \
+  --output generated/training/large_001 --workers 4 --timeout 259200 \
+  --resume generated/training/large_001/checkpoints/latest.pt \
+  --max-epochs 500 --no-early-stopping
+```
+
+This preserves the existing physical dataset and training state. Learning-rate
+reductions, validation, checkpoint saving, and invalid-output failure handling
+remain active. The early-stopping flag may change on resume along with the
+epoch cap and verbosity. The longer supervisor timeout accommodates this run.

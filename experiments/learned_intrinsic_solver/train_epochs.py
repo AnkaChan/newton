@@ -38,6 +38,8 @@ class EpochTrainConfig(TrainSmokeConfig):
     batch_size: int = 16
     min_epochs: int = 30
     max_epochs: int = 200
+    early_stopping: bool = True
+    """Allow a validation plateau to end the run before max_epochs."""
 
     def __post_init__(self):
         """Validate the global seed pools and epoch controls."""
@@ -202,7 +204,7 @@ def _validate(step, dataset, batch_size, device, world_size):
 
 def _config_for_resume(config):
     values = asdict(config)
-    for key in ("max_epochs", "verbose"):
+    for key in ("max_epochs", "early_stopping", "verbose"):
         values.pop(key)
     return values
 
@@ -264,7 +266,7 @@ def _run(output, config, resume, rank, world_size, device):
         if saved.get("status") == "failed":
             raise ValueError("failure checkpoints are diagnostic")
         if _config_for_resume(config) != _config_for_resume(EpochTrainConfig(**saved["config"])):
-            raise ValueError("resume configuration differs beyond max_epochs/verbosity")
+            raise ValueError("resume configuration differs beyond max_epochs/early_stopping/verbosity")
         if saved["world_size"] != world_size:
             raise ValueError("resume world size differs")
         if config.max_epochs < saved["completed_epochs"]:
@@ -557,7 +559,7 @@ def _run(output, config, resume, rank, world_size, device):
         validation = _validate(step, dataset, config.batch_size, device, world_size)
         if validation["sample_count"] != config.validation_count:
             raise ValueError("validation query count differs from configured count")
-        schedule = controller.observe(epoch, validation)
+        schedule = controller.observe(epoch, validation, allow_early_stop=config.early_stopping)
         for group in optimizer.param_groups:
             group["lr"] = schedule["learning_rate"]
         completed = epoch
@@ -673,6 +675,9 @@ def _main():
     parser.add_argument("--validation-count", type=int, default=512)
     parser.add_argument("--max-epochs", type=int, default=200)
     parser.add_argument("--min-epochs", type=int, default=30)
+    parser.add_argument(
+        "--no-early-stopping", action="store_true", help="Train until max-epochs despite a loss plateau"
+    )
     parser.add_argument("--cells", type=int, nargs=3, default=(10, 10, 40))
     parser.add_argument("--seed", type=int, default=73)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
@@ -687,6 +692,7 @@ def _main():
         validation_count=args.validation_count,
         max_epochs=args.max_epochs,
         min_epochs=args.min_epochs,
+        early_stopping=not args.no_early_stopping,
         cell_counts=tuple(args.cells),
         seed=args.seed,
         device=args.device,

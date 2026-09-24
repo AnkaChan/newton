@@ -120,7 +120,7 @@ class EpochDataset:
         self.dataset_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.dataset_dir / f"rank_{rank}.pt"
         config_identity = asdict(config)
-        for schedule_field in ("updates", "max_epochs", "verbose"):
+        for schedule_field in ("updates", "max_epochs", "early_stopping", "verbose"):
             config_identity.pop(schedule_field, None)
         identity = {
             "schema_version": 1,

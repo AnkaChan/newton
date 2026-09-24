@@ -57,6 +57,30 @@ class TestTrainingSchedule(unittest.TestCase):
         self.assertEqual(result["status"], "epoch_limit")
         self.assertEqual(result["learning_rate"], 1e-4)
 
+    def test_disabled_early_stopping_keeps_reducing_learning_rate_until_epoch_limit(self):
+        """Continue useful or poor flat validation through the requested 500 epochs."""
+        for descent in (0.98, 0.5):
+            with self.subTest(descent=descent):
+                controller = PlateauController(max_epochs=500)
+                for epoch in range(1, 500):
+                    result = controller.observe(epoch, validation(descent=descent), allow_early_stop=False)
+                    self.assertEqual(result["status"], "running", f"epoch {epoch}")
+                    self.assertFalse(result["stop"], f"epoch {epoch}")
+                self.assertEqual(result["learning_rate"], 1e-6)
+                result = controller.observe(500, validation(descent=descent), allow_early_stop=False)
+                self.assertEqual(result, {"learning_rate": 1e-6, "stop": True, "status": "epoch_limit"})
+
+    def test_old_controller_state_can_resume_with_early_stopping_disabled(self):
+        """Extend the epoch cap without changing checkpoint controller fields."""
+        controller = PlateauController()
+        for epoch in range(1, 30):
+            controller.observe(epoch, validation())
+        resumed = PlateauController(max_epochs=500)
+        resumed.load_state_dict(controller.state_dict())
+        for epoch in range(30, 500):
+            self.assertFalse(resumed.observe(epoch, validation(), allow_early_stop=False)["stop"])
+        self.assertEqual(resumed.observe(500, validation(), allow_early_stop=False)["status"], "epoch_limit")
+
 
 if __name__ == "__main__":
     unittest.main()

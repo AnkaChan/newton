@@ -109,6 +109,19 @@ def write_report(output: Path, report: dict):
     checkpoint_html = " · ".join(
         f'<a href="checkpoints/{escape(path.name)}">{escape(path.name)}</a>' for path in sorted(checkpoints)
     )
+    if config.get("early_stopping", True):
+        stopping_description = (
+            f"The run checks for a plateau after at least {config.get('min_epochs', 30)} epochs, "
+            f"with a cap of {config.get('max_epochs', 200)}. A plateau counts as convergence only with "
+            "five clean validations, at least 95% descent, and lower mean physical energy. "
+            "A poor plateau is reported as stalled."
+        )
+    else:
+        stopping_description = (
+            f"The target is {config.get('max_epochs', 200)} epochs. Plateau early stopping is disabled; "
+            "learning-rate reductions, validation, and checkpoint saving remain enabled. "
+            "Reaching the epoch target does not establish convergence."
+        )
     document = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="60">
 <title>Learned intrinsic solver — larger training</title><style>
@@ -125,9 +138,7 @@ a{{color:#087c91}} img{{width:100%;background:white;border-radius:12px}} pre{{wh
 <p>{details}</p><img src="loss_curve.svg" alt="Training and validation loss, descent rate, raw energy, and learning rate by epoch">
 <p>Lower normalized energy change is better. Zero means no improvement. Each epoch visits every training state once,
 with fresh candidate perturbations. Validation candidates remain fixed. Invalid validation outputs produce gaps in loss curves
-and count against the descent rate.</p><p>The run checks for a plateau after at least {config.get("min_epochs", 30)} epochs,
-with a cap of {config.get("max_epochs", 200)}. A plateau counts as convergence only with five clean validations,
-at least 95% descent, and lower mean physical energy. A poor plateau is reported as stalled.</p>
+and count against the descent rate.</p><p>{stopping_description}</p>
 <p><a href="epochs.csv">Epoch data (CSV)</a> · <a href="report.json">Full report (JSON)</a> ·
 <a href="loss_curve.png">Loss plot (PNG)</a> · <a href="loss_curve.svg">Loss plot (SVG)</a></p>
 <p>{checkpoint_html}</p>{failure_html}<details><summary>Configuration</summary><pre>{escape(json.dumps(config, indent=2))}</pre></details>
