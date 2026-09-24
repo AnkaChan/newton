@@ -4,7 +4,7 @@
 """Bounded, real four-GPU DDP diagnostic for one learned hex optimizer step.
 
 Each process sees one exclusively claimed CUDA device as cuda:0. Native Newton
-sampling and SciPy fusion factorization remain on CPU. The fixed physical query
+sampling and PARDISO fusion factorization remain on CPU. The fixed physical query
 batch is replayed for a few Adam updates; this is not an epoch or a rollout.
 """
 
@@ -587,7 +587,7 @@ def run_probe(output: Path, config: ProbeConfig) -> dict:
                 "optimizer_updates": min(row["optimizer_updates"] for row in reports),
                 "ranks": reports,
                 "loss_definition": "mean((E_after - E_before.detach()) / max(E_before.detach(), 1 joule)) per rank; DDP averages rank gradients",
-                "compute_partition": "Network, features, energy, Adam on each rank's exclusive GPU; native model sampling and SciPy factorization/solves on CPU",
+                "compute_partition": "Network, features, energy, Adam on each rank's exclusive GPU; native model sampling and PARDISO factorization/solves on CPU",
             }
             _json(output / "report.json", shared)
         dist.barrier()

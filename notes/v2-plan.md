@@ -306,7 +306,12 @@ After plan approval: finish the trainer/data integration, resolve the chosen
 settling and inversion changes, validate gradients, measure batch capacity
 with activation checkpointing, and verify the updated four-GPU path. Neural,
 feature and energy operations run on GPU; the existing differentiable sparse
-fusion uses its CPU solve with an adjoint backward pass. Do not assume that
+fusion uses a cached CPU PARDISO factorization with an adjoint backward pass.
+Factor once per fixed fusion matrix and reuse it across solver iterations and
+physical timesteps. Keep float32 for factorization and both solves; the
+checkpoint reconstructs each process's native factors from its saved context.
+The oneMKL runtime is an optional dependency of this experiment. Missing
+PARDISO is an explicit setup error, not a silent fallback to SuperLU. Do not assume that
 the previous four-GPU single-iteration run proves this new training loop.
 
 The complete experiment suite passed 207 tests on CPU/CUDA after adding seeded

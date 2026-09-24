@@ -1330,3 +1330,34 @@ network and native model inputs remain lambda, mu and density, and the sampled
 material stays fixed over its trajectory.
 
 Training remains stopped; this material choice does not launch a new campaign.
+
+## 37. Use PARDISO for the cached fusion solve — 2026-09-24
+
+After the baseline, 30-thread, PARDISO and GPU-CG timing comparisons, the user
+selected PARDISO. Replace the fusion factorization and forward/transpose solve
+backend with oneMKL PARDISO, preserving the original assembled matrix,
+float32 precision, prescribed-corner behavior and implicit adjoint. Cache the
+native factorization for the lifetime of each fixed fusion matrix. Rebuild
+native handles in each process and on checkpoint restoration; never serialize
+or share the raw factor handle between processes.
+
+Keep oneMKL as an opt-in dependency of this research experiment. Discover the
+installed runtime or an explicit `MKL_RT` path, and fail clearly if unavailable.
+Use scoped native thread settings, honoring `MKL_NUM_THREADS` and defaulting to
+30. GNU OpenMP avoids loading a second OpenMP implementation beside Torch on
+Linux. Release native factor memory on explicit close and automatic cleanup.
+
+The measurements used one transformer layer, batch size one, float32 and
+32 consecutive optimizer iterations inside one physical timestep. SuperLU
+updates took 2.22–2.29 s; PARDISO took 2.19 s, with 0.230 s in its sparse solves.
+These fresh-network samples do not establish steady-state training throughput.
+The simple GPU-CG trial was slower and needed a looser residual tolerance for
+its training adjoint. Keep its implementation as diagnostic tooling.
+
+Thirty-two inner iterations were a maximum-case profiling choice, not the
+initial curriculum stage. For each physical timestep, hold weights fixed for
+K consecutive network-and-fusion iterations, combine the intermediate losses,
+backpropagate through the sequence, then make one Adam update. The proposed
+curriculum begins at K=1 and grows toward 32. The production epoch trainer
+still needs integration with that helper and the live physical trajectories.
+Selecting PARDISO does not start a training campaign.

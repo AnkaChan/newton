@@ -283,10 +283,35 @@ uv run --no-sync python -m unittest discover \
 shared-corner reconstruction and a physical implicit-Euler objective. Its
 working geometry, network, sparse factorization, and backward solves use
 **float32**. Torch geometry, network, and energy run on the network's CPU or
-CUDA device. The fixed SciPy factorization and forward/adjoint sparse solves
+CUDA device. The fixed oneMKL PARDISO factorization and forward/adjoint sparse solves
 remain on CPU, with differentiable device transfers handled by the custom
 fusion function. At least one prescribed corner is required; use the canonical
 fixed end for the current experiment.
+
+Install the experiment's optional PARDISO runtime into the existing environment:
+
+```bash
+uv pip install --python .venv/bin/python \
+  -r experiments/learned_intrinsic_solver/requirements-pardiso.txt
+```
+
+The tested runtime is oneMKL 2025.3.0 on Linux x86-64. This is an optional
+dependency of this research experiment, not of Newton core. Intel distributes
+the runtime under the [Intel Simplified Software License](licenses/oneMKL-LICENSE.txt);
+its installed package retains Intel's notices. The Python bridge has Newton's
+Apache-2.0 license. The runtime is found in the active Python environment;
+`MKL_RT` can select an explicit library path. A missing runtime raises an
+installation error rather than silently selecting another solver.
+
+PARDISO factorizes each fixed fusion matrix once, then reuses it for forward
+and transpose adjoint solves. The full real matrix is retained, including
+float32 assembly roundoff, rather than assuming exact numerical symmetry.
+Factorization and solves preserve float32; float64 remains available for
+reference gradient checks. GNU OpenMP is used on Linux to coexist with Torch.
+The solver honors `MKL_NUM_THREADS`, defaulting to 30 when unset, and restores
+the previous thread setting after each native call. Explicit factor cleanup
+and automatic cleanup both release native memory. Factor handles are local to
+their creating process and are rebuilt when a checkpoint reconstructs a solver.
 
 `hex_energy.HexImplicitEulerLoss` uses **eight-node trilinear hexahedra with
 2×2×2 Gauss integration**, not a tetrahedral decomposition. The material is
@@ -338,7 +363,7 @@ one matrix is still repeated across the eight integration points. This limits
 the corrections available to training and can leave an energy floor. The
 current shape's unresolved warping is retained by incremental fusion.
 
-The custom Torch backward reuses the cached sparse LU factorization for an
+The custom Torch backward reuses the cached PARDISO LU factorization for an
 adjoint solve. First-order derivatives are available for cell increments,
 base positions, and prescribed positions. Rest geometry, material weights,
 and the constraint set are fixed; second derivatives and GPU fusion are not
@@ -607,7 +632,7 @@ NCCL_P2P_DISABLE=1 uv run --no-sync python -u \
 The complete `LearnedHexSolverStep` is wrapped in DDP, including feature construction,
 fusion, and physical loss evaluation. Equal per-rank mean losses produce the global
 batch-mean gradient. Network, frames, energy, and Adam run on CUDA in float32 with
-TF32 and AMP disabled. Each process keeps its own fixed CPU SciPy fusion factor.
+TF32 and AMP disabled. Each process keeps its own fixed CPU PARDISO fusion factor.
 
 The probe checks prescribed corners, finite energies and gradients, byte-identical
 replica weights after every update, and exact continuation from a serialized

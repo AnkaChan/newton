@@ -5,7 +5,7 @@
 
 This proof of concept uses float32 by default. Construct with float64 only for
 reference gradient checks. Torch work runs on the network's CPU or CUDA device.
-The fixed SciPy factorization stays on CPU with a custom forward/adjoint bridge;
+The fixed PARDISO factorization stays on CPU with a custom forward/adjoint bridge;
 construct a new step to change dtype, material, or constraints.
 Polar rotations are recomputed per call without differentiation. The network,
 other geometric features, corner reconstruction, and energy remain connected.

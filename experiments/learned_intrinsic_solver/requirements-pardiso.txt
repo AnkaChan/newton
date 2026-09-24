@@ -1,0 +1,3 @@
+# Optional runtime for this research experiment, separate from Newton core.
+# Intel Simplified Software License; see licenses/oneMKL-LICENSE.txt.
+mkl==2025.3.0

@@ -4,8 +4,10 @@
 """Check incremental hexahedral fusion and its CPU/CUDA tensor adjoint."""
 
 import itertools
+import os
 import unittest
 from importlib.util import find_spec
+from unittest.mock import patch
 
 import numpy as np
 
@@ -42,6 +44,20 @@ def _reference_energy(rest, base, result, increments, weights):
 
 
 class TestHexFusion(unittest.TestCase):
+    def test_missing_selected_pardiso_runtime_does_not_fall_back(self):
+        """Fail clearly when the requested sparse runtime cannot be loaded."""
+        rest = generate_cuboid((1, 1, 1))
+        with patch.dict(os.environ, {"MKL_RT": "/missing-newton-test-runtime/libmkl_rt.so"}):
+            with self.assertRaises(ImportError):
+                HexFusion(rest, [0])
+
+    def test_backend_configuration_error_remains_visible(self):
+        """Preserve backend setup advice rather than misdiagnosing constraints."""
+        rest = generate_cuboid((1, 1, 1))
+        with patch.dict(os.environ, {"MKL_INTERFACE_LAYER": "ILP64"}):
+            with self.assertRaisesRegex(ValueError, "LP64"):
+                HexFusion(rest, [0])
+
     def test_single_pin_reproduces_full_affine_increment(self):
         """Recover all affine axes and a nonzero translation with only one pin."""
         import torch

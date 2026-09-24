@@ -18,6 +18,7 @@ import numpy as np
 import torch  # noqa: TID253 -- This opt-in autograd layer explicitly requires Torch.
 
 from .hex_energy import hex_gauss_quadrature
+from .pardiso import PardisoFactor
 
 if TYPE_CHECKING:
     from .data import VoxelGridData
@@ -129,7 +130,6 @@ class HexFusion:
         dtype: torch.dtype = torch.float32,
     ):
         from scipy import sparse
-        from scipy.sparse.linalg import splu
 
         if dtype not in (torch.float32, torch.float64):
             raise ValueError("HexFusion supports only torch.float32 and torch.float64")
@@ -207,12 +207,10 @@ class HexFusion:
         self._factor = None
         if len(self._free):
             try:
-                self._factor = splu(self._free_stiffness)
+                self._factor = PardisoFactor(self._free_stiffness)
             except RuntimeError as error:
-                raise ValueError(
-                    "fusion stiffness is singular; every connected component needs fixed corners"
-                ) from error
-            if self._factor.L.dtype != self._numpy_dtype or self._factor.U.dtype != self._numpy_dtype:
+                raise ValueError(f"fusion factorization failed: {error}") from error
+            if self._factor.dtype != self._numpy_dtype:
                 raise RuntimeError("sparse factorization changed the requested working precision")
 
     @property
@@ -228,7 +226,7 @@ class HexFusion:
     def _solve(self, right_hand_side: np.ndarray, *, transpose: bool = False) -> np.ndarray:
         if self._factor is None:
             return np.zeros_like(right_hand_side)
-        return self._factor.solve(np.asfortranarray(right_hand_side), trans="T" if transpose else "N")
+        return self._factor.solve(np.asfortranarray(right_hand_side), transpose=transpose)
 
     def _indices(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         """Cache private index tensors without exposing mutable operator topology."""
