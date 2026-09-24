@@ -1030,3 +1030,64 @@ The [100-iteration report](https://ankachen.com/artifacts/learned-intrinsic-solv
 contains linear/log curves, maximum/mean/median values, and all per-case data.
 A compact archived result is [validation-100-summary.json](results/validation-100-summary.json).
 All 159 experiment tests passed, including CUDA and evaluation regressions.
+
+## 29. Ten physical rollouts with two learned iterations — 2026-09-24
+
+The user requested ten initial states, each physically simulated for ten
+seconds with two learned solver iterations per timestep and recorded using
+Newton's renderer. Use the stopped epoch-198 final checkpoint, dt = 1/300 s,
+and the existing native Newton Model/State/SolverLearnedIntrinsic integration.
+Each timestep prepares a new original implicit Euler inertial target from
+current positions and velocities, applies the existing rigid-guided candidate
+initialization, and makes exactly two consecutive learned proposals against
+that target. The resulting positions update velocity and become the next
+physical state. This is distinct from the earlier fixed-objective validation.
+
+Select ten saved held-out physical states without inspecting results, using
+NumPy default_rng(73) to sample without replacement from seeds 10000–10511:
+10015, 10112, 10136, 10153, 10248, 10356, 10395, 10411, 10488, and 10502.
+Use their saved positions and velocities, with the original z-min pins. Keep
+float32, trained materials, gravity, and the existing CPU sparse fusion solve;
+network inference runs on independently claimed GPUs. Training stays stopped.
+
+Save positions at 30 frames per simulated second, then render surface geometry
+and grid lines with Newton ViewerGL. Keep each clip's camera fixed and frame
+its full recorded motion. Preserve checkpoint/dataset identities, actual
+proposal counts, physical times, and per-case completion or failure. If a
+proposal becomes invalid, retain the valid prefix and report the failure;
+do not change the solver, restart the state, or present a padded video as ten
+seconds of completed simulation.
+
+
+The ten attempts produced 23,733 completed physical timesteps and 47,474
+attempted learned updates. Every accepted timestep executed exactly two
+updates; each of the eight failed steps stopped in its first learned update.
+Seeds 10248 and 10356 completed all 3,000 steps / 10 seconds. The other seeds
+stopped when a proposed shape had a nonpositive hexahedral Gauss Jacobian:
+10015 at 7.930 s, 10112 at 7.136667 s, 10136 at 6.230 s, 10153 at 8.546667 s,
+10395 at 6.960 s, 10411 at 4.326667 s, 10488 at 8.273333 s, and 10502 at
+9.706667 s. Every retained frame preserves all 121 pins exactly, and the
+checkpoint parameter hash remains unchanged. These are interrupted attempts,
+not ten successfully completed ten-second simulations.
+
+Newton ViewerGL rendered all ten saved trajectories, with a fixed camera per
+clip, surface voxel edges, orange pins, and physical timestamps. Complete
+recordings contain 300 frames at 30 fps. Failed recordings stop at the last
+valid state; an off-grid terminal sample can change playback length by less
+than one frame. All ten MP4s were decoded and checked for frame counts and
+nonuniform moving imagery. Desktop and mobile page layouts were inspected;
+the public page returned HTTP 200 and video range requests returned HTTP 206.
+All 167 experiment tests and repository pre-commit checks passed.
+
+While these runs were in progress, the user pointed out that the optimizer
+should represent and recover from inversion. The three-axis representation
+can encode an inverted shape, but the present frame extraction explicitly
+rejects inverted cell centers and the logarithmic Neo-Hookean energy rejects
+nonpositive Gauss Jacobians. Recovery is therefore not implemented in this
+baseline. Proper rotation frames with signed local axes, an energy defined
+through inversion, and recovery training require a separate change; these
+recordings preserve the existing checkpoint and physical formulation.
+
+[Watch all ten recordings](https://ankachen.com/artifacts/learned-intrinsic-solver/learned-two-iterations/index.html).
+The compact reproducibility record is
+[learned-two-iterations-summary.json](results/learned-two-iterations-summary.json).
