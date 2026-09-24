@@ -977,7 +977,7 @@ disabled: all ranks exited successfully and validation had no invalid cases.
 Repository pre-commit checks passed. The production restart uses the same
 `large_001` directory and begins epoch 16 from the epoch-15 checkpoint.
 
-## 28. Stop training and evaluate 100 solver iterations — 2026-09-25
+## 28. Stop training and evaluate 100 solver iterations — 2026-09-24
 
 The user stopped the campaign after observing a plateau. Training stopped
 with epoch 198 / 25,344 completed Adam updates preserved; the partial epoch
@@ -1009,3 +1009,24 @@ if any query fails; any remaining-valid statistics must be separately labelled.
 The bounded evaluation can use four independently claimed GPUs with float32,
 TF32 and AMP off, and the existing CPU sparse fusion solves. Training remains
 stopped throughout this evaluation.
+
+The requested evaluation completed all 100 iterations for all 512 validation
+states, without invalid geometry, nonfinite energies, or changed network
+parameters. All four ranks exited successfully; evaluation took 134 seconds.
+The first-step normalized energy change matched the saved epoch-198 validation
+within 4.14e-09, validating the initial queries, checkpoint, and energy measure.
+All initial energies were above 8.3 J, so the training normalization's 1 J floor
+was inactive for this validation set.
+
+The mean energy ratio fell to 0.408627 after one iteration and reached its
+minimum, 0.368290, at iteration 3. It then rose: at iteration 100 the maximum
+ratio was 2.607246, the mean 1.245757, and the median 1.184489. At that point
+380/512 states had more energy than initially. Geometric validity therefore
+coexists with failed repeated descent; the one-step-trained network does not
+maintain an optimizing trajectory over 100 iterations. Training remains
+stopped; no repair, line search, or additional training was added.
+
+The [100-iteration report](https://ankachen.com/artifacts/learned-intrinsic-solver/validation-100/index.html)
+contains linear/log curves, maximum/mean/median values, and all per-case data.
+A compact archived result is [validation-100-summary.json](results/validation-100-summary.json).
+All 159 experiment tests passed, including CUDA and evaluation regressions.

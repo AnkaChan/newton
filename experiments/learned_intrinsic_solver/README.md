@@ -697,3 +697,38 @@ This preserves the existing physical dataset and training state. Learning-rate
 reductions, validation, checkpoint saving, and invalid-output failure handling
 remain active. The early-stopping flag may change on resume along with the
 epoch cap and verbosity. The longer supervisor timeout accommodates this run.
+
+### Repeated validation iterations
+
+`evaluate_rollout.py` evaluates a saved epoch model against the same fixed
+validation queries for 100 consecutive learned steps. Each query retains its
+original physical inertial prediction and pins. Frames are recomputed after
+feeding each fused shape into the next iteration. Network parameters remain
+unchanged, and physical time does not advance.
+
+The result records exact per-query `current_energy / initial_energy` at
+iterations 0–100. `rollout_report.py` plots the maximum, mean, and median of
+these individual ratios; it also provides CSV and NPZ trajectories. A failed
+query is missing from its first failure onward, with an explicit diagnostic.
+Full-population statistics are marked unavailable after any failure, while
+optional valid-only statistics are separately labelled.
+
+The epoch-198 campaign evaluation used four independent GPU ranks. They can
+also be replayed sequentially on one exclusively claimed GPU:
+
+```bash
+source "$AI_DOCS/Envs/scripts/gpu-claim.sh" learned-validation occupy
+for rollout_rank in 0 1 2 3; do
+  RANK="$rollout_rank" WORLD_SIZE=4 uv run --no-sync python -m \
+    experiments.learned_intrinsic_solver.evaluate_rollout \
+    --checkpoint generated/training/large_001/checkpoints/final.pt \
+    --data-directory generated/training/large_001/data \
+    --output generated/validation_rollout/epoch198_100_replay --iterations 100
+done
+uv run --no-sync python -m experiments.learned_intrinsic_solver.rollout_report \
+  --output generated/validation_rollout/epoch198_100_replay
+```
+
+Use a fresh output directory. Rank file hashes and the complete saved
+validation seed pool are checked. Evaluation uses float32 without TF32/AMP;
+only CPU aggregation of the reported energy values uses float64.
