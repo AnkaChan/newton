@@ -57,7 +57,9 @@ class TestPhysicalRollout(unittest.TestCase):
             native.append(result)
             state.particle_q.assign(result.positions.detach().numpy()[0])
             state.particle_qd.assign(result.velocities.detach().numpy()[0])
-        windows = list(self.rollout.windows(self.x, self.v, forces=self.f, physical_steps=2, iterations=2))
+        windows = list(
+            self.rollout.windows(self.x, self.v, forces=self.f, physical_steps=2, iterations=2, gradient_window=2)
+        )
         self.assertEqual(len(windows), 1)
         window = windows[0]
         self.assertEqual(len(window.steps), 2)
@@ -70,6 +72,33 @@ class TestPhysicalRollout(unittest.TestCase):
             torch.testing.assert_close(got.velocities[:, self.fixed], torch.zeros_like(got.velocities[:, self.fixed]))
             self.assertEqual(got.energies.shape, (1, 3))
         self.assertTrue(window.objective.requires_grad)
+
+    def test_default_trains_each_timestep_without_resetting_physical_state(self):
+        x = self.x.clone().requires_grad_()
+        v = self.v.clone().requires_grad_()
+        optimizer = torch.optim.SGD(self.step.network.parameters(), lr=1e-6)
+        iterator = self.rollout.windows(x, v, physical_steps=2, iterations=2)
+        first = next(iterator)
+        self.assertEqual((first.start_step, first.end_step), (0, 1))
+        first.objective.backward()
+        first_x_gradient, first_v_gradient = x.grad.clone(), v.grad.clone()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        second = next(iterator)
+        self.assertEqual((second.start_step, second.end_step), (1, 2))
+        previous = second.steps[0]
+        self.assertFalse(previous.previous_positions.requires_grad)
+        self.assertFalse(previous.previous_velocities.requires_grad)
+        torch.testing.assert_close(previous.previous_positions, first.final_positions.detach(), rtol=0, atol=0)
+        torch.testing.assert_close(previous.previous_velocities, first.final_velocities.detach(), rtol=0, atol=0)
+        second.objective.backward()
+        torch.testing.assert_close(x.grad, first_x_gradient, rtol=0, atol=0)
+        torch.testing.assert_close(v.grad, first_v_gradient, rtol=0, atol=0)
+        gradients = [parameter.grad for parameter in self.step.network.parameters() if parameter.grad is not None]
+        self.assertTrue(all(torch.isfinite(gradient).all() for gradient in gradients))
+        self.assertGreater(sum(gradient.square().sum().item() for gradient in gradients), 0)
+        with self.assertRaises(StopIteration):
+            next(iterator)
 
     def test_two_step_window_retains_cross_step_gradient_and_cuts_only_at_boundary(self):
         x = self.x.clone().requires_grad_()

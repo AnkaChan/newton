@@ -1111,16 +1111,18 @@ repeat the old one-iteration campaign. Later training windows should also
 continue existing simulated trajectories to cover states beyond their first
 few timesteps, alongside fresh augmented starts.
 
-Eight physical steps per rollout and two physical steps per gradient window
-are provisional memory choices, presented to the user for adjustment. Inside
-each window, all inner iterates and both positions and velocities remain
-attached to the gradient graph. Between windows, detach positions and
-velocities together while carrying their values forward unchanged. This is
-truncated differentiation across physical time, not a reset of the simulation.
-Keep the weights fixed until all window losses for an update have been
-backpropagated, then apply Adam. Activation checkpointing recomputes the full
-learned step, including frame/edge feature construction and fusion, to bound
-memory. Start measured batch sizes small before sizing four-GPU training.
+The user selected independent training at each physical timestep on the state
+produced by the preceding timestep. The default gradient window is therefore
+one physical step. Detach both positions and velocities at every physical
+timestep boundary, preserving their values exactly. Within that timestep,
+all learned optimizer iterations remain attached to the gradient graph, up
+to 32 iterations. Each physical timestep has its own loss and backward pass;
+weights can be updated after that solve before advancing to the next solve.
+Weights must remain fixed throughout an inner solve and its backward pass.
+Eight physical steps per forward rollout remains the proposed horizon.
+Activation checkpointing recomputes the full learned step, including
+frame/edge feature construction and fusion, to bound memory. Start measured
+batch sizes small before sizing four-GPU training.
 
 Each physical step averages the normalized energy change after all inner
 updates and adds a penalty for energy increases. Its initial energy and
@@ -1130,8 +1132,8 @@ prediction as fixed, while its network-feature path remains differentiable.
 This avoids rewarding changes to the energy reference itself. Frame
 decomposition and native semi-implicit rigid guidance remain frozen as
 previously agreed. The training tensor path reuses native Newton model
-metadata but avoids native State snapshots and writes, which would sever
-gradients between physical steps.
+metadata and explicitly manages state continuity and the chosen gradient
+boundaries.
 
 New reusable modules implement the inner unroll and physical gradient
 windows. This is design and feasibility work: the existing epoch trainer has
@@ -1140,7 +1142,8 @@ has not resumed. Inversion-tolerant energy/frame handling remains a separate
 requirement before claiming inversion recovery or robust long trajectories.
 
 
-The final-policy CUDA feasibility check used the full 10×10×40 grid and the
+Before the user's one-timestep gradient choice, the CUDA feasibility check
+used the full 10×10×40 grid and the
 epoch-198 model on held-out physical seed 10000: eight physical steps,
 32 learned iterations per step, two-step gradient windows, and activation
 checkpointing. Positions and velocities carried forward exactly between
@@ -1151,3 +1154,33 @@ forward/backward run took 58.60 seconds with peak Torch allocated memory
 passed. This is gradient-path feasibility, not improved solver quality: the
 existing model increased energy sharply from the third physical timestep.
 Results: [unroll32-physical8-probe.json](results/unroll32-physical8-probe.json).
+
+After that choice, the rollout default was changed to one physical timestep.
+A regression test failed under the old two-step default and passes with the
+new policy. It verifies exact X/V continuity, independent backward passes,
+and a parameter update between timesteps without a gradient connection back
+to the preceding timestep. All eleven focused unroll/rollout tests passed.
+
+## 31. Diagnose failure to preserve rest — 2026-09-24
+
+The user observed difficulty reaching a resting state and asked how to improve
+it. A force-free diagnostic used the epoch-198 checkpoint, the canonical
+10×10×40 rest shape, zero velocity, zero gravity, and fixed inertial target
+equal to that rest shape. The first proposal moved corners by 0.060 mm RMS
+and raised energy from about 0.00014 J to 0.01546 J. All ten fixed-target
+updates increased energy, reaching 0.03294 J. Pins remained exact and the
+geometry stayed valid. The small nonzero initial energy is float32 evaluation
+error. This test diagnoses drift from rest; it does not establish convergence
+behavior for gravity-loaded equilibrium shapes.
+
+The correction head can represent exactly zero, but this checkpoint's sigmoid
+step controller is saturated at its configured maximum, 0.05. There is no
+explicit rule preserving equilibrium. Recommended next changes are training
+on verified equilibria and small perturbations around them, penalizing drift
+from those equilibria, exposing the current implicit-Euler force residual,
+and making corrections vanish as that residual vanishes. Those changes are
+proposals, not implemented by this diagnostic. Consecutive optimizer and
+physical-step training should include states near convergence as well as
+large deformations.
+
+Diagnostic: [epoch198-rest-drift.json](results/epoch198-rest-drift.json).

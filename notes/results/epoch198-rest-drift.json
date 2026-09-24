@@ -1,0 +1,260 @@
+{
+  "checkpoint": "generated/training/large_001/checkpoints/final.pt",
+  "checkpoint_epoch": 198,
+  "cell_counts": [
+    10,
+    10,
+    40
+  ],
+  "gravity_m_per_s2": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "velocity_m_per_s": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "time_step_seconds": 0.0033333333333333335,
+  "max_step_size": 0.05,
+  "fixed_count": 121,
+  "iterations_requested": 10,
+  "iterations": [
+    {
+      "iteration": 1,
+      "energy_joule": {
+        "elastic": 0.005615408532321453,
+        "inertia": 0.009845206514000893,
+        "total": 0.015460615046322346
+      },
+      "displacement_rms_m": 5.994215825921856e-05,
+      "displacement_max_m": 0.0002164282777812332,
+      "displacement_from_rest_rms_m": 5.994215825921856e-05,
+      "axis_correction_rms_norm": 0.0728960856795311,
+      "axis_correction_max_norm": 0.4762391149997711,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.9951235055923462,
+        "min_center_j": 0.9969103932380676,
+        "min_center_singular_ratio": 0.9950924515724182
+      },
+      "pins_exact": true
+    },
+    {
+      "iteration": 2,
+      "energy_joule": {
+        "elastic": 0.008731922134757042,
+        "inertia": 0.01062560174614191,
+        "total": 0.019357524812221527
+      },
+      "displacement_rms_m": 7.986033779161517e-06,
+      "displacement_max_m": 8.152068767230958e-05,
+      "displacement_from_rest_rms_m": 6.248875433811918e-05,
+      "axis_correction_rms_norm": 0.07143322378396988,
+      "axis_correction_max_norm": 0.463349312543869,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.9915451407432556,
+        "min_center_j": 0.9963556528091431,
+        "min_center_singular_ratio": 0.9928504824638367
+      },
+      "pins_exact": true
+    },
+    {
+      "iteration": 3,
+      "energy_joule": {
+        "elastic": 0.01137516088783741,
+        "inertia": 0.010566018521785736,
+        "total": 0.021941179409623146
+      },
+      "displacement_rms_m": 5.065908226242755e-06,
+      "displacement_max_m": 5.0699367420747876e-05,
+      "displacement_from_rest_rms_m": 6.270208541536704e-05,
+      "axis_correction_rms_norm": 0.07127857208251953,
+      "axis_correction_max_norm": 0.46505245566368103,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.9895234704017639,
+        "min_center_j": 0.9956067204475403,
+        "min_center_singular_ratio": 0.9915173649787903
+      },
+      "pins_exact": true
+    },
+    {
+      "iteration": 4,
+      "energy_joule": {
+        "elastic": 0.01349350344389677,
+        "inertia": 0.01053438801318407,
+        "total": 0.02402789145708084
+      },
+      "displacement_rms_m": 3.4293464068468893e-06,
+      "displacement_max_m": 3.1734874937683344e-05,
+      "displacement_from_rest_rms_m": 6.283288530539721e-05,
+      "axis_correction_rms_norm": 0.07132240384817123,
+      "axis_correction_max_norm": 0.46595028042793274,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.9882139563560486,
+        "min_center_j": 0.9951793551445007,
+        "min_center_singular_ratio": 0.9907451272010803
+      },
+      "pins_exact": true
+    },
+    {
+      "iteration": 5,
+      "energy_joule": {
+        "elastic": 0.015349193476140499,
+        "inertia": 0.010789292864501476,
+        "total": 0.026138486340641975
+      },
+      "displacement_rms_m": 2.4700693757040426e-06,
+      "displacement_max_m": 2.1142641344340518e-05,
+      "displacement_from_rest_rms_m": 6.370759365381673e-05,
+      "axis_correction_rms_norm": 0.07128147035837173,
+      "axis_correction_max_norm": 0.46647292375564575,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.9872516989707947,
+        "min_center_j": 0.9948602318763733,
+        "min_center_singular_ratio": 0.9902989268302917
+      },
+      "pins_exact": true
+    },
+    {
+      "iteration": 6,
+      "energy_joule": {
+        "elastic": 0.016951829195022583,
+        "inertia": 0.01064310222864151,
+        "total": 0.027594931423664093
+      },
+      "displacement_rms_m": 2.4914122604968725e-06,
+      "displacement_max_m": 1.8460870705894195e-05,
+      "displacement_from_rest_rms_m": 6.345864676404744e-05,
+      "axis_correction_rms_norm": 0.0713244080543518,
+      "axis_correction_max_norm": 0.4663501977920532,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.9865477085113525,
+        "min_center_j": 0.9946371912956238,
+        "min_center_singular_ratio": 0.9899656772613525
+      },
+      "pins_exact": true
+    },
+    {
+      "iteration": 7,
+      "energy_joule": {
+        "elastic": 0.0184040404856205,
+        "inertia": 0.01091298833489418,
+        "total": 0.02931702882051468
+      },
+      "displacement_rms_m": 2.0691336430900265e-06,
+      "displacement_max_m": 1.5181980415945873e-05,
+      "displacement_from_rest_rms_m": 6.430789653677493e-05,
+      "axis_correction_rms_norm": 0.07128175348043442,
+      "axis_correction_max_norm": 0.4666489064693451,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.9859652519226074,
+        "min_center_j": 0.9944366812705994,
+        "min_center_singular_ratio": 0.9897657632827759
+      },
+      "pins_exact": true
+    },
+    {
+      "iteration": 8,
+      "energy_joule": {
+        "elastic": 0.019717656075954437,
+        "inertia": 0.010774413123726845,
+        "total": 0.030492069199681282
+      },
+      "displacement_rms_m": 2.054647666227538e-06,
+      "displacement_max_m": 1.2970180250704288e-05,
+      "displacement_from_rest_rms_m": 6.404770101653412e-05,
+      "axis_correction_rms_norm": 0.07132409512996674,
+      "axis_correction_max_norm": 0.4665175974369049,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.9855333566665649,
+        "min_center_j": 0.9942998886108398,
+        "min_center_singular_ratio": 0.9895868301391602
+      },
+      "pins_exact": true
+    },
+    {
+      "iteration": 9,
+      "energy_joule": {
+        "elastic": 0.020931394770741463,
+        "inertia": 0.011019127443432808,
+        "total": 0.03195052221417427
+      },
+      "displacement_rms_m": 1.814406346056785e-06,
+      "displacement_max_m": 1.2174812582088634e-05,
+      "displacement_from_rest_rms_m": 6.479438161477447e-05,
+      "axis_correction_rms_norm": 0.07129441201686859,
+      "axis_correction_max_norm": 0.46692150831222534,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.985158383846283,
+        "min_center_j": 0.9941704869270325,
+        "min_center_singular_ratio": 0.9894895553588867
+      },
+      "pins_exact": true
+    },
+    {
+      "iteration": 10,
+      "energy_joule": {
+        "elastic": 0.0220407135784626,
+        "inertia": 0.010895824059844017,
+        "total": 0.03293653577566147
+      },
+      "displacement_rms_m": 1.7959330307348864e-06,
+      "displacement_max_m": 1.0119620128534734e-05,
+      "displacement_from_rest_rms_m": 6.455433322116733e-05,
+      "axis_correction_rms_norm": 0.07133737951517105,
+      "axis_correction_max_norm": 0.4668329358100891,
+      "step_size_min": 0.05000000074505806,
+      "step_size_max": 0.05000000074505806,
+      "screen": {
+        "valid": true,
+        "min_gauss_j": 0.9848824143409729,
+        "min_center_j": 0.9940875172615051,
+        "min_center_singular_ratio": 0.9893845319747925
+      },
+      "pins_exact": true
+    }
+  ],
+  "status": "completed",
+  "initial_energy_joule": {
+    "elastic": 0.0001383724738843739,
+    "inertia": 0.0,
+    "total": 0.0001383724738843739
+  },
+  "initial_screen": {
+    "valid": true,
+    "min_gauss_j": 0.9999982118606567,
+    "min_center_j": 0.9999983310699463,
+    "min_center_singular_ratio": 0.9999982118606567
+  },
+  "iterations_completed": 10,
+  "elapsed_seconds": 0.7041737139225006,
+  "gpu_peak_allocated_bytes": 109239296
+}

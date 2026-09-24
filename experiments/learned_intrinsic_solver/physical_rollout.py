@@ -9,7 +9,8 @@ updates, and velocity advance otherwise stay connected inside a window. The
 default training policy freezes Y only when evaluating physical energy; Y is
 still an attached network feature. Windows detach X and V at their boundary so
 callers can backward each window and release its graph before asking for the
-next one.
+next one. The default is one physical timestep per gradient window: train
+each solve independently on the physical state produced by the previous one.
 """
 
 from __future__ import annotations
@@ -213,7 +214,7 @@ class PhysicalRollout:
         *,
         physical_steps: int,
         iterations: int = 1,
-        gradient_window: int = 2,
+        gradient_window: int = 1,
         forces: Tensor | None = None,
         fixed_positions: Tensor | None = None,
     ):
@@ -224,6 +225,8 @@ class PhysicalRollout:
         physical X unless supplied explicitly. Each step recomputes Y from its
         current X,V; every inner query within that step sees that same Y.
         The local objective is the mean over physical steps and batch samples.
+        By default, gradients stop at every physical timestep boundary while
+        all optimizer iterations inside that timestep remain connected.
         """
         forces, pins = self._validate_inputs(
             positions, velocities, forces, fixed_positions, physical_steps, iterations, gradient_window
