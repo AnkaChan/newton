@@ -1,0 +1,36 @@
+{
+  "status": "stopped_by_user",
+  "stop_reason": "User requested stopping after observing a training plateau.",
+  "completed_epochs": 198,
+  "optimizer_updates": 25344,
+  "stopped_during_epoch": 199,
+  "checkpoint_note": "Final checkpoint preserves the last fully completed epoch (198); partial epoch 199 updates are not included.",
+  "final_epoch": {
+    "epoch": 198,
+    "optimizer_updates": 25344,
+    "learning_rate": 1e-06,
+    "next_learning_rate": 1e-06,
+    "train": {
+      "mean_normalized_loss": -0.5968026159098372,
+      "mean_before_joule": 88.40210023522377,
+      "mean_after_joule": 38.34746075049043,
+      "descent_rate": 1.0,
+      "failed_count": 0,
+      "valid_count": 8192,
+      "sample_count": 8192
+    },
+    "validation": {
+      "mean_normalized_loss": -0.5913725681602955,
+      "mean_before_joule": 91.98701095581055,
+      "mean_after_joule": 40.505056619644165,
+      "descent_rate": 1.0,
+      "failed_count": 0,
+      "valid_count": 512,
+      "sample_count": 512,
+      "failures": []
+    },
+    "elapsed_seconds": 45776.93251499161,
+    "epoch_seconds": 228.9013898447156
+  },
+  "public_report": "https://ankachen.com/artifacts/learned-intrinsic-solver/training-large/index.html"
+}

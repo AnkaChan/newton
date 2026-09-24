@@ -976,3 +976,36 @@ run resumed an old epoch-two checkpoint through epoch three with the flag
 disabled: all ranks exited successfully and validation had no invalid cases.
 Repository pre-commit checks passed. The production restart uses the same
 `large_001` directory and begins epoch 16 from the epoch-15 checkpoint.
+
+## 28. Stop training and evaluate 100 solver iterations — 2026-09-25
+
+The user stopped the campaign after observing a plateau. Training stopped
+with epoch 198 / 25,344 completed Adam updates preserved; the partial epoch
+199 is excluded from the final checkpoint. Latest and best checkpoints remain
+available. All four GPU reservations were released. Final validation one-step
+normalized energy change was -0.591373, with 512/512 states decreasing energy
+and no invalid outputs. Raw mean energy was 91.9870 J before and 40.5051 J after
+one update. The final resumable checkpoint has `status=stopped_by_user`.
+[Stop snapshot](results/large-training-stop.json).
+
+The user next requested 100 consecutive solver iterations on the fixed
+validation set. Evaluate the saved epoch-198 final model on all 512 original
+validation candidates, with weights fixed and no Adam updates. Hold each
+original implicit Euler inertial target and pins unchanged, recompute frames
+from the current candidate each iteration, and feed each fused global shape
+into the next learned iteration. Physical time does not advance.
+
+For each query and iteration, divide current implicit Euler energy by that
+query's initial energy, using the exact positive initial value without a
+1-joule floor. Plot maximum, arithmetic mean, and median of these per-query
+ratios at iterations 0–100. This is a relative physical-energy measure, not an
+error relative to the unknown minimum. All curves start at one. Initial
+energies and first-step results must agree with the saved training validation.
+Preserve per-query energies and ratios as downloadable data.
+
+Report failed trajectories explicitly without repair, a line search, or
+holding their last valid energy. Full-population statistics become undefined
+if any query fails; any remaining-valid statistics must be separately labelled.
+The bounded evaluation can use four independently claimed GPUs with float32,
+TF32 and AMP off, and the existing CPU sparse fusion solves. Training remains
+stopped throughout this evaluation.
