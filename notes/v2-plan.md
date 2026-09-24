@@ -9,6 +9,9 @@ below.
 Latest data-policy revision: generate intermediate states on the fly and
 reproduce initial conditions with a seeded augmenter reset. Intermediate-state
 disk replay is optional diagnostic tooling, not the training baseline.
+The latest rollout target is 128 consecutive physical timesteps, with up to
+32 optimizer iterations inside each timestep. Add one overall perturbation
+multiplier per initial case to cover quieter starting states.
 
 ## Physical problem and representation
 
@@ -70,6 +73,22 @@ the inertial candidate and perturbed optimizer candidates. Always preserve
 the prescribed corners. Shape, velocity, material and candidate sampling
 should use reproducible seeds, with held-out seeds separate from training.
 
+Add a global perturbation scale to multiply the whole displacement from rest
+and the whole initial velocity field by the same scalar. This keeps the
+multiresolution deformation pattern while varying its overall intensity.
+For V2, sample the scale uniformly from 0 to 1 on its own seeded random
+stream. Smaller values give shapes closer to rest and lower initial speeds.
+Use a fixed zero scale for explicit undeformed, zero-velocity cases, and a
+fixed scale of one to recover the previous augmentation. Material, gravity,
+rest size and timestep are not multiplied. In particular, zero initial
+perturbation under gravity is not automatically a static equilibrium.
+
+The augmenter exposes `perturbation_scale_range`: `(0, 1)` selects V2's
+variable intensity, `(0, 0)` gives canonical rest with zero velocity, and
+`(1, 1)` preserves the previous seed-to-state mapping. The library default
+remains `(1, 1)` for compatibility; the future V2 trainer must select `(0, 1)`
+explicitly. Record the sampled scalar and its range in initial-state metadata.
+
 The implemented material sampler draws independently in logarithmic space:
 
 | Quantity | Range |
@@ -114,23 +133,29 @@ physical solve. The next solve then uses the updated weights. Do not rerun
 earlier physical steps after a weight update.
 
 Generate these trajectories live, so they change as the solver learns.
-Eight physical steps is a proposed training segment length, not a maximum
-trajectory lifetime: some trajectories must continue into later motion and
-settling. Mix those continuations with fresh seeded resets and near-equilibrium
+The final target is 128 consecutive physical steps per segment. At dt=1/300 s
+that covers about 0.427 seconds of physical time; it is not a maximum
+trajectory lifetime or a guarantee of settling. Some trajectories must continue
+into later motion and settling. Mix those continuations with fresh seeded resets and near-equilibrium
 starts. The exact sampling mixture is still a training-plan choice for review.
 Do not archive every intermediate state or sample a historical replay buffer
 in this baseline.
+
+The gradient boundary is still one physical timestep. Process its loss and
+backward pass before advancing; 128 forward physical steps do not require a
+128-step gradient graph. The longer horizon increases total computation, not
+the intended gradient-window memory. Do not accumulate every window's graph.
 
 For the new one-layer model, the proposed curriculum is:
 
 | Stage | Optimizer updates per physical step | Physical steps per segment |
 |---|---:|---:|
-| Initial | 1 | 2 |
-| 2 | 2 | 2 |
-| 3 | 4 | 2 |
-| 4 | 8 | 4 |
-| 5 | 16 | 4 |
-| Final | 32 | 8 |
+| Initial | 1 | 8 |
+| 2 | 2 | 16 |
+| 3 | 4 | 32 |
+| 4 | 8 | 64 |
+| 5 | 16 | 128 |
+| Final | 32 | 128 |
 
 Retain shorter solves after advancing. Use validation descent and trajectory
 stability to decide when to advance; numerical thresholds and patience remain
@@ -160,8 +185,10 @@ to grid size, augmentation ranges or implementation.
 ```python
 from experiments.learned_intrinsic_solver.initial_state import InitialStateAugmenter
 
-augmenter = InitialStateAugmenter(rest, master_seed=73, time_step=1 / 300)
-initial = augmenter.reset(seed=42)
+augmenter = InitialStateAugmenter(
+    rest, master_seed=73, time_step=1 / 300, perturbation_scale_range=(0, 1)
+)
+initial = augmenter.reset(seed=42)  # Also reproduces its global perturbation scale.
 # Advance the current physical state with the current network.
 # At the next reset, regenerate from rest rather than storing its history.
 same_initial = augmenter.reset()
@@ -252,7 +279,8 @@ speed, resting drift and fixed-corner accuracy. Failed cases must remain
 visible rather than disappearing from aggregate curves.
 
 Maintain epoch/update loss curves, curriculum stage, actual K and physical
-step counts, continuation/reset counts and material distribution. Save
+step counts, continuation/reset counts, perturbation-scale distribution and
+material distribution. Save
 latest/best/periodic resumable checkpoints including optimizer, random states,
 generator configuration/version, seed schedule and active trajectory states.
 An initial budget of up to 500 epochs is a proposal, with convergence-based
@@ -266,8 +294,10 @@ fusion uses its CPU solve with an adjoint backward pass. Do not assume that
 the previous four-GPU single-iteration run proves this new training loop.
 
 The complete experiment suite passed 207 tests on CPU/CUDA after adding seeded
-reset. Seven reset tests cover reproducibility, mutation isolation, legacy
-shape/velocity parity, separate material draws, pins, RNG isolation and
-unrepresentable float32 geometry. One full-grid reset took 0.24 seconds on
-CPU and repeated exactly. These are implementation checks, not evidence that
-a new model has been trained or that inversion recovery is implemented.
+reset. After adding the overall perturbation multiplier, all 33 focused data
+tests passed, including nine reset tests. They cover reproducibility, mutation
+isolation, legacy shape/velocity parity, separate material draws, pins, RNG
+isolation, zero/fractional/random multipliers and unrepresentable float32
+geometry. One full-grid reset took 0.24 seconds on CPU and repeated exactly.
+These are implementation checks, not evidence that a new model has been
+trained or that inversion recovery is implemented.

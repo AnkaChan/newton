@@ -1262,3 +1262,31 @@ quantized positions with float64 determinants and is not a stability proof.
 Seven focused reset tests and the full 207-test CPU/CUDA experiment suite
 passed, including exact compatibility with the existing shape/velocity seed
 stream. The independent review found no blocking issue.
+
+## 34. Longer physical trajectories and overall perturbation scale — 2026-09-24
+
+The user requested longer sequences, approximately 128 steps, and another
+global multiplier on the initial perturbation to provide quieter starts.
+Interpret 128 as consecutive physical timesteps; the previously selected
+maximum of 32 learned optimizer iterations per physical timestep is unchanged.
+Keep the gradient boundary at each physical timestep. At dt=1/300 s, 128
+physical steps span about 0.427 s; continuing beyond a segment is still needed
+when studying longer settling behavior.
+
+The revised proposed curriculum in v2-plan.md grows (inner iterations,
+physical segment length) through (1,8), (2,16), (4,32), (8,64), (16,128), and
+(32,128). Its progression thresholds still need review and trainer integration;
+no new training campaign has started.
+
+Add `perturbation_scale_range` to the initial-state augmenter. One independent
+seeded scalar multiplies both the complete displacement from rest and the
+initial velocity. V2 selects a uniform draw in [0,1]. A fixed zero gives the
+canonical undeformed shape and zero velocity; a fixed one preserves the
+previous augmentation exactly. Keep the API default at (1,1) for existing
+callers, while documenting explicit (0,1) in V2. Material and the underlying
+random shape/velocity pattern remain independent of this new random stream.
+Pins remain exact and the scaled float32 geometry is screened. Zero initial
+motion does not imply force balance under gravity.
+
+All 33 focused data tests passed after this change, including nine reset
+tests. No 128-step training rollout or new campaign was launched.

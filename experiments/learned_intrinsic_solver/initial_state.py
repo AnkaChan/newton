@@ -23,7 +23,7 @@ from .multiscale import generate_multiscale, interpolate_control_grid, screen_ge
 __all__ = ["InitialState", "InitialStateAugmenter"]
 
 _DEFAULT_MATERIAL_RANGES = MaterialRanges()
-_GENERATOR_VERSION = "initial_state_v1"
+_GENERATOR_VERSION = "initial_state_v2"
 _MULTISCALE_MAX_LEVELS = 3
 _MIN_VOLUME_RATIO = 0.2
 _VELOCITY_CONTROL_CAPS = (3, 3, 5)
@@ -69,8 +69,10 @@ class InitialStateAugmenter:
     """Regenerate seeded trajectory starts from an immutable canonical rest copy.
 
     The physical seed stream ``[master_seed, seed, 701]`` reproduces the smoke
-    sampler's X/V distribution when ranges and timestep agree. A separate
-    ``[master_seed, seed, 1103]`` stream selects one trajectory-level material.
+    sampler's X/V distribution when ranges, timestep, and perturbation scale
+    agree at one. Separate ``[master_seed, seed, 1103]`` and
+    ``[master_seed, seed, 1301]`` streams select trajectory-level material and
+    a shared global perturbation multiplier.
     Calling ``reset()`` repeats the current seed; ``reset(seed)`` switches it.
     """
 
@@ -84,6 +86,7 @@ class InitialStateAugmenter:
         material_ranges: MaterialRanges = _DEFAULT_MATERIAL_RANGES,
         strength_range: tuple[float, float] = (0.02, 0.1),
         velocity_dt_range: tuple[float, float] = (0.0, 0.1),
+        perturbation_scale_range: tuple[float, float] = (1.0, 1.0),
     ):
         if not isinstance(rest, VoxelGridData):
             raise TypeError("rest must be canonical VoxelGridData")
@@ -115,6 +118,7 @@ class InitialStateAugmenter:
         self.material_ranges = material_ranges
         self.strength_range = _range(strength_range, "strength_range")
         self.velocity_dt_range = _range(velocity_dt_range, "velocity_dt_range")
+        self.perturbation_scale_range = _range(perturbation_scale_range, "perturbation_scale_range")
 
     def _float32_positions(self, sampled: np.ndarray) -> tuple[np.ndarray, dict[str, float], int]:
         rest = self._rest
@@ -148,7 +152,19 @@ class InitialStateAugmenter:
             max_levels=_MULTISCALE_MAX_LEVELS,
             min_volume_ratio=_MIN_VOLUME_RATIO,
         )
-        positions, screen, extra_halvings = self._float32_positions(sample.positions)
+        perturbation_stream = [self.master_seed, current, 1301]
+        perturbation_scale = float(
+            np.random.default_rng(np.random.SeedSequence(perturbation_stream)).uniform(*self.perturbation_scale_range)
+        )
+        if perturbation_scale == 1.0:
+            sampled_positions = sample.positions  # Preserve the legacy float32 conversion bit for bit.
+        elif perturbation_scale == 0.0:
+            sampled_positions = rest.corner_rest_positions
+        else:
+            sampled_positions = rest.corner_rest_positions + perturbation_scale * (
+                sample.positions - rest.corner_rest_positions
+            )
+        positions, screen, extra_halvings = self._float32_positions(sampled_positions)
         counts = tuple(min(n + 1, cap) for n, cap in zip(rest.cell_counts, _VELOCITY_CONTROL_CAPS, strict=True))
         controls = rng.uniform(-1, 1, size=(*counts, 3))
         controls[:, :, 0] = 0
@@ -159,10 +175,14 @@ class InitialStateAugmenter:
             extent=np.asarray(rest.cell_counts) * rest.cell_size,
         )
         velocity[self._fixed] = 0
-        target_displacement_rms = float(rng.uniform(*self.velocity_dt_range) * rest.cell_size)
+        unscaled_target_displacement_rms = float(rng.uniform(*self.velocity_dt_range) * rest.cell_size)
         norm = _rms(velocity)
-        velocity *= target_displacement_rms / (self.time_step * norm) if norm else 0
+        velocity *= unscaled_target_displacement_rms / (self.time_step * norm) if norm else 0
         velocity = velocity.astype(np.float32)
+        if perturbation_scale == 0.0:
+            velocity.fill(0)
+        elif perturbation_scale != 1.0:
+            velocity *= np.float32(perturbation_scale)
         velocity[self._fixed] = 0
         if not np.isfinite(velocity).all():
             raise ValueError("float32 initial velocity is nonfinite")
@@ -178,12 +198,14 @@ class InitialStateAugmenter:
             "physical_seed_sequence": physical_stream,
             "material_seed_sequence": material_stream,
             "material_seed": material_seed,
+            "perturbation_seed_sequence": perturbation_stream,
             "cell_counts": list(rest.cell_counts),
             "cell_size": rest.cell_size,
             "origin": [float(value) for value in rest.corner_rest_positions[0]],
             "time_step": self.time_step,
             "strength_range": list(self.strength_range),
             "velocity_dt_range": list(self.velocity_dt_range),
+            "perturbation_scale_range": list(self.perturbation_scale_range),
             "material_ranges": asdict(self.material_ranges),
             "multiscale_max_levels": _MULTISCALE_MAX_LEVELS,
             "minimum_volume_ratio": _MIN_VOLUME_RATIO,
@@ -191,11 +213,13 @@ class InitialStateAugmenter:
             "max_float32_backtracking_steps": _MAX_FLOAT32_HALVINGS - 1,
             "material": asdict(material),
             "strength": strength,
-            "augmentation_scale": sample.effective_scale * (0.5**extra_halvings),
+            "perturbation_scale": perturbation_scale,
+            "augmentation_scale": sample.effective_scale * perturbation_scale * (0.5**extra_halvings),
             "multiscale_backtracking_steps": sample.backtracking_steps,
             "float32_backtracking_steps": extra_halvings,
             "velocity_dt_rms_m": _rms(self.time_step * velocity),
-            "requested_velocity_dt_rms_m": target_displacement_rms,
+            "requested_velocity_dt_rms_m": perturbation_scale * unscaled_target_displacement_rms,
+            "unscaled_requested_velocity_dt_rms_m": unscaled_target_displacement_rms,
             "screen": screen,
         }
         self.seed = current

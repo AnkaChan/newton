@@ -61,8 +61,11 @@ class TestInitialStateAugmenter(unittest.TestCase):
         for seed in (0, 7, 19):
             expected = sampler._physical(seed, fixed)
             actual = self.augmenter.reset(seed)
+            explicit_one = InitialStateAugmenter(self.rest, seed=seed, perturbation_scale_range=(1.0, 1.0)).reset()
             np.testing.assert_array_equal(actual.positions, expected["positions"])
             np.testing.assert_array_equal(actual.velocities, expected["velocity"])
+            np.testing.assert_array_equal(explicit_one.positions, expected["positions"])
+            np.testing.assert_array_equal(explicit_one.velocities, expected["velocity"])
             self.assertEqual(actual.metadata["strength"], expected["metadata"]["strength"])
             self.assertEqual(
                 actual.metadata["requested_velocity_dt_rms_m"], expected["metadata"]["requested_velocity_dt_rms_m"]
@@ -86,6 +89,53 @@ class TestInitialStateAugmenter(unittest.TestCase):
             self.assertGreaterEqual(value, bounds[0])
             self.assertLessEqual(value, bounds[1])
 
+    def test_zero_and_fractional_global_perturbation_scale(self):
+        seed = 7
+        baseline = self.augmenter.reset(seed)
+        zero = InitialStateAugmenter(self.rest, perturbation_scale_range=(0.0, 0.0)).reset(seed)
+        quarter = InitialStateAugmenter(self.rest, perturbation_scale_range=(0.25, 0.25)).reset(seed)
+        rest32 = self.rest.corner_rest_positions.astype(np.float32)
+        np.testing.assert_array_equal(zero.positions, rest32)
+        np.testing.assert_array_equal(zero.velocities, np.zeros_like(zero.velocities))
+        np.testing.assert_array_equal(quarter.positions[quarter.fixed_indices], rest32[quarter.fixed_indices])
+        np.testing.assert_array_equal(quarter.velocities[quarter.fixed_indices], 0)
+        self.assertEqual(zero.material, baseline.material)
+        self.assertEqual(quarter.material, baseline.material)
+        np.testing.assert_allclose(
+            quarter.positions - rest32,
+            0.25 * (baseline.positions - rest32),
+            rtol=5e-4,
+            atol=3e-8,
+        )
+        np.testing.assert_allclose(quarter.velocities, 0.25 * baseline.velocities, rtol=1e-6, atol=1e-7)
+        self.assertEqual(zero.metadata["augmentation_scale"], 0)
+        self.assertEqual(quarter.metadata["perturbation_scale"], 0.25)
+        self.assertEqual(
+            quarter.metadata["requested_velocity_dt_rms_m"],
+            0.25 * baseline.metadata["requested_velocity_dt_rms_m"],
+        )
+
+    def test_random_global_scale_is_reproducible_independent_and_bounded(self):
+        random_scale = InitialStateAugmenter(self.rest, perturbation_scale_range=(0.0, 1.0))
+        first = random_scale.reset(7)
+        random_scale.reset(9)
+        repeated = random_scale.reset(7)
+        fresh = InitialStateAugmenter(self.rest, perturbation_scale_range=(0.0, 1.0)).reset(7)
+        expected = float(np.random.default_rng(np.random.SeedSequence([73, 7, 1301])).uniform(0.0, 1.0))
+        self.assertEqual(first.metadata["perturbation_scale"], expected)
+        self.assertEqual(first.metadata["perturbation_seed_sequence"], [73, 7, 1301])
+        self.assertGreaterEqual(expected, 0)
+        self.assertLessEqual(expected, 1)
+        for other in (repeated, fresh):
+            np.testing.assert_array_equal(other.positions, first.positions)
+            np.testing.assert_array_equal(other.velocities, first.velocities)
+            self.assertEqual(other.metadata, first.metadata)
+        self.assertEqual(first.material, self.augmenter.reset(7).material)
+        changed_shape = InitialStateAugmenter(
+            self.rest, strength_range=(0.0, 0.0), perturbation_scale_range=(0.0, 1.0)
+        ).reset(7)
+        self.assertEqual(changed_shape.metadata["perturbation_scale"], expected)
+
     def test_float32_screen_pins_and_metadata(self):
         state = self.augmenter.reset(2)
         self.assertEqual(state.positions.dtype, np.float32)
@@ -101,7 +151,7 @@ class TestInitialStateAugmenter(unittest.TestCase):
         self.assertGreaterEqual(state.metadata["screen"]["min_tet_volume_ratio"], 0.2)
         self.assertGreaterEqual(state.metadata["screen"]["min_sampled_jacobian"], 0.2)
         self.assertEqual(state.metadata["schema_version"], 1)
-        self.assertEqual(state.metadata["generator_version"], "initial_state_v1")
+        self.assertEqual(state.metadata["generator_version"], "initial_state_v2")
         self.assertEqual(state.metadata["physical_seed_sequence"], [73, 2, 701])
 
     def test_reset_does_not_advance_global_numpy_random_state(self):
@@ -124,6 +174,8 @@ class TestInitialStateAugmenter(unittest.TestCase):
             {"time_step": 0},
             {"strength_range": (0.2, 0.1)},
             {"velocity_dt_range": (-1, 0.1)},
+            {"perturbation_scale_range": (-0.1, 1.0)},
+            {"perturbation_scale_range": (1.0, 0.5)},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises((TypeError, ValueError)):
                 InitialStateAugmenter(self.rest, **kwargs)
