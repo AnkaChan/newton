@@ -1184,3 +1184,43 @@ physical-step training should include states near convergence as well as
 large deformations.
 
 Diagnostic: [epoch198-rest-drift.json](results/epoch198-rest-drift.json).
+
+## 32. Retain physical states on disk and vary materials — 2026-09-24
+
+The user approved implementing disk retention of previous physical states.
+Keep every collected timestep input, with no automatic replay-buffer eviction.
+Use float32 positions and velocities, the applicable loads and prescribed
+positions, and a shared immutable physical context for rest geometry,
+topology, material, mass and timestep. Replay recomputes the implicit-Euler
+problem with the current network; historical predictions are not labels.
+
+The implementation uses one SQLite archive per rank, atomic durable batch
+appends, compressed deduplicated contexts, and lazy reads across rank files.
+Commit a timestep's input before solving it, so failed solves retain their
+starting states. Trajectory IDs and step indices cannot be overwritten, and
+one trajectory cannot switch physical contexts. Sampling uses a seeded fixed
+row-ID snapshot; explicit refresh admits newer data. The reader loads only
+selected arrays. There is no storage-imposed ratio between replay and live
+training, and no automatic trainer restart.
+
+The user also requested material ranges: lambda and mu each from 1,000 to
+1,000,000 Pa, density from 100 to 10,000 kg/m³. The new deterministic sampler
+draws these independently and log-uniformly, once per object/trajectory.
+Retained states restore their actual material and native masses; replaying a
+state with another context is rejected. The old fixed-material training
+dataset and trained checkpoint are unchanged.
+
+This implements storage, the physical-rollout retention/replay adapter, and
+the material sampler. The production epoch trainer still needs the separately
+reviewed consecutive-iteration/physical-step integration before another
+campaign. No new training campaign was authorized or launched.
+
+During this work the user asked about inversion. The three signed axes can
+represent it; a proper rotation frame can be obtained by sign-correcting an
+SVD rotation and computing local axes from the original deformation matrix.
+Reconstruction retains the inversion in those axes. Frame continuity near
+degeneracy, an inversion-tolerant continuation of the elastic energy, and
+recovery examples remain proposals. None of these physics changes is part of
+the disk archive implementation.
+
+Usage and storage contract: [DISK-REPLAY.MD](DISK-REPLAY.MD).

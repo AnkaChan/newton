@@ -16,6 +16,7 @@ each solve independently on the physical state produced by the previous one.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import NamedTuple
 
 import torch  # noqa: TID253 -- This opt-in experimental module uses Torch tensors.
@@ -157,11 +158,11 @@ class PhysicalRollout:
         velocities: Tensor,
         forces: Tensor,
         fixed_positions: Tensor,
+        gravity: Tensor,
         *,
         iterations: int,
     ) -> PhysicalStep:
         step = self.unrolled.step
-        gravity = torch.as_tensor(self.solver._gravity(), dtype=positions.dtype, device=positions.device)
         acceleration = gravity + forces / step.energy.lumped_mass[None, :, None]
         inertial = make_inertial_prediction(positions, velocities, self.time_step, explicit_acceleration=acceleration)
 
@@ -217,6 +218,7 @@ class PhysicalRollout:
         gradient_window: int = 1,
         forces: Tensor | None = None,
         fixed_positions: Tensor | None = None,
+        on_step_start: Callable[[int, Tensor, Tensor, Tensor, Tensor, Tensor], None] | None = None,
     ):
         """Yield consecutive differentiable windows, detaching X,V between them.
 
@@ -227,7 +229,13 @@ class PhysicalRollout:
         The local objective is the mean over physical steps and batch samples.
         By default, gradients stop at every physical timestep boundary while
         all optimizer iterations inside that timestep remain connected.
+        Optional on_step_start receives (index, X, V, forces, pins, gravity)
+        as detached, isolated tensor copies immediately before each solve.
+        It can durably retain a failed solve's starting state without touching
+        the autograd path or modifying the physical inputs.
         """
+        if on_step_start is not None and not callable(on_step_start):
+            raise TypeError("on_step_start must be callable or None")
         forces, pins = self._validate_inputs(
             positions, velocities, forces, fixed_positions, physical_steps, iterations, gradient_window
         )
@@ -238,7 +246,17 @@ class PhysicalRollout:
             end = min(start + gradient_window, physical_steps)
             for index in range(start, end):
                 applied_forces = forces if forces.ndim == 3 else forces[index]
-                result = self._advance(x, v, applied_forces, pins, iterations=iterations)
+                gravity = torch.as_tensor(self.solver._gravity(), dtype=x.dtype, device=x.device)
+                if on_step_start is not None:
+                    on_step_start(
+                        index,
+                        x.detach().clone(),
+                        v.detach().clone(),
+                        applied_forces.detach().clone(),
+                        pins.detach().clone(),
+                        gravity.detach().clone(),
+                    )
+                result = self._advance(x, v, applied_forces, pins, gravity, iterations=iterations)
                 steps.append(result)
                 x, v = result.positions, result.velocities
             per_sample = torch.stack([step.per_sample_objective for step in steps]).mean(dim=0)
