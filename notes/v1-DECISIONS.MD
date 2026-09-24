@@ -1290,3 +1290,29 @@ motion does not imply force balance under gravity.
 
 All 33 focused data tests passed after this change, including nine reset
 tests. No 128-step training rollout or new campaign was launched.
+
+## 35. Derive Lamé parameters from Young's modulus — 2026-09-24
+
+The user requested obtaining lambda and mu from Young's modulus. This
+supersedes the independent lambda/mu sampling in section 32. Sample Young's
+modulus log-uniformly from 1,000 to 1,000,000 Pa, retaining the independent
+log-uniform density range of 100 to 10,000 kg/m³. Poisson's ratio is also
+needed; use a configurable default of 0.3 as a provisional implementation
+choice. A configured interval is sampled uniformly within `0 <= nu < 0.5`.
+The ratio choice is not yet a user decision.
+
+Derive `mu = E / (2 * (1 + nu))` and
+`lambda = E * nu / ((1 + nu) * (1 - 2 * nu))`. The network, energy and Newton
+model still consume lambda, mu and density. Material sample dictionaries
+retain exactly these three model keywords; read-only properties expose the
+corresponding Young's modulus and Poisson's ratio.
+
+Reset metadata records both parameterizations and uses generation version
+`initial_state_v3`. The material mapping changes, while shape, velocity,
+perturbation and density random streams retain their previous meanings.
+One material remains fixed for the whole physical trajectory. The production
+trainer still uses its old fixed material until the V2 integration is done.
+
+All 36 focused data tests passed, including known conversion values,
+reproducible draws, parameter ranges, reset provenance and shape/velocity
+compatibility. No new training campaign was started.

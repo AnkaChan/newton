@@ -79,13 +79,13 @@ class TestInitialStateAugmenter(unittest.TestCase):
         self.assertEqual(state.metadata["material_seed"], material_seed)
         different_shape = InitialStateAugmenter(self.rest, master_seed=73, strength_range=(0.0, 0.0)).reset(seed)
         self.assertEqual(different_shape.material, state.material)
-        custom_ranges = MaterialRanges(lame_lambda=(1e4, 1e5), lame_mu=(1e3, 1e4), density=(200, 500))
+        custom_ranges = MaterialRanges(youngs_modulus=(1e4, 1e5), poissons_ratio=(0.2, 0.4), density=(200, 500))
         different_material = InitialStateAugmenter(self.rest, master_seed=73, material_ranges=custom_ranges).reset(seed)
         np.testing.assert_array_equal(different_material.positions, state.positions)
         np.testing.assert_array_equal(different_material.velocities, state.velocities)
-        for value, bounds in zip(
-            asdict(different_material.material).values(), asdict(custom_ranges).values(), strict=True
-        ):
+        sampled = different_material.material
+        values = (sampled.youngs_modulus, sampled.poissons_ratio, sampled.density)
+        for value, bounds in zip(values, asdict(custom_ranges).values(), strict=True):
             self.assertGreaterEqual(value, bounds[0])
             self.assertLessEqual(value, bounds[1])
 
@@ -151,8 +151,19 @@ class TestInitialStateAugmenter(unittest.TestCase):
         self.assertGreaterEqual(state.metadata["screen"]["min_tet_volume_ratio"], 0.2)
         self.assertGreaterEqual(state.metadata["screen"]["min_sampled_jacobian"], 0.2)
         self.assertEqual(state.metadata["schema_version"], 1)
-        self.assertEqual(state.metadata["generator_version"], "initial_state_v2")
+        self.assertEqual(state.metadata["generator_version"], "initial_state_v3")
         self.assertEqual(state.metadata["physical_seed_sequence"], [73, 2, 701])
+
+    def test_youngs_and_poisson_provenance_matches_derived_solver_parameters(self):
+        """Record modulus and ratio consistently with the actual solver inputs."""
+        ranges = MaterialRanges(youngs_modulus=(1000, 1000), poissons_ratio=(0.25, 0.25), density=(1000, 1000))
+        state = InitialStateAugmenter(self.rest, material_ranges=ranges).reset(2)
+        self.assertAlmostEqual(state.material.lame_lambda, 400)
+        self.assertAlmostEqual(state.material.lame_mu, 400)
+        source = state.metadata["material_parameters"]
+        self.assertAlmostEqual(source["youngs_modulus"], 1000)
+        self.assertAlmostEqual(source["poissons_ratio"], 0.25)
+        self.assertEqual(state.metadata["material"], asdict(state.material))
 
     def test_reset_does_not_advance_global_numpy_random_state(self):
         original = np.random.get_state()  # noqa: NPY002 -- Verify the legacy global RNG is untouched.

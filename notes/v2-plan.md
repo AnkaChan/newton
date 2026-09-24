@@ -89,13 +89,28 @@ variable intensity, `(0, 0)` gives canonical rest with zero velocity, and
 remains `(1, 1)` for compatibility; the future V2 trainer must select `(0, 1)`
 explicitly. Record the sampled scalar and its range in initial-state metadata.
 
-The implemented material sampler draws independently in logarithmic space:
+The implemented material sampler draws Young's modulus and density independently
+in logarithmic space, then derives the Lamé parameters:
 
-| Quantity | Range |
-|---|---:|
-| First Lamé parameter, lambda | 1,000–1,000,000 Pa |
-| Shear modulus, mu | 1,000–1,000,000 Pa |
-| Density | 100–10,000 kg/m³ |
+| Quantity | Sampling |
+|---|---|
+| Young's modulus, E | Log-uniform from 1,000–1,000,000 Pa |
+| Poisson's ratio, nu | Configurable; default fixed at 0.3 |
+| Density | Log-uniform from 100–10,000 kg/m³ |
+
+Young's modulus alone is insufficient to determine both Lamé parameters. Use:
+
+```text
+mu     = E / (2 * (1 + nu))
+lambda = E * nu / ((1 + nu) * (1 - 2 * nu))
+```
+
+The default ratio of 0.3 is a provisional implementation choice, not a user
+decision. A nonzero configured ratio range is sampled uniformly; this solver
+supports `0 <= nu < 0.5`. The network and physical energy still receive lambda
+and mu. They are derived together, not drawn independently. Initial-state
+metadata records both forms and the generation version is `initial_state_v3`;
+the changed material mapping preserves the shape/velocity and density streams.
 
 Sample one uniform material per object and keep it fixed along that trajectory.
 The same reset seed and augmentation configuration reproduce the initial
@@ -299,5 +314,8 @@ tests passed, including nine reset tests. They cover reproducibility, mutation
 isolation, legacy shape/velocity parity, separate material draws, pins, RNG
 isolation, zero/fractional/random multipliers and unrepresentable float32
 geometry. One full-grid reset took 0.24 seconds on CPU and repeated exactly.
+After deriving Lamé parameters from Young's modulus and Poisson's ratio,
+all 36 focused data tests passed, including ten reset tests and seven material
+tests. Known conversion values and recorded material provenance are covered.
 These are implementation checks, not evidence that a new model has been
 trained or that inversion recovery is implemented.

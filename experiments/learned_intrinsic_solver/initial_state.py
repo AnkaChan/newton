@@ -23,7 +23,7 @@ from .multiscale import generate_multiscale, interpolate_control_grid, screen_ge
 __all__ = ["InitialState", "InitialStateAugmenter"]
 
 _DEFAULT_MATERIAL_RANGES = MaterialRanges()
-_GENERATOR_VERSION = "initial_state_v2"
+_GENERATOR_VERSION = "initial_state_v3"
 _MULTISCALE_MAX_LEVELS = 3
 _MIN_VOLUME_RATIO = 0.2
 _VELOCITY_CONTROL_CAPS = (3, 3, 5)
@@ -212,6 +212,10 @@ class InitialStateAugmenter:
             "velocity_control_point_caps": list(_VELOCITY_CONTROL_CAPS),
             "max_float32_backtracking_steps": _MAX_FLOAT32_HALVINGS - 1,
             "material": asdict(material),
+            "material_parameters": {
+                "youngs_modulus": material.youngs_modulus,
+                "poissons_ratio": material.poissons_ratio,
+            },
             "strength": strength,
             "perturbation_scale": perturbation_scale,
             "augmentation_scale": sample.effective_scale * perturbation_scale * (0.5**extra_halvings),
