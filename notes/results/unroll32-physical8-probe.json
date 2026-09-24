@@ -1,0 +1,66 @@
+{
+  "status": "complete",
+  "physical_steps": 8,
+  "iterations_per_step": 32,
+  "gradient_window": 2,
+  "activation_checkpointing": true,
+  "detach_energy_target": true,
+  "loss_policy": "preceding_energy_detached",
+  "training_updates": 0,
+  "physical_seed": 10000,
+  "checkpoint_epoch": 198,
+  "cell_counts": [
+    10,
+    10,
+    40
+  ],
+  "batch": 1,
+  "completed_physical_steps": 8,
+  "completed_windows": 4,
+  "state_continuity_exact": true,
+  "pins_exact": true,
+  "finite_parameter_gradients": true,
+  "all_parameters_unchanged": true,
+  "input_position_gradient_norm": 163.37498474121094,
+  "input_velocity_gradient_norm": 1.1508899927139282,
+  "network_gradient_norm": 5489.1318359375,
+  "energy_per_step": [
+    {
+      "initial_energy_joule": 52.167884826660156,
+      "final_energy_joule": 22.841970443725586
+    },
+    {
+      "initial_energy_joule": 23.846084594726562,
+      "final_energy_joule": 14.802331924438477
+    },
+    {
+      "initial_energy_joule": 21.458114624023438,
+      "final_energy_joule": 197.9704132080078
+    },
+    {
+      "initial_energy_joule": 191.26914978027344,
+      "final_energy_joule": 628.9277954101562
+    },
+    {
+      "initial_energy_joule": 542.2262573242188,
+      "final_energy_joule": 891.9215087890625
+    },
+    {
+      "initial_energy_joule": 706.2583618164062,
+      "final_energy_joule": 1058.76904296875
+    },
+    {
+      "initial_energy_joule": 846.604248046875,
+      "final_energy_joule": 1146.509765625
+    },
+    {
+      "initial_energy_joule": 906.4512939453125,
+      "final_energy_joule": 1220.975341796875
+    }
+  ],
+  "seconds": 58.599678069353104,
+  "peak_allocated_bytes": 742385664,
+  "experiment_test_count": 177,
+  "production_training_restarted": false,
+  "trainer_curriculum_integration_complete": false
+}

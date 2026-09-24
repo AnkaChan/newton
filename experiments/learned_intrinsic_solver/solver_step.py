@@ -208,6 +208,7 @@ class LearnedHexSolverStep(nn.Module):
         frames: Tensor | None = None,
         rigid_delta_rotation: Tensor | None = None,
         rigid_delta_translation: Tensor | None = None,
+        detach_energy_target: bool = False,
     ) -> LearnedHexStepOutput:
         """Update local axes, fuse shared corners, and evaluate implicit-Euler energy.
 
@@ -221,11 +222,16 @@ class LearnedHexSolverStep(nn.Module):
             rigid_delta_translation: Optional world translation [m], [B,3], in
                 the same map x -> Q*x+t. Pins set the final translation in this
                 clamped baseline, so this t cancels from the exact minimizer.
+            detach_energy_target: Treat the inertial predictor as fixed only
+                in the physical energy. Its network-feature path remains
+                differentiable, including in consecutive physical steps.
 
         Returns:
             Proposed global positions and per-object physical energy terms.
             No state is mutated or physical time advanced.
         """
+        if not isinstance(detach_energy_target, bool):
+            raise TypeError("detach_energy_target must be boolean")
         inputs = self.prepare_inputs(positions, inertial_prediction, frames=frames)
         prediction = self.network(inputs.local_axes, inputs.state_features, inputs.edge_features, inputs.conditioning)
         world_increment = inputs.frames @ (prediction.local_target_axes - inputs.local_axes)
@@ -247,7 +253,8 @@ class LearnedHexSolverStep(nn.Module):
         if fixed_positions is None:
             fixed_positions = self.rest_positions[self.fixed_indices][None].expand(batch, -1, -1)
         fused = self.fusion.fuse(base, world_increment, fixed_positions)
-        loss = self.energy(fused, inertial_prediction)
+        energy_target = inertial_prediction.detach() if detach_energy_target else inertial_prediction
+        loss = self.energy(fused, energy_target)
         return LearnedHexStepOutput(
             fused, prediction.local_target_axes, prediction.axis_correction, prediction.step_size, inputs.frames, loss
         )

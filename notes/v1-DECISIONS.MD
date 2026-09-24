@@ -1091,3 +1091,63 @@ recordings preserve the existing checkpoint and physical formulation.
 [Watch all ten recordings](https://ankachen.com/artifacts/learned-intrinsic-solver/learned-two-iterations/index.html).
 The compact reproducibility record is
 [learned-two-iterations-summary.json](results/learned-two-iterations-summary.json).
+
+## 30. Train up to 32 iterations and consecutive physical steps — 2026-09-24
+
+The user requested a maximum of 32 learned optimizer iterations per physical
+timestep and training on consecutive physical timesteps. These are separate
+counts: the inner solve holds its original inertial prediction fixed, while
+each physical advance updates positions and velocities and constructs a new
+inertial prediction. The previous physical positions must remain distinct
+from the candidate shape used to initialize the optimizer.
+
+The proposed curriculum starts from the existing epoch-198 weights and grows
+through (inner iterations, physical steps) = (2,2), (4,2), (8,4), (16,4), and
+(32,8), retaining some shorter queries. Progression must depend on held-out
+per-iteration descent and physical-rollout results, and the actual counts and
+curriculum stage must be recorded in curves and resumable checkpoints. A
+stage that cannot advance must be reported explicitly. It must not silently
+repeat the old one-iteration campaign. Later training windows should also
+continue existing simulated trajectories to cover states beyond their first
+few timesteps, alongside fresh augmented starts.
+
+Eight physical steps per rollout and two physical steps per gradient window
+are provisional memory choices, presented to the user for adjustment. Inside
+each window, all inner iterates and both positions and velocities remain
+attached to the gradient graph. Between windows, detach positions and
+velocities together while carrying their values forward unchanged. This is
+truncated differentiation across physical time, not a reset of the simulation.
+Keep the weights fixed until all window losses for an update have been
+backpropagated, then apply Adam. Activation checkpointing recomputes the full
+learned step, including frame/edge feature construction and fusion, to bound
+memory. Start measured batch sizes small before sizing four-GPU training.
+
+Each physical step averages the normalized energy change after all inner
+updates and adds a penalty for energy increases. Its initial energy and
+normalization scale are detached, as is the preceding energy used as each
+descent comparison target. The physical loss treats that timestep's inertial
+prediction as fixed, while its network-feature path remains differentiable.
+This avoids rewarding changes to the energy reference itself. Frame
+decomposition and native semi-implicit rigid guidance remain frozen as
+previously agreed. The training tensor path reuses native Newton model
+metadata but avoids native State snapshots and writes, which would sever
+gradients between physical steps.
+
+New reusable modules implement the inner unroll and physical gradient
+windows. This is design and feasibility work: the existing epoch trainer has
+not yet been wired to this curriculum, and the stopped production campaign
+has not resumed. Inversion-tolerant energy/frame handling remains a separate
+requirement before claiming inversion recovery or robust long trajectories.
+
+
+The final-policy CUDA feasibility check used the full 10×10×40 grid and the
+epoch-198 model on held-out physical seed 10000: eight physical steps,
+32 learned iterations per step, two-step gradient windows, and activation
+checkpointing. Positions and velocities carried forward exactly between
+windows, pins remained exact, input and network gradients were finite and
+nonzero, and parameters stayed unchanged (zero Adam updates). The batch-one
+forward/backward run took 58.60 seconds with peak Torch allocated memory
+742,385,664 bytes. All 177 experiment tests and repository pre-commit checks
+passed. This is gradient-path feasibility, not improved solver quality: the
+existing model increased energy sharply from the third physical timestep.
+Results: [unroll32-physical8-probe.json](results/unroll32-physical8-probe.json).
