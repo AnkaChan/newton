@@ -37,7 +37,9 @@ class TestOptimizerProbe(unittest.TestCase):
                 output_dir=Path(directory), cell_counts=(2, 2, 3), seeds=(0,), iterations=2, threads=2
             )
             self.assertTrue(report["all_graph_checks_passed"])
+            self.assertEqual(report["network_hops"], [1])
             cases = {case["head_initialization"]: case for case in report["cases"]}
+            self.assertEqual({tuple(case["network_hops"]) for case in cases.values()}, {(1,)})
             zero = cases["zero"]
             self.assertTrue(zero["zero_head_exact_noop"])
             self.assertGreater(zero["parameter_gradients"]["correction_head.weight"]["norm"], 0)

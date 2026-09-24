@@ -1,5 +1,11 @@
 # V1 Plan: Learned Intrinsic Solver
 
+**Historical V1 snapshot.** The architecture, backend, dataset and training
+status below record the earlier baseline. Current V2 decisions and implemented
+mixed-pool training are described in [v2-plan.md](v2-plan.md) and
+[decision 39](v1-DECISIONS.MD#39-v2-mixed-pool-trainer-implementation--2026-09-24).
+The new pipeline's verification is in progress; no new campaign has launched.
+
 Build a learned optimizer for the original implicit-Euler problem of a
 three-dimensional deformable solid. The current proof of concept is a pinned
 10×10×40 grid of 0.025 m cubic hexahedra with canonical rest geometry. Its

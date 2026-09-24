@@ -197,8 +197,8 @@ class IntrinsicSolverOutput(NamedTuple):
 class IntrinsicSolverNetwork(nn.Module):
     """Stack experimental graph-transformer blocks into a local-target predictor.
 
-    The baseline is three local blocks with corner-connected hop distances
-    (1, 1, 1), width 128, and four heads. Topology is a full canonical cuboid;
+    The baseline is one local block with corner-connected hop distance
+    (1,), width 128, and four heads. Topology is a full canonical cuboid;
     each batch entry has the same topology and is one separate object. Indices
     and masks are registered buffers, so state_dict and device moves retain
     them. Do not use this topology to connect separate or empty material cells.
@@ -221,7 +221,9 @@ class IntrinsicSolverNetwork(nn.Module):
         num_heads: Attention heads per block.
         edge_input_dim: Raw directed edge channels; network_geometry supplies 24.
         edge_hidden_dim: Shared encoded edge width.
-        hops: Exact graph-hop distance used by each block, plus self.
+        hops: Exact graph-hop distance used by each block, plus self. Defaults
+            to one radius-1 block (27 masked slots); pass an explicit sequence
+            to restore a saved architecture with more blocks.
         max_step_size: Upper bound on the dimensionless object step.
         query_chunk_size: Query cells per attention chunk; all neighbor slots remain visible.
     """
@@ -236,7 +238,7 @@ class IntrinsicSolverNetwork(nn.Module):
         num_heads: int = 4,
         edge_input_dim: int = 24,
         edge_hidden_dim: int = 64,
-        hops: tuple[int, ...] = (1, 1, 1),
+        hops: tuple[int, ...] = (1,),
         max_step_size: float = 1.0,
         query_chunk_size: int = 128,
     ):

@@ -45,7 +45,7 @@ class TrainSmokeConfig:
     hidden_dim: int = 128
     edge_hidden_dim: int = 64
     num_heads: int = 4
-    hops: tuple[int, ...] = (1, 1, 1)
+    hops: tuple[int, ...] = (1,)
     query_chunk_size: int = 128
     train_count: int = 16
     validation_count: int = 8
@@ -672,6 +672,18 @@ def _run_training(output, config, *, resume):
     return result
 
 
+def _resolve_cli_hops(hops, resume):
+    """Use checkpoint hops only when the CLI leaves the architecture unspecified."""
+    if hops is not None:
+        return tuple(hops)
+    if resume is not None:
+        import torch
+
+        saved = torch.load(resume, map_location="cpu", weights_only=False)
+        return tuple(saved["config"]["hops"])
+    return TrainSmokeConfig.hops
+
+
 def _main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path(__file__).parent / "generated" / "training_smoke")
@@ -682,6 +694,9 @@ def _main():
     parser.add_argument("--cell-counts", nargs=3, type=int, default=(10, 10, 40))
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--edge-hidden-dim", type=int, default=64)
+    parser.add_argument(
+        "--hops", nargs="+", type=int, help="Hop distance per block; default: saved hops on resume, otherwise 1"
+    )
     parser.add_argument("--train-count", type=int, default=16)
     parser.add_argument("--validation-count", type=int, default=8)
     parser.add_argument("--validation-interval", type=int, default=8)
@@ -692,6 +707,7 @@ def _main():
     args = parser.parse_args()
     values = vars(args).copy()
     output, resume = values.pop("output"), values.pop("resume")
+    values["hops"] = _resolve_cli_hops(values["hops"], resume)
     result = run_training(output, TrainSmokeConfig(**values), resume=resume)
     print(
         json.dumps(

@@ -1,6 +1,6 @@
 # V1 Technical Decisions: Learned Intrinsic Solver
 
-Recorded from the design conversation through 2026-09-24. Early sections preserve the original proposals and open questions; the later implementation sections supersede their status claims. The current design, measured results, and next training configuration are consolidated in sections 22–24. This is an experimental solver, without a general convergence or contact guarantee. The short overview is [v1-PLAN.MD](v1-PLAN.MD).
+Recorded from the design conversation through 2026-09-24. Early sections preserve the original proposals and open questions; the later implementation sections supersede their status claims. Sections 22–38 preserve the earlier design and measurements. The current implementation status is in [section 39](#39-v2-mixed-pool-trainer-implementation--2026-09-24) and [v2-plan.md](v2-plan.md); its configurable defaults remain subject to campaign review. This is an experimental solver, without a general convergence or contact guarantee. The short overview is [v1-PLAN.MD](v1-PLAN.MD).
 
 **Latest clarification:** the global rigid pose target is used only in fusion. The physical implicit-Euler inertia, free-motion predictor, inertial-offset inputs, and physical gradients remain unchanged. Fusion constructs a candidate configuration; it does not replace the physical time-step objective.
 
@@ -1432,3 +1432,112 @@ multi-GPU trainer remain unimplemented or unintegrated. Exact resume must
 eventually checkpoint active candidates, fixed Y, sampled counts and progress
 as well as weights, optimizer and random state. This records the agreed
 trainer design without authorizing a training launch; training remains stopped.
+
+
+## 39. V2 mixed-pool trainer implementation — 2026-09-24
+
+The user authorized completing the V2 trainer and its verification. **No new
+training campaign has been launched.** This section supersedes the
+unimplemented-status statements in section 38 while retaining the selected
+physical problem and detached mixed-state update policy. Existing sections
+remain historical records, including earlier probabilities and curriculum
+proposals that were not finalized campaign decisions.
+
+The new `train_mixed` pipeline integrates `MixedHexSolverStep`,
+`ActiveTrajectoryPool` and `MixedCurriculum`. Each rank maintains independent
+material contexts and an active pool, with one shared network forward over
+its full mixed batch and one Adam update after the mean local loss. DDP
+synchronizes learned parameters and gradients with physical context buffers
+kept local. The launcher exposes `--pipeline mixed`; the legacy epoch pipeline
+and explicitly saved architectures remain available. V2 starts fresh with the
+one-layer `[1]` network. It never truncates an old three-layer checkpoint.
+
+Each trajectory independently samples K and H once, retains both through H
+completed physical steps, and then receives a new unique reset seed and fresh
+budgets. Maximum counts remain K=32 and H=128. Stage changes affect only new
+resets. Every proposal and physical boundary detaches the carried state;
+there is no connected K/H graph or additional 1/K weight in the mixed loss.
+Initial/comparison energies are detached, and the original implicit-Euler Y
+is constant within each physical solve despite intervening Adam updates.
+Velocity is reconstructed from the solved positions relative to the physical
+step's starting positions, not the previous inner iterate. The next physical
+step is prepared once; the final H step retires without an unused advance.
+
+The default pool has 4B members for per-rank batch size B. A deterministic
+FIFO rotates all active members, including pending preparation, so one
+long-K cohort cannot monopolize the batch. Returned members or replacements
+go to the tail. Bounded CPU workers prepare resets and advances, normally
+with about three intervening batches at 4B capacity. A pending head can delay
+dispatch even when later members are ready; this is the explicit tradeoff
+for reproducible ordering and exact resume. There is no padded batch or
+barrier requiring all trajectories to finish a phase. CPU PARDISO forward
+and adjoint work still synchronizes proposals, so GPU occupancy is not guaranteed.
+
+The following are **configurable implementation defaults**, not newly claimed
+user-approved campaign choices: 8,192 global optimizer queries per epoch,
+512 fixed held-out starts using a distinct master seed, 4B active members per
+rank, uniform independent sampling from the available K/H sets, and a
+50/35/10/5 inertial/noisy-inertial/previous/rigid-guided candidate mixture.
+Training starts form a continuing seeded stream rather than a finite dataset
+of 8,192 states. The augmenter receives `2*seed` for training and `2*seed+1`
+for validation, in addition to distinct master seeds. This prevents shape
+leakage from the underlying generator that consumes the reset seed directly. Candidate initialization may screen and back off its own
+perturbation; a failed learned proposal is diagnosed and stops the run rather
+than being repaired or reset away.
+
+The validation-gated curriculum retains caps (1,8), (2,16), (4,32), (8,64),
+(16,128), (32,128) and all configured shorter choices. Defaults require at
+least 10 epochs in a stage and two consecutive qualifying validations:
+no failures, finite decreasing mean energy, descent rate at least 0.9, and
+survival of all evaluated physical trajectories. Qualification during the
+minimum residence counts toward patience. The thresholds and 500-epoch cap
+remain provisional pending campaign review. Stalled stages are reported.
+
+Retained physics and numerical decisions are unchanged: three dimensionless
+axes in each cell's current polar frame; recompute frames per proposal and
+freeze their derivatives; one network proposal in that same frame; original
+free-motion Y and implicit-Euler inertia; positive pin masses; fixed-corner
+elimination; float32 with TF32 and AMP off; eight-Gauss-point Neo-Hookean
+elasticity and full-quadrature displacement-gradient fusion. The solved
+increment is added to the candidate, so a zero axis increment preserves a
+compatible pinned shape exactly. Native semi-implicit rigid prediction is
+used for once-per-step initializer guidance through fusion and does not
+replace Y or accumulate an extra rigid update every inner iteration. Frame,
+feature and energy computations currently use Torch; the previously proposed
+Warp frame kernel is not implied by this integration.
+
+Each material uses cached process-local oneMKL PARDISO factors and a
+transpose-solve autograd bridge. Factors persist while the actual matrix is
+unchanged across inner and physical steps; different matrices have separate
+factors. Missing PARDISO is an explicit setup error. E remains log-uniform
+from 1,000 to 1,000,000 Pa, nu uniform from 0.2 to 0.49, and density independently
+log-uniform from 100 to 10,000 kg/m³; lambda and mu are derived, and material
+stays fixed per trajectory. The V2 perturbation multiplier remains uniform
+on [0,1] for both the whole displacement and initial velocity. Pins remain
+exact, and zero perturbation under gravity is not an equilibrium claim.
+
+Atomic checkpoints gather every rank's active state, K/H and ages, context
+specifications, seed and RNG state, deterministic dispatch and pending/ready
+membership, plus network, Adam, curriculum and plateau-controller state.
+Preparation is drained without reordering. Resume with the same rank count and device class
+rebuilds native factors and restores prepared payloads without extra resets;
+only the active state is saved, not an archive of intermediate training
+states. Per-rank failure diagnostics retain inputs, contexts, model and
+optimizer state. Frozen-weight held-out validation reports optimization
+energy curves and physical survival without removing failed cases from
+population accounting.
+
+Settling/equilibrium features and losses, inversion-tolerant frame or energy
+continuation, contact, and general free-body fusion remain deferred research.
+They are not part of this trainer change. The current logarithmic energy and
+frame checks reject invalid/inverted geometry; no line search or general
+learned descent guarantee is added. Exact no-op fusion is not proof of learned
+resting stability.
+
+The implementation passed 277 experiment tests and bounded full-grid four-GPU,
+gradient-reference, mixed-iteration/resume and batch-capacity checks. CPU resume
+is bit-exact in tests; GPU numeric continuation is within float32 tolerance.
+Use the [V2 verification checklist](v2-plan.md#current-implementation-verification-checklist)
+and [implementation progress](v2-implementation-plan.md) for current results.
+Historical four-GPU or data-generator tests do not establish correctness or
+convergence of this new mixed pipeline. Campaign launch remains separate.

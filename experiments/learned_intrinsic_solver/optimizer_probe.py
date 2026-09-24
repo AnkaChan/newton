@@ -177,6 +177,7 @@ def _run_case(rest, sample, seed: int, *, iterations: int, nonzero_head: bool) -
         "head_initialization": "diagnostic_nonzero" if nonzero_head else "zero",
         "head_weight_std": 1e-4 if nonzero_head else 0.0,
         "network_seed": 123,
+        "network_hops": list(network.hops),
         "dtype": str(initial.dtype),
         "device": str(initial.device),
         "initialization_effective_scale": sample.effective_scale,
@@ -369,7 +370,7 @@ def run_optimizer_probe(
         "gravity_m_s2": [0.0, -9.81, 0.0],
         "initial_velocity_and_external_force": "zero",
         "network_hidden_dim": 128,
-        "network_hops": [1, 1, 1],
+        "network_hops": None,
         "frame_derivatives": "frozen at every update; this is not the full polar-frame derivative",
         "interpretation": "Untrained proposals; graph checks do not assert descent or convergence.",
         "parameter_updates": 0,
@@ -383,6 +384,7 @@ def run_optimizer_probe(
             for nonzero_head in (False, True):
                 result = _run_case(rest, sample, seed, iterations=iterations, nonzero_head=nonzero_head)
                 report["cases"].append(result)
+                report["network_hops"] = result["network_hops"]
                 report["all_graph_checks_passed"] = all(case["graph_checks_passed"] for case in report["cases"])
                 report["elapsed_seconds"] = time.perf_counter() - started
                 _write_report(report, output_dir)

@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .train_smoke import TrainSmokeConfig
+from .train_smoke import TrainSmokeConfig, _resolve_cli_hops
 
 __all__ = ["EpochTrainConfig", "run_training"]
 
@@ -683,6 +683,9 @@ def _main():
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--edge-hidden-dim", type=int, default=64)
+    parser.add_argument(
+        "--hops", nargs="+", type=int, help="Hop distance per block; default: saved hops on resume, otherwise 1"
+    )
     parser.add_argument("--max-step-size", type=float, default=0.05)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
@@ -698,6 +701,7 @@ def _main():
         device=args.device,
         hidden_dim=args.hidden_dim,
         edge_hidden_dim=args.edge_hidden_dim,
+        hops=_resolve_cli_hops(args.hops, args.resume),
         max_step_size=args.max_step_size,
         verbose=not args.quiet,
     )

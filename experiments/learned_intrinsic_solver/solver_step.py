@@ -70,7 +70,7 @@ class LearnedHexSolverStep(nn.Module):
         time_step: Positive physical time step [s].
         network: Optional network with 38 state, 24 edge, and 5 conditioning
             inputs on CPU or CUDA in the chosen dtype. Its device determines
-            geometry, network, and energy execution. Default is the CPU [1,1,1] baseline.
+            geometry, network, and energy execution. Default is the CPU one-block [1] baseline.
         dtype: Working Torch dtype; float32 default, float64 reference only.
     """
 

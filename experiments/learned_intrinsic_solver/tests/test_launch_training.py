@@ -24,6 +24,16 @@ _WORKER_RESULT = {
 
 
 class TestLaunchTraining(unittest.TestCase):
+    def test_mixed_pipeline_selects_new_trainer(self):
+        """The new pool trainer is explicit and preserves the legacy launch path."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            claim = root / "claim.sh"
+            claim.touch()
+            with patch.object(launcher_module, "_run_workers", return_value=_WORKER_RESULT) as run:
+                launch_training(root / "mixed", pipeline="mixed", gpu_claim=claim)
+            self.assertIn("experiments.learned_intrinsic_solver.train_mixed", run.call_args.args[0][0])
+
     def test_fresh_launch_claims_each_gpu_and_records_result(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

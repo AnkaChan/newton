@@ -46,6 +46,7 @@ def launch_training(
     resume: Path | None = None,
     training_arguments: tuple[str, ...] = (),
     gpu_claim: Path | None = None,
+    pipeline: str = "epochs",
 ) -> dict:
     """Run one, two, or four exclusively claimed GPU ranks under supervision.
 
@@ -54,6 +55,8 @@ def launch_training(
     """
     if isinstance(workers, bool) or workers not in (1, 2, 4):
         raise ValueError("workers must be one, two, or four")
+    if pipeline not in ("epochs", "mixed"):
+        raise ValueError("pipeline must be epochs or mixed")
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     _check_forwarded_arguments(training_arguments)
@@ -106,7 +109,7 @@ def launch_training(
             sys.executable,
             "-u",
             "-m",
-            "experiments.learned_intrinsic_solver.train_epochs",
+            f"experiments.learned_intrinsic_solver.train_{pipeline}",
             "--output",
             str(output),
             *training_arguments,
@@ -117,7 +120,12 @@ def launch_training(
     print(f"Launching {workers} ranks; logs: {logs}", flush=True)
     result = dict(_run_workers(commands, logs, timeout=timeout, environments=environments))
     result.update(
-        config={"workers": workers, "timeout": timeout, "training_arguments": list(training_arguments)},
+        config={
+            "workers": workers,
+            "timeout": timeout,
+            "training_arguments": list(training_arguments),
+            "pipeline": pipeline,
+        },
         resume=str(resume) if resume is not None else None,
         logs_directory=str(logs),
         world_size=workers,
@@ -135,6 +143,7 @@ def _main():
     parser.add_argument("--workers", type=int, choices=(1, 2, 4), default=4)
     parser.add_argument("--timeout", type=float, default=86400)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--pipeline", choices=("epochs", "mixed"), default="epochs")
     args, remaining = parser.parse_known_args()
     if remaining[:1] == ["--"]:
         remaining = remaining[1:]
@@ -143,6 +152,7 @@ def _main():
         workers=args.workers,
         timeout=args.timeout,
         resume=args.resume,
+        pipeline=args.pipeline,
         training_arguments=tuple(remaining),
     )
     print(json.dumps(result, indent=2))

@@ -205,7 +205,7 @@ The earlier separately published page URLs remain available.
 ## PyTorch transformer baseline
 
 `network.IntrinsicTransformerLayer` is the reusable `torch.nn.Module` block.
-`network.IntrinsicSolverNetwork` stacks **three local blocks, hops [1, 1, 1]**,
+`network.IntrinsicSolverNetwork` uses **one local block, hops [1]**,
 with 128 hidden features and four heads by default. Each cell attends to its
 26 face/edge/corner neighbors plus itself. Boundary slots remain present and
 are masked before softmax. There is no fixed geometric attention prior.
@@ -556,13 +556,13 @@ step Adam and zero gradients after each yield. Positions and velocities carry
 forward without their gradient history. This mode is single-device; calling
 it through `DDP.module` bypasses distributed synchronization.
 
-The selected next trainer design instead mixes active states of different
+The selected V2 trainer mixes active states of different
 iteration depths in each batch and updates Adam after one proposal per member.
 Each seeded initial state samples its own K and physical horizon H from the
 available sets. Both stay fixed for that trajectory; its inertial target is
 fixed only within a physical timestep. The live mixed-batch scheduler and its
-distributed integration remain pending; the production epoch trainer is still
-K=1. See [the V2 plan](../../notes/v2-plan.md).
+distributed integration are implemented in `train_mixed`; the separate legacy
+epoch trainer remains K=1. See [the V2 plan](../../notes/v2-plan.md).
 
 Explore the [interactive pool illustration](https://ankachen.com/artifacts/learned-intrinsic-solver/pool/index.html)
 to see ready instances replace those preparing a timestep or reset. Its
@@ -644,7 +644,11 @@ Checkpoints include initial, periodic, best-validation, and final weights,
 Adam state, physical samples, sampler state, fixed validation candidates,
 configuration, and CPU/selected-device CUDA RNG state. Resume with the same
 configuration and `--resume <checkpoint.pt>`; `--updates` specifies the desired
-total completed weight updates. CPU is supported for small tests. This is a
+total completed weight updates. Both training CLIs restore the checkpoint's
+hop sequence on resume unless `--hops` is explicitly supplied. New runs default
+to `--hops 1`; use `--hops 1 1 1` to select the earlier three-block architecture.
+An explicit hop sequence that differs from the checkpoint is rejected.
+CPU is supported for small tests. This is a
 bounded training experiment, not evidence of convergence on arbitrary states.
 
 ## Four-GPU numerical diagnostic
@@ -799,3 +803,80 @@ uv run --no-sync python -m experiments.learned_intrinsic_solver.rollout_report \
 Use a fresh output directory. Rank file hashes and the complete saved
 validation seed pool are checked. Evaluation uses float32 without TF32/AMP;
 only CPU aggregation of the reported energy values uses float64.
+
+## Experimental V2 mixed-trajectory trainer
+
+`train_mixed.py` runs one batched proposal per selected trajectory, averages
+the local physical losses, and makes one Adam update. Carried positions and
+comparison energies are detached after each update. Each trajectory retains
+its own material, sampled optimizer budget K, and physical-step budget H;
+its inertial target stays fixed throughout each physical solve. A bounded
+CPU worker pool prepares new physical steps and resets while other queries
+are ready. Fusion still uses a differentiable CPU PARDISO solve.
+
+New V2 runs initialize the one-block network. `queries_per_epoch` counts
+optimizer queries across all ranks, so it must divide evenly by
+`batch_size * workers`; it does not count unique initial states. The defaults
+are 8,192 queries per epoch, batch 16 per rank, and 4B active trajectories per
+rank. Young's modulus, Poisson's ratio, density, and initial perturbation scale
+vary independently as described in [the V2 plan](../../notes/v2-plan.md).
+Training and validation use disjoint augmentation-seed namespaces.
+
+Configuration overrides are a JSON object of `MixedTrainConfig` fields. For
+example, save the following as `mixed-config.json` when preparing a campaign:
+
+```json
+{
+  "batch_size": 16,
+  "pool_multiplier": 4,
+  "queries_per_epoch": 8192,
+  "max_epochs": 500,
+  "stage_epochs": 10,
+  "stage_patience": 2,
+  "stage_descent_rate": 0.9,
+  "preparation_workers": 2,
+  "cpu_threads": 2
+}
+```
+
+After the campaign review, launch through the existing GPU-claim supervisor:
+
+```bash
+uv run --no-sync python -m experiments.learned_intrinsic_solver.launch_training \
+  --pipeline mixed --workers 4 --output generated/training/mixed_v2_001 \
+  --config mixed-config.json
+```
+
+The curriculum grows the available K/H caps only after its minimum residence
+and consecutive qualifying validation epochs. Active trajectories keep their
+sampled budgets across stage changes. `stage_epochs`, `stage_patience`, and
+`stage_descent_rate` are configurable implementation choices. The provisional
+`candidate_probabilities` default `[0.5, 0.35, 0.1, 0.05]` selects inertial,
+noisy inertial, previous-position, and rigid candidates in that order.
+
+Validation regenerates fixed held-out starts and freezes weights for 100
+optimizer iterations plus an eight-step physical rollout with two optimizer
+iterations per step by default. The report includes relative energy curves,
+separate optimizer/physical failure counts, trajectory survival, sampled budgets
+and ages, per-rank material/perturbation histograms, and timing. Near-zero initial
+energies have absolute energy, displacement and free-corner force-residual
+diagnostics. Outputs include `updates.csv`, `epochs.csv`,
+`loss_curve.svg`, `report.json`, and `index.html`.
+
+Latest, best-validation, periodic, and final checkpoints save weights, Adam,
+curriculum/controller state, each rank's active pool, RNG states, and material
+contexts. Native factors are rebuilt on resume. Resume with the same rank
+count, device class and configuration, adding `--resume <output>/checkpoints/latest.pt` to
+the launcher; `--max-epochs` may extend the run. Failed training writes a
+failed report and `failure_rank_<rank>.pt` containing the rejected inputs,
+material contexts, weights, and Adam state. It never repairs a learned
+proposal. Intermediate trajectory histories are not archived.
+
+CPU checkpoint continuation is bit-for-bit reproducible in the regression test.
+Four-GPU continuation preserves discrete pool/RNG state and matches within
+float32 tolerance; GPU reductions are not promised to be bit-for-bit identical
+across runs or device assignments. See [verification evidence](../../notes/v2-implementation-plan.md).
+
+The existing epoch pipeline remains the launcher's default. Select
+`--pipeline mixed` explicitly for V2; legacy three-block checkpoint restoration
+continues through the existing trainers.

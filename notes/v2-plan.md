@@ -1,10 +1,13 @@
 # V2 plan: a learned optimizer for deformable hexahedral bodies
 
-Date: 2026-09-24. This document records the current decisions and the proposed
-next training campaign. **Training remains stopped. Review and approval of
-the training plan are required before launching another campaign.** Implemented
-helpers, proposed changes, and remaining integration work are distinguished
-below.
+Date: 2026-09-24. This document records the retained physical decisions and
+the implemented V2 trainer. **No new training campaign has been launched.**
+Implementation and bounded verification are authorized; campaign settings and
+launch still require review. The new pipeline has passed bounded full-grid
+distributed checks; those checks do not establish learned convergence or
+long-horizon physical stability.
+See [implementation progress](v2-implementation-plan.md) and the current
+[decision record](v1-DECISIONS.MD#39-v2-mixed-pool-trainer-implementation--2026-09-24).
 
 Latest data-policy revision: generate intermediate states on the fly and
 reproduce initial conditions with a seeded augmenter reset. Intermediate-state
@@ -12,8 +15,8 @@ disk replay is optional diagnostic tooling, not the training baseline.
 Each initial state independently samples an inner-iteration count K and a
 physical trajectory length H from the counts available at its curriculum
 stage. Keep those counts until H physical steps finish, then reset and sample
-again. The eventual proposed caps are K=32 and H=128. Add one overall
-perturbation multiplier per initial case to cover quieter starting states.
+again. The implemented maximum caps are K=32 and H=128. One overall
+perturbation multiplier per initial case covers quieter starting states.
 The selected trainer advances each sample in a mixed batch by one detached
 network-and-fusion update, then makes one Adam update for that batch. Full
 connected unrolling remains an opt-in comparison.
@@ -33,11 +36,22 @@ orientation; they are not normalized to unit length. Rest size is a separate
 input. This is a cell-center affine description, not a complete independent
 description of all eight deformed corner positions.
 
-The network proposes changes to those same local axes. Differentiable global
-fusion finds compatible shared corner positions while enforcing prescribed
-corners. The native semi-implicit rigid prediction guides global pose through
-fusion. **It does not replace the inertial target in the implicit-Euler
-energy.** Elasticity is evaluated with hexahedral quadrature, not tetrahedra.
+The network proposes changes to those same local axes. Recompute polar frames
+from each current candidate, then freeze their derivatives for that proposal.
+Convert the predicted axis increment into world coordinates and fit displacement
+gradients at all eight Gauss points, with stiffness times rest-volume weights.
+Add the solved displacement to the current shared corners. Pin elimination is
+exact; a zero axis increment preserves the current compatible pinned shape,
+including its corner warping. Full quadrature constrains the reconstruction;
+one axis increment per cell still cannot express every eight-corner update.
+
+The native semi-implicit rigid predictor supplies a once-per-physical-step
+rigid-guided initializer through fusion. It is not reapplied as an accumulating
+rigid rotation on every inner query. **It does not replace the original free
+inertial target Y or the physical implicit-Euler inertia.** Elasticity is
+compressible logarithmic Neo-Hookean energy at eight Gauss points per hex,
+not a tetrahedral approximation. Positive pin masses remain part of the
+physical mass and inertia model. This remains a clamped, contact-free problem.
 
 ## Network baseline
 
@@ -68,7 +82,9 @@ inputs do not yet include the physical energy gradient or optimizer history.
 The `[1]` default is implemented in the workspace. Existing checkpoints keep
 their explicitly saved architecture. The epoch-198 checkpoint has three
 layers and cannot be directly resumed as a one-layer model. **Fresh
-initialization is the proposed baseline**; no silent checkpoint truncation.
+initialization is the V2 baseline**; no silent checkpoint truncation. The
+legacy trainer retains explicit saved architectures; the new mixed pipeline
+has its own checkpoint format.
 
 ## Data generation and material
 
@@ -91,8 +107,8 @@ perturbation under gravity is not automatically a static equilibrium.
 The augmenter exposes `perturbation_scale_range`: `(0, 1)` selects V2's
 variable intensity, `(0, 0)` gives canonical rest with zero velocity, and
 `(1, 1)` preserves the previous seed-to-state mapping. The library default
-remains `(1, 1)` for compatibility; the future V2 trainer must select `(0, 1)`
-explicitly. Record the sampled scalar and its range in initial-state metadata.
+remains `(1, 1)` for compatibility; the implemented V2 configuration explicitly
+selects `(0, 1)`. Initial-state metadata records the sampled scalar and range.
 
 The implemented material sampler draws Young's modulus and density independently
 in logarithmic space, then derives the Lamé parameters:
@@ -120,28 +136,39 @@ the changed material mapping preserves the shape/velocity and density streams.
 
 Sample one uniform material per object and keep it fixed along that trajectory.
 The same reset seed and augmentation configuration reproduce the initial
-shape, velocity and material. The old production dataset and trainer still
-use their original fixed material until the new training pipeline is integrated.
+shape, velocity and material. The legacy dataset and epoch trainer retain their original material behavior.
+The new `train_mixed` pipeline uses these independent per-trajectory materials.
 
-The current `LearnedHexSolverStep` binds one physical context. The selected
-mixed-state trainer needs batched per-instance material, mass and energy
-inputs while keeping each object's material fixed for its K/H trajectory.
-Independent continuous material draws will usually be unique; grouping only
-identical materials does not supply the intended mixed batch. Keep one batched
-network forward over the fixed-shape grid queries, not Python network calls
-per object. Fusion may dispatch by physical operator/context and reuse cached
-factors only when the actual assembled matrices match. Prepare required
-factors before admitting instances to the ready pool. This heterogeneous
-physical-context support remains pending and is not implemented by the
-detached-iteration helper.
-Across GPU ranks, synchronize learned parameters and gradients while keeping
-each rank's physical material and mass buffers local. This needs explicit
-verification in the new distributed trainer.
+`MixedHexSolverStep` implements batched per-instance material, mass, features
+and energy while each object's material remains fixed for its K/H trajectory.
+It runs one shared network forward over the mixed fixed-shape batch. Fusion
+dispatches to each physical context's cached CPU PARDISO factor; continuously
+sampled different matrices require their own factors. Context construction
+prepares factors before their first query. Native handles are owned by their
+process and remain outside module buffers and serialized tensors.
 
-Use the previous scale of 8,192 training starts per logical epoch and 512 fixed
-held-out seeds as a proposed starting point. These describe seed schedules,
-not a stored collection of intermediate states. The old 50/35/10/5 candidate
-mixture is historical, not a decided V2 initial-state mixture.
+DDP synchronizes learned parameters and gradients with `broadcast_buffers=False`;
+each rank owns its physical contexts and trajectory pool. The launcher exposes
+the opt-in `mixed` pipeline alongside the legacy `epochs` pipeline. The new
+path requires its own distributed parity, resume and capacity evidence; the
+old four-GPU result does not verify this trainer.
+
+A logical epoch defaults to **8,192 optimizer queries globally across all
+ranks**, not 8,192 distinct starts or a fixed training seed set. With batch B
+per rank and R ranks, an epoch has 8192/(B*R) Adam updates; configuration must
+make this quotient integral. New starts form a continuing seeded stream.
+Validation defaults to 512 fixed held-out starts partitioned across ranks and
+reused across checkpoints. Training maps logical reset seeds to `2*seed` and
+validation to `2*seed+1`, with distinct master seeds as well. This disjoint
+even/odd namespace is needed because initial shape generation uses the reset
+seed directly; changing only the master seed would not separate those shapes.
+
+The candidate mixture is a configurable implementation default: 50% inertial,
+35% noisy inertial, 10% previous physical positions and 5% rigid-guided
+initialization. These reused historical probabilities are **not an approved
+campaign decision**. Initializer perturbations are screened before a learned
+query; backoff or fallback is recorded. A failed learned proposal is never
+repaired or silently reset through this initializer path.
 
 ## Consecutive optimizer iterations and physical timesteps
 
@@ -174,27 +201,30 @@ detach both, and begin its next physical timestep with a newly computed Y
 unless H is complete and the trajectory resets.
 Count H in completed physical timesteps, not optimizer proposals or batches.
 
-For the proposed implementation, keep a bounded active pool larger than the
-training batch: roughly 4B instances per GPU is a starting point for batch
-size B. Gather B ready queries, make exactly one proposal per member, average
-their local losses, update Adam once, and scatter detached results back to
-their instances. Do not pad shorter K/H schedules or wait for every
-trajectory to finish a common phase.
+`ActiveTrajectoryPool` implements a bounded pool larger than the training
+batch, defaulting to 4B trajectories per rank. A deterministic dispatch FIFO
+rotates all active members, including those awaiting preparation. Select the
+next B distinct members, make exactly one proposal each, average their local
+losses, update Adam once, and append returned members or their replacements
+to the tail. This prevents a long-K cohort from monopolizing consecutive
+batches while the rest of the pool waits. There is no padding or barrier
+requiring every trajectory to finish a common phase.
 
-After an instance reaches K and still has physical steps remaining, prepare
-its next step once, including the new Y, frozen rigid target and initial
-candidate. Park instances awaiting
-preparation while other ready instances fill the next batch. At H, perform a
-seeded reset and independently resample K/H; prefetch initial states so reset
-work can overlap other batches. Use a bounded CPU preparation worker pool
-and prepare work outside the critical path where possible. Reuse cached
-PARDISO factorizations when the actual assembled matrix is the same, with
-native handles owned by their process; different matrices require their own
-factors. Do not refactor merely because an instance advances physical time.
-These are proposed trainer mechanisms, not an implemented scheduling system.
-The current CPU PARDISO solve inside
-each batch still blocks that path, so this design does not guarantee an
-always-busy GPU.
+After K proposals, reconstruct velocity from the **physical-step starting
+positions**, `(solved_positions - physical_positions) / dt`, and set prescribed
+velocities to zero. If H is not complete, the worker prepares the next step's
+new Y and initializer once, clearing the old step's comparison energies.
+At H, retire the context and reset with a new unique seed and newly sampled
+K/H; do not compute an unused next physical state. CPU reset and advance work
+runs in a bounded worker pool. Factorizations persist across inner iterations
+and physical timesteps whenever the actual assembled matrix is unchanged.
+
+With capacity 4B, a returned member normally has roughly three batches of
+preparation overlap before its next dispatch turn. To make ordering independent
+of worker completion timing, dispatch can wait for a pending head even when
+later members are ready. This is the explicit fairness/reproducibility
+tradeoff. It is not a whole-pool barrier, and it does not guarantee zero GPU
+idle time. The CPU PARDISO forward and adjoint also synchronize each proposal.
 
 Release each batch's graph after backward and retain only detached carried
 states and diagnostics. There is a gradient boundary after every inner
@@ -205,10 +235,11 @@ every state or sample a historical replay buffer in this baseline. At
 dt=1/300 s, H=128 covers about 0.427 seconds; completing that trajectory does
 not establish that it has settled.
 
-The proposed available counts at the final stage are K in {1, 2, 4, 8, 16, 32}
-and H in {8, 16, 32, 64, 128}. Uniform independent sampling over the available
-sets is a proposal; exact probabilities are not finalized. Curriculum stages
-cap these sets rather than assign one fixed K/H pair to all samples:
+The default available counts at the final stage are K in {1, 2, 4, 8, 16, 32}
+and H in {8, 16, 32, 64, 128}. The implementation samples uniformly and
+independently from the configured available sets; this sampling policy is a
+provisional campaign default. Curriculum stages cap these sets rather than
+assign one fixed K/H pair to all samples:
 
 | Stage | Maximum available K | Maximum available H |
 |---|---:|---:|
@@ -222,10 +253,15 @@ cap these sets rather than assign one fixed K/H pair to all samples:
 For example, the stage with caps K=4 and H=32 permits independent draws from
 {1, 2, 4} and {8, 16, 32}. Retain shorter counts as the caps grow. A stage
 change affects new resets; active trajectories keep their previously sampled
-K and H until completion. Use validation descent and trajectory stability to
-decide when to advance; thresholds and patience remain to be selected before
-launch. Log sampled counts, progress and curriculum stage. If a stage stalls,
-report it; never silently train only one iteration for the whole campaign.
+K and H until completion. `MixedCurriculum` advances only after both a minimum
+stage residence and consecutive qualifying validation results. Configurable
+implementation defaults are 10 epochs per stage and two consecutive results
+with no failures, finite decreasing mean energy, descent rate at least 0.9,
+and every evaluated physical trajectory surviving. Qualifying epochs during
+the minimum residence count toward patience. These thresholds remain
+provisional pending campaign review; they are not evidence that K=32/H=128
+is stable. Log counts, ages, stage and qualification status. If a stage stalls,
+report it; never silently label a permanent K=1 run the completed curriculum.
 
 The reusable inner solver now detaches carried positions by default. Its
 `backward_detached` method and
@@ -237,10 +273,10 @@ available, but it does not implement the selected mixed-state trainer.
 
 Full connected unrolling remains an opt-in comparison. Connecting groups of
 two to four inner updates is a future experiment with no demonstrated
-training benefit over the detached baseline. The production epoch trainer
-still uses K=1. The mixed active pool, per-trajectory K/H scheduling, live
-trajectories up to 128 steps, and updated multi-GPU trainer are not yet
-implemented or integrated. Training remains stopped.
+training benefit over the detached baseline. The legacy epoch trainer still uses K=1. The new mixed pipeline implements
+the active pool, sampled K/H, up to 128 physical steps per trajectory, and
+rank-local pools under DDP. Completion of implementation is separate from
+campaign stability and the verification checklist below. Training remains stopped.
 
 ## On-demand generation and reset
 
@@ -282,12 +318,27 @@ an Adam update or logging boundary does not itself trigger a reset.
 
 A seed reproduces an initial condition, not a trajectory generated while
 network weights were changing. Regeneration with newer weights intentionally
-produces newer trajectories. For exact training resume, the proposed checkpoint
-includes the small active trajectory pool and its per-sample K/H, progress,
-candidate and fixed Y, in addition to weights, optimizer, random states and
-seed schedule. This saves the current state at checkpoint time, not all
-intermediate training states. Alternatively, restarting from seeds is a
-trajectory reset and must be identified as such.
+produces newer trajectories. Resumable checkpoints now include every rank's
+active physical positions, velocities, candidate, fixed Y, pins, forces,
+detached comparison energies, material specifications, K/H and progress,
+unique seed cursor, budget RNG, dispatch order and ready/pending membership.
+They also save network and Adam state, curriculum and plateau-controller
+state, generator configuration/version metadata, and process RNG states.
+
+Checkpointing drains preparation without changing dispatch or queue order,
+then snapshots detached independent CPU tensors and all context specifications.
+Distributed errors are coordinated before gathering rank states, and the file
+is replaced atomically. Resume requires the same rank count, device class and compatible
+physical/training configuration. It rebuilds native factors in each process
+and restores the prepared queues without invoking extra initial resets.
+CPU continuation is bit-for-bit exact in the regression test. Four-GPU runs
+preserve discrete pool/RNG state and agree within float32 tolerance, but are
+not bit-for-bit identical across runs/device assignments. Differences already
+appear before a restart in the repeatability check; no deterministic GPU
+reduction mode is forced for this baseline.
+Runtime wait/preparation timings are diagnostic and are not deterministic
+numerical state. This saves active state at checkpoint time, not every
+intermediate training state. Restarting from seeds is a different reset policy.
 
 The existing disk-retention framework remains available for explicit debugging
 or selected failure records. It is not invoked by the reset augmenter or the
@@ -323,8 +374,11 @@ equilibrium. Under gravity, equilibrium can be a bent shape; a canonical
 straight beam is not automatically at equilibrium. Also consider exposing
 the current physical force residual and making the correction vanish as that
 residual vanishes. Those input/output changes and the added equilibrium loss
-are not yet implemented or finalized. Choose them before fixing the new
-training input schema and starting a campaign.
+remain deferred physics and feature research. They are not part of the mixed
+trainer implementation, and no equilibrium loss or new feature channel is
+silently added. Review them separately before committing to campaign claims
+about settling. A zero network axis correction is an exact fusion no-op;
+that algebraic property alone does not establish learned resting stability.
 
 ## Inversion — representation supported; solver changes proposed
 
@@ -361,12 +415,18 @@ the same held-out seeds; changing motion then measures solver improvement.
 Also regenerate fixed initial-state validation queries so loss comparisons
 are not obscured by changing live training trajectories.
 
-Report mean, median and maximum relative energy through 100 optimizer
-iterations, together with invalid-state counts. Treat near-zero initial
-energies separately using absolute energy, displacement and force residuals;
-their relative ratios can be misleading. Evaluate physical rollout survival,
-speed, resting drift and fixed-corner accuracy. Failed cases must remain
-visible rather than disappearing from aggregate curves.
+The implemented validator reports mean, median and maximum relative energy
+through 100 optimizer iterations by default, along with invalid-state counts,
+absolute energy, displacement and physical survival. Near-zero initial energies
+are counted separately and excluded from relative ratios. Physical validation
+defaults to eight steps with two optimizer queries per step; this is distinct
+from training's sampled K/H. Weights stay frozen for each whole validation
+trajectory, and failed cases remain visible instead of disappearing from the
+population curves. Optimizer failures invalidate relative population curves
+from the failed iteration onward; physical failures are reported separately.
+Near-zero cases include absolute energy, displacement and free-corner
+force-residual norms. Dedicated resting-drift studies remain a research item;
+the current survival check does not substitute for them.
 
 Maintain epoch/update loss curves, curriculum stage, sampled K/H distributions,
 actual inner-iteration and physical-step counts, reset counts,
@@ -374,22 +434,31 @@ perturbation-scale distribution and material distribution. Save
 latest/best/periodic resumable checkpoints including optimizer, random states,
 generator configuration/version, seed schedule and active trajectory and
 optimizer states, including sampled K/H and progress counters.
-An initial budget of up to 500 epochs is a proposal, with convergence-based
-stopping and explicit reporting of plateaus.
+The implemented epoch limit defaults to 500, with validation-based
+learning-rate reductions and explicit converged/stalled/epoch-limit statuses.
+This is a configurable implementation default, not authorization to run a
+500-epoch campaign. A training preparation or learned-proposal failure stops
+the run and saves a per-rank failure diagnostic with active inputs, contexts,
+model and optimizer state; no sample is silently replaced to hide a failure.
+The normal live stream is not an intermediate-state archive.
 
-After plan approval: finish the trainer/data integration, resolve the chosen
-settling and inversion changes, validate gradients, measure batch capacity
-with the mixed batch's one-proposal graph, and verify the updated four-GPU path.
-Use activation checkpointing within an iteration if needed; measure connected
-unrolling separately when comparing it. Neural, feature and energy operations
-run on GPU; the existing differentiable sparse
-fusion uses a cached CPU PARDISO factorization with an adjoint backward pass.
+Complete the verification checklist before declaring the new pipeline ready
+for campaign review. Settling and inversion changes are deferred, independent
+research tasks. Use activation checkpointing within an iteration if needed;
+measure connected unrolling separately when comparing it. Neural, feature and
+energy operations run on the configured CPU or GPU in float32, with TF32 and
+AMP disabled. Differentiable sparse fusion uses cached CPU PARDISO factors
+with float32 forward and transpose-adjoint solves.
 Factor once per fixed fusion matrix and reuse it across solver iterations and
 physical timesteps. Keep float32 for factorization and both solves; the
 checkpoint reconstructs each process's native factors from its saved context.
 The oneMKL runtime is an optional dependency of this experiment. Missing
 PARDISO is an explicit setup error, not a silent fallback to SuperLU. Do not assume that
 the previous four-GPU single-iteration run proves this new training loop.
+
+## Historical verification context
+
+The following results predate the mixed trainer and do not verify it.
 
 The complete experiment suite passed 207 tests on CPU/CUDA after adding seeded
 reset. After adding the overall perturbation multiplier, all 33 focused data
@@ -402,3 +471,22 @@ all 36 focused data tests passed, including ten reset tests and seven material
 tests. Known conversion values and recorded material provenance are covered.
 These are implementation checks, not evidence that a new model has been
 trained or that inversion recovery is implemented.
+
+
+## Current implementation verification checklist
+
+Verified on 2026-09-24. See [commands, artifacts and limitations](v2-implementation-plan.md#verification-evidence).
+
+| Check | Evidence |
+|---|---|
+| Complete experiment suite, including mixed physics, gradients, frozen frames, fusion, pool lifecycle, detached loss, curriculum, failure retention and CPU resume | 277 tests passed in 55.544 seconds on a claimed L40; CPU and CUDA cases enabled |
+| K=32/H=128 scheduler lifecycle | 4,096 proposals, 127 physical advances and one final retirement/reset; callback-only test |
+| Four-GPU gradient averaging with heterogeneous materials | Eight distinct objects, batch two per rank; reference Adam weight error at most 2.19e-11, moment relative L2 error 1.48e-7 |
+| Mixed inner/physical updates and resume on full 10×10×40 grids | 64 bounded Adam updates with mixed budgets; K=32 completed on every rank; discrete checkpoint state preserved, float32 numerical continuation (not bit-exact GPU repeatability) |
+| Full-grid validation curves | Four held-out cases through 100 optimizer iterations, plus separate two-step physical checks; no invalid cases in this bounded check |
+| Batch capacity and timing | Batch 16 on one L40: peak 4.76 GiB, approximately 0.62 s forward/backward/Adam excluding setup, input preparation and validation; not a maximum-batch search |
+| Candidate probabilities, stage thresholds and campaign budget | Configurable provisional defaults remain subject to campaign review |
+
+No new training campaign has been launched. Bounded verification uses disposable
+weights and does not demonstrate convergence, H=128 physical stability,
+inversion recovery or resting equilibrium.

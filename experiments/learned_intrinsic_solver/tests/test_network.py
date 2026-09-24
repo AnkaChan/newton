@@ -6,6 +6,7 @@
 import io
 import math
 import unittest
+from dataclasses import asdict
 
 try:
     import torch
@@ -14,7 +15,9 @@ except ModuleNotFoundError as error:
         raise
     raise unittest.SkipTest("PyTorch is an optional dependency") from error
 
+from experiments.learned_intrinsic_solver.distributed_probe import ProbeConfig, _network
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork, IntrinsicTransformerLayer
+from experiments.learned_intrinsic_solver.train_smoke import TrainSmokeConfig
 
 
 class TestIntrinsicTransformer(unittest.TestCase):
@@ -154,6 +157,40 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
         for actual, wanted in zip(restored(*inputs), expected, strict=True):
             torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
 
+    def test_default_one_layer_radius_one_and_training_config(self):
+        """Use one masked 27-slot neighborhood with the current 38-feature width."""
+        model = IntrinsicSolverNetwork((3, 3, 3), 38)
+        self.assertEqual(TrainSmokeConfig().hops, (1,))
+        self.assertEqual(model.hops, (1,))
+        self.assertEqual(len(model.layers), 1)
+        self.assertEqual(sum(parameter.numel() for parameter in model.parameters()), 320142)
+        indices, mask = model.neighborhood(1)
+        self.assertEqual(indices.shape, (27, 27))
+        self.assertEqual(int(mask[13].sum()), 27)
+        self.assertEqual(int(mask[0].sum()), 8)
+
+    def test_saved_explicit_three_layer_config_restores_strictly(self):
+        """Keep old checkpoint architecture when saved hops explicitly name three blocks."""
+        saved_config = asdict(TrainSmokeConfig(hops=(1, 1, 1)))
+        legacy = IntrinsicSolverNetwork((2, 2, 2), 38, hops=saved_config["hops"])
+        stream = io.BytesIO()
+        torch.save({"config": saved_config, "network_state": legacy.state_dict()}, stream)
+        stream.seek(0)
+        saved = torch.load(stream, weights_only=True)
+        restored_config = TrainSmokeConfig(**saved["config"])
+        self.assertEqual(restored_config.hops, (1, 1, 1))
+        restored = IntrinsicSolverNetwork((2, 2, 2), 38, hops=restored_config.hops)
+        restored.load_state_dict(saved["network_state"], strict=True)
+        self.assertEqual(len(restored.layers), 3)
+        with self.assertRaises(RuntimeError):
+            IntrinsicSolverNetwork((2, 2, 2), 38).load_state_dict(saved["network_state"], strict=True)
+
+    def test_distributed_probe_uses_current_default_architecture(self):
+        """Build the active diagnostic probe with the same single block."""
+        model = _network(ProbeConfig(world_size=1, batch_size=1, cell_counts=(2, 2, 2)), torch.device("cpu"))
+        self.assertEqual(model.hops, (1,))
+        self.assertEqual(len(model.layers), 1)
+
     def test_batch_independence_and_output_bounds(self):
         """Keep independent objects separate and bound each cell's nine-component correction."""
         model = IntrinsicSolverNetwork((2, 2, 3), 5, hidden_dim=16, max_step_size=0.2)
@@ -170,7 +207,7 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
         torch.testing.assert_close(together.local_target_axes, expected)
 
     def test_solver_network_gradients(self):
-        """Train through all three local blocks and the shared object step controller."""
+        """Train through the local block and the shared object step controller."""
         model = IntrinsicSolverNetwork((2, 2, 3), 5, hidden_dim=16)
         with torch.no_grad():
             model.correction_head.weight.normal_(std=0.1)
@@ -217,7 +254,7 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
         self.assertEqual(output.local_target_axes.shape, (1, 4000, 3, 3))
         self.assertEqual(output.local_target_axes.dtype, torch.float32)
         self.assertTrue(torch.isfinite(output.local_target_axes).all())
-        self.assertEqual([model.neighborhood(h)[0].shape[1] for h in model.hops], [27, 27, 27])
+        self.assertEqual([model.neighborhood(h)[0].shape[1] for h in model.hops], [27])
 
 
 if __name__ == "__main__":
