@@ -20,12 +20,13 @@ def _finite(value) -> bool:
 
 
 class MixedCurriculum:
-    """Increase K/H caps only after sufficient complete, stable validation.
+    """Increase K/H caps after qualified validation or a configured epoch limit.
 
     Experimental. Stages expose caps (1,8), (2,16), (4,32), (8,64),
     (16,128), (32,128), retaining configured shorter counts. A stage advances
     when both its minimum epoch residence and consecutive qualifying-validation
-    patience are satisfied. Qualifying epochs during the minimum residence count
+    patience are satisfied, or the optional maximum residence is reached.
+    Qualifying epochs during the minimum residence count
     toward patience. Advancing resets both counters; final-stage observations
     continue counting without advancing.
 
@@ -41,6 +42,8 @@ class MixedCurriculum:
         physical_step_counts: Available positive trajectory lengths with at
             least one value no greater than 8.
         min_stage_epochs: Minimum validation epochs spent in each stage.
+        max_stage_epochs: Optional hard residence limit, at least the minimum.
+            Reaching this limit advances even if validation does not qualify.
         patience: Required consecutive qualifying validation epochs.
         min_descent_rate: Inclusive qualifying descent-rate threshold in [0,1].
     """
@@ -53,8 +56,9 @@ class MixedCurriculum:
         physical_step_counts=(8, 16, 32, 64, 128),
         *,
         min_stage_epochs=10,
+        max_stage_epochs=None,
         patience=2,
-        min_descent_rate=0.9,
+        min_descent_rate=0.8,
     ):
         def counts(values, name, maximum):
             values = tuple(values)
@@ -70,9 +74,12 @@ class MixedCurriculum:
             raise ValueError("initial curriculum requires K=1 and an H <= 8")
         if not _integer(min_stage_epochs, minimum=1) or not _integer(patience, minimum=1):
             raise ValueError("min_stage_epochs and patience must be positive integers")
+        if max_stage_epochs is not None and not _integer(max_stage_epochs, minimum=min_stage_epochs):
+            raise ValueError("max_stage_epochs must be None or an integer at least min_stage_epochs")
         if not _finite(min_descent_rate) or not 0 <= min_descent_rate <= 1:
             raise ValueError("min_descent_rate must be finite and in [0,1]")
         self.min_stage_epochs = int(min_stage_epochs)
+        self.max_stage_epochs = int(max_stage_epochs) if max_stage_epochs is not None else None
         self.patience = int(patience)
         self.min_descent_rate = float(min_descent_rate)
         self.stage = 0
@@ -95,7 +102,8 @@ class MixedCurriculum:
         ``physical_survivors``, ``mean_before_joule``, ``mean_after_joule`` and
         ``descent_rate``. Returned counters describe the current stage after
         any advancement. ``qualified`` describes this observation, while
-        ``advanced`` indicates a stage transition.
+        ``advanced`` indicates a stage transition and ``advance_reason`` records
+        whether validation or the hard residence limit caused it.
         """
         failed = validation.get("failed_count")
         count = validation.get("sample_count")
@@ -125,13 +133,34 @@ class MixedCurriculum:
         if advanced:
             self.stage += 1
             self.stage_epochs = self.qualified_epochs = 0
+            reason = "validation"
+        else:
+            advanced = self.advance_if_overdue()
+            reason = "max_stage_epochs" if advanced else None
         return {
             "stage": self.stage,
             "advanced": bool(advanced),
+            "advance_reason": reason,
             "qualified": bool(qualified),
             "stage_epochs": self.stage_epochs,
             "qualified_epochs": self.qualified_epochs,
         }
+
+    def advance_if_overdue(self) -> bool:
+        """Apply a hard limit once without observing or reclassifying validation.
+
+        This also applies a newly configured limit to restored progress. Extra
+        residence in the previous stage never counts toward the next stage.
+        """
+        if (
+            self.stage < len(self._CAPS) - 1
+            and self.max_stage_epochs is not None
+            and self.stage_epochs >= self.max_stage_epochs
+        ):
+            self.stage += 1
+            self.stage_epochs = self.qualified_epochs = 0
+            return True
+        return False
 
     def state_dict(self) -> dict:
         """Return serializable configuration and progress without mutable aliases."""
@@ -140,6 +169,7 @@ class MixedCurriculum:
             "iteration_counts": list(self.iteration_counts),
             "physical_step_counts": list(self.physical_step_counts),
             "min_stage_epochs": self.min_stage_epochs,
+            "max_stage_epochs": self.max_stage_epochs,
             "patience": self.patience,
             "min_descent_rate": self.min_descent_rate,
             "stage": self.stage,
@@ -149,12 +179,15 @@ class MixedCurriculum:
 
     def load_state_dict(self, state: dict) -> None:
         """Restore validated configuration and counters atomically for exact resume."""
+        if isinstance(state, dict):
+            state = {"max_stage_epochs": None, **state}
         if not isinstance(state, dict) or set(state) != set(self.state_dict()) or state["version"] != 1:
             raise ValueError("incompatible mixed curriculum state")
         restored = MixedCurriculum(
             state["iteration_counts"],
             state["physical_step_counts"],
             min_stage_epochs=state["min_stage_epochs"],
+            max_stage_epochs=state["max_stage_epochs"],
             patience=state["patience"],
             min_descent_rate=state["min_descent_rate"],
         )

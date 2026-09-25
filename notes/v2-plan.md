@@ -253,15 +253,26 @@ assign one fixed K/H pair to all samples:
 For example, the stage with caps K=4 and H=32 permits independent draws from
 {1, 2, 4} and {8, 16, 32}. Retain shorter counts as the caps grow. A stage
 change affects new resets; active trajectories keep their previously sampled
-K and H until completion. `MixedCurriculum` advances only after both a minimum
+K and H until completion. Validation-based advancement requires both a minimum
 stage residence and consecutive qualifying validation results. Configurable
 implementation defaults are 10 epochs per stage and two consecutive results
-with no failures, finite decreasing mean energy, descent rate at least 0.9,
+with no failures, finite decreasing mean energy, descent rate at least 0.8,
 and every evaluated physical trajectory surviving. Qualifying epochs during
 the minimum residence count toward patience. These thresholds remain
 provisional pending campaign review; they are not evidence that K=32/H=128
 is stable. Log counts, ages, stage and qualification status. If a stage stalls,
 report it; never silently label a permanent K=1 run the completed curriculum.
+
+On 2026-09-25, the user lowered the descent-rate threshold from 90% to 80%
+for LIDO-v2 and selected a hard cap of 20 epochs per stage. Validation can
+advance a stage after the minimum 10 epochs; reaching 20 forces advancement
+even when validation has not qualified. A resume into an already overdue
+stage advances it once, then starts the next stage's residence counter at zero.
+It does not skip multiple stages or reclassify earlier validation results.
+Active trajectories, weights and Adam state are retained; newly reset
+trajectories use the expanded choices. The resume report records the old/new
+settings and first affected epoch. The existing plateau stopping policy is
+unchanged; the cap bounds residence while training continues.
 
 The reusable inner solver now detaches carried positions by default. Its
 `backward_detached` method and

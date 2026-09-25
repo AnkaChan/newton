@@ -6,9 +6,11 @@
 import importlib.util
 import tempfile
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import patch
+
+import numpy as np
 
 if importlib.util.find_spec("torch") is None:
     raise unittest.SkipTest("Optional PyTorch dependency is not installed")
@@ -101,6 +103,102 @@ class TestMixedTraining(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "resume configuration"):
                 run_training(output, replace(self.config(2), time_step=0.01), resume=checkpoint)
             self.assertEqual(before, checkpoint.read_bytes())
+
+    def test_resume_updates_only_descent_gate_and_records_effective_boundary(self):
+        """Change the gate without rewriting prior decisions or resetting training state."""
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            original_config = replace(self.config(1), stage_descent_rate=0.9)
+            run_training(output, original_config)
+            checkpoint = output / "checkpoints/latest.pt"
+            saved = torch.load(checkpoint, weights_only=False)
+            resumed = run_training(output, replace(original_config, stage_descent_rate=0.8), resume=checkpoint)
+            restored = torch.load(output / "checkpoints/final.pt", weights_only=False)
+
+            def assert_same(expected, actual):
+                if isinstance(expected, torch.Tensor):
+                    torch.testing.assert_close(expected, actual, rtol=0, atol=0)
+                elif isinstance(expected, np.ndarray):
+                    np.testing.assert_array_equal(expected, actual)
+                elif isinstance(expected, dict):
+                    self.assertEqual(expected.keys(), actual.keys())
+                    for name, value in expected.items():
+                        assert_same(value, actual[name])
+                elif isinstance(expected, (tuple, list)):
+                    self.assertEqual(len(expected), len(actual))
+                    for left, right in zip(expected, actual, strict=True):
+                        assert_same(left, right)
+                else:
+                    self.assertEqual(expected, actual)
+
+            for name in ("network_state", "optimizer_state", "controller_state", "rank_states"):
+                assert_same(saved[name], restored[name])
+            self.assertEqual(restored["curriculum_state"], {**saved["curriculum_state"], "min_descent_rate": 0.8})
+            self.assertEqual(resumed["epochs"], saved["report"]["epochs"])
+            self.assertEqual(resumed["updates"], saved["report"]["updates"])
+            self.assertEqual(
+                resumed["configuration_changes"],
+                [
+                    {
+                        "field": "stage_descent_rate",
+                        "previous": 0.9,
+                        "current": 0.8,
+                        "effective_from_epoch": 2,
+                        "completed_updates": saved["report"]["completed_updates"],
+                        "source": "checkpoint_resume",
+                    }
+                ],
+            )
+            self.assertEqual(restored["config"]["stage_descent_rate"], 0.8)
+
+    def test_default_descent_gate_is_eighty_percent(self):
+        """Use the user-selected descent gate for newly configured campaigns."""
+        self.assertEqual(MixedTrainConfig().stage_descent_rate, 0.8)
+
+    def test_stage_limit_defaults_and_legacy_configuration(self):
+        """Give new campaigns twenty-epoch caps while old checkpoints remain uncapped."""
+        self.assertEqual(MixedTrainConfig().stage_max_epochs, 20)
+        legacy = asdict(self.config(1))
+        legacy.pop("stage_max_epochs")
+        self.assertIsNone(MixedTrainConfig.from_checkpoint_config(legacy).stage_max_epochs)
+        for value in (0, 9, True, 20.5):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                MixedTrainConfig(stage_max_epochs=value)
+
+    def test_resume_applies_overdue_cap_without_new_validation(self):
+        """Promote once at resume while leaving checkpoint history and active budgets intact."""
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            config = replace(self.config(1), stage_max_epochs=None, stage_descent_rate=1.0)
+            run_training(output, config)
+            checkpoint = output / "checkpoints/latest.pt"
+            saved = torch.load(checkpoint, weights_only=False)
+            self.assertEqual(saved["curriculum_state"]["stage"], 0)
+            report = run_training(output, replace(config, stage_max_epochs=1), resume=checkpoint)
+            restored = torch.load(output / "checkpoints/final.pt", weights_only=False)
+            self.assertEqual(restored["curriculum_state"]["stage"], 1)
+            self.assertEqual(restored["curriculum_state"]["stage_epochs"], 0)
+            self.assertEqual(report["epochs"], saved["report"]["epochs"])
+            self.assertEqual(report["updates"], saved["report"]["updates"])
+            self.assertEqual(report["configuration_changes"][0]["field"], "stage_max_epochs")
+            self.assertEqual(
+                report["curriculum_events"],
+                [
+                    {
+                        "source": "checkpoint_resume",
+                        "advance_reason": "max_stage_epochs",
+                        "previous_stage": 0,
+                        "stage": 1,
+                        "previous_stage_epochs": 1,
+                        "effective_from_epoch": 2,
+                        "completed_updates": saved["report"]["completed_updates"],
+                    }
+                ],
+            )
+            original_pool = saved["rank_states"][0]["pool"]
+            resumed_pool = restored["rank_states"][0]["pool"]
+            self.assertEqual(original_pool["iteration_counts"], resumed_pool["iteration_counts"])
+            self.assertEqual(original_pool["physical_step_counts"], resumed_pool["physical_step_counts"])
 
 
 if __name__ == "__main__":

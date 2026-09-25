@@ -53,8 +53,10 @@ class MixedTrainConfig:
     queries_per_epoch: int = 8192
     max_epochs: int = 500
     stage_epochs: int = 10
+    stage_max_epochs: int | None = 20
+    """Hard residence limit per curriculum stage; None preserves uncapped legacy runs."""
     stage_patience: int = 2
-    stage_descent_rate: float = 0.9
+    stage_descent_rate: float = 0.8
     candidate_probabilities: tuple[float, ...] = (0.5, 0.35, 0.1, 0.05)
     iteration_counts: tuple[int, ...] = (1, 2, 4, 8, 16, 32)
     physical_step_counts: tuple[int, ...] = (8, 16, 32, 64, 128)
@@ -137,6 +139,12 @@ class MixedTrainConfig:
             raise ValueError("energy_increase_weight must be finite and nonnegative")
         if not 0 <= self.stage_descent_rate <= 1:
             raise ValueError("stage_descent_rate must lie in [0,1]")
+        if self.stage_max_epochs is not None and (
+            isinstance(self.stage_max_epochs, bool)
+            or not isinstance(self.stage_max_epochs, int)
+            or self.stage_max_epochs < self.stage_epochs
+        ):
+            raise ValueError("stage_max_epochs must be None or an integer at least stage_epochs")
         if (
             len(self.candidate_probabilities) != 4
             or any(not math.isfinite(v) or v < 0 for v in self.candidate_probabilities)
@@ -171,6 +179,7 @@ class MixedTrainConfig:
     def from_checkpoint_config(cls, values):
         """Interpret pre-damping checkpoints explicitly as legacy zero viscosity."""
         values = dict(values)
+        values.setdefault("stage_max_epochs", None)
         if "feature_schema_version" not in values:
             values["feature_schema_version"] = 1
             values.setdefault("damping_range", (0.0, 0.0))
@@ -347,7 +356,10 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     """Run an explicitly requested V2 campaign or a bounded verification run.
 
     Checkpoints restore the same rank count, curriculum, pool queues and Adam
-    sequence. Native factors are rebuilt; they are never serialized.
+    sequence. The configured descent-rate gate and stage limit may change on
+    resume. The gate applies only to future validation; an overdue hard limit
+    promotes one stage immediately. Both changes record their epoch boundary.
+    Native factors are rebuilt; they are never serialized.
     """
     import torch
     import torch.distributed as dist
@@ -369,7 +381,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     if saved:
         if saved.get("format") != "mixed_pool_v2" or saved["world_size"] != world_size:
             raise ValueError("incompatible checkpoint format or rank count")
-        allowed = {"max_epochs", "verbose", "early_stopping"}
+        allowed = {"max_epochs", "verbose", "early_stopping", "stage_descent_rate", "stage_max_epochs"}
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
         if any(saved_config.get(k) != v for k, v in asdict(config).items() if k not in allowed):
             raise ValueError("resume configuration differs from saved physical/training configuration")
@@ -420,6 +432,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         config.iteration_counts,
         config.physical_step_counts,
         min_stage_epochs=config.stage_epochs,
+        max_stage_epochs=config.stage_max_epochs,
         patience=config.stage_patience,
         min_descent_rate=config.stage_descent_rate,
     )
@@ -430,6 +443,12 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             optimizer.load_state_dict(saved["optimizer_state"])
             controller.load_state_dict(saved["controller_state"])
             curriculum.load_state_dict(saved["curriculum_state"])
+            previous_descent_rate = curriculum.min_descent_rate
+            previous_stage_limit = curriculum.max_stage_epochs
+            curriculum.min_descent_rate = config.stage_descent_rate
+            curriculum.max_stage_epochs = config.stage_max_epochs
+            previous_stage, previous_stage_epochs = curriculum.stage, curriculum.stage_epochs
+            overdue_advanced = curriculum.advance_if_overdue()
             state = saved["rank_states"][rank]
             for key, spec in state["context_specs"].items():
                 step.register_context(key, **spec)
@@ -446,6 +465,33 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             if device.type == "cuda":
                 torch.cuda.set_rng_state(state["cuda_rng"], device)
             report = saved["report"]
+            for field, previous, current in (
+                ("stage_descent_rate", previous_descent_rate, config.stage_descent_rate),
+                ("stage_max_epochs", previous_stage_limit, config.stage_max_epochs),
+            ):
+                if previous != current:
+                    report.setdefault("configuration_changes", []).append(
+                        {
+                            "field": field,
+                            "previous": previous,
+                            "current": current,
+                            "effective_from_epoch": report["completed_epochs"] + 1,
+                            "completed_updates": report["completed_updates"],
+                            "source": "checkpoint_resume",
+                        }
+                    )
+            if overdue_advanced:
+                report.setdefault("curriculum_events", []).append(
+                    {
+                        "source": "checkpoint_resume",
+                        "advance_reason": "max_stage_epochs",
+                        "previous_stage": previous_stage,
+                        "stage": curriculum.stage,
+                        "previous_stage_epochs": previous_stage_epochs,
+                        "effective_from_epoch": report["completed_epochs"] + 1,
+                        "completed_updates": report["completed_updates"],
+                    }
+                )
             report["config"] = asdict(config)
             report["status"] = "running"
         else:

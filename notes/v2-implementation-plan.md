@@ -51,7 +51,11 @@ campaign approval.
   campaign setting.
 - Curriculum defaults require at least 10 epochs in a stage and two
   consecutive qualifying validations: no failures, finite decreasing mean
-  energy, descent at least 0.9 and complete physical survival. The stage caps
+  energy, descent at least 0.8 and complete physical survival. The descent
+  threshold was lowered from 0.9 by the user on 2026-09-25. The user also
+  selected a hard cap of 20 epochs per stage: reaching it forces advancement
+  without waiting for the validation gate. An overdue stage advances once on
+  resume, preserving active trajectories and optimizer state. The stage caps
   remain (1,8), (2,16), (4,32), (8,64), (16,128), (32,128).
 - The provisional run limit is 500 epochs with validation-based learning-rate
   reductions and explicit plateau/stalled reporting. No campaign is running.
