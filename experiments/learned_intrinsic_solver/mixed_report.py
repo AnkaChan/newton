@@ -302,6 +302,7 @@ def write_mixed_report(output, report, *, updated_at=None):
 a{{color:#087c91}}img,svg{{display:block;width:100%;height:auto;background:white;border-radius:12px}}pre{{white-space:pre-wrap;word-break:break-word;font-size:13px}}
 .status{{background:#e6f2f4;padding:18px;border-radius:10px}}h1{{line-height:1.2}}h2{{font-size:22px}}.muted{{color:#526174;font-size:14px}}
 .legend span{{margin-right:20px}}.failure{{padding:18px;border:1px solid #c63645;border-radius:10px;background:#fff5f5}}code{{font-size:13px}}table{{border-collapse:collapse;width:100%}}td,th{{padding:7px;border-bottom:1px solid #e5eaf2;text-align:left}}details{{margin:18px 0}}summary{{cursor:pointer}}section{{margin:28px 0}}
+@media(max-width:600px){{table{{table-layout:fixed;font-size:14px}}td,th{{padding:6px 4px;overflow-wrap:anywhere}}}}
 </style></head><body><main>
 <a href="/artifacts/learned-intrinsic-solver/index.html">← All solver experiments</a>
 <h1>LIDO-v2 — training the deformation optimizer</h1>
