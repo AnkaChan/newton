@@ -1,0 +1,94 @@
+{
+  "cell_counts": [
+    10,
+    10,
+    40
+  ],
+  "cell_size": 0.025,
+  "time_step": 0.0033333333333333335,
+  "gravity": [
+    0.0,
+    -9.81,
+    0.0
+  ],
+  "hidden_dim": 128,
+  "edge_hidden_dim": 64,
+  "num_heads": 4,
+  "hops": [
+    1
+  ],
+  "query_chunk_size": 128,
+  "max_step_size": 0.05,
+  "learning_rate": 0.0001,
+  "energy_increase_weight": 1.0,
+  "batch_size": 16,
+  "pool_multiplier": 4,
+  "queries_per_epoch": 8192,
+  "max_epochs": 500,
+  "stage_epochs": 10,
+  "stage_patience": 2,
+  "stage_descent_rate": 0.8,
+  "candidate_probabilities": [
+    0.5,
+    0.35,
+    0.1,
+    0.05
+  ],
+  "iteration_counts": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32
+  ],
+  "physical_step_counts": [
+    8,
+    16,
+    32,
+    64,
+    128
+  ],
+  "validation_count": 512,
+  "validation_iterations": 100,
+  "validation_physical_steps": 8,
+  "validation_physical_iterations": 2,
+  "checkpoint_interval": 5,
+  "early_stopping": true,
+  "youngs_modulus_range": [
+    1000.0,
+    1000000.0
+  ],
+  "poissons_ratio_range": [
+    0.2,
+    0.49
+  ],
+  "density_range": [
+    100.0,
+    10000.0
+  ],
+  "damping_range": [
+    10.0,
+    1000.0
+  ],
+  "feature_schema_version": 2,
+  "strength_range": [
+    0.02,
+    0.1
+  ],
+  "velocity_dt_range": [
+    0.0,
+    0.1
+  ],
+  "perturbation_scale_range": [
+    0.0,
+    1.0
+  ],
+  "seed": 73,
+  "device": "cuda",
+  "cpu_threads": 2,
+  "preparation_workers": 2,
+  "verbose": true,
+  "stage_max_epochs": 20,
+  "geometry_backtracking": true
+}

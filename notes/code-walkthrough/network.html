@@ -1,0 +1,53 @@
+<section id="network">
+<h2>01 Transformer and solver network</h2>
+<p><strong>One network call proposes a new local shape for every cell.</strong> The network receives the current cell axes, the physical state, and nearby cell geometry. It predicts three target axes in the same cell frame. A separate fusion stage turns all those targets into shared vertex positions. <code>IntrinsicSolverNetwork</code> and its attention block, <code>IntrinsicTransformerLayer</code>, are ordinary PyTorch <code>nn.Module</code> classes. The current configuration uses one block, selected by <code>hops=[1]</code>, with 128 hidden channels and four attention heads. Constructing this configuration on the CPU gives <strong>326,414 trainable parameters</strong>; topology indices and masks are buffers, excluded from that count. <a href="source/network.py.html#L201">Network class</a> · <a href="source/train_mixed.py.html#L428">Training construction</a></p>
+
+<h3 id="network-inputs">What one cell receives</h3>
+<p>The input builder first gathers a cell’s eight corners, computes its deformation matrix, and extracts a local rotation frame. It treats that frame as fixed during differentiation. The current axes are the deformation matrix expressed in that frame. They are dimensionless: identity means rest shape, while their lengths and angles carry stretch and shear. The network sees their nine entries, followed by 86 additional state values. <a href="source/mixed_physics.py.html#L275">Input builder</a></p>
+<table>
+<thead><tr><th>Per-cell input</th><th>Values</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>Current local axes</td><td>9</td><td>Three deformed material axes, stored as a 3 × 3 matrix with axes in columns.</td></tr>
+<tr><td>Inertial offsets</td><td>24</td><td>For each of eight corners, the vector from its current position to its inertial prediction: eight vectors × three components. Expressed in the receiving cell’s frame and divided by rest cell size.</td></tr>
+<tr><td>Exposed-face flags</td><td>6</td><td>Which material-grid faces lie on the object boundary.</td></tr>
+<tr><td>Fixed-corner flags</td><td>8</td><td>Which corners have prescribed positions. These flags inform the network; fusion also enforces the constraints.</td></tr>
+<tr><td>Damping state</td><td>48</td><td>Six independent entries of the change in the deformation metric at each of eight Gauss points.</td></tr>
+<tr><td><strong>Total node input</strong></td><td><strong>95</strong></td><td><strong>9 axes + 86 state values.</strong></td></tr>
+</tbody></table>
+<div data-code="mixed_physics.py:287:294"></div>
+<p>The damping metric is <code>FᵀF</code>, which describes lengths and angles without world rotation. Its change compares the candidate with the <em>start of this physical timestep</em>, held fixed across that timestep’s solver iterations. At each Gauss point the packed order is <code>xx, yy, zz, √2·xy, √2·xz, √2·yz</code>. The square-root factors preserve the matrix’s squared norm when packed into six values. <a href="source/damping.py.html#L40">Metric difference</a> · <a href="source/damping.py.html#L47">Packing</a></p>
+<p>Six separate scalar inputs condition the block: <code>log1p(λ / 100000 Pa)</code>, <code>log1p(μ / 100000 Pa)</code>, <code>log(ρ / 1000 kg/m³)</code>, <code>log(h / 0.025 m)</code>, <code>log(dt / (1/60 s))</code>, and <code>log1p(η / (μ·dt))</code>. Here λ and μ are Lamé elastic coefficients, ρ is density, h is rest cell size, and η is the absolute damping coefficient. The last ratio normalizes a network input; the physical damping coefficient remains η. Each object’s six values are broadcast to its cells. <a href="source/mixed_physics.py.html#L301">Exact scalar construction</a></p>
+<p>The canonical rest shape is a cube of side h. Its size enters through h, the normalization of geometric vectors, and the rest-grid offsets. This input layout contains no current energy-gradient channel, previous optimizer-gradient channel, or recurrent hidden state. There is no <code>axis_gradient</code> argument in the current network interface. The physical-start damping data is its explicit temporal input. <a href="source/network.py.html#L301">Forward arguments</a> · <a href="source/mixed_physics.py.html#L275">Complete feature assembly</a></p>
+
+<h3 id="network-edges">How neighbors enter the receiving cell’s frame</h3>
+<p>Each cell has 27 fixed slots: itself plus the 26 cells sharing a face, edge, or corner. Boundary slots outside the cuboid have a false mask. The network therefore uses the same layer for interior and boundary cells. A slot is a neighbor location, not a feature dimension. <a href="source/network_geometry.py.html#L59">Neighborhood construction</a></p>
+<p>Each directed edge has <strong>24 raw values</strong>: rest-center offset divided by h (3), current-center offset in the receiver’s frame divided by h (3), the neighbor-to-receiver frame rotation (9), and the neighbor’s axes transported into the receiver’s frame (9). For receiver i and neighbor j, <code>RᵢᵀRⱼ</code> converts a vector from j’s frame into i’s; multiplying it by j’s local axes expresses those axes in i’s coordinates. Rest offsets use the common material reference coordinates. This conversion makes neighbors comparable despite their different frames. Rotating the entire physical configuration rotates the frames with it and leaves these local inputs unchanged. The 128 hidden channels are learned features, not world-space XYZ vectors. <a href="source/network_geometry.py.html#L160">Frame transport and feature order</a></p>
+<p>The edge encoder maps <code>24 → 64 → 64</code> using a SiLU activation between its linear layers. Its weights are shared across edges. The node encoder similarly maps <code>95 → 128 → 128</code>, and the scalar encoder maps <code>6 → 128 → 128</code>. <a href="source/network.py.html#L268">The three encoders</a></p>
+
+<div data-code="network.py:268:286"></div>
+<h3 id="network-layer">One transformer block, step by step</h3>
+<p>LayerNorm first normalizes each cell’s 128 hidden channels. <strong>FiLM</strong> then lets material and timestep information adjust those channels: multiply by a learned scale and add a learned offset. A linear map turns the 128-channel scalar embedding into four 128-channel vectors: scale and offset for attention, and scale and offset for the feed-forward branch. The scale is applied as <code>1 + scale</code>; zero-initialized FiLM weights therefore begin as an identity adjustment. <a href="source/network.py.html#L85">Block modules</a> · <a href="source/network.py.html#L145">FiLM application</a></p>
+<p>A linear projection produces query, key, and value vectors. Each of four heads receives 32 channels. For each neighbor, a head scores the receiver’s query against that neighbor’s key, divided by √32. <code>edge_bias</code> maps the encoded edge to four additional scores—one per head. Softmax converts these scores into weights over the valid neighbor slots.</p>
+<div data-code="network.py:85:99"></div>
+<p><code>edge_val</code> has a different job: it maps the edge to 128 values, split across the four heads, and adds them to the neighbor’s value vector. Each head sums these geometry-adjusted values using its attention weights. Thus the edge influences both <em>how much attention a neighbor receives</em> and <em>what information that neighbor sends</em>. Both projections are learned; no fixed distance-based attention preference is inserted.</p>
+<div data-code="network.py:165:180"></div>
+<p>Missing neighbors are masked before projection and receive exactly zero attention. The four head outputs are concatenated, projected, and added to the incoming token: the attention residual. A second LayerNorm and FiLM adjustment feed an MLP with widths <code>128 → 512 → 128</code> and SiLU activation. Its output is added through another residual. Queries are processed in chunks of 128 cells to reduce temporary gathers; every query still sees all 27 slots. Chunking does not shrink its neighborhood or remove stored training activations. <a href="source/network.py.html#L153">Full attention path</a></p>
+
+<h3 id="network-dimensions">Current tensor sizes</h3>
+<p>Here <strong>B</strong> is objects per GPU (16), <strong>N</strong> is cells per object (10 × 10 × 40 = 4,000), <strong>H</strong> is heads (4), <strong>K</strong> is neighbor slots (27), and <strong>D</strong> is hidden width (128). K in this table is unrelated to the number of repeated solver iterations.</p>
+<table>
+<thead><tr><th>Tensor</th><th>Shape</th></tr></thead>
+<tbody>
+<tr><td>Node input / hidden tokens</td><td>[16, 4000, 95] / [16, 4000, 128]</td></tr>
+<tr><td>Raw / encoded directed edges</td><td>[16, 4000, 27, 24] / [16, 4000, 27, 64]</td></tr>
+<tr><td>Scalar conditioning</td><td>[16, 4000, 6]</td></tr>
+<tr><td>Query, key, or value</td><td>[B, N, H, D/H] = [16, 4000, 4, 32]</td></tr>
+<tr><td>Attention weights, when requested for inspection</td><td>[B, N, H, K] = [16, 4000, 4, 27]; ordinary execution computes query chunks</td></tr>
+<tr><td>Target axes / object step</td><td>[16, 4000, 3, 3] / [16]</td></tr>
+</tbody></table>
+
+<h3 id="network-output">How hidden tokens become target axes</h3>
+<p>After the block, LayerNorm feeds a nine-value correction head for each cell. Dividing its output by <code>sqrt(1 + sum(raw²))</code> preserves its direction and bounds the combined nine-value norm below one. The controller averages hidden tokens over all cells, predicts one scalar per object, and applies <code>0.05 × sigmoid(scalar)</code>. That shared step multiplies every cell’s bounded correction. Adding the result to the current axes produces the target axes in the same frozen local frame.</p>
+<div data-code="network.py:347:352"></div>
+<p>This is nine correction values per cell plus one shared object-level step, rather than ten independent outputs per cell. The correction may vary from cell to cell, including its magnitude. The network returns targets, corrections, and the shared step; it does not directly return vertex positions or a rigid transform. Fusion and geometric acceptance follow outside the network. The step bound alone guarantees neither energy descent nor a valid fused shape. <a href="source/network.py.html#L186">Output record</a> · <a href="source/mixed_physics.py.html#L383">Caller and fusion handoff</a></p>
+</section>

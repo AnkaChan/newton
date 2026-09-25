@@ -1,0 +1,60 @@
+<section id="energy">
+  <h2>02 Energy and gradients</h2>
+  <p>The network proposes a shape update. Fusion turns that proposal into shared vertex positions, and the physical objective assigns those positions one energy value per object. Training differentiates this value back to the network’s weights. The objective combines resistance to deformation, inertia, and damping:</p>
+  <pre class="formula">total_energy(X) = elastic_energy(X)
+                + inertia_energy(X, Y)
+                + damping_energy(X, X_start)</pre>
+  <p><code>X</code> means the candidate vertex positions being evaluated, in meters. <code>X_start</code> is the object’s position at the start of this physical timestep. <code>Y</code> is its inertial prediction. All three energy terms are measured in joules. The mixed-material implementation returns their separate values and their sum as tensors of shape <code>[batch_size]</code>. <a href="source/mixed_physics.py.html#L338">Read the energy implementation</a>.</p>
+
+  <h3>The physical timestep supplies a fixed inertial prediction</h3>
+  <p>Before the inner solver iterations, the preparation step snapshots positions and velocities. For each vertex it computes:</p>
+  <pre class="formula">Y = X_start + dt × V_start + dt² × acceleration
+acceleration = gravity + external_force / vertex_mass
+
+inertia_energy = sum_over_vertices(
+    vertex_mass × squared_length(X − Y) / (2 × dt²)
+)</pre>
+  <p><code>dt</code> is the physical timestep in seconds. <code>V_start</code> is velocity in meters per second. The inertial term penalizes movement away from the position predicted by momentum and explicit forces. Gravity enters through <code>Y</code>; there is no additional gravity potential in this objective. The rigid prediction used during candidate preparation does not replace <code>Y</code>. <a href="source/mixed_physics.py.html#L438">Preparation code</a> and <a href="source/hex_energy.py.html#L93">inertial predictor</a>.</p>
+  <p>Both <code>Y</code> and <code>X_start</code> stay unchanged throughout the inner iterations of one timestep. After committing its final candidate, the solver computes velocity as <code>(X_final − X_start) / dt</code>, sets prescribed-corner velocities to zero, and prepares the next timestep. Each rest cell contributes <code>density × cell_size³ / 8</code> to each of its eight corner masses; contributions accumulate at shared vertices. Prescribed corners retain positive physical masses, while their positions are enforced by fusion. <a href="source/hex_energy.py.html#L226">Mass assembly</a>.</p>
+
+  <h3>Elasticity is evaluated inside each hexahedron</h3>
+  <p>The loss reads all eight deformed corner positions of each cell. It evaluates the cell’s deformation gradient, <code>F</code>, at eight interior Gauss points: two sample locations along each material axis. At each point, <code>F</code> maps a tiny rest-space displacement to its deformed displacement. Its columns describe how the three material directions change there. A warped cell can have different <code>F</code> values at these points.</p>
+  <pre class="formula">F = sum_over_8_corners(outer_product(position, rest_shape_gradient))
+J = determinant(F)
+
+elastic_density = μ/2 × (sum_of_squared_F_entries − 3)
+                − μ × log(J)
+                + λ/2 × log(J)²
+
+elastic_energy = sum_over_cells_and_8_points(weight × elastic_density)</pre>
+  <p>A <code>rest_shape_gradient</code> gives how a corner’s interpolation weight changes along the three rest directions; <code>outer_product</code> builds the nine pairwise component products. <code>λ</code> and <code>μ</code> are Lamé parameters in pascals: <code>μ</code> controls shear stiffness, and <code>λ</code> weights the volumetric term. <code>J</code> is the signed local volume ratio. Each quadrature weight is <code>cell_size³ / 8</code>, so the eight weights sum to the cell’s rest volume. This is a logarithmic Neo-Hookean energy. The code subtracts one corner before forming gradients to reduce translation-related cancellation, and evaluates the squared-entry expression through <code>F − I</code> for better precision near rest. <a href="source/hex_energy.py.html#L44">Quadrature construction</a>.</p>
+  <div data-code="mixed_physics.py:338:353"></div>
+
+  <h3>Damping measures shape change from the physical start</h3>
+  <p>Damping uses a metric matrix <code>C = transpose(F) × F</code>. Its diagonal entries are squared lengths of the transformed axes; its off-diagonal entries are their dot products. At every Gauss point, it compares this metric with the metric of the physical-start shape:</p>
+  <pre class="formula">delta_C = transpose(F) × F − transpose(F_start) × F_start
+damping_energy = sum_over_cells_and_8_points(
+    weight × η × sum_of_squared_delta_C_entries / (2 × dt)
+)</pre>
+  <p><code>η</code> is the absolute damping coefficient in pascal-seconds. The sum includes all nine matrix entries, so both copies of each off-diagonal component count. This metric formulation produces no damping for a rigid rotation or translation of the starting shape. Its reference is always <code>X_start</code>, including on later inner iterations. <a href="source/mixed_physics.py.html#L354">Damping energy assembly</a>.</p>
+  <div data-code="damping.py:36:44"></div>
+
+  <h3>Position gradients and weight gradients answer different questions</h3>
+  <p><strong>The position gradient</strong>, <code>d(total_energy)/dX</code>, describes how the objective changes when vertices move. It contains three components per vertex and has units of force. Its inertia contribution is exactly <code>vertex_mass × (X − Y) / dt²</code>. Because the total also includes inertia, this gradient is an objective residual, not just the elastic force.</p>
+  <p><strong>The training gradient</strong>, <code>d(training_loss)/dθ</code>, describes how changing each network weight <code>θ</code> would change the scored proposal. Calling <code>loss.backward()</code> applies the chain rule along this path:</p>
+  <pre class="formula">training loss → physical energy → fused positions
+              → proposed cell-axis updates → network weights</pre>
+  <p>PyTorch differentiates the energy’s tensor operations automatically. Fusion supplies its own backward operation: a transposed sparse solve maps position gradients back to axis-update gradients. The sparse matrix and its factorization remain fixed. Frame decomposition runs without gradients, so this backward pass treats the extracted frames as constants. <a href="source/fusion.py.html#L63">Fusion adjoint</a>; <a href="source/train_mixed.py.html#L645">training backward pass</a>.</p>
+  <aside class="callout"><p><strong>The mixed solver does not feed an energy-gradient vector into the network.</strong> Its inputs contain axes, inertial offsets, boundary flags, damping metric differences, neighbor features, and material conditioning. The metric differences are not gradients. The trainer evaluates the input energy without gradients, then differentiates the proposed output energy for weight updates. Validation separately computes position gradients for its near-zero-energy residual diagnostic. <a href="source/mixed_physics.py.html#L275">Input assembly</a>; <a href="source/mixed_validation.py.html#L39">residual diagnostic</a>.</p></aside>
+
+  <h3>The scalar training loss scores each proposal</h3>
+  <pre class="formula">scale = max(initial_energy, 1 joule)
+loss = (new_energy − initial_energy) / scale
+     + increase_weight × max(new_energy − previous_energy, 0) / scale</pre>
+  <p><code>initial_energy</code> belongs to this timestep’s first optimizer candidate and stays fixed across its inner iterations. <code>previous_energy</code> is evaluated immediately before the current proposal; <code>new_energy</code> is evaluated after it. The configured <code>increase_weight</code> is 1. An uphill proposal therefore receives an extra penalty. A negative loss is possible because the first term measures energy change. The one-joule denominator floor means this is not simply the remaining-energy ratio <code>new_energy / initial_energy</code>.</p>
+  <div data-code="train_mixed.py:200:206"></div>
+  <p>The batch averages these per-object losses before one Adam update. Initial and previous energies are detached. Candidate positions are also detached before the next iteration, and preparation snapshots physical states without gradients. Consequently, learning includes queries from later iterations and timesteps, but backward differentiation covers only the current proposal. <a href="source/train_mixed.py.html#L624">Input-energy evaluation</a>; <a href="source/train_mixed.py.html#L714">iteration boundary</a>.</p>
+
+  <h3>The implemented evaluation domain</h3>
+  <p>The logarithmic energy requires finite, positive <code>J</code> at all eight Gauss points; the implementation raises an error otherwise. Frame extraction and output checking also require a positively oriented, nonsingular cell-center gradient. Candidate initialization additionally screens corners and auxiliary tetrahedra. If <code>geometry_backtracking</code> is enabled, fused updates are shortened before scoring until the configured geometry checks pass; the chosen scale is detached. Positive Gauss-point determinants alone do not certify orientation everywhere inside a cell. <a href="source/train_mixed.py.html#L275">Candidate screening</a>; <a href="source/train_mixed.py.html#L348">output checks</a>; <a href="source/mixed_physics.py.html#L401">optional acceptance branch</a>.</p>
+</section>

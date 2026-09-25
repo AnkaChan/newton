@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="A source-linked walkthrough of the learned intrinsic solver: transformer, implicit Euler energy, differentiable local-to-global assembly, and deterministic augmentation.">
+<link rel="icon" href="data:,"><title>LIDO · an implementation walkthrough</title>
+<style>@@STYLE@@</style></head><body>
+<a class="skip" href="#overview">Skip to the walkthrough</a>
+<aside class="sidebar"><a class="brand" href="#overview">LIDO<span>Code walkthrough</span></a>
+<nav aria-label="Chapters"><a href="#overview">Start here</a><a href="#network"><b>01</b> Transformer &amp; network</a><a href="#energy"><b>02</b> Energy &amp; gradients</a><a href="#frames"><b>03</b> Frames &amp; assembly</a><a href="#augmentation"><b>04</b> Data augmentation</a><a href="#implementation-map">Implementation map</a></nav>
+<div class="reader-tools"><button id="toggle-code" type="button" aria-pressed="false">Expand code excerpts</button><a href="walkthrough.zip" download>Download complete walkthrough</a><a href="index.html" download="lido-code-walkthrough.html">Download this page</a></div>
+<p class="sidebar-note">Explanations first.<br>Exact code when you need it.</p>
+<a class="project-back" href="/artifacts/learned-intrinsic-solver/index.html">← All project pages</a>
+</aside>
+<main>
+<header id="overview"><p class="eyebrow">NEWTON · LEARNED INTRINSIC DEFORMATION OPTIMIZER</p>
+<h1>From a grid of cells<br>to a learned solver step.</h1>
+<p class="deck">How the implemented network reads a deformed object, proposes local axis changes, assembles one shared shape, and learns from its physical energy.</p>
+<div class="metadata"><span>Source snapshot <code>@@REVISION@@</code></span><span>25 September 2026</span><span>PyTorch + Newton + PARDISO</span></div>
+<div class="facts"><div><strong>4,000</strong><span>cell tokens</span></div><div><strong>4,961</strong><span>shared corners</span></div><div><strong>326,414</strong><span>network parameters</span></div><div><strong>1 / 300 s</strong><span>physical timestep</span></div></div>
+<p>This walkthrough follows <a href="source/train_mixed.py.html#L364"><code>train_mixed.run_training()</code></a> and <a href="source/mixed_physics.py.html#L45"><code>MixedHexSolverStep</code></a>, using the saved campaign configuration. One <strong>physical timestep</strong> advances simulation time. Within it, several <strong>solver iterations</strong> improve a candidate shape while the timestep's physical reference stays fixed. One network query performs one such iteration.</p>
+<p>The graph nodes are <strong>cells</strong>. The actual simulated shape is stored as <strong>shared corner positions</strong>. A local proposal from one cell cannot independently move a corner that is also used by neighboring cells; assembly reconciles their proposals.</p>
+<div class="callout"><strong>Scope of this snapshot.</strong> The implemented energy uses logarithmic Neo-Hookean elasticity and rejects nonpositive determinants at its Gauss points. The frame and initializer paths impose additional orientation checks. The saved configuration enables geometry backtracking. Those restrictions are described where they occur in the code.</div>
+</header>
+
+<section class="flow-section" id="one-query" aria-labelledby="flow-title"><h2 id="flow-title">Follow one query</h2>
+<p>Select a step to see what it computes and which gradients pass through it.</p>
+<div class="flow-controls" role="group" aria-label="Execution direction"><button type="button" data-mode="forward" aria-pressed="true">Forward execution →</button><button type="button" data-mode="backward" aria-pressed="false">← Backpropagation</button></div>
+<div id="flow-nodes" class="flow-nodes" role="group" aria-label="Solver stages"></div>
+<article id="flow-detail" class="flow-detail" aria-live="polite"></article>
+<p class="caption">CPU preparation happens outside the learned update. Neural operations and energy evaluation use the GPU; the custom assembly operation bridges to a cached CPU sparse solve.</p>
+</section>
+
+<details class="glossary"><summary>A small vocabulary for the rest of the page</summary><dl>
+<dt>Cell / hexahedron</dt><dd>A volume element with eight corner references. Rest cells are cubes; current corners can form a warped shape.</dd>
+<dt>Deformation gradient F</dt><dd>A 3 × 3 matrix describing how a small displacement in rest coordinates changes in the current shape. Its columns are three transformed material axes.</dd>
+<dt>Frame R</dt><dd>Three orthonormal coordinate directions used to express a cell's vectors locally.</dd>
+<dt>Local axes A</dt><dd>The deformation axes expressed in R: A = RᵀF. The axes retain length and angle changes.</dd>
+<dt>Gauss point</dt><dd>A sample location inside an element used to approximate its energy integral. There are eight per cell here.</dd>
+<dt>Gradient / backward pass</dt><dd>A gradient measures how a scalar changes when its inputs change. Backpropagation combines these derivatives to update the network weights.</dd>
+<dt>Detach / no_grad</dt><dd>A deliberate boundary that prevents differentiation through an earlier computation or state.</dd>
+<dt>Factorization / adjoint</dt><dd>A factorization prepares a fixed matrix for repeated linear solves. The adjoint is the transposed solve used to propagate a gradient through assembly.</dd>
+</dl></details>
+
+@@NETWORK@@
+@@ENERGY@@
+@@FRAMES@@
+@@DATA@@
+
+<section id="implementation-map"><h2>Implementation map</h2><p>These links open complete, line-numbered source files from the same snapshot as the excerpts. Each source page also links to the pinned GitHub revision. The main page includes its explanations, diagrams, styles, and code excerpts without an external library.</p>
+@@SOURCE_MAP@@
+<details><summary>Configuration used for the dimensions and sampling ranges</summary><pre class="config"><code>@@CONFIG@@</code></pre></details>
+<p class="caption">Source hashes and build information: <a href="snapshot.json">snapshot.json</a>. This is a code walkthrough, not a live training status report. <a href="/artifacts/learned-intrinsic-training-v2/index.html">Open the training dashboard</a>.</p>
+</section>
+<footer>Readable explanations · exact source excerpts · one implementation snapshot</footer>
+</main><script>@@SCRIPT@@</script></body></html>

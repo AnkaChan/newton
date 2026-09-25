@@ -1,0 +1,46 @@
+<section id="frames">
+  <h2>03 Local frames and differentiable assembly</h2>
+  <p>The network proposes a change to each cell’s three deformation axes. Assembly turns those cell proposals into one position for every shared corner. The positions are the persistent shape; frames and axes are derived descriptions rebuilt for a solver query. In the 10 × 10 × 40 grid, 4,000 cells share 4,961 corners. Adjacent cells therefore cannot move their common corner independently.</p>
+
+  <h3>Read the current deformation from eight shared corners</h3>
+  <p>Each canonical rest cell has side length <code>h</code>, measured in meters. Gather its eight current corner positions in the fixed material ordering. The first column of the center deformation matrix <code>F</code> is the difference between the current centroids of the positive-x and negative-x faces, divided by <code>h</code>. Repeat for y and z. These columns are dimensionless transformed material axes: their lengths retain stretch, and their relative directions retain shear.</p>
+  <pre class="equation"><code>F[:, x] = (mean(x-positive face) − mean(x-negative face)) / h
+F[:, y] = (mean(y-positive face) − mean(y-negative face)) / h
+F[:, z] = (mean(z-positive face) − mean(z-negative face)) / h</code></pre>
+  <p>The implementation uses an equivalent weighted corner sum, subtracting the first corner before accumulating to reduce translation-related cancellation. A batch produces <code>F: [B, 4000, 3, 3]</code>. This is the trilinear hex deformation gradient <em>at the center</em>; one matrix does not describe every possible warping of eight corners. Those corner positions remain available throughout the solve. <a href="source/mixed_physics.py.html#L278">See the center-gradient computation</a>.</p>
+
+  <h3>Separate the coordinate frame from the axes</h3>
+  <p>The code decomposes each center matrix with SVD, forms the rotation <code>R = left × right_transpose</code>, and expresses the axes in that frame as <code>A = Rᵀ × F</code>. Multiplication by <code>Rᵀ</code> converts world vectors into local coordinates; multiplication by <code>R</code> converts them back. Both matrices have three columns, but different jobs: <code>R</code> is an orthonormal coordinate frame, while <code>A</code> carries the actual stretch and shear.</p>
+  <p>The SVD runs inside <code>torch.no_grad()</code>. Consequently, differentiation treats <code>R</code> as fixed for this query, while <code>A = RᵀF</code> retains its position-gradient path. The frame can be recomputed at the next query; “frozen” does not mean fixed for the entire trajectory.</p>
+  <div data-code="mixed_physics.py:278:288"></div>
+  <p><strong>Current inversion restriction:</strong> this extractor rejects a nonpositive center determinant and a smallest singular value below its float32 threshold. The raw nine-entry axes format can mathematically represent an inverted matrix, but this extraction path does not accept one. The energy separately requires positive Gauss-point Jacobians. When optional geometry backtracking is enabled, the mixed solver also shortens proposals that fail its sampled geometry checks. These are runtime restrictions beyond the axes’ representational capacity. <a href="source/mixed_physics.py.html#L281">Frame checks</a> · <a href="source/mixed_physics.py.html#L341">Energy checks</a> · <a href="source/mixed_physics.py.html#L402">Optional acceptance</a></p>
+
+  <h3>Turn local axis proposals into a shared displacement</h3>
+  <p>The network outputs target axes in the same local frame as its input. The mixed solver subtracts the current axes and rotates the difference into world coordinates:</p>
+  <pre class="equation"><code>local_increment = target_axes − current_axes
+D = R × local_increment
+new_positions = base_positions + solved_displacement</code></pre>
+  <p><code>D</code> is one dimensionless 3 × 3 matrix per cell. Assembly finds corner displacements, in meters, whose deformation gradients best match these proposals. At each of eight Gauss points per cell, <code>G(c,q)</code> differentiates the shared displacement using the <em>rest</em> shape-function gradients. The exact fitting objective is:</p>
+  <pre class="equation"><code>minimize over corner displacements δ:
+  Σ cells c  weight[c] × (1/8) Σ Gauss points q
+      squared_sum_of_entries( G(c,q) δ − D[c] )
+
+subject to:
+  δ[fixed] = prescribed_positions − base_positions[fixed]</code></pre>
+  <p>The context sets <code>weight[c] = Young’s modulus × h³</code>, which has units of joules. The quadrature weights are normalized internally, so rest volume is included once. There is <strong>no mass term or implicit-Euler inertia term in this assembly objective</strong>. The physical energy is evaluated afterward on the assembled positions. <a href="source/mixed_physics.py.html#L198">Context weights</a> · <a href="source/fusion.py.html#L99">Assembly objective</a></p>
+  <p>All cells reference one global corner array. Competing targets are reconciled by the weighted fit, rather than by averaging independently moved copies. Prescribed corners are assigned their exact supplied positions. The connected grid requires at least one fixed corner to remove the free translation; this implementation does not supply an unconstrained translation gauge.</p>
+  <p><strong>A concrete example:</strong> with <code>h = 0.025 m</code>, an unrotated cell with <code>A = diag(1, 1, 1.2)</code> measures 25 × 25 × 30 mm. A target <code>diag(1, 1, 1.1)</code> gives <code>D = diag(0, 0, −0.1)</code>. For one affine cell with its bottom face fixed, assembly lowers the top by 2.5 mm. For many cells, shared corners make all such requests interact.</p>
+  <p>The solve fits an <em>increment</em>. A zero proposal preserves the existing warped shape exactly when its prescribed corners are already satisfied. It does not repeatedly reconstruct the entire shape from center axes or discard existing within-cell warping. <a href="source/fusion.py.html#L102">Incremental behavior</a></p>
+
+  <h3>Reuse the factor, differentiate through the solution</h3>
+  <p>Stacking the gradient samples gives a fixed operator <code>G</code> and diagonal weights <code>W</code>. Assembly constructs <code>H = GᵀWG</code> and a target operator <code>B</code> that repeats each cell proposal at its eight samples. With <code>f</code> denoting free corners and <code>p</code> prescribed corners, the linear system is:</p>
+  <pre class="equation"><code>H_ff δ_f = B_f D − H_fp δ_p</code></pre>
+  <div data-code="fusion.py:182:214"></div>
+  <p>PARDISO factors this matrix once when the material context is constructed and reuses the factor for its solver iterations and physical timesteps. Current positions and neural weights change the right-hand side, not this matrix. Context replacement builds another factor; there is no single global factor shared by every sampled material. Factors and solves stay float32 on CPU; tensors transferred back preserve the input device. <a href="source/pardiso.py.html#L165">Factor construction</a> · <a href="source/pardiso.py.html#L210">Cached solves</a></p>
+  <p>The custom backward pass receives the loss gradient on assembled free corners, <code>g_f</code>, solves <code>H_ffᵀ z = g_f</code>, and applies <code>B_fᵀ z</code> to obtain gradients for the proposed axes. That gradient continues through the world rotation and network. CPU transfers do not sever this custom gradient path. The implementation also returns gradients for base and prescribed positions; it supports first derivatives, with fixed topology, material weights, and factorization. The trainer’s detached iteration and timestep boundaries determine how far state gradients propagate.</p>
+  <div data-code="fusion.py:62:81"></div>
+
+  <h3>Where the rigid prediction enters</h3>
+  <p>The mixed path recomputes mass center, angular momentum, and inertia from the current physical shape, then invokes Newton’s body integrator under <code>no_grad()</code>. Its rotation and translation produce a rigid-guided base. A zero-increment assembly restores prescribed corners, yielding an initialization candidate. The ordinary learned query subsequently assembles from its current candidate. The separate single-material API can also apply an explicitly supplied rigid map during assembly. <a href="source/rigid_predictor.py.html#L176">Rigid prediction</a> · <a href="source/mixed_physics.py.html#L438">Mixed preparation</a> · <a href="source/solver_step.py.html#L289">Single-material path</a></p>
+  <p>This guidance does not replace the physical inertial prediction <code>Y</code>. The mixed preparation computes <code>Y</code> separately from physical positions, velocity, gravity, and force. Pins determine translation in this clamped assembly: a uniform translation of its base cancels from the exact constrained minimizer. Newton’s model keeps the pinned particles’ positive masses; the learned solver enforces their prescribed positions explicitly. <a href="source/mixed_physics.py.html#L444">Physical prediction</a> · <a href="source/solver_step.py.html#L269">Rigid-map semantics</a> · <a href="source/newton_model.py.html#L38">Pinned-particle convention</a></p>
+</section>

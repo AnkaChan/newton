@@ -1,0 +1,49 @@
+<section id="augmentation">
+<h2><span class="chapter">04</span> Data augmentation</h2>
+<p class="lead">A seed generates an entire physical starting state: one shared-corner shape, a smooth velocity field, fixed corners, and one material. The canonical rest grid stays unchanged. The training pool then produces further states by applying the learned solver.</p>
+
+<h3>Build the rest object once</h3>
+<p><a href="source/data.py.html#L64"><code>generate_cuboid()</code></a> creates the grid topology and rest coordinates. For this campaign, 10 × 10 × 40 cells with a 0.025 m edge length form a 0.25 × 0.25 × 1 m object. There are 4,000 cells and <strong>4,961 shared corners</strong>: 11 × 11 × 41. A corner is stored once; neighboring cells refer to the same index. Arrays use x/y/z order with z varying fastest.</p>
+<p>The 121 corners on the minimum-z face are prescribed: their positions stay at rest and their velocities are zero. “Restored prescribed corners” means assigning those known values exactly after generating a perturbation. The rest grid determines material coordinates, element sizes, masses, and shape-function derivatives.</p>
+<div data-code="data.py:104:113"></div>
+
+<h3>Add smooth deformation at several scales</h3>
+<p>A <strong>control point</strong> is a sample of a displacement field. It says how far to move nearby material; it is not an extra simulation particle. <a href="source/multiscale.py.html#L61"><code>build_hierarchy()</code></a> derives the control grids from the actual voxel counts. Starting at voxel spacing, it doubles the target spacing until the longest axis has at most four intervals. It retains at most three levels, including the coarsest and finest.</p>
+<div class="table-wrap"><table><caption>Automatically generated hierarchy for the 10 × 10 × 40 rest grid</caption><thead><tr><th>Level</th><th>Control points</th><th>Share of displacement budget</th><th>Effect</th></tr></thead><tbody>
+<tr><td>Coarse</td><td>2 × 2 × 4</td><td>64 / 73 ≈ 87.7%</td><td>Motion spanning much of the object</td></tr>
+<tr><td>Middle</td><td>4 × 4 × 11</td><td>8 / 73 ≈ 11.0%</td><td>Intermediate bends and distortion</td></tr>
+<tr><td>Fine</td><td>11 × 11 × 41</td><td>1 / 73 ≈ 1.4%</td><td>Variation at voxel spacing</td></tr>
+</tbody></table></div>
+<p>Each control displacement component is drawn uniformly between minus and plus that level's amplitude. Amplitude weights are proportional to the target spacing raised to 1.5. Their sum is <code>strength × shortest rest side</code>. Strength is uniform from 0.02 to 0.10, so the requested total component budget is 5–25 mm here. This is a sampling bound, not the measured RMS deformation.</p>
+<p><a href="source/multiscale.py.html#L115"><code>interpolate_control_grid()</code></a> uses the eight surrounding control points to compute a weighted displacement at every rest corner. This is trilinear interpolation: near a control point, that point gets more weight. The three interpolated fields are added. Control vectors on the fixed face are zero.</p>
+<div data-code="multiscale.py:256:269"></div>
+<p>The generator checks the combined shape and each individual level at the eight corners, eight Gauss points, and cell center, plus the auxiliary five-tetrahedron decomposition. It halves all level amplitudes together until the minimum sampled volume ratio is at least 0.2. After conversion to float32, another check can shorten the displacement again. <strong>This initial-state sampler rejects starts that fail these sampled orientation checks.</strong> Finite samples do not certify orientation everywhere inside a cell or exclude self-intersection. Its geometry screens are implemented in <a href="source/multiscale.py.html#L155"><code>_GeometryScreen</code></a> and <a href="source/initial_state.py.html#L123"><code>_float32_positions()</code></a>.</p>
+
+<h3>Use one global multiplier for shape and velocity</h3>
+<p><a href="source/initial_state.py.html#L141"><code>InitialStateAugmenter.reset()</code></a> independently draws a multiplier <code>g</code> uniformly from 0 to 1. It scales both the displacement from rest and the initial velocity. Values near zero produce quieter starts. Setting g exactly to zero yields rest positions and zero velocity; a continuous uniform draw does not deliberately assign a separate probability to exact rest.</p>
+<pre class="formula">starting shape = rest shape + g × sampled displacement
+starting velocity = g × sampled velocity</pre>
+<p>Velocity uses its own 3 × 3 × 5 control grid. Its interpolated field is normalized so that the RMS displacement over one timestep, <code>dt × velocity</code>, is uniformly sampled between 0 and 0.1 cell widths before applying g. With a 25 mm cell and dt = 1/300 s, that is at most 2.5 mm per step, equivalent to an RMS speed of 0.75 m/s before scaling. Fixed corners have zero velocity.</p>
+<div data-code="initial_state.py:155:186"></div>
+
+<h3>Sample the material independently</h3>
+<p>One material is held fixed throughout a trajectory. All cells in that object share it; different batch members can have different materials. <a href="source/material_sampling.py.html#L114"><code>sample_material()</code></a> uses these campaign ranges:</p>
+<div class="table-wrap"><table><thead><tr><th>Quantity</th><th>Meaning</th><th>Distribution</th></tr></thead><tbody>
+<tr><td>Young's modulus E</td><td>Resistance to small elastic deformation</td><td>Log-uniform, 10³–10⁶ Pa</td></tr>
+<tr><td>Poisson ratio ν</td><td>Coupling between length change and transverse contraction</td><td>Uniform, 0.20–0.49</td></tr>
+<tr><td>Density ρ</td><td>Rest mass per volume</td><td>Log-uniform, 100–10,000 kg/m³</td></tr>
+<tr><td>Viscosity η</td><td>VBD metric damping coefficient</td><td>Log-uniform, 10–1,000 Pa·s</td></tr>
+</tbody></table></div>
+<p>Log-uniform sampling gives equal probability to equal multiplicative ranges, such as 10³–10⁴ and 10⁴–10⁵. Viscosity is an absolute independently sampled value. It is not multiplied by stiffness. The network receives derived Lamé parameters λ and μ; <a href="source/material_sampling.py.html#L106">the conversion</a> is:</p>
+<pre class="formula">μ = E / [2 × (1 + ν)]
+λ = E × ν / [(1 + ν) × (1 − 2ν)]</pre>
+
+<h3>A seed repeats the same start; a rollout generates the later states</h3>
+<p>The augmenter owns a canonical rest copy. <code>reset(seed)</code> selects a seed and regenerates from that copy; <code>reset()</code> repeats the selected seed. Neither operation starts from a previously deformed result. Independent random streams select shape/velocity strength, material, and g, so their draws do not accidentally consume one another's random numbers. Damping has an additional separate stream. Returned positions and velocities are owned float32 arrays.</p>
+<p><a href="source/train_mixed.py.html#L223"><code>_TrajectoryFactory.reset()</code></a> uses even physical seeds for training and odd ones for validation, with a separate validation master seed. At each physical step, <a href="source/train_mixed.py.html#L262"><code>_candidate()</code></a> chooses the optimizer's initial guess:</p>
+<div class="table-wrap"><table><thead><tr><th>Probability</th><th>Initial guess</th></tr></thead><tbody>
+<tr><td>50%</td><td>The inertial prediction Y</td></tr><tr><td>35%</td><td>Y plus a smooth perturbation, requested RMS 0.01–0.10 cell widths</td></tr><tr><td>10%</td><td>The physical timestep's starting positions</td></tr><tr><td>5%</td><td>The rigid predictor's candidate</td></tr>
+</tbody></table></div>
+<p>These are requested mixture probabilities. Current validity checks can substitute the physical starting shape or shorten initializer noise, so the accepted distribution also depends on those checks.</p>
+<p><a href="source/trajectory_pool.py.html#L237"><code>ActiveTrajectoryPool.finish_batch()</code></a> retains each trajectory's current detached state in memory. After one learned update it either queues another solver iteration, advances a physical timestep, or replaces a completed trajectory with a new seeded start. Different objects can therefore contribute different iteration and timestep ages to the same batch. The configured budget sets extend to 32 solver iterations per timestep and 128 physical steps per trajectory. Intermediate training examples are generated on demand; resumable checkpoints save the active pool.</p>
+</section>
