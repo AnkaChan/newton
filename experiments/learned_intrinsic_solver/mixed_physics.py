@@ -23,6 +23,7 @@ from .damping import damping_metric_difference, pack_damping_features
 from .data import VoxelGridData
 from .fusion import HexFusion
 from .hex_energy import HexImplicitEulerLoss, HexLossTerms, make_inertial_prediction
+from .hex_validity import HexFeasibility
 from .network import IntrinsicSolverNetwork
 from .network_geometry import build_edge_features
 from .rigid_predictor import RigidPosePredictor
@@ -53,8 +54,9 @@ class MixedHexSolverStep(nn.Module):
 
     The rigid predictor only initializes the candidate. The physical inertial
     target stays unchanged through learned updates. Polar frames remain frozen,
-    fusion has its existing CPU forward/adjoint, and inverted Gauss Jacobians
-    fail without contact handling or a line search.
+    fusion has its existing CPU forward/adjoint. Optional geometry backtracking
+    shortens invalid fused increments before energy evaluation. Contact and
+    energy-descent acceptance are not implemented.
 
     Args:
         rest: Canonical cubic hexahedral rest grid [m].
@@ -64,6 +66,10 @@ class MixedHexSolverStep(nn.Module):
             channels, on CPU or CUDA. Positive damping requires the damped schema.
         time_step: Positive physical timestep [s].
         gravity: World acceleration [m/s^2].
+        geometry_backtracking: Shorten each fused increment independently until
+            the augmenter's sampled hex/tet orientation and the solver's center
+            nonsingularity tests pass. Keep raw network head outputs for
+            diagnostics; report the detached multiplier as acceptance_scale.
     """
 
     def __init__(
@@ -74,6 +80,7 @@ class MixedHexSolverStep(nn.Module):
         network: IntrinsicSolverNetwork,
         time_step: float,
         gravity=(0.0, -9.81, 0.0),
+        geometry_backtracking: bool = False,
     ):
         super().__init__()
         if (
@@ -119,6 +126,10 @@ class MixedHexSolverStep(nn.Module):
         self.cell_size = rest.cell_size
         self.network = network
         self._damped_schema = network.state_feature_dim == 86
+        if not isinstance(geometry_backtracking, bool):
+            raise ValueError("geometry_backtracking must be boolean")
+        self.geometry_backtracking = geometry_backtracking
+        self.feasibility = HexFeasibility(rest) if geometry_backtracking else None
         self._contexts: dict[str, _PhysicalContext] = {}
         self._contexts_lock = threading.RLock()
         self._build_lock = threading.Lock()
@@ -387,9 +398,20 @@ class MixedHexSolverStep(nn.Module):
                 for i, context in enumerate(contexts)
             ]
         )
+        acceptance_scale = None
+        if self.feasibility is not None:
+            if not torch.equal(positions[:, self.fixed_indices], fixed_positions):
+                raise ValueError("geometry backtracking requires the base to satisfy prescribed corners")
+            fused, acceptance_scale = self.feasibility(positions, fused)
         loss = self._energy(fused, inertial_prediction, contexts, previous_positions)
         return LearnedHexStepOutput(
-            fused, prediction.local_target_axes, prediction.axis_correction, prediction.step_size, inputs.frames, loss
+            fused,
+            prediction.local_target_axes,
+            prediction.axis_correction,
+            prediction.step_size,
+            inputs.frames,
+            loss,
+            acceptance_scale,
         )
 
     def _cpu_snapshot(self, value: Tensor, name: str) -> Tensor:

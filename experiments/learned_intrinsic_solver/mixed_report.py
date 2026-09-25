@@ -217,8 +217,20 @@ def write_mixed_report(output, report, *, updated_at=None):
     _atomic_text(output / "loss_curve.svg", loss_plot)
     _atomic_text(output / "validation_curve.svg", validation_plot)
     for name, data, columns in (
-        ("updates", report.get("updates", []), ("update", "epoch", "loss", "before_joule", "after_joule")),
-        ("epochs", rows, ("epoch", "loss", "query_count", "seconds")),
+        (
+            "updates",
+            report.get("updates", []),
+            (
+                "update",
+                "epoch",
+                "loss",
+                "before_joule",
+                "after_joule",
+                "shortened_query_count",
+                "mean_acceptance_scale",
+            ),
+        ),
+        ("epochs", rows, ("epoch", "loss", "query_count", "seconds", "shortened_query_count", "mean_acceptance_scale")),
     ):
         buffer = io.StringIO()
         writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
@@ -253,6 +265,35 @@ def write_mixed_report(output, report, *, updated_at=None):
         if isinstance(batch_size, int)
         else ""
     )
+    acceptance_changes = [
+        change for change in report.get("configuration_changes", []) if change.get("field") == "geometry_backtracking"
+    ]
+    acceptance_change = acceptance_changes[-1] if acceptance_changes else {}
+    acceptance_enabled = acceptance_change.get("current", config.get("geometry_backtracking"))
+    acceptance_status = (
+        "enabled" if acceptance_enabled is True else "disabled" if acceptance_enabled is False else "not recorded"
+    )
+    if acceptance_enabled is True and acceptance_change.get("effective_from_epoch") is not None:
+        acceptance_status += f" from epoch {acceptance_change['effective_from_epoch']}"
+
+    def shortened_fraction(row, *, prefix=""):
+        shortened, total = row.get(f"{prefix}shortened_query_count"), row.get(f"{prefix}query_count")
+        if not isinstance(shortened, int) or not isinstance(total, int):
+            return "not recorded"
+        return f"{shortened} / {total}"
+
+    acceptance_scale = latest.get("mean_acceptance_scale")
+    acceptance_scale_text = (
+        _number(acceptance_scale)
+        if isinstance(acceptance_scale, (int, float)) and math.isfinite(acceptance_scale)
+        else "not recorded"
+    )
+    acceptance_html = f"""<details><summary>Geometry acceptance: {escape(acceptance_status)}</summary>
+<p class="muted">Shortened updates use a smaller fraction of the proposed displacement to keep the sampled cell geometry valid. A scale of 1 keeps the full update. These checks do not enforce energy descent. Counts below are from the latest completed epoch; historical measurements are not reconstructed.</p>
+<table><tr><th>Queries</th><th>Shortened / evaluated</th><th>Mean accepted fraction</th></tr>
+<tr><td>Training epoch {escape(latest.get("epoch", "—"))}</td><td>{shortened_fraction(latest)}</td><td>{acceptance_scale_text}</td></tr>
+<tr><td>Validation optimizer</td><td>{shortened_fraction(validation, prefix="optimization_")}</td><td>—</td></tr>
+<tr><td>Validation physical rollout</td><td>{shortened_fraction(validation, prefix="physical_")}</td><td>—</td></tr></table></details>"""
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="30"><title>LIDO-v2 · live training</title>
@@ -270,7 +311,7 @@ Available solver iterations: K = {escape(counts_k)} · Physical timesteps: H = {
 Curriculum descent gate: {gate_text} · Hard cap: {escape(stage_limit_text)}</p>
 <p>Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(validation.get("mean_after_joule"))} J after one update.<br>
 Descent: {descent_text}; first-update failures: {escape(validation.get("first_update_failed_count", "Not evaluated"))}; all validation failures: {escape(validation.get("failed_count", "Not evaluated"))}.</p>
-{failure_html}<img src="loss_curve.svg" alt="Training objective and validation normalized change, validation descent rate, physical energy, and learning rate by epoch">
+{acceptance_html}{failure_html}<img src="loss_curve.svg" alt="Training objective and validation normalized change, validation descent rate, physical energy, and learning rate by epoch">
 <p class="muted">Lower normalized objective is better; zero means no change. The training objective includes an uphill penalty. Validation shows the first update on fixed seeds, without that penalty. Both use the existing 1 J normalization floor, so these are not pure relative-error percentages. The learning rate is recorded after each epoch's scheduler decision.</p>
 <details><summary>How the loss curves are computed</summary>
 <p>Mean local training loss averages all queried trajectories and ranks in each completed epoch. Epochs mix solver ages, physical timesteps and curriculum stages.</p>

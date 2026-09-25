@@ -18,13 +18,14 @@ from experiments.learned_intrinsic_solver.mixed_validation import validate, vali
 class _AnalyticStep(torch.nn.Module):
     """Provide exact quadratic energies while using the real proposal acceptance gate."""
 
-    def __init__(self, *, fail_iteration=None, fail_physical=False, pin_target=0.0):
+    def __init__(self, *, fail_iteration=None, fail_physical=False, pin_target=0.0, report_acceptance=False):
         super().__init__()
         self.contexts = {}
         self.batch_sizes = []
         self.fail_iteration = fail_iteration
         self.fail_physical = fail_physical
         self.pin_target = pin_target
+        self.report_acceptance = report_acceptance
         self.register_buffer("fixed_indices", torch.tensor([0]))
         self.register_buffer("cell_corner_indices", torch.arange(8).reshape(1, 8))
         self.register_buffer(
@@ -49,7 +50,11 @@ class _AnalyticStep(torch.nn.Module):
                 raise ValueError("deliberate physical rollout failure")
         proposed = positions.clone()
         proposed[:, 7, 0] = 1 + (proposed[:, 7, 0] - 1) / 2
-        return SimpleNamespace(positions=proposed, loss=self.energy(proposed, inertial_prediction, context_ids))
+        return SimpleNamespace(
+            positions=proposed,
+            loss=self.energy(proposed, inertial_prediction, context_ids),
+            acceptance_scale=torch.full((len(context_ids),), 0.5) if self.report_acceptance else None,
+        )
 
 
 class _Factory:
@@ -96,6 +101,16 @@ class TestMixedValidation(unittest.TestCase):
             validation_physical_steps=2,
             validation_physical_iterations=1,
         )
+
+    def test_report_counts_shortened_optimizer_and_physical_updates_separately(self):
+        """Count every accepted half-step across both fixed-state and physical validation."""
+        step = _AnalyticStep(report_acceptance=True)
+        report = validate(step, _Factory(step), self._config(count=2, batch_size=2), torch.device("cpu"), 0, 1)
+        self.assertEqual(report["optimization_shortened_query_count"], 6)
+        self.assertEqual(report["optimization_query_count"], 6)
+        self.assertEqual(report["physical_shortened_query_count"], 4)
+        self.assertEqual(report["physical_query_count"], 4)
+        self.assertEqual(report["samples"][0]["acceptance_scales"], [0.5, 0.5, 0.5])
 
     def test_late_optimization_failure_preserves_first_query_and_physical_success(self):
         """Keep early population curve points and independent physical survival after iteration two fails."""

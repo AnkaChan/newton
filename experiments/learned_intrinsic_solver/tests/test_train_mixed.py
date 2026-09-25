@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -17,11 +18,42 @@ if importlib.util.find_spec("torch") is None:
 
 import torch  # noqa: TID253 -- Optional experimental training tests.
 
-from experiments.learned_intrinsic_solver.train_mixed import MixedTrainConfig, local_objective, run_training
+from experiments.learned_intrinsic_solver.data import generate_cuboid
+from experiments.learned_intrinsic_solver.multiscale import screen_geometry
+from experiments.learned_intrinsic_solver.train_mixed import (
+    MixedTrainConfig,
+    _TrajectoryFactory,
+    local_objective,
+    run_training,
+)
 
 
 class TestMixedTraining(unittest.TestCase):
     """Check the optimizer contract rather than a copied implementation."""
+
+    def test_initializer_uses_the_enabled_float32_feasibility_margin(self):
+        """Replace numerically ambiguous initial candidates before solver input."""
+        rest = generate_cuboid((1, 1, 1))
+        base = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)
+        marginal = base.clone()
+        marginal[0] = torch.tensor([0.5928649306297302, 0.11281482130289078, 0.2943202257156372])
+        self.assertGreater(min(screen_geometry(rest, marginal.numpy()).values()), 0)
+        config = replace(self.config(1), geometry_backtracking=True, candidate_probabilities=(0, 0, 0, 1))
+        factory = _TrajectoryFactory(
+            SimpleNamespace(fixed_indices=torch.empty(0, dtype=torch.long)), rest, config, rank=0
+        )
+        prepared = factory._candidate(
+            {
+                "seed": 1,
+                "physical_age": 0,
+                "physical_positions": base,
+                "candidate": marginal,
+                "inertial_prediction": base.clone(),
+                "fixed_positions": base[:0],
+            }
+        )
+        self.assertTrue(prepared["initializer_fallback"])
+        self.assertTrue(torch.equal(prepared["candidate"], base))
 
     def test_local_loss_cuts_history_and_keeps_each_member_gradient(self):
         """Only the current proposal receives gradients, with no hidden 1/K scale."""
@@ -154,6 +186,31 @@ class TestMixedTraining(unittest.TestCase):
     def test_default_descent_gate_is_eighty_percent(self):
         """Use the user-selected descent gate for newly configured campaigns."""
         self.assertEqual(MixedTrainConfig().stage_descent_rate, 0.8)
+
+    def test_resume_enables_geometry_guard_and_reports_accepted_updates(self):
+        """Enable guarded proposals on resume and preserve earlier training history."""
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            run_training(output, self.config(1))
+            checkpoint = output / "checkpoints/latest.pt"
+            saved = torch.load(checkpoint, weights_only=False)
+            # Exercise the legacy checkpoint migration, not a new default.
+            saved["config"].pop("geometry_backtracking", None)
+            torch.save(saved, checkpoint)
+            self.assertFalse(MixedTrainConfig.from_checkpoint_config(saved["config"]).geometry_backtracking)
+            report = run_training(output, replace(self.config(2), geometry_backtracking=True), resume=checkpoint)
+            self.assertEqual(report["epochs"][0], saved["report"]["epochs"][0])
+            change = report["configuration_changes"][-1]
+            self.assertEqual(
+                (change["field"], change["previous"], change["current"]), ("geometry_backtracking", False, True)
+            )
+            self.assertEqual(change["effective_from_epoch"], 2)
+            latest = report["epochs"][-1]
+            self.assertGreater(latest["mean_acceptance_scale"], 0)
+            self.assertLessEqual(latest["mean_acceptance_scale"], 1)
+            self.assertGreaterEqual(latest["shortened_query_count"], 0)
+            self.assertLessEqual(latest["shortened_query_count"], latest["query_count"])
+            self.assertTrue(all("shortened_query_count" in row for row in report["updates"][-4:]))
 
     def test_stage_limit_defaults_and_legacy_configuration(self):
         """Give new campaigns twenty-epoch caps while old checkpoints remain uncapped."""

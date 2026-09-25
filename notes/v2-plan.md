@@ -576,3 +576,49 @@ Run output is `generated/training_v2_damping_20260924`; the complete launch
 configuration is `generated/training_v2_damping_config.json`. The private
 compact handoff is `generated/training_v2_handoff.md`. The campaign uses a new
 network and Adam state; the one-update verification weights are discarded.
+
+## Corner-inversion failure recovery and monitoring (2026-09-25)
+
+The run failed during epoch 43 at update 5,502: trajectory 9,238 had a folded
+corner despite positive determinants at all eight energy quadrature points
+and the cell center. The minimum corner determinant was -0.0094782, while
+the minimum Gauss determinant was +0.176085. The subsequent physical-step
+initializer correctly rejected this shape. This was a real local inversion,
+not a sparse-solve or float32 error.
+
+Enable `geometry_backtracking` for this campaign from epoch 43. After fusion,
+test all eight corners, eight Gauss points, and the center, together with the
+augmenter's alternating five-tet topology and the existing center singularity
+threshold. Shorten each invalid object's displacement independently by factors
+of two, with at most 32 halvings. Use a conservative scale-aware float32
+roundoff margin so a barely positive computed determinant is not accepted as
+reliably oriented. Initial candidate preparation uses this same margin on CPU,
+in addition to its existing screen. The accepted proposal is evaluated by the
+unchanged elastic, inertia, and damping energy. This acceptance checks geometry;
+it does not impose energy descent, certify the interior between samples, handle
+contact, or make the log Neo-Hookean energy inversion-tolerant.
+
+Acceptance selection is detached; gradients still pass through the scaled
+displacement, fusion, and current network. Already feasible proposals remain
+bit exact. Prescribed corners remain exact. Invalid bases, nonfinite proposals,
+and exhausted searches still fail explicitly and retain diagnostics. Historical
+checkpoints default to backtracking disabled; enabling it on resume is recorded
+as a configuration change. Network head outputs remain raw proposals, while
+returned positions and losses describe accepted updates. Reports and CSVs record
+shortened query counts and mean accepted fraction; validation records optimizer
+and physical rollout counts separately. Missing historical data stays missing.
+
+On the saved failed proposal, accepting half the displacement gives a minimum
+sampled determinant of +0.00269383 and energy 503.219 → 272.171 J. The complete
+epoch-42 checkpoint preserves 5,376 Adam updates and all 256 active trajectories
+pass geometry checks. Recovery uses this checkpoint and repeats 126 unsaved
+updates. Preserve the original failure snapshots, logs, metrics, checkpoint,
+and source manifest before resuming the same campaign and tmux session.
+
+A persistent `LIDO-v2-monitor` session checks every **900 seconds**: actual
+training ranks, failure records, progress age, checkpoint age, and the public
+dashboard. It queues this existing agent conversation for investigation and
+deduplicates pending messages. It never blindly restarts workers or changes
+training settings. Idle conversation wakeup was tested. Monitoring survives
+terminal disconnects but depends on the VM and existing conversation consumer.
+The dashboard continues publishing every 45 seconds at the existing URL.

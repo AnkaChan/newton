@@ -37,7 +37,12 @@ class LearnedHexInputs(NamedTuple):
 
 
 class LearnedHexStepOutput(NamedTuple):
-    """Experimental shared corners [m], local targets, frozen frames, and energy [J]."""
+    """Experimental shared corners [m], raw local targets, frames, and energy [J].
+
+    ``acceptance_scale`` optionally reports a detached per-object factor applied
+    to the fused position increment. Network head outputs remain the raw proposal;
+    positions and loss describe the accepted update.
+    """
 
     positions: Tensor
     local_target_axes: Tensor
@@ -45,6 +50,7 @@ class LearnedHexStepOutput(NamedTuple):
     step_size: Tensor
     frames: Tensor
     loss: HexLossTerms
+    acceptance_scale: Tensor | None = None
 
 
 class LearnedHexSolverStep(nn.Module):

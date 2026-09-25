@@ -12,6 +12,17 @@ __all__ = ["validate", "validation_chunk"]
 _NEAR_ZERO_ENERGY = 1e-8
 
 
+def _record_acceptance(result, samples, *, physical=False):
+    scale = getattr(result, "acceptance_scale", None)
+    values = scale.detach().cpu().tolist() if scale is not None else [1.0] * len(samples)
+    for sample, value in zip(samples, values, strict=True):
+        if physical:
+            sample["physical_query_count"] += 1
+            sample["physical_shortened_query_count"] += int(value < 1)
+        else:
+            sample["acceptance_scales"].append(value)
+
+
 def _record_iteration(step, batch, start, samples, energies):
     """Append one complete observation, differentiating only near-zero physical energies."""
     import torch
@@ -71,6 +82,7 @@ def _optimization(step, factory, seeds, samples, config, device):
             result = _checked_forward(step, step, batch)
             batch["candidate"] = result.positions.detach()
             _record_iteration(step, batch, start, samples, result.loss.total)
+            _record_acceptance(result, samples)
     except (RuntimeError, ValueError) as error:
         if len(seeds) > 1:
             raise
@@ -94,6 +106,7 @@ def _physical(step, factory, seeds, samples, config, device):
             for _ in range(config.validation_physical_iterations):
                 result = _checked_forward(step, step, batch)
                 batch["candidate"] = result.positions.detach()
+                _record_acceptance(result, samples, physical=True)
             for index, payload in enumerate(payloads):
                 payload["candidate"] = batch["candidate"][index].detach().cpu()
             completed += 1
@@ -136,6 +149,9 @@ def validation_chunk(step, factory, seeds, config, device):
             "physical_steps": 0,
             "physical_error": None,
             "physical_failure_step": None,
+            "acceptance_scales": [],
+            "physical_query_count": 0,
+            "physical_shortened_query_count": 0,
         }
         for seed in seeds
     ]
@@ -213,6 +229,12 @@ def _summarize(samples, config):
         "failures": failed,
         "samples": samples,
         "mean_normalized_loss": float(np.mean((after - before) / np.maximum(before, 1.0))) if first_complete else None,
+        "optimization_query_count": sum(len(sample.get("acceptance_scales", [])) for sample in samples),
+        "optimization_shortened_query_count": sum(
+            value < 1 for sample in samples for value in sample.get("acceptance_scales", [])
+        ),
+        "physical_query_count": sum(sample.get("physical_query_count", 0) for sample in samples),
+        "physical_shortened_query_count": sum(sample.get("physical_shortened_query_count", 0) for sample in samples),
         "mean_before_joule": float(np.mean(before)) if first_complete else None,
         "mean_after_joule": float(np.mean(after)) if first_complete else None,
         "descent_rate": float(np.sum(after < before) / len(samples)) if samples else 0.0,

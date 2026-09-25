@@ -4,6 +4,7 @@
 """Verify live mixed-training report data and publication boundaries."""
 
 import copy
+import csv
 import json
 import tempfile
 import unittest
@@ -120,6 +121,62 @@ class TestMixedReport(unittest.TestCase):
             report = json.loads((root / "public/report.json").read_text())
             self.assertEqual(report["status"], "preparing")
             self.assertEqual(report["completed_epochs"], 0)
+
+    def test_acceptance_diagnostics_distinguish_missing_history_from_measured_zero(self):
+        """Keep historical acceptance unknown and display recorded fractions after enabling the guard."""
+        report = self._report()
+        report["configuration_changes"] = [
+            {"field": "geometry_backtracking", "previous": False, "current": True, "effective_from_epoch": 43}
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertIn("Geometry acceptance: enabled from epoch 43", page)
+            self.assertIn("<td>Training epoch 1</td><td>not recorded</td><td>not recorded</td>", page)
+            self.assertIn("<td>Validation optimizer</td><td>not recorded</td>", page)
+            self.assertIn("<td>Validation physical rollout</td><td>not recorded</td>", page)
+            for name in ("epochs", "updates"):
+                with (output / f"{name}.csv").open() as handle:
+                    row = next(csv.DictReader(handle))
+                self.assertEqual(row["shortened_query_count"], "")
+                self.assertEqual(row["mean_acceptance_scale"], "")
+
+            latest = copy.deepcopy(report["epochs"][0])
+            latest.update(epoch=43, query_count=64, shortened_query_count=8, mean_acceptance_scale=0.9375)
+            latest["validation"].update(
+                optimization_query_count=200,
+                optimization_shortened_query_count=0,
+                physical_query_count=32,
+                physical_shortened_query_count=4,
+            )
+            report["epochs"].append(latest)
+            report["updates"].append(
+                {"update": 5503, "epoch": 43, "shortened_query_count": 8, "mean_acceptance_scale": 0.9375}
+            )
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertIn("<td>Training epoch 43</td><td>8 / 64</td><td>0.9375</td>", page)
+            self.assertIn("<td>Validation optimizer</td><td>0 / 200</td>", page)
+            self.assertIn("<td>Validation physical rollout</td><td>4 / 32</td>", page)
+            for name in ("epochs", "updates"):
+                with (output / f"{name}.csv").open() as handle:
+                    rows = list(csv.DictReader(handle))
+                self.assertEqual(rows[0]["shortened_query_count"], "")
+                self.assertEqual(rows[-1]["shortened_query_count"], "8")
+                self.assertEqual(rows[-1]["mean_acceptance_scale"], "0.9375")
+
+    def test_acceptance_status_uses_configuration_without_a_resume_event(self):
+        """Report enabled and disabled guard settings in fresh campaigns."""
+        report = self._report()
+        with tempfile.TemporaryDirectory() as directory:
+            for enabled, label in ((True, "enabled"), (False, "disabled")):
+                with self.subTest(enabled=enabled):
+                    report["config"]["geometry_backtracking"] = enabled
+                    write_mixed_report(directory, report)
+                    self.assertIn(
+                        f"Geometry acceptance: {label}</summary>", (Path(directory) / "index.html").read_text()
+                    )
 
 
 if __name__ == "__main__":

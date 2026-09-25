@@ -48,6 +48,8 @@ class MixedTrainConfig:
     max_step_size: float = 0.05
     learning_rate: float = 1e-4
     energy_increase_weight: float = 1.0
+    geometry_backtracking: bool = False
+    """Shorten fused proposals to preserve sampled hex orientation when enabled."""
     batch_size: int = 16
     pool_multiplier: int = 4
     queries_per_epoch: int = 8192
@@ -137,6 +139,8 @@ class MixedTrainConfig:
                 raise ValueError(f"{name} must be finite and positive")
         if not math.isfinite(self.energy_increase_weight) or self.energy_increase_weight < 0:
             raise ValueError("energy_increase_weight must be finite and nonnegative")
+        if not isinstance(self.geometry_backtracking, bool):
+            raise ValueError("geometry_backtracking must be a boolean")
         if not 0 <= self.stage_descent_rate <= 1:
             raise ValueError("stage_descent_rate must lie in [0,1]")
         if self.stage_max_epochs is not None and (
@@ -180,6 +184,7 @@ class MixedTrainConfig:
         """Interpret pre-damping checkpoints explicitly as legacy zero viscosity."""
         values = dict(values)
         values.setdefault("stage_max_epochs", None)
+        values.setdefault("geometry_backtracking", False)
         if "feature_schema_version" not in values:
             values["feature_schema_version"] = 1
             values.setdefault("damping_range", (0.0, 0.0))
@@ -205,12 +210,15 @@ class _TrajectoryFactory:
     """Prepare detached CPU trajectories without accessing network parameters."""
 
     def __init__(self, step, rest, config, *, rank, validation=False):
+        from .hex_validity import HexFeasibility  # noqa: PLC0415 -- Optional training boundary.
+
         self.step, self.rest, self.config = step, rest, config
         self.prefix = f"{'validation' if validation else 'train'}-{rank}"
         self.master_seed = config.seed + (1000000007 if validation else 0)
         self.seed_parity = int(validation)
         # Preparation workers use CPU topology without synchronizing CUDA.
         self.fixed_indices = step.fixed_indices.detach().cpu().clone()
+        self.feasibility = HexFeasibility(rest) if config.geometry_backtracking else None
 
     def reset(self, seed):
         import torch
@@ -271,6 +279,7 @@ class _TrajectoryFactory:
             return (
                 bool(torch.isfinite(candidate).all())
                 and min(screen_geometry(self.rest, candidate.numpy()).values()) > 0
+                and (self.feasibility is None or bool(self.feasibility.valid(candidate[None]).all()))
             )
 
         base_fallback = not valid(base)
@@ -358,8 +367,9 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     Checkpoints restore the same rank count, curriculum, pool queues and Adam
     sequence. The configured descent-rate gate and stage limit may change on
     resume. The gate applies only to future validation; an overdue hard limit
-    promotes one stage immediately. Both changes record their epoch boundary.
-    Native factors are rebuilt; they are never serialized.
+    promotes one stage immediately. Geometry backtracking may also be enabled
+    on resume. These changes record their epoch boundary. Native factors are
+    rebuilt; they are never serialized.
     """
     import torch
     import torch.distributed as dist
@@ -381,7 +391,14 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     if saved:
         if saved.get("format") != "mixed_pool_v2" or saved["world_size"] != world_size:
             raise ValueError("incompatible checkpoint format or rank count")
-        allowed = {"max_epochs", "verbose", "early_stopping", "stage_descent_rate", "stage_max_epochs"}
+        allowed = {
+            "max_epochs",
+            "verbose",
+            "early_stopping",
+            "stage_descent_rate",
+            "stage_max_epochs",
+            "geometry_backtracking",
+        }
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
         if any(saved_config.get(k) != v for k, v in asdict(config).items() if k not in allowed):
             raise ValueError("resume configuration differs from saved physical/training configuration")
@@ -419,9 +436,14 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         max_step_size=config.max_step_size,
         query_chunk_size=config.query_chunk_size,
     ).to(device)
-    step = MixedHexSolverStep(rest, fixed, network=network, time_step=config.time_step, gravity=config.gravity).to(
-        device
-    )
+    step = MixedHexSolverStep(
+        rest,
+        fixed,
+        network=network,
+        time_step=config.time_step,
+        gravity=config.gravity,
+        geometry_backtracking=config.geometry_backtracking,
+    ).to(device)
     factory = _TrajectoryFactory(step, rest, config, rank=rank)
     validation_factory = _TrajectoryFactory(step, rest, config, rank=rank, validation=True)
     optimizer = torch.optim.Adam(network.parameters(), lr=config.learning_rate)
@@ -468,6 +490,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             for field, previous, current in (
                 ("stage_descent_rate", previous_descent_rate, config.stage_descent_rate),
                 ("stage_max_epochs", previous_stage_limit, config.stage_max_epochs),
+                ("geometry_backtracking", saved_config["geometry_backtracking"], config.geometry_backtracking),
             ):
                 if previous != current:
                     report.setdefault("configuration_changes", []).append(
@@ -648,7 +671,12 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 optimizer.step()
                 timings["backward_and_adam_seconds"] += time.perf_counter() - began
                 after = result.loss.total.detach()
-                values = torch.stack((losses.detach().sum(), previous.sum(), after.sum())).double()
+                acceptance = result.acceptance_scale
+                if acceptance is None:
+                    acceptance = torch.ones_like(after)
+                values = torch.stack(
+                    (losses.detach().sum(), previous.sum(), after.sum(), (acceptance < 1).sum(), acceptance.sum())
+                ).double()
                 if world_size > 1:
                     dist.all_reduce(values)
                 values = values.cpu().tolist()
@@ -661,9 +689,16 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                         "loss": values[0] / query_count,
                         "before_joule": values[1] / query_count,
                         "after_joule": values[2] / query_count,
+                        "shortened_query_count": int(values[3]),
+                        "mean_acceptance_scale": values[4] / query_count,
                     }
                 )
-                totals.update(loss=values[0], query_count=query_count)
+                totals.update(
+                    loss=values[0],
+                    query_count=query_count,
+                    shortened_query_count=int(values[3]),
+                    acceptance_scale_sum=values[4],
+                )
                 for i, record in enumerate(records):
                     budgets[f"{record.iteration_budget}/{record.step_budget}"] += 1
                     ages[str(record.inner_iteration)] += 1
@@ -733,6 +768,8 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 "epoch": epoch,
                 "loss": totals["loss"] / totals["query_count"],
                 "query_count": totals["query_count"],
+                "shortened_query_count": totals["shortened_query_count"],
+                "mean_acceptance_scale": totals["acceptance_scale_sum"] / totals["query_count"],
                 "seconds": time.perf_counter() - epoch_start,
                 "available_K": counts[0],
                 "available_H": counts[1],
