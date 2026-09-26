@@ -14,6 +14,7 @@ if importlib.util.find_spec("torch") is None:
 
 import torch  # noqa: TID253
 
+from experiments.learned_intrinsic_solver import features
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 from experiments.learned_intrinsic_solver.newton_model import build_newton_hex_model
@@ -35,7 +36,13 @@ class TestCudaLearnedSolver(unittest.TestCase):
         self.state.particle_q.assign(x)
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(711)
-            self.network = IntrinsicSolverNetwork(self.rest.cell_counts, 38, hidden_dim=16, edge_hidden_dim=8)
+            self.network = IntrinsicSolverNetwork(
+                self.rest.cell_counts,
+                features.STATE_FEATURE_DIM,
+                conditioning_dim=features.CONDITIONING_DIM,
+                hidden_dim=16,
+                edge_hidden_dim=8,
+            )
             with torch.no_grad():
                 self.network.correction_head.weight.normal_(std=0.001)
 
@@ -72,9 +79,15 @@ class TestCudaLearnedSolver(unittest.TestCase):
         gpu_problem = gpu.prepare_problem(self.state, 0.01)
         cpu_result = cpu.solve(cpu_problem)
         current = cpu_result.initial_positions.detach().cuda()
+        history = None
         for update in cpu_result.updates:
-            gpu_update = gpu.propose_update(current, gpu_problem, frames=update.frames.cuda())
+            gpu_update = gpu.propose_update(current, gpu_problem, frames=update.frames.cuda(), history=history)
             current = gpu_update.positions
+            history = gpu_update.next_history()
+        self.assertEqual(cpu_result.history.axis_gradient_world.device.type, "cpu")
+        torch.testing.assert_close(
+            history.axis_gradient_world.cpu(), cpu_result.history.axis_gradient_world, rtol=2e-4, atol=1e-6
+        )
         torch.testing.assert_close(current.cpu(), cpu_result.positions, rtol=2e-5, atol=2e-7)
         torch.testing.assert_close(gpu_update.loss.total.cpu(), cpu_result.loss.total, rtol=2e-4, atol=2e-6)
         cpu_result.loss.total.sum().backward()

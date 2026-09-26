@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from .data import generate_cuboid
+from .features import CONDITIONING_DIM, STATE_FEATURE_DIM
 from .multiscale import generate_multiscale
 from .network import IntrinsicSolverNetwork
 from .solver_step import LearnedHexSolverStep
@@ -33,7 +34,9 @@ def _fixture(dtype):
     # Create the same float32 data/parameters before casting the reference copy.
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(73)
-        model = IntrinsicSolverNetwork(rest.cell_counts, 38, hidden_dim=16, edge_hidden_dim=8)
+        model = IntrinsicSolverNetwork(
+            rest.cell_counts, STATE_FEATURE_DIM, conditioning_dim=CONDITIONING_DIM, hidden_dim=16, edge_hidden_dim=8
+        )
         with torch.no_grad():
             model.correction_head.weight.normal_(std=0.004)
             for layer in model.layers:
@@ -48,12 +51,14 @@ def _fixture(dtype):
         network=model.to(dtype=dtype),
         dtype=dtype,
     )
-    x = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)[None]
+    previous = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)[None]
+    x = previous.clone()
     z = x[..., 2].clone()
     x[..., 0] += 0.08 * z.square() + 0.001 * torch.sin(21 * x[..., 1]) * z / 0.3
     x[..., 1] += 0.02 * z.square()
     y = x + torch.tensor([0.0003, -0.001, 0.0001])
-    return step, x.to(dtype), y.to(dtype)
+    # The physical-step start (rest here) anchors the physical axis-change block.
+    return step, x.to(dtype), y.to(dtype), previous.to(dtype)
 
 
 def _comparison(analytical: float, numerical: float) -> dict:
@@ -77,22 +82,26 @@ def _direction(shape, seed, dtype):
 def _check_dtype(dtype):
     import torch
 
-    step, x, y = _fixture(dtype)
+    step, x, y, previous = _fixture(dtype)
     float32 = dtype == torch.float32
     results = {}
     saved_gradients = {}
 
+    def energy(candidate):
+        return step.energy(candidate, y, previous_positions=previous).total
+
+    def query(candidate):
+        return step(candidate, y, previous_positions=previous)
+
     variable_x = x.clone().requires_grad_()
-    energy = step.energy(variable_x, y).total.sum()
-    gradient = torch.autograd.grad(energy, variable_x)[0]
+    gradient = torch.autograd.grad(energy(variable_x).sum(), variable_x)[0]
     direction = _direction(x.shape, 11, dtype)
     analytical = (gradient * direction).sum().item()
     results["hex_energy_positions"] = []
     for epsilon in [1e-3, 3e-4, 1e-4] if float32 else [1e-5, 3e-6, 1e-6]:
         with torch.no_grad():
             numerical = (
-                (step.energy(x + epsilon * direction, y).total - step.energy(x - epsilon * direction, y).total).sum()
-                / (2 * epsilon)
+                (energy(x + epsilon * direction) - energy(x - epsilon * direction)).sum() / (2 * epsilon)
             ).item()
         results["hex_energy_positions"].append({"epsilon_m": epsilon, **_comparison(analytical, numerical)})
     saved_gradients["energy"] = gradient.detach().double().numpy()
@@ -115,7 +124,7 @@ def _check_dtype(dtype):
     saved_gradients["fusion"] = gradient.detach().double().numpy()
 
     parameter = step.network.correction_head.bias
-    loss = step(x, y).loss.total.sum()
+    loss = query(x).loss.total.sum()
     gradient = torch.autograd.grad(loss, parameter)[0]
     direction = _direction(parameter.shape, 29, dtype)
     analytical = (gradient * direction).sum().item()
@@ -124,16 +133,16 @@ def _check_dtype(dtype):
     with torch.no_grad():
         for epsilon in [3e-3, 1e-3, 3e-4] if float32 else [1e-4, 1e-5, 1e-6]:
             parameter.copy_(original + epsilon * direction)
-            plus = step(x, y).loss.total.sum().item()
+            plus = query(x).loss.total.sum().item()
             parameter.copy_(original - epsilon * direction)
-            minus = step(x, y).loss.total.sum().item()
+            minus = query(x).loss.total.sum().item()
             results["network_through_fusion_and_energy"].append(
                 {"epsilon_parameter": epsilon, **_comparison(analytical, (plus - minus) / (2 * epsilon))}
             )
         parameter.copy_(original)
-        before = step(x, y).loss.total.item()
+        before = query(x).loss.total.item()
         parameter.copy_(original - 1e-3 * gradient / gradient.norm())
-        after = step(x, y).loss.total.item()
+        after = query(x).loss.total.item()
         parameter.copy_(original)
     results["small_gradient_descent_check"] = {
         "before_joule": before,
@@ -167,7 +176,8 @@ def _full_grid() -> dict:
     x = torch.tensor(sample.positions, dtype=torch.float32)[None]
     acceleration = torch.tensor([0.0, -9.81, 0.0], dtype=torch.float32)
     y = x + acceleration / 300**2
-    result = step(x, y)
+    # The sampled shape is the physical-step start; the query starts from it at rest velocity.
+    result = step(x, y, previous_positions=x)
     result.loss.total.mean().backward()
     gradients = [p.grad for p in step.network.parameters()]
     finite = all(g is not None and torch.isfinite(g).all().item() for g in gradients)

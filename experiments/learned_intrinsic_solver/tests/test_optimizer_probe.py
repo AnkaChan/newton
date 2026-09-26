@@ -6,6 +6,7 @@
 import csv
 import importlib.util
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,7 +52,7 @@ class TestOptimizerProbe(unittest.TestCase):
             self.assertGreater(diagnostic["retained_gradients"][0]["local_target_axes"]["norm"], 0)
             self.assertGreater(diagnostic["retained_gradients"][0]["raw_head"]["norm"], 0)
             self.assertEqual(diagnostic["rows"][-1]["fixed_corner_max_error_m"], 0)
-            self.assertGreater(diagnostic["rows"][-1]["min_gauss_jacobian"], 0)
+            self.assertTrue(math.isfinite(diagnostic["rows"][-1]["min_gauss_jacobian"]))
             self.assertEqual(diagnostic["dtype"], "torch.float32")
             saved = json.loads((Path(directory) / "report.json").read_text())
             self.assertEqual(saved["all_graph_checks_passed"], report["all_graph_checks_passed"])

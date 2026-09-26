@@ -114,7 +114,12 @@ def _read_physical_samples(checkpoint, data_directory, config, seeds):
 
 
 def _state_is_valid(solver, result, output_positions, output_velocities, fixed, prescribed):
-    """Screen final geometry and both learned energies before accepting a step."""
+    """Screen finiteness and pins before accepting a step; inversion is a diagnostic.
+
+    Finite inverted or collapsed cells are accepted (the stable Neo-Hookean
+    objective is defined there); the minimum Gauss Jacobian is returned for
+    reporting only. Nonfinite positions or energies remain explicit failures.
+    """
     import torch
 
     from .train_smoke import _screen  # noqa: PLC0415 - Optional evaluation boundary.
@@ -124,9 +129,9 @@ def _state_is_valid(solver, result, output_positions, output_velocities, fixed, 
     minimum = math.inf
     problem = SimpleNamespace(optimizer=solver.learned_step)
     for index, update in enumerate(result.updates, start=1):
+        if not torch.isfinite(update.positions).all().item() or not torch.isfinite(update.loss.total).all().item():
+            raise ValueError(f"learned iteration {index} has nonfinite positions or energy")
         screen = _screen(problem, update.positions)
-        if not screen["valid"] or not torch.isfinite(update.loss.total).all().item():
-            raise ValueError(f"learned iteration {index} has invalid geometry or energy: {screen}")
         minimum = min(minimum, float(screen["min_gauss_j"]))
     if not np.isfinite(output_positions).all() or not np.isfinite(output_velocities).all():
         raise ValueError("physical step produced nonfinite positions or velocities")
@@ -196,6 +201,8 @@ def _simulate_case(
         return original_propose(*args, **kwargs)
 
     solver.propose_update = counted_proposal
+    # A new trajectory starts without optimizer history; step() then carries it.
+    solver.last_result = None
     try:
         for step_number in range(1, requested_steps + 1):
             state_in = states[completed % 2]
@@ -296,6 +303,7 @@ def run_cases(
     import torch
 
     from .data import generate_cuboid  # noqa: PLC0415 - Optional simulation boundary.
+    from .features import CONDITIONING_DIM, STATE_FEATURE_DIM  # noqa: PLC0415
     from .network import IntrinsicSolverNetwork  # noqa: PLC0415
     from .newton_model import build_newton_hex_model  # noqa: PLC0415
     from .newton_solver import SolverLearnedIntrinsic  # noqa: PLC0415
@@ -339,7 +347,8 @@ def run_cases(
         )
         network = IntrinsicSolverNetwork(
             config.cell_counts,
-            38,
+            STATE_FEATURE_DIM,
+            conditioning_dim=CONDITIONING_DIM,
             hidden_dim=config.hidden_dim,
             edge_hidden_dim=config.edge_hidden_dim,
             num_heads=config.num_heads,

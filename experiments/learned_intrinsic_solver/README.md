@@ -230,11 +230,17 @@ The network accepts an explicit, configurable packed feature contract:
 | `conditioning` | `[B, N, C]` or `[B, C]` | Prepared material/size/timestep scalars |
 
 All batch entries use the same full-cuboid topology and represent separate
-objects. `N` is the cell count and the baseline has `S=27`. One possible state
-packing is 24 inertial-offset components divided by rest length, six exposed
-faces, and eight fixed-corner flags (`D=38`). Optimizer history can add channels.
-Normalization and the final physical feature packing remain caller-owned;
-log/normalize material parameters rather than feeding raw large stiffnesses.
+objects. `N` is the cell count and the baseline has `S=27`. The revised
+nine-value schema (`features.py`, schema version 3) packs `D=61` state values:
+five 3x3 blocks in the receiving frame (inertial axis offset, physical axis
+change, normalized current and previous axis gradients, normalized previous
+achieved update), six exposed faces, eight fixed-corner flags, the log gradient
+RMS and a history flag, with `C=6` conditioning channels (lambda, mu, density,
+cell size, timestep, viscosity). Both solver steps assemble it through
+`input_assembly.assemble_inputs`; legacy 38/5 and 86/6 networks and their
+checkpoints are rejected explicitly and are never reshaped. Normalization and
+the final physical feature packing remain caller-owned; log/normalize material
+parameters rather than feeding raw large stiffnesses.
 
 For already prepared float32 geometry and features:
 
@@ -242,7 +248,7 @@ For already prepared float32 geometry and features:
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 from experiments.learned_intrinsic_solver.network_geometry import build_edge_features
 
-model = IntrinsicSolverNetwork((10, 10, 40), state_feature_dim=38, conditioning_dim=5)
+model = IntrinsicSolverNetwork((10, 10, 40), features.STATE_FEATURE_DIM, conditioning_dim=features.CONDITIONING_DIM)
 # rest_centers: [N,3]; centers: [B,N,3]; frames/local_axes: [B,N,3,3].
 edges = {
     hop: build_edge_features(
@@ -328,22 +334,26 @@ loss = hex_elastic_energy(X) + 0.5 * sum(mass * squared_length(X - Y)) / dt²
 Keep `Y` fixed during optimizer iterations within a physical timestep. An
 explicit acceleration included in `Y` must not also be counted as a potential.
 The optional rigid fusion map does not change `Y`, mass, or this objective.
-Contact, damping, acceptance/line search, and physical-rollout training are
-not included. Single-update optimizer training is available below.
-A nonpositive deformation determinant at any Gauss point raises
-an error; the implementation does not clamp or silently repair the candidate.
-Positive Gauss samples alone do not prove a cell is valid everywhere.
+Contact, acceptance/line search, and physical-rollout training are not
+included. Single-update optimizer training is available below. The elastic law
+is Newton's stable Neo-Hookean density, finite for inverted and collapsed
+cells: an inverted candidate is accepted and never clamped or repaired; only
+nonfinite inputs raise.
 
-The integration packs the baseline inputs automatically: local axes (9),
-receiver-frame inertial vectors divided by rest size (24), exposed faces (6),
-and fixed-corner flags (8). Five FiLM channels are `log1p(lambda/1e5 Pa)`,
-`log1p(mu/1e5 Pa)`, `log(density/1000 kg/m³)`, `log(h/0.025 m)`, and
-`log(dt/(1/60 s))`. The two material channels remain finite at zero lambda.
-The model stores per-cell `lame_lambda`, `lame_mu`, and `density`; the elastic
-law uses these Lamé coefficients directly.
-Polar frames are extracted using Torch under `no_grad`, recomputed per call.
-Optional precomputed frames are detached as well. A Warp implementation remains
-future work; other geometry derivatives are preserved.
+The integration packs the revised schema automatically: local axes (9) plus
+the 61 state values listed above. The six FiLM channels are
+`log1p(lambda/1e5 Pa)`, `log1p(mu/1e5 Pa)`, `log(density/1000 kg/m³)`,
+`log(h/0.025 m)`, `log(dt/(1/60 s))`, and `log1p(eta/(mu dt))`; the viscosity
+channel is present even at zero damping and the material channels remain
+finite at zero lambda. The model stores per-cell `lame_lambda`, `lame_mu`,
+`density`, and `damping`; the elastic law uses these Lamé coefficients directly.
+Frames are the closest proper rotations of the cell-center deformation with the
+clamped-face tie-break (`frames.py`), extracted under `no_grad` and recomputed
+per call; the gradient feature (fusion adjoint of the zero-pinned physical
+gradient) is detached as well. Optional precomputed frames are detached too.
+The physical-step start `previous_positions` is a required input of every
+query, and the detached optimizer history (previous gradient feature and
+achieved axis change) is carried from query to query and across physical steps.
 
 Fusion uses **increments**. Multiply the predicted local axis change by its
 frozen frame to get a world gradient increment. `fusion.HexFusion` finds the
@@ -413,8 +423,9 @@ central finite differences at three step sizes for energy, fusion targets,
 and the complete network-to-energy chain. A separate float64 reference checks
 the same float32-quantized inputs and network parameters. Double precision is
 used only for reference runs and diagnostic comparisons, not to implement the
-working float32 solve. Frame derivatives are deliberately excluded; geometry
-finite differences must hold the supplied frames fixed to check this convention.
+working float32 solve. Frame and gradient-feature derivatives are deliberately
+excluded; geometry finite differences must hold the supplied frames and the
+detached gradient feature fixed to check this convention.
 
 ## Native Newton model and solver
 
@@ -508,14 +519,19 @@ result.loss.total.mean().backward()
 `prepare_problem()` snapshots the original corners, inertial prediction,
 stationary pins, and rigid target, and captures the material/dt/fusion context.
 Preparing another timestep does not change an existing problem's objective.
-`propose_update()` recomputes current axes, polar frames, inertial offsets,
-and neighborhood features on every call. It returns both the local axis
-proposal and the actual fused corner displacement. Supplied candidates must
-be finite float32 `[1,P,3]` tensors on the network device with prescribed corners satisfied
-exactly; the hex energy rejects inverted elements. A query does not integrate
-the rigid pose again. `solve()` defaults to five updates, shares network
-weights across them, and never detaches intermediate candidates. Each update
-retains its input, output, frozen frame, local target, and physical loss.
+`propose_update()` recomputes current axes, closest-rotation frames, the
+axis blocks, the gradient feature, and neighborhood features on every call. It
+returns both the local axis proposal and the actual fused corner displacement,
+plus the detached diagnostics (world axis gradient, achieved axis update, free
+force residual, tie mask). Supplied candidates must be finite float32
+`[1,P,3]` tensors on the network device with prescribed corners satisfied
+exactly; inverted elements are accepted. A query does not integrate the rigid
+pose again. `solve()` defaults to five updates, shares network weights across
+them, never detaches intermediate candidates, feeds each update's detached
+history to the next, and exposes the final history on its result; `step()`
+carries that history across consecutive physical steps until `last_result` is
+cleared. Each update retains its input, output, frozen frame, local target,
+and physical loss.
 
 This interface proposes directions; the initial untrained network cannot
 guarantee descent. Its default zero correction head produces exact zero
@@ -894,9 +910,8 @@ fusion matrix are unchanged. `HexLossTerms` has a fourth `damping` field; new
 energy results always provide a tensor (legacy three-argument construction
 sets it to None).
 
-`MixedTrainConfig.feature_schema_version=2` selects 86 state channels and 6
-conditioning channels. Version1 requires zero damping and retains 38/5.
-CLI resume recognizes older configurations as version 1 and does not silently
-add damping or resize checkpoint weights. New and legacy configurations cannot
-be interchanged on resume. The per-object damping sample and actual physical
-anchor are included in resumable active state.
+`feature_schema_version=3` is the only supported schema: 61 state channels
+and 6 conditioning channels for every step (`features.py`), damped or not.
+Legacy version 1 (38/5) and version 2 (86/6) checkpoints are rejected
+explicitly and are never resized; start a fresh run. The per-object damping
+sample and actual physical anchor are included in resumable active state.

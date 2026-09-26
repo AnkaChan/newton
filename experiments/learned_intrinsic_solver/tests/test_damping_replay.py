@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import torch  # noqa: TID253
 
+from experiments.learned_intrinsic_solver import features
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.disk_replay import DiskReplayStore, ReplayState
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
@@ -40,10 +41,11 @@ class TestDampingReplay(unittest.TestCase):
             damping=[10.0, 100.0] if damped else 0.0,
             gravity=(0, -9.81, 0),
         )
+        # One revised schema serves damped and undamped physics; the viscosity channel is always present.
         network = IntrinsicSolverNetwork(
             rest.cell_counts,
-            86 if damped else 38,
-            conditioning_dim=6 if damped else 5,
+            features.STATE_FEATURE_DIM,
+            conditioning_dim=features.CONDITIONING_DIM,
             hidden_dim=16,
             edge_hidden_dim=8,
         )

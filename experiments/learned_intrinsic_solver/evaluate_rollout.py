@@ -56,72 +56,120 @@ def _checkpoint_validation(saved):
     return matches[0]
 
 
-def _baseline(step, positions, inertial, seeds, indices, energies, failures):
-    """Evaluate initial energy, splitting a bad batch to identify each bad case."""
+def _baseline(step, positions, inertial, previous, seeds, indices, energies, failures):
+    """Evaluate initial energy, splitting a bad batch to identify each bad case.
+
+    Only nonfinite energies fail; the stable law makes inverted candidates finite
+    and the objective may legitimately be nonpositive near rest.
+    """
     import torch
 
     if not indices:
         return
     selection = torch.tensor(indices, dtype=torch.long, device=positions.device)
     try:
-        values = step.energy(positions[selection], inertial[selection]).total.detach()
-        if not torch.isfinite(values).all().item() or (values <= 0).any().item():
-            raise ValueError("initial physical energy must be finite and positive")
+        values = step.energy(
+            positions[selection], inertial[selection], previous_positions=previous[selection]
+        ).total.detach()
+        if not torch.isfinite(values).all().item():
+            raise ValueError("initial physical energy must be finite")
         energies[0, indices] = values.cpu().numpy().astype(np.float64)
     except (ValueError, RuntimeError) as error:
         if len(indices) == 1:
             failures.append({"physical_seed": int(seeds[indices[0]]), "iteration": 0, "error": str(error)})
             return
         middle = len(indices) // 2
-        _baseline(step, positions, inertial, seeds, indices[:middle], energies, failures)
-        _baseline(step, positions, inertial, seeds, indices[middle:], energies, failures)
+        _baseline(step, positions, inertial, previous, seeds, indices[:middle], energies, failures)
+        _baseline(step, positions, inertial, previous, seeds, indices[middle:], energies, failures)
 
 
-def _propose(step, positions, inertial, pins, seeds, indices, iteration, energies, failures):
-    """Advance good cases and recursively isolate invalid proposals."""
+def _propose(step, positions, inertial, pins, previous, history, seeds, indices, iteration, energies, failures):
+    """Advance good cases and recursively isolate invalid proposals.
+
+    ``history`` holds the per-case optimizer history (gradient feature, achieved
+    update, validity) carried from the previous iteration; survivors return
+    their fused positions and detached new history entries.
+    """
     import torch
 
-    from .train_epochs import _screen_output  # noqa: PLC0415 - Optional Torch boundary.
+    from .input_assembly import OptimizerHistory  # noqa: PLC0415 - Optional Torch boundary.
+    from .train_epochs import _screen_output  # noqa: PLC0415
 
     if not indices:
         return []
     selection = torch.tensor(indices, dtype=torch.long, device=positions.device)
     try:
-        result = step(positions[selection], inertial[selection], fixed_positions=pins[selection])
+        carried = OptimizerHistory(*(value[selection] for value in history))
+        result = step(
+            positions[selection],
+            inertial[selection],
+            fixed_positions=pins[selection],
+            previous_positions=previous[selection],
+            history=carried,
+        )
         _screen_output(step, result, pins[selection])
         after = result.loss.total.detach()
         if not torch.isfinite(after).all().item():
             raise ValueError("learned proposal energy is nonfinite")
         energies[iteration, indices] = after.cpu().numpy().astype(np.float64)
-        return [(index, result.positions[offset : offset + 1].detach()) for offset, index in enumerate(indices)]
+        return [
+            (
+                index,
+                result.positions[offset : offset + 1].detach(),
+                result.axis_gradient_world[offset].detach(),
+                result.achieved_axis_update_world[offset].detach(),
+            )
+            for offset, index in enumerate(indices)
+        ]
     except (ValueError, RuntimeError) as error:
         if len(indices) == 1:
             failures.append({"physical_seed": int(seeds[indices[0]]), "iteration": iteration, "error": str(error)})
             return []
         middle = len(indices) // 2
-        return _propose(
-            step, positions, inertial, pins, seeds, indices[:middle], iteration, energies, failures
-        ) + _propose(step, positions, inertial, pins, seeds, indices[middle:], iteration, energies, failures)
+        arguments = (step, positions, inertial, pins, previous, history, seeds)
+        return _propose(*arguments, indices[:middle], iteration, energies, failures) + _propose(
+            *arguments, indices[middle:], iteration, energies, failures
+        )
 
 
 def _rollout_batch(step, batch, iterations, device, *, rank=0, batch_number=0):
-    """Preserve original Y and pins while repeatedly updating candidate corners."""
+    """Preserve original Y, pins and physical start while repeatedly updating candidate corners.
+
+    Consecutive iterations carry the detached optimizer history exactly as the
+    trained step consumes it; the first iteration starts without history.
+    """
+    import torch
+
+    from .input_assembly import OptimizerHistory  # noqa: PLC0415 - Optional Torch boundary.
+
     positions = batch["positions"].to(device)
     inertial = batch["inertial_prediction"].to(device)
     pins = batch["fixed_positions"].to(device)
+    previous = batch["previous_positions"].to(device)
     seeds = [int(seed) for seed in batch["physical_seeds"]]
     count = len(seeds)
+    cells = step.cell_corner_indices.shape[0]
+    history = OptimizerHistory(
+        positions.new_zeros((count, cells, 3, 3)),
+        positions.new_zeros((count, cells, 3, 3)),
+        torch.zeros(count, dtype=torch.bool, device=device),
+    )
     energies = np.full((iterations + 1, count), np.nan, dtype=np.float64)
     failures = []
-    _baseline(step, positions, inertial, seeds, list(range(count)), energies, failures)
+    _baseline(step, positions, inertial, previous, seeds, list(range(count)), energies, failures)
     active = [index for index in range(count) if math.isfinite(energies[0, index])]
     for iteration in range(1, iterations + 1):
         if not active:
             break
-        survivors = _propose(step, positions, inertial, pins, seeds, active, iteration, energies, failures)
-        active = [index for index, _ in survivors]
-        for index, proposal in survivors:
+        survivors = _propose(
+            step, positions, inertial, pins, previous, history, seeds, active, iteration, energies, failures
+        )
+        active = [index for index, *_ in survivors]
+        for index, proposal, gradient_feature, achieved in survivors:
             positions[index : index + 1] = proposal
+            history.axis_gradient_world[index] = gradient_feature
+            history.axis_update_world[index] = achieved
+            history.valid[index] = True
         if iteration % 10 == 0 or iteration == iterations:
             print(
                 f"rank={rank} batch={batch_number} iteration={iteration}/{iterations} surviving={len(active)}/{count}",
@@ -155,6 +203,7 @@ def run_rank(
     from .data import generate_cuboid  # noqa: PLC0415 - Optional evaluation boundary.
     from .distributed_probe import _parameter_hash  # noqa: PLC0415
     from .epoch_data import EpochDataset  # noqa: PLC0415
+    from .features import CONDITIONING_DIM, STATE_FEATURE_DIM  # noqa: PLC0415
     from .network import IntrinsicSolverNetwork  # noqa: PLC0415
     from .newton_model import build_newton_hex_model  # noqa: PLC0415
     from .newton_solver import SolverLearnedIntrinsic  # noqa: PLC0415
@@ -206,7 +255,8 @@ def run_rank(
         )
         network = IntrinsicSolverNetwork(
             config.cell_counts,
-            38,
+            STATE_FEATURE_DIM,
+            conditioning_dim=CONDITIONING_DIM,
             hidden_dim=config.hidden_dim,
             edge_hidden_dim=config.edge_hidden_dim,
             num_heads=config.num_heads,

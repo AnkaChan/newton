@@ -18,7 +18,6 @@ import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 
@@ -80,7 +79,7 @@ class ProbeConfig:
 
 
 def collate_queries(queries):
-    """Pack fixed per-object candidates while retaining each original Y and pins."""
+    """Pack fixed per-object candidates while retaining each original Y, physical start and pins."""
     import torch
 
     if not queries:
@@ -98,6 +97,7 @@ def collate_queries(queries):
     return {
         "positions": torch.cat([candidate for _, candidate, _ in queries], dim=0).detach(),
         "inertial_prediction": torch.cat([problem.inertial_prediction for problem, _, _ in queries], dim=0).detach(),
+        "previous_positions": torch.cat([problem.previous_positions for problem, _, _ in queries], dim=0).detach(),
         "fixed_positions": torch.cat([problem.fixed_positions for problem, _, _ in queries], dim=0).detach(),
         "physical_seeds": [metadata["physical_seed"] for _, _, metadata in queries],
         "metadata": [copy.deepcopy(metadata) for _, _, metadata in queries],
@@ -107,12 +107,14 @@ def collate_queries(queries):
 def _network(config, device):
     import torch
 
-    from .network import IntrinsicSolverNetwork  # noqa: PLC0415 - Optional training boundary.
+    from .features import CONDITIONING_DIM, STATE_FEATURE_DIM  # noqa: PLC0415 - Optional training boundary.
+    from .network import IntrinsicSolverNetwork  # noqa: PLC0415
 
     torch.manual_seed(config.seed)
     network = IntrinsicSolverNetwork(
         config.cell_counts,
-        38,
+        STATE_FEATURE_DIM,
+        conditioning_dim=CONDITIONING_DIM,
         hidden_dim=128,
         edge_hidden_dim=64,
         num_heads=4,
@@ -270,6 +272,8 @@ def run_probe(output: Path, config: ProbeConfig) -> dict:
     import torch.distributed as dist
     from torch.nn.parallel import DistributedDataParallel
 
+    from .features import FEATURE_SCHEMA_VERSION  # noqa: PLC0415 - Optional training boundary.
+
     if torch.cuda.device_count() != 1:
         raise RuntimeError("each rank must see exactly one exclusively claimed CUDA device")
     if os.environ.get("LOCAL_RANK") != "0":
@@ -314,12 +318,14 @@ def run_probe(output: Path, config: ProbeConfig) -> dict:
         initial_step_state = _cpu(step.state_dict()) if config.rank == 0 else None
         initial_optimizer_state = _cpu(optimizer.state_dict()) if config.rank == 0 else None
         input_batch = _cpu(batch)
-        positions, inertial, pins = (batch[key] for key in ("positions", "inertial_prediction", "fixed_positions"))
+        positions, inertial, pins, previous = (
+            batch[key] for key in ("positions", "inertial_prediction", "fixed_positions", "previous_positions")
+        )
         local_error = None
         before = None
         try:
             with torch.no_grad():
-                before = step.energy(positions, inertial).total.detach()
+                before = step.energy(positions, inertial, previous_positions=previous).total.detach()
             if not torch.isfinite(before).all().item():
                 raise ValueError("nonfinite initial physical energy")
         except Exception as exc:
@@ -346,15 +352,11 @@ def run_probe(output: Path, config: ProbeConfig) -> dict:
             result = normalized = None
             try:
                 with torch.autocast(device_type="cuda", enabled=False):
-                    result = module(positions, inertial, fixed_positions=pins)
+                    result = module(positions, inertial, fixed_positions=pins, previous_positions=previous)
                     normalized = (result.loss.total - before) / before.clamp_min(1.0)
-                from .train_smoke import _screen  # noqa: PLC0415 - Optional training boundary.
+                from .train_epochs import _screen_output  # noqa: PLC0415 - Optional training boundary.
 
-                screen = _screen(SimpleNamespace(optimizer=step), result.positions)
-                if not screen["valid"] or not torch.isfinite(result.loss.total).all().item():
-                    raise ValueError(f"invalid learned output or energy: {screen}")
-                if not torch.equal(result.positions[:, step.fixed_indices], pins):
-                    raise ValueError("learned output moved prescribed pins")
+                _screen_output(step, result, pins)
                 if config.rank == config.fail_rank and update == config.fail_update:
                     raise ValueError("intentional rank failure before backward")
             except Exception as exc:
@@ -449,7 +451,9 @@ def run_probe(output: Path, config: ProbeConfig) -> dict:
         if completed and failure is None:
             # Check the final checkpoint by replaying the same fixed query.
             with torch.no_grad():
-                final_after = _cpu(module(positions, inertial, fixed_positions=pins).loss.total)
+                final_after = _cpu(
+                    module(positions, inertial, fixed_positions=pins, previous_positions=previous).loss.total
+                )
         torch.cuda.synchronize(device)
         training_elapsed_seconds = time.perf_counter() - start
         final_step_state = _cpu(step.state_dict())
@@ -471,7 +475,7 @@ def run_probe(output: Path, config: ProbeConfig) -> dict:
                 optimizer.zero_grad(set_to_none=True)
                 replay_error = None
                 try:
-                    replay_output = module(positions, inertial, fixed_positions=pins)
+                    replay_output = module(positions, inertial, fixed_positions=pins, previous_positions=previous)
                     replay_normalized = (replay_output.loss.total - before) / before.clamp_min(1.0)
                     if not torch.isfinite(replay_normalized).all().item():
                         raise ValueError("nonfinite replay objective")
@@ -548,7 +552,9 @@ def run_probe(output: Path, config: ProbeConfig) -> dict:
                 "gravity": (0.0, -9.81, 0.0),
             },
             "network": {
-                "state_feature_dim": 38,
+                "state_feature_dim": step.network.state_feature_dim,
+                "conditioning_dim": step.network.conditioning_dim,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
                 "hidden_dim": 128,
                 "edge_hidden_dim": 64,
                 "num_heads": 4,

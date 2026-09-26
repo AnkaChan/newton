@@ -14,23 +14,27 @@ if importlib.util.find_spec("torch") is None:
 
 import torch  # noqa: TID253
 
+from experiments.learned_intrinsic_solver import features
 from experiments.learned_intrinsic_solver.tests import test_train_mixed
 from experiments.learned_intrinsic_solver.train_mixed import MixedTrainConfig, _batch, run_training
 
 
 class TestDampingTraining(unittest.TestCase):
     def test_default_schema_and_legacy_checkpoint_config(self):
-        """Enable sampled damping for new runs and explicitly preserve old zero-viscosity layouts."""
+        """Sample damping by default and reject pre-revision checkpoint layouts explicitly."""
         config = MixedTrainConfig()
         self.assertEqual(config.damping_range, (10.0, 1000.0))
-        self.assertEqual((config.state_feature_dim, config.conditioning_dim), (86, 6))
+        self.assertEqual((config.state_feature_dim, config.conditioning_dim), (features.STATE_FEATURE_DIM, 6))
+        self.assertEqual(config.feature_schema_version, 3)
         old = asdict(config)
         del old["damping_range"], old["feature_schema_version"]
-        legacy = MixedTrainConfig.from_checkpoint_config(old)
-        self.assertEqual(legacy.damping_range, (0.0, 0.0))
-        self.assertEqual((legacy.state_feature_dim, legacy.conditioning_dim), (38, 5))
         with self.assertRaisesRegex(ValueError, "legacy"):
-            replace(config, feature_schema_version=1)
+            MixedTrainConfig.from_checkpoint_config(old)
+        for version in (1, 2):
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "legacy"):
+                replace(config, feature_schema_version=version)
+        zero_damping = replace(config, damping_range=(0.0, 0.0))
+        self.assertEqual((zero_damping.state_feature_dim, zero_damping.conditioning_dim), (61, 6))
 
     def test_batch_preserves_physical_anchor_separately_from_candidate(self):
         """Collate the physical-step start without replacing it with an inner optimizer iterate."""
@@ -48,12 +52,11 @@ class TestDampingTraining(unittest.TestCase):
         torch.testing.assert_close(batch["physical_positions"], start.detach()[None])
         self.assertFalse(batch["physical_positions"].requires_grad)
         self.assertFalse(torch.equal(batch["physical_positions"], batch["candidate"]))
+        self.assertIsNone(batch["history"])
 
-    def test_legacy_resume_is_explicit_and_new_damping_cannot_replace_it(self):
-        """Resume legacy weights only with legacy physics and feature dimensions."""
-        config = replace(
-            test_train_mixed.TestMixedTraining.config(1), feature_schema_version=1, damping_range=(0.0, 0.0)
-        )
+    def test_legacy_checkpoint_resume_is_rejected_before_writing(self):
+        """Refuse to resume a checkpoint whose saved configuration predates the revised schema."""
+        config = replace(test_train_mixed.TestMixedTraining.config(1), damping_range=(0.0, 0.0))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run_training(root, config)
@@ -62,24 +65,17 @@ class TestDampingTraining(unittest.TestCase):
             del saved["config"]["feature_schema_version"], saved["config"]["damping_range"]
             for spec in saved["rank_states"][0]["context_specs"].values():
                 spec.pop("damping", None)
-            for record in saved["rank_states"][0]["pool"]["records"]:
-                record["payload"]["context_spec"].pop("damping", None)
-                record["payload"]["metadata"]["material"].pop("damping", None)
-                record["payload"]["metadata"]["material_ranges"].pop("damping", None)
             torch.save(saved, path)
-            with self.assertRaisesRegex(ValueError, "resume configuration"):
-                run_training(root, test_train_mixed.TestMixedTraining.config(2), resume=path)
-            resumed = run_training(root, replace(config, max_epochs=2), resume=path)
-            self.assertEqual(resumed["completed_epochs"], 2)
+            before = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "legacy"):
+                run_training(root, replace(config, max_epochs=2), resume=path)
+            self.assertEqual(before, path.read_bytes())
+            self.assertFalse((root / "checkpoints/final.pt").exists() and saved["report"]["completed_epochs"] > 1)
 
-    def test_legacy_and_fresh_payloads_share_zero_damping_diagnostics(self):
-        """Resume a batch mixing old missing-viscosity metadata with newly reset objects."""
+    def test_payloads_missing_viscosity_metadata_share_zero_damping_diagnostics(self):
+        """Resume a batch mixing missing-viscosity metadata with newly reset zero-damping objects."""
         config = replace(
-            test_train_mixed.TestMixedTraining.config(1),
-            queries_per_epoch=2,
-            feature_schema_version=1,
-            damping_range=(0.0, 0.0),
-            cpu_threads=2,
+            test_train_mixed.TestMixedTraining.config(1), queries_per_epoch=2, damping_range=(0.0, 0.0), cpu_threads=2
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

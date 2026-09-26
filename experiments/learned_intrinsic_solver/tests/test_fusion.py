@@ -43,6 +43,22 @@ def _reference_energy(rest, base, result, increments, weights):
     return total
 
 
+def _projection_case(dtype, *, seed, batch_count=2):
+    """Build a clamped 2x2x3 grid with a warped base, random targets, pins, and a position gradient."""
+    import torch
+
+    rest = generate_cuboid((2, 2, 3), cell_size=0.25)
+    fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == 0)
+    fusion = HexFusion(rest, fixed, dtype=dtype)
+    random = torch.Generator().manual_seed(seed)
+    base = torch.tensor(rest.corner_rest_positions, dtype=dtype)[None].repeat(batch_count, 1, 1)
+    base = base + 0.02 * torch.randn(base.shape, generator=random, dtype=dtype)
+    increments = torch.randn((batch_count, fusion.cell_count, 3, 3), generator=random, dtype=dtype)
+    prescribed = base[:, fixed] + 0.01 * torch.randn((batch_count, len(fixed), 3), generator=random, dtype=dtype)
+    gradient = torch.randn(base.shape, generator=random, dtype=dtype)
+    return rest, fusion, base, increments, prescribed, gradient
+
+
 class TestHexFusion(unittest.TestCase):
     def test_missing_selected_pardiso_runtime_does_not_fall_back(self):
         """Fail clearly when the requested sparse runtime cannot be loaded."""
@@ -274,6 +290,116 @@ class TestHexFusion(unittest.TestCase):
             fusion.fuse(base, increments.cpu(), prescribed)
         with self.assertRaises(ValueError):
             fusion.fuse(base, increments, prescribed.cpu())
+
+
+class TestHexFusionProjectGradient(unittest.TestCase):
+    def test_float64_adjoint_identity(self):
+        """Match <project_gradient(g), D> with <g_free, fuse(D) - fuse(0)> per batch element."""
+        import torch
+
+        _, fusion, base, increments, prescribed, gradient = _projection_case(torch.float64, seed=61)
+        projected = fusion.project_gradient(gradient)
+        self.assertEqual(projected.shape, increments.shape)
+        self.assertEqual(projected.dtype, torch.float64)
+        self.assertEqual(projected.device, gradient.device)
+        self.assertFalse(projected.requires_grad)
+        with torch.no_grad():
+            moved = fusion.fuse(base, increments, prescribed)
+            unmoved = fusion.fuse(base, torch.zeros_like(increments), prescribed)
+        delta = moved - unmoved
+        free = fusion.free_indices
+        self.assertTrue(torch.equal(delta[:, fusion.fixed_indices], torch.zeros_like(delta[:, fusion.fixed_indices])))
+        left = torch.einsum("bcij,bcij->b", projected, increments)
+        right = torch.einsum("bpi,bpi->b", gradient[:, free], delta[:, free])
+        self.assertGreater(float(right.abs().min()), 1e-3)
+        torch.testing.assert_close(left, right, rtol=1e-9, atol=1e-12)
+
+    def test_float64_matches_autograd_of_fuse(self):
+        """Equal the autograd increment gradient of <g, fuse(base, D, fixed)> for any D."""
+        import torch
+
+        _, fusion, base, increments, prescribed, gradient = _projection_case(torch.float64, seed=62)
+        variable = increments.clone().requires_grad_()
+        objective = (gradient * fusion.fuse(base, variable, prescribed)).sum()
+        expected = torch.autograd.grad(objective, variable)[0]
+        torch.testing.assert_close(fusion.project_gradient(gradient), expected, rtol=1e-12, atol=1e-12)
+        other = torch.zeros_like(increments, requires_grad=True)
+        expected_other = torch.autograd.grad((gradient * fusion.fuse(base, other, prescribed)).sum(), other)[0]
+        torch.testing.assert_close(expected_other, expected, rtol=1e-12, atol=1e-12)
+
+    def test_fixed_rows_are_ignored(self):
+        """Read only free-corner rows; prescribed-corner rows never reach the solve."""
+        import torch
+
+        _, fusion, _, increments, _, gradient = _projection_case(torch.float64, seed=63)
+        fixed = fusion.fixed_indices
+        masked = gradient.clone()
+        masked[:, fixed] = 0.0
+        self.assertTrue(torch.equal(fusion.project_gradient(gradient), fusion.project_gradient(masked)))
+        polluted = gradient.clone()
+        polluted[:, fixed] = float("nan")
+        self.assertTrue(torch.equal(fusion.project_gradient(polluted), fusion.project_gradient(masked)))
+        only_fixed = gradient - masked
+        self.assertTrue(torch.equal(fusion.project_gradient(only_fixed), torch.zeros_like(increments)))
+
+    def test_float32_smoke_matches_reference_and_autograd(self):
+        """Return finite detached float32 results close to the float64 reference on CPU."""
+        import torch
+
+        rest, fusion, base, increments, prescribed, gradient = _projection_case(torch.float32, seed=64)
+        projected = fusion.project_gradient(gradient.clone().requires_grad_())
+        self.assertEqual(projected.shape, increments.shape)
+        self.assertEqual(projected.dtype, torch.float32)
+        self.assertEqual(projected.device, gradient.device)
+        self.assertFalse(projected.requires_grad)
+        self.assertTrue(torch.isfinite(projected).all())
+        self.assertGreater(float(projected.abs().max()), 0.0)
+        variable = increments.clone().requires_grad_()
+        expected = torch.autograd.grad((gradient * fusion.fuse(base, variable, prescribed)).sum(), variable)[0]
+        torch.testing.assert_close(projected, expected, rtol=1e-6, atol=1e-6)
+        reference = HexFusion(rest, fusion.fixed_indices, dtype=torch.float64).project_gradient(gradient.double())
+        torch.testing.assert_close(projected.double(), reference, rtol=1e-4, atol=1e-5)
+
+    def test_cuda_input_matches_cpu_and_keeps_device(self):
+        """Accept a CUDA position gradient and return the CPU result on the input device."""
+        import torch
+
+        if not torch.cuda.is_available():
+            self.skipTest("CUDA is unavailable")
+        _, fusion, _, increments, _, gradient = _projection_case(torch.float32, seed=65)
+        expected = fusion.project_gradient(gradient)
+        cuda_gradient = gradient.to("cuda").requires_grad_()
+        projected = fusion.project_gradient(cuda_gradient)
+        self.assertEqual(projected.device, cuda_gradient.device)
+        self.assertEqual(projected.dtype, torch.float32)
+        self.assertEqual(projected.shape, increments.shape)
+        self.assertFalse(projected.requires_grad)
+        torch.testing.assert_close(projected.cpu(), expected, rtol=0, atol=0)
+
+    def test_all_pinned_projection_is_zero(self):
+        """Return zero axis gradients when no free corner remains."""
+        import torch
+
+        rest = generate_cuboid((1, 1, 1))
+        fusion = HexFusion(rest, [7, 3, 2, 1, 5, 6, 0, 4])
+        gradient = torch.arange(48, dtype=torch.float32).reshape(2, 8, 3)
+        projected = fusion.project_gradient(gradient)
+        self.assertTrue(torch.equal(projected, torch.zeros((2, 1, 3, 3))))
+
+    def test_reject_invalid_position_gradients(self):
+        """Reject implicit dtype conversion, non-tensor input, and malformed shapes."""
+        import torch
+
+        rest = generate_cuboid((1, 1, 1))
+        fusion = HexFusion(rest, [0])
+        gradient = torch.zeros((1, 8, 3))
+        with self.assertRaises(TypeError):
+            fusion.project_gradient(gradient.double())
+        with self.assertRaises(TypeError):
+            fusion.project_gradient(gradient.numpy())
+        for malformed in (gradient[0], gradient[:, :7], gradient[:0], gradient[..., :2]):
+            with self.subTest(shape=tuple(malformed.shape)), self.assertRaises(ValueError):
+                fusion.project_gradient(malformed)
 
 
 if __name__ == "__main__":

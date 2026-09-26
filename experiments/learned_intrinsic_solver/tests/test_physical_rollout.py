@@ -4,10 +4,12 @@
 """CPU checks for differentiable physical windows around learned inner solves."""
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch  # noqa: TID253
 
+from experiments.learned_intrinsic_solver import features
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 from experiments.learned_intrinsic_solver.newton_model import build_newton_hex_model
@@ -29,7 +31,13 @@ class TestPhysicalRollout(unittest.TestCase):
             density=100,
             gravity=(0, -9.81, 0),
         )
-        network = IntrinsicSolverNetwork(self.rest.cell_counts, 38, hidden_dim=16, edge_hidden_dim=8)
+        network = IntrinsicSolverNetwork(
+            self.rest.cell_counts,
+            features.STATE_FEATURE_DIM,
+            conditioning_dim=features.CONDITIONING_DIM,
+            hidden_dim=16,
+            edge_hidden_dim=8,
+        )
         with torch.no_grad():
             network.correction_head.weight.normal_(std=1e-4)
         self.solver = SolverLearnedIntrinsic(self.model, network=network, iterations=2)
@@ -52,8 +60,10 @@ class TestPhysicalRollout(unittest.TestCase):
         state.particle_qd.assign(self.v[0].numpy())
         state.particle_f.assign(self.f[0].numpy())
         native = []
+        history = None
         for _ in range(2):
-            result = self.solver.predict(state, self.dt)
+            result = self.solver.predict(state, self.dt, history=history)
+            history = result.history
             native.append(result)
             state.particle_q.assign(result.positions.detach().numpy()[0])
             state.particle_qd.assign(result.velocities.detach().numpy()[0])
@@ -71,7 +81,52 @@ class TestPhysicalRollout(unittest.TestCase):
             torch.testing.assert_close(got.positions[:, self.fixed], self.x[:, self.fixed], rtol=0, atol=0)
             torch.testing.assert_close(got.velocities[:, self.fixed], torch.zeros_like(got.velocities[:, self.fixed]))
             self.assertEqual(got.energies.shape, (1, 3))
+            torch.testing.assert_close(
+                got.history.axis_gradient_world, expected.history.axis_gradient_world, rtol=0, atol=2e-8
+            )
         self.assertTrue(window.objective.requires_grad)
+
+    def test_history_is_carried_across_physical_steps_and_cleared_for_a_new_rollout(self):
+        """Consume each query's detached history in the next query, across steps and windows, until a new rollout."""
+        records = []
+        original = self.step.forward
+
+        def recording(*args, **kwargs):
+            result = original(*args, **kwargs)
+            records.append((kwargs.get("history"), result))
+            return result
+
+        with patch.object(self.step, "forward", recording):
+            windows = list(self.rollout.windows(self.x, self.v, forces=self.f, physical_steps=2, iterations=2))
+        self.assertEqual(len(records), 4)
+        self.assertIsNone(records[0][0])
+        for index in range(1, 4):
+            consumed, previous = records[index][0], records[index - 1][1]
+            self.assertEqual(consumed.valid.tolist(), [True])
+            self.assertFalse(consumed.axis_gradient_world.requires_grad)
+            torch.testing.assert_close(consumed.axis_gradient_world, previous.axis_gradient_world, rtol=0, atol=0)
+            torch.testing.assert_close(consumed.axis_update_world, previous.achieved_axis_update_world, rtol=0, atol=0)
+        # Step 2 (records[2]) consumed the history exposed by step 1, i.e. it crossed the timestep boundary.
+        torch.testing.assert_close(
+            records[2][0].axis_gradient_world, windows[0].steps[0].history.axis_gradient_world, rtol=0, atol=0
+        )
+        records.clear()
+        with patch.object(self.step, "forward", recording):
+            resumed = next(
+                self.rollout.windows(
+                    windows[0].final_positions.detach(),
+                    windows[0].final_velocities.detach(),
+                    forces=self.f,
+                    physical_steps=1,
+                    iterations=2,
+                    history=windows[0].steps[0].history,
+                )
+            )
+            fresh = next(self.rollout.windows(self.x, self.v, forces=self.f, physical_steps=1, iterations=2))
+        torch.testing.assert_close(resumed.steps[0].positions, windows[1].steps[0].positions, rtol=0, atol=0)
+        self.assertIsNotNone(records[0][0])
+        self.assertIsNone(records[2][0])
+        self.assertIsNone(fresh.steps[0].previous_positions.grad)
 
     def test_default_trains_each_timestep_without_resetting_physical_state(self):
         x = self.x.clone().requires_grad_()

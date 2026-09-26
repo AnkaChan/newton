@@ -5,6 +5,7 @@
 
 import importlib.util
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -13,6 +14,7 @@ if importlib.util.find_spec("torch") is None:
 
 import torch  # noqa: TID253
 
+from experiments.learned_intrinsic_solver import features, input_assembly
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 from experiments.learned_intrinsic_solver.newton_model import build_newton_hex_model
@@ -42,7 +44,13 @@ class TestLearnedOptimizer(unittest.TestCase):
         self.state.particle_qd.assign(velocity)
 
     def _solver(self, *, nonzero=True):
-        network = IntrinsicSolverNetwork(self.rest.cell_counts, 38, hidden_dim=16, edge_hidden_dim=8)
+        network = IntrinsicSolverNetwork(
+            self.rest.cell_counts,
+            features.STATE_FEATURE_DIM,
+            conditioning_dim=features.CONDITIONING_DIM,
+            hidden_dim=16,
+            edge_hidden_dim=8,
+        )
         if nonzero:
             with torch.no_grad():
                 network.correction_head.weight.normal_(std=0.002)
@@ -114,12 +122,25 @@ class TestLearnedOptimizer(unittest.TestCase):
         torch.testing.assert_close(update.loss.inertia, expected_inertia)
 
     def test_frozen_frame_unroll_gradient_matches_finite_difference(self):
-        """Check a three-update parameter derivative while replaying the same frozen frame sequence."""
+        """Check a three-update parameter derivative while replaying frozen frames, gradient features and history."""
         solver = self._solver()
         problem = solver.prepare_problem(self.state, 0.01)
         initial = solver.initialize_candidate(problem)
-        result = solver.solve(problem, initial_positions=initial)
+        recorded_gradients = []
+        original_gradient = input_assembly.objective_gradient
+
+        def record(*args, **kwargs):
+            value = original_gradient(*args, **kwargs)
+            recorded_gradients.append(value)
+            return value
+
+        with patch.object(input_assembly, "objective_gradient", record):
+            result = solver.solve(problem, initial_positions=initial)
+        self.assertEqual(len(recorded_gradients), 3)
         frames = [update.frames for update in result.updates]
+        # Frames, the gradient feature and the consumed history are detached inputs of each query; the
+        # finite difference must hold all three sequences fixed to match the frozen-graph derivative.
+        histories = [None] + [update.next_history() for update in result.updates[:-1]]
         parameter = solver.network.correction_head.bias
         gradient = torch.autograd.grad(result.loss.total.sum(), parameter)[0]
         direction = torch.tensor([1, -2, 3, -1, 0.5, -0.5, 2, -1, 1], dtype=torch.float32)
@@ -131,8 +152,14 @@ class TestLearnedOptimizer(unittest.TestCase):
             for sign in (1, -1):
                 parameter.copy_(original + sign * 1e-3 * direction)
                 current = initial
-                for frame in frames:
-                    current = solver.propose_update(current, problem, frames=frame).positions
+                replay = iter(recorded_gradients)
+
+                def replay_gradient(*args, _replay=replay, **kwargs):
+                    return next(_replay)
+
+                with patch.object(input_assembly, "objective_gradient", replay_gradient):
+                    for frame, history in zip(frames, histories, strict=True):
+                        current = solver.propose_update(current, problem, frames=frame, history=history).positions
                 values.append(problem.objective(current).total.sum().item())
             parameter.copy_(original)
         numerical = (values[0] - values[1]) / 2e-3

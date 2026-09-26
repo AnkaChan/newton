@@ -135,6 +135,23 @@ class TestDampingEnergy(unittest.TestCase):
         self.assertEqual(unchanged.item(), 0.0)
         self.assertGreater(torch.autograd.grad(physical.sum(), positions)[0].norm().item(), 1.0)
 
+    def test_damped_total_is_finite_through_inversion(self):
+        """Keep damping, elasticity and their gradients finite for an inverted candidate."""
+        import torch
+
+        _, loss, anchor, _ = self._fixture()
+        inverted = anchor.clone()
+        inverted[:, :, 0] *= -1.0
+        inverted[:, -1] += torch.tensor([0.02, -0.01, 0.03], dtype=torch.float64)
+        inverted.requires_grad_()
+        terms = loss(inverted, anchor, previous_positions=anchor)
+        gradient = torch.autograd.grad(terms.total.sum(), inverted)[0]
+        for value in (terms.total, terms.elastic, terms.inertia, terms.damping, gradient):
+            self.assertTrue(torch.isfinite(value).all().item())
+        self.assertGreater(terms.damping.item(), 0.0)
+        self.assertGreater(terms.elastic.item(), 0.0)
+        torch.testing.assert_close(terms.total, terms.elastic + terms.inertia + terms.damping)
+
     def test_inverse_timestep_and_per_cell_coefficients(self):
         """Scale independently authored cell viscosities by inverse physical timestep."""
         import torch

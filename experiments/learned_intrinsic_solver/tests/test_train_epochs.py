@@ -181,10 +181,10 @@ class TestEpochTraining(unittest.TestCase):
             def train(self):
                 pass
 
-            def energy(self, positions, inertial):
+            def energy(self, positions, inertial, *, previous_positions=None):
                 return SimpleNamespace(total=10 + positions[:, 0, 0])
 
-            def __call__(self, positions, inertial, *, fixed_positions):
+            def __call__(self, positions, inertial, *, fixed_positions, previous_positions=None):
                 return SimpleNamespace(
                     positions=positions,
                     loss=SimpleNamespace(total=9 + positions[:, 0, 0]),
@@ -196,6 +196,7 @@ class TestEpochTraining(unittest.TestCase):
                 yield {
                     "positions": positions,
                     "inertial_prediction": positions.clone(),
+                    "previous_positions": positions.clone(),
                     "fixed_positions": positions.clone(),
                     "physical_seeds": [10000, 10001],
                     "metadata": [{"physical_seed": 10000}, {"physical_seed": 10001}],

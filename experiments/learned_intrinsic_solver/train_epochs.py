@@ -135,27 +135,36 @@ def _batch_on_device(batch, device):
 
 
 def _screen_output(step, result, pins):
-    """Reject invalid learned proposals without altering them."""
+    """Reject nonfinite learned proposals or moved pins without altering them.
+
+    Inverted or collapsed cells are accepted (the stable energy is finite there);
+    the returned Jacobian screen is a diagnostic only, never a failure condition.
+    """
     import torch
 
     from .train_smoke import _screen  # noqa: PLC0415 - Optional training boundary.
 
     screen = _screen(SimpleNamespace(optimizer=step), result.positions)
-    if not screen["valid"] or not torch.isfinite(result.loss.total).all().item():
-        raise ValueError(f"invalid learned output or energy: {screen}")
+    if not torch.isfinite(result.positions).all().item():
+        raise ValueError(f"nonfinite learned output positions: {screen}")
+    if not torch.isfinite(result.loss.total).all().item():
+        raise ValueError(f"nonfinite learned output energy: {screen}")
     if not torch.equal(result.positions[:, step.fixed_indices], pins):
         raise ValueError("learned output moved prescribed pins")
+    return screen
 
 
 def _evaluate_one(step, batch, totals):
     """Evaluate one or more validation queries with the unwrapped step."""
     import torch
 
-    positions, inertial, pins = (batch[key] for key in ("positions", "inertial_prediction", "fixed_positions"))
-    before = step.energy(positions, inertial).total.detach()
+    positions, inertial, pins, previous = (
+        batch[key] for key in ("positions", "inertial_prediction", "fixed_positions", "previous_positions")
+    )
+    before = step.energy(positions, inertial, previous_positions=previous).total.detach()
     if not torch.isfinite(before).all().item():
         raise ValueError("nonfinite initial physical energy")
-    result = step(positions, inertial, fixed_positions=pins)
+    result = step(positions, inertial, fixed_positions=pins, previous_positions=previous)
     _screen_output(step, result, pins)
     _add_values(totals, before, result.loss.total.detach())
 
@@ -177,7 +186,7 @@ def _validate(step, dataset, batch_size, device, world_size):
                 for index, seed in enumerate(cpu_batch["physical_seeds"]):
                     single = {
                         key: value[index : index + 1]
-                        if key in ("positions", "inertial_prediction", "fixed_positions")
+                        if key in ("positions", "inertial_prediction", "fixed_positions", "previous_positions")
                         else value
                         for key, value in cpu_batch.items()
                     }
@@ -252,6 +261,7 @@ def _run(output, config, resume, rank, world_size, device):
     from .data import generate_cuboid  # noqa: PLC0415 - Optional training boundary.
     from .distributed_probe import _replicas_equal  # noqa: PLC0415
     from .epoch_data import EpochDataset  # noqa: PLC0415
+    from .features import CONDITIONING_DIM, STATE_FEATURE_DIM  # noqa: PLC0415
     from .network import IntrinsicSolverNetwork  # noqa: PLC0415
     from .newton_model import build_newton_hex_model  # noqa: PLC0415
     from .newton_solver import SolverLearnedIntrinsic  # noqa: PLC0415
@@ -318,7 +328,8 @@ def _run(output, config, resume, rank, world_size, device):
     )
     network = IntrinsicSolverNetwork(
         config.cell_counts,
-        38,
+        STATE_FEATURE_DIM,
+        conditioning_dim=CONDITIONING_DIM,
         hidden_dim=config.hidden_dim,
         edge_hidden_dim=config.edge_hidden_dim,
         num_heads=config.num_heads,
@@ -474,8 +485,8 @@ def _run(output, config, resume, rank, world_size, device):
             transfer_error = None
             try:
                 batch = _batch_on_device(cpu_batch, device)
-                positions, inertial, pins = (
-                    batch[key] for key in ("positions", "inertial_prediction", "fixed_positions")
+                positions, inertial, pins, previous = (
+                    batch[key] for key in ("positions", "inertial_prediction", "fixed_positions", "previous_positions")
                 )
             except (ValueError, RuntimeError) as error:
                 transfer_error = f"epoch {epoch} batch {batch_count} transfer: {type(error).__name__}: {error}"
@@ -488,11 +499,11 @@ def _run(output, config, resume, rank, world_size, device):
             before = after = normalized = None
             try:
                 with torch.no_grad():
-                    before = step.energy(positions, inertial).total.detach()
+                    before = step.energy(positions, inertial, previous_positions=previous).total.detach()
                 if not torch.isfinite(before).all().item():
                     raise ValueError("nonfinite initial physical energy")
                 with torch.autocast(device_type=device.type, enabled=False):
-                    result = module(positions, inertial, fixed_positions=pins)
+                    result = module(positions, inertial, fixed_positions=pins, previous_positions=previous)
                     _screen_output(step, result, pins)
                     after = result.loss.total
                     normalized = (after - before) / before.clamp_min(1.0)

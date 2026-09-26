@@ -11,6 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import torch  # noqa: TID253
 
+from experiments.learned_intrinsic_solver import features
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.disk_replay import DiskReplayDataset, DiskReplayStore
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
@@ -26,6 +27,16 @@ from experiments.learned_intrinsic_solver.replay_rollout import (
 from experiments.learned_intrinsic_solver.unrolled_solver import UnrolledHexSolver
 
 
+def _network(cell_counts):
+    return IntrinsicSolverNetwork(
+        cell_counts,
+        features.STATE_FEATURE_DIM,
+        conditioning_dim=features.CONDITIONING_DIM,
+        hidden_dim=16,
+        edge_hidden_dim=8,
+    )
+
+
 class TestReplayRollout(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(71)
@@ -39,7 +50,7 @@ class TestReplayRollout(unittest.TestCase):
             density=100,
             gravity=(0, -9.81, 0),
         )
-        network = IntrinsicSolverNetwork(rest.cell_counts, 38, hidden_dim=16, edge_hidden_dim=8)
+        network = _network(rest.cell_counts)
         with torch.no_grad():
             network.correction_head.weight.normal_(std=1e-4)
         solver = SolverLearnedIntrinsic(model, network=network, iterations=2)
@@ -88,13 +99,20 @@ class TestReplayRollout(unittest.TestCase):
         self.assertFalse(np.array_equal(states[0].positions, windows[0].steps[0].initial_candidate.detach().numpy()[0]))
         self.assertEqual(states[0].metadata["source_checkpoint"], "sha256:example")
         self.assertEqual(states[1].metadata["iterations"], 2)
+        # The retained history is the detached history entering each step: none at the start, then carried.
+        self.assertIsNone(states[0].history)
+        carried = windows[0].steps[0].history
+        self.assertEqual(carried.valid.tolist(), [True])
+        np.testing.assert_array_equal(states[1].history["axis_gradient_world"], carried.axis_gradient_world[0].numpy())
+        np.testing.assert_array_equal(states[1].history["axis_update_world"], carried.axis_update_world[0].numpy())
+        self.assertGreater(np.abs(states[1].history["axis_update_world"]).max(), 0)
         with DiskReplayStore(self.path, read_only=True) as store:
             context = store.get_context(states[0].context_id)
         for name in ("lame_lambda", "lame_mu", "density", "lumped_mass"):
             np.testing.assert_array_equal(
                 context["arrays"][name], getattr(self.rollout.unrolled.step.energy, name).detach().numpy()
             )
-        replay_network = IntrinsicSolverNetwork((1, 1, 2), 38, hidden_dim=16, edge_hidden_dim=8)
+        replay_network = _network((1, 1, 2))
         replay_network.load_state_dict(self.rollout.unrolled.step.network.state_dict(), strict=True)
         replay_rollout = build_replay_rollout(context, replay_network, gravity=states[0].metadata["gravity"])
         for state, window in zip(states, windows, strict=True):
@@ -154,11 +172,11 @@ class TestReplayRollout(unittest.TestCase):
             "density": np.array([100, 10000], dtype=np.float32),
         }
         model = build_newton_hex_model(rest, fixed, gravity=(0, -9.81, 0), **material)
-        network = IntrinsicSolverNetwork(rest.cell_counts, 38, hidden_dim=16, edge_hidden_dim=8)
+        network = _network(rest.cell_counts)
         solver = SolverLearnedIntrinsic(model, network=network)
         original = PhysicalRollout(solver, UnrolledHexSolver(solver._step_for_dt(1 / 300)), time_step=1 / 300)
         context = physical_context(original)
-        restored_network = IntrinsicSolverNetwork(rest.cell_counts, 38, hidden_dim=16, edge_hidden_dim=8)
+        restored_network = _network(rest.cell_counts)
         restored = build_replay_rollout(context, restored_network, gravity=(0, -9.81, 0))
         for name, values in material.items():
             np.testing.assert_array_equal(context["arrays"][name], values)
@@ -177,7 +195,7 @@ class TestReplayRollout(unittest.TestCase):
             other_arrays["lame_mu"] *= 2
             other_id = store.register_context(metadata=source["metadata"], arrays=other_arrays)
             other = store.get_context(other_id)
-        network = IntrinsicSolverNetwork((1, 1, 2), 38, hidden_dim=16, edge_hidden_dim=8)
+        network = _network((1, 1, 2))
         wrong_physics = build_replay_rollout(other, network, gravity=state.metadata["gravity"])
         with self.assertRaisesRegex(ValueError, "context_id"):
             replay_state(wrong_physics, other, state)
@@ -212,7 +230,7 @@ class TestReplayRollout(unittest.TestCase):
             (record_id,) = store.record_ids()
             state = store.get(int(record_id))
             context = store.get_context(state.context_id)
-        network = IntrinsicSolverNetwork((1, 1, 2), 38, hidden_dim=16, edge_hidden_dim=8)
+        network = _network((1, 1, 2))
         network.load_state_dict(self.rollout.unrolled.step.network.state_dict(), strict=True)
         changed_policy = build_replay_rollout(
             context,

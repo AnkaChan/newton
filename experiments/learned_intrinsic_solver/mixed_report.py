@@ -17,6 +17,34 @@ from pathlib import Path
 
 __all__ = ["write_mixed_report", "write_progress"]
 
+_UPDATE_COLUMNS = (
+    "update",
+    "epoch",
+    "loss",
+    "before_joule",
+    "after_joule",
+    "mean_force_residual_n",
+    "step_size_mean",
+    "step_size_min",
+    "step_size_max",
+    "tie_cell_count",
+)
+_EPOCH_COLUMNS = (
+    "epoch",
+    "loss",
+    "query_count",
+    "seconds",
+    "mean_force_residual_n",
+    "step_size_mean",
+    "step_size_min",
+    "step_size_max",
+    "tie_cell_count",
+    "selection_metric",
+    "selection_eligible",
+    "physical_survivors",
+    "sample_count",
+)
+
 
 def _utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -65,12 +93,27 @@ def write_progress(output, report, *, phase, epoch, available_K=None, available_
     _atomic_text(Path(output) / "progress.json", json.dumps(progress, indent=2) + "\n")
 
 
+def _finite(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _number(value):
-    return f"{value:.6g}" if isinstance(value, (int, float)) and math.isfinite(value) else "Unavailable"
+    return f"{value:.6g}" if _finite(value) else "Unavailable"
+
+
+def _lookup(row, *path):
+    """Return a nested value or None when any key is missing or not a mapping."""
+    value = row
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
 
 
 def _plot(title, series, *, xlabel):
-    finite = [(x, y) for _, _, points in series for x, y in points if isinstance(y, (int, float)) and math.isfinite(y)]
+    """Return one SVG line chart; None or nonfinite values leave gaps in the line."""
+    finite = [(x, y) for _, _, points in series for x, y in points if _finite(y)]
     if not finite:
         return (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340">'
@@ -107,7 +150,7 @@ def _plot(title, series, *, xlabel):
         commands = []
         connected = False
         for x, y in values:
-            if not isinstance(y, (int, float)) or not math.isfinite(y):
+            if not _finite(y):
                 connected = False
                 continue
             px, py = point(x, y)
@@ -121,46 +164,88 @@ def _plot(title, series, *, xlabel):
     return "".join(elements)
 
 
+def _curve_plot(title, curves):
+    """Plot mean/median/max per iteration with the shared failed/valid gap handling."""
+    return _plot(
+        title,
+        [
+            (name, color, [(r.get("iteration"), r.get(name)) for r in curves if _finite(r.get("iteration"))])
+            for name, color in (("mean", "#2563eb"), ("median", "#16804a"), ("max", "#c63645"))
+        ],
+        xlabel="Optimizer iteration",
+    )
+
+
 def _epoch_plot(rows):
     import matplotlib as mpl
     from matplotlib.figure import Figure
     from matplotlib.ticker import MaxNLocator
 
-    def values(key, *, validation=False, scale=1):
+    def values(*path, scale=1):
+        return [(_lookup(row, *path) * scale) if _finite(_lookup(row, *path)) else math.nan for row in rows]
+
+    def ratio(*path, denominator):
         result = []
         for row in rows:
-            value = (row.get("validation", {}) if validation else row).get(key)
-            result.append(value * scale if isinstance(value, (int, float)) and math.isfinite(value) else math.nan)
+            value, total = _lookup(row, *path), _lookup(row, *denominator)
+            result.append(100 * value / total if _finite(value) and _finite(total) and total > 0 else math.nan)
         return result
 
     with mpl.rc_context({"svg.fonttype": "none", "font.size": 10}):
-        figure = Figure(figsize=(12, 7), layout="constrained")
-        axes = figure.subplots(2, 2)
+        figure = Figure(figsize=(12, 10), layout="constrained")
+        axes = figure.subplots(3, 2)
         epochs = [row["epoch"] for row in rows]
-        axes[0, 0].plot(epochs, values("loss", scale=100), ".-", color="#157f94", label="Training objective")
+        axes[0, 0].plot(epochs, values("loss"), ".-", color="#157f94", label="Training objective (mean over queries)")
         axes[0, 0].plot(
             epochs,
-            values("mean_normalized_loss", validation=True, scale=100),
+            values("validation", "mean_normalized_loss"),
             ".-",
             color="#d26a25",
             label="Validation: first update",
         )
-        axes[0, 0].set_ylabel("Normalized objective (x100)")
+        axes[0, 0].set_ylabel("Per-update LeCO objective")
         axes[0, 0].axhline(0, color="grey", linewidth=0.7)
         axes[0, 0].legend()
-        axes[0, 1].plot(epochs, values("descent_rate", validation=True, scale=100), ".-", color="#d26a25")
+        axes[0, 1].plot(epochs, values("validation", "descent_rate", scale=100), ".-", color="#d26a25")
         axes[0, 1].set_ylabel("Validation queries with lower energy (%)")
         axes[0, 1].set_ylim(-2, 102)
         for key, label, color in (
             ("mean_before_joule", "Before first update", "#157f94"),
             ("mean_after_joule", "After first update", "#d26a25"),
         ):
-            axes[1, 0].plot(epochs, values(key, validation=True), ".-", label=label, color=color)
+            axes[1, 0].plot(epochs, values("validation", key), ".-", label=label, color=color)
         axes[1, 0].set_ylabel("Validation mean physical energy (J)")
         axes[1, 0].legend()
-        axes[1, 1].plot(epochs, values("learning_rate"), ".-", color="#7052a3")
-        axes[1, 1].set_ylabel("Adam learning rate after epoch")
-        axes[1, 1].set_yscale("log")
+        metric = values("validation", "selection", "metric")
+        axes[1, 1].plot(epochs, metric, ".-", color="#7052a3", label="Cheap validation, final iteration")
+        full = values("full_horizon_validation", "final_free_force_residual_norm_n", "mean")
+        axes[1, 1].plot(epochs, full, "s", color="#c63645", label="Full horizon, final step")
+        axes[1, 1].set_ylabel("Selection metric: mean final force residual (N)")
+        if any(_finite(value) and value > 0 for value in metric + full):
+            axes[1, 1].set_yscale("log")
+        axes[1, 1].legend()
+        axes[2, 0].plot(
+            epochs,
+            ratio("validation", "physical_survivors", denominator=("validation", "sample_count")),
+            ".-",
+            color="#157f94",
+            label="Cheap validation",
+        )
+        axes[2, 0].plot(
+            epochs,
+            ratio(
+                "full_horizon_validation", "physical_survivors", denominator=("full_horizon_validation", "sample_count")
+            ),
+            "s",
+            color="#c63645",
+            label="Full horizon",
+        )
+        axes[2, 0].set_ylabel("Physical survivors (%)")
+        axes[2, 0].set_ylim(-2, 102)
+        axes[2, 0].legend()
+        axes[2, 1].plot(epochs, values("learning_rate"), ".-", color="#7052a3")
+        axes[2, 1].set_ylabel("Adam learning rate after epoch")
+        axes[2, 1].set_yscale("log")
         for axis in axes.flat:
             axis.set_xlabel("Completed epoch")
             axis.xaxis.set_major_locator(MaxNLocator(integer=True))
@@ -171,8 +256,17 @@ def _epoch_plot(rows):
     return buffer.getvalue()
 
 
+def _latest_full_horizon(rows):
+    """Return (epoch, summary) of the most recent full-horizon validation, or (None, None)."""
+    for row in reversed(rows):
+        full = row.get("full_horizon_validation")
+        if isinstance(full, dict):
+            return row.get("epoch"), full
+    return None, None
+
+
 def write_mixed_report(output, report, *, updated_at=None):
-    """Write portable epoch metrics, two SVG plots and a page refreshing every 30s.
+    """Write portable epoch metrics, three SVG plots and a page refreshing every 30s.
 
     Experimental. Only report metrics are written; checkpoints and trajectory
     state are never read. ``updated_at`` denotes the source metrics timestamp,
@@ -189,15 +283,19 @@ def write_mixed_report(output, report, *, updated_at=None):
     latest = rows[-1] if rows else {}
     progress = report.get("progress", {})
     config = report.get("config", {})
-    validation = latest.get("validation", {})
+    validation = latest.get("validation") or {}
     relative = validation.get("relative_energy", [])
     endpoint = relative[-1] if relative else {}
+    residual_curve = validation.get("force_residual", [])
+    residual_endpoint = residual_curve[-1] if residual_curve else {}
+    selection = validation.get("selection") or {}
+    best = report.get("best_selection") or {}
     validation_iterations = config.get("validation_iterations", 100)
     completed = report.get("completed_epochs", 0)
     maximum = config.get("max_epochs", 500)
     status = report.get("status", "preparing")
     phase = progress.get("phase", status)
-    if status in ("failed", "interrupted", "epoch_limit", "early_stopped"):
+    if status in ("failed", "interrupted", "epoch_limit", "early_stopped", "plateau_converged", "stalled"):
         phase = status
 
     def escape(value):
@@ -206,31 +304,24 @@ def write_mixed_report(output, report, *, updated_at=None):
     counts_k = progress.get("available_K", latest.get("available_K", [1]))
     counts_h = progress.get("available_H", latest.get("available_H", [8]))
     loss_plot = _epoch_plot(rows)
-    validation_plot = _plot(
-        "Validation relative physical energy",
-        [
-            (name, color, [(r["iteration"], r.get(name)) for r in relative])
-            for name, color in (("mean", "#2563eb"), ("median", "#16804a"), ("max", "#c63645"))
-        ],
-        xlabel="Optimizer iteration",
-    )
+    validation_plot = _curve_plot("Validation relative physical energy", relative)
+    residual_plot = _curve_plot("Validation free-corner force residual (N)", residual_curve)
     _atomic_text(output / "loss_curve.svg", loss_plot)
     _atomic_text(output / "validation_curve.svg", validation_plot)
+    _atomic_text(output / "residual_curve.svg", residual_plot)
+    epoch_rows = [
+        {
+            **row,
+            "selection_metric": _lookup(row, "validation", "selection", "metric"),
+            "selection_eligible": _lookup(row, "validation", "selection", "eligible"),
+            "physical_survivors": _lookup(row, "validation", "physical_survivors"),
+            "sample_count": _lookup(row, "validation", "sample_count"),
+        }
+        for row in rows
+    ]
     for name, data, columns in (
-        (
-            "updates",
-            report.get("updates", []),
-            (
-                "update",
-                "epoch",
-                "loss",
-                "before_joule",
-                "after_joule",
-                "shortened_query_count",
-                "mean_acceptance_scale",
-            ),
-        ),
-        ("epochs", rows, ("epoch", "loss", "query_count", "seconds", "shortened_query_count", "mean_acceptance_scale")),
+        ("updates", report.get("updates", []), _UPDATE_COLUMNS),
+        ("epochs", epoch_rows, _EPOCH_COLUMNS),
     ):
         buffer = io.StringIO()
         writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
@@ -253,9 +344,9 @@ def write_mixed_report(output, report, *, updated_at=None):
         else "Absolute metric viscosity is fixed within each trajectory."
     )
     descent = validation.get("descent_rate")
-    descent_text = f"{descent:.1%}" if isinstance(descent, (int, float)) and math.isfinite(descent) else "Unavailable"
+    descent_text = f"{descent:.1%}" if _finite(descent) else "Unavailable"
     gate = config.get("stage_descent_rate")
-    gate_text = f"{gate:.0%}" if isinstance(gate, (int, float)) and math.isfinite(gate) else "Unavailable"
+    gate_text = f"{gate:.0%}" if _finite(gate) else "Unavailable"
     stage_limit = config.get("stage_max_epochs")
     stage_limit_text = f"{stage_limit} epochs per stage" if stage_limit is not None else "No hard cap"
     world_size = report.get("world_size", 1)
@@ -265,35 +356,41 @@ def write_mixed_report(output, report, *, updated_at=None):
         if isinstance(batch_size, int)
         else ""
     )
-    acceptance_changes = [
-        change for change in report.get("configuration_changes", []) if change.get("field") == "geometry_backtracking"
-    ]
-    acceptance_change = acceptance_changes[-1] if acceptance_changes else {}
-    acceptance_enabled = acceptance_change.get("current", config.get("geometry_backtracking"))
-    acceptance_status = (
-        "enabled" if acceptance_enabled is True else "disabled" if acceptance_enabled is False else "not recorded"
+    survivors = validation.get("physical_survivors")
+    sample_count = validation.get("sample_count")
+    survival_text = (
+        f"{survivors} / {sample_count}"
+        if isinstance(survivors, int) and isinstance(sample_count, int)
+        else "Not evaluated"
     )
-    if acceptance_enabled is True and acceptance_change.get("effective_from_epoch") is not None:
-        acceptance_status += f" from epoch {acceptance_change['effective_from_epoch']}"
-
-    def shortened_fraction(row, *, prefix=""):
-        shortened, total = row.get(f"{prefix}shortened_query_count"), row.get(f"{prefix}query_count")
-        if not isinstance(shortened, int) or not isinstance(total, int):
-            return "not recorded"
-        return f"{shortened} / {total}"
-
-    acceptance_scale = latest.get("mean_acceptance_scale")
-    acceptance_scale_text = (
-        _number(acceptance_scale)
-        if isinstance(acceptance_scale, (int, float)) and math.isfinite(acceptance_scale)
-        else "not recorded"
+    metric = selection.get("metric")
+    metric_text = f"{_number(metric)} N" if _finite(metric) else "Unavailable"
+    eligible = selection.get("eligible")
+    eligibility_text = (
+        "eligible for checkpoint selection"
+        if eligible is True
+        else "not eligible (a failed or incomplete trajectory)"
+        if eligible is False
+        else "eligibility not recorded"
     )
-    acceptance_html = f"""<details><summary>Geometry acceptance: {escape(acceptance_status)}</summary>
-<p class="muted">Shortened updates use a smaller fraction of the proposed displacement to keep the sampled cell geometry valid. A scale of 1 keeps the full update. These checks do not enforce energy descent. Counts below are from the latest completed epoch; historical measurements are not reconstructed.</p>
-<table><tr><th>Queries</th><th>Shortened / evaluated</th><th>Mean accepted fraction</th></tr>
-<tr><td>Training epoch {escape(latest.get("epoch", "—"))}</td><td>{shortened_fraction(latest)}</td><td>{acceptance_scale_text}</td></tr>
-<tr><td>Validation optimizer</td><td>{shortened_fraction(validation, prefix="optimization_")}</td><td>—</td></tr>
-<tr><td>Validation physical rollout</td><td>{shortened_fraction(validation, prefix="physical_")}</td><td>—</td></tr></table></details>"""
+    best_text = (
+        f"Best so far: {_number(best.get('metric'))} N at epoch {escape(best.get('epoch'))}."
+        if _finite(best.get("metric"))
+        else "No eligible epoch has been selected yet."
+    )
+    full_epoch, full = _latest_full_horizon(rows)
+    if full:
+        final_residual = full.get("final_free_force_residual_norm_n") or {}
+        final_energy = full.get("final_energy_joule") or {}
+        full_html = f"""<table><tr><th>Epoch</th><th>K</th><th>H</th><th>Survivors</th><th>Final residual mean / median / max (N)</th><th>Final energy mean (J)</th><th>Seconds</th></tr>
+<tr><td>{escape(full_epoch)}</td><td>{escape(full.get("iterations", "—"))}</td><td>{escape(full.get("physical_steps", "—"))}</td><td>{escape(full.get("physical_survivors", "—"))} / {escape(full.get("sample_count", "—"))}</td><td>{_number(final_residual.get("mean"))} / {_number(final_residual.get("median"))} / {_number(final_residual.get("max"))}</td><td>{_number(final_energy.get("mean"))}</td><td>{_number(full.get("seconds"))}</td></tr></table>"""
+    else:
+        full_html = '<p class="muted">No full-horizon validation has completed yet.</p>'
+    residual_table = (
+        f"<tr><td>Force residual (N)</td><td>{_number(residual_endpoint.get('mean'))}</td><td>{_number(residual_endpoint.get('median'))}</td><td>{_number(residual_endpoint.get('max'))}</td></tr>"
+        if residual_endpoint
+        else ""
+    )
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="30"><title>LIDO-v2 · live training</title>
@@ -310,20 +407,24 @@ a{{color:#087c91}}img,svg{{display:block;width:100%;height:auto;background:white
 {escape(config.get("queries_per_epoch", "—"))} training queries per epoch and {escape(config.get("validation_count", validation.get("sample_count", "—")))} fixed validation states. {escape(batch_text)}<br>
 Available solver iterations: K = {escape(counts_k)} · Physical timesteps: H = {escape(counts_h)}<br>
 Curriculum descent gate: {gate_text} · Hard cap: {escape(stage_limit_text)}</p>
-<p>Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(validation.get("mean_after_joule"))} J after one update.<br>
-Descent: {descent_text}; first-update failures: {escape(validation.get("first_update_failed_count", "Not evaluated"))}; all validation failures: {escape(validation.get("failed_count", "Not evaluated"))}.</p>
-{acceptance_html}{failure_html}<img src="loss_curve.svg" alt="Training objective and validation normalized change, validation descent rate, physical energy, and learning rate by epoch">
-<p class="muted">Lower normalized objective is better; zero means no change. The training objective includes an uphill penalty. Validation shows the first update on fixed seeds, without that penalty. Both use the existing 1 J normalization floor, so these are not pure relative-error percentages. The learning rate is recorded after each epoch's scheduler decision.</p>
+<p>Selection metric (mean free-corner force residual after {validation_iterations} iterations): {metric_text}, {eligibility_text}. Physical survivors: {survival_text}. {best_text}<br>
+Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(validation.get("mean_after_joule"))} J after one update. Descent: {descent_text}; first-update failures: {escape(validation.get("first_update_failed_count", "Not evaluated"))}; all validation failures: {escape(validation.get("failed_count", "Not evaluated"))}.</p>
+{failure_html}<img src="loss_curve.svg" alt="Training objective and validation first-update objective, validation descent rate, physical energy, selection metric, physical survivors, and learning rate by epoch">
+<p class="muted">Lower objective is better. The training objective includes an uphill penalty; validation shows the first update on fixed seeds with the same form. The selection metric is the mean final free-corner force residual of the cheap validation; squares mark full-horizon checks. The learning rate is recorded after each epoch's scheduler decision.</p>
 <details><summary>How the loss curves are computed</summary>
 <p>Mean local training loss averages all queried trajectories and ranks in each completed epoch. Epochs mix solver ages, physical timesteps and curriculum stages.</p>
-<p>Training loss = (E_after &minus; E_initial) / max(E_initial, 1 J) + λ · max(E_after &minus; E_previous, 0) / max(E_initial, 1 J). λ = {escape(config.get("energy_increase_weight", 1.0))}.</p>
-<p>Validation normalized change = (E_after &minus; E_initial) / max(E_initial, 1 J), after one update. Both curves are multiplied by 100 for display. Missing measurements leave gaps. Training descent rate is not recorded; the descent panel shows validation only.</p></details>
+<p>Per-update loss = asinh(E_after / s) + &lambda; · max((E_after &minus; E_before) / s, 0) with s = max(|E_before|, floor), where E_before is the energy immediately before that update and floor = c · 2<sup>&minus;23</sup> · V · (&lambda;<sub>Lam&eacute;</sub> + 2&mu; + &eta;/dt + &rho;h<sup>2</sup>/dt<sup>2</sup>) is the material-aware float32 energy floor (c = {escape(config.get("energy_floor_scale", 1.0))}). The penalty weight is &lambda; = {escape(config.get("energy_increase_weight", 1.0))}.</p>
+<p>Validation reports the same per-update loss for the first update of each fixed seed. Missing measurements leave gaps. Training descent rate is not recorded; the descent panel shows validation only.</p></details>
 <section><h2>Latest validation: {validation_iterations} optimizer iterations</h2>
-<p class="muted">Epoch {escape(latest.get("epoch", "—"))}, {escape(validation.get("sample_count", 0))} fixed validation seeds. Each value is a per-trajectory physical energy ratio Eᵢ / E₀; mean, median and maximum aggregate those ratios. Network weights stay fixed during validation.</p>
+<p class="muted">Epoch {escape(latest.get("epoch", "—"))}, {escape(validation.get("sample_count", 0))} fixed validation seeds. Each energy value is a per-trajectory physical energy ratio Eᵢ / E₀; the residual is the Euclidean norm of the free-corner position gradient [N]. Mean, median and maximum aggregate the per-trajectory values. Network weights stay fixed during validation.</p>
 <div class="legend"><span style="color:#2563eb">● Mean</span><span style="color:#16804a">● Median</span><span style="color:#c63645">● Maximum</span></div>{validation_plot}
-<table><tr><th>At iteration {escape(endpoint.get("iteration", validation_iterations))}</th><th>Mean</th><th>Median</th><th>Maximum</th></tr><tr><td>Relative energy</td><td>{_number(endpoint.get("mean"))}</td><td>{_number(endpoint.get("median"))}</td><td>{_number(endpoint.get("max"))}</td></tr></table>
-<p class="muted">Failed validation trajectories: {escape(validation.get("failed_count", "Not evaluated"))}; physical survivors: {escape(validation.get("physical_survivors", "Not evaluated"))}; near-zero initial energies: {escape(endpoint.get("near_zero_count", 0))}. Optimizer failures leave gaps from the failed iteration onward; near-zero initial energies are excluded from relative ratios. Physical-rollout failures are counted separately in the report.</p></section>
-<p><a href="report.json">Metrics JSON</a> · <a href="progress.json">Live progress</a> · <a href="epochs.csv">Epoch CSV</a> · <a href="updates.csv">Update CSV</a> · <a href="loss_curve.svg">Training SVG</a> · <a href="validation_curve.svg">Validation SVG</a></p>
+{residual_plot}
+<table><tr><th>At iteration {escape(endpoint.get("iteration", validation_iterations))}</th><th>Mean</th><th>Median</th><th>Maximum</th></tr><tr><td>Relative energy</td><td>{_number(endpoint.get("mean"))}</td><td>{_number(endpoint.get("median"))}</td><td>{_number(endpoint.get("max"))}</td></tr>{residual_table}</table>
+<p class="muted">Failed validation trajectories: {escape(validation.get("failed_count", "Not evaluated"))}; physical survivors: {survival_text}; near-zero initial energies: {escape(endpoint.get("near_zero_count", 0))}. Optimizer failures leave gaps from the failed iteration onward; near-zero initial energies are excluded from relative ratios but keep their residuals. Physical-rollout failures are counted separately in the report.</p>
+<h2>Latest full-horizon validation</h2>
+<p class="muted">Held-out seeds run K learned iterations on each of H physical steps at the largest currently available budgets; every {escape(config.get("validation_full_interval", "—"))} epochs and before curriculum advancement.</p>
+{full_html}</section>
+<p><a href="report.json">Metrics JSON</a> · <a href="progress.json">Live progress</a> · <a href="epochs.csv">Epoch CSV</a> · <a href="updates.csv">Update CSV</a> · <a href="loss_curve.svg">Training SVG</a> · <a href="validation_curve.svg">Validation SVG</a> · <a href="residual_curve.svg">Residual SVG</a></p>
 <details><summary>Configuration</summary><p>{damping_text}</p><pre>{escape(json.dumps(config, indent=2))}</pre></details>
 <p class="muted">This page refreshes every 30 seconds. Curves update after each completed epoch.<br>
 Epoch in progress: {escape(progress.get("epoch", "Not started"))}. Training heartbeat: {escape(progress.get("updated_at", "Waiting"))}.<br>

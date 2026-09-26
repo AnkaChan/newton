@@ -474,7 +474,8 @@ def run_training(output: Path, config: TrainSmokeConfig, *, resume: Path | None 
 def _run_training(output, config, *, resume):
     import torch
 
-    from .network import IntrinsicSolverNetwork  # noqa: PLC0415 - Optional training boundary.
+    from .features import CONDITIONING_DIM, STATE_FEATURE_DIM  # noqa: PLC0415 - Optional training boundary.
+    from .network import IntrinsicSolverNetwork  # noqa: PLC0415
     from .newton_model import build_newton_hex_model  # noqa: PLC0415
     from .newton_solver import SolverLearnedIntrinsic  # noqa: PLC0415
 
@@ -504,7 +505,8 @@ def _run_training(output, config, *, resume):
     )
     network = IntrinsicSolverNetwork(
         config.cell_counts,
-        38,
+        STATE_FEATURE_DIM,
+        conditioning_dim=CONDITIONING_DIM,
         hidden_dim=config.hidden_dim,
         edge_hidden_dim=config.edge_hidden_dim,
         num_heads=config.num_heads,

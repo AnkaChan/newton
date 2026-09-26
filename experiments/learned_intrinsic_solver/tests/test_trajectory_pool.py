@@ -33,11 +33,10 @@ class _Physics:
     def advance(self, payload):
         with self.lock:
             self.advances.append(payload["seed"])
+        # Carry every stored key, including optimizer history, across the boundary.
         result = dict(payload)
         result["velocities"] = payload["candidate"] - payload["physical_positions"]
         result["physical_positions"] = payload["candidate"].clone()
-        result.pop("energy_initial", None)
-        result.pop("energy_previous", None)
         return result
 
     def retire(self, payload):
@@ -54,7 +53,8 @@ def _iterate(pool):
     signature = _signature(records)
     for record in records:
         record.payload["candidate"] = record.payload["candidate"] + 1
-        record.payload["energy_previous"] = record.payload["candidate"].sum()
+        record.payload["history_axis_update_world"] = record.payload["candidate"].sum()
+        record.payload["history_valid"] = True
     pool.finish_batch(records)
     return signature
 
@@ -145,7 +145,7 @@ class TestTrajectoryPool(unittest.TestCase):
         pool.finish_batch(third)
 
     def test_advance_updates_velocity_once_at_each_physical_boundary(self):
-        """Delegate velocity updates only after all inner iterations of a step."""
+        """Delegate velocity updates only after all inner iterations of a step; history is carried."""
         pool, physics = self.make_pool(capacity=3, batch_size=1, iteration_counts=(2,), physical_step_counts=(2,))
         initial_seed = None
         observations = []
@@ -156,12 +156,14 @@ class TestTrajectoryPool(unittest.TestCase):
                 initial_seed = record.seed
             if record.seed == initial_seed:
                 observations.append((record.inner_iteration, record.physical_step, record.payload["velocities"].item()))
+                if record.physical_step == 0 and record.inner_iteration == 0:
+                    self.assertNotIn("history_valid", record.payload)
                 if record.physical_step == 1 and record.inner_iteration == 0:
-                    self.assertNotIn("energy_initial", record.payload)
-                    self.assertNotIn("energy_previous", record.payload)
+                    self.assertTrue(record.payload["history_valid"])
+                    self.assertEqual(record.payload["history_axis_update_world"].item(), 9.0)
             record.payload["candidate"] += 1
-            record.payload["energy_initial"] = torch.tensor(10.0)
-            record.payload["energy_previous"] = torch.tensor(9.0)
+            record.payload["history_axis_update_world"] = torch.tensor(9.0)
+            record.payload["history_valid"] = True
             pool.finish_batch(records)
         pool.quiesce()
         self.assertEqual(observations, [(0, 0, 0.0), (1, 0, 0.0), (0, 1, 2.0), (1, 1, 2.0)])
@@ -284,13 +286,13 @@ class TestTrajectoryPool(unittest.TestCase):
         for record in records:
             record.payload["candidate"] = inputs.square()
             record.payload["nested"] = {"value": [inputs * 3]}
-            record.payload["energy_previous"] = inputs.sum()
+            record.payload["history_axis_gradient_world"] = inputs.sum()
         pool.finish_batch(records)
         for record in records:
             for tensor in (
                 record.payload["candidate"],
                 record.payload["nested"]["value"][0],
-                record.payload["energy_previous"],
+                record.payload["history_axis_gradient_world"],
             ):
                 self.assertIsNone(tensor.grad_fn)
                 self.assertFalse(tensor.requires_grad)

@@ -6,6 +6,14 @@
 One update evaluates one proposal per ready trajectory. Epochs count global
 optimizer queries, not unique trajectories. CPU preparation overlaps other
 ready queries; differentiable CPU fusion still synchronizes each proposal.
+
+Candidates start from the inertial prediction, half of them with smooth
+multiscale noise; inverted or collapsed cells are accepted and only nonfinite
+values raise. Every query stores its un-normalized world axis gradient and the
+achieved world change of the center deformation as detached optimizer history,
+which is carried across physical steps and cleared only at trajectory reset.
+The per-update objective is the LeCO asinh form with the material-aware energy
+floor of the revised nine-value schema.
 """
 
 from __future__ import annotations
@@ -24,12 +32,18 @@ from pathlib import Path
 
 import numpy as np
 
+from . import features
 from .material_sampling import MaterialRanges
 from .mixed_report import write_progress
 from .mixed_validation import validate as _validate
 from .mixed_validation import validation_chunk as _validation_chunk  # noqa: F401 -- Keep the existing test seam.
 
-__all__ = ["MixedTrainConfig", "local_objective", "run_training"]
+__all__ = ["PERTURBED_CANDIDATE_PROBABILITY", "MixedTrainConfig", "local_objective", "run_training"]
+
+PERTURBED_CANDIDATE_PROBABILITY = 0.5
+"""Probability that a new candidate adds smooth multiscale noise to the inertial prediction."""
+
+_LEGACY_CONFIG_FIELDS = ("candidate_probabilities", "geometry_backtracking")
 
 
 @dataclass(frozen=True)
@@ -48,24 +62,29 @@ class MixedTrainConfig:
     max_step_size: float = 0.05
     learning_rate: float = 1e-4
     energy_increase_weight: float = 1.0
-    geometry_backtracking: bool = False
-    """Shorten fused proposals to preserve sampled hex orientation when enabled."""
+    energy_floor_scale: float = 1.0
+    """Multiplier c of the material-aware energy floor in the per-update loss scale."""
     batch_size: int = 16
     pool_multiplier: int = 4
     queries_per_epoch: int = 8192
     max_epochs: int = 500
     stage_epochs: int = 10
     stage_max_epochs: int | None = 20
-    """Hard residence limit per curriculum stage; None preserves uncapped legacy runs."""
+    """Hard residence limit per curriculum stage; None disables the cap."""
     stage_patience: int = 2
     stage_descent_rate: float = 0.8
-    candidate_probabilities: tuple[float, ...] = (0.5, 0.35, 0.1, 0.05)
+    plateau_min_final_stage_epochs: int = 20
+    """Final-stage epochs required before plateau stopping may be considered."""
     iteration_counts: tuple[int, ...] = (1, 2, 4, 8, 16, 32)
     physical_step_counts: tuple[int, ...] = (8, 16, 32, 64, 128)
     validation_count: int = 512
     validation_iterations: int = 100
     validation_physical_steps: int = 8
     validation_physical_iterations: int = 2
+    validation_full_count: int = 16
+    """Held-out seeds of the full-horizon check, disjoint from the cheap set."""
+    validation_full_interval: int = 5
+    """Epoch interval of the full-horizon check; curriculum advancement also triggers it."""
     checkpoint_interval: int = 5
     early_stopping: bool = True
     youngs_modulus_range: tuple[float, float] = (1e3, 1e6)
@@ -73,8 +92,8 @@ class MixedTrainConfig:
     density_range: tuple[float, float] = (100.0, 10000.0)
     damping_range: tuple[float, float] = (10.0, 1000.0)
     """Independent log-uniform absolute VBD viscosity [Pa·s]."""
-    feature_schema_version: int = 2
-    """One is legacy 38/5 inputs; two adds metric damping state (86/6)."""
+    feature_schema_version: int = features.FEATURE_SCHEMA_VERSION
+    """Only the revised nine-value schema (3) is supported; legacy runs restart."""
     strength_range: tuple[float, float] = (0.02, 0.1)
     velocity_dt_range: tuple[float, float] = (0.0, 0.1)
     perturbation_scale_range: tuple[float, float] = (0.0, 1.0)
@@ -99,7 +118,6 @@ class MixedTrainConfig:
             "strength_range",
             "velocity_dt_range",
             "perturbation_scale_range",
-            "candidate_probabilities",
         ):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         for name in (
@@ -116,6 +134,8 @@ class MixedTrainConfig:
             "validation_iterations",
             "validation_physical_steps",
             "validation_physical_iterations",
+            "validation_full_count",
+            "validation_full_interval",
             "checkpoint_interval",
             "cpu_threads",
             "preparation_workers",
@@ -124,6 +144,9 @@ class MixedTrainConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
+        limit = self.plateau_min_final_stage_epochs
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError("plateau_min_final_stage_epochs must be a nonnegative integer")
         for name in ("cell_counts", "hops", "iteration_counts", "physical_step_counts"):
             values = getattr(self, name)
             if not values or any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in values):
@@ -134,13 +157,12 @@ class MixedTrainConfig:
             raise ValueError("V2 budgets are limited to K <= 32 and H <= 128")
         if 1 not in self.iteration_counts or min(self.physical_step_counts) > 8:
             raise ValueError("initial curriculum requires K=1 and an H <= 8")
-        for name in ("cell_size", "time_step", "max_step_size", "learning_rate"):
-            if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
+        for name in ("cell_size", "time_step", "max_step_size", "learning_rate", "energy_floor_scale"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
         if not math.isfinite(self.energy_increase_weight) or self.energy_increase_weight < 0:
             raise ValueError("energy_increase_weight must be finite and nonnegative")
-        if not isinstance(self.geometry_backtracking, bool):
-            raise ValueError("geometry_backtracking must be a boolean")
         if not 0 <= self.stage_descent_rate <= 1:
             raise ValueError("stage_descent_rate must lie in [0,1]")
         if self.stage_max_epochs is not None and (
@@ -149,12 +171,6 @@ class MixedTrainConfig:
             or self.stage_max_epochs < self.stage_epochs
         ):
             raise ValueError("stage_max_epochs must be None or an integer at least stage_epochs")
-        if (
-            len(self.candidate_probabilities) != 4
-            or any(not math.isfinite(v) or v < 0 for v in self.candidate_probabilities)
-            or not math.isclose(sum(self.candidate_probabilities), 1.0)
-        ):
-            raise ValueError("candidate_probabilities must contain four nonnegative probabilities summing to one")
         if len(self.gravity) != 3 or not all(math.isfinite(v) for v in self.gravity):
             raise ValueError("gravity must be a finite three-vector")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
@@ -164,30 +180,41 @@ class MixedTrainConfig:
             if len(bounds) != 2 or not all(math.isfinite(v) for v in bounds) or not 0 <= bounds[0] <= bounds[1]:
                 raise ValueError(f"invalid {name}")
         self.material_ranges()
-        if isinstance(self.feature_schema_version, bool) or self.feature_schema_version not in (1, 2):
-            raise ValueError("feature_schema_version must be 1 or 2")
-        if self.feature_schema_version == 1 and self.damping_range != (0.0, 0.0):
-            raise ValueError("legacy feature schema requires zero damping")
+        if (
+            isinstance(self.feature_schema_version, bool)
+            or self.feature_schema_version != features.FEATURE_SCHEMA_VERSION
+        ):
+            raise ValueError(
+                f"feature_schema_version must be {features.FEATURE_SCHEMA_VERSION}: the revised nine-value "
+                "schema; legacy checkpoints require fresh initialization"
+            )
 
     @property
     def state_feature_dim(self):
-        """Return the fixed state width, independent of individual damping draws."""
-        return 86 if self.feature_schema_version == 2 else 38
+        """Return the revised per-cell state width."""
+        return features.STATE_FEATURE_DIM
 
     @property
     def conditioning_dim(self):
-        """Return the fixed FiLM width for the selected checkpoint schema."""
-        return 6 if self.feature_schema_version == 2 else 5
+        """Return the FiLM width of the revised schema."""
+        return features.CONDITIONING_DIM
 
     @classmethod
     def from_checkpoint_config(cls, values):
-        """Interpret pre-damping checkpoints explicitly as legacy zero viscosity."""
+        """Rebuild a revised-schema configuration; reject legacy checkpoints explicitly.
+
+        Raises:
+            ValueError: The saved ``feature_schema_version`` is not the revised
+                schema or the configuration carries the removed
+                ``candidate_probabilities``/``geometry_backtracking`` fields.
+        """
         values = dict(values)
-        values.setdefault("stage_max_epochs", None)
-        values.setdefault("geometry_backtracking", False)
-        if "feature_schema_version" not in values:
-            values["feature_schema_version"] = 1
-            values.setdefault("damping_range", (0.0, 0.0))
+        legacy = [name for name in _LEGACY_CONFIG_FIELDS if name in values]
+        if values.get("feature_schema_version") != features.FEATURE_SCHEMA_VERSION or legacy:
+            raise ValueError(
+                "incompatible legacy checkpoint; start a fresh run: the revised nine-value schema "
+                f"(feature_schema_version {features.FEATURE_SCHEMA_VERSION}) has no {', '.join(_LEGACY_CONFIG_FIELDS)}"
+            )
         return cls(**values)
 
     def material_ranges(self):
@@ -197,32 +224,46 @@ class MixedTrainConfig:
         )
 
 
-def local_objective(after, initial, previous, *, increase_weight=1.0):
-    """Return per-member local losses; gradients reach only the new proposal."""
+def local_objective(after, before, floor, *, increase_weight=1.0):
+    """Return per-member LeCO losses for one update; gradients reach only ``after``.
+
+    ``scale = max(|before|, floor)`` is detached, where ``before`` is the
+    energy of the candidate immediately before this update and ``floor`` the
+    material-aware energy floor [J]. The loss is
+    ``asinh(after / scale) + increase_weight * relu((after - before) / scale)``.
+
+    Args:
+        after: Energies after the update, shape [B]; the only differentiable input.
+        before: Energies immediately before the update, shape [B]; detached.
+        floor: Positive finite floor [J], shape [B] or scalar; detached.
+        increase_weight: Nonnegative weight of the energy-increase penalty.
+    """
     import torch
 
-    initial, previous = initial.detach(), previous.detach()
-    scale = initial.clamp_min(1.0)
-    return (after - initial) / scale + increase_weight * torch.relu(after - previous) / scale
+    before = before.detach()
+    floor = torch.as_tensor(floor, dtype=before.dtype, device=before.device).detach()
+    if not torch.isfinite(floor).all() or (floor <= 0).any():
+        raise ValueError("energy floor must be finite and positive")
+    scale = torch.maximum(before.abs(), floor)
+    return torch.asinh(after / scale) + increase_weight * torch.relu((after - before) / scale)
 
 
 class _TrajectoryFactory:
     """Prepare detached CPU trajectories without accessing network parameters."""
 
     def __init__(self, step, rest, config, *, rank, validation=False):
-        from .hex_validity import HexFeasibility  # noqa: PLC0415 -- Optional training boundary.
-
         self.step, self.rest, self.config = step, rest, config
         self.prefix = f"{'validation' if validation else 'train'}-{rank}"
         self.master_seed = config.seed + (1000000007 if validation else 0)
         self.seed_parity = int(validation)
         # Preparation workers use CPU topology without synchronizing CUDA.
         self.fixed_indices = step.fixed_indices.detach().cpu().clone()
-        self.feasibility = HexFeasibility(rest) if config.geometry_backtracking else None
+        self.cell_count = len(step.cell_corner_indices)
 
     def reset(self, seed):
         import torch
 
+        from .history import empty_history  # noqa: PLC0415 -- Optional training boundary.
         from .initial_state import InitialStateAugmenter  # noqa: PLC0415 -- Optional training boundary.
 
         c = self.config
@@ -241,12 +282,14 @@ class _TrajectoryFactory:
         try:
             payload = self.step.prepare(key, torch.from_numpy(initial.positions), torch.from_numpy(initial.velocities))
             payload.update(context_spec=specification, metadata=initial.metadata, seed=seed, physical_age=0)
+            payload.update(empty_history(self.cell_count))
             return self._candidate(payload)
         except BaseException:
             self.step.discard_context(key)
             raise
 
     def advance(self, payload):
+        from .history import carry_history  # noqa: PLC0415 -- Optional training boundary.
         from .train_epochs import _cpu  # noqa: PLC0415 -- Optional training boundary.
 
         payload = _cpu(payload)
@@ -254,73 +297,53 @@ class _TrajectoryFactory:
         for key in ("context_spec", "metadata", "seed"):
             prepared[key] = payload[key]
         prepared["physical_age"] = payload["physical_age"] + 1
+        carry_history(payload, prepared)
         return self._candidate(prepared)
 
     def retire(self, payload):
         self.step.discard_context(payload["context_id"])
 
     def _candidate(self, payload):
-        """Use configurable initializer probabilities; never repair a learned output."""
+        """Draw one of two equiprobable initializers; never screen, shorten or repair.
+
+        ``inertial`` uses the inertial prediction with prescribed corners set;
+        ``perturbed_inertial`` adds smooth multiscale noise with an RMS of
+        1-10 percent of the cell size. The rigid initializer computed by
+        ``prepare`` is replaced and never used as the learned candidate.
+        Only a nonfinite candidate raises.
+        """
         import torch
 
-        from .multiscale import generate_multiscale, screen_geometry  # noqa: PLC0415 -- Optional training boundary.
+        from .multiscale import generate_multiscale  # noqa: PLC0415 -- Optional training boundary.
 
         rng = np.random.default_rng(
             np.random.SeedSequence([self.master_seed, payload["seed"], payload["physical_age"], 911])
         )
-        draw = rng.random()
-        index = min(int(np.searchsorted(np.cumsum(self.config.candidate_probabilities), draw, side="right")), 3)
-        mode = ("inertial", "noisy_inertial", "previous", "rigid")[index]
-        fixed = self.fixed_indices
-        base = payload["inertial_prediction"].clone()
-        base[fixed] = payload["fixed_positions"]
-
-        def valid(candidate):
-            return (
-                bool(torch.isfinite(candidate).all())
-                and min(screen_geometry(self.rest, candidate.numpy()).values()) > 0
-                and (self.feasibility is None or bool(self.feasibility.valid(candidate[None]).all()))
-            )
-
-        base_fallback = not valid(base)
-        if base_fallback:
-            base = payload["physical_positions"].clone()
-        candidate = (
-            payload["physical_positions"].clone()
-            if mode == "previous"
-            else payload["candidate"].clone()
-            if mode == "rigid"
-            else base.clone()
-        )
-        halvings = 0
-        if mode == "noisy_inertial":
+        perturbed = rng.random() < PERTURBED_CANDIDATE_PROBABILITY
+        candidate = payload["inertial_prediction"].clone()
+        if perturbed:
             sample = generate_multiscale(self.rest, seed=int(rng.integers(2**32)), strength=0.1)
             noise = sample.positions - self.rest.corner_rest_positions
             rms = float(np.sqrt(np.mean(np.sum(noise**2, axis=-1))))
             noise *= float(rng.uniform(0.01, 0.1) * self.config.cell_size) / rms if rms else 0
-            noise = torch.from_numpy(noise.astype(np.float32))
-            noise[fixed] = 0
-            candidate = base + noise
-            while not valid(candidate) and halvings < 32:
-                halvings += 1
-                candidate = base + (0.5**halvings) * noise
-        candidate[fixed] = payload["fixed_positions"]
-        fallback = not valid(candidate)
-        if fallback:
-            candidate = payload["physical_positions"].clone()
-        if not valid(candidate):
-            raise ValueError("physical state is invalid before candidate initialization")
-        payload.update(
-            candidate=candidate.detach(),
-            candidate_mode=mode,
-            initializer_halvings=halvings,
-            initializer_fallback=bool(fallback or base_fallback),
-        )
+            candidate = candidate + torch.from_numpy(noise.astype(np.float32))
+        candidate[self.fixed_indices] = payload["fixed_positions"]
+        if not torch.isfinite(candidate).all():
+            raise ValueError("nonfinite candidate initialization")
+        payload.update(candidate=candidate.detach(), candidate_mode="perturbed_inertial" if perturbed else "inertial")
         return payload
 
 
-def _batch(records, device):
+def _batch(records, device, *, cell_count=None):
+    """Collate detached payload tensors and the stacked optimizer history on ``device``.
+
+    ``cell_count`` validates stored history blocks; when omitted it is read
+    from the first stored block, and payloads without any history entries
+    yield ``history=None`` (no history for the whole batch).
+    """
     import torch
+
+    from .history import HISTORY_KEYS, batch_history  # noqa: PLC0415 -- Optional training boundary.
 
     payloads = [getattr(record, "payload", record) for record in records]
     values = {
@@ -328,10 +351,19 @@ def _batch(records, device):
         for name in ("candidate", "inertial_prediction", "fixed_positions", "physical_positions")
     }
     values["context_ids"] = tuple(p["context_id"] for p in payloads)
+    if cell_count is None:
+        blocks = [p.get(HISTORY_KEYS[0]) for p in payloads]
+        blocks = [block for block in blocks if isinstance(block, torch.Tensor) and block.ndim == 3]
+        if blocks:
+            cell_count = int(blocks[0].shape[0])
+        elif any(p.get("history_valid", False) for p in payloads):
+            raise ValueError("payload history_valid is set without stored history blocks")
+    values["history"] = batch_history(payloads, device, cell_count=cell_count) if cell_count is not None else None
     return values
 
 
 def _checked_forward(module, step, batch):
+    """Evaluate one learned proposal; reject only nonfinite outputs or moved pins."""
     import torch
 
     result = module(
@@ -340,18 +372,12 @@ def _checked_forward(module, step, batch):
         batch["context_ids"],
         fixed_positions=batch["fixed_positions"],
         previous_positions=batch["physical_positions"],
+        history=batch.get("history"),
     )
     if not torch.isfinite(result.loss.total).all() or not torch.isfinite(result.positions).all():
         raise ValueError("nonfinite learned proposal; trajectory retained as a failure")
     if not torch.equal(result.positions[:, step.fixed_indices], batch["fixed_positions"]):
         raise ValueError("learned proposal moved prescribed corners")
-    with torch.no_grad():
-        corners = result.positions[:, step.cell_corner_indices]
-        center = torch.einsum("bcki,kj->bcij", corners - corners[:, :, :1], step.center_gradients)
-        singular = torch.linalg.svdvals(center)
-        threshold = 4 * torch.finfo(result.positions.dtype).eps * singular[..., 0].clamp_min(1)
-        if (torch.linalg.det(center) <= 0).any() or (singular[..., -1] <= threshold).any():
-            raise ValueError("learned proposal has an invalid or singular center deformation")
     return result
 
 
@@ -361,15 +387,45 @@ def _write_report(output, report):
     write_mixed_report(output, report)
 
 
+def _selection_metric(validation):
+    """Return the finite selection metric when the validation is eligible, else None."""
+    selection = validation.get("selection") or {}
+    metric = selection.get("metric")
+    if selection.get("eligible") and isinstance(metric, (int, float)) and math.isfinite(metric):
+        return float(metric)
+    return None
+
+
+def _allow_early_stop(config, curriculum) -> bool:
+    """Return whether plateau stopping may be considered after this epoch's curriculum observation.
+
+    Stopping is permitted only when enabled and the curriculum has completed at
+    least ``plateau_min_final_stage_epochs`` epochs in its final stage; call
+    this after ``curriculum.observe`` so a stage entered this epoch counts zero.
+    """
+    return bool(
+        config.early_stopping
+        and curriculum.stage == curriculum.final_stage
+        and curriculum.stage_epochs >= config.plateau_min_final_stage_epochs
+    )
+
+
 def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None = None):
     """Run an explicitly requested V2 campaign or a bounded verification run.
 
-    Checkpoints restore the same rank count, curriculum, pool queues and Adam
-    sequence. The configured descent-rate gate and stage limit may change on
-    resume. The gate applies only to future validation; an overdue hard limit
-    promotes one stage immediately. Geometry backtracking may also be enabled
-    on resume. These changes record their epoch boundary. Native factors are
-    rebuilt; they are never serialized.
+    Checkpoints restore the same rank count, curriculum, pool queues, optimizer
+    history and Adam sequence. The configured descent-rate gate and stage limit
+    may change on resume; the gate applies only to future validation and an
+    overdue hard limit promotes one stage immediately. These changes record
+    their epoch boundary. Native factors are rebuilt; they are never
+    serialized. Legacy checkpoints are rejected explicitly.
+
+    Every epoch runs the cheap validation; every ``validation_full_interval``
+    epochs, or when the curriculum could advance, the full-horizon check at the
+    largest available K and H follows. The best checkpoint is selected by the
+    validation ``selection`` metric (mean final free-corner force residual with
+    survival required). Plateau stopping is considered only after
+    ``plateau_min_final_stage_epochs`` epochs in the final curriculum stage.
     """
     import torch
     import torch.distributed as dist
@@ -377,7 +433,9 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
 
     from .curriculum import MixedCurriculum  # noqa: PLC0415 -- Optional training boundary.
     from .data import generate_cuboid  # noqa: PLC0415 -- Optional training boundary.
+    from .history import store_history  # noqa: PLC0415 -- Optional training boundary.
     from .mixed_physics import MixedHexSolverStep  # noqa: PLC0415 -- Optional training boundary.
+    from .mixed_validation import validate_full_horizon  # noqa: PLC0415 -- Optional training boundary.
     from .network import IntrinsicSolverNetwork  # noqa: PLC0415 -- Optional training boundary.
     from .train_epochs import _all_ranks_ok, _atomic_torch, _cpu  # noqa: PLC0415 -- Optional training boundary.
     from .training_schedule import PlateauController  # noqa: PLC0415 -- Optional training boundary.
@@ -391,14 +449,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     if saved:
         if saved.get("format") != "mixed_pool_v2" or saved["world_size"] != world_size:
             raise ValueError("incompatible checkpoint format or rank count")
-        allowed = {
-            "max_epochs",
-            "verbose",
-            "early_stopping",
-            "stage_descent_rate",
-            "stage_max_epochs",
-            "geometry_backtracking",
-        }
+        allowed = {"max_epochs", "verbose", "early_stopping", "stage_descent_rate", "stage_max_epochs"}
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
         if any(saved_config.get(k) != v for k, v in asdict(config).items() if k not in allowed):
             raise ValueError("resume configuration differs from saved physical/training configuration")
@@ -442,8 +493,9 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         network=network,
         time_step=config.time_step,
         gravity=config.gravity,
-        geometry_backtracking=config.geometry_backtracking,
+        energy_floor_scale=config.energy_floor_scale,
     ).to(device)
+    cell_count = len(step.cell_corner_indices)
     factory = _TrajectoryFactory(step, rest, config, rank=rank)
     validation_factory = _TrajectoryFactory(step, rest, config, rank=rank, validation=True)
     optimizer = torch.optim.Adam(network.parameters(), lr=config.learning_rate)
@@ -490,7 +542,6 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             for field, previous, current in (
                 ("stage_descent_rate", previous_descent_rate, config.stage_descent_rate),
                 ("stage_max_epochs", previous_stage_limit, config.stage_max_epochs),
-                ("geometry_backtracking", saved_config["geometry_backtracking"], config.geometry_backtracking),
             ):
                 if previous != current:
                     report.setdefault("configuration_changes", []).append(
@@ -539,8 +590,10 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 "completed_epochs": 0,
                 "epochs": [],
                 "updates": [],
+                "best_selection": None,
                 "status": "running",
             }
+        best_metric = (report.get("best_selection") or {}).get("metric")
         module = (
             DistributedDataParallel(step, device_ids=[0] if device.type == "cuda" else None, broadcast_buffers=False)
             if world_size > 1
@@ -613,14 +666,15 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                     output, report, phase="training", epoch=epoch, available_K=counts[0], available_H=counts[1]
                 )
             totals = Counter()
-            budgets, ages, steps, materials, perturbations = Counter(), Counter(), Counter(), [], []
+            budgets, ages, steps, modes, materials, perturbations = Counter(), Counter(), Counter(), Counter(), [], []
             timings = Counter()
+            step_size_min, step_size_max = math.inf, -math.inf
             for _ in range(config.queries_per_epoch // (config.batch_size * world_size)):
                 began = time.perf_counter()
                 error, records = None, None
                 try:
                     records = pool.take_batch()
-                    batch = _batch(records, device)
+                    batch = _batch(records, device, cell_count=cell_count)
                     with torch.no_grad():
                         previous = step.energy(
                             batch["candidate"],
@@ -628,13 +682,8 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                             batch["context_ids"],
                             previous_positions=batch["physical_positions"],
                         ).total
-                    initial = torch.stack(
-                        [
-                            r.payload.get("energy_initial", previous[i]).to(device).detach()
-                            for i, r in enumerate(records)
-                        ]
-                    )
-                    if not torch.isfinite(initial).all() or not torch.isfinite(previous).all():
+                        floor = step.energy_floor(batch["context_ids"])
+                    if not torch.isfinite(previous).all():
                         raise ValueError("nonfinite input energy")
                 except Exception as caught:
                     error = repr(caught)
@@ -649,7 +698,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                     with torch.autocast(device_type=device.type, enabled=False):
                         result = _checked_forward(module, step, batch)
                         losses = local_objective(
-                            result.loss.total, initial, previous, increase_weight=config.energy_increase_weight
+                            result.loss.total, previous, floor, increase_weight=config.energy_increase_weight
                         )
                         loss = losses.mean()
                 except Exception as caught:
@@ -671,38 +720,52 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 optimizer.step()
                 timings["backward_and_adam_seconds"] += time.perf_counter() - began
                 after = result.loss.total.detach()
-                acceptance = result.acceptance_scale
-                if acceptance is None:
-                    acceptance = torch.ones_like(after)
-                values = torch.stack(
-                    (losses.detach().sum(), previous.sum(), after.sum(), (acceptance < 1).sum(), acceptance.sum())
+                residual = result.force_residual_norm.detach()
+                step_size = result.step_size.detach()
+                ties = (
+                    result.tie_mask.sum().to(after.dtype) if result.tie_mask is not None else torch.zeros_like(after[0])
+                )
+                sums = torch.stack(
+                    (losses.detach().sum(), previous.sum(), after.sum(), residual.sum(), step_size.sum(), ties)
                 ).double()
+                extremes = torch.stack((-step_size.min(), step_size.max())).double()
                 if world_size > 1:
-                    dist.all_reduce(values)
-                values = values.cpu().tolist()
+                    dist.all_reduce(sums)
+                    dist.all_reduce(extremes, op=dist.ReduceOp.MAX)
+                sums = sums.cpu().tolist()
+                extremes = extremes.cpu().tolist()
                 query_count = config.batch_size * world_size
+                step_size_min = min(step_size_min, -extremes[0])
+                step_size_max = max(step_size_max, extremes[1])
                 report["completed_updates"] += 1
                 report["updates"].append(
                     {
                         "update": report["completed_updates"],
                         "epoch": epoch,
-                        "loss": values[0] / query_count,
-                        "before_joule": values[1] / query_count,
-                        "after_joule": values[2] / query_count,
-                        "shortened_query_count": int(values[3]),
-                        "mean_acceptance_scale": values[4] / query_count,
+                        "loss": sums[0] / query_count,
+                        "before_joule": sums[1] / query_count,
+                        "after_joule": sums[2] / query_count,
+                        "mean_force_residual_n": sums[3] / query_count,
+                        "step_size_mean": sums[4] / (query_count * cell_count),
+                        "step_size_min": -extremes[0],
+                        "step_size_max": extremes[1],
+                        "tie_cell_count": int(round(sums[5])),
                     }
                 )
                 totals.update(
-                    loss=values[0],
+                    loss=sums[0],
                     query_count=query_count,
-                    shortened_query_count=int(values[3]),
-                    acceptance_scale_sum=values[4],
+                    force_residual_sum=sums[3],
+                    step_size_sum=sums[4],
+                    tie_cell_count=int(round(sums[5])),
                 )
+                payloads = [record.payload for record in records]
+                store_history(payloads, result)
                 for i, record in enumerate(records):
                     budgets[f"{record.iteration_budget}/{record.step_budget}"] += 1
                     ages[str(record.inner_iteration)] += 1
                     steps[str(record.physical_step)] += 1
+                    modes[record.payload["candidate_mode"]] += 1
                     materials.append(
                         {
                             "damping": 0.0,
@@ -711,26 +774,36 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                         }
                     )
                     perturbations.append(record.payload["metadata"]["perturbation_scale"])
-                    record.payload.update(
-                        candidate=result.positions[i].detach(),
-                        energy_initial=initial[i].detach(),
-                        energy_previous=after[i].detach(),
-                    )
+                    record.payload["candidate"] = result.positions[i].detach()
                 pool.finish_batch(records)
                 if rank == 0 and report["completed_updates"] % 8 == 0:
                     write_progress(
                         output, report, phase="training", epoch=epoch, available_K=counts[0], available_H=counts[1]
                     )
-                del result, loss, losses, records, batch, initial, previous, after
+                del result, loss, losses, records, batch, previous, floor, after, residual, step_size, payloads
             if rank == 0:
                 write_progress(
                     output, report, phase="validation", epoch=epoch, available_K=counts[0], available_H=counts[1]
                 )
             validation = _validate(step, validation_factory, config, device, rank, world_size)
-            curriculum_decision = curriculum.observe(validation)
-            decision = controller.observe(
-                epoch, validation, allow_early_stop=config.early_stopping and epoch >= max(30, 2 * config.stage_epochs)
+            need_full = epoch % config.validation_full_interval == 0 or curriculum.needs_full_horizon(validation)
+            full = (
+                validate_full_horizon(
+                    step,
+                    validation_factory,
+                    config,
+                    device,
+                    rank,
+                    world_size,
+                    iterations=max(counts[0]),
+                    physical_steps=max(counts[1]),
+                )
+                if need_full
+                else None
             )
+            curriculum_decision = curriculum.observe(validation, full_horizon=full)
+            allow_early_stop = _allow_early_stop(config, curriculum)
+            decision = controller.observe(epoch, validation, allow_early_stop=allow_early_stop)
             for group in optimizer.param_groups:
                 group["lr"] = decision["learning_rate"]
             diagnostics = {
@@ -738,6 +811,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 "budgets": dict(budgets),
                 "inner_ages": dict(ages),
                 "physical_ages": dict(steps),
+                "candidate_modes": dict(modes),
                 "pool": dict(pool.stats),
                 "timings": dict(timings),
                 "peak_cuda_bytes": torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0,
@@ -764,12 +838,29 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 dist.all_gather_object(rank_diagnostics, diagnostics)
             else:
                 rank_diagnostics[0] = diagnostics
+            candidate_modes = Counter()
+            for part in rank_diagnostics:
+                candidate_modes.update(part["candidate_modes"])
+            metric = _selection_metric(validation)
+            is_best = metric is not None and (best_metric is None or metric < best_metric)
+            if is_best:
+                best_metric = metric
+                report["best_selection"] = {
+                    "epoch": epoch,
+                    "metric": metric,
+                    "aggregation": validation["selection"].get("aggregation"),
+                    "completed_updates": report["completed_updates"],
+                }
             row = {
                 "epoch": epoch,
                 "loss": totals["loss"] / totals["query_count"],
                 "query_count": totals["query_count"],
-                "shortened_query_count": totals["shortened_query_count"],
-                "mean_acceptance_scale": totals["acceptance_scale_sum"] / totals["query_count"],
+                "mean_force_residual_n": totals["force_residual_sum"] / totals["query_count"],
+                "step_size_mean": totals["step_size_sum"] / (totals["query_count"] * cell_count),
+                "step_size_min": step_size_min,
+                "step_size_max": step_size_max,
+                "tie_cell_count": totals["tie_cell_count"],
+                "candidate_modes": dict(candidate_modes),
                 "seconds": time.perf_counter() - epoch_start,
                 "available_K": counts[0],
                 "available_H": counts[1],
@@ -782,8 +873,10 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 "rank_0_perturbation_scale": [min(perturbations), max(perturbations)],
                 "rank_0_timings": dict(timings),
                 "validation": validation,
+                "full_horizon_validation": full,
                 "learning_rate": decision["learning_rate"],
                 "curriculum": curriculum_decision,
+                "allow_early_stop": bool(allow_early_stop),
                 "rank_0_pool": dict(pool.stats),
                 "rank_0_peak_cuda_bytes": torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0,
                 "rank_diagnostics": rank_diagnostics,
@@ -791,15 +884,18 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             report["epochs"].append(row)
             report.update(completed_epochs=epoch, status=decision["status"])
             checkpoint("latest.pt")
-            if controller.bad_epochs == 0:
+            if is_best:
                 checkpoint("best_validation.pt")
             if epoch % config.checkpoint_interval == 0:
                 checkpoint(f"epoch_{epoch:04d}.pt")
             if rank == 0:
                 _write_report(output, report)
                 if config.verbose:
+                    selection = validation.get("selection") or {}
                     print(
-                        f"epoch {epoch}: loss={row['loss']:.6g}, K={counts[0]}, H={counts[1]}, validation failures={validation['failed_count']}",
+                        f"epoch {epoch}: loss={row['loss']:.6g}, K={counts[0]}, H={counts[1]}, "
+                        f"selection={selection.get('metric')} (eligible={selection.get('eligible')}), "
+                        f"validation failures={validation['failed_count']}",
                         flush=True,
                     )
             if decision["stop"]:

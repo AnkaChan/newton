@@ -32,13 +32,19 @@ class TestDistributedProbe(unittest.TestCase):
             pins = torch.full((1, 2, 3), float(seed + 1))
             candidate[:, fixed] = pins
             original_y = torch.full((1, 4, 3), float(seed + 2))
-            problem = SimpleNamespace(inertial_prediction=original_y, fixed_positions=pins, fixed_indices=fixed)
+            previous = torch.full((1, 4, 3), float(seed + 3))
+            problem = SimpleNamespace(
+                inertial_prediction=original_y, previous_positions=previous, fixed_positions=pins, fixed_indices=fixed
+            )
             queries.append((problem, candidate, {"physical_seed": seed}))
         batch = collate_queries(queries)
         self.assertEqual(batch["physical_seeds"], [7, 8])
         torch.testing.assert_close(batch["positions"], torch.cat([query[1] for query in queries]))
         torch.testing.assert_close(
             batch["inertial_prediction"], torch.cat([query[0].inertial_prediction for query in queries])
+        )
+        torch.testing.assert_close(
+            batch["previous_positions"], torch.cat([query[0].previous_positions for query in queries])
         )
         torch.testing.assert_close(batch["fixed_positions"], batch["positions"][:, fixed])
         self.assertFalse(torch.equal(batch["positions"], batch["inertial_prediction"]))
@@ -47,6 +53,7 @@ class TestDistributedProbe(unittest.TestCase):
         fixed = torch.tensor([0])
         problem = SimpleNamespace(
             inertial_prediction=torch.ones(1, 2, 3),
+            previous_positions=torch.ones(1, 2, 3),
             fixed_positions=torch.ones(1, 1, 3),
             fixed_indices=fixed,
         )

@@ -6,7 +6,9 @@
 The saved four rank microbatches are evaluated in sequence. Each local mean
 loss contributes one quarter of the global loss, which reproduces the sample
 weighting of distributed gradient averaging without an all-reduce. Frozen
-first-step frames distinguish gradient differences from polar-SVD differences.
+first-step frames distinguish gradient differences from frame-decomposition
+differences. Probes saved with the legacy 38/86 network schema are rejected
+explicitly when the step is rebuilt; they require a fresh probe run.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import numpy as np
 import torch  # noqa: TID253 -- Explicit opt-in PyTorch diagnostic.
 
 from .data import generate_cuboid
+from .features import CONDITIONING_DIM
 from .network import IntrinsicSolverNetwork
 from .solver_step import LearnedHexSolverStep
 
@@ -123,9 +126,11 @@ def _build_step(config: dict, physics: dict, network_config: dict, device: torch
     counts = tuple(config["cell_counts"])
     rest = generate_cuboid(counts, cell_size=float(physics["cell_size"]))
     fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == rest.corner_rest_positions[:, 2].min())
+    # LearnedHexSolverStep rejects legacy 38/86 schemas with an explicit ValueError.
     network = IntrinsicSolverNetwork(
         counts,
         int(network_config["state_feature_dim"]),
+        conditioning_dim=int(network_config.get("conditioning_dim", CONDITIONING_DIM)),
         hidden_dim=int(network_config["hidden_dim"]),
         edge_hidden_dim=int(network_config["edge_hidden_dim"]),
         num_heads=int(network_config["num_heads"]),
@@ -144,9 +149,11 @@ def _build_step(config: dict, physics: dict, network_config: dict, device: torch
     )
 
 
-def _on_device(batch: dict, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _on_device(batch: dict, device: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Move only the saved physical query tensors to the reference device."""
-    return tuple(batch[key].to(device) for key in ("positions", "inertial_prediction", "fixed_positions"))
+    return tuple(
+        batch[key].to(device) for key in ("positions", "inertial_prediction", "fixed_positions", "previous_positions")
+    )
 
 
 def _state_equal(left, right) -> bool:
@@ -273,13 +280,13 @@ def run_reference(
     first_loss_actual = 0.0
     cached_before = []
     for rank, saved in enumerate(ranks):
-        positions, original_y, pins = device_batches[rank]
+        positions, original_y, pins, previous = device_batches[rank]
         if not torch.equal(positions[:, step.fixed_indices], pins):
             raise ValueError(f"rank {rank} candidate pins differ from saved prescribed positions")
         frames = first_frames[rank]
         with torch.autocast(device_type="cuda", enabled=False):
-            before = step.energy(positions, original_y).total.detach()
-            result = step(positions, original_y, fixed_positions=pins, frames=frames)
+            before = step.energy(positions, original_y, previous_positions=previous).total.detach()
+            result = step(positions, original_y, fixed_positions=pins, frames=frames, previous_positions=previous)
             after = result.loss.total
             normalized = (after - before) / before.clamp_min(1.0)
             (normalized.mean() / world_size).backward()
@@ -328,9 +335,9 @@ def run_reference(
         optimizer.zero_grad(set_to_none=True)
         torch.cuda.synchronize(reference_device)
         update_started = time.perf_counter()
-        for (positions, original_y, pins), before in zip(device_batches, cached_before, strict=True):
+        for (positions, original_y, pins, previous), before in zip(device_batches, cached_before, strict=True):
             with torch.autocast(device_type="cuda", enabled=False):
-                result = step(positions, original_y, fixed_positions=pins)
+                result = step(positions, original_y, fixed_positions=pins, previous_positions=previous)
                 normalized = (result.loss.total - before) / before.clamp_min(1.0)
                 (normalized.mean() / world_size).backward()
             del result, normalized
@@ -360,8 +367,8 @@ def run_reference(
     final_rows = []
     with torch.no_grad(), torch.autocast(device_type="cuda", enabled=False):
         for rank, saved in enumerate(ranks):
-            positions, original_y, pins = device_batches[rank]
-            after = final_step(positions, original_y, fixed_positions=pins).loss.total
+            positions, original_y, pins, previous = device_batches[rank]
+            after = final_step(positions, original_y, fixed_positions=pins, previous_positions=previous).loss.total
             final_rows.append({"rank": rank, "after_joule": _comparison(after, saved["final_after_per_sample"])})
     optimizer_steps = [
         int(state["step"].item() if isinstance(state["step"], torch.Tensor) else state["step"])

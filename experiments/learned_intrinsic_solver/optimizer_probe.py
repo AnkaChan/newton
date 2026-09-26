@@ -5,9 +5,11 @@
 
 Experimental CPU float32 diagnostic, not training or a fallback optimizer. The
 default workload unrolls five updates on each of three 4,000-cell samples with
-both the default zero head and a small random diagnostic head. Frozen frames
-are recomputed between updates; their decomposition is excluded from backward.
-Graph checks and physical descent are reported separately in JSON and CSV.
+both the default zero head and a small random diagnostic head. Frozen
+closest-rotation frames and the detached gradient feature are recomputed
+between updates and excluded from backward; each update consumes the detached
+optimizer history of the preceding one. Graph checks and physical descent are
+reported separately in JSON and CSV.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from .data import generate_cuboid
+from .features import CONDITIONING_DIM, STATE_FEATURE_DIM
 from .multiscale import generate_multiscale
 from .network import IntrinsicSolverNetwork
 from .newton_model import build_newton_hex_model
@@ -156,7 +159,7 @@ def _run_case(rest, sample, seed: int, *, iterations: int, nonzero_head: bool) -
     original_state = [value.numpy().copy() for value in (state.particle_q, state.particle_qd, state.particle_f)]
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(123)
-        network = IntrinsicSolverNetwork(rest.cell_counts, 38)
+        network = IntrinsicSolverNetwork(rest.cell_counts, STATE_FEATURE_DIM, conditioning_dim=CONDITIONING_DIM)
         if nonzero_head:
             with torch.no_grad():
                 network.correction_head.weight.normal_(std=1e-4)
@@ -191,12 +194,14 @@ def _run_case(rest, sample, seed: int, *, iterations: int, nonzero_head: bool) -
     }
     updates = []
     current = initial
+    history = None
     try:
         row, gradient = _energy_row(problem, current, 0, free)
         result["rows"].append(row)
         for index in range(iterations):
             update_started = time.perf_counter()
-            update = solver.propose_update(current, problem)
+            update = solver.propose_update(current, problem, history=history)
+            history = update.next_history()
             updates.append(update)
             for tensor in (update.positions, update.local_target_axes, update.axis_correction, update.direction):
                 tensor.retain_grad()
@@ -209,7 +214,11 @@ def _run_case(rest, sample, seed: int, *, iterations: int, nonzero_head: bool) -
                     "energy_decreased": after["loss_joule"] < row["loss_joule"],
                     "raw_head_norm": raw_outputs[-1].detach().norm().item(),
                     "axis_correction_norm": update.axis_correction.detach().norm().item(),
-                    "step_size": update.step_size.detach().item(),
+                    "step_size": update.step_size.detach().mean().item(),
+                    "step_size_min": update.step_size.detach().min().item(),
+                    "step_size_max": update.step_size.detach().max().item(),
+                    "free_force_residual_norm_n": update.force_residual_norm.detach().item(),
+                    "tie_cell_count": int(update.tie_mask.sum()),
                     "forward_seconds": time.perf_counter() - update_started,
                 }
             )
@@ -371,7 +380,8 @@ def run_optimizer_probe(
         "initial_velocity_and_external_force": "zero",
         "network_hidden_dim": 128,
         "network_hops": None,
-        "frame_derivatives": "frozen at every update; this is not the full polar-frame derivative",
+        "frame_derivatives": "closest-rotation frames and the gradient feature are frozen at every update; their derivatives are excluded",
+        "feature_schema": {"state_feature_dim": STATE_FEATURE_DIM, "conditioning_dim": CONDITIONING_DIM},
         "interpretation": "Untrained proposals; graph checks do not assert descent or convergence.",
         "parameter_updates": 0,
         "line_search_or_fallback": False,

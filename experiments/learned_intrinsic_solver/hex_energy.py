@@ -5,9 +5,11 @@
 
 This opt-in PyTorch module may change without compatibility guarantees. It uses
 8-node trilinear cubic rest hexahedra and full 2x2x2 Gauss integration, without
-tetrahedralization or reduced-integration stabilization. Its logarithmic
-Neo-Hookean law rejects nonpositive determinants at any quadrature point.
-Positive sampled determinants do not prove an everywhere uninverted element.
+tetrahedralization or reduced-integration stabilization. Its elastic law is
+Newton VBD's stable Neo-Hookean density with the sampled Lamé parameters mapped
+as mu_NH = mu and lambda_NH = lambda + mu. The density is a polynomial in the
+deformation gradient, so it stays finite through collapse (J = 0) and inversion
+(J < 0); no quadrature point is rejected for its Jacobian sign.
 """
 
 from __future__ import annotations
@@ -23,7 +25,14 @@ from .data import VoxelGridData
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["HexImplicitEulerLoss", "HexLossTerms", "HexQuadrature", "hex_gauss_quadrature", "make_inertial_prediction"]
+__all__ = [
+    "HexImplicitEulerLoss",
+    "HexLossTerms",
+    "HexQuadrature",
+    "hex_gauss_quadrature",
+    "make_inertial_prediction",
+    "stable_neo_hookean_density",
+]
 
 
 class HexQuadrature(NamedTuple):
@@ -139,6 +148,83 @@ def make_inertial_prediction(
     return prediction
 
 
+def stable_neo_hookean_density(deformation: torch.Tensor, lame_mu, lame_lambda) -> torch.Tensor:
+    """Return the stable Neo-Hookean density psi(F) [J/m^3] over the leading dims of F.
+
+    Experimental. This is Newton VBD's stable Neo-Hookean law with the sampled
+    Lamé parameters mapped as mu_NH = mu and lambda_NH = lambda + mu, written in
+    its rest-zero form (psi(I) = 0 and P(I) = 0). With J = det(F):
+
+    psi = mu/2 (||F||_F^2 - 3) - mu (J - 1) + (lambda + mu)/2 (J - 1)^2,
+    P = dpsi/dF = mu F + ((lambda + mu)(J - 1) - mu) cof(F).
+
+    The value is evaluated from H = F - I using the exact identities
+    ||F||_F^2 - 3 = 2 tr(H) + ||H||_F^2 and J - 1 = tr(H) + s2(H) + s3(H),
+    where s2 is the sum of the three principal 2x2 minors of H and s3 = det(H)
+    from cofactors. The mu tr(H) terms cancel algebraically, leaving
+    psi = mu/2 ||H||_F^2 - mu (s2 + s3) + (lambda + mu)/2 (tr(H) + s2 + s3)^2.
+    This is algebraically identical to the naive formula and reduces float32
+    cancellation near rest (generated/verification/energy_floor_calibration/
+    SUMMARY.md). No inverse or logarithm is used, so the density and its
+    autograd stress are finite for every finite F, including J <= 0 and F = 0.
+    Nonfinite deformation entries propagate; callers validate their inputs.
+
+    Args:
+        deformation: Deformation gradients F, shape [...,3,3], float32/float64.
+        lame_mu: Shear modulus [Pa], scalar or tensor broadcastable to the
+            leading shape ``deformation.shape[:-2]`` (for example ``[1,C,1]``
+            against ``[B,C,Q,3,3]``). Tensors must share F's dtype and device.
+        lame_lambda: First Lamé parameter [Pa], broadcast like ``lame_mu``.
+
+    Returns:
+        Density psi with shape ``deformation.shape[:-2]``.
+
+    Raises:
+        ValueError: F does not end in 3x3 or a material does not broadcast to
+            its leading shape.
+        TypeError: F is not a float32/float64 tensor, or a material tensor
+            differs from F in dtype or device.
+    """
+    import torch
+
+    if not isinstance(deformation, torch.Tensor) or deformation.dtype not in (torch.float32, torch.float64):
+        raise TypeError("deformation must be a float32 or float64 tensor")
+    if deformation.ndim < 2 or deformation.shape[-2:] != (3, 3):
+        raise ValueError("deformation must have shape [...,3,3]")
+    leading = deformation.shape[:-2]
+    materials = []
+    for value, name in ((lame_mu, "lame_mu"), (lame_lambda, "lame_lambda")):
+        if isinstance(value, torch.Tensor):
+            if value.dtype != deformation.dtype or value.device != deformation.device:
+                raise TypeError(f"{name} must match the deformation dtype and device")
+            material = value
+        else:
+            material = torch.as_tensor(value, dtype=deformation.dtype, device=deformation.device)
+        try:
+            broadcast = torch.broadcast_shapes(material.shape, leading)
+        except RuntimeError as error:
+            raise ValueError(f"{name} must broadcast to the leading deformation shape {tuple(leading)}") from error
+        if broadcast != leading:
+            raise ValueError(f"{name} must broadcast to the leading deformation shape {tuple(leading)}")
+        materials.append(material)
+    mu, lam = materials
+    increment = deformation - torch.eye(3, dtype=deformation.dtype, device=deformation.device)
+    h00, h01, h02 = increment[..., 0, 0], increment[..., 0, 1], increment[..., 0, 2]
+    h10, h11, h12 = increment[..., 1, 0], increment[..., 1, 1], increment[..., 1, 2]
+    h20, h21, h22 = increment[..., 2, 0], increment[..., 2, 1], increment[..., 2, 2]
+    trace = h00 + h11 + h22
+    # First-row cofactors of H give det(H) without an inverse.
+    cofactor_00 = h11 * h22 - h12 * h21
+    cofactor_01 = h12 * h20 - h10 * h22
+    cofactor_02 = h10 * h21 - h11 * h20
+    principal_minors = cofactor_00 + (h00 * h22 - h02 * h20) + (h00 * h11 - h01 * h10)
+    determinant = h00 * cofactor_00 + h01 * cofactor_01 + h02 * cofactor_02
+    higher_order = principal_minors + determinant
+    jacobian_minus_one = trace + higher_order
+    squared_norm = increment.square().sum(dim=(-1, -2))
+    return 0.5 * mu * squared_norm - mu * higher_order + 0.5 * (lam + mu) * jacobian_minus_one.square()
+
+
 class HexImplicitEulerLoss(nn.Module):
     """Evaluate physical inertia, elasticity, and VBD metric damping.
 
@@ -148,17 +234,21 @@ class HexImplicitEulerLoss(nn.Module):
     Inputs and buffers must share dtype and device. No force or material
     parameter is inferred from a rigid fusion target.
 
-    psi(F) = mu/2 (tr(F^T F)-3) - mu log(J) + lambda/2 log(J)^2,
-    J = det(F). Total = sum_q psi(F_q) w_q + sum_v m_v |X_v-Y_v|^2/(2 dt^2)
+    psi(F) = mu/2 (tr(F^T F)-3) - mu (J-1) + (lambda+mu)/2 (J-1)^2,
+    J = det(F), is Newton VBD's stable Neo-Hookean density with the Lamé
+    mapping mu_NH = mu, lambda_NH = lambda + mu in rest-zero form; see
+    :func:`stable_neo_hookean_density`. It is finite through collapse and
+    inversion, so no quadrature Jacobian sign is rejected.
+    Total = sum_q psi(F_q) w_q + sum_v m_v |X_v-Y_v|^2/(2 dt^2)
     + sum_q damping*w_q*||F_q^T F_q - F_n,q^T F_n,q||_F^2/(2 dt).
     The final term matches Newton VBD solid damping, uses all nine metric
     entries, and vanishes under finite rigid motion of the previous geometry.
     A cell contributes density*cell_size^3/8 to each shared-corner mass.
     Material parameters are scalar or shape [cell_count], and fixed at module
     construction. No boundary constraints are applied by this loss.
-    This logarithmic law requires nonnegative lambda: negative lambda would
-    make its volumetric energy unbounded below as J->0. Zero lambda is valid;
-    the mu-dependent logarithmic term is retained.
+    Lambda must be nonnegative so the volumetric stiffness lambda + mu stays
+    positive and the law remains bounded below. Zero lambda is valid; the
+    mu-dependent volumetric terms are retained.
 
     Args:
         rest: Canonical cuboid topology and rest geometry [m].
@@ -259,9 +349,11 @@ class HexImplicitEulerLoss(nn.Module):
                 unchanged through inner solver iterations; gradients through it
                 are preserved for differentiable physical rollouts.
 
+        Collapsed or inverted quadrature points (J <= 0) are accepted; the
+        stable Neo-Hookean density is finite for every finite deformation.
+
         Raises:
-            ValueError: An input is malformed/nonfinite, or any quadrature
-                deformation Jacobian is nonpositive. Jacobians are never clamped.
+            ValueError: An input is malformed or nonfinite.
             TypeError: Input dtype/device differs from the module buffers.
         """
         import torch
@@ -287,18 +379,7 @@ class HexImplicitEulerLoss(nn.Module):
         # Relative coordinates reduce cancellation from global translation;
         # partition of unity makes this the same material gradient.
         deformation = torch.einsum("bcki,qkj->bcqij", corners - corners[:, :, :1], self.shape_gradients)
-        jacobian = torch.linalg.det(deformation)
-        if not torch.isfinite(jacobian).all().item() or (jacobian <= 0).any().item():
-            raise ValueError("deformation Jacobian must be finite and positive at all hex Gauss points")
-        log_j = torch.log(jacobian)
-        # Evaluate tr(F^T F)-3 without subtracting nearly equal O(1)
-        # quantities near rest: F=I+H gives 2 tr(H)+||H||_F^2 exactly.
-        increment = deformation - torch.eye(3, dtype=deformation.dtype, device=deformation.device)
-        invariant_minus_three = 2 * increment.diagonal(dim1=-2, dim2=-1).sum(dim=-1) + increment.square().sum(
-            dim=(-1, -2)
-        )
-        mu, lam = self.lame_mu[None, :, None], self.lame_lambda[None, :, None]
-        density = 0.5 * mu * invariant_minus_three - mu * log_j + 0.5 * lam * log_j.square()
+        density = stable_neo_hookean_density(deformation, self.lame_mu[None, :, None], self.lame_lambda[None, :, None])
         elastic = (density * self.quadrature_weights[None, None]).sum(dim=(1, 2))
         inertia = (
             0.5

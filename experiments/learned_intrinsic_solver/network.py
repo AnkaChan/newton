@@ -191,7 +191,7 @@ class IntrinsicSolverOutput(NamedTuple):
     axis_correction: Tensor
     """Dimensionless corrections with joint nine-value norm below one, shape [B, N, 3, 3]."""
     step_size: Tensor
-    """Dimensionless shared step in [0, max_step_size] for each object, shape [B]."""
+    """Dimensionless per-cell step in (0, max_step_size), shape [B, N]."""
 
 
 class IntrinsicSolverNetwork(nn.Module):
@@ -209,14 +209,17 @@ class IntrinsicSolverNetwork(nn.Module):
     each layer. Shared scalar conditioning drives each layer's FiLM.
 
     The correction head starts at zero, so initial local targets equal current
-    axes. This does not guarantee a no-op after global fusion. The bounded
-    sigmoid step controller is an experimental configurable choice, not a
+    axes. This does not guarantee a no-op after global fusion. The step head is
+    applied per cell: every cell receives its own bounded sigmoid step in
+    (0, max_step_size), equal to 0.5 * max_step_size at the zero initialization.
+    This per-cell step controller is an experimental configurable choice, not a
     guarantee of physical stability or energy descent.
 
     Args:
         cell_counts: Positive cell counts along material x, y, z; z varies fastest.
         state_feature_dim: Additional prepared per-cell features, excluding axes.
-        conditioning_dim: Prepared material/size/timestep scalar channels.
+        conditioning_dim: Prepared material/size/timestep/viscosity scalar
+            channels; the revised schema supplies six (features.CONDITIONING_DIM).
         hidden_dim: Cell-token width.
         num_heads: Attention heads per block.
         edge_input_dim: Raw directed edge channels; network_geometry supplies 24.
@@ -224,7 +227,7 @@ class IntrinsicSolverNetwork(nn.Module):
         hops: Exact graph-hop distance used by each block, plus self. Defaults
             to one radius-1 block (27 masked slots); pass an explicit sequence
             to restore a saved architecture with more blocks.
-        max_step_size: Upper bound on the dimensionless object step.
+        max_step_size: Upper bound on the dimensionless per-cell step.
         query_chunk_size: Query cells per attention chunk; all neighbor slots remain visible.
     """
 
@@ -233,7 +236,7 @@ class IntrinsicSolverNetwork(nn.Module):
         cell_counts: tuple[int, int, int],
         state_feature_dim: int,
         *,
-        conditioning_dim: int = 5,
+        conditioning_dim: int = 6,
         hidden_dim: int = 128,
         num_heads: int = 4,
         edge_input_dim: int = 24,
@@ -319,7 +322,8 @@ class IntrinsicSolverNetwork(nn.Module):
                 before this call; the network does not infer physical units.
 
         Returns:
-            Local targets, bounded corrections, and an object-level step.
+            Local targets, bounded corrections, and a per-cell step [B, N] with
+            target = local_axes + step_size[..., None, None] * axis_correction.
             Frame extraction and global reconstruction are external operations.
         """
         cells = prod(self.cell_counts)
@@ -347,6 +351,6 @@ class IntrinsicSolverNetwork(nn.Module):
         features = self.output_norm(features)
         raw = self.correction_head(features)
         correction = (raw / torch.sqrt(1 + raw.square().sum(dim=-1, keepdim=True))).reshape(batch, cells, 3, 3)
-        step_size = self.max_step_size * self.step_head(features.mean(dim=1)).squeeze(-1).sigmoid()
-        target = local_axes + step_size[:, None, None, None] * correction
+        step_size = self.max_step_size * self.step_head(features).squeeze(-1).sigmoid()
+        target = local_axes + step_size[..., None, None] * correction
         return IntrinsicSolverOutput(target, correction, step_size)

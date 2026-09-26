@@ -23,11 +23,19 @@ def _validation(**updates):
     return result
 
 
+def _full(**updates):
+    result = {"failed_count": 0, "sample_count": 4, "physical_survivors": 4}
+    result.update(updates)
+    return result
+
+
 class TestMixedCurriculum(unittest.TestCase):
     def test_require_minimum_residence_and_consecutive_qualified_validation(self):
         """Wait for both residence and an unbroken qualifying validation streak."""
         curriculum = MixedCurriculum(min_stage_epochs=3, patience=2)
         self.assertEqual(curriculum.available_counts, ((1,), (8,)))
+        self.assertEqual(curriculum.final_stage, 5)
+        self.assertFalse(curriculum.needs_full_horizon(_validation()))
         first = curriculum.observe(_validation())
         self.assertEqual(
             first,
@@ -36,16 +44,21 @@ class TestMixedCurriculum(unittest.TestCase):
                 "advanced": False,
                 "advance_reason": None,
                 "qualified": True,
+                "full_horizon_qualified": None,
                 "stage_epochs": 1,
                 "qualified_epochs": 1,
             },
         )
+        self.assertFalse(curriculum.needs_full_horizon(_validation()))
         self.assertFalse(curriculum.observe(_validation())["advanced"])
         failure = curriculum.observe(_validation(failed_count=1))
         self.assertFalse(failure["qualified"])
         self.assertEqual(failure["qualified_epochs"], 0)
+        self.assertFalse(curriculum.needs_full_horizon(_validation()))
         self.assertFalse(curriculum.observe(_validation())["advanced"])
-        advanced = curriculum.observe(_validation())
+        self.assertTrue(curriculum.needs_full_horizon(_validation()))
+        self.assertFalse(curriculum.needs_full_horizon(_validation(failed_count=1)))
+        advanced = curriculum.observe(_validation(), full_horizon=_full())
         self.assertEqual(
             advanced,
             {
@@ -53,11 +66,61 @@ class TestMixedCurriculum(unittest.TestCase):
                 "advanced": True,
                 "advance_reason": "validation",
                 "qualified": True,
+                "full_horizon_qualified": True,
                 "stage_epochs": 0,
                 "qualified_epochs": 0,
             },
         )
         self.assertEqual(curriculum.available_counts, ((1, 2), (8, 16)))
+
+    def test_missing_or_failed_full_horizon_blocks_validation_advancement_and_resets_streak(self):
+        """Never advance by validation without a passing full check; restart the streak instead."""
+        curriculum = MixedCurriculum(min_stage_epochs=1, patience=2)
+        self.assertEqual(curriculum.observe(_validation())["qualified_epochs"], 1)
+        self.assertTrue(curriculum.needs_full_horizon(_validation()))
+        missing = curriculum.observe(_validation())
+        self.assertEqual(
+            missing,
+            {
+                "stage": 0,
+                "advanced": False,
+                "advance_reason": None,
+                "qualified": True,
+                "full_horizon_qualified": None,
+                "stage_epochs": 2,
+                "qualified_epochs": 0,
+            },
+        )
+        self.assertEqual(curriculum.observe(_validation(), full_horizon=_full(failed_count=1))["qualified_epochs"], 1)
+        for failing in (
+            _full(failed_count=1),
+            _full(physical_survivors=3),
+            _full(sample_count=0, physical_survivors=0),
+            {},
+        ):
+            with self.subTest(failing=failing):
+                decision = curriculum.observe(_validation(), full_horizon=failing)
+                self.assertFalse(decision["advanced"])
+                self.assertFalse(decision["full_horizon_qualified"])
+                self.assertEqual(decision["qualified_epochs"], 0)
+                self.assertEqual(curriculum.stage, 0)
+                self.assertEqual(curriculum.observe(_validation())["qualified_epochs"], 1)
+        self.assertTrue(curriculum.needs_full_horizon(_validation()))
+        decision = curriculum.observe(_validation(), full_horizon=_full())
+        self.assertTrue(decision["advanced"])
+        self.assertTrue(decision["full_horizon_qualified"])
+        self.assertEqual(curriculum.stage, 1)
+
+    def test_full_horizon_result_without_pending_advancement_is_recorded_only(self):
+        """Report an interval-driven full check without touching the qualifying streak."""
+        curriculum = MixedCurriculum(min_stage_epochs=5, patience=2)
+        decision = curriculum.observe(_validation(), full_horizon=_full(failed_count=1))
+        self.assertFalse(decision["full_horizon_qualified"])
+        self.assertEqual(decision["qualified_epochs"], 1)
+        decision = curriculum.observe(_validation(failed_count=1), full_horizon=_full())
+        self.assertTrue(decision["full_horizon_qualified"])
+        self.assertFalse(decision["qualified"])
+        self.assertEqual(decision["qualified_epochs"], 0)
 
     def test_failed_stalled_or_incomplete_validation_never_advances(self):
         """Reject inversion failures, poor descent, lost trajectories and nonfinite energy."""
@@ -77,7 +140,8 @@ class TestMixedCurriculum(unittest.TestCase):
             with self.subTest(changes=changes):
                 curriculum = MixedCurriculum(min_stage_epochs=1, patience=1)
                 for _ in range(12):
-                    decision = curriculum.observe(_validation(**changes))
+                    self.assertFalse(curriculum.needs_full_horizon(_validation(**changes)))
+                    decision = curriculum.observe(_validation(**changes), full_horizon=_full())
                     self.assertFalse(decision["qualified"])
                     self.assertFalse(decision["advanced"])
                     self.assertEqual(curriculum.stage, 0)
@@ -97,42 +161,58 @@ class TestMixedCurriculum(unittest.TestCase):
         for stage, counts in enumerate(expected):
             self.assertEqual(curriculum.stage, stage)
             self.assertEqual(curriculum.available_counts, counts)
-            decision = curriculum.observe(_validation())
+            self.assertEqual(curriculum.needs_full_horizon(_validation()), stage < 5)
+            decision = curriculum.observe(_validation(), full_horizon=_full())
             self.assertEqual(decision["advanced"], stage < 5)
         for _ in range(12):
-            self.assertFalse(curriculum.observe(_validation())["advanced"])
-        self.assertEqual(curriculum.stage, 5)
+            self.assertFalse(curriculum.needs_full_horizon(_validation()))
+            self.assertFalse(curriculum.observe(_validation(), full_horizon=_full())["advanced"])
+        self.assertEqual(curriculum.stage, curriculum.final_stage)
 
     def test_configured_threshold_and_smaller_count_sets_are_preserved(self):
         """Use configured thresholds without creating unavailable K or H choices."""
         curriculum = MixedCurriculum((1, 2), (1, 2), min_stage_epochs=1, patience=1, min_descent_rate=0.8)
         self.assertEqual(curriculum.available_counts, ((1,), (1, 2)))
-        self.assertFalse(curriculum.observe(_validation(descent_rate=0.79))["qualified"])
+        self.assertFalse(curriculum.observe(_validation(descent_rate=0.79), full_horizon=_full())["qualified"])
         for _ in range(5):
-            self.assertTrue(curriculum.observe(_validation(descent_rate=0.8))["advanced"])
+            self.assertTrue(curriculum.observe(_validation(descent_rate=0.8), full_horizon=_full())["advanced"])
             self.assertEqual(curriculum.available_counts, ((1, 2), (1, 2)))
 
     def test_default_gate_accepts_eighty_percent_inclusively(self):
         """Advance at exactly the user-selected eighty-percent descent rate."""
         curriculum = MixedCurriculum(min_stage_epochs=1, patience=1)
-        self.assertTrue(curriculum.observe(_validation(descent_rate=0.8))["advanced"])
+        self.assertTrue(curriculum.observe(_validation(descent_rate=0.8), full_horizon=_full())["advanced"])
 
-    def test_hard_limit_advances_despite_failed_validation(self):
+    def test_hard_limit_advances_despite_failed_validation_or_failed_full_check(self):
         """Force one stage transition at the epoch limit without claiming qualification."""
-        curriculum = MixedCurriculum(min_stage_epochs=1, patience=2, max_stage_epochs=2)
-        self.assertFalse(curriculum.observe(_validation(failed_count=1))["advanced"])
-        decision = curriculum.observe(_validation(failed_count=1))
+        for full in (None, _full(failed_count=1)):
+            with self.subTest(full=full):
+                curriculum = MixedCurriculum(min_stage_epochs=1, patience=2, max_stage_epochs=2)
+                self.assertFalse(curriculum.needs_full_horizon(_validation(failed_count=1)))
+                self.assertFalse(curriculum.observe(_validation(failed_count=1))["advanced"])
+                self.assertTrue(curriculum.needs_full_horizon(_validation(failed_count=1)))
+                decision = curriculum.observe(_validation(failed_count=1), full_horizon=full)
+                self.assertTrue(decision["advanced"])
+                self.assertFalse(decision["qualified"])
+                self.assertEqual(decision["advance_reason"], "max_stage_epochs")
+                self.assertEqual(decision["full_horizon_qualified"], None if full is None else False)
+                self.assertEqual(curriculum.stage, 1)
+                self.assertEqual(curriculum.stage_epochs, 0)
+                self.assertEqual(curriculum.qualified_epochs, 0)
+
+    def test_hard_limit_advances_qualified_streak_blocked_by_full_check(self):
+        """Let the cap promote even when the validation route was just vetoed by the full check."""
+        curriculum = MixedCurriculum(min_stage_epochs=1, patience=1, max_stage_epochs=1)
+        decision = curriculum.observe(_validation(), full_horizon=_full(physical_survivors=0))
         self.assertTrue(decision["advanced"])
-        self.assertFalse(decision["qualified"])
         self.assertEqual(decision["advance_reason"], "max_stage_epochs")
-        self.assertEqual(curriculum.stage, 1)
-        self.assertEqual(curriculum.stage_epochs, 0)
-        self.assertEqual(curriculum.qualified_epochs, 0)
+        self.assertFalse(decision["full_horizon_qualified"])
+        self.assertTrue(decision["qualified"])
 
     def test_validation_can_advance_before_hard_limit(self):
         """Keep the existing quality gate as the earlier promotion route."""
         curriculum = MixedCurriculum(min_stage_epochs=1, patience=1, max_stage_epochs=2)
-        self.assertEqual(curriculum.observe(_validation())["advance_reason"], "validation")
+        self.assertEqual(curriculum.observe(_validation(), full_horizon=_full())["advance_reason"], "validation")
 
     def test_legacy_state_has_no_hard_limit_and_overdue_resume_advances_once(self):
         """Load old counters exactly and enforce a newly supplied cap without validation."""
@@ -140,6 +220,7 @@ class TestMixedCurriculum(unittest.TestCase):
         for _ in range(30):
             curriculum.observe(_validation(descent_rate=0.0))
         state = curriculum.state_dict()
+        self.assertEqual(state["version"], 1)
         state.pop("max_stage_epochs", None)
         restored = MixedCurriculum(max_stage_epochs=20)
         restored.load_state_dict(state)
@@ -159,6 +240,7 @@ class TestMixedCurriculum(unittest.TestCase):
         for _ in range(5):
             self.assertEqual(curriculum.observe({}), restored.observe({}))
         self.assertEqual(restored.stage, 5)
+        self.assertFalse(restored.needs_full_horizon(_validation()))
         self.assertFalse(restored.observe({})["advanced"])
 
     def test_resume_preserves_streak_and_future_decisions(self):
@@ -171,9 +253,13 @@ class TestMixedCurriculum(unittest.TestCase):
         resumed.load_state_dict(saved)
         for changes in ({}, {"failed_count": 1}, {}, {}, {}, {}, {}, {}):
             value = _validation(descent_rate=0.98, **changes)
-            self.assertEqual(curriculum.observe(value), resumed.observe(value))
+            self.assertEqual(curriculum.needs_full_horizon(value), resumed.needs_full_horizon(value))
+            self.assertEqual(
+                curriculum.observe(value, full_horizon=_full()), resumed.observe(value, full_horizon=_full())
+            )
             self.assertEqual(curriculum.available_counts, resumed.available_counts)
             self.assertEqual(curriculum.state_dict(), resumed.state_dict())
+        self.assertGreater(curriculum.stage, 0)
 
     def test_invalid_configuration_or_checkpoint_leaves_state_unchanged(self):
         """Validate budgets and checkpoint counters before mutating live progress."""

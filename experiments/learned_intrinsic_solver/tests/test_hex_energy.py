@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Check hexahedral physical energies and position gradients."""
+"""Check hexahedral stable Neo-Hookean energies and position gradients."""
 
 import importlib.util
 import unittest
@@ -17,6 +17,7 @@ from experiments.learned_intrinsic_solver.hex_energy import (
     HexImplicitEulerLoss,
     hex_gauss_quadrature,
     make_inertial_prediction,
+    stable_neo_hookean_density,
 )
 
 # Preserve the former E=1000 Pa, nu=0.3 material in position-gradient checks.
@@ -70,14 +71,17 @@ class TestHexEnergy(unittest.TestCase):
         self.assertAlmostEqual(loss(positions, positions).elastic.item(), expected, places=12)
 
     def test_uniform_dilation_analytic_energy(self):
-        """Match the compressible log Neo-Hookean energy for uniform dilation."""
+        """Match the stable Neo-Hookean energy with Newton's Lamé mapping for uniform dilation."""
         import torch
 
         rest = generate_cuboid((2, 1, 1), cell_size=0.4)
         lam, mu = np.array([250.0, 900.0]), np.array([375.0, 400.0])
         scale = 1.12
-        log_j = 3 * np.log(scale)
-        expected = np.sum(0.4**3 * (0.5 * mu * (3 * scale**2 - 3) - mu * log_j + 0.5 * lam * log_j**2))
+        jacobian_minus_one = scale**3 - 1
+        expected = np.sum(
+            0.4**3
+            * (0.5 * mu * (3 * scale**2 - 3) - mu * jacobian_minus_one + 0.5 * (lam + mu) * jacobian_minus_one**2)
+        )
         for dtype, tolerance in ((torch.float64, 1e-12), (torch.float32, 2e-5)):
             loss = HexImplicitEulerLoss(rest, lam, mu, 1000, 0.01, dtype=dtype)
             positions = (torch.tensor(rest.corner_rest_positions, dtype=dtype) * scale)[None]
@@ -91,7 +95,7 @@ class TestHexEnergy(unittest.TestCase):
             torch.testing.assert_close(terms.total, terms.elastic, rtol=0, atol=0)
 
     def test_zero_lambda_dilation_energy_and_derivative(self):
-        """Retain the mu logarithmic term and its derivative when lambda is zero."""
+        """Retain the mu volumetric terms (lambda_NH = mu) and their derivative when lambda is zero."""
         import torch
 
         rest = generate_cuboid((1, 1, 1), cell_size=0.4)
@@ -100,8 +104,9 @@ class TestHexEnergy(unittest.TestCase):
         scale = torch.tensor(scale_value, dtype=torch.float64, requires_grad=True)
         positions = scale * torch.tensor(rest.corner_rest_positions, dtype=torch.float64)[None]
         energy = loss(positions, positions).elastic.sum()
-        expected = 0.4**3 * mu * (1.5 * (scale_value**2 - 1) - 3 * np.log(scale_value))
-        expected_derivative = 0.4**3 * 3 * mu * (scale_value - 1 / scale_value)
+        jacobian_minus_one = scale_value**3 - 1
+        expected = 0.4**3 * mu * (1.5 * (scale_value**2 - 1) - jacobian_minus_one + 0.5 * jacobian_minus_one**2)
+        expected_derivative = 0.4**3 * 3 * mu * (scale_value - 2 * scale_value**2 + scale_value**5)
         self.assertAlmostEqual(energy.item(), expected, places=12)
         self.assertAlmostEqual(torch.autograd.grad(energy, scale)[0].item(), expected_derivative, places=11)
         torch.testing.assert_close(loss.lame_lambda, torch.zeros(1, dtype=torch.float64), rtol=0, atol=0)
@@ -223,24 +228,182 @@ class TestHexEnergy(unittest.TestCase):
         analytical = (gradient32 * direction).sum().item()
         self.assertLess(abs(analytical - numerical) / max(abs(analytical), abs(numerical)), 0.01)
 
-    def test_invalid_jacobian_and_parameters(self):
-        """Reject inverted or collapsed quadrature gradients without clamping."""
+    def test_density_matches_naive_formula_and_cofactor_stress(self):
+        """Match the naive stable Neo-Hookean formula and its cofactor stress on random F."""
+        import torch
+
+        generator = torch.Generator(device="cpu").manual_seed(3)
+        deformation = torch.eye(3, dtype=torch.float64) + 0.7 * torch.randn(
+            48, 3, 3, dtype=torch.float64, generator=generator
+        )
+        deformation[:12] *= -1.0
+        deformation[12, :, 2] = 0.0
+        mu, lam = 400.0, 650.0
+        jacobian = torch.linalg.det(deformation)
+        self.assertLess(jacobian.min().item(), 0.0)
+        self.assertLess(jacobian.abs().min().item(), 1e-12)
+        naive = (
+            0.5 * mu * (deformation.square().sum(dim=(-1, -2)) - 3)
+            - mu * (jacobian - 1)
+            + 0.5 * (lam + mu) * (jacobian - 1).square()
+        )
+        density = stable_neo_hookean_density(deformation, mu, lam)
+        self.assertEqual(density.shape, (48,))
+        torch.testing.assert_close(density, naive, rtol=1e-12, atol=1e-10)
+        variable = deformation.clone().requires_grad_()
+        stress = torch.autograd.grad(stable_neo_hookean_density(variable, mu, lam).sum(), variable)[0]
+        columns = deformation.unbind(-1)
+        cofactor = torch.stack(
+            [
+                torch.linalg.cross(columns[1], columns[2]),
+                torch.linalg.cross(columns[2], columns[0]),
+                torch.linalg.cross(columns[0], columns[1]),
+            ],
+            dim=-1,
+        )
+        expected = mu * deformation + ((lam + mu) * (jacobian - 1) - mu)[:, None, None] * cofactor
+        torch.testing.assert_close(stress, expected, rtol=1e-12, atol=1e-10)
+
+    def test_rest_zero_stress_and_lame_small_strain_hessian(self):
+        """Vanish at rest and recover the Lamé tensor as the small-strain Hessian."""
+        import torch
+
+        mu, lam = _LAME_MU, _LAME_LAMBDA
+        identity = torch.eye(3, dtype=torch.float64)
+        self.assertEqual(stable_neo_hookean_density(identity, mu, lam).item(), 0.0)
+        variable = identity.clone().requires_grad_()
+        stress = torch.autograd.grad(stable_neo_hookean_density(variable, mu, lam), variable)[0]
+        torch.testing.assert_close(stress, torch.zeros_like(stress), rtol=0, atol=0)
+        hessian = torch.autograd.functional.hessian(
+            lambda flat: stable_neo_hookean_density(flat.reshape(3, 3), mu, lam), identity.reshape(9)
+        ).reshape(3, 3, 3, 3)
+        lame_tensor = lam * torch.einsum("ij,kl->ijkl", identity, identity) + mu * (
+            torch.einsum("ik,jl->ijkl", identity, identity) + torch.einsum("il,jk->ijkl", identity, identity)
+        )
+        torch.testing.assert_close(hessian, lame_tensor, rtol=0, atol=1e-12)
+        # Uniaxial small strain recovers the stiffness lambda + 2 mu to leading order.
+        epsilon = 1e-4
+        stretched = identity.clone()
+        stretched[0, 0] += epsilon
+        density = stable_neo_hookean_density(stretched, mu, lam).item()
+        self.assertAlmostEqual(density / epsilon**2, 0.5 * (lam + 2 * mu), delta=1e-3 * (lam + 2 * mu))
+
+    def test_gauss_point_stress_assembles_position_gradient(self):
+        """Assemble the autograd position gradient from the analytic stress at every Gauss point."""
+        import torch
+
+        rest = generate_cuboid((2, 1, 1), cell_size=0.3)
+        lam, mu = np.array([250.0, 900.0]), np.array([375.0, 400.0])
+        loss = HexImplicitEulerLoss(rest, lam, mu, 1000, 0.01, dtype=torch.float64)
+        generator = torch.Generator(device="cpu").manual_seed(5)
+        positions = torch.tensor(rest.corner_rest_positions[None], dtype=torch.float64)
+        positions = positions + 0.04 * torch.randn(positions.shape, dtype=torch.float64, generator=generator)
+        # Fold the far corner of the second cell so that some Gauss points are inverted.
+        positions[:, -1, 0] -= 0.7
+        variable = positions.clone().requires_grad_()
+        gradient = torch.autograd.grad(loss(variable, positions).elastic.sum(), variable)[0]
+        corners = positions[:, loss.cell_corner_indices]
+        deformation = torch.einsum("bcki,qkj->bcqij", corners, loss.shape_gradients)
+        jacobian = torch.linalg.det(deformation)
+        self.assertLess(jacobian.min().item(), 0.0)
+        self.assertGreater(jacobian.max().item(), 0.0)
+        columns = deformation.unbind(-1)
+        cofactor = torch.stack(
+            [
+                torch.linalg.cross(columns[1], columns[2]),
+                torch.linalg.cross(columns[2], columns[0]),
+                torch.linalg.cross(columns[0], columns[1]),
+            ],
+            dim=-1,
+        )
+        mu_cell = loss.lame_mu[None, :, None, None, None]
+        lam_cell = loss.lame_lambda[None, :, None, None, None]
+        stress = mu_cell * deformation + ((lam_cell + mu_cell) * (jacobian - 1)[..., None, None] - mu_cell) * cofactor
+        # F_q = sum_k x_k g_qk^T gives dE/dx_k = sum_q w_q P_q g_qk.
+        contribution = torch.einsum("q,bcqij,qkj->bcki", loss.quadrature_weights, stress, loss.shape_gradients)
+        expected = torch.zeros_like(positions)
+        expected.index_add_(1, loss.cell_corner_indices.reshape(-1), contribution.reshape(1, -1, 3))
+        torch.testing.assert_close(gradient, expected, rtol=1e-11, atol=1e-11)
+
+    def test_collapsed_and_inverted_cells_are_finite(self):
+        """Accept collapsed, inverted, folded and fully collapsed cells with finite energy and gradient."""
         import torch
 
         rest = generate_cuboid((1, 1, 1), cell_size=0.5)
         loss = HexImplicitEulerLoss(rest, _LAME_LAMBDA, _LAME_MU, 1000, 0.01)
         positions = torch.tensor(rest.corner_rest_positions[None], dtype=torch.float32)
-        for scale in (0.0, -1.0):
-            invalid = positions.clone()
-            invalid[:, :, 0] *= scale
-            with self.assertRaisesRegex(ValueError, "Jacobian"):
-                loss(invalid, positions)
-        # This corner fold leaves the center determinant positive (0.5),
-        # but the far Gauss points detect an inverted region.
-        invalid = positions.clone()
-        invalid[:, -1, 0] -= 1.0
-        with self.assertRaisesRegex(ValueError, "Jacobian"):
-            loss(invalid, positions)
+        kappa = _LAME_LAMBDA + _LAME_MU
+        # Uniform F = diag(s,1,1) gives J = s at every Gauss point; F = 0 gives J = 0.
+        uniform = {0.0: 0.5**3 * (0.5 * _LAME_MU + 0.5 * kappa), -1.0: 0.5**3 * (2 * _LAME_MU + 2 * kappa)}
+        candidates = []
+        for scale, expected in uniform.items():
+            candidate = positions.clone()
+            candidate[:, :, 0] *= scale
+            candidates.append((candidate, expected))
+        # This corner fold leaves the center determinant positive (0.5)
+        # while the far Gauss points are inverted.
+        folded = positions.clone()
+        folded[:, -1, 0] -= 1.0
+        candidates.append((folded, None))
+        candidates.append((torch.zeros_like(positions), 0.5**3 * 0.5 * _LAME_LAMBDA))
+        for candidate, expected in candidates:
+            variable = candidate.clone().requires_grad_()
+            terms = loss(variable, positions)
+            gradient = torch.autograd.grad(terms.total.sum(), variable)[0]
+            self.assertTrue(torch.isfinite(terms.total).all().item())
+            self.assertTrue(torch.isfinite(gradient).all().item())
+            self.assertGreater(terms.elastic.item(), 0.0)
+            if expected is not None:
+                self.assertAlmostEqual(terms.elastic.item(), expected, delta=1e-5 * expected)
+        # At F = 0 the elastic stress vanishes exactly; only inertia can act there.
+        zero_deformation = torch.zeros(3, 3, dtype=torch.float64, requires_grad=True)
+        stress = torch.autograd.grad(
+            stable_neo_hookean_density(zero_deformation, _LAME_MU, _LAME_LAMBDA), zero_deformation
+        )
+        torch.testing.assert_close(stress[0], torch.zeros(3, 3, dtype=torch.float64), rtol=0, atol=0)
+        # The float32 assembly only leaves accumulation rounding of the O(mu, lambda+mu) partial products.
+        collapsed = torch.zeros_like(positions).requires_grad_()
+        elastic_gradient = torch.autograd.grad(loss(collapsed, positions).elastic.sum(), collapsed)[0]
+        self.assertLess(elastic_gradient.abs().max().item(), 1e-7 * (_LAME_LAMBDA + 2 * _LAME_MU) * 0.5**2)
+
+    def test_density_broadcasting_and_validation(self):
+        """Broadcast per-cell materials over Gauss points and reject malformed inputs."""
+        import torch
+
+        deformation = torch.eye(3).expand(2, 3, 8, 3, 3).clone()
+        deformation[..., 0, 1] += 0.1 * torch.arange(8.0)
+        per_cell_mu = torch.tensor([100.0, 200.0, 300.0])[None, :, None]
+        density = stable_neo_hookean_density(deformation, per_cell_mu, 0.0)
+        self.assertEqual(density.shape, (2, 3, 8))
+        self.assertEqual(density.dtype, torch.float32)
+        reference = torch.stack(
+            [
+                stable_neo_hookean_density(deformation[:, cell], per_cell_mu[0, cell, 0].item(), 0.0)
+                for cell in range(3)
+            ],
+            dim=1,
+        )
+        torch.testing.assert_close(density, reference)
+        with self.assertRaises(ValueError):
+            stable_neo_hookean_density(deformation[..., :2], 1.0, 1.0)
+        with self.assertRaises(ValueError):
+            stable_neo_hookean_density(deformation, torch.ones(3), 1.0)
+        with self.assertRaises(ValueError):
+            stable_neo_hookean_density(deformation, 1.0, torch.ones(4, 3, 8))
+        with self.assertRaises(TypeError):
+            stable_neo_hookean_density(deformation, torch.ones(1, 3, 1, dtype=torch.float64), 1.0)
+        with self.assertRaises(TypeError):
+            stable_neo_hookean_density(deformation.numpy(), 1.0, 1.0)
+        with self.assertRaises(TypeError):
+            stable_neo_hookean_density(deformation.to(torch.int64), 1.0, 1.0)
+
+    def test_invalid_parameters(self):
+        """Reject malformed material, time step and dtype inputs."""
+        import torch
+
+        rest = generate_cuboid((1, 1, 1), cell_size=0.5)
+        loss = HexImplicitEulerLoss(rest, _LAME_LAMBDA, _LAME_MU, 1000, 0.01)
+        positions = torch.tensor(rest.corner_rest_positions[None], dtype=torch.float32)
         for kwargs in (
             {"lame_lambda": -1},
             {"lame_lambda": np.nan},

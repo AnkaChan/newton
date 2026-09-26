@@ -6,7 +6,10 @@
 Use one SQLite file per training rank. Each committed batch is durable and
 atomic; no state is evicted or overwritten. Geometry/material contexts are
 content-addressed and stored once. Readers fetch only requested float32 states,
-not a complete trajectory or its autograd graph. This module does not train.
+not a complete trajectory or its autograd graph. Each state may carry the
+detached optimizer history that entered its solve (two [C,3,3] world matrices),
+stored in a nullable column that is added to older files on first writable
+open. This module does not train.
 """
 
 from __future__ import annotations
@@ -56,6 +59,34 @@ def _float32(value, shape: tuple[int, ...], name: str) -> np.ndarray:
     return array
 
 
+def _history_blob(history, cell_count: int | None) -> bytes | None:
+    """Serialize a valid optimizer history as compressed float32 [C,3,3] arrays, or None."""
+    if history is None:
+        return None
+    if not isinstance(history, Mapping) or set(history) != {"axis_gradient_world", "axis_update_world"}:
+        raise ValueError("history must be None or map axis_gradient_world and axis_update_world to [C,3,3] arrays")
+    arrays = {}
+    for name in ("axis_gradient_world", "axis_update_world"):
+        array = _numpy(history[name])
+        if array.ndim != 3 or array.shape[1:] != (3, 3) or array.dtype.kind != "f":
+            raise ValueError(f"history {name} must be a floating array of shape [C, 3, 3]")
+        arrays[name] = _float32(array, array.shape, f"history {name}")
+    if arrays["axis_gradient_world"].shape != arrays["axis_update_world"].shape:
+        raise ValueError("history blocks must share one [C, 3, 3] shape")
+    if cell_count is not None and arrays["axis_gradient_world"].shape[0] != cell_count:
+        raise ValueError("history cell count must match the context's cell_corner_indices")
+    stream = io.BytesIO()
+    np.savez_compressed(stream, **arrays)
+    return stream.getvalue()
+
+
+def _history_from_blob(data) -> dict | None:
+    if data is None:
+        return None
+    with np.load(io.BytesIO(data), allow_pickle=False) as arrays:
+        return {name: arrays[name].copy() for name in ("axis_gradient_world", "axis_update_world")}
+
+
 def _nonnegative_int(value, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a nonnegative integer")
@@ -76,8 +107,12 @@ class ReplayState:
     float32 NumPy arrays. ``forces=None`` means zero external particle force;
     ``fixed_positions=None`` means the context's rest positions at fixed indices.
     ``metadata`` holds finite JSON provenance, for example seed, physical time,
-    producing checkpoint, and optimizer update. A trajectory ID must be unique
-    across restart segments in its rank file; a step cannot be overwritten.
+    producing checkpoint, and optimizer update. ``history`` is None when no
+    optimizer history entered the step (trajectory start) or a mapping with
+    ``axis_gradient_world`` and ``axis_update_world`` float arrays [C,3,3], the
+    detached world history consumed by the step's first learned query. A
+    trajectory ID must be unique across restart segments in its rank file; a
+    step cannot be overwritten.
     """
 
     context_id: str
@@ -88,6 +123,7 @@ class ReplayState:
     forces: Any = None
     fixed_positions: Any = None
     metadata: dict = field(default_factory=dict)
+    history: Any = None
 
 
 class DiskReplayStore:
@@ -143,6 +179,7 @@ class DiskReplayStore:
                         forces BLOB,
                         fixed_positions BLOB,
                         metadata TEXT NOT NULL,
+                        history BLOB,
                         UNIQUE (trajectory_id, step_index)
                     );
                     CREATE INDEX states_context ON states(context_id, id);
@@ -157,6 +194,13 @@ class DiskReplayStore:
         if not self.read_only:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(states)")}
+        self._has_history_column = "history" in columns
+        if not self._has_history_column and not self.read_only:
+            # Older files predate optimizer history; the nullable column is additive.
+            with connection:
+                connection.execute("ALTER TABLE states ADD COLUMN history BLOB")
+            self._has_history_column = True
 
     def __enter__(self):
         return self
@@ -237,11 +281,14 @@ class DiskReplayStore:
         Duplicate (trajectory_id, step_index) raises ``sqlite3.IntegrityError``
         and rolls back the whole batch. Unknown contexts or invalid/nonfinite
         inputs also leave the store unchanged. Float64 inputs are converted to
-        float32; already-float32 values round-trip exactly.
+        float32; already-float32 values round-trip exactly. Optimizer history
+        blocks must match the context's cell count when it stores
+        ``cell_corner_indices``.
         """
         self._writable()
         rows = []
         dimensions = {}
+        cell_counts = {}
         trajectories = {}
         for state in states:
             if not isinstance(state, ReplayState):
@@ -277,6 +324,12 @@ class DiskReplayStore:
                 if state.fixed_positions is None
                 else _float32(state.fixed_positions, (fixed, 3), "fixed_positions").tobytes()
             )
+            history = None
+            if state.history is not None:
+                if state.context_id not in cell_counts:
+                    topology = self.get_context(state.context_id)["arrays"].get("cell_corner_indices")
+                    cell_counts[state.context_id] = None if topology is None else int(len(topology))
+                history = _history_blob(state.history, cell_counts[state.context_id])
             rows.append(
                 (
                     state.context_id,
@@ -287,6 +340,7 @@ class DiskReplayStore:
                     forces,
                     pins,
                     _json(state.metadata),
+                    history,
                 )
             )
         identifiers = []
@@ -294,7 +348,7 @@ class DiskReplayStore:
             for row in rows:
                 cursor = self._connection.execute(
                     "INSERT INTO states (context_id,trajectory_id,step_index,positions,velocities,forces,"
-                    "fixed_positions,metadata) VALUES (?,?,?,?,?,?,?,?)",
+                    "fixed_positions,metadata,history) VALUES (?,?,?,?,?,?,?,?,?)",
                     row,
                 )
                 identifiers.append(cursor.lastrowid)
@@ -303,9 +357,11 @@ class DiskReplayStore:
     def get(self, record_id: int) -> ReplayState:
         """Fetch one committed record without loading other states."""
         record_id = _nonnegative_int(record_id, "record_id")
+        history_column = "s.history" if self._has_history_column else "NULL"
         row = self._connection.execute(
             "SELECT s.context_id,s.trajectory_id,s.step_index,s.positions,s.velocities,s.forces,s.fixed_positions,"
-            "s.metadata,c.particle_count,c.fixed_count FROM states s JOIN contexts c ON s.context_id=c.id WHERE s.id=?",
+            f"s.metadata,c.particle_count,c.fixed_count,{history_column} FROM states s JOIN contexts c "
+            "ON s.context_id=c.id WHERE s.id=?",
             (record_id,),
         ).fetchone()
         if row is None:
@@ -323,6 +379,7 @@ class DiskReplayStore:
             forces=array(row[5], row[8]),
             fixed_positions=array(row[6], row[9]),
             metadata=json.loads(row[7]),
+            history=_history_from_blob(row[10]),
         )
 
     def record_ids(self, *, context_id: str | None = None) -> np.ndarray:

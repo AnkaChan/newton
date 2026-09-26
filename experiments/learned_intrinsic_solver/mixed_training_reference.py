@@ -48,6 +48,8 @@ def _execution_settings(device, cpu_threads):
 
 
 def _first_batches(initial, after):
+    from .history import HISTORY_KEYS  # noqa: PLC0415 -- Keep optional execution imports local.
+
     if initial.get("format") != "mixed_pool_v2" or after.get("format") != "mixed_pool_v2":
         raise ValueError("expected mixed_pool_v2 checkpoints")
     if initial["report"]["completed_updates"] != 0 or after["report"]["completed_updates"] != 1:
@@ -83,8 +85,10 @@ def _first_batches(initial, after):
                 raise ValueError("global first batch must have distinct context identifiers")
             if context_id not in state["context_specs"]:
                 raise ValueError("initial dispatch has no serialized physical context")
-            if "energy_initial" in payload or "energy_previous" in payload:
-                raise ValueError("initial dispatch must have no optimizer energy history")
+            if payload.get("history_valid", False) or any(
+                bool((payload[name] != 0).any()) for name in HISTORY_KEYS[:2] if name in payload
+            ):
+                raise ValueError("initial dispatch must have no optimizer history")
             specifications[context_id] = state["context_specs"][context_id]
             records.append(payload)
         rank_sizes.append(len(selected))
@@ -152,9 +156,11 @@ def verify_first_update(
     in each initial rank pool. Only selected physical contexts are rebuilt.
 
     The network and physics run on the requested CPU or CUDA device in float32.
-    The reference directly constructs the detached local objective and one Adam
-    update, without invoking the trainer's update loop or distributed reduction.
-    Equal full rank batches make the global sample mean the expected DDP mean.
+    The reference directly states the per-update LeCO objective with the
+    material-aware energy floor and one Adam update, without invoking the
+    trainer's update loop or distributed reduction. The first dispatch carries
+    no optimizer history, so its stacked history is all invalid. Equal full
+    rank batches make the global sample mean the expected DDP mean.
     Moment comparisons include a relative L2 bound, preventing an absolute
     tolerance from hiding a gradient-sum versus gradient-mean error.
 
@@ -176,6 +182,7 @@ def verify_first_update(
     import torch
 
     from .data import generate_cuboid  # noqa: PLC0415 -- Keep optional execution imports local.
+    from .history import batch_history  # noqa: PLC0415
     from .mixed_physics import MixedHexSolverStep  # noqa: PLC0415
     from .network import IntrinsicSolverNetwork  # noqa: PLC0415
     from .train_mixed import MixedTrainConfig  # noqa: PLC0415
@@ -213,7 +220,12 @@ def verify_first_update(
         initial_agreement = all(state["parameter_sha256"] == initial_hash for state in saved_initial["rank_states"])
         rank_agreement = all(state["parameter_sha256"] == after_hash for state in saved_after["rank_states"])
         step = MixedHexSolverStep(
-            rest, fixed, network=network, time_step=config["time_step"], gravity=config["gravity"]
+            rest,
+            fixed,
+            network=network,
+            time_step=config["time_step"],
+            gravity=config["gravity"],
+            energy_floor_scale=config["energy_floor_scale"],
         )
         try:
             for name, specification in specifications.items():
@@ -223,18 +235,27 @@ def verify_first_update(
                 torch.stack([record[name] for record in records]).to(target_device)
                 for name in ("candidate", "inertial_prediction", "fixed_positions", "physical_positions")
             )
+            history = batch_history(records, target_device, cell_count=len(step.cell_corner_indices))
             optimizer = torch.optim.Adam(network.parameters(), lr=config["learning_rate"])
             with torch.no_grad():
                 original_energy = step.energy(candidate, inertial, context_ids, previous_positions=physical_start).total
+                floor = step.energy_floor(context_ids)
             with torch.autocast(device_type=target_device.type, enabled=False):
                 result = step(
-                    candidate, inertial, context_ids, fixed_positions=prescribed, previous_positions=physical_start
+                    candidate,
+                    inertial,
+                    context_ids,
+                    fixed_positions=prescribed,
+                    previous_positions=physical_start,
+                    history=history,
                 )
-                scale = original_energy.clamp_min(1.0)
-                # Independently state the first-update objective. E0 and previous
-                # energy coincide here, and neither has an autograd history.
-                local_loss = (result.loss.total - original_energy) / scale
-                local_loss += config["energy_increase_weight"] * torch.relu(result.loss.total - original_energy) / scale
+                # Independently state the first-update LeCO objective: the energy
+                # before this update is the initial candidate energy, detached.
+                scale = torch.maximum(original_energy.abs(), floor)
+                local_loss = torch.asinh(result.loss.total / scale)
+                local_loss = local_loss + config["energy_increase_weight"] * torch.relu(
+                    (result.loss.total - original_energy) / scale
+                )
                 loss = local_loss.mean()
             optimizer.zero_grad(set_to_none=True)
             loss.backward()

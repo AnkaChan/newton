@@ -7,10 +7,40 @@ from __future__ import annotations
 
 import copy
 import math
+from collections.abc import Mapping
+from numbers import Real
+
+_GOOD_DESCENT_RATE = 0.8
+_RELATIVE_FLOOR = 1e-12
+
+
+def _selection_metric(validation) -> float | None:
+    """Return the eligible, finite checkpoint-selection metric or None."""
+    selection = validation.get("selection") if isinstance(validation, Mapping) else None
+    if not isinstance(selection, Mapping) or not selection.get("eligible"):
+        return None
+    metric = selection.get("metric")
+    if isinstance(metric, bool) or not isinstance(metric, Real) or not math.isfinite(metric):
+        return None
+    return float(metric)
 
 
 class PlateauController:
-    """Distinguish useful convergence from stalled training and the epoch cap."""
+    """Distinguish useful convergence from stalled training and the epoch cap.
+
+    Decisions use the validator's checkpoint-selection metric
+    ``validation["selection"]["metric"]`` (mean final free-corner force residual
+    norm [N], lower is better) and only when ``validation["selection"]["eligible"]``
+    is true; ineligible or nonfinite validations count as bad epochs and never
+    improve the best value. An improvement must be relative:
+    ``best - metric >= threshold * max(best, 1e-12)``. A "good" epoch is a
+    complete one with every physical trajectory surviving and a descent rate of
+    at least 0.8. Stopping requires ``allow_early_stop``, the minimum epoch
+    count, ``stop_patience`` bad epochs and at least two learning-rate
+    reductions; it reports ``plateau_converged`` when the last five epochs were
+    good and ``stalled`` otherwise. ``best_loss`` keeps its attribute name for
+    checkpoint compatibility but stores the best selection metric.
+    """
 
     def __init__(
         self,
@@ -19,7 +49,7 @@ class PlateauController:
         max_epochs=200,
         lr_patience=5,
         stop_patience=15,
-        threshold=1e-4,
+        threshold=1e-3,
         min_lr=1e-6,
     ):
         if not (0 < min_lr <= learning_rate and 1 <= min_epochs <= max_epochs):
@@ -41,15 +71,30 @@ class PlateauController:
         self.recent_good = []
 
     def observe(self, epoch: int, validation: dict, *, allow_early_stop: bool = True) -> dict:
-        """Consume validation, retaining learning-rate reductions when stopping is disabled."""
+        """Consume validation, retaining learning-rate reductions when stopping is disabled.
+
+        Args:
+            epoch: One-based consecutive validation epoch.
+            validation: Summary from ``mixed_validation.validate`` with
+                ``selection``, ``physical_survivors``, ``sample_count`` and
+                ``descent_rate``.
+            allow_early_stop: Whether plateau or stall stopping may trigger;
+                the epoch limit applies regardless.
+
+        Returns:
+            ``{"learning_rate", "stop", "status"}`` with status ``running``,
+            ``plateau_converged``, ``stalled`` or ``epoch_limit``.
+        """
         if epoch != self.last_epoch + 1:
             raise ValueError("validation epochs must be consecutive and start at one")
         self.last_epoch = epoch
-        loss = validation.get("mean_normalized_loss")
-        complete = validation.get("failed_count") == 0 and loss is not None and math.isfinite(loss)
-        improved = complete and (self.best_loss is None or self.best_loss - loss >= self.threshold)
+        metric = _selection_metric(validation)
+        complete = metric is not None
+        improved = complete and (
+            self.best_loss is None or self.best_loss - metric >= self.threshold * max(self.best_loss, _RELATIVE_FLOOR)
+        )
         if improved:
-            self.best_loss = loss
+            self.best_loss = metric
             self.bad_epochs = self.lr_bad_epochs = 0
         else:
             self.bad_epochs += 1
@@ -59,15 +104,13 @@ class PlateauController:
             self.reductions += int(new_lr < self.learning_rate)
             self.learning_rate = new_lr
             self.lr_bad_epochs = 0
-        before, after = validation.get("mean_before_joule"), validation.get("mean_after_joule")
+        descent = validation.get("descent_rate")
         good = (
             complete
-            and validation.get("descent_rate", 0) >= 0.95
-            and before is not None
-            and after is not None
-            and math.isfinite(before)
-            and math.isfinite(after)
-            and after < before
+            and validation.get("physical_survivors") == validation.get("sample_count")
+            and isinstance(descent, Real)
+            and not isinstance(descent, bool)
+            and descent >= _GOOD_DESCENT_RATE
         )
         self.recent_good = [*self.recent_good, bool(good)][-5:]
         status = "running"

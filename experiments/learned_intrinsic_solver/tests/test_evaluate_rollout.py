@@ -109,27 +109,40 @@ class TestEvaluateRollout(unittest.TestCase):
                 )
 
     def test_invalid_query_stops_at_first_failure_and_preserves_survivor(self):
-        """Split a failing batch and leave future energies missing only for the failed query."""
+        """Split a failing batch, carry per-query history, and leave future energies missing only for the failure."""
+        history_flags = []
 
         class Step:
-            def energy(self, positions, inertial):
+            cell_corner_indices = torch.zeros((1, 8), dtype=torch.long)
+
+            def energy(self, positions, inertial, *, previous_positions=None):
                 return SimpleNamespace(total=10 + positions[:, 0, 0])
 
-            def __call__(self, positions, inertial, *, fixed_positions):
+            def __call__(self, positions, inertial, *, fixed_positions, previous_positions=None, history=None):
+                history_flags.append(history.valid.tolist())
                 if (positions[:, 0, 0] >= 5).any():
                     raise ValueError("deliberate invalid proposal")
                 proposed = positions + 1
-                return SimpleNamespace(positions=proposed, loss=SimpleNamespace(total=10 + proposed[:, 0, 0]))
+                count = positions.shape[0]
+                return SimpleNamespace(
+                    positions=proposed,
+                    loss=SimpleNamespace(total=10 + proposed[:, 0, 0]),
+                    axis_gradient_world=torch.full((count, 1, 3, 3), 2.0),
+                    achieved_axis_update_world=torch.full((count, 1, 3, 3), 3.0),
+                )
 
         positions = torch.tensor([[[1.0, 0, 0]], [[4.0, 0, 0]]])
         batch = {
             "positions": positions,
             "inertial_prediction": positions.clone(),
+            "previous_positions": positions.clone(),
             "fixed_positions": positions.clone(),
             "physical_seeds": [10000, 10001],
         }
         with patch("experiments.learned_intrinsic_solver.train_epochs._screen_output"):
             seeds, energies, relative, failures = _rollout_batch(Step(), batch, 3, torch.device("cpu"))
+        self.assertEqual(history_flags[0], [False, False])
+        self.assertTrue(all(all(flags) for flags in history_flags[1:]))
         self.assertEqual(seeds.tolist(), [10000, 10001])
         self.assertEqual(energies[:, 0].tolist(), [11, 12, 13, 14])
         self.assertEqual(energies[:2, 1].tolist(), [14, 15])

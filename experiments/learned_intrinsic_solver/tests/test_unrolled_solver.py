@@ -15,7 +15,9 @@ if importlib.util.find_spec("torch") is None:
 
 import torch  # noqa: TID253
 
+from experiments.learned_intrinsic_solver import features
 from experiments.learned_intrinsic_solver.data import generate_cuboid
+from experiments.learned_intrinsic_solver.input_assembly import OptimizerHistory
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 from experiments.learned_intrinsic_solver.solver_step import LearnedHexSolverStep
 from experiments.learned_intrinsic_solver.unrolled_solver import UnrolledHexSolver
@@ -28,7 +30,8 @@ class TestUnrolledHexSolver(unittest.TestCase):
         fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == 0)
         network = IntrinsicSolverNetwork(
             rest.cell_counts,
-            38,
+            features.STATE_FEATURE_DIM,
+            conditioning_dim=features.CONDITIONING_DIM,
             hidden_dim=16,
             edge_hidden_dim=8,
             num_heads=4,
@@ -49,44 +52,93 @@ class TestUnrolledHexSolver(unittest.TestCase):
             time_step=1 / 300,
             network=network,
         )
-        positions = torch.from_numpy(rest.corner_rest_positions.astype(np.float32))[None].clone()
-        inertial = positions.clone()
+        previous = torch.from_numpy(rest.corner_rest_positions.astype(np.float32))[None].clone()
+        positions = previous.clone()
+        positions[:, :, 0] += 0.01 * positions[:, :, 2]
+        inertial = previous.clone()
         inertial[:, :, 1] -= 0.0002
         pins = positions[:, fixed].clone()
-        return step, positions, inertial, pins
+        return step, positions, inertial, pins, previous
 
     def test_k1_matches_existing_step_and_k2_k4_k32_report_all_energies(self):
-        """Match one baseline proposal and retain exactly K+1 physical energies."""
-        step, positions, inertial, pins = self._problem()
+        """Match one baseline proposal, expose its history, and retain exactly K+1 physical energies."""
+        step, positions, inertial, pins, previous = self._problem()
         module = UnrolledHexSolver(step)
-        baseline = step(positions, inertial, fixed_positions=pins)
-        single = module(positions, inertial, fixed_positions=pins, iterations=1)
+        baseline = step(positions, inertial, fixed_positions=pins, previous_positions=previous)
+        single = module(positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=1)
         torch.testing.assert_close(single.final_positions, baseline.positions, rtol=0, atol=0)
-        torch.testing.assert_close(single.energies[:, 0], step.energy(positions, inertial).total, rtol=0, atol=0)
+        torch.testing.assert_close(
+            single.energies[:, 0], step.energy(positions, inertial, previous_positions=previous).total, rtol=0, atol=0
+        )
         torch.testing.assert_close(single.energies[:, 1], baseline.loss.total, rtol=0, atol=0)
         self.assertEqual(single.performed_iterations, 1)
         self.assertEqual(single.per_sample_objective.shape, (1,))
+        self.assertEqual(single.history.valid.tolist(), [True])
+        torch.testing.assert_close(single.history.axis_gradient_world, baseline.axis_gradient_world, rtol=0, atol=0)
+        torch.testing.assert_close(
+            single.history.axis_update_world, baseline.achieved_axis_update_world, rtol=0, atol=0
+        )
+        self.assertFalse(single.history.axis_gradient_world.requires_grad)
         torch.testing.assert_close(single.objective, single.per_sample_objective.mean(), rtol=0, atol=0)
         scale = single.energies[:, 0].detach().clamp_min(1.0)
         expected = ((single.energies[:, 1] - single.energies[:, 0].detach()) / scale).mean()
         penalty = (torch.relu(single.energies[:, 1] - single.energies[:, 0]) / scale).mean()
         torch.testing.assert_close(single.objective, expected + penalty, rtol=0, atol=0)
         no_penalty = UnrolledHexSolver(step, energy_increase_weight=0)(
-            positions, inertial, fixed_positions=pins, iterations=1
+            positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=1
         )
         torch.testing.assert_close(no_penalty.objective, expected, rtol=0, atol=0)
         for count in (2, 4, 32):
-            result = module(positions, inertial, fixed_positions=pins, iterations=count)
+            result = module(positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=count)
             self.assertEqual(result.energies.shape, (1, count + 1))
             self.assertEqual(result.performed_iterations, count)
             self.assertTrue(torch.isfinite(result.energies).all())
             torch.testing.assert_close(result.final_positions[:, step.fixed_indices], pins, rtol=0, atol=0)
         with self.assertRaisesRegex(ValueError, "iterations"):
-            module(positions, inertial, fixed_positions=pins, iterations=33)
+            module(positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=33)
+        with self.assertRaises(TypeError):
+            module(positions, inertial, fixed_positions=pins)
+        with self.assertRaisesRegex(ValueError, "previous_positions"):
+            module(positions, inertial, fixed_positions=pins, previous_positions=None)
+
+    def test_history_is_threaded_through_iterations_and_seeded_from_the_caller(self):
+        """Feed each proposal's detached history to the next one and accept a carried history for the first."""
+        step, positions, inertial, pins, previous = self._problem(nonzero_head=True)
+        records = []
+        original = step.forward
+
+        def recording(*args, **kwargs):
+            result = original(*args, **kwargs)
+            records.append((kwargs.get("history"), result))
+            return result
+
+        with patch.object(step, "forward", recording):
+            result = UnrolledHexSolver(step)(
+                positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=3
+            )
+        self.assertIsNone(records[0][0])
+        for index in (1, 2):
+            consumed, before = records[index][0], records[index - 1][1]
+            self.assertEqual(consumed.valid.tolist(), [True])
+            torch.testing.assert_close(consumed.axis_gradient_world, before.axis_gradient_world, rtol=0, atol=0)
+            torch.testing.assert_close(consumed.axis_update_world, before.achieved_axis_update_world, rtol=0, atol=0)
+        torch.testing.assert_close(result.history.axis_gradient_world, records[2][1].axis_gradient_world)
+        records.clear()
+        with patch.object(step, "forward", recording):
+            seeded = UnrolledHexSolver(step)(
+                positions,
+                inertial,
+                fixed_positions=pins,
+                previous_positions=previous,
+                iterations=1,
+                history=result.history,
+            )
+        torch.testing.assert_close(records[0][0].axis_gradient_world, result.history.axis_gradient_world)
+        self.assertGreater((seeded.energies[:, 1] - result.energies[:, 1]).abs().max().item(), 0)
 
     def test_final_energy_gradient_reaches_first_fused_positions(self):
         """Retain cross-iteration gradients only when explicitly requested."""
-        step, positions, inertial, pins = self._problem(nonzero_head=True)
+        step, positions, inertial, pins, previous = self._problem(nonzero_head=True)
         module = UnrolledHexSolver(step, detach_iterations=False)
         captured = []
         original_forward = step.forward
@@ -97,7 +149,7 @@ class TestUnrolledHexSolver(unittest.TestCase):
             return result
 
         with patch.object(step, "forward", capture):
-            result = module(positions, inertial, fixed_positions=pins, iterations=2)
+            result = module(positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=2)
         first_position_gradient = torch.autograd.grad(result.energies[:, -1].sum(), captured[0], retain_graph=True)[0]
         self.assertGreater(first_position_gradient.norm().item(), 0)
         result.objective.backward()
@@ -108,7 +160,7 @@ class TestUnrolledHexSolver(unittest.TestCase):
 
     def test_default_cuts_cross_iteration_gradient_but_trains_every_update(self):
         """Train all proposals locally without connecting their carried positions."""
-        step, positions, inertial, pins = self._problem(nonzero_head=True)
+        step, positions, inertial, pins, previous = self._problem(nonzero_head=True)
         captured = []
 
         def capture(_module, _args, output):
@@ -117,7 +169,9 @@ class TestUnrolledHexSolver(unittest.TestCase):
 
         handle = step.register_forward_hook(capture)
         try:
-            result = UnrolledHexSolver(step)(positions, inertial, fixed_positions=pins, iterations=4)
+            result = UnrolledHexSolver(step)(
+                positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=4
+            )
         finally:
             handle.remove()
         cross_gradient = torch.autograd.grad(
@@ -133,18 +187,28 @@ class TestUnrolledHexSolver(unittest.TestCase):
 
     def test_streamed_backward_matches_independent_local_losses(self):
         """Average every local gradient, preserve weights, and return detached diagnostics."""
-        step, positions, inertial, pins = self._problem(nonzero_head=True)
+        step, positions, inertial, pins, previous = self._problem(nonzero_head=True)
         count = 4
         with torch.no_grad():
             states = [positions]
-            energies = [step.energy(positions, inertial).total]
+            energies = [step.energy(positions, inertial, previous_positions=previous).total]
+            histories = [None]
             for _ in range(count):
-                update = step(states[-1], inertial, fixed_positions=pins)
+                update = step(
+                    states[-1], inertial, fixed_positions=pins, previous_positions=previous, history=histories[-1]
+                )
                 states.append(update.positions)
                 energies.append(update.loss.total)
+                histories.append(
+                    OptimizerHistory(
+                        update.axis_gradient_world, update.achieved_axis_update_world, torch.tensor([True])
+                    )
+                )
         scale = energies[0].clamp_min(1.0)
         for index in range(count):
-            update = step(states[index], inertial, fixed_positions=pins)
+            update = step(
+                states[index], inertial, fixed_positions=pins, previous_positions=previous, history=histories[index]
+            )
             loss = (update.loss.total - energies[0] + torch.relu(update.loss.total - energies[index])) / scale
             (loss.mean() / count).backward()
         expected = {
@@ -159,7 +223,9 @@ class TestUnrolledHexSolver(unittest.TestCase):
             step.zero_grad(set_to_none=True)
             module = UnrolledHexSolver(step, checkpoint_activations=checkpoint)
             for repeat in (1, 2):
-                result = module.backward_detached(source, prediction, fixed_positions=pins, iterations=count)
+                result = module.backward_detached(
+                    source, prediction, fixed_positions=pins, previous_positions=previous, iterations=count
+                )
                 for name, parameter in step.named_parameters():
                     torch.testing.assert_close(parameter, weights[name], rtol=0, atol=0)
                     if name in expected:
@@ -170,10 +236,13 @@ class TestUnrolledHexSolver(unittest.TestCase):
                         self.assertFalse(value.requires_grad)
                 torch.testing.assert_close(result.final_positions, states[-1], rtol=0, atol=0)
                 torch.testing.assert_close(result.energies, torch.stack(energies, dim=1), rtol=0, atol=0)
+                torch.testing.assert_close(
+                    result.history.axis_gradient_world, histories[-1].axis_gradient_world, rtol=0, atol=0
+                )
 
     def test_streamed_backward_releases_saved_activations_each_iteration(self):
         """Bound saved activation storage by one proposal rather than the sequence length."""
-        step, positions, inertial, pins = self._problem(nonzero_head=True)
+        step, positions, inertial, pins, previous = self._problem(nonzero_head=True)
         module = UnrolledHexSolver(step)
         peaks = []
         for count in (1, 4):
@@ -191,7 +260,9 @@ class TestUnrolledHexSolver(unittest.TestCase):
 
             step.zero_grad(set_to_none=True)
             with torch.autograd.graph.saved_tensors_hooks(SavedTensor, lambda saved: saved.value):
-                module.backward_detached(positions, inertial, fixed_positions=pins, iterations=count)
+                module.backward_detached(
+                    positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=count
+                )
             self.assertEqual(counts["live"], 0)
             peaks.append(counts["peak"])
         self.assertGreater(peaks[0], 0)
@@ -199,24 +270,26 @@ class TestUnrolledHexSolver(unittest.TestCase):
 
     def test_streamed_backward_rejects_connected_or_no_grad_usage(self):
         """Reject modes incompatible with immediate local backward."""
-        step, positions, inertial, pins = self._problem()
+        step, positions, inertial, pins, previous = self._problem()
         with self.assertRaisesRegex(ValueError, "detach_iterations"):
             UnrolledHexSolver(step, detach_iterations=False).backward_detached(
-                positions, inertial, fixed_positions=pins
+                positions, inertial, fixed_positions=pins, previous_positions=previous
             )
         with torch.no_grad(), self.assertRaisesRegex(RuntimeError, "grad"):
-            UnrolledHexSolver(step).backward_detached(positions, inertial, fixed_positions=pins)
+            UnrolledHexSolver(step).backward_detached(
+                positions, inertial, fixed_positions=pins, previous_positions=previous
+            )
 
     def test_nonreentrant_checkpoint_matches_plain_k4_gradient(self):
         """Recompute each inner step in backward without changing first-order gradients."""
-        step, positions, inertial, pins = self._problem(nonzero_head=True)
+        step, positions, inertial, pins, previous = self._problem(nonzero_head=True)
         plain = UnrolledHexSolver(step)
         memory = UnrolledHexSolver(step, checkpoint_activations=True)
-        result_plain = plain(positions, inertial, fixed_positions=pins, iterations=4)
+        result_plain = plain(positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=4)
         result_plain.objective.backward()
         reference = step.network.correction_head.weight.grad.detach().clone()
         step.zero_grad(set_to_none=True)
-        result_memory = memory(positions, inertial, fixed_positions=pins, iterations=4)
+        result_memory = memory(positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=4)
         result_memory.objective.backward()
         torch.testing.assert_close(result_memory.energies, result_plain.energies, rtol=0, atol=0)
         torch.testing.assert_close(result_memory.objective, result_plain.objective, rtol=0, atol=0)
@@ -225,24 +298,43 @@ class TestUnrolledHexSolver(unittest.TestCase):
 
     def test_detached_energy_target_retains_network_feature_gradient(self):
         """Remove Y's direct energy gradient while preserving its network-feature path."""
-        step, positions, inertial, pins = self._problem(nonzero_head=True)
+        step, positions, inertial, pins, previous = self._problem(nonzero_head=True)
         inertial.requires_grad_()
         module = UnrolledHexSolver(step)
-        full = module(positions, inertial, fixed_positions=pins, iterations=1)
-        detached = module(positions, inertial, fixed_positions=pins, iterations=1, detach_energy_target=True)
+        full = module(positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=1)
+        detached = module(
+            positions,
+            inertial,
+            fixed_positions=pins,
+            previous_positions=previous,
+            iterations=1,
+            detach_energy_target=True,
+        )
         torch.testing.assert_close(full.final_positions, detached.final_positions, rtol=0, atol=0)
         torch.testing.assert_close(full.energies, detached.energies, rtol=0, atol=0)
         full_gradient = torch.autograd.grad(full.energies[:, -1].sum(), inertial, retain_graph=True)[0]
         feature_gradient = torch.autograd.grad(detached.energies[:, -1].sum(), inertial, retain_graph=True)[0]
         direct_gradient = torch.autograd.grad(
-            step.energy(detached.final_positions.detach(), inertial).total.sum(), inertial
+            step.energy(detached.final_positions.detach(), inertial, previous_positions=previous).total.sum(), inertial
         )[0]
         self.assertGreater(feature_gradient.norm().item(), 0)
         torch.testing.assert_close(full_gradient - feature_gradient, direct_gradient, rtol=1e-4, atol=1e-5)
 
-        plain = module(positions, inertial, fixed_positions=pins, iterations=2, detach_energy_target=True)
+        plain = module(
+            positions,
+            inertial,
+            fixed_positions=pins,
+            previous_positions=previous,
+            iterations=2,
+            detach_energy_target=True,
+        )
         memory = UnrolledHexSolver(step, checkpoint_activations=True)(
-            positions, inertial, fixed_positions=pins, iterations=2, detach_energy_target=True
+            positions,
+            inertial,
+            fixed_positions=pins,
+            previous_positions=previous,
+            iterations=2,
+            detach_energy_target=True,
         )
         torch.testing.assert_close(plain.objective, memory.objective, rtol=0, atol=0)
         plain_gradient = torch.autograd.grad(plain.objective, step.network.correction_head.weight, retain_graph=True)[0]
@@ -251,21 +343,22 @@ class TestUnrolledHexSolver(unittest.TestCase):
 
     def test_increase_penalty_freezes_each_preceding_energy(self):
         """Penalize later increases without giving a gradient that raises prior energy."""
-        step, positions, inertial, pins = self._problem()
+        step, positions, inertial, pins, previous = self._problem()
         module = UnrolledHexSolver(step)
         initial = torch.tensor([1.0], requires_grad=True)
         first = torch.tensor([3.0], requires_grad=True)
         second = torch.tensor([5.0], requires_grad=True)
         later_energies = iter((first, second))
+        zeros = torch.zeros(1, 2, 3, 3)
 
-        def next_energy(current, prediction, fixed, *, detach_energy_target, previous_positions=None):
-            return current, next(later_energies)
+        def next_energy(current, prediction, fixed, previous_positions, history, *, detach_energy_target):
+            return current, next(later_energies), zeros, zeros
 
         with (
             patch.object(step.energy, "forward", return_value=SimpleNamespace(total=initial)),
             patch.object(module, "_one_step", next_energy),
         ):
-            result = module(positions, inertial, fixed_positions=pins, iterations=2)
+            result = module(positions, inertial, fixed_positions=pins, previous_positions=previous, iterations=2)
         before_gradient, first_gradient, second_gradient = torch.autograd.grad(
             result.mean_energy_increase_penalty, (initial, first, second), allow_unused=True
         )

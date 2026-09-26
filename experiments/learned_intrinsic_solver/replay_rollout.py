@@ -4,9 +4,11 @@
 """Retain physical step starts and replay them with a supplied current network.
 
 The disk record stores X and V before rigid-guided candidate construction, not
-the candidate or Y. Replay recomputes both from the retained physical state,
-forces, gravity, material, mass, and timestep. A synchronous pre-step callback
-also retains the input to a learned solve that subsequently fails.
+the candidate or Y, plus the detached optimizer history carried into that
+step (None at a trajectory start). Replay recomputes candidate and Y from the
+retained physical state, forces, gravity, material, mass, and timestep, and
+seeds the inner unroll with the retained history. A synchronous pre-step
+callback also retains the input to a learned solve that subsequently fails.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import torch  # noqa: TID253 -- Optional experimental tensor/serialization adapt
 
 from .data import generate_cuboid
 from .disk_replay import DiskReplayStore, ReplayState
+from .input_assembly import OptimizerHistory
 from .network import IntrinsicSolverNetwork
 from .newton_model import build_newton_hex_model
 from .newton_solver import SolverLearnedIntrinsic
@@ -119,6 +122,7 @@ def retain_windows(
     step_offset: int = 0,
     provenance: Mapping | Callable[[int], Mapping] | None = None,
     trajectory_metadata: Sequence[Mapping] | None = None,
+    history: OptimizerHistory | None = None,
 ) -> Iterator[PhysicalWindow]:
     """Yield ordinary windows while durably retaining each member before solve.
 
@@ -128,7 +132,9 @@ def retain_windows(
     as checkpoint hash, epoch/update, and physical seed. A callable provenance
     is evaluated with the absolute step index at each pre-step callback, after
     the caller may have updated weights between yielded windows. It only sees detached copies
-    and the persisted arrays are detached CPU snapshots.
+    and the persisted arrays are detached CPU snapshots. ``history`` seeds the
+    optimizer history when continuing a trajectory across successive calls;
+    pass the previous call's last ``steps[-1].history``.
     """
     if not isinstance(rollout, PhysicalRollout):
         raise TypeError("rollout must be a PhysicalRollout")
@@ -148,11 +154,25 @@ def retain_windows(
     payload = physical_context(rollout)
     context_id = store.register_context(**payload)
 
-    def save_step(index: int, x: Tensor, v: Tensor, f: Tensor, pins: Tensor, gravity: Tensor) -> None:
+    def save_step(
+        index: int,
+        x: Tensor,
+        v: Tensor,
+        f: Tensor,
+        pins: Tensor,
+        gravity: Tensor,
+        history: OptimizerHistory | None,
+    ) -> None:
         snapshots = []
         current_provenance = provenance(step_offset + index) if callable(provenance) else provenance
         shared = dict(current_provenance or {})
         for member, trajectory_id in enumerate(trajectory_ids):
+            retained_history = None
+            if history is not None and bool(history.valid[member]):
+                retained_history = {
+                    "axis_gradient_world": _cpu_array(history.axis_gradient_world[member]),
+                    "axis_update_world": _cpu_array(history.axis_update_world[member]),
+                }
             metadata = {**shared, **per_member[member]}
             metadata.update(
                 {
@@ -172,6 +192,7 @@ def retain_windows(
                     forces=f[member],
                     fixed_positions=pins[member],
                     metadata=metadata,
+                    history=retained_history,
                 )
             )
         store.append(snapshots)
@@ -184,6 +205,7 @@ def retain_windows(
         gradient_window=gradient_window,
         forces=forces,
         fixed_positions=fixed_positions,
+        history=history,
         on_step_start=save_step,
     )
     del positions, velocities, forces, fixed_positions
@@ -261,7 +283,11 @@ def replay_state(
     *,
     iterations: int | None = None,
 ) -> PhysicalStep:
-    """Recompute one saved physical solve using the supplied network's weights."""
+    """Recompute one saved physical solve using the supplied network's weights.
+
+    The retained optimizer history (None at a trajectory start) seeds the inner
+    unroll exactly as it did when the state was recorded.
+    """
     if context.get("context_id") != state.context_id:
         raise ValueError("replay state context_id does not match the supplied context")
     _verify_context(rollout, context)
@@ -281,6 +307,13 @@ def replay_state(
     fixed = context["arrays"]["fixed_indices"]
     pin_values = context["arrays"]["rest_positions"][fixed] if state.fixed_positions is None else state.fixed_positions
     pins = torch.as_tensor(np.asarray(pin_values).copy(), **kwargs)[None]
+    history = None
+    if state.history is not None:
+        history = OptimizerHistory(
+            torch.as_tensor(np.asarray(state.history["axis_gradient_world"]).copy(), **kwargs)[None],
+            torch.as_tensor(np.asarray(state.history["axis_update_world"]).copy(), **kwargs)[None],
+            torch.ones(1, dtype=torch.bool, device=reference.device),
+        )
     window = next(
         rollout.windows(
             x,
@@ -290,6 +323,7 @@ def replay_state(
             gradient_window=1,
             forces=f,
             fixed_positions=pins,
+            history=history,
         )
     )
     return window.steps[0]

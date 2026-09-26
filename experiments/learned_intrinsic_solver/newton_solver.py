@@ -24,7 +24,9 @@ import newton
 from newton.solvers import SolverBase
 
 from .data import generate_cuboid
+from .features import CONDITIONING_DIM, STATE_FEATURE_DIM
 from .hex_energy import HexLossTerms, make_inertial_prediction
+from .input_assembly import OptimizerHistory
 from .network import IntrinsicSolverNetwork
 from .rigid_predictor import RigidPosePredictor, RigidPrediction
 from .solver_step import LearnedHexSolverStep
@@ -66,8 +68,14 @@ class LearnedOptimizerUpdate(NamedTuple):
     current_positions, positions, and direction are [1,P,3] [m], with
     direction = positions - current_positions and zero direction at pins.
     Local target axes and corrections are dimensionless [1,C,3,3]; frames
-    are frozen [1,C,3,3] rotations. step_size is dimensionless [1]. loss
-    is the post-update energy [J]. An untrained proposal need not descend.
+    are frozen [1,C,3,3] rotations. step_size is the dimensionless per-cell
+    step [1,C]. loss is the post-update energy [J]. An untrained proposal
+    need not descend. The trailing detached diagnostics mirror
+    ``LearnedHexStepOutput``: this query's world axis gradient feature [J],
+    the achieved world change of the center deformation, the free-corner
+    force residual norm [N] at the pre-update candidate, and the frame tie
+    mask (None when frames were replayed). The first two form the optimizer
+    history consumed by the next query.
     """
 
     current_positions: torch.Tensor
@@ -78,6 +86,20 @@ class LearnedOptimizerUpdate(NamedTuple):
     step_size: torch.Tensor
     frames: torch.Tensor
     loss: HexLossTerms
+    axis_gradient_world: torch.Tensor | None = None
+    achieved_axis_update_world: torch.Tensor | None = None
+    force_residual_norm: torch.Tensor | None = None
+    tie_mask: torch.Tensor | None = None
+
+    def next_history(self) -> OptimizerHistory:
+        """Return the detached optimizer history that the following query should consume."""
+        import torch
+
+        return OptimizerHistory(
+            self.axis_gradient_world.detach(),
+            self.achieved_axis_update_world.detach(),
+            torch.ones(self.positions.shape[0], dtype=torch.bool, device=self.positions.device),
+        )
 
 
 class LearnedNewtonStepResult(NamedTuple):
@@ -86,6 +108,9 @@ class LearnedNewtonStepResult(NamedTuple):
     Positions and inertial prediction are [m], velocities [m/s], all [1,P,3].
     The rigid prediction is frozen. Each entry in updates is an inner optimizer
     iterate using the same physical Y; the final entry supplies the loss [J].
+    ``history`` is the detached optimizer history after the final update; pass
+    it to the next physical step's ``solve``/``predict`` to carry it across the
+    timestep boundary (``step`` does this automatically through last_result).
     """
 
     positions: torch.Tensor
@@ -94,6 +119,7 @@ class LearnedNewtonStepResult(NamedTuple):
     rigid_prediction: RigidPrediction
     updates: tuple[LearnedOptimizerUpdate, ...]
     initial_positions: torch.Tensor
+    history: OptimizerHistory | None = None
 
     @property
     def loss(self) -> HexLossTerms:
@@ -119,14 +145,18 @@ class SolverLearnedIntrinsic(SolverBase):
     no free-body gauge, and populated contacts are rejected.
 
     step() writes detached final corners/velocities to a separate Newton State.
-    Its last_result retains the Torch graph for training network parameters.
+    Its last_result retains the Torch graph for training network parameters and
+    the detached optimizer history, which consecutive step() calls carry across
+    physical timesteps; set ``last_result = None`` to begin a new trajectory.
     This is a learned proposal, not a converged implicit physical solve: no
     line search, convergence test, contact response, or inversion repair is
-    supplied. Use a trained network before interpreting rollouts physically.
+    supplied. Inverted candidates are accepted by the frames and the stable
+    energy. Use a trained network before interpreting rollouts physically.
 
     Args:
         model: CPU float32 Newton model with learned_intrinsic hex attributes.
-        network: Optional existing baseline-compatible Torch network.
+        network: Optional existing revised-schema Torch network
+            (``features.STATE_FEATURE_DIM`` state and six conditioning inputs).
         iterations: Positive number of learned optimization iterations per dt.
     """
 
@@ -212,10 +242,8 @@ class SolverLearnedIntrinsic(SolverBase):
         self._fixed_tensor = torch.from_numpy(self._fixed)
         self.rigid_predictor = RigidPosePredictor(self._mass, gravity=tuple(self._gravity().tolist()))
         if self.network is None:
-            has_damping = bool((self._damping > 0).any())
-            self.network = IntrinsicSolverNetwork(
-                counts, 86 if has_damping else 38, conditioning_dim=6 if has_damping else 5
-            )
+            # The viscosity channel is always present; zero damping needs no separate schema.
+            self.network = IntrinsicSolverNetwork(counts, STATE_FEATURE_DIM, conditioning_dim=CONDITIONING_DIM)
         if self.network.cell_counts != counts:
             raise ValueError("network cell counts must match the model")
         self.learned_step = None
@@ -357,14 +385,17 @@ class SolverLearnedIntrinsic(SolverBase):
         problem: LearnedHexProblem,
         *,
         frames: torch.Tensor | None = None,
+        history: OptimizerHistory | None = None,
     ) -> LearnedOptimizerUpdate:
         """Query the shared learned optimizer at any feasible current candidate.
 
         candidate is [1,P,3] float32 [m] on the network device, with prescribed corners already
         satisfied exactly. Geometry/features are recomputed from this candidate;
-        optional frames [1,C,3,3] replay frozen rotations for derivative checks.
-        Returns the actual fused displacement, without advancing physical time
-        or altering this problem. No descent or accepted-step guarantee exists.
+        optional frames [1,C,3,3] replay frozen rotations for derivative checks,
+        and ``history`` supplies the detached previous-query optimizer history
+        (None for a first query). Returns the actual fused displacement and the
+        detached diagnostics, without advancing physical time or altering this
+        problem. No descent or accepted-step guarantee exists.
         """
         import torch
 
@@ -386,6 +417,7 @@ class SolverLearnedIntrinsic(SolverBase):
             previous_positions=problem.previous_positions,
             fixed_positions=problem.fixed_positions,
             frames=frames,
+            history=history,
         )
         return LearnedOptimizerUpdate(
             candidate,
@@ -396,6 +428,10 @@ class SolverLearnedIntrinsic(SolverBase):
             update.step_size,
             update.frames,
             update.loss,
+            axis_gradient_world=update.axis_gradient_world,
+            achieved_axis_update_world=update.achieved_axis_update_world,
+            force_residual_norm=update.force_residual_norm,
+            tie_mask=update.tie_mask,
         )
 
     def solve(
@@ -404,6 +440,7 @@ class SolverLearnedIntrinsic(SolverBase):
         *,
         initial_positions: torch.Tensor | None = None,
         iterations: int | None = None,
+        history: OptimizerHistory | None = None,
     ) -> LearnedNewtonStepResult:
         """Unroll repeated optimizer queries with gradients through every update.
 
@@ -411,7 +448,12 @@ class SolverLearnedIntrinsic(SolverBase):
         [m]; otherwise rigid-guided fusion initializes it. iterations overrides
         the configured positive count for this solve. The same network, Y, dt,
         materials, and prescribed positions are used throughout. Candidates
-        remain attached to the graph; each iteration's polar frames are frozen.
+        remain attached to the graph; each iteration's closest-rotation frames are
+        frozen and inverted candidates are accepted. ``history`` is the detached
+        optimizer history carried from the preceding physical step (None starts
+        a trajectory); every inner update consumes the previous update's
+        detached gradient feature and achieved axis change, and the result
+        exposes the final history for the next step.
         """
         import torch
 
@@ -424,8 +466,9 @@ class SolverLearnedIntrinsic(SolverBase):
         current = initial
         updates = []
         for _ in range(count):
-            update = self.propose_update(current, problem)
+            update = self.propose_update(current, problem, history=history)
             current = update.positions
+            history = update.next_history()
             updates.append(update)
         updated_velocity = (current - problem.previous_positions) / problem.time_step
         free = torch.ones(current.shape[1], dtype=torch.bool, device=current.device)
@@ -438,6 +481,7 @@ class SolverLearnedIntrinsic(SolverBase):
             problem.rigid_prediction,
             tuple(updates),
             initial,
+            history,
         )
         self.last_result = result
         return result
@@ -449,13 +493,17 @@ class SolverLearnedIntrinsic(SolverBase):
         *,
         control: newton.Control | None = None,
         contacts: newton.Contacts | None = None,
+        history: OptimizerHistory | None = None,
     ) -> LearnedNewtonStepResult:
         """Prepare and solve one physical step without modifying native State arrays.
 
         Return all differentiable optimizer updates and retain them in
         last_result. Physical inputs are snapshotted once by prepare_problem.
+        ``history`` is the detached optimizer history from the preceding
+        physical step of the same trajectory, or None to start one.
         """
-        return self.solve(self.prepare_problem(state_in, dt, control=control, contacts=contacts))
+        problem = self.prepare_problem(state_in, dt, control=control, contacts=contacts)
+        return self.solve(problem, history=history)
 
     def step(
         self,
@@ -470,11 +518,15 @@ class SolverLearnedIntrinsic(SolverBase):
         The output force buffer is untouched, following ordinary solver usage;
         clear/populate forces on the next input state before its physical step.
         Network gradients remain available through last_result.loss.total.
+        Consecutive calls carry the detached optimizer history of last_result
+        across the timestep boundary; set ``last_result = None`` (or call
+        ``notify_model_changed``) before the first step of a new trajectory.
         """
         if state_in is state_out:
             raise ValueError("use separate input and output Newton States")
         self._check_state(state_out)
-        result = self.predict(state_in, dt, control=control, contacts=contacts)
+        carried = None if self.last_result is None else self.last_result.history
+        result = self.predict(state_in, dt, control=control, contacts=contacts, history=carried)
         state_out.particle_q.assign(result.positions.detach().cpu().numpy()[0])
         state_out.particle_qd.assign(result.velocities.detach().cpu().numpy()[0])
 

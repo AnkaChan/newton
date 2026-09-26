@@ -3,9 +3,18 @@
 
 """Experimental heterogeneous physical contexts sharing one batched network.
 
-Geometry, features, and eight-point hex energy use batched float32 Torch. Each
-material owns a CPU PARDISO factor and a native Newton rigid predictor. Contexts
-are ordinary Python objects, excluded from module state and DDP broadcasts.
+Geometry, the revised nine-value input schema, and eight-point hex energy use
+batched float32 Torch. Each material owns a CPU PARDISO factor and a native
+Newton rigid predictor. Contexts are ordinary Python objects, excluded from
+module state and DDP broadcasts.
+
+Frames are the closest proper rotations of the cell-center deformation with the
+clamped-face tie-break from :mod:`frames`. Inverted and collapsed candidates
+are accepted: the Newton stable Neo-Hookean law is finite for every finite
+shape, no geometry backtracking or acceptance scaling exists, and only
+nonfinite inputs raise. The gradient input is the detached position gradient of
+the complete physical objective projected through each context's fusion
+adjoint, normalized with the LeCO convention in :mod:`features`.
 """
 
 from __future__ import annotations
@@ -19,17 +28,33 @@ import numpy as np
 import torch  # noqa: TID253 -- Explicit opt-in PyTorch implementation.
 from torch import Tensor, nn  # noqa: TID253
 
-from .damping import damping_metric_difference, pack_damping_features
+from .damping import damping_metric_difference
 from .data import VoxelGridData
+from .features import (
+    CONDITIONING_DIM,
+    EDGE_FEATURE_DIM,
+    FEATURE_SCHEMA_VERSION,
+    STATE_FEATURE_DIM,
+    center_deformation,
+    conditioning_channels,
+)
+from .frames import select_reference_corners
 from .fusion import HexFusion
-from .hex_energy import HexImplicitEulerLoss, HexLossTerms, make_inertial_prediction
-from .hex_validity import HexFeasibility
+from .hex_energy import HexImplicitEulerLoss, HexLossTerms, make_inertial_prediction, stable_neo_hookean_density
+from .input_assembly import (
+    LearnedHexInputs,
+    LearnedHexStepOutput,
+    OptimizerHistory,
+    assemble_inputs,
+    check_history,
+)
 from .network import IntrinsicSolverNetwork
-from .network_geometry import build_edge_features
 from .rigid_predictor import RigidPosePredictor
-from .solver_step import LearnedHexInputs, LearnedHexStepOutput
 
-__all__ = ["MixedHexSolverStep"]
+__all__ = ["MixedHexSolverStep", "OptimizerHistory"]
+
+_FLOAT32_EPSILON = 2.0**-23
+"""Unit roundoff of float32 used by the material-aware energy floor."""
 
 
 @dataclass
@@ -52,24 +77,31 @@ class MixedHexSolverStep(nn.Module):
     threads while another batch runs. Wrap this module with DDP using
     ``broadcast_buffers=False`` and checkpoint ``context_specs`` separately.
 
+    Only the revised schema is supported: :data:`features.STATE_FEATURE_DIM`
+    state inputs (five nine-value matrix blocks in the receiving frame,
+    boundary flags, log gradient RMS and the history flag), six conditioning
+    channels and 24 edge inputs. Frames are the closest proper rotations of the
+    cell-center deformation; ties are broken with the reference built from
+    three prescribed corners of the clamped face when
+    :func:`frames.select_reference_corners` finds them, otherwise the plain
+    formula is kept. The frame decomposition and the gradient feature are
+    frozen for the query; the network, local axes, fusion and energy remain
+    differentiable to every network parameter.
+
     The rigid predictor only initializes the candidate. The physical inertial
-    target stays unchanged through learned updates. Polar frames remain frozen,
-    fusion has its existing CPU forward/adjoint. Optional geometry backtracking
-    shortens invalid fused increments before energy evaluation. Contact and
-    energy-descent acceptance are not implemented.
+    target stays unchanged through learned updates. Inverted or collapsed
+    candidates are evaluated with the stable Neo-Hookean law and are never
+    rejected or shortened; nonfinite inputs raise. Contact and energy-descent
+    acceptance are not implemented.
 
     Args:
         rest: Canonical cubic hexahedral rest grid [m].
         fixed_indices: Unique prescribed corner indices, at least one.
-        network: Shared float32 network with legacy 38 state/5 conditioning
-            channels or damped 86 state/6 conditioning channels, and 24 edge
-            channels, on CPU or CUDA. Positive damping requires the damped schema.
+        network: Shared float32 network with the revised schema, on CPU or CUDA.
         time_step: Positive physical timestep [s].
         gravity: World acceleration [m/s^2].
-        geometry_backtracking: Shorten each fused increment independently until
-            the augmenter's sampled hex/tet orientation and the solver's center
-            nonsingularity tests pass. Keep raw network head outputs for
-            diagnostics; report the detached multiplier as acceptance_scale.
+        energy_floor_scale: Positive multiplier ``c`` of the material-aware
+            energy floor returned by :meth:`energy_floor`.
     """
 
     def __init__(
@@ -80,7 +112,7 @@ class MixedHexSolverStep(nn.Module):
         network: IntrinsicSolverNetwork,
         time_step: float,
         gravity=(0.0, -9.81, 0.0),
-        geometry_backtracking: bool = False,
+        energy_floor_scale: float = 1.0,
     ):
         super().__init__()
         if (
@@ -91,11 +123,21 @@ class MixedHexSolverStep(nn.Module):
         ):
             raise ValueError("time_step must be finite and positive")
         if (
-            network.cell_counts != rest.cell_counts
-            or (network.state_feature_dim, network.conditioning_dim) not in ((38, 5), (86, 6))
-            or network.edge_input_dim != 24
+            isinstance(energy_floor_scale, bool)
+            or not isinstance(energy_floor_scale, Real)
+            or not math.isfinite(energy_floor_scale)
+            or energy_floor_scale <= 0
         ):
-            raise ValueError("network must match the grid, use 38/5 or 86/6 state/conditioning inputs, and 24 edges")
+            raise ValueError("energy_floor_scale must be finite and positive")
+        if network.cell_counts != rest.cell_counts:
+            raise ValueError("network cell_counts must match the rest grid")
+        schema = (network.state_feature_dim, network.conditioning_dim, network.edge_input_dim)
+        if schema != (STATE_FEATURE_DIM, CONDITIONING_DIM, EDGE_FEATURE_DIM):
+            raise ValueError(
+                f"network must use the revised schema {FEATURE_SCHEMA_VERSION}: {STATE_FEATURE_DIM} state, "
+                f"{CONDITIONING_DIM} conditioning and {EDGE_FEATURE_DIM} edge inputs, got "
+                f"{schema[0]}/{schema[1]}/{schema[2]}; legacy 38/5 and 86/6 networks are not supported"
+            )
         device = next(network.parameters()).device
         if device.type not in ("cpu", "cuda") or any(
             parameter.device != device or parameter.dtype != torch.float32 for parameter in network.parameters()
@@ -124,12 +166,9 @@ class MixedHexSolverStep(nn.Module):
         self._gravity_cpu = gravity_tensor
         self.time_step = float(time_step)
         self.cell_size = rest.cell_size
+        self.energy_floor_scale = float(energy_floor_scale)
+        self.rest_volume = len(rest.cell_corner_indices) * rest.cell_size**3
         self.network = network
-        self._damped_schema = network.state_feature_dim == 86
-        if not isinstance(geometry_backtracking, bool):
-            raise ValueError("geometry_backtracking must be boolean")
-        self.geometry_backtracking = geometry_backtracking
-        self.feasibility = HexFeasibility(rest) if geometry_backtracking else None
         self._contexts: dict[str, _PhysicalContext] = {}
         self._contexts_lock = threading.RLock()
         self._build_lock = threading.Lock()
@@ -150,6 +189,9 @@ class MixedHexSolverStep(nn.Module):
             (torch.tensor(rest.cell_exposed_faces, dtype=torch.float32), flags[self.cell_corner_indices]), -1
         )
         self.register_buffer("boundary_features", boundary)
+        corners = select_reference_corners(rest.corner_rest_positions, fixed)
+        reference = torch.zeros(0, dtype=torch.long) if corners is None else torch.as_tensor(corners, dtype=torch.long)
+        self.register_buffer("reference_corners", reference)
         self.to(device=device)
 
     @property
@@ -169,7 +211,7 @@ class MixedHexSolverStep(nn.Module):
             lame_mu: Positive shear modulus [Pa].
             density: Positive rest density [kg/m^3].
             damping: Nonnegative absolute damping coefficient [Pa*s], held
-                fixed for this context. Positive values require the damped schema.
+                fixed for this context.
         """
         if not isinstance(context_id, str) or not context_id:
             raise ValueError("context_id must be a nonempty string")
@@ -180,8 +222,6 @@ class MixedHexSolverStep(nn.Module):
             if value < 0 or (name not in ("lame_lambda", "damping") and value == 0):
                 raise ValueError(f"{name} is outside the physical range")
         specification = {name: float(value) for name, value in specification.items()}
-        if damping > 0 and not self._damped_schema:
-            raise ValueError("positive damping requires the 86-state, 6-conditioning damped schema")
         damping_tensor = torch.tensor(damping, dtype=torch.float32)
         if not torch.isfinite(damping_tensor):
             raise ValueError("damping must remain finite in float32")
@@ -232,6 +272,8 @@ class MixedHexSolverStep(nn.Module):
             return tuple(self._contexts[name] for name in context_ids)
 
     def _check_positions(self, value: Tensor, name: str) -> None:
+        if not isinstance(value, Tensor):
+            raise ValueError(f"{name} must be a tensor")
         if value.ndim != 3 or value.shape[1:] != self.rest_positions.shape or not value.shape[0]:
             raise ValueError(f"{name} must have shape [nonempty_batch, corner_count, 3]")
         if value.dtype != torch.float32 or value.device != self.rest_positions.device:
@@ -242,13 +284,20 @@ class MixedHexSolverStep(nn.Module):
     def _check_previous_positions(self, positions, previous_positions, *, required):
         if previous_positions is None:
             if required:
-                raise ValueError("previous_positions must supply the physical-step damping anchor")
+                raise ValueError("previous_positions must supply the physical-step start positions")
             return
-        if not isinstance(previous_positions, Tensor):
-            raise ValueError("previous_positions must be a tensor")
         self._check_positions(previous_positions, "previous_positions")
         if previous_positions.shape != positions.shape:
             raise ValueError("previous_positions must have the same batch shape as positions")
+
+    def _check_history(self, history, positions: Tensor) -> OptimizerHistory | None:
+        return check_history(
+            history,
+            batch=positions.shape[0],
+            cell_count=len(self.cell_corner_indices),
+            dtype=torch.float32,
+            device=positions.device,
+        )
 
     def prepare_inputs(
         self,
@@ -256,61 +305,61 @@ class MixedHexSolverStep(nn.Module):
         inertial_prediction: Tensor,
         context_ids: tuple[str, ...],
         *,
-        previous_positions: Tensor | None = None,
+        previous_positions: Tensor,
+        history: OptimizerHistory | None = None,
     ) -> LearnedHexInputs:
-        """Encode mixed materials, frozen frames, and unchanged physical Y.
+        """Encode mixed materials, frozen frames, the gradient feature and history.
 
-        The damped schema requires ``previous_positions`` [m] with the same
-        shape as positions. Keep this physical-step anchor fixed throughout
-        the inner solve, including when the context damping coefficient is zero.
+        Args:
+            positions: Candidate world corners [m], shape [B, P, 3].
+            inertial_prediction: Unchanged physical Y [m], same shape.
+            context_ids: One registered context identifier per object.
+            previous_positions: Physical-step start [m], same shape. It anchors
+                the damping term and the physical axis-change block and stays
+                fixed across the inner queries of one physical step.
+            history: Detached previous-query history, or None for no history
+                on the whole batch (zero blocks, ``history_valid = 0``).
+
+        Returns:
+            Frozen frames, differentiable local axes, packed state, edge and
+            conditioning features, plus the detached world axis gradient, the
+            zero-pinned position gradient [N] and the frame tie mask.
         """
         self._check_positions(positions, "positions")
         self._check_positions(inertial_prediction, "inertial_prediction")
         if positions.shape != inertial_prediction.shape:
             raise ValueError("positions and inertial_prediction must share a batch shape")
-        self._check_previous_positions(positions, previous_positions, required=self._damped_schema)
+        self._check_previous_positions(positions, previous_positions, required=True)
         contexts = self._lookup(context_ids, positions.shape[0])
-        return self._prepare_inputs(positions, inertial_prediction, contexts, previous_positions)
+        history = self._check_history(history, positions)
+        return self._prepare_inputs(positions, inertial_prediction, contexts, previous_positions, history)
 
     def _prepare_inputs(
-        self, positions: Tensor, inertial_prediction: Tensor, contexts, previous_positions
+        self, positions: Tensor, inertial_prediction: Tensor, contexts, previous_positions: Tensor, history
     ) -> LearnedHexInputs:
-        corners = positions[:, self.cell_corner_indices]
-        deformation = torch.einsum("bcki,kj->bcij", corners - corners[:, :, :1], self.center_gradients)
-        with torch.no_grad():
-            left, singular, right_transpose = torch.linalg.svd(deformation)
-            threshold = 4 * torch.finfo(positions.dtype).eps * singular[..., 0].clamp_min(1)
-            if (torch.linalg.det(deformation) <= 0).any() or (singular[..., -1] <= threshold).any():
-                raise ValueError("current center deformation must be positively oriented and nonsingular")
-            frames = left @ right_transpose
-        axes = frames.transpose(-1, -2) @ deformation
-        offsets = inertial_prediction[:, self.cell_corner_indices] - corners
-        local_offsets = torch.einsum("bcij,bckj->bcki", frames.transpose(-1, -2), offsets) / self.cell_size
-        state = torch.cat((local_offsets.flatten(-2), self.boundary_features[None].expand(len(contexts), -1, -1)), -1)
-        if self._damped_schema:
-            difference = damping_metric_difference(
-                positions, previous_positions, self.cell_corner_indices, self.shape_gradients
+        """Compose the shared schema-3 assembly with this batch's per-context energy and fusion adjoints."""
+
+        def energy_total(candidate: Tensor, target: Tensor, previous: Tensor) -> Tensor:
+            return self._energy(candidate, target, contexts, previous).total
+
+        def project_gradient(position_gradient: Tensor) -> Tensor:
+            return torch.cat(
+                [context.fusion.project_gradient(position_gradient[i : i + 1]) for i, context in enumerate(contexts)]
             )
-            state = torch.cat((state, pack_damping_features(difference)), -1)
-        edges = {
-            hop: build_edge_features(
-                self.rest_centers, corners.mean(-2), frames, axes, self.cell_size, *self.network.neighborhood(hop)
-            )
-            for hop in set(self.network.hops)
-        }
+
         material = torch.stack([context.material for context in contexts]).to(positions.device)
-        lam, mu, rho, damping = material.unbind(-1)
-        channels = [
-            (lam / 1e5).log1p(),
-            (mu / 1e5).log1p(),
-            (rho / 1000).log(),
-            torch.full_like(mu, self.cell_size / 0.025).log(),
-            torch.full_like(mu, self.time_step * 60).log(),
-        ]
-        if self._damped_schema:
-            channels.append((damping / (mu * self.time_step)).log1p())
-        conditioning = torch.stack(channels, -1)[:, None].expand(-1, len(self.cell_corner_indices), -1)
-        return LearnedHexInputs(frames, axes, state, edges, conditioning)
+        channels = conditioning_channels(*material.unbind(-1), self.cell_size, self.time_step)
+        conditioning = channels[:, None].expand(-1, len(self.cell_corner_indices), -1)
+        return assemble_inputs(
+            self,
+            positions,
+            inertial_prediction,
+            previous_positions,
+            energy_total=energy_total,
+            project_gradient=project_gradient,
+            conditioning=conditioning,
+            history=history,
+        )
 
     def energy(
         self,
@@ -322,8 +371,10 @@ class MixedHexSolverStep(nn.Module):
     ) -> HexLossTerms:
         """Evaluate batched full-quadrature elasticity, inertia, and damping [J].
 
-        Positive damping requires ``previous_positions`` [m], the unchanged
-        physical-step starting positions, with the same shape as positions.
+        The stable Neo-Hookean density is finite for inverted and collapsed
+        Gauss points; only nonfinite inputs raise. Positive damping requires
+        ``previous_positions`` [m], the unchanged physical-step starting
+        positions, with the same shape as positions.
         """
         self._check_positions(positions, "positions")
         self._check_positions(inertial_prediction, "inertial_prediction")
@@ -338,15 +389,9 @@ class MixedHexSolverStep(nn.Module):
     def _energy(self, positions: Tensor, inertial_prediction: Tensor, contexts, previous_positions) -> HexLossTerms:
         corners = positions[:, self.cell_corner_indices]
         deformation = torch.einsum("bcki,qkj->bcqij", corners - corners[:, :, :1], self.shape_gradients)
-        jacobian = torch.linalg.det(deformation)
-        if not torch.isfinite(jacobian).all() or (jacobian <= 0).any():
-            raise ValueError("deformation Jacobian must be finite and positive at all hex Gauss points")
-        log_j = jacobian.log()
-        increment = deformation - torch.eye(3, dtype=positions.dtype, device=positions.device)
-        invariant = 2 * increment.diagonal(dim1=-2, dim2=-1).sum(-1) + increment.square().sum((-1, -2))
         material = torch.stack([context.material for context in contexts]).to(positions.device)
         lam, mu = material[:, 0, None, None], material[:, 1, None, None]
-        density = 0.5 * mu * invariant - mu * log_j + 0.5 * lam * log_j.square()
+        density = stable_neo_hookean_density(deformation, mu, lam)
         elastic = (density * self.quadrature_weights[None, None]).sum((1, 2))
         masses = torch.stack([context.mass for context in contexts]).to(positions.device)
         step = positions.new_tensor(self.time_step)
@@ -360,6 +405,25 @@ class MixedHexSolverStep(nn.Module):
             damping = (damping_density * self.quadrature_weights[None, None]).sum((1, 2))
         return HexLossTerms(elastic + inertia + damping, elastic, inertia, damping)
 
+    def energy_floor(self, context_ids: tuple[str, ...]) -> Tensor:
+        """Return the detached material-aware energy floor [J], shape [B] float32.
+
+        ``floor = c * eps32 * V * (lambda + 2 mu + eta / dt + rho h^2 / dt^2)``
+        with ``V`` the total rest volume, ``eps32 = 2**-23`` and ``c`` the
+        constructor's ``energy_floor_scale`` (default 1). Evidence:
+        ``generated/verification/energy_floor_calibration/SUMMARY.md``
+        (provisional ``c = 1``).
+        """
+        if not isinstance(context_ids, tuple) or not context_ids:
+            raise ValueError("context_ids must be a nonempty tuple of identifiers")
+        contexts = self._lookup(context_ids, len(context_ids))
+        material = torch.stack([context.material for context in contexts]).to(torch.float64)
+        lam, mu, rho, damping = material.unbind(-1)
+        step, size = self.time_step, self.cell_size
+        modulus = lam + 2 * mu + damping / step + rho * size**2 / step**2
+        floor = self.energy_floor_scale * _FLOAT32_EPSILON * self.rest_volume * modulus
+        return floor.to(dtype=torch.float32, device=self.rest_positions.device)
+
     def forward(
         self,
         positions: Tensor,
@@ -367,26 +431,41 @@ class MixedHexSolverStep(nn.Module):
         context_ids: tuple[str, ...],
         *,
         fixed_positions: Tensor | None = None,
-        previous_positions: Tensor | None = None,
+        previous_positions: Tensor,
+        history: OptimizerHistory | None = None,
     ) -> LearnedHexStepOutput:
         """Make one batched proposal, fuse per material, and evaluate physical energy.
 
-        The damped schema requires the unchanged physical-step starting
-        ``previous_positions`` [m], with the same shape as positions.
+        Args:
+            positions: Candidate world corners [m], shape [B, P, 3].
+            inertial_prediction: Unchanged physical Y [m], same shape.
+            context_ids: One registered context identifier per object.
+            fixed_positions: Prescribed corners [m], shape [B, K, 3] in
+                ``fixed_indices`` order; defaults to the rest positions.
+            previous_positions: Unchanged physical-step start [m], same shape.
+            history: Detached previous-query history or None.
+
+        Returns:
+            Fused positions, raw network outputs, frozen frames and energies,
+            plus detached diagnostics: the world axis gradient feature, the
+            achieved world change of the center deformation, the free-corner
+            force residual norm [N] at the pre-update candidate, and the tie mask.
         """
         self._check_positions(positions, "positions")
         self._check_positions(inertial_prediction, "inertial_prediction")
         if positions.shape != inertial_prediction.shape:
             raise ValueError("positions and inertial_prediction must share a batch shape")
-        self._check_previous_positions(positions, previous_positions, required=self._damped_schema)
+        self._check_previous_positions(positions, previous_positions, required=True)
         contexts = self._lookup(context_ids, positions.shape[0])
-        inputs = self._prepare_inputs(positions, inertial_prediction, contexts, previous_positions)
+        history = self._check_history(history, positions)
+        inputs = self._prepare_inputs(positions, inertial_prediction, contexts, previous_positions, history)
         prediction = self.network(inputs.local_axes, inputs.state_features, inputs.edge_features, inputs.conditioning)
         world_increment = inputs.frames @ (prediction.local_target_axes - inputs.local_axes)
         if fixed_positions is None:
             fixed_positions = self.rest_positions[self.fixed_indices][None].expand(len(contexts), -1, -1)
         if (
-            fixed_positions.shape != (len(contexts), len(self.fixed_indices), 3)
+            not isinstance(fixed_positions, Tensor)
+            or fixed_positions.shape != (len(contexts), len(self.fixed_indices), 3)
             or fixed_positions.dtype != positions.dtype
             or fixed_positions.device != positions.device
             or not torch.isfinite(fixed_positions).all()
@@ -398,12 +477,12 @@ class MixedHexSolverStep(nn.Module):
                 for i, context in enumerate(contexts)
             ]
         )
-        acceptance_scale = None
-        if self.feasibility is not None:
-            if not torch.equal(positions[:, self.fixed_indices], fixed_positions):
-                raise ValueError("geometry backtracking requires the base to satisfy prescribed corners")
-            fused, acceptance_scale = self.feasibility(positions, fused)
         loss = self._energy(fused, inertial_prediction, contexts, previous_positions)
+        with torch.no_grad():
+            achieved = center_deformation(
+                fused.detach(), self.cell_corner_indices, self.center_gradients
+            ) - center_deformation(positions.detach(), self.cell_corner_indices, self.center_gradients)
+            residual = torch.linalg.vector_norm(inputs.position_gradient.flatten(1), dim=1)
         return LearnedHexStepOutput(
             fused,
             prediction.local_target_axes,
@@ -411,7 +490,10 @@ class MixedHexSolverStep(nn.Module):
             prediction.step_size,
             inputs.frames,
             loss,
-            acceptance_scale,
+            axis_gradient_world=inputs.axis_gradient_world,
+            achieved_axis_update_world=achieved,
+            force_residual_norm=residual,
+            tie_mask=inputs.tie_mask,
         )
 
     def _cpu_snapshot(self, value: Tensor, name: str) -> Tensor:
@@ -429,7 +511,8 @@ class MixedHexSolverStep(nn.Module):
         context identifier and tensors, with no model, factor or native handle.
         Positive pin masses participate in momentum and inertia. Prescribed
         corners keep their input positions in the initialized candidate.
-        ``physical_positions`` remains the damping anchor for every inner update.
+        ``physical_positions`` remains the physical-step anchor for every inner
+        update. The rigid initializer never writes optimizer history.
         """
         context = self._lookup((context_id,), 1)[0]
         x = self._cpu_snapshot(positions, "positions")

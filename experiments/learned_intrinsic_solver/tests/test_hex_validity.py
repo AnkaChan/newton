@@ -16,9 +16,7 @@ import torch  # noqa: TID253
 from experiments.learned_intrinsic_solver import hex_validity
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.hex_energy import HexImplicitEulerLoss
-from experiments.learned_intrinsic_solver.mixed_physics import MixedHexSolverStep
 from experiments.learned_intrinsic_solver.multiscale import screen_geometry
-from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 
 
 class TestHexFeasibility(unittest.TestCase):
@@ -132,32 +130,6 @@ class TestHexFeasibility(unittest.TestCase):
             proposal = x + torch.tensor(rng.normal(size=x.shape), dtype=x.dtype) * amplitude
             expected = min(screen_geometry(rest, proposal[0].numpy()).values()) > 0
             self.assertEqual(bool(guard.valid(proposal)[0]), expected)
-
-    def test_mixed_step_backtracks_before_log_energy_and_keeps_fusion_gradient(self):
-        """Shorten a real learned inversion before log energy and differentiate fusion."""
-        network = IntrinsicSolverNetwork((1, 1, 1), 38, hidden_dim=16, edge_hidden_dim=8, max_step_size=4)
-        with torch.no_grad():
-            network.correction_head.bias[-1] = -10
-        fixed = np.array([0, 2, 4, 6])
-        step = MixedHexSolverStep(self.rest, fixed, network=network, time_step=0.01, geometry_backtracking=True)
-        self.addCleanup(step.close)
-        step.register_context("fixture", lame_lambda=1, lame_mu=1, density=1)
-        result = step(self.base, self.base, ("fixture",))
-        self.assertEqual(result.acceptance_scale.tolist(), [0.5])
-        self.assertGreater(min(screen_geometry(self.rest, result.positions[0].detach().numpy()).values()), 0)
-        self.assertTrue(torch.equal(result.positions[:, fixed], self.base[:, fixed]))
-        result.loss.total.sum().backward()
-        derivative = float(network.correction_head.bias.grad[-1])
-        self.assertTrue(np.isfinite(derivative))
-        values = []
-        for bias in (-10.01, -9.99):
-            with torch.no_grad():
-                network.correction_head.bias[-1] = bias
-                moved = step(self.base, self.base, ("fixture",))
-            self.assertEqual(moved.acceptance_scale.tolist(), [0.5])
-            values.append(float(moved.loss.total[0]))
-        numerical = (values[1] - values[0]) / 0.02
-        self.assertAlmostEqual(derivative, numerical, delta=max(abs(numerical) * 0.03, 0.01))
 
 
 if __name__ == "__main__":

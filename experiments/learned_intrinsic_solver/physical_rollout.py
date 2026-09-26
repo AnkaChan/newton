@@ -5,7 +5,10 @@
 
 Newton State and the CPU rigid proxy are deliberately outside the graph. Each
 physical step keeps one inertial predictor Y. The inner solver detaches carried
-candidates by default; windows also detach X and V at physical boundaries.
+candidates by default; windows also detach X and V at physical boundaries. The
+detached optimizer history (previous gradient feature and achieved axis change)
+is carried across physical steps and windows; it is cleared only when a new
+``windows`` iteration starts a trajectory or the caller resumes one explicitly.
 ``backward_each_iteration=True`` streams local parameter gradients and returns
 detached diagnostics, ready for one caller-owned Adam update per timestep.
 Ordinary windows retain graphs for explicit backward and gradient comparisons.
@@ -21,6 +24,7 @@ import torch  # noqa: TID253 -- This opt-in experimental module uses Torch tenso
 from torch import Tensor  # noqa: TID253
 
 from .hex_energy import make_inertial_prediction
+from .input_assembly import OptimizerHistory
 from .newton_solver import SolverLearnedIntrinsic
 from .unrolled_solver import UnrolledHexSolver
 
@@ -28,7 +32,11 @@ __all__ = ["PhysicalRollout", "PhysicalStep", "PhysicalWindow"]
 
 
 class PhysicalStep(NamedTuple):
-    """One physical advance, with K+1 inner energies [B,K+1] in joules."""
+    """One physical advance, with K+1 inner energies [B,K+1] in joules.
+
+    ``history`` is the detached optimizer history after the step's last inner
+    proposal; the rollout feeds it to the next physical step.
+    """
 
     previous_positions: Tensor
     previous_velocities: Tensor
@@ -39,6 +47,7 @@ class PhysicalStep(NamedTuple):
     objective: Tensor
     positions: Tensor
     velocities: Tensor
+    history: OptimizerHistory | None = None
 
 
 class PhysicalWindow(NamedTuple):
@@ -160,6 +169,7 @@ class PhysicalRollout:
         *,
         iterations: int,
         backward_each_iteration: bool = False,
+        history: OptimizerHistory | None = None,
     ) -> PhysicalStep:
         step = self.unrolled.step
         acceleration = gravity + forces / step.energy.lumped_mass[None, :, None]
@@ -192,6 +202,7 @@ class PhysicalRollout:
             fixed_positions=fixed_positions,
             iterations=iterations,
             detach_energy_target=self.detach_energy_target,
+            history=history,
         )
         new_positions = solved.final_positions
         free = torch.ones(positions.shape[1], dtype=torch.bool, device=positions.device)
@@ -207,6 +218,7 @@ class PhysicalRollout:
             solved.objective,
             new_positions,
             new_velocities,
+            solved.history,
         )
 
     def windows(
@@ -219,8 +231,10 @@ class PhysicalRollout:
         gradient_window: int = 1,
         forces: Tensor | None = None,
         fixed_positions: Tensor | None = None,
-        on_step_start: Callable[[int, Tensor, Tensor, Tensor, Tensor, Tensor], None] | None = None,
+        on_step_start: Callable[[int, Tensor, Tensor, Tensor, Tensor, Tensor, OptimizerHistory | None], None]
+        | None = None,
         backward_each_iteration: bool = False,
+        history: OptimizerHistory | None = None,
     ):
         """Yield consecutive differentiable windows, detaching X,V between them.
 
@@ -239,10 +253,14 @@ class PhysicalRollout:
         then apply one optimizer step after it is yielded. Do not backward
         its objective again. The iterator itself never updates weights.
         This streaming mode is single-device; DDP integration is pending.
-        Optional on_step_start receives (index, X, V, forces, pins, gravity)
-        as detached, isolated tensor copies immediately before each solve.
-        It can durably retain a failed solve's starting state without touching
-        the autograd path or modifying the physical inputs.
+        The detached optimizer history is carried from each physical step to
+        the next (across windows too); ``history`` seeds the first step when a
+        retained trajectory is resumed and defaults to None for a new one.
+        Optional on_step_start receives (index, X, V, forces, pins, gravity,
+        history) as detached, isolated tensor copies (history None or an
+        ``OptimizerHistory`` of clones) immediately before each solve. It can
+        durably retain a failed solve's starting state without touching the
+        autograd path or modifying the physical inputs.
         """
         if on_step_start is not None and not callable(on_step_start):
             raise TypeError("on_step_start must be callable or None")
@@ -276,6 +294,7 @@ class PhysicalRollout:
                         applied_forces.detach().clone(),
                         pins.detach().clone(),
                         gravity.detach().clone(),
+                        None if history is None else OptimizerHistory(*(value.detach().clone() for value in history)),
                     )
                 result = self._advance(
                     x,
@@ -285,9 +304,10 @@ class PhysicalRollout:
                     gravity,
                     iterations=iterations,
                     backward_each_iteration=backward_each_iteration,
+                    history=history,
                 )
                 steps.append(result)
-                x, v = result.positions, result.velocities
+                x, v, history = result.positions, result.velocities, result.history
             per_sample = torch.stack([step.per_sample_objective for step in steps]).mean(dim=0)
             yield PhysicalWindow(start, end, tuple(steps), per_sample, per_sample.mean(), x, v)
             x, v = x.detach(), v.detach()

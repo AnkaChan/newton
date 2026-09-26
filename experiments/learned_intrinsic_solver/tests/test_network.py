@@ -15,6 +15,7 @@ except ModuleNotFoundError as error:
         raise
     raise unittest.SkipTest("PyTorch is an optional dependency") from error
 
+from experiments.learned_intrinsic_solver import features
 from experiments.learned_intrinsic_solver.distributed_probe import ProbeConfig, _network
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork, IntrinsicTransformerLayer
 from experiments.learned_intrinsic_solver.train_smoke import TrainSmokeConfig
@@ -138,14 +139,14 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
         return axes, state, edges, conditioning
 
     def test_initial_target_and_state_dict(self):
-        """Start with unchanged local axes and preserve learned outputs across serialization."""
+        """Start with unchanged axes and a uniform half-maximum per-cell step; preserve outputs across saves."""
         model = IntrinsicSolverNetwork((2, 3, 4), 5, hidden_dim=16, num_heads=4)
         inputs = self._inputs(model)
         output = model(*inputs)
         torch.testing.assert_close(output.local_target_axes, inputs[0], rtol=0, atol=0)
         self.assertEqual(torch.count_nonzero(output.axis_correction).item(), 0)
-        self.assertEqual(output.step_size.shape, (2,))
-        self.assertTrue(((output.step_size > 0) & (output.step_size < 1)).all())
+        self.assertEqual(output.step_size.shape, (2, 24))
+        torch.testing.assert_close(output.step_size, torch.full((2, 24), 0.5), rtol=0, atol=0)
         with torch.no_grad():
             model.correction_head.weight.normal_(std=0.1)
         expected = model(*inputs)
@@ -158,12 +159,15 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
             torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
 
     def test_default_one_layer_radius_one_and_training_config(self):
-        """Use one masked 27-slot neighborhood with the current 38-feature width."""
-        model = IntrinsicSolverNetwork((3, 3, 3), 38)
+        """Use one masked 27-slot neighborhood with the revised 61-feature, six-channel width by default."""
+        model = IntrinsicSolverNetwork((3, 3, 3), features.STATE_FEATURE_DIM)
+        self.assertEqual(model.conditioning_dim, features.CONDITIONING_DIM)
         self.assertEqual(TrainSmokeConfig().hops, (1,))
         self.assertEqual(model.hops, (1,))
         self.assertEqual(len(model.layers), 1)
-        self.assertEqual(sum(parameter.numel() for parameter in model.parameters()), 320142)
+        self.assertEqual(sum(parameter.numel() for parameter in model.parameters()), 323214)
+        self.assertEqual(model.node_encoder[0].in_features, 9 + features.STATE_FEATURE_DIM)
+        self.assertEqual(model.condition_encoder[0].in_features, features.CONDITIONING_DIM)
         indices, mask = model.neighborhood(1)
         self.assertEqual(indices.shape, (27, 27))
         self.assertEqual(int(mask[13].sum()), 27)
@@ -200,14 +204,31 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
         together = model(axes, state, edges, conditioning)
         first = model(axes[:1], state[:1], {h: e[:1] for h, e in edges.items()}, conditioning[:1])
         torch.testing.assert_close(together.local_target_axes[:1], first.local_target_axes)
+        torch.testing.assert_close(together.step_size[:1], first.step_size)
         norms = torch.linalg.vector_norm(together.axis_correction.flatten(-2), dim=-1)
         self.assertTrue((norms < 1).all())
-        self.assertTrue(((together.step_size > 0) & (together.step_size <= 0.2)).all())
-        expected = axes + together.step_size[:, None, None, None] * together.axis_correction
+        self.assertEqual(together.step_size.shape, (2, 12))
+        self.assertTrue(((together.step_size > 0) & (together.step_size < 0.2)).all())
+        expected = axes + together.step_size[..., None, None] * together.axis_correction
         torch.testing.assert_close(together.local_target_axes, expected)
 
+    def test_per_cell_step_varies_across_cells(self):
+        """Give cells of one object different steps once the step head has nonzero weights."""
+        model = IntrinsicSolverNetwork((2, 2, 2), 5, hidden_dim=16, max_step_size=0.2)
+        axes, state, edges, conditioning = self._inputs(model)
+        uniform = model(axes, state, edges, conditioning).step_size
+        torch.testing.assert_close(uniform, torch.full((2, 8), 0.1))
+        with torch.no_grad():
+            model.step_head.weight.normal_()
+        varied = model(axes, state, edges, conditioning).step_size
+        self.assertEqual(varied.shape, (2, 8))
+        self.assertTrue(torch.isfinite(varied).all())
+        self.assertTrue(((varied > 0) & (varied < 0.2)).all())
+        for row in varied:
+            self.assertGreater((row - row[0]).abs().amax().item(), 1e-4)
+
     def test_solver_network_gradients(self):
-        """Train through the local block and the shared object step controller."""
+        """Train through the local block and the per-cell step controller."""
         model = IntrinsicSolverNetwork((2, 2, 3), 5, hidden_dim=16)
         with torch.no_grad():
             model.correction_head.weight.normal_(std=0.1)
@@ -225,6 +246,8 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
         for parameter in model.parameters():
             self.assertIsNotNone(parameter.grad)
             self.assertTrue(torch.isfinite(parameter.grad).all())
+        self.assertGreater(model.step_head.weight.grad.abs().sum().item(), 0)
+        self.assertGreater(model.step_head.bias.grad.abs().sum().item(), 0)
         self.assertGreater(state.grad.abs().sum().item(), 0)
         self.assertGreater(conditioning.grad.abs().sum().item(), 0)
         for values in edges.values():
@@ -252,6 +275,7 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
                 inputs = self._inputs(model, batch=1)
             output = model(*inputs)
         self.assertEqual(output.local_target_axes.shape, (1, 4000, 3, 3))
+        self.assertEqual(output.step_size.shape, (1, 4000))
         self.assertEqual(output.local_target_axes.dtype, torch.float32)
         self.assertTrue(torch.isfinite(output.local_target_axes).all())
         self.assertEqual([model.neighborhood(h)[0].shape[1] for h in model.hops], [27])

@@ -43,6 +43,8 @@ class TestMixedTrainingReference(unittest.TestCase):
             validation_iterations=1,
             validation_physical_steps=1,
             validation_physical_iterations=1,
+            validation_full_count=1,
+            validation_full_interval=1,
             device="cpu",
             cpu_threads=1,
             preparation_workers=1,
@@ -71,6 +73,12 @@ class TestMixedTrainingReference(unittest.TestCase):
         self.assertGreater(report["parameters"]["element_count"], 0)
         self.assertEqual(report["optimizer"]["tensor_count"], 3 * report["parameters"]["tensor_count"])
         json.dumps(report, allow_nan=False)
+
+    def test_reference_loss_matches_the_recorded_first_update_loss(self):
+        """State the LeCO objective independently and reproduce the trainer's batch loss."""
+        report = verify_first_update(self.initial_path, self.after_path, device="cpu")
+        recorded = self.after["report"]["updates"][0]["loss"]
+        self.assertAlmostEqual(report["reference_loss"], recorded, places=5)
 
     def test_different_viscosities_are_heterogeneous_materials(self):
         """Accept a real matching update whose only material variation is viscosity."""
@@ -154,6 +162,26 @@ class TestMixedTrainingReference(unittest.TestCase):
         corrupted["rank_states"][0]["pool"]["dispatch"] = [0]
         with self.assertRaisesRegex(ValueError, "full batch"):
             verify_first_update(self._write("short-batch.pt", corrupted), self.after_path)
+
+    def test_reject_initial_dispatch_with_optimizer_history_or_legacy_config(self):
+        """Require a historyless first dispatch and the revised schema."""
+        corrupted = copy.deepcopy(self.initial)
+        record = corrupted["rank_states"][0]["pool"]["records"][0]
+        record["payload"]["history_valid"] = True
+        with self.assertRaisesRegex(ValueError, "optimizer history"):
+            verify_first_update(self._write("with-history.pt", corrupted), self.after_path)
+        corrupted = copy.deepcopy(self.initial)
+        record = corrupted["rank_states"][0]["pool"]["records"][0]
+        record["payload"]["history_axis_gradient_world"] += 1
+        with self.assertRaisesRegex(ValueError, "optimizer history"):
+            verify_first_update(self._write("nonzero-history.pt", corrupted), self.after_path)
+        legacy_initial, legacy_after = copy.deepcopy(self.initial), copy.deepcopy(self.after)
+        for saved in (legacy_initial, legacy_after):
+            saved["config"]["feature_schema_version"] = 2
+        with self.assertRaisesRegex(ValueError, "legacy"):
+            verify_first_update(
+                self._write("legacy-initial.pt", legacy_initial), self._write("legacy-after.pt", legacy_after)
+            )
 
 
 if __name__ == "__main__":

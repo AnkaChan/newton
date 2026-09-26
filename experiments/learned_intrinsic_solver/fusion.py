@@ -65,11 +65,8 @@ class _FusionSolve(torch.autograd.Function):
         fusion = ctx.fusion
         batch_count = ctx.batch_count
         fixed, free = fusion._indices(ctx.device)
-        free_gradient = gradient_output[:, free].detach().cpu().contiguous().numpy()
-        adjoint = fusion._solve(_columns(free_gradient), transpose=True)
+        adjoint, gradient_targets = fusion._adjoint_targets(gradient_output[:, free])
         boundary_transfer = _batch(fusion._fixed_coupling.T @ adjoint, batch_count)
-        target_rows = _batch(fusion._target_operator.T @ adjoint, batch_count)
-        gradient_targets = target_rows.reshape(batch_count, fusion.cell_count, 3, 3).swapaxes(-1, -2)
         boundary_transfer = torch.from_numpy(np.ascontiguousarray(boundary_transfer)).to(device=ctx.device)
         gradient_base = gradient_output.clone()
         gradient_base[:, fixed] = boundary_transfer
@@ -95,6 +92,8 @@ class HexFusion:
     differentiated. Gradients through targets, base positions, and prescribed
     positions remain available across the device transfers. The CPU bridge
     performs synchronous transfers and does not support CUDA graph capture.
+    ``project_gradient`` exposes the same transpose solve as a detached
+    operator that maps free-corner position gradients to axis increments.
 
     The minimized objective is the cell-weighted average of
     ``||grad(delta_position) - world_axis_increment||^2`` over all eight Gauss
@@ -237,6 +236,26 @@ class HexFusion:
             )
         return self._device_indices[device]
 
+    def _adjoint_targets(self, free_gradient: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
+        """Pull free-corner cotangents back to axis increments through the transpose solve.
+
+        Args:
+            free_gradient: Free-corner position cotangents, shape [B, F, 3], in
+                ``free_indices`` order, on any device. Autograd history is
+                discarded.
+
+        Returns:
+            The packed adjoint columns ``K_ff^{-T} g_free`` with shape [F, 3B]
+            and the axis-increment gradients ``unpack(B^T K_ff^{-T} g_free)``
+            with shape [B, C, 3, 3] (axes in columns), both as CPU NumPy arrays
+            in the working precision.
+        """
+        batch_count = free_gradient.shape[0]
+        columns = _columns(free_gradient.detach().cpu().contiguous().numpy())
+        adjoint = self._solve(columns, transpose=True)
+        target_rows = _batch(self._target_operator.T @ adjoint, batch_count)
+        return adjoint, target_rows.reshape(batch_count, self.cell_count, 3, 3).swapaxes(-1, -2)
+
     def fuse(
         self,
         base_positions: torch.Tensor,
@@ -287,3 +306,45 @@ class HexFusion:
         if fixed_positions.shape != (batch_count, len(self._fixed), 3):
             raise ValueError("fixed_positions must have shape [B, K, 3]")
         return _FusionSolve.apply(self, base_positions, world_axis_increments, fixed_positions)
+
+    def project_gradient(self, position_gradient: torch.Tensor) -> torch.Tensor:
+        """Return axis-increment gradients ``unpack(B^T K_ff^{-T} g_free)``.
+
+        This is the adjoint of the increment-to-position map behind ``fuse``
+        for a frozen base and frozen prescribed positions: for every increment
+        ``D``, ``<project_gradient(g), D>`` equals
+        ``<g_free, fuse(base, D, fixed) - fuse(base, 0, fixed)>``. It runs the
+        cached factor's transpose solve through the same code path as the
+        autograd backward of ``fuse``, so it matches
+        ``autograd.grad(<g, fuse(base, D, fixed)>, D)`` for any ``D``. No extra
+        stiffness or volume factor is applied.
+
+        Args:
+            position_gradient: World position gradient of the physical
+                objective [N], shape [B, P, 3], on CPU or CUDA. Only free-corner
+                rows are read; fixed rows are ignored. Autograd history is
+                discarded.
+
+        Returns:
+            Detached axis-increment gradients [J], shape [B, C, 3, 3], on the
+            input device in the working precision, in the same world matrix
+            layout as ``world_axis_increments`` in ``fuse`` (axes in columns).
+
+        Raises:
+            TypeError: If the input is not a tensor in the chosen precision.
+            ValueError: If the shape is not [B, P, 3] with B > 0, the device is
+                neither CPU nor CUDA, or the free rows are not finite.
+        """
+        if not isinstance(position_gradient, torch.Tensor) or position_gradient.dtype != self.dtype:
+            raise TypeError(f"position_gradient must be a tensor with dtype {self.dtype}")
+        if position_gradient.device.type not in ("cpu", "cuda"):
+            raise ValueError("position_gradient must use a CPU or CUDA device")
+        if (
+            position_gradient.ndim != 3
+            or position_gradient.shape[1:] != (self.corner_count, 3)
+            or position_gradient.shape[0] == 0
+        ):
+            raise ValueError("position_gradient must have shape [B, P, 3] with B > 0")
+        _, free = self._indices(position_gradient.device)
+        _, gradient_targets = self._adjoint_targets(position_gradient[:, free])
+        return torch.from_numpy(np.ascontiguousarray(gradient_targets)).to(device=position_gradient.device)

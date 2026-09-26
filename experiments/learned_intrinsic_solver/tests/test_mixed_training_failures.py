@@ -5,6 +5,7 @@
 
 import importlib.util
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,7 @@ import torch  # noqa: TID253
 
 from experiments.learned_intrinsic_solver import train_mixed
 from experiments.learned_intrinsic_solver.data import generate_cuboid
+from experiments.learned_intrinsic_solver.history import HISTORY_KEYS
 from experiments.learned_intrinsic_solver.initial_state import InitialStateAugmenter
 from experiments.learned_intrinsic_solver.mixed_physics import MixedHexSolverStep
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
@@ -43,6 +45,8 @@ class TestMixedTrainingFailures(unittest.TestCase):
             validation_iterations=1,
             validation_physical_steps=1,
             validation_physical_iterations=1,
+            validation_full_count=1,
+            validation_full_interval=1,
             device="cpu",
             cpu_threads=1,
             preparation_workers=1,
@@ -96,6 +100,7 @@ class TestMixedTrainingFailures(unittest.TestCase):
                 payload = factory.reset(73)
                 self.assertEqual(payload["seed"], 73)
                 self.assertEqual(payload["metadata"]["physical_seed"], expected_seed)
+                self.assertFalse(payload["history_valid"])
                 expected = InitialStateAugmenter(
                     rest,
                     master_seed=factory.master_seed,
@@ -110,15 +115,17 @@ class TestMixedTrainingFailures(unittest.TestCase):
                 factory.retire(payload)
         self.assertEqual(step.context_specs, {})
 
-    def test_singular_center_proposal_is_rejected_before_backward(self):
-        """Reject finite positive-Gauss proposals that cannot form the next local frame."""
+    def test_collapsed_and_inverted_proposals_are_accepted_before_backward(self):
+        """Accept finite singular or inverted proposals; reject only nonfinite ones or moved pins."""
         step, rest = self._step(self._config())
         step.register_context("case", lame_lambda=1000.0, lame_mu=1000.0, density=1000.0)
         positions = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)[None]
+        free = torch.ones(positions.shape[1], dtype=torch.bool)
+        free[step.fixed_indices] = False
         collapsed = positions.clone()
-        collapsed[:, :, 2] *= 1e-8
-        loss = step.energy(collapsed, positions, ("case",))
-        self.assertTrue(torch.isfinite(loss.total).all())
+        collapsed[:, free, 2] *= 1e-8
+        inverted = positions.clone()
+        inverted[:, free, 2] = -inverted[:, free, 2]
         batch = {
             "candidate": positions,
             "physical_positions": positions,
@@ -126,13 +133,64 @@ class TestMixedTrainingFailures(unittest.TestCase):
             "context_ids": ("case",),
             "fixed_positions": positions[:, step.fixed_indices],
         }
+        for name, proposal in (("collapsed", collapsed), ("inverted", inverted)):
+            with self.subTest(proposal=name):
+                loss = step.energy(proposal, positions, ("case",))
+                self.assertTrue(torch.isfinite(loss.total).all())
+                calls = []
 
-        def collapsed_proposal(*args, **kwargs):
-            return SimpleNamespace(positions=collapsed, loss=loss)
+                def module(*args, _loss=loss, _proposal=proposal, _calls=calls, **kwargs):
+                    _calls.append(kwargs)
+                    return SimpleNamespace(positions=_proposal, loss=_loss)
 
-        with self.assertRaises(ValueError):
-            train_mixed._checked_forward(collapsed_proposal, step, batch)
+                result = train_mixed._checked_forward(module, step, batch)
+                self.assertIs(result.positions, proposal)
+                self.assertIsNone(calls[0]["history"])
+                self.assertIs(calls[0]["previous_positions"], batch["physical_positions"])
+        nonfinite = positions.clone()
+        nonfinite[:, -1, 0] = math.nan
+        with self.assertRaisesRegex(ValueError, "nonfinite"):
+            train_mixed._checked_forward(
+                lambda *a, **k: SimpleNamespace(positions=nonfinite, loss=step.energy(positions, positions, ("case",))),
+                step,
+                batch,
+            )
+        moved = positions.clone()
+        moved[:, step.fixed_indices[0], 0] += 0.01
+        with self.assertRaisesRegex(ValueError, "prescribed"):
+            train_mixed._checked_forward(
+                lambda *a, **k: SimpleNamespace(positions=moved, loss=step.energy(positions, positions, ("case",))),
+                step,
+                batch,
+            )
         self.assertTrue(all(parameter.grad is None for parameter in step.network.parameters()))
+
+    def test_real_forward_accepts_an_inverted_candidate(self):
+        """Run the real mixed step on an inverted candidate without rejection."""
+        step, rest = self._step(self._config())
+        step.register_context("case", lame_lambda=1000.0, lame_mu=1000.0, density=1000.0, damping=10.0)
+        positions = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)[None]
+        inverted = positions.clone()
+        free = torch.ones(positions.shape[1], dtype=torch.bool)
+        free[step.fixed_indices] = False
+        inverted[:, free, 2] = -inverted[:, free, 2]
+        batch = train_mixed._batch(
+            [
+                {
+                    "candidate": inverted[0],
+                    "physical_positions": positions[0],
+                    "inertial_prediction": positions[0],
+                    "fixed_positions": positions[0, step.fixed_indices],
+                    "context_id": "case",
+                }
+            ],
+            torch.device("cpu"),
+        )
+        result = train_mixed._checked_forward(step, step, batch)
+        self.assertTrue(torch.isfinite(result.positions).all())
+        self.assertTrue(torch.isfinite(result.force_residual_norm).all())
+        self.assertEqual(result.step_size.shape, (1, 1))
+        self.assertEqual(result.tie_mask.shape, (1, 1))
 
     def test_failed_training_saves_inputs_weights_and_failed_report(self):
         """Preserve the actual rejected query and optimizer state without recording an update."""
@@ -159,6 +217,9 @@ class TestMixedTrainingFailures(unittest.TestCase):
             self.assertEqual(failure["context_specs"][payload["context_id"]], payload["context_spec"])
             for key in ("candidate", "physical_positions", "velocities", "inertial_prediction", "fixed_positions"):
                 torch.testing.assert_close(payload[key], saved["payload"][key], rtol=0, atol=0)
+            self.assertFalse(payload["history_valid"])
+            for key in HISTORY_KEYS[:2]:
+                self.assertEqual(payload[key].abs().sum().item(), 0.0)
             for key, weights in initial["network_state"].items():
                 torch.testing.assert_close(weights, failure["network_state"][key], rtol=0, atol=0)
             self.assertEqual(failure["optimizer_state"], initial["optimizer_state"])

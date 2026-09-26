@@ -4,7 +4,7 @@
 """Experimental deterministic scheduling of mixed, independently sampled trajectories.
 
 The caller performs one learned inner iteration on each returned record, finishes
-backward, and replaces its candidate and energy history before returning the batch.
+backward, and replaces its candidate and optimizer history before returning the batch.
 CPU preparation runs in bounded worker threads; the pool itself is owned by the
 calling thread. Callbacks must protect any shared registries they mutate.
 """
@@ -89,9 +89,10 @@ class ActiveTrajectoryPool:
     """Experimental FIFO active pool with timing-independent trajectory sampling.
 
     K and H are sampled once per reset from the available counts. ``advance``
-    owns physical integration and clearing ``energy_initial``/``energy_previous``
-    for the next timestep. ``retire`` runs on the caller thread after backward;
-    reset and advance run in the worker pool. No callback is called at restore.
+    owns physical integration and carries the detached optimizer history of the
+    finished payload into the next timestep; only ``reset`` clears it. ``retire``
+    runs on the caller thread after backward; reset and advance run in the
+    worker pool. No callback is called at restore.
 
     A dispatch FIFO rotates every active trajectory, including preparing ones.
     Returning a batch appends its members or their replacements to the tail.
