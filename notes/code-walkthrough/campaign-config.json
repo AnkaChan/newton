@@ -28,12 +28,6 @@
   "stage_epochs": 10,
   "stage_patience": 2,
   "stage_descent_rate": 0.8,
-  "candidate_probabilities": [
-    0.5,
-    0.35,
-    0.1,
-    0.05
-  ],
   "iteration_counts": [
     1,
     2,
@@ -71,7 +65,7 @@
     10.0,
     1000.0
   ],
-  "feature_schema_version": 2,
+  "feature_schema_version": 3,
   "strength_range": [
     0.02,
     0.1
@@ -90,5 +84,8 @@
   "preparation_workers": 2,
   "verbose": true,
   "stage_max_epochs": 20,
-  "geometry_backtracking": true
+  "energy_floor_scale": 1.0,
+  "validation_full_count": 16,
+  "validation_full_interval": 5,
+  "plateau_min_final_stage_epochs": 20
 }

@@ -1,53 +1,170 @@
 <section id="network">
-<h2>01 Transformer and solver network</h2>
-<p><strong>One network call proposes a new local shape for every cell.</strong> The network receives the current cell axes, the physical state, and nearby cell geometry. It predicts three target axes in the same cell frame. A separate fusion stage turns all those targets into shared vertex positions. <code>IntrinsicSolverNetwork</code> and its attention block, <code>IntrinsicTransformerLayer</code>, are ordinary PyTorch <code>nn.Module</code> classes. The current configuration uses one block, selected by <code>hops=[1]</code>, with 128 hidden channels and four attention heads. Constructing this configuration on the CPU gives <strong>326,414 trainable parameters</strong>; topology indices and masks are buffers, excluded from that count. <a href="source/network.py.html#L201">Network class</a> · <a href="source/train_mixed.py.html#L428">Training construction</a></p>
+<h2>01 Transformer and network</h2>
+<p><strong>One network call proposes a new set of local deformation axes for every cell of every object in the batch.</strong> The learned part of the solver lives in three modules under <code>experiments/learned_intrinsic_solver/</code>: <a href="source/network.py.html#L36"><code>network.py</code></a> holds the attention block <code>IntrinsicTransformerLayer</code> and the full predictor <code>IntrinsicSolverNetwork</code>; <a href="source/network_geometry.py.html#L22"><code>network_geometry.py</code></a> builds the fixed 27-slot neighborhood of a cuboid grid and the 24-value descriptor of every directed edge; <a href="source/features.py.html#L54"><code>features.py</code></a> is the single source of truth for the per-cell state vector and the six conditioning channels. The network runs once per solver iteration: <a href="source/mixed_physics.py.html#L427"><code>MixedHexSolverStep.forward</code></a> first lets <a href="source/input_assembly.py.html#L185"><code>assemble_inputs</code></a> compute frames, local axes, state, edge and conditioning tensors from the current candidate corners, then <a href="source/mixed_physics.py.html#L462">calls the network</a> and hands its targets to fusion. Training constructs the module in <a href="source/train_mixed.py.html#L479"><code>run_training</code></a> with the campaign configuration: cell counts 10 × 10 × 40 (N = 4,000 cells), hidden width 128, edge width 64, four heads, one radius-one block (<code>hops = [1]</code>), query chunks of 128 cells and a step bound of 0.05. Built on the CPU, that configuration has <strong>323,214 trainable parameters</strong>; the neighbor index and mask tensors are registered buffers and are not counted.</p>
+<p>The network never sees world coordinates. Every matrix it reads or writes is expressed in the receiving cell's own rotation frame R, which the caller extracts from the current deformation and detaches. The network's output is a target for the local axes A = RᵀF, not a vertex position; a separate assembly step reconciles the 4,000 per-cell targets into one shared shape.</p>
 
-<h3 id="network-inputs">What one cell receives</h3>
-<p>The input builder first gathers a cell’s eight corners, computes its deformation matrix, and extracts a local rotation frame. It treats that frame as fixed during differentiation. The current axes are the deformation matrix expressed in that frame. They are dimensionless: identity means rest shape, while their lengths and angles carry stretch and shear. The network sees their nine entries, followed by 86 additional state values. <a href="source/mixed_physics.py.html#L275">Input builder</a></p>
-<table>
-<thead><tr><th>Per-cell input</th><th>Values</th><th>Meaning</th></tr></thead>
+<h3 id="network-node-input">The 70-value node input</h3>
+<p>Each cell is one token. Its input is the current local axes (9 values) followed by 61 state values, concatenated inside the network to a 70-wide vector. The current axes are the cell-center deformation gradient F, a 3 × 3 matrix whose columns are the three transformed material directions, rotated into the cell frame:</p>
+<pre class="formula">F_ij = sum over the 8 corners k of (x_k - x_0)_i * G_kj      G = signs / (4 h), units 1/m
+A    = Rᵀ F                                                 dimensionless, identity at rest
+node_input = [ A flattened row-major (9) | state (61) ]     70 values per cell</pre>
+<p>Row-major flattening means entry (i, j) of the matrix lands at position 3i + j; the correction head uses the same layout in reverse. F is differentiable in the corner positions (<a href="source/features.py.html#L190"><code>center_deformation</code></a>), and <a href="source/features.py.html#L223"><code>to_local</code></a> is a plain <code>Rᵀ @ M</code> with no detach, so whether A carries a gradient depends on what the caller passes in. The state vector is packed by <a href="source/features.py.html#L261"><code>pack_state_features</code></a> in exactly this order:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Block</th><th>Values</th><th>Positions</th><th>Definition and normalization</th></tr></thead>
 <tbody>
-<tr><td>Current local axes</td><td>9</td><td>Three deformed material axes, stored as a 3 × 3 matrix with axes in columns.</td></tr>
-<tr><td>Inertial offsets</td><td>24</td><td>For each of eight corners, the vector from its current position to its inertial prediction: eight vectors × three components. Expressed in the receiving cell’s frame and divided by rest cell size.</td></tr>
-<tr><td>Exposed-face flags</td><td>6</td><td>Which material-grid faces lie on the object boundary.</td></tr>
-<tr><td>Fixed-corner flags</td><td>8</td><td>Which corners have prescribed positions. These flags inform the network; fusion also enforces the constraints.</td></tr>
-<tr><td>Damping state</td><td>48</td><td>Six independent entries of the change in the deformation metric at each of eight Gauss points.</td></tr>
-<tr><td><strong>Total node input</strong></td><td><strong>95</strong></td><td><strong>9 axes + 86 state values.</strong></td></tr>
-</tbody></table>
-<div data-code="mixed_physics.py:287:294"></div>
-<p>The damping metric is <code>FᵀF</code>, which describes lengths and angles without world rotation. Its change compares the candidate with the <em>start of this physical timestep</em>, held fixed across that timestep’s solver iterations. At each Gauss point the packed order is <code>xx, yy, zz, √2·xy, √2·xz, √2·yz</code>. The square-root factors preserve the matrix’s squared norm when packed into six values. <a href="source/damping.py.html#L40">Metric difference</a> · <a href="source/damping.py.html#L47">Packing</a></p>
-<p>Six separate scalar inputs condition the block: <code>log1p(λ / 100000 Pa)</code>, <code>log1p(μ / 100000 Pa)</code>, <code>log(ρ / 1000 kg/m³)</code>, <code>log(h / 0.025 m)</code>, <code>log(dt / (1/60 s))</code>, and <code>log1p(η / (μ·dt))</code>. Here λ and μ are Lamé elastic coefficients, ρ is density, h is rest cell size, and η is the absolute damping coefficient. The last ratio normalizes a network input; the physical damping coefficient remains η. Each object’s six values are broadcast to its cells. <a href="source/mixed_physics.py.html#L301">Exact scalar construction</a></p>
-<p>The canonical rest shape is a cube of side h. Its size enters through h, the normalization of geometric vectors, and the rest-grid offsets. This input layout contains no current energy-gradient channel, previous optimizer-gradient channel, or recurrent hidden state. There is no <code>axis_gradient</code> argument in the current network interface. The physical-start damping data is its explicit temporal input. <a href="source/network.py.html#L301">Forward arguments</a> · <a href="source/mixed_physics.py.html#L275">Complete feature assembly</a></p>
+<tr><td><code>inertial_axis_offset</code></td><td>9</td><td>0 to 8</td><td><code>Rᵀ (F_target - F_current)</code>: how far the current cell deformation is from the deformation of the inertial prediction Y at this cell center. Not normalized.</td></tr>
+<tr><td><code>physical_axis_change</code></td><td>9</td><td>9 to 17</td><td><code>Rᵀ (F_current - F_previous)</code>: change since the start of the physical timestep, the same reference the damping energy uses. Not normalized.</td></tr>
+<tr><td><code>current_axis_gradient</code></td><td>9</td><td>18 to 26</td><td><code>clip(Rᵀ G / rms, -10, 10)</code> where G is the gradient of the complete physical objective with respect to this cell's unscaled axis increment, in joules, projected through the fusion adjoint. <code>rms</code> is the root mean square of the nine components of <code>Rᵀ G</code> over all cells of the object, floored at 1e-12.</td></tr>
+<tr><td><code>previous_axis_gradient</code></td><td>9</td><td>27 to 35</td><td>The previous query's G, stored in world coordinates, re-expressed in the current frame and divided by the <em>current</em> rms, then clipped to ±10. Written as zeros when the object has no history.</td></tr>
+<tr><td><code>previous_axis_update</code></td><td>9</td><td>36 to 44</td><td>The change in center F actually produced by the previous fused update, re-expressed in the current frame, divided by its <em>own</em> floored rms and clipped to ±10. Zeros when there is no history.</td></tr>
+<tr><td>Exposed-face flags</td><td>6</td><td>45 to 50</td><td>1.0 where the cell has no neighbor across that face, in the order -x, +x, -y, +y, -z, +z.</td></tr>
+<tr><td>Fixed-corner flags</td><td>8</td><td>51 to 58</td><td>1.0 for each of the cell's eight corners that has a prescribed position, in z-fast local corner order.</td></tr>
+<tr><td><code>log_gradient_rms</code></td><td>1</td><td>59</td><td>Natural log of the floored current gradient rms, one value per object, broadcast to every cell.</td></tr>
+<tr><td><code>history_valid</code></td><td>1</td><td>60</td><td>Exactly 1.0 when the two history blocks are real measurements, 0.0 when they were zeroed for lack of history.</td></tr>
+</tbody></table></div>
+<p class="caption">The five matrix blocks are 45 values, the boundary metadata 14, the trailing scalars 2: <code>STATE_FEATURE_DIM = 61</code>. The checkpoint schema version for this layout is 3; older 38- and 86-value layouts are rejected by the physics step rather than reshaped.</p>
+<div data-code="features.py:54:98"></div>
+<p>Key implementation points:</p>
+<ul>
+<li>All five matrix blocks share one shape <code>[B, C, 3, 3]</code>, dtype and device; the boundary flags may be <code>[C, 14]</code> shared across the batch (the physics step registers them as a buffer of that shape) or <code>[B, C, 14]</code>. The result is <code>[B, C, 61]</code> in the dtype of the matrix blocks.</li>
+<li>Both history blocks are overwritten with zeros wherever <code>history_valid</code> is false, regardless of the tensors supplied, so a missing history can never be mistaken for a measured zero. The flag itself is the last column.</li>
+<li><code>rms_normalize</code> computes <code>sqrt(mean over cells and components of value²)</code> per object, clamps it to at least <code>RMS_FLOOR = 1e-12</code>, divides and clips to <code>±CLIP = ±10</code>. The clip acts on local-frame components, which is why the caller rotates into R before normalizing. When a second field reuses another field's rms, that rms is passed in and floored again.</li>
+<li>Nothing in <code>features.py</code> detaches. In the assembly that feeds the network, the frame R, the objective gradient G and the history are detached; A, the inertial axis offset and the physical axis change remain differentiable functions of the candidate corners, while Y and the physical-start positions are held fixed.</li>
+</ul>
+<div data-code="features.py:250:258"></div>
+<div data-code="features.py:335:345"></div>
 
-<h3 id="network-edges">How neighbors enter the receiving cell’s frame</h3>
-<p>Each cell has 27 fixed slots: itself plus the 26 cells sharing a face, edge, or corner. Boundary slots outside the cuboid have a false mask. The network therefore uses the same layer for interior and boundary cells. A slot is a neighbor location, not a feature dimension. <a href="source/network_geometry.py.html#L59">Neighborhood construction</a></p>
-<p>Each directed edge has <strong>24 raw values</strong>: rest-center offset divided by h (3), current-center offset in the receiver’s frame divided by h (3), the neighbor-to-receiver frame rotation (9), and the neighbor’s axes transported into the receiver’s frame (9). For receiver i and neighbor j, <code>RᵢᵀRⱼ</code> converts a vector from j’s frame into i’s; multiplying it by j’s local axes expresses those axes in i’s coordinates. Rest offsets use the common material reference coordinates. This conversion makes neighbors comparable despite their different frames. Rotating the entire physical configuration rotates the frames with it and leaves these local inputs unchanged. The 128 hidden channels are learned features, not world-space XYZ vectors. <a href="source/network_geometry.py.html#L160">Frame transport and feature order</a></p>
-<p>The edge encoder maps <code>24 → 64 → 64</code> using a SiLU activation between its linear layers. Its weights are shared across edges. The node encoder similarly maps <code>95 → 128 → 128</code>, and the scalar encoder maps <code>6 → 128 → 128</code>. <a href="source/network.py.html#L268">The three encoders</a></p>
+<h3 id="network-conditioning">Six conditioning channels</h3>
+<p>Material and timestep information does not enter the node vector. It arrives as six dimensionless per-object scalars that the network turns into a 128-channel embedding and applies through FiLM inside the block. The channels, in order, are:</p>
+<pre class="formula">c1 = log1p(λ / 1e5 Pa)              first Lamé parameter
+c2 = log1p(μ / 1e5 Pa)              shear modulus
+c3 = log(ρ / 1000 kg/m³)            density
+c4 = log(h / 0.025 m)               rest cell size
+c5 = log(dt / (1/60 s)) = log(60 dt)  physical timestep
+c6 = log1p(η / (μ dt))              viscosity relative to μ dt; η itself is unchanged</pre>
+<p><code>conditioning_channels</code> returns <code>[B, 6]</code>. The physics step expands it to <code>[B, N, 6]</code> before the call; the network accepts either shape and broadcasts <code>[B, 6]</code> over cells itself. In the campaign configuration h = 0.025 m gives c4 = 0 exactly and dt = 1/300 s gives c5 = log(0.2), about -1.61, for every object. The materials are not value-checked here, and bad values are only partly visible: ρ ≤ 0 makes c3 nonfinite and μ = 0 makes c6 nonfinite (0/0 when η = 0, η/0 otherwise), but λ = 0 and η = 0 are valid inputs that give c1 = 0 and c6 = 0, and negative values of small magnitude pass through as finite channels. The range checks live upstream: both <a href="source/mixed_physics.py.html#L203"><code>register_context</code></a> and <a href="source/hex_energy.py.html#L311"><code>HexImplicitEulerLoss</code></a> require μ > 0, ρ > 0, λ ≥ 0 and η ≥ 0 before materials reach this function. Inside the network, <code>condition_encoder</code> maps 6 → 128 → SiLU → 128; the result is the <code>conditioning</code> argument of every block, whose FiLM layer therefore has 128 input channels.</p>
+<div data-code="features.py:399:407"></div>
 
-<div data-code="network.py:268:286"></div>
-<h3 id="network-layer">One transformer block, step by step</h3>
-<p>LayerNorm first normalizes each cell’s 128 hidden channels. <strong>FiLM</strong> then lets material and timestep information adjust those channels: multiply by a learned scale and add a learned offset. A linear map turns the 128-channel scalar embedding into four 128-channel vectors: scale and offset for attention, and scale and offset for the feed-forward branch. The scale is applied as <code>1 + scale</code>; zero-initialized FiLM weights therefore begin as an identity adjustment. <a href="source/network.py.html#L85">Block modules</a> · <a href="source/network.py.html#L145">FiLM application</a></p>
-<p>A linear projection produces query, key, and value vectors. Each of four heads receives 32 channels. For each neighbor, a head scores the receiver’s query against that neighbor’s key, divided by √32. <code>edge_bias</code> maps the encoded edge to four additional scores—one per head. Softmax converts these scores into weights over the valid neighbor slots.</p>
+<h3 id="network-neighborhood">27 neighbor slots per cell</h3>
+<p>Attention is restricted to a fixed local neighborhood: each cell attends to itself and to the 26 cells that share a face, an edge or a corner with it. <a href="source/network_geometry.py.html#L22"><code>build_grid_neighborhood</code></a> enumerates these slots once for the whole grid; the same table is used for every object in the batch because all objects share the canonical cuboid topology.</p>
+<pre class="formula">cell id(x, y, z) = x · ny · nz + y · nz + z            z varies fastest
+slot 0           = offset (0, 0, 0)                     self
+slots 1 to 26    = every (dx, dy, dz) with max(|dx|, |dy|, |dz|) = 1, in lexicographic order
+valid(cell, slot) = neighbor coordinates inside [0, nx) × [0, ny) × [0, nz)
+invalid slot     → index 0, mask false</pre>
+<ul>
+<li>Returns <code>neighbor_indices</code> (int64) and <code>neighbor_mask</code> (bool), both <code>[N, S]</code> with S = 27 for hop 1. For the 10 × 10 × 40 grid that is <code>[4000, 27]</code>; 92,512 of the 108,000 slots are valid, and a cell has between 8 valid slots (a corner cell: itself plus seven neighbors) and 27.</li>
+<li>Invalid slots hold index 0 so that gathers stay in range; the mask, not the index, says whether a slot exists. Slot 0 is always valid, so no cell has an empty attention row.</li>
+<li>The network registers the two tensors as buffers named <code>neighbor_indices_1</code> and <code>neighbor_mask_1</code>, so they move with <code>.to(device)</code> and are saved in the state dict. Larger hops (2 and 4 give 99 and 387 slots) are supported by the builder but the campaign uses only hop 1.</li>
+</ul>
+<div data-code="network_geometry.py:59:77"></div>
+
+<h3 id="network-edges">The 24-value directed edge descriptor</h3>
+<p>Cells in different places have different frames, so a neighbor's geometry is only comparable after it is transported into the receiving cell's frame. <a href="source/network_geometry.py.html#L80"><code>build_edge_features</code></a> does this for every (receiver i, slot j) pair. With R the detached frames, c the current cell centers (the mean of the eight current corners), X the rest centers and h the rest cell size:</p>
+<pre class="formula">rest_offset       = (X_j - X_i) / h                 3 values; integer grid offsets (dx, dy, dz) up to float32 rounding
+current_offset    = R_iᵀ (c_j - c_i) / h            3 values; where the neighbor is now, seen from i
+relative_frame    = R_iᵀ R_j                        9 values, row-major; converts j-frame vectors into i-frame
+transported_axes  = R_iᵀ R_j A_j = R_iᵀ F_j         9 values, row-major; the neighbor's deformation in i's frame
+
+edge(i, j)  = [ rest_offset | current_offset | relative_frame | transported_axes ]   24 dimensionless values
+masked slot = 24 zeros
+self slot   = [ 0, 0, 0 | 0, 0, 0 | identity | A_i ]</pre>
+<ul>
+<li>Output shape <code>[B, N, S, 24]</code>, in the input dtype without promotion; float32 stays float32. All four geometry inputs must share one floating dtype and device.</li>
+<li><code>frames.detach()</code> is applied inside the function, so no gradient reaches the frame extraction through edges. <code>current_centers</code> and <code>local_axes</code> are not detached; their autograd links are left to the caller.</li>
+<li>If the whole object is rotated by a rigid Q, every R and F picks up the same left factor and the products <code>R_iᵀ R_j</code>, <code>R_iᵀ F_j</code> and <code>R_iᵀ (c_j - c_i)</code> are unchanged: the descriptor is invariant to global rotation and translation. The 128 hidden channels the network builds from it are learned features, not world-space vectors.</li>
+<li>Invalid slot indices are first replaced by 0 so the gathers are safe, and the finished features are zeroed at masked slots. The network masks them once more before its edge encoder as a guard against poisoned padding.</li>
+</ul>
+<div data-code="network_geometry.py:160:178"></div>
+
+<h3 id="network-encoders">Three encoders and one block</h3>
+<p><code>IntrinsicSolverNetwork.__init__</code> creates the encoders, one <code>IntrinsicTransformerLayer</code> per configured hop, an output LayerNorm and the two heads. All three encoders are two linear layers with a SiLU between them:</p>
+<pre class="formula">node_encoder:      70 → 128 → SiLU → 128       one token per cell
+edge_encoder:      24 →  64 → SiLU →  64       once per hop, shared by every block
+condition_encoder:  6 → 128 → SiLU → 128       feeds each block's FiLM</pre>
+<ul>
+<li><code>state_feature_dim</code> is 61 and <code>9 + state_feature_dim = 70</code> is the node encoder's input width. The physics step refuses a network whose state, conditioning or edge widths differ from <code>features.py</code>.</li>
+<li>The block is constructed with <code>conditioning_dim = hidden_dim = 128</code>: it receives the encoded condition, not the raw six channels.</li>
+<li>Both heads and their biases are zero-initialized, so a freshly built network returns the current axes unchanged as its target and a step of half the bound.</li>
+</ul>
+<div data-code="network.py:271:296"></div>
+<p>In <code>forward</code>, the condition is encoded once, the axes and state are concatenated and encoded into tokens, and the raw edges of each hop are masked and encoded once. The blocks then run in order, each with its own hop's edges and topology:</p>
+<div data-code="network.py:335:350"></div>
+
+<h3 id="network-layer">Inside the transformer block</h3>
+<p>The block is a pre-LayerNorm transformer layer with three additions: FiLM modulation of both normalized branches, a learned per-head score bias from the edge, and a learned per-edge addition to the value. Written out, with x the incoming tokens, e the encoded edges and c the encoded condition:</p>
+<pre class="formula">(γ1, β1, γ2, β2) = split(film(c), 4)                     each [B, N, 128]; film is zero-initialized
+
+n      = LayerNorm(x) · (1 + γ1) + β1
+q, k, v = split(W_qkv n)                                  each [B, N, 4 heads, 32]
+s_ij   = (q_i · k_j) / √32 + edge_bias(e_ij)              one score per head; -∞ at masked slots
+w_ij   = softmax over the 27 slots of s_ij                masked weights set to exactly 0
+m_i    = Σ_j w_ij (v_j + edge_val(e_ij))                  per head, concatenated back to 128
+x'     = x + W_out m                                      attention residual
+
+n'     = LayerNorm(x') · (1 + γ2) + β2
+y      = x' + W2 SiLU(W1 n')                              W1: 128 → 512, W2: 512 → 128</pre>
+<p>The modules, in construction order: two LayerNorms, the fused query-key-value projection <code>128 → 384</code>, <code>edge_bias: 64 → 4</code> (one bias per head), <code>edge_val: 64 → 128</code> (one 32-vector per head), the output projection, the feed-forward pair with multiplier 4, and <code>film: 128 → 512</code> whose weight and bias start at zero so the modulation begins as the identity.</p>
 <div data-code="network.py:85:99"></div>
-<p><code>edge_val</code> has a different job: it maps the edge to 128 values, split across the four heads, and adds them to the neighbor’s value vector. Each head sums these geometry-adjusted values using its attention weights. Thus the edge influences both <em>how much attention a neighbor receives</em> and <em>what information that neighbor sends</em>. Both projections are learned; no fixed distance-based attention preference is inserted.</p>
-<div data-code="network.py:165:180"></div>
-<p>Missing neighbors are masked before projection and receive exactly zero attention. The four head outputs are concatenated, projected, and added to the incoming token: the attention residual. A second LayerNorm and FiLM adjustment feed an MLP with widths <code>128 → 512 → 128</code> and SiLU activation. Its output is added through another residual. Queries are processed in chunks of 128 cells to reduce temporary gathers; every query still sees all 27 slots. Chunking does not shrink its neighborhood or remove stored training activations. <a href="source/network.py.html#L153">Full attention path</a></p>
+<p><strong>FiLM.</strong> The condition is broadcast to <code>[B, N, 128]</code> if it arrived per object, passed through <code>film</code> and split into four 128-channel pieces: scale and shift for the attention branch, scale and shift for the feed-forward branch. The scale is applied as <code>1 + γ</code>, so zero weights mean no change. A layer built with <code>conditioning_dim = 0</code> has no FiLM and rejects a condition tensor.</p>
+<div data-code="network.py:144:156"></div>
+<p><strong>Masked attention in query chunks.</strong> Queries are processed 128 cells at a time. For each chunk the code gathers the keys and values of the 27 slots, zeroes the edge features at invalid slots <em>before</em> the two edge projections, adds the per-head edge bias to the scaled dot product, fills invalid slots with -∞ and takes the softmax over slots. A row with no valid slot cannot occur with the canonical topology, but it is still made safe by replacing its scores with zeros before the softmax so no NaN reaches the backward pass. The message adds <code>edge_val(e_ij)</code> to each neighbor's value before weighting, so the edge shapes both how much a neighbor is heard and what it says.</p>
+<ul>
+<li>Shapes per chunk of size n: <code>scores</code> and <code>weights</code> <code>[B, n, 27, 4]</code>, <code>edge_values</code> <code>[B, n, 27, 4, 32]</code>, message <code>[B, n, 4, 32]</code> reshaped to <code>[B, n, 128]</code>. With N = 4,000 there are 32 chunks (31 of 128 cells and one of 32).</li>
+<li>Chunking only bounds the temporary gathers of one chunk. Autograd still stores every chunk's activations, so it does not reduce training memory, and every query still sees all 27 slots.</li>
+<li>When <code>return_attention</code> is set, the weights are returned as <code>[B, N, 4, 27]</code> with invalid entries exactly zero; ordinary training does not request them.</li>
+</ul>
+<div data-code="network.py:157:176"></div>
+<p>The concatenated messages go through the output projection and are added to the incoming tokens. The second LayerNorm, the second FiLM pair and the feed-forward MLP form the second residual:</p>
+<div data-code="network.py:177:183"></div>
 
-<h3 id="network-dimensions">Current tensor sizes</h3>
-<p>Here <strong>B</strong> is objects per GPU (16), <strong>N</strong> is cells per object (10 × 10 × 40 = 4,000), <strong>H</strong> is heads (4), <strong>K</strong> is neighbor slots (27), and <strong>D</strong> is hidden width (128). K in this table is unrelated to the number of repeated solver iterations.</p>
-<table>
-<thead><tr><th>Tensor</th><th>Shape</th></tr></thead>
+<h3 id="network-output">Bounded correction, per-cell step, target axes</h3>
+<p>After the block, one LayerNorm feeds two linear heads that read the same normalized token. The correction head produces nine raw values per cell and squashes them so that the joint nine-value norm is below one; the step head produces one scalar per cell and passes it through a sigmoid scaled by the configured bound:</p>
+<pre class="formula">z      = LayerNorm(y)                                    [B, N, 128]
+raw    = W_c z + b_c                                     [B, N, 9]
+corr   = raw / sqrt(1 + ‖raw‖²)  reshaped to 3 × 3       ‖corr‖ &lt; 1, direction of raw preserved
+step   = max_step_size · sigmoid(W_s z + b_s)            [B, N], each value in (0, max_step_size)
+target = A + step · corr                                 [B, N, 3, 3], same frame as A</pre>
+<ul>
+<li>The step is <strong>per cell</strong>: <code>step_size</code> has shape <code>[B, N]</code> and is broadcast over the 3 × 3 matrix with <code>step_size[..., None, None]</code>. Every cell scales its own correction; there is no object-level scalar.</li>
+<li>With the campaign bound 0.05 the step lies in (0, 0.05); at zero initialization <code>sigmoid(0) = 0.5</code> gives 0.025 for every cell, and the zero correction makes <code>target = A</code>. A zero output is representable, but fusion does not necessarily return the same shape for it.</li>
+<li>The nine-value bound limits the size of the local axis change per query. It says nothing by itself about energy descent or about whether the assembled shape stays valid; those are checked downstream.</li>
+<li>The return value is the <code>IntrinsicSolverOutput</code> tuple <code>(local_target_axes, axis_correction, step_size)</code>. The physics step then forms <code>world_increment = R (target - A) = step · R corr</code> and passes it to fusion (<a href="source/mixed_physics.py.html#L463">call site</a>); the network itself never touches vertex positions.</li>
+</ul>
+<div data-code="network.py:186:194"></div>
+<div data-code="network.py:351:356"></div>
+<aside class="callout"><p><strong>Where gradients enter and leave the network.</strong> During training, the loss reaches the network through <code>target</code>: fusion and the energy are differentiated back to <code>step · corr</code>, then through both heads, the output LayerNorm, the block, the three encoders and their inputs. Of the inputs, the frame R, the gradient blocks, the log rms, the history and the flags are constants of the query. A, the two deformation-difference blocks and the edge offsets and axes are functions of the candidate corners, but the trainer detaches the candidate at the query boundary, so no gradient crosses into earlier iterations or timesteps.</p></aside>
+
+<h3 id="network-dimensions">Tensor sizes and parameter count</h3>
+<p>Symbols: B = objects per GPU (16 in the campaign), N = cells per object (4,000), S = neighbor slots (27), H = heads (4), D = hidden width (128), D/H = 32, E = encoded edge width (64).</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Tensor</th><th>Shape</th><th>Campaign shape</th></tr></thead>
 <tbody>
-<tr><td>Node input / hidden tokens</td><td>[16, 4000, 95] / [16, 4000, 128]</td></tr>
-<tr><td>Raw / encoded directed edges</td><td>[16, 4000, 27, 24] / [16, 4000, 27, 64]</td></tr>
-<tr><td>Scalar conditioning</td><td>[16, 4000, 6]</td></tr>
-<tr><td>Query, key, or value</td><td>[B, N, H, D/H] = [16, 4000, 4, 32]</td></tr>
-<tr><td>Attention weights, when requested for inspection</td><td>[B, N, H, K] = [16, 4000, 4, 27]; ordinary execution computes query chunks</td></tr>
-<tr><td>Target axes / object step</td><td>[16, 4000, 3, 3] / [16]</td></tr>
-</tbody></table>
-
-<h3 id="network-output">How hidden tokens become target axes</h3>
-<p>After the block, LayerNorm feeds a nine-value correction head for each cell. Dividing its output by <code>sqrt(1 + sum(raw²))</code> preserves its direction and bounds the combined nine-value norm below one. The controller averages hidden tokens over all cells, predicts one scalar per object, and applies <code>0.05 × sigmoid(scalar)</code>. That shared step multiplies every cell’s bounded correction. Adding the result to the current axes produces the target axes in the same frozen local frame.</p>
-<div data-code="network.py:347:352"></div>
-<p>This is nine correction values per cell plus one shared object-level step, rather than ten independent outputs per cell. The correction may vary from cell to cell, including its magnitude. The network returns targets, corrections, and the shared step; it does not directly return vertex positions or a rigid transform. Fusion and geometric acceptance follow outside the network. The step bound alone guarantees neither energy descent nor a valid fused shape. <a href="source/network.py.html#L186">Output record</a> · <a href="source/mixed_physics.py.html#L383">Caller and fusion handoff</a></p>
+<tr><td><code>local_axes</code> A</td><td>[B, N, 3, 3]</td><td>[16, 4000, 3, 3]</td></tr>
+<tr><td><code>state_features</code> / node input / tokens</td><td>[B, N, 61] / [B, N, 70] / [B, N, D]</td><td>[16, 4000, 61] / [16, 4000, 70] / [16, 4000, 128]</td></tr>
+<tr><td><code>conditioning</code> / encoded condition / FiLM pieces</td><td>[B, 6] or [B, N, 6] / [B, N, D] / 4 × [B, N, D]</td><td>[16, 4000, 6] / [16, 4000, 128] / 4 × [16, 4000, 128]</td></tr>
+<tr><td><code>neighbor_indices</code>, <code>neighbor_mask</code></td><td>[N, S]</td><td>[4000, 27]</td></tr>
+<tr><td>Raw edges / encoded edges</td><td>[B, N, S, 24] / [B, N, S, E]</td><td>[16, 4000, 27, 24] / [16, 4000, 27, 64]</td></tr>
+<tr><td>Query, key, value</td><td>[B, N, H, D/H]</td><td>[16, 4000, 4, 32]</td></tr>
+<tr><td>Scores and weights per chunk of n queries</td><td>[B, n, S, H]</td><td>[16, 128, 27, 4]</td></tr>
+<tr><td>Attention, when requested</td><td>[B, N, H, S]</td><td>[16, 4000, 4, 27]</td></tr>
+<tr><td><code>axis_correction</code> / <code>step_size</code> / <code>local_target_axes</code></td><td>[B, N, 3, 3] / [B, N] / [B, N, 3, 3]</td><td>[16, 4000, 3, 3] / [16, 4000] / [16, 4000, 3, 3]</td></tr>
+</tbody></table></div>
+<p>Parameters of the campaign configuration, grouped by module (weights plus biases):</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Module</th><th>Parameters</th></tr></thead>
+<tbody>
+<tr><td><code>node_encoder</code> (70 → 128 → 128)</td><td>25,600</td></tr>
+<tr><td><code>edge_encoder</code> (24 → 64 → 64)</td><td>5,760</td></tr>
+<tr><td><code>condition_encoder</code> (6 → 128 → 128)</td><td>17,408</td></tr>
+<tr><td>Block: two LayerNorms</td><td>512</td></tr>
+<tr><td>Block: <code>qkv</code> (128 → 384)</td><td>49,536</td></tr>
+<tr><td>Block: <code>edge_bias</code> (64 → 4) and <code>edge_val</code> (64 → 128)</td><td>260 + 8,320</td></tr>
+<tr><td>Block: <code>out_projection</code> (128 → 128)</td><td>16,512</td></tr>
+<tr><td>Block: <code>ffn</code> (128 → 512 → 128)</td><td>131,712</td></tr>
+<tr><td>Block: <code>film</code> (128 → 512)</td><td>66,048</td></tr>
+<tr><td><code>output_norm</code>, <code>correction_head</code> (128 → 9), <code>step_head</code> (128 → 1)</td><td>256 + 1,161 + 129</td></tr>
+<tr><td><strong>Total</strong></td><td><strong>323,214</strong></td></tr>
+</tbody></table></div>
+<p class="caption">Counted by constructing <code>IntrinsicSolverNetwork((10, 10, 40), 61, conditioning_dim=6, hidden_dim=128, num_heads=4, edge_input_dim=24, edge_hidden_dim=64, hops=(1,), max_step_size=0.05, query_chunk_size=128)</code> on the CPU and summing <code>numel()</code> over <code>parameters()</code>. The FiLM layer is the second-largest module because it maps the 128-channel condition to four 128-channel modulations.</p>
 </section>

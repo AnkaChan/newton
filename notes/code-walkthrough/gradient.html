@@ -1,0 +1,133 @@
+<section id="gradient">
+  <h2>05 The gradient input: from physical energy to axis coordinates</h2>
+  <p>Every learned query starts by measuring how the physical objective wants the current candidate to move, and that measurement is handed to the network as an input. The code lives in <a href="source/input_assembly.py.html#L185"><code>input_assembly.assemble_inputs()</code></a>, which <a href="source/mixed_physics.py.html#L337"><code>MixedHexSolverStep._prepare_inputs()</code></a> calls once per query before the network runs. Four helpers do the work: <a href="source/input_assembly.py.html#L153"><code>objective_gradient()</code></a> differentiates the energy with respect to corner positions, <a href="source/fusion.py.html#L310"><code>HexFusion.project_gradient()</code></a> pulls that position gradient back to the per-cell axis variables through the transposed fusion solve, <a href="source/features.py.html#L194"><code>features.to_local()</code></a> rotates the result into each cell's frame, and <a href="source/features.py.html#L226"><code>features.rms_normalize()</code></a> scales and clips it. The previous query's gradient and the change it achieved travel with the trajectory through <a href="source/history.py.html#L28"><code>history.py</code></a>. The whole feature is detached: it informs the network, but the training gradient never flows through it.</p>
+  <pre class="formula">g       = d E_total / d X            evaluated at the candidate X, with Y and X_start fixed   [N]
+g[pins] = 0
+G_world = unpack(B_fᵀ K_ff⁻ᵀ g_free)   one 3 × 3 matrix per cell                                [J]
+G_local = Rᵀ G_world                    same matrix in the cell's frame                          [J]
+rms     = max(sqrt(mean over cells and 9 entries of G_local²), 1e-12)   one value per object
+feature = clip(G_local / rms, −10, +10)  plus the scalar log(rms)</pre>
+  <p>Here <code>X</code> holds the candidate corner positions in meters, <code>E_total</code> is the elastic plus inertia plus damping objective from chapter 02, <code>K_ff</code> and <code>B_f</code> are the free-corner blocks of the fusion operators from chapter 03, and <code>R</code> is the detached frame of each cell. The rest of this chapter follows these lines through the code.</p>
+
+  <h3 id="gradient-position">Step 1: the position gradient of the physical objective</h3>
+  <p>The first quantity is the ordinary gradient of the complete objective with respect to the shared corner positions. It is evaluated at the current candidate. The inertial prediction <code>Y</code> and the physical-step start <code>X_start</code> enter the energy as constants: they are detached before the call, so the derivative describes only how moving the candidate changes the energy. The result has one three-vector per corner and units of joules per meter, that is newtons. Its inertia part is exactly <code>mass × (X − Y) / dt²</code>, so this vector is the full implicit-Euler residual, not the elastic force alone.</p>
+  <p>Key implementation points:</p>
+  <ul>
+    <li>The function opens <code>torch.enable_grad()</code> and works on <code>positions.detach().requires_grad_(True)</code>. This creates a fresh leaf tensor, so the small autograd graph built here connects to nothing else and can be evaluated even when the caller runs under <code>torch.no_grad()</code>, as validation does.</li>
+    <li><code>energy_total</code> returns one energy per object, shape <code>[B]</code>. The code differentiates <code>total.sum()</code>. Because each object's energy depends only on its own corners, the gradient of the batch sum equals the per-object gradients stacked, shape <code>[B, P, 3]</code>.</li>
+    <li>The rows of prescribed corners are set to zero after differentiation. Fusion assigns those corners their exact positions, so their energy derivative is a reaction force that no network output can act on. The adjoint in the next step reads only free rows anyway; zeroing the prescribed rows keeps reactions out of the force residual norm reported later.</li>
+    <li>The returned tensor is detached and shares the dtype and device of <code>positions</code> (float32 on the module device in production).</li>
+  </ul>
+  <div data-code="input_assembly.py:153:182"></div>
+  <p>The mixed-material step supplies <code>energy_total</code> as a closure over this batch's material contexts, so each object is evaluated with its own Lamé parameters, mass and damping coefficient. It supplies <code>project_gradient</code> the same way: each object owns a fusion factor whose weights include that object's Young's modulus, so the adjoint runs per object and the results are concatenated along the batch axis.</p>
+  <div data-code="mixed_physics.py:337:362"></div>
+
+  <h3 id="gradient-adjoint">Step 2: the fusion adjoint turns corner forces into axis gradients</h3>
+  <p>The network does not move corners. It proposes a dimensionless 3 × 3 axis increment <code>D</code> per cell, and fusion solves for the corner displacement whose sampled deformation change best fits all those increments at once (chapter 03). For a fixed base shape and fixed prescribed positions, the free-corner positions are an affine function of the increments:</p>
+  <pre class="formula">x_free(D) = base_free + K_ff⁻¹ (B_f D − K_fp δ_p)
+
+d x_free / d D = K_ff⁻¹ B_f
+
+d E / d D = (K_ff⁻¹ B_f)ᵀ g_free = B_fᵀ K_ff⁻ᵀ g_free</pre>
+  <p>Reading the last line right to left: solve once with the transposed stiffness matrix against the free-corner position gradient, then apply the transposed target operator. This is the chain rule through fusion, and it is exactly what the custom autograd <a href="source/fusion.py.html#L64">backward of <code>fuse</code></a> computes during training. <code>project_gradient</code> exposes the same computation as a detached forward operator. The unit test <code>test_fusion.TestHexFusionProjectGradient</code> checks the identity <code>&lt;project_gradient(g), D&gt; = &lt;g_free, fuse(base, D, fixed) − fuse(base, 0, fixed)&gt;</code> and equality with <code>autograd.grad</code> of <code>fuse</code> in float64.</p>
+  <p>Three properties of this derivative matter for how the feature should be read:</p>
+  <ul>
+    <li><strong>It is the derivative with respect to the unscaled world axis increment <code>D</code>.</strong> During a query the increment is <code>D = R (A_target − A) = R (s ⊙ correction)</code>, where <code>s</code> is the per-cell sigmoid step and <code>correction</code> the bounded nine-value head output. The feature differentiates with respect to <code>D</code> itself, the world increment fusion actually receives; it does not chain back through the frame rotation <code>R</code> or the step multiplier <code>s</code> to the head output <code>correction</code>. It therefore answers the physical question "how much does the energy change per unit change of this cell's world axes, once every shared corner has been reconciled", independently of how the current network parametrizes its output. Step 3 turns it into the derivative with respect to the local increment <code>L = Rᵀ D = s ⊙ correction</code>; neither step involves the sigmoid step multiplier <code>s</code>.</li>
+    <li><strong>No extra stiffness or volume factor is applied.</strong> The stiffness matrix <code>K = Gᵀ W G</code> and the target operator <code>B = Gᵀ W T</code> already contain the cell weights <code>E × h³</code> (joules) and the normalized quadrature weights; see <a href="source/fusion.py.html#L192">their construction</a> and <a href="source/mixed_physics.py.html#L239">the weight formula</a>. The adjoint of the map actually used in the forward pass is <code>B_fᵀ K_ff⁻ᵀ</code> and nothing else; multiplying by another factor would make it stop being the derivative.</li>
+    <li><strong>Units come out in joules.</strong> <code>g_free</code> is in N = J/m, <code>K_ff</code> in J/m², so <code>z = K_ff⁻ᵀ g_free</code> is in meters and <code>B_fᵀ z</code>, with <code>B</code> in J/m, is in joules. A joule per unit of dimensionless axis change is the natural unit for the derivative of an energy with respect to <code>F</code>.</li>
+  </ul>
+  <div data-code="fusion.py:310:331"></div>
+  <p>The implementation packs every object and world component handed to one factor as right-hand-side columns so one sparse solve serves all of them; in the mixed step each call carries a single object, so the packed array is <code>[F, 3]</code>. <code>_columns</code> turns <code>[B, F, 3]</code> into a Fortran-ordered <code>[F, 3B]</code> array; the cached PARDISO factor solves with <code>transpose=True</code>; <code>_target_operator.T</code> (shape <code>[3C, F]</code>) maps the solution to packed target rows; <code>_batch</code> and the final <code>reshape(B, C, 3, 3).swapaxes(-1, -2)</code> restore a world matrix per cell with material axes in columns, the same layout as <code>world_axis_increments</code> in <code>fuse</code>. <code>K_ff</code> is symmetric, so the transposed solve equals the ordinary solve in exact arithmetic; the code uses the transpose path so that this feature and the autograd backward share one code path. Only free-corner rows are read; the trip through NumPy discards any autograd history, so the result is detached by construction.</p>
+  <div data-code="fusion.py:239:257"></div>
+  <div data-code="fusion.py:338:350"></div>
+
+  <h3 id="gradient-local">Step 3: express the gradient in the cell's frame</h3>
+  <p>The world matrix <code>G_world</code> has world components along its rows and material axes along its columns. The network works in each cell's proper rotation frame <code>R</code>, so the gradient is rotated with <code>Rᵀ</code> on the left. This is again the chain rule: with the local increment <code>L</code> defined by <code>D = R L</code>, the derivative with respect to <code>L</code> is <code>Rᵀ dE/dD</code>. The rotation acts only on the row index; the column index, which says which material axis the entry belongs to, is untouched. Because <code>R</code> is orthonormal, the Frobenius norm of each cell matrix is unchanged, so the RMS in the next step does not depend on the frame choice.</p>
+  <p>The same one-line function serves every matrix block of the state vector: the inertial axis offset <code>Rᵀ (F_Y − F)</code>, the physical axis change <code>Rᵀ (F − F_start)</code>, the current and previous gradients, and the previous achieved update. The frames come from <a href="source/frames.py.html#L240"><code>closest_proper_rotations</code></a>, computed under <code>torch.no_grad()</code> and returned detached, so multiplying by <code>Rᵀ</code> never adds a differentiable path through the frame.</p>
+  <div data-code="features.py:213:223"></div>
+  <div data-code="input_assembly.py:233:249"></div>
+
+  <h3 id="gradient-normalize">Step 4: RMS normalization, floor, clip, and the log scalar</h3>
+  <p>Gradient magnitudes vary by orders of magnitude between a soft, nearly settled object and a stiff object far from equilibrium. The network receives the shape of the gradient field and its magnitude separately. One RMS is computed per object over all cells and all nine matrix entries, so the relative size of the gradient between cells of the same object is preserved. The RMS is floored at <code>1e-12</code> so a measured zero stays finite (zero in, zero out, and the log of the floor as the scalar). Components are then divided by the RMS and clipped to <code>±10</code>; the clip is applied to the local-frame entries.</p>
+  <pre class="formula">rms_b  = sqrt( mean over c, i, j of G_local[b, c, i, j]² )      shape [B, 1, 1, 1]
+rms_b  = max(rms_b, 1e-12)
+block  = clip(G_local / rms_b, −10, +10)                         shape [B, C, 3, 3]
+scalar = log(rms_b)                                               one value per object, broadcast to every cell</pre>
+  <p>Three fields go through this function with different statistics:</p>
+  <ul>
+    <li>The <strong>current gradient</strong> defines <code>rms_b</code> and is divided by it. Its natural log becomes the <code>log_gradient_rms</code> scalar, one value per object copied to every cell.</li>
+    <li>The <strong>previous gradient</strong> (from history, first rotated into the current frame) is divided by the <em>current</em> RMS, passed in through the <code>rms</code> argument. The two gradient blocks are therefore in the same units, and their difference is meaningful to the network as a change of the gradient between consecutive queries.</li>
+    <li>The <strong>previous achieved update</strong> is a dimensionless change of the center deformation, a different quantity in different units, so it is normalized by its own RMS. Its scale is not given to the network as a separate scalar.</li>
+  </ul>
+  <p>The constants live in <a href="source/features.py.html#L94"><code>RMS_FLOOR</code></a> and <a href="source/features.py.html#L97"><code>CLIP</code></a>. The function never detaches; the inputs are already detached, so the outputs are constants for backpropagation.</p>
+  <div data-code="features.py:250:258"></div>
+  <p>Without history, both history blocks are zero tensors and the flag is false for the whole batch. With history, the blocks are rotated with the current frames and normalized as described, and the per-object flag is copied through.</p>
+  <div data-code="input_assembly.py:250:267"></div>
+  <p><a href="source/features.py.html#L261"><code>pack_state_features</code></a> flattens each 3 × 3 block row-major into nine values and concatenates the five blocks (45 values), the 14 boundary flags, the log RMS (1) and the history flag (1, exactly 1.0 or 0.0), giving the 61-value state vector of <a href="source/features.py.html#L72"><code>STATE_FEATURE_DIM</code></a>. The network prepends the nine current axes, so each cell token starts from 70 numbers (<a href="source/network.py.html#L337">node encoder input</a>). For objects whose flag is false the two history blocks are overwritten with zeros regardless of the tensors supplied, so a missing history is always distinguishable from a measured zero.</p>
+  <div data-code="features.py:335:345"></div>
+
+  <h3 id="gradient-history">Step 5: the optimizer history</h3>
+  <p>A first-order optimizer that sees only the current gradient cannot estimate curvature or momentum. The step therefore also receives what happened at the previous learned query on the same trajectory: the gradient it saw and the change it actually achieved. Both are stored as <em>world</em> 3 × 3 matrices per cell, not local ones. Frames are recomputed for every candidate and can jump at the tie-break threshold, so storing local matrices would tie the history to a frame that no longer exists; storing world matrices and applying the current <code>Rᵀ</code> at consumption time keeps the two blocks consistent with the rest of the input.</p>
+  <div data-code="input_assembly.py:92:110"></div>
+  <p>What is stored, and when:</p>
+  <ul>
+    <li><strong>Stored gradient:</strong> the un-normalized world axis gradient <code>G_world</code> of the query, in joules, exactly the tensor that served as the current-gradient input (before <code>Rᵀ</code>, before RMS division and clipping). Normalizing it later with the next query's RMS is what makes the two gradient blocks comparable.</li>
+    <li><strong>Stored update:</strong> the achieved change of the center deformation, <code>F_center(fused) − F_center(candidate)</code>, dimensionless. It is derived from the fused positions the query actually produced, not from the network's requested target, so it already includes the reconciliation of shared corners performed by fusion.</li>
+    <li><strong>Written</strong> by <code>store_history</code> after every learned query, in the trainer and in both validators, so held-out queries receive the same history the network was trained with.</li>
+    <li><strong>Cleared</strong> only when a trajectory is reset: <a href="source/train_mixed.py.html#L285"><code>reset</code></a> writes <a href="source/history.py.html#L32"><code>empty_history</code></a>, zero blocks and <code>history_valid = False</code>.</li>
+    <li><strong>Carried unchanged</strong> across a physical timestep boundary by <code>carry_history</code>: the candidate initializer that follows a timestep never writes history, so the history a new timestep's first query sees is the last learned query of the previous timestep.</li>
+  </ul>
+  <div data-code="history.py:99:121"></div>
+  <div data-code="history.py:124:132"></div>
+  <p>The payload keys are <code>history_axis_gradient_world</code>, <code>history_axis_update_world</code> and <code>history_valid</code>. They live inside the trajectory payload dictionaries, so the pool checkpoint carries them and a resumed run continues with the same history. The trainer's factory shows both boundaries: <code>reset</code> attaches an empty history after preparing the physical step, and <code>advance</code> copies the previous payload's history into the newly prepared one.</p>
+  <div data-code="train_mixed.py:279:301"></div>
+  <p>When a batch is collated, <code>batch_history</code> stacks the per-payload blocks into one <code>OptimizerHistory</code> on the compute device: <code>[B, C, 3, 3]</code> float32 for each block and a <code>[B]</code> boolean flag. Payloads with <code>history_valid</code> false contribute zero blocks. <a href="source/input_assembly.py.html#L113"><code>check_history</code></a> then validates shapes, dtype, device and finiteness inside the step and detaches the blocks once more before <code>assemble_inputs</code> consumes them.</p>
+  <div data-code="history.py:85:96"></div>
+
+  <h3 id="gradient-outputs">Step 6: the diagnostic outputs and how the trainer uses them</h3>
+  <p><code>MixedHexSolverStep.forward</code> returns a <a href="source/input_assembly.py.html#L68"><code>LearnedHexStepOutput</code></a> whose trailing fields carry four detached diagnostics next to the fused positions and energies:</p>
+  <ul>
+    <li><code>axis_gradient_world</code>: the un-normalized world gradient <code>G_world</code>, shape <code>[B, C, 3, 3]</code>, joules. This is what <code>store_history</code> saves as the next query's previous gradient.</li>
+    <li><code>achieved_axis_update_world</code>: <code>F_center(fused) − F_center(candidate)</code>, computed under <code>torch.no_grad()</code> from detached positions, shape <code>[B, C, 3, 3]</code>, dimensionless. This is saved as the next query's previous update.</li>
+    <li><code>force_residual_norm</code>: the Euclidean norm of the position gradient over all corners and components, shape <code>[B]</code>, newtons. Because the prescribed rows are zero, this is the free-corner residual of the objective at the pre-update candidate. The trainer logs it as <code>mean_force_residual_n</code>; validation uses the same quantity per iteration and its final-iteration mean as the checkpoint selection metric (<a href="source/mixed_validation.py.html#L67">validation residuals</a>).</li>
+    <li><code>tie_mask</code>: the boolean <code>[B, C]</code> mask from chapter 03, true where the closest-rotation problem for the cell frame was a tie within <code>tie_tolerance</code>, passed through unchanged. The mixed step always decomposes <code>F</code>, so the mask is never <code>None</code> here although the trainer guards for it; the trainer sums it per update and logs <code>tie_cell_count</code> (<a href="source/train_mixed.py.html#L725">train_mixed.py:725-727</a>).</li>
+  </ul>
+  <div data-code="mixed_physics.py:480:497"></div>
+  <p>In <a href="source/train_mixed.py.html#L413"><code>train_mixed.run_training</code></a> the sequence for one update is: collate the batch with its stacked history, evaluate the pre-update energy without gradients for the loss scale, run the step with <code>history=batch.get("history")</code>, form the loss from the fused energy, backpropagate, take the Adam step, and only then write the history and replace each trajectory's candidate with the detached fused positions. The history written here is consumed by the same trajectory's next query, whether that query is the next inner iteration or the first iteration of the next physical timestep.</p>
+  <div data-code="train_mixed.py:354:362"></div>
+  <div data-code="train_mixed.py:365:381"></div>
+  <div data-code="train_mixed.py:762:778"></div>
+
+  <h3 id="gradient-detach">Step 7: the one-query detach rule</h3>
+  <p>The gradient feature is a constant for backpropagation. Every stage that produces it breaks the autograd connection: <code>objective_gradient</code> differentiates a detached copy of the candidate and returns a detached tensor; <code>project_gradient</code> passes through NumPy and PARDISO; the frames are computed under <code>no_grad</code>; the history is detached on storage and again when <code>check_history</code> validates it. The state vector the network reads is therefore a plain input, exactly like the boundary flags. The candidate positions themselves are detached leaves in the training batch, so the axes <code>A = Rᵀ F</code> do not carry a gradient to earlier queries either.</p>
+  <p>What does train is the path from the network output to the fused energy:</p>
+  <pre class="formula">network parameters θ
+  → correction, step s            (heads)
+  → A_target = A + s ⊙ correction
+  → D = R (A_target − A)           (frame R is a constant)
+  → x_fused = fuse(candidate, D, prescribed)     (custom backward: transposed sparse solve)
+  → E_total(x_fused, Y, X_start)  (autograd through elasticity, inertia, damping)
+  → local_objective → loss.backward() → Adam</pre>
+  <p>The same transposed solve appears twice in one query: once in the forward pass, as the detached feature that tells the network where the energy decreases, and once in the backward pass, as the true derivative of the fused energy with respect to the network's proposal. Nothing differentiates the network through its own input feature, so there is no second-order term and no unrolling across queries: one query is one forward and one backward. Learning across inner iterations and physical timesteps happens because later queries are trained on states that earlier queries produced, with the detached history telling the network what the previous query saw and achieved.</p>
+  <div data-code="mixed_physics.py:461:480"></div>
+  <div data-code="train_mixed.py:698:722"></div>
+  <aside class="callout"><p><strong>Two energies at the same candidate, three energy evaluations per update.</strong> The trainer evaluates <code>E(candidate)</code> once under <code>no_grad</code> for the loss scale; <code>objective_gradient</code> evaluates it again with gradient tracking to obtain <code>g</code>; the loss evaluates <code>E(x_fused)</code> a third time, differentiably. The first two are constants for the weight update; only the third participates in <code>loss.backward()</code>.</p></aside>
+
+  <h3 id="gradient-shapes">Worked shapes for the configured grid</h3>
+  <p>With the 10 × 10 × 40 grid there are <code>P = 4,961</code> shared corners (11 × 11 × 41), <code>C = 4,000</code> cells, <code>K = 121</code> prescribed corners on the minimum-z face and <code>F = P − K = 4,840</code> free corners. <code>B = 16</code> objects per GPU.</p>
+  <div class="table-wrap"><table><caption>Tensor shapes along the gradient path for B = 16</caption><thead><tr><th>Quantity</th><th>Shape</th><th>Units</th></tr></thead><tbody>
+  <tr><td>Candidate positions <code>X</code></td><td>[16, 4961, 3]</td><td>m</td></tr>
+  <tr><td>Position gradient <code>g</code>, prescribed rows zeroed</td><td>[16, 4961, 3]</td><td>N</td></tr>
+  <tr><td>Free rows read by the adjoint, packed as solve columns</td><td>[1, 4840, 3] → [4840, 3], once per object (16 calls)</td><td>N</td></tr>
+  <tr><td>Adjoint solution <code>z = K_ff⁻ᵀ g_free</code></td><td>[4840, 3] per object</td><td>m</td></tr>
+  <tr><td>World axis gradient <code>G_world = unpack(B_fᵀ z)</code></td><td>[3·4000, 3] → [1, 4000, 3, 3] per object; <code>torch.cat</code> → [16, 4000, 3, 3]</td><td>J</td></tr>
+  <tr><td>Local gradient <code>Rᵀ G_world</code></td><td>[16, 4000, 3, 3]</td><td>J</td></tr>
+  <tr><td>Per-object RMS and its log</td><td>[16, 1, 1, 1] and [16]</td><td>J and log of a value in J</td></tr>
+  <tr><td>Normalized, clipped block, flattened into the state vector</td><td>[16, 4000, 3, 3] → [16, 4000, 9]</td><td>dimensionless</td></tr>
+  <tr><td>Previous gradient and previous update blocks</td><td>[16, 4000, 9] each; flag [16]</td><td>dimensionless</td></tr>
+  <tr><td>State vector; node input with the nine axes prepended</td><td>[16, 4000, 61]; [16, 4000, 70]</td><td></td></tr>
+  <tr><td>History stored per trajectory payload</td><td>[4000, 3, 3] world gradient (J), [4000, 3, 3] achieved update, one bool</td><td></td></tr>
+  <tr><td><code>force_residual_norm</code></td><td>[16]</td><td>N</td></tr>
+  </tbody></table></div>
+  <p class="caption">Each transposed solve has three right-hand-side columns, one per world component. The mixed step calls <code>project_gradient</code> once per object (<a href="source/mixed_physics.py.html#L345">mixed_physics.py:345-348</a>) because each object's fusion factor carries its own Young's modulus, so a query runs 16 three-column solves against 16 factors; the <code>[F, 3B]</code> packing of <code>_columns</code> merges objects only when a single <code>HexFusion</code> serves the whole batch, which is not the case here.</p>
+</section>

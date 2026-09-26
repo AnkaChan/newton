@@ -9,40 +9,157 @@ import hashlib
 import html
 import json
 import re
+import shutil
 import subprocess
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-REVISION = "496a3675f0fed5005d897250691a592b1122de45"
+REVISION = "f4298870a69334e94ee48eef077f452f40cce5bd"
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 PREFIX = "experiments/learned_intrinsic_solver/"
 SOURCE_MAP = (
-    ("network.py", "IntrinsicTransformerLayer", "LayerNorm, FiLM, attention, edge bias/value, and residual MLP."),
-    ("network.py", "IntrinsicSolverNetwork", "Input encoders, transformer stack, correction head, and object step."),
-    ("network_geometry.py", "build_grid_neighborhood", "Fixed 27-slot topology and masks for missing neighbors."),
-    ("network_geometry.py", "build_edge_features", "Transport neighbor geometry into the receiving cell's frame."),
-    ("mixed_physics.py", "MixedHexSolverStep", "Material contexts, features, learned query, and physical advance."),
-    ("hex_energy.py", "HexImplicitEulerLoss", "Hex quadrature, mass assembly, elasticity, inertia, and damping."),
-    ("damping.py", "damping_metric_difference", "Physical-start metric differences and six-value feature packing."),
-    ("fusion.py", "_FusionSolve", "Custom autograd forward solve and transposed backward solve."),
-    ("fusion.py", "HexFusion", "Full-quadrature incremental fitting and prescribed-corner constraints."),
-    ("pardiso.py", "PardisoFactor", "Cached CPU sparse factorization and repeated forward/transpose solves."),
+    (
+        "network.py",
+        "IntrinsicTransformerLayer",
+        "LayerNorm, FiLM, masked graph attention with edge bias/value, and the residual MLP.",
+    ),
+    (
+        "network.py",
+        "IntrinsicSolverNetwork",
+        "Node, edge and conditioning encoders, transformer stack, bounded correction head and per-cell sigmoid step.",
+    ),
+    (
+        "network_geometry.py",
+        "build_grid_neighborhood",
+        "Fixed 27-slot cuboid topology and masks for missing neighbors.",
+    ),
+    (
+        "network_geometry.py",
+        "build_edge_features",
+        "24 directed edge values: rest and current offsets, relative frame and transported neighbor axes.",
+    ),
+    (
+        "mixed_physics.py",
+        "MixedHexSolverStep",
+        "Material contexts, input assembly, one network query, per-material fusion, energy and detached diagnostics.",
+    ),
+    (
+        "input_assembly.py",
+        "assemble_inputs",
+        "Shared schema-3 assembly: F, frames, local axes, gradient feature, history normalization, state packing, edges.",
+    ),
+    (
+        "input_assembly.py",
+        "objective_gradient",
+        "Detached position gradient [N] of the full objective at the candidate, prescribed rows zeroed.",
+    ),
+    (
+        "fusion.py",
+        "HexFusion.project_gradient",
+        "Transpose solve mapping the free-corner position gradient to world axis-increment gradients.",
+    ),
+    (
+        "features.py",
+        "pack_state_features",
+        "Packing order of the 61 state values: five 3x3 blocks, 14 boundary flags, log gradient RMS, history flag.",
+    ),
+    (
+        "features.py",
+        "conditioning_channels",
+        "Six dimensionless FiLM channels from Lame parameters, density, cell size, timestep and viscosity.",
+    ),
+    (
+        "frames.py",
+        "closest_proper_rotations",
+        "SVD closest proper rotation, tie detection and the float64 clamped-face tie-break.",
+    ),
+    (
+        "frames.py",
+        "select_reference_corners",
+        "Three ordered prescribed corners spanning the clamped face for the reference frame.",
+    ),
+    (
+        "fusion.py",
+        "_FusionSolve",
+        "Custom autograd forward solve and transposed backward solve through the cached factor.",
+    ),
+    (
+        "fusion.py",
+        "HexFusion",
+        "Full-quadrature incremental fitting of shared corners with prescribed-corner constraints.",
+    ),
+    ("pardiso.py", "PardisoFactor", "Cached CPU sparse LU factorization and repeated forward and transpose solves."),
+    (
+        "hex_energy.py",
+        "stable_neo_hookean_density",
+        "Newton stable Neo-Hookean density from H = F - I, finite through collapse and inversion.",
+    ),
+    (
+        "hex_energy.py",
+        "HexImplicitEulerLoss",
+        "Hex quadrature, lumped mass, elasticity, implicit-Euler inertia and metric damping.",
+    ),
+    (
+        "damping.py",
+        "damping_metric_difference",
+        "Gauss-point metric change F^T F - F_n^T F_n against the physical-step start.",
+    ),
+    (
+        "history.py",
+        "store_history",
+        "Write the detached world axis gradient and achieved axis update into trajectory payloads.",
+    ),
     (
         "rigid_predictor.py",
         "RigidPosePredictor",
-        "Reduce the physical shape to rigid state and call Newton integration.",
+        "Reduce the physical shape to rigid state and call Newton integration for the initializer.",
     ),
     ("data.py", "generate_cuboid", "Canonical rest corners, cells, and material-grid topology."),
-    ("multiscale.py", "generate_multiscale", "Automatic control-grid hierarchy and compatible shared-corner fields."),
-    ("initial_state.py", "InitialStateAugmenter", "Deterministic reset, shape/velocity sampling, and pinned corners."),
-    ("material_sampling.py", "sample_material", "Seeded E, Poisson ratio, density, and absolute viscosity."),
-    ("train_mixed.py", "local_objective", "Normalized energy change and uphill penalty for one proposal."),
-    ("train_mixed.py", "run_training", "Mixed batches, backward, Adam, detached boundaries, and checkpoints."),
+    ("multiscale.py", "generate_multiscale", "Control-grid hierarchy and smooth shared-corner displacement fields."),
+    (
+        "initial_state.py",
+        "InitialStateAugmenter",
+        "Deterministic reset: material, shape and velocity sampling with pinned corners.",
+    ),
+    (
+        "material_sampling.py",
+        "sample_material",
+        "Seeded Young's modulus, Poisson ratio, density and absolute viscosity.",
+    ),
+    (
+        "train_mixed.py",
+        "local_objective",
+        "LeCO per-update loss: asinh(E_after / s) + relu((E_after - E_before) / s), s = max(|E_before|, floor).",
+    ),
+    (
+        "train_mixed.py",
+        "run_training",
+        "Mixed batches, energy before and after, backward, Adam, history storage, validation and checkpoints.",
+    ),
     ("trajectory_pool.py", "ActiveTrajectoryPool", "Blend different iteration and timestep ages in the active pool."),
-    ("hex_validity.py", "HexFeasibility", "Optional sampled-geometry acceptance and detached step shortening."),
+    (
+        "curriculum.py",
+        "MixedCurriculum",
+        "Stage caps on iterations K and physical steps H; advancement by qualified validation or epoch limit.",
+    ),
+    (
+        "training_schedule.py",
+        "PlateauController",
+        "Learning-rate reductions and plateau stopping on the validation selection metric.",
+    ),
+    (
+        "mixed_validation.py",
+        "validate",
+        "Fixed-seed validation: residual norms per iteration, selection metric and the cheap physical check.",
+    ),
+    (
+        "mixed_validation.py",
+        "validate_full_horizon",
+        "Held-out 16-seed check at the full available K x H horizon.",
+    ),
 )
 
 
@@ -107,9 +224,9 @@ def main():
         )
 
     page = (HERE / "page.html").read_text()
-    for key in ("network", "energy", "frames", "data"):
+    for key in ("network", "energy", "frames", "data", "gradient"):
         fragment = (HERE / f"{key}.html").read_text()
-        fragment = re.sub(r"<h2>(0[123]) (.*?)</h2>", r'<h2><span class="chapter">\1</span>\2</h2>', fragment)
+        fragment = re.sub(r"<h2>(0[12345]) (.*?)</h2>", r'<h2><span class="chapter">\1</span>\2</h2>', fragment)
         page = page.replace(f"@@{key.upper()}@@", fragment)
     page = page.replace("@@STYLE@@", (HERE / "style.css").read_text())
     page = page.replace("@@SCRIPT@@", (HERE / "main.js").read_text())
@@ -117,11 +234,29 @@ def main():
     page = page.replace("@@CONFIG@@", html.escape((HERE / "campaign-config.json").read_text()))
     page = re.sub(r'<div data-code="([a-z_]+\.py):(\d+):(\d+)"></div>', excerpt, page)
 
+    def locate(name, symbol):
+        """Return the line of a module-level def/class or a dotted Class.method."""
+        scope = ast.parse(read_source(name)).body
+        node = None
+        for part in symbol.split("."):
+            node = next(
+                (
+                    child
+                    for child in scope
+                    if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == part
+                ),
+                None,
+            )
+            if node is None:
+                raise ValueError(f"SOURCE_MAP symbol not found: {name}:{symbol}")
+            scope = getattr(node, "body", [])
+        return node.lineno
+
     rows = []
     for name, symbol, description in SOURCE_MAP:
-        node = next(node for node in ast.walk(ast.parse(read_source(name))) if getattr(node, "name", None) == symbol)
+        line = locate(name, symbol)
         rows.append(
-            f'<tr><td><a href="source/{name}.html#L{node.lineno}"><code>{symbol}</code></a>'
+            f'<tr><td><a href="source/{name}.html#L{line}"><code>{symbol}</code></a>'
             f"<br><small>{name}</small></td><td>{html.escape(description)}</td></tr>"
         )
     source_map = (
@@ -137,7 +272,13 @@ def main():
     for name in re.findall(r'source: "([a-z_]+\.py)#L\d+"', page):
         read_source(name)
     (output / "index.html").write_text(page)
-    (output / "source").mkdir(exist_ok=True)
+    # Rebuild the source bundle from scratch so pages of files no longer in the snapshot do not linger.
+    shutil.rmtree(output / "source", ignore_errors=True)
+    (output / "source").mkdir()
+    remote_branches = subprocess.run(
+        ["git", "branch", "-r", "--contains", REVISION], cwd=ROOT, capture_output=True, text=True, check=False
+    ).stdout.split()
+    published = bool(remote_branches)
     source_style = """
 body{margin:0;background:#f5f8f7;color:#18333b;font:15px/1.6 system-ui}
 header{padding:24px 28px;border-bottom:1px solid #d8e4e4;background:#fff}
@@ -149,13 +290,18 @@ pre{margin:0;padding:20px 12px;overflow:auto;background:#142c34;color:#d7e7e9;fo
 """
     for name, contents in sources.items():
         github = f"https://github.com/AnkaChan/newton/blob/{REVISION}/{PREFIX}{name}"
+        origin = (
+            f'<a href="{github}">Pinned GitHub source</a>'
+            if published
+            else f"Local snapshot of commit {REVISION[:12]} (not yet pushed to GitHub)"
+        )
         source_page = (
             '<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,">'
             f"<title>{name} · LIDO source</title><style>{source_style}</style></head><body><header>"
             '<a href="../index.html#implementation-map">← Code walkthrough</a>'
             f"<h1>{name}</h1><p>{PREFIX}{name} · snapshot {REVISION[:8]}</p>"
-            f'<p><a href="{github}">Pinned GitHub source</a> · <a href="{name}" download>Download Python</a></p>'
+            f'<p>{origin} · <a href="{name}" download>Download Python</a></p>'
             f"</header><pre><code>{source_lines(name, 1, len(contents.splitlines()), identifiers=True)}</code></pre>"
             "</body></html>"
         )
@@ -166,7 +312,7 @@ pre{margin:0;padding:20px 12px;overflow:auto;background:#142c34;color:#d7e7e9;fo
         "implementation_root": PREFIX,
         "campaign_config": json.loads((HERE / "campaign-config.json").read_text()),
         "source_sha256": {name: hashlib.sha256(value.encode()).hexdigest() for name, value in sorted(sources.items())},
-        "chapters": ["network", "energy", "frames", "augmentation"],
+        "chapters": ["network", "energy", "frames", "augmentation", "gradient"],
         "excerpt_count": page.count('class="code-excerpt"'),
     }
     (output / "snapshot.json").write_text(json.dumps(manifest, indent=2) + "\n")

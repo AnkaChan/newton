@@ -1,46 +1,185 @@
 <section id="frames">
-  <h2>03 Local frames and differentiable assembly</h2>
-  <p>The network proposes a change to each cell’s three deformation axes. Assembly turns those cell proposals into one position for every shared corner. The positions are the persistent shape; frames and axes are derived descriptions rebuilt for a solver query. In the 10 × 10 × 40 grid, 4,000 cells share 4,961 corners. Adjacent cells therefore cannot move their common corner independently.</p>
+<h2>03 Local frames and differentiable assembly</h2>
+<p>This chapter follows one learned query from shared corner positions to a fused shape. The code lives in five modules under <code>experiments/learned_intrinsic_solver</code>: <a href="source/features.py.html#L144"><code>features.center_deformation</code></a> reads the center deformation gradient of every cell, <a href="source/frames.py.html#L168"><code>frames.closest_proper_rotations</code></a> chooses one rotation frame per cell, <a href="source/input_assembly.py.html#L185"><code>input_assembly.assemble_inputs</code></a> composes the network inputs from those pieces, <a href="source/fusion.py.html#L82"><code>fusion.HexFusion</code></a> turns per-cell world increments into one compatible set of corner positions through a cached CPU sparse solve from <a href="source/pardiso.py.html#L76"><code>pardiso.PardisoFactor</code></a>, and <a href="source/mixed_physics.py.html#L427"><code>MixedHexSolverStep.forward</code></a> strings them together. All of it runs once per solver iteration: the input assembly before the network call, fusion and the energy after it. A second, network-free use of fusion happens once per physical timestep in <a href="source/mixed_physics.py.html#L506"><code>prepare</code></a>.</p>
+<p>Two facts organize the chapter. First, the persistent state is the array of shared corner positions <code>X</code>, shape <code>[B, P, 3]</code> in meters; frames and local axes are derived from it for one query and then discarded. Second, the network never reads or writes world coordinates directly: it receives dimensionless 3 × 3 matrices expressed in a per-cell frame and returns a target in that same frame. The rotation back to world space and the reconciliation of neighboring cells are the assembly steps below. In the campaign grid of 10 × 10 × 40 cells, <code>C = 4000</code> cells share <code>P = 4961</code> corners, and the 121 corners of the clamped face <code>z = 0</code> are prescribed, leaving 4840 free corners.</p>
 
-  <h3>Read the current deformation from eight shared corners</h3>
-  <p>Each canonical rest cell has side length <code>h</code>, measured in meters. Gather its eight current corner positions in the fixed material ordering. The first column of the center deformation matrix <code>F</code> is the difference between the current centroids of the positive-x and negative-x faces, divided by <code>h</code>. Repeat for y and z. These columns are dimensionless transformed material axes: their lengths retain stretch, and their relative directions retain shear.</p>
-  <pre class="equation"><code>F[:, x] = (mean(x-positive face) − mean(x-negative face)) / h
-F[:, y] = (mean(y-positive face) − mean(y-negative face)) / h
-F[:, z] = (mean(z-positive face) − mean(z-negative face)) / h</code></pre>
-  <p>The implementation uses an equivalent weighted corner sum, subtracting the first corner before accumulating to reduce translation-related cancellation. A batch produces <code>F: [B, 4000, 3, 3]</code>. This is the trilinear hex deformation gradient <em>at the center</em>; one matrix does not describe every possible warping of eight corners. Those corner positions remain available throughout the solve. <a href="source/mixed_physics.py.html#L278">See the center-gradient computation</a>.</p>
+<h3 id="frames-deformation">The center deformation gradient from eight shared corners</h3>
+<p>Each rest cell is a cube of side <code>h</code> (0.025 m in the campaign). Its eight corners are stored in z-fastest material order: corner <code>k</code> sits at rest offset <code>signs_k · h/2</code> from the cell center, with <code>signs_k</code> running through <code>(-1,-1,-1), (-1,-1,+1), (-1,+1,-1), ...</code>. For the trilinear hexahedron, the derivative of corner <code>k</code>'s interpolation weight at the cell center is <code>signs_k / (4h)</code>, so the deformation gradient at the center is a fixed weighted sum of the current corner positions:</p>
+<pre class="formula">G_k  = signs_k / (4 h)                       shape [8, 3], units 1/m
+F_ij = sum_k (x_k - x_0)_i · (G_k)_j         shape [B, C, 3, 3], dimensionless
 
-  <h3>Separate the coordinate frame from the axes</h3>
-  <p>The code decomposes each center matrix with SVD, forms the rotation <code>R = left × right_transpose</code>, and expresses the axes in that frame as <code>A = Rᵀ × F</code>. Multiplication by <code>Rᵀ</code> converts world vectors into local coordinates; multiplication by <code>R</code> converts them back. Both matrices have three columns, but different jobs: <code>R</code> is an orthonormal coordinate frame, while <code>A</code> carries the actual stretch and shear.</p>
-  <p>The SVD runs inside <code>torch.no_grad()</code>. Consequently, differentiation treats <code>R</code> as fixed for this query, while <code>A = RᵀF</code> retains its position-gradient path. The frame can be recomputed at the next query; “frozen” does not mean fixed for the entire trajectory.</p>
-  <div data-code="mixed_physics.py:278:288"></div>
-  <p><strong>Current inversion restriction:</strong> this extractor rejects a nonpositive center determinant and a smallest singular value below its float32 threshold. The raw nine-entry axes format can mathematically represent an inverted matrix, but this extraction path does not accept one. The energy separately requires positive Gauss-point Jacobians. When optional geometry backtracking is enabled, the mixed solver also shortens proposals that fail its sampled geometry checks. These are runtime restrictions beyond the axes’ representational capacity. <a href="source/mixed_physics.py.html#L281">Frame checks</a> · <a href="source/mixed_physics.py.html#L341">Energy checks</a> · <a href="source/mixed_physics.py.html#L402">Optional acceptance</a></p>
+equivalently, column j of F:
+F[:, j] = (mean of the 4 corners on the +j face - mean of the 4 corners on the -j face) / h</pre>
+<ul>
+<li><code>center_gradients</code> is a registered buffer built once in the step constructor from the sign table divided by <code>4h</code>. It is the same for every cell because all rest cells are identical cubes.</li>
+<li>Subtracting corner zero changes nothing mathematically, because the eight gradients sum to zero, but it keeps the float32 accumulation free of the large common translation.</li>
+<li>The columns of <code>F</code> are the three transformed material axes. They are not normalized; an inverted or collapsed cell simply produces a finite <code>F</code> with a nonpositive determinant, and nothing in this path rejects it.</li>
+<li>The function detaches nothing. When <code>positions</code> requires gradients, <code>F</code> is differentiable in them through one <code>einsum</code>.</li>
+<li>This is the deformation at the center only. The energy of <a href="#energy">chapter 02</a> evaluates a separate <code>F</code> at each of eight Gauss points, and fusion below matches its target at those same eight points.</li>
+</ul>
+<div data-code="mixed_physics.py:175:194"></div>
+<div data-code="features.py:170:191"></div>
 
-  <h3>Turn local axis proposals into a shared displacement</h3>
-  <p>The network outputs target axes in the same local frame as its input. The mixed solver subtracts the current axes and rotates the difference into world coordinates:</p>
-  <pre class="equation"><code>local_increment = target_axes − current_axes
-D = R × local_increment
-new_positions = base_positions + solved_displacement</code></pre>
-  <p><code>D</code> is one dimensionless 3 × 3 matrix per cell. Assembly finds corner displacements, in meters, whose deformation gradients best match these proposals. At each of eight Gauss points per cell, <code>G(c,q)</code> differentiates the shared displacement using the <em>rest</em> shape-function gradients. The exact fitting objective is:</p>
-  <pre class="equation"><code>minimize over corner displacements δ:
-  Σ cells c  weight[c] × (1/8) Σ Gauss points q
-      squared_sum_of_entries( G(c,q) δ − D[c] )
+<h3 id="frames-rotation">The frame is the closest proper rotation</h3>
+<p>A frame is an orthonormal, right-handed basis <code>R</code> attached to a cell. Its job is to make the network's inputs and outputs independent of the world orientation of the object: everything the network reads is first multiplied by <code>Rᵀ</code>, and its output is multiplied by <code>R</code> on the way back. The implementation picks the proper rotation nearest to <code>F</code> in the Frobenius norm, computed from a singular value decomposition:</p>
+<pre class="formula">U, s, Vh = svd(F)                s = (s1, s2, s3) descending, s3 >= 0
+d = +1 if det(U Vh) >= 0 else -1
+R = U diag(1, 1, d) Vh           proper rotation, det R = +1 for every cell
+A = Rᵀ F                         local axes, shape [B, C, 3, 3]; R A = F exactly</pre>
+<p>For a cell with positive determinant, <code>d = +1</code> and <code>R = U Vh</code> is the polar rotation of <code>F</code>. For an inverted cell the plain product <code>U Vh</code> would be a reflection; flipping the sign of the third column of <code>U</code> restores a rotation while acting on the smallest singular direction, the direction along which <code>F</code> is least stretched. <code>A</code> then carries everything that is not rotation: stretch on its diagonal, shear in its off-diagonal entries, and an inversion as a negative determinant.</p>
+<ul>
+<li>The whole decomposition runs under <code>torch.no_grad()</code> on a detached copy of <code>F</code>, and the result is returned detached. <code>R</code> is therefore a constant of the current query; autograd treats it exactly like a fixed matrix.</li>
+<li><code>A = Rᵀ F</code> is computed afterwards by <a href="source/features.py.html#L194"><code>features.to_local</code></a>, outside the <code>no_grad</code> block, so <code>A</code> stays differentiable in the positions through <code>F</code>.</li>
+<li><code>F</code> itself is never edited. Because <code>R</code> is orthonormal, <code>R A</code> reconstructs <code>F</code> for every cell, including inverted and collapsed ones.</li>
+<li>Frames are recomputed from the current candidate at every query. No frame is carried from one iteration to the next, and there is no separate frame for the inertial prediction or the physical start: their deformations are expressed in the candidate's frame.</li>
+<li><code>_proper_rotation</code> treats a zero determinant as <code>+1</code>, so the sign table never contains zeros. The function also returns the singular values of the unmodified <code>F</code> for diagnostics.</li>
+</ul>
+<div data-code="frames.py:159:165"></div>
+<div data-code="frames.py:240:250"></div>
 
-subject to:
-  δ[fixed] = prescribed_positions − base_positions[fixed]</code></pre>
-  <p>The context sets <code>weight[c] = Young’s modulus × h³</code>, which has units of joules. The quadrature weights are normalized internally, so rest volume is included once. There is <strong>no mass term or implicit-Euler inertia term in this assembly objective</strong>. The physical energy is evaluated afterward on the assembled positions. <a href="source/mixed_physics.py.html#L198">Context weights</a> · <a href="source/fusion.py.html#L99">Assembly objective</a></p>
-  <p>All cells reference one global corner array. Competing targets are reconciled by the weighted fit, rather than by averaging independently moved copies. Prescribed corners are assigned their exact supplied positions. The connected grid requires at least one fixed corner to remove the free translation; this implementation does not supply an unconstrained translation gauge.</p>
-  <p><strong>A concrete example:</strong> with <code>h = 0.025 m</code>, an unrotated cell with <code>A = diag(1, 1, 1.2)</code> measures 25 × 25 × 30 mm. A target <code>diag(1, 1, 1.1)</code> gives <code>D = diag(0, 0, −0.1)</code>. For one affine cell with its bottom face fixed, assembly lowers the top by 2.5 mm. For many cells, shared corners make all such requests interact.</p>
-  <p>The solve fits an <em>increment</em>. A zero proposal preserves the existing warped shape exactly when its prescribed corners are already satisfied. It does not repeatedly reconstruct the entire shape from center axes or discard existing within-cell warping. <a href="source/fusion.py.html#L102">Incremental behavior</a></p>
+<h3 id="frames-ties">Ties and the clamped-face reference</h3>
+<p>The closest rotation is unique only when <code>F</code> is well separated from the set of matrices that have two equally good rotations. In squared Frobenius distance, the next-best proper rotation is <code>4 · gap</code> farther from <code>F</code> than the best one, with</p>
+<pre class="formula">gap = s2 + s3     if d > 0     (a proper cell is ambiguous only when two singular values vanish)
+gap = s2 - s3     if d &lt; 0     (an inverted cell is ambiguous when the two smallest coincide)
 
-  <h3>Reuse the factor, differentiate through the solution</h3>
-  <p>Stacking the gradient samples gives a fixed operator <code>G</code> and diagonal weights <code>W</code>. Assembly constructs <code>H = GᵀWG</code> and a target operator <code>B</code> that repeats each cell proposal at its eight samples. With <code>f</code> denoting free corners and <code>p</code> prescribed corners, the linear system is:</p>
-  <pre class="equation"><code>H_ff δ_f = B_f D − H_fp δ_p</code></pre>
-  <div data-code="fusion.py:182:214"></div>
-  <p>PARDISO factors this matrix once when the material context is constructed and reuses the factor for its solver iterations and physical timesteps. Current positions and neural weights change the right-hand side, not this matrix. Context replacement builds another factor; there is no single global factor shared by every sampled material. Factors and solves stay float32 on CPU; tensors transferred back preserve the input device. <a href="source/pardiso.py.html#L165">Factor construction</a> · <a href="source/pardiso.py.html#L210">Cached solves</a></p>
-  <p>The custom backward pass receives the loss gradient on assembled free corners, <code>g_f</code>, solves <code>H_ffᵀ z = g_f</code>, and applies <code>B_fᵀ z</code> to obtain gradients for the proposed axes. That gradient continues through the world rotation and network. CPU transfers do not sever this custom gradient path. The implementation also returns gradients for base and prescribed positions; it supports first derivatives, with fixed topology, material weights, and factorization. The trainer’s detached iteration and timestep boundaries determine how far state gradients propagate.</p>
-  <div data-code="fusion.py:62:81"></div>
+tie  when  gap &lt;= tol · max(s1, 1)          tol = tie_tolerance = 1e-4</pre>
+<p>A collapsed cell (rank one or zero) and an inverted cell with equal middle and smallest singular values are the two tie cases. Left alone, the SVD would return an arbitrary rotation for them, and that rotation could jump between iterations. The implementation resolves ties with a reference frame built from the clamped face, so the choice rotates with the whole problem and is repeatable:</p>
+<pre class="formula">eps    = tol · max(s1, 1)
+R_tie  = closest proper rotation of (F + eps · R_ref)     same formula, float64, tie cells only</pre>
+<p>Adding a small multiple of the reference singles out, among all equally close rotations, the one nearest to <code>R_ref</code>. For a rank-one <code>F</code> the leading axis is still mapped as <code>F</code> demands and the free rotation about it is fixed by the reference; for <code>F = 0</code> the frame is <code>R_ref</code> itself. The reference comes from three prescribed corners:</p>
+<pre class="formula">rest geometry, chosen once at construction (select_reference_corners):
+p0 = prescribed corner with the lexicographically smallest rest (x, y, z)
+p1 = prescribed corner farthest from p0
+p2 = prescribed corner maximizing |(p1 - p0) x (p2 - p0)|
 
-  <h3>Where the rigid prediction enters</h3>
-  <p>The mixed path recomputes mass center, angular momentum, and inertia from the current physical shape, then invokes Newton’s body integrator under <code>no_grad()</code>. Its rotation and translation produce a rigid-guided base. A zero-increment assembly restores prescribed corners, yielding an initialization candidate. The ordinary learned query subsequently assembles from its current candidate. The separate single-material API can also apply an explicitly supplied rigid map during assembly. <a href="source/rigid_predictor.py.html#L176">Rigid prediction</a> · <a href="source/mixed_physics.py.html#L438">Mixed preparation</a> · <a href="source/solver_step.py.html#L289">Single-material path</a></p>
-  <p>This guidance does not replace the physical inertial prediction <code>Y</code>. The mixed preparation computes <code>Y</code> separately from physical positions, velocity, gravity, and force. Pins determine translation in this clamped assembly: a uniform translation of its base cancels from the exact constrained minimizer. Newton’s model keeps the pinned particles’ positive masses; the learned solver enforces their prescribed positions explicitly. <a href="source/mixed_physics.py.html#L444">Physical prediction</a> · <a href="source/solver_step.py.html#L269">Rigid-map semantics</a> · <a href="source/newton_model.py.html#L38">Pinned-particle convention</a></p>
+current geometry, rebuilt every query (reference_rotation):
+e1 = normalize(x1 - x0)
+n  = normalize(e1 x (x2 - x0))
+e2 = n x e1
+R_ref = [e1  e2  n]     columns, shape [B, 3, 3]</pre>
+<ul>
+<li>Corner selection is pure NumPy on rest positions and runs once in the step constructor; the result is the <code>reference_corners</code> buffer, three long indices or an empty tensor when fewer than three noncollinear prescribed corners exist. Distances and areas equal within a relative <code>1e-9</code> resolve to the smallest corner ID. In the campaign grid the prescribed corners are the <code>z = 0</code> face, which gives the rest corners <code>(0, 0, 0)</code>, <code>(0.25, 0.25, 0)</code> and <code>(0, 0.25, 0)</code> in meters: <code>e1</code> runs along the face diagonal and <code>n</code> along <code>+z</code>.</li>
+<li><code>reference_rotation</code> reads the current positions of those three corners under <code>no_grad</code>, so <code>R_ref</code> is detached like the frames. Because the corners are prescribed, it changes only if the pins themselves are moved. It raises on coincident or collinear corners.</li>
+<li>The tie branch touches only cells in <code>tie_mask</code>. Their matrices are cast to float64 before the perturbed SVD because the perturbed problem is conditioned like <code>1 / tol</code>; the resulting frames are cast back to float32. Cells that are not ties are never modified.</li>
+<li>Without a reference, tie cells keep the plain formula and <code>tie_mask</code> still reports them. The trainer sums the mask per update and logs it as <code>tie_cell_count</code>.</li>
+<li>The frame is discontinuous across the tie threshold. This is acceptable because the frame is only a coordinate choice: <code>R A = F</code> holds either way, and the optimizer history is stored in world coordinates so a frame jump cannot corrupt it.</li>
+</ul>
+<div data-code="frames.py:93:108"></div>
+<div data-code="frames.py:141:156"></div>
+<div data-code="frames.py:251:257"></div>
+
+<h3 id="frames-assembly">Assembling the network inputs in one frame</h3>
+<p><code>assemble_inputs</code> is the shared entry point that both solver paths call before the network. It computes the deformation of the candidate, the reference and the frames, then the local axes, and expresses every other 3 × 3 quantity in the same frame with <code>to_local</code>, that is <code>Rᵀ M</code>. The nine entries of <code>A</code> are the network's first input. The state vector then packs, in order, the inertial axis offset <code>Rᵀ (F(Y) - F(X))</code>, the physical axis change <code>Rᵀ (F(X) - F(X_start))</code>, the normalized current axis gradient, the two normalized history blocks, fourteen boundary flags, <code>log rms</code> and the history flag; <a href="#network">chapter 01</a> lists the widths and <a href="#gradient">chapter 05</a> derives the gradient and history blocks. The frames and axes also feed the edge descriptors, which transport each neighbor's axes into the receiving cell's frame.</p>
+<ul>
+<li><code>F(Y)</code> and <code>F(X_start)</code> reuse <code>center_deformation</code> on the inertial prediction and on the physical-step start. Both tensors arrive detached from the trainer and stay fixed across the inner iterations of one timestep, so the two difference blocks are differentiable in the candidate positions only, exactly like <code>A</code>.</li>
+<li>All three deformations are expressed in the one frame computed from the candidate. There is no per-input frame and no transport between frames inside a query.</li>
+<li>When a caller passes <code>frames</code> explicitly, the SVD is skipped and <code>tie_mask</code> is <code>None</code>. The mixed step never does this; it always decomposes the current <code>F</code>.</li>
+<li>The returned <code>LearnedHexInputs</code> carries the detached frames, the differentiable axes and state, the edge features per hop, the conditioning, and three detached diagnostics: the world axis gradient, the zero-pinned position gradient and the tie mask.</li>
+</ul>
+<div data-code="input_assembly.py:233:244"></div>
+
+<h3 id="frames-increment">From a local target to a world increment</h3>
+<p>The network returns <code>local_target_axes = A + step_size · correction</code>, where <code>correction</code> is a nine-value matrix of joint norm below one and <code>step_size</code> a per-cell scalar in <code>(0, 0.05)</code>. The step subtracts the current axes and rotates the difference back to world space:</p>
+<pre class="formula">D = R (A_target - A) = R (step_size · correction)          shape [B, C, 3, 3], dimensionless</pre>
+<p><code>D</code> is the requested change of each cell's center deformation gradient in world coordinates. Because <code>A</code> appears in both terms it cancels algebraically: the increment depends on the network output and on the constant frame, and gradients from anything downstream reach the network only through <code>step_size</code> and <code>correction</code>. The batch is then fused one object at a time, because each object's material context owns its own factor, and the physical energy of chapter 02 is evaluated on the fused positions.</p>
+<div data-code="mixed_physics.py:461:479"></div>
+
+<h3 id="frames-objective">Fusion: what is being minimized</h3>
+<p>Adjacent cells share corners, so 4000 independent requests <code>D_c</code> cannot all be satisfied. Fusion solves one weighted least-squares problem for a corner displacement <code>u</code> (meters) whose deformation-gradient change, sampled at the eight Gauss points of every cell, is as close as possible to that cell's request:</p>
+<pre class="formula">(G u)_cq = sum_a outer(u[corner(c, a)], dN_a/dX(q))       change of F at Gauss point q of cell c
+
+minimize over u:   1/2 · sum_c w_c · sum_q (1/8) · || (G u)_cq - D_c ||²
+subject to:        u_p = fixed_positions - base_p           prescribed corners, exact
+
+fused = base + u</pre>
+<p>Every shared corner is a single unknown, so the fit reconciles neighbors instead of averaging separately moved copies. The eight-point average inside a cell means a warped cell is asked to match one <code>D_c</code> on average, not at every point. Solving for an increment on top of <code>base</code> makes the operation incremental: a zero request preserves whatever warping the base already has. As a concrete scale, with <code>h = 0.025 m</code> a request <code>D = diag(0, 0, -0.1)</code> on a single unrotated cell whose bottom face is fixed lowers its top face by 2.5 mm; in the grid, every such request competes with its neighbors through the shared corners.</p>
+<ul>
+<li><code>w_c</code> is fixed per material context: Young's modulus times rest cell volume, in joules. The code evaluates <code>E = μ (3 - μ / (λ + μ))</code> in a scaled form and multiplies by <code>h³</code>. The quadrature weights are normalized to sum to one inside <code>HexFusion</code>, so volume enters once.</li>
+<li>Fusion contains no mass, inertia or elasticity term. It is a reconstruction layer; physics is evaluated afterwards on <code>fused</code>.</li>
+<li>The problem needs at least one prescribed corner to remove the free translation; the constructor refuses an empty <code>fixed_indices</code>.</li>
+</ul>
+<div data-code="mixed_physics.py:234:249"></div>
+
+<h3 id="frames-operators">Fixed sparse operators and one cached factor</h3>
+<p>Setting the gradient of the objective to zero gives linear normal equations. Stacking all Gauss-point shape gradients into a sparse matrix <code>G</code> and the per-row weights into a diagonal <code>W</code>:</p>
+<pre class="formula">G      shape [C·8·3, P]     row (c, q, j) holds dN_a/dX_j(q) for the 8 corners a of cell c
+W      diagonal, entry w_c / 8 on every row of cell c
+K      = Gᵀ W G             shape [P, P]
+B      = Gᵀ W T             T repeats the target column D_c[:, j] on the rows (c, q, j)
+
+K_ff u_f = B_f D - K_fp u_p         f = free corners, p = prescribed corners</pre>
+<p>Only <code>K_ff</code>, the coupling block <code>K_fp</code> and the free rows <code>B_f</code> are kept. Because rest topology, weights and pins never change for a context, <code>K_ff</code> is built and factored once in the constructor, and the factor is reused for every forward solve, every adjoint solve and every gradient feature of that context, across solver iterations and physical timesteps.</p>
+<ul>
+<li>Shapes for the campaign grid: <code>G</code> has 96,000 rows and 4961 columns with eight nonzeros per row; <code>K_ff</code> is 4840 × 4840 after removing the 121 prescribed corners.</li>
+<li>Rows are ordered <code>(cell, Gauss point, material direction j)</code>. The three world components of a vector become separate right-hand-side columns, packed as <code>[N, 3B]</code> column-major arrays by <code>_columns</code>, so one call solves all of them. Here <code>N</code> is the row count of whatever is being packed: <code>3C</code> target rows and one row per prescribed corner (121 in the campaign grid) for the pin displacements in the forward pass, <code>F = 4840</code> free-corner gradient rows in the adjoint. The sparse products <code>B_f</code> and <code>K_fp</code> turn the forward inputs into an <code>[F, 3B]</code> right-hand side, so every right-hand side handed to the factor has <code>F</code> rows.</li>
+<li>The operators are SciPy CSR/CSC matrices in the working precision (float32 in training). <code>PardisoFactor</code> copies the matrix, calls oneMKL PARDISO with matrix type 11 (real, general) and single-precision factors, and validates the CSR structure during analysis.</li>
+<li>Each material context owns its own <code>HexFusion</code> and therefore its own factor; no factor is shared across materials. An autograd graph keeps a reference to its fusion object, so a discarded context can still run its backward pass.</li>
+</ul>
+<div data-code="fusion.py:181:193"></div>
+<div data-code="fusion.py:194:213"></div>
+
+<h3 id="frames-forward">The forward solve, exact pins and the zero-increment no-op</h3>
+<p><code>HexFusion.fuse</code> validates shapes and calls the custom autograd function <code>_FusionSolve</code>. Its forward pass moves only what the solve needs to the CPU: the targets, packed as <code>[3C, 3B]</code>, and the prescribed displacement <code>fixed_positions - base_p</code>. It assembles the right-hand side, solves, and adds the result to a clone of the base on the original device.</p>
+<ul>
+<li>Prescribed corners are assigned <code>fixed_positions</code> directly rather than <code>base + u_p</code>, so they are bit-exact. The trainer checks after every query that the fused pins equal the supplied values.</li>
+<li>With <code>D = 0</code> and pins already satisfied, the right-hand side is zero and the base is returned unchanged. When the pins are not satisfied, the same zero-increment solve spreads the pin correction over the free corners in the way that changes the sampled deformation gradients least.</li>
+<li>In every learned query <code>u_p</code> is exactly zero. <a href="source/train_mixed.py.html#L330"><code>_candidate</code></a> writes <code>fixed_positions</code> into the pinned rows of each new candidate, <a href="source/train_mixed.py.html#L350"><code>_batch</code></a> copies them unchanged, and every fused result reassigns them (<a href="source/fusion.py.html#L56">fusion.py</a>) before it becomes the next candidate (<a href="source/train_mixed.py.html#L777">trainer</a>, <a href="source/mixed_validation.py.html#L184">validation</a>); <code>fixed_positions</code> itself is the pinned positions captured by <code>prepare</code> at the start of the physical step and held constant across its inner iterations. The <code>torch.equal</code> check at <a href="source/train_mixed.py.html#L379">train_mixed.py:379</a> confirms this after every query. The learned solve is therefore just <code>K_ff u_f = B_f D</code>. The <code>K_fp u_p</code> term is nonzero only in <code>prepare</code>, where the rigid motion has moved the pinned rows of <code>base</code> while <code>fixed_positions = x[fixed]</code> stays put. The backward pass still applies <code>K_fpᵀ z</code>, but that gradient lands on the detached base and pin leaves.</li>
+<li><code>prepare</code> uses exactly that once per physical timestep: it rotates and translates the physical shape by the Newton rigid predictor, then fuses a zero increment with the pinned positions to produce a compatible initial candidate. The mixed trainer later replaces this candidate with the inertial or perturbed-inertial candidate of <a href="#augmentation">chapter 04</a>; the inertial prediction <code>Y</code> is computed independently of this fuse.</li>
+<li>The <code>.detach()</code> calls inside <code>forward</code> only strip autograd metadata for the NumPy conversion. Gradients are supplied by the custom <code>backward</code> below, not by tracing these operations.</li>
+</ul>
+<div data-code="fusion.py:41:60"></div>
+<div data-code="mixed_physics.py:521:532"></div>
+
+<h3 id="frames-backward">The transposed solve carries the gradient back</h3>
+<p>Autograd hands <code>backward</code> the gradient of the loss with respect to the fused positions, <code>g</code> of shape <code>[B, P, 3]</code>. The forward map from <code>D</code> to <code>u_f</code> is linear, <code>u_f = K_ff⁻¹ (B_f D - K_fp u_p)</code>, so its adjoint is one transposed solve followed by the transposed operators:</p>
+<pre class="formula">z          = K_ff^-T g_f                one transposed sparse solve, shape [F, 3B]
+dL/dD      = unpack(B_fᵀ z)             shape [B, C, 3, 3], same layout as D
+dL/dbase_f = g_f                        free base rows pass straight through
+dL/dbase_p = K_fpᵀ z                    through u_p = fixed_positions - base_p
+dL/dfixed  = g_p - K_fpᵀ z              direct assignment plus the same coupling</pre>
+<ul>
+<li>The solve uses PARDISO's transposed mode (<code>iparm[11] = 2</code>) on the cached factor. <code>K_ff</code> is symmetric, so this equals the plain solve up to rounding, but the code asks for the exact transpose so the adjoint identity holds for the factored matrix as stored.</li>
+<li><code>_adjoint_targets</code> reshapes <code>B_fᵀ z</code> from <code>[3C, 3B]</code> back to <code>[B, C, 3, 3]</code> with axes in columns, undoing the packing of the forward pass.</li>
+<li><code>backward</code> is marked <code>once_differentiable</code>: first derivatives only. Topology, weights and the factor are never differentiated; the function returns <code>None</code> for the fusion object.</li>
+<li>The CPU round trip does not break the chain. Autograd sees a single differentiable operation from three tensors to one tensor on the same device, and the gradients come back on that device.</li>
+<li>The fusion tests compare this adjoint with finite differences and with <code>torch.autograd.gradcheck</code>, and compare CUDA gradients with CPU gradients.</li>
+</ul>
+<div data-code="fusion.py:62:79"></div>
+<div data-code="fusion.py:239:257"></div>
+<div data-code="pardiso.py:225:240"></div>
+
+<h3 id="frames-projection">The same transposed solve builds the gradient input</h3>
+<p>The network also receives a gradient as an input: how the physical objective would change if each cell's world increment changed. Before the network runs, <code>objective_gradient</code> differentiates the complete energy with respect to the corner positions at a detached copy of the candidate, with <code>Y</code> and <code>X_start</code> held fixed, and zeroes the prescribed rows. <code>HexFusion.project_gradient</code> then applies exactly the adjoint of the previous section to that gradient:</p>
+<pre class="formula">g       = dE_total/dX at the detached candidate, g[pins] = 0        shape [B, P, 3], newtons
+G_world = unpack(B_fᵀ K_ff^-T g_f) = dE_total/dD                     shape [B, C, 3, 3], joules
+G_local = Rᵀ G_world                                                  then RMS-normalized and clipped</pre>
+<p>For any increment <code>D</code>, the inner product of <code>G_world</code> with <code>D</code> equals the inner product of <code>g_f</code> with <code>fuse(base, D) - fuse(base, 0)</code>. In words: <code>G_world</code> is the direction in which the energy of the fused shape grows fastest per unit change of a cell's request, after fusion has reconciled the shared corners. The feature is detached end to end: <code>objective_gradient</code> returns a detached tensor and <code>project_gradient</code> discards autograd history, so no second-order term flows through it. The normalization, the history blocks and the trainer's use of the diagnostics are the subject of <a href="#gradient">chapter 05</a>.</p>
+<div data-code="input_assembly.py:176:182"></div>
+<div data-code="input_assembly.py:245:249"></div>
+
+<h3 id="frames-history">History travels in world coordinates</h3>
+<p>After fusion, the step computes under <code>no_grad</code> the change of the center deformation that the fused update actually achieved, <code>F(fused) - F(X)</code>. The trainer stores it together with the un-normalized <code>G_world</code> in the trajectory payload as detached world matrices. The next query, which has new frames, multiplies both by its own <code>Rᵀ</code> before normalizing and packing them. Storing world matrices rather than local ones is what makes the frame recomputation, and the tie-break jumps, harmless for history. The payload carries these blocks across physical timestep boundaries unchanged and clears them only when a trajectory resets. <a href="source/history.py.html#L99">store_history</a> · <a href="source/history.py.html#L124">carry_history</a></p>
+<div data-code="mixed_physics.py:480:497"></div>
+
+<h3 id="frames-differentiation">What is differentiated and what is frozen</h3>
+<p>One training update differentiates a single scalar, the mean per-object objective of chapter 02, back to the network parameters. The differentiable chain is short and stays inside one query:</p>
+<pre class="formula">parameters -> correction, step_size -> A_target -> D = R (A_target - A)
+           -> fused = fuse(X, D, pins) -> E_total(fused; Y, X_start) -> loss</pre>
+<p>Everything else is held fixed for the query, either by an explicit detach or because it enters as a leaf tensor that does not require gradients:</p>
+<table>
+<thead><tr><th>Quantity</th><th>How it is frozen</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Frames <code>R</code>, reference <code>R_ref</code></td><td><code>no_grad</code> and <code>detach</code> inside the frame functions</td><td><a href="source/frames.py.html#L240">closest_proper_rotations</a>, <a href="source/frames.py.html#L141">reference_rotation</a></td></tr>
+<tr><td>Gradient input</td><td><code>autograd.grad</code> on a detached copy; the adjoint discards history</td><td><a href="source/input_assembly.py.html#L176">objective_gradient</a>, <a href="source/fusion.py.html#L310">project_gradient</a></td></tr>
+<tr><td>Optimizer history</td><td>Detached when stored and again when validated</td><td><a href="source/history.py.html#L118">store_history</a>, <a href="source/input_assembly.py.html#L150">check_history</a></td></tr>
+<tr><td>Candidate <code>X</code>, <code>Y</code>, <code>X_start</code>, pins</td><td>Collated from payloads with <code>detach()</code>; the fused result is detached before it becomes the next candidate</td><td><a href="source/train_mixed.py.html#L350">_batch</a>, <a href="source/train_mixed.py.html#L777">candidate hand-off</a></td></tr>
+<tr><td>Energy before the update, floor</td><td>Computed under <code>no_grad</code>; detached again in the objective</td><td><a href="source/train_mixed.py.html#L678">trainer loop</a>, <a href="source/train_mixed.py.html#L243">local_objective</a></td></tr>
+<tr><td>Fusion operators and factor</td><td>NumPy and PARDISO objects built once; <code>backward</code> returns <code>None</code> for them</td><td><a href="source/fusion.py.html#L123">HexFusion.__init__</a></td></tr>
+</tbody>
+</table>
+<p>Three consequences are worth stating plainly. The local axes <code>A</code> and the two difference blocks are differentiable in the positions, but in the mixed trainer the positions are a detached leaf, so that path ends there; the trainable path is the one through the network output. Gradients never cross a query boundary: each update learns from the energy of its own fused proposal, and the next iteration starts from a fresh, detached candidate. And because <code>R</code> is constant, the network learns to produce increments in a frame it did not choose, while the inputs it receives in that frame are consistent with how its output is interpreted.</p>
+<div data-code="train_mixed.py:676:685"></div>
+<div data-code="train_mixed.py:243:248"></div>
+<div data-code="train_mixed.py:762:778"></div>
+<p class="caption">Frames, fusion operators and the cached factor never receive gradients. The network parameters do, through the world increment, the CPU sparse solve and the physical energy of the fused shape.</p>
 </section>
