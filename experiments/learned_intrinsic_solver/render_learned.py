@@ -13,6 +13,12 @@ present, is drawn as a flat quad at its sampled height spanning at least
 :data:`_PLANE_MIN_HALF_EXTENT` around the beam, and every static contact point
 as a sphere of its lateral radius with a tick along its normal. The scene
 is viewed with +y up, opposite to gravity, so the floor lies under the beam.
+
+The camera frames the beam, not the whole quad: the bounding box of the frames
+that stay near the rest configuration, the floor footprint directly beneath it
+and the static points close to it (:func:`_camera_for_trajectory`). Frames
+that fly away are rendered but left out of the framing so the beam stays large
+on screen.
 """
 
 from __future__ import annotations
@@ -56,6 +62,19 @@ _PLANE_MARGIN = 1.25
 
 _CAMERA_DIRECTION = (1.6, 0.9, 0.9)
 """Unnormalized camera offset from the framed center: the +x side, above the floor, toward the free end."""
+
+_FRAMING_RUNAWAY_FACTOR = 3.0
+"""Frames are framed while the running trajectory bounding box stays within this many rest diagonals.
+
+An untrained network can send the beam flying; framing only the frames before
+that keeps the beam large on screen instead of shrinking it to fit the escape.
+"""
+
+_FRAMING_POINT_DISTANCE = 0.5
+"""Static points farther than this [m] from the framed beam box do not widen the framing."""
+
+_FRAMING_FILL = 0.8
+"""Fraction of each frame half-extent the framed box may fill, leaving a border around the scene."""
 
 _UNIT_NORMAL_TOLERANCE = 1e-3
 
@@ -188,59 +207,136 @@ def _plane_geometry(positions: np.ndarray, contact: _ContactGeometry) -> tuple[n
     return vertices, triangles, half_extent
 
 
-def _contact_framing_points(positions: np.ndarray, contact: _ContactGeometry) -> np.ndarray:
-    """Return extra points the camera must contain: the floor under the beam and every static sphere."""
-    values = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+def _box_corners(lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
+    """Return the eight corners of the axis-aligned box ``[lower, upper]``, shape [8, 3]."""
+    return np.array(
+        [[x, y, z] for x in (lower[0], upper[0]) for y in (lower[1], upper[1]) for z in (lower[2], upper[2])],
+        dtype=np.float64,
+    )
+
+
+def _box_distances(points: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
+    """Return the Euclidean distance [m] from each point to the axis-aligned box ``[lower, upper]``."""
+    outside = np.maximum(lower - points, 0.0) + np.maximum(points - upper, 0.0)
+    return np.linalg.norm(outside, axis=1)
+
+
+def _framed_frame_count(positions: np.ndarray, reference_size: float) -> int:
+    """Return how many leading frames the camera frames.
+
+    The running bounding box of frames ``0..k`` must stay within
+    :data:`_FRAMING_RUNAWAY_FACTOR` times ``reference_size``, the rest
+    bounding-box diagonal [m]. The first frame is always framed.
+    """
+    values = np.asarray(positions, dtype=np.float64)
+    lower = np.minimum.accumulate(values.min(axis=1), axis=0)
+    upper = np.maximum.accumulate(values.max(axis=1), axis=0)
+    within = np.linalg.norm(upper - lower, axis=1) <= _FRAMING_RUNAWAY_FACTOR * reference_size
+    if within.all():
+        return len(values)
+    return max(1, int(np.argmin(within)))
+
+
+def _contact_framing_points(lower: np.ndarray, upper: np.ndarray, contact: _ContactGeometry) -> np.ndarray:
+    """Return extra points the camera must contain around the framed beam box ``[lower, upper]``.
+
+    These are the floor region directly beneath the box, its corners projected
+    onto the plane, and the static spheres whose centers lie within
+    :data:`_FRAMING_POINT_DISTANCE` of the box. The rest of the plane quad and
+    far-off spheres do not widen the framing.
+    """
+    lower = np.asarray(lower, dtype=np.float64)
+    upper = np.asarray(upper, dtype=np.float64)
     extra = []
     if contact.plane_present:
-        lower, upper = values.min(axis=0), values.max(axis=0)
-        corners = np.array(
-            [[x, y, z] for x in (lower[0], upper[0]) for y in (lower[1], upper[1]) for z in (lower[2], upper[2])]
-        )
+        corners = _box_corners(lower, upper)
         n = _unit(contact.plane_normal)
         point = np.asarray(contact.plane_point, dtype=np.float64)
         extra.append(corners - ((corners - point) @ n)[:, None] * n)
     if contact.point_count:
         centers = np.asarray(contact.point_positions, dtype=np.float64)
-        radii = np.asarray(contact.point_radii, dtype=np.float64)[:, None]
-        extra.extend((centers - radii, centers + radii))
+        near = _box_distances(centers, lower, upper) <= _FRAMING_POINT_DISTANCE
+        radii = np.asarray(contact.point_radii, dtype=np.float64)[near, None]
+        extra.extend((centers[near] - radii, centers[near] + radii))
     return np.concatenate(extra) if extra else np.zeros((0, 3))
 
 
-def _camera_for_trajectory(positions: np.ndarray, *, fov: float = 45.0, extra_points: np.ndarray | None = None) -> dict:
-    """Choose one +y-up perspective that contains all saved valid trajectory frames.
+def _fit_distance(offsets: np.ndarray, direction: np.ndarray, *, fov: float, aspect: float) -> float:
+    """Return the smallest distance along ``direction`` from which every offset projects inside the frame.
+
+    Args:
+        offsets: Points relative to the camera target [m], shape [K, 3].
+        direction: Unit offset of the camera from the target; the camera looks back along it with +y up.
+        fov: Vertical field of view in degrees.
+        aspect: Frame width over height.
+
+    The frame is shrunk by :data:`_FRAMING_FILL` so the points keep a border.
+    """
+    forward = -direction
+    right = _unit(np.cross(forward, (0.0, 1.0, 0.0)))
+    up = np.cross(right, forward)
+    tan_vertical = math.tan(math.radians(fov) / 2) * _FRAMING_FILL
+    tan_horizontal = tan_vertical * aspect
+    lateral = np.abs(offsets @ right) / tan_horizontal
+    vertical = np.abs(offsets @ up) / tan_vertical
+    return float((np.maximum(lateral, vertical) - offsets @ forward).max())
+
+
+def _camera_for_trajectory(
+    positions: np.ndarray,
+    contact: _ContactGeometry | None = None,
+    *,
+    rest: np.ndarray | None = None,
+    fov: float = 45.0,
+    aspect: float = 16 / 9,
+) -> dict:
+    """Choose one +y-up perspective framing the beam, the floor beneath it and the static points near it.
+
+    The framed box is the bounding box of the leading frames that stay within
+    :data:`_FRAMING_RUNAWAY_FACTOR` rest diagonals (:func:`_framed_frame_count`),
+    widened by the floor footprint beneath it and the static spheres within
+    :data:`_FRAMING_POINT_DISTANCE` of it. The camera sits along
+    :data:`_CAMERA_DIRECTION` from the box center at the smallest distance at
+    which every box corner projects inside the frame.
 
     Args:
         positions: Saved frames [m], shape [frame, corner, 3].
+        contact: Static contact partners; ``None`` frames the beam alone.
+        rest: Rest corner positions [m], shape [corner, 3], whose bounding-box
+            diagonal is the reference size. The first frame is used if omitted.
         fov: Vertical field of view in degrees.
-        extra_points: Further points [m], shape [K, 3], that the view must also
-            contain, for example the floor region under the beam.
+        aspect: Frame width over height.
     """
     values = np.asarray(positions)
     if values.ndim != 3 or values.shape[-1] != 3 or not np.isfinite(values).all():
         raise ValueError("positions must be finite [frame, corner, 3]")
-    points = values.reshape(-1, 3).astype(np.float64)
-    if extra_points is not None:
-        extra = np.asarray(extra_points, dtype=np.float64)
-        if extra.ndim != 2 or extra.shape[1] != 3 or not np.isfinite(extra).all():
-            raise ValueError("extra_points must be finite [K, 3]")
-        if len(extra):
-            points = np.concatenate((points, extra))
-    lower = points.min(axis=0)
-    upper = points.max(axis=0)
+    if not (math.isfinite(aspect) and aspect > 0 and 0 < fov < 180):
+        raise ValueError("aspect must be positive and fov must lie in (0, 180) degrees")
+    if contact is None:
+        contact = _ContactGeometry.empty()
+    reference = np.asarray(values[0] if rest is None else rest, dtype=np.float64).reshape(-1, 3)
+    reference_size = max(float(np.linalg.norm(reference.max(axis=0) - reference.min(axis=0))), 1e-3)
+    framed = _framed_frame_count(values, reference_size)
+    beam = values[:framed].reshape(-1, 3).astype(np.float64)
+    lower, upper = beam.min(axis=0), beam.max(axis=0)
+    extra = _contact_framing_points(lower, upper, contact)
+    if len(extra):
+        lower, upper = np.minimum(lower, extra.min(axis=0)), np.maximum(upper, extra.max(axis=0))
     target = (lower + upper) / 2
-    radius = float(np.linalg.norm(upper - lower) / 2)
-    distance = max(0.5, radius / math.sin(math.radians(fov) / 2) * 1.2)
     direction = _unit(np.array(_CAMERA_DIRECTION, dtype=np.float64))
+    distance = max(0.5, _fit_distance(_box_corners(lower, upper) - target, direction, fov=fov, aspect=aspect))
     camera = target + distance * direction
     return {
         "position": camera.tolist(),
         "target": target.tolist(),
         "distance": distance,
         "fov_degrees": fov,
+        "aspect": aspect,
         "up_axis": "Y",
         "bounds_min": lower.tolist(),
         "bounds_max": upper.tolist(),
+        "framed_frame_count": framed,
+        "frame_count": int(len(values)),
     }
 
 
@@ -382,10 +478,13 @@ def render_trajectory(trajectory: Path, output: Path, *, fps: int = 30, width: i
         raise ValueError("fps must be a positive integer")
     positions, times, rest, fixed, cells, contact = _load_trajectory(trajectory)
     triangles, edges = _boundary_geometry(cells)
+    camera = _camera_for_trajectory(positions, contact, rest=rest, aspect=width / height)
+    framed = camera["framed_frame_count"]
+    if framed < len(times):
+        print(f"framing frames 0..{framed - 1} of {len(times)}; later frames leave the rest neighbourhood", flush=True)
     plane_half_extent = None
     if contact.plane_present:
-        plane_vertices, plane_triangles, plane_half_extent = _plane_geometry(positions, contact)
-    camera = _camera_for_trajectory(positions, extra_points=_contact_framing_points(positions, contact))
+        plane_vertices, plane_triangles, plane_half_extent = _plane_geometry(positions[:framed], contact)
     metadata_path = trajectory.with_name("report.json")
     metadata = json.loads(metadata_path.read_text()) if metadata_path.is_file() else {}
     capture_tools = Path(os.environ.get("AI_LOGS", "/home/horde/Code/AI-Docs/AI-Logs")) / "Newton" / "tools"
@@ -507,6 +606,7 @@ def render_trajectory(trajectory: Path, output: Path, *, fps: int = 30, width: i
         "simulation_status": metadata.get("status"),
         "frame_pixel_std_min": frame_std_min,
         "camera": camera,
+        "framed_physical_time_seconds": float(times[framed - 1]),
         "surface_triangle_count": len(triangles),
         "surface_grid_edge_count": len(edges),
         "contact": {
