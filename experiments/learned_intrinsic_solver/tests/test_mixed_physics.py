@@ -20,7 +20,8 @@ if importlib.util.find_spec("torch") is None:
 import torch  # noqa: TID253
 
 from experiments.learned_intrinsic_solver import features
-from experiments.learned_intrinsic_solver.contact_scene import KIND_PLANE, ContactPartners
+from experiments.learned_intrinsic_solver.contact_geometry import sample_points
+from experiments.learned_intrinsic_solver.contact_scene import KIND_PLANE, KIND_POINT, ContactPartners, detect_contacts
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.frames import (
     closest_proper_rotations,
@@ -941,6 +942,57 @@ class TestMixedHexSolverStepContact(unittest.TestCase):
             torch.testing.assert_close(advanced[name], expected[name], rtol=0, atol=0)
         torch.save(near, io.BytesIO())
 
+    def test_prepare_drops_partners_that_do_not_oppose_the_face_normal(self):
+        """Pass the step-start face normals to detection so grazing and back-facing partners pair with nothing.
+
+        A floor 0.03 m below the (2, 1, 2) grid lies within the 2 r = 0.1 m
+        band of the four bottom faces (gap 0.03) and of the eight side faces
+        (centroids at y = 0.05, gap 0.08); only the bottom faces oppose its
+        normal. A static disk beside the +x face whose normal points away from
+        the body is a candidate of the two +x faces without the filter and of
+        nothing with it; the same disk facing the body pairs with exactly those
+        two faces.
+        """
+        beside = torch.tensor([[0.23, 0.05, 0.1]])
+        self.step.register_context("floor", **self.spec, contact=floor_partners(-0.03))
+        for name, normal in (("away", [[1.0, 0.0, 0.0]]), ("facing", [[-1.0, 0.0, 0.0]])):
+            self.step.register_context(
+                name,
+                **self.spec,
+                contact=ContactPartners(
+                    plane_present=False,
+                    plane_point=torch.zeros(3),
+                    plane_normal=torch.tensor([0.0, 1.0, 0.0]),
+                    point_positions=beside,
+                    point_normals=torch.tensor(normal),
+                    point_radii=torch.tensor([0.08]),
+                    ke=500.0,
+                    kd=0.0,
+                    mu=0.0,
+                ),
+            )
+        floor, away, facing = self._payloads(self.step, ("floor", "away", "facing"))
+        samples = sample_points(self.rest_positions[None], self.step.face_samples.corners)[0]
+        unfiltered = {
+            name: detect_contacts(
+                samples,
+                torch.zeros_like(samples),
+                self.step._contexts[name].contact,
+                radius=self.radius,
+                time_step=self.dt,
+            )
+            for name in ("floor", "away")
+        }
+        self.assertEqual(unfiltered["floor"].sample_index.shape, (12,))
+        self.assertEqual(floor["contact_sample_index"].shape, (4,))
+        self.assertEqual(self.step.face_samples.face_index[floor["contact_sample_index"]].tolist(), [2, 2, 2, 2])
+        self.assertTrue((floor["contact_kind"] == KIND_PLANE).all())
+        self.assertEqual(unfiltered["away"].sample_index.shape, (2,))
+        self.assertEqual(away["contact_sample_index"].shape, (0,))
+        self.assertEqual(facing["contact_sample_index"].shape, (2,))
+        self.assertTrue((facing["contact_kind"] == KIND_POINT).all())
+        self.assertEqual(self.step.face_samples.face_index[facing["contact_sample_index"]].tolist(), [1, 1])
+
     def test_penetrating_floor_raises_energy_and_pushes_bottom_corners_upward(self):
         """Add a positive contact energy for a penetrating floor whose force lifts the bottom corners."""
         self.step.register_context("free", **self.spec)
@@ -948,8 +1000,9 @@ class TestMixedHexSolverStepContact(unittest.TestCase):
         ids = ("free", "floor")
         payloads = self._payloads(self.step, ids)
         contact = contact_batch(payloads)
-        self.assertEqual(contact["sample_index"].shape[1], 12)
-        self.assertEqual(contact["mask"].tolist(), [[False] * 12, [True] * 12])
+        # Only the four bottom faces oppose the floor normal; the eight side faces within the band are dropped.
+        self.assertEqual(contact["sample_index"].shape[1], 4)
+        self.assertEqual(contact["mask"].tolist(), [[False] * 4, [True] * 4])
         # Evaluate at the step start so the friction and damping anchors coincide with the positions.
         positions = self._stack(payloads, "physical_positions")
         target = self._stack(payloads, "inertial_prediction")
@@ -1005,10 +1058,10 @@ class TestMixedHexSolverStepContact(unittest.TestCase):
         self.assertEqual(inputs.contact_mask.shape, (2, self.cell_count, 5))
         self.assertFalse(inputs.contact_tokens.requires_grad)
         self.assertEqual(inputs.contact_mask[0].sum().item(), 0)
-        # Every cell owns three of the twelve floor pairs (its -y face and two side faces).
-        self.assertEqual(inputs.contact_mask[1].sum(-1).tolist(), [3] * self.cell_count)
+        # Every cell owns one floor pair, its -y face; its side faces within the band do not oppose the floor.
+        self.assertEqual(inputs.contact_mask[1].sum(-1).tolist(), [1] * self.cell_count)
         kinds = inputs.contact_tokens[1][inputs.contact_mask[1]][:, 15:18]
-        torch.testing.assert_close(kinds, torch.tensor([[1.0, 0.0, 0.0]]).expand(12, 3), rtol=0, atol=0)
+        torch.testing.assert_close(kinds, torch.tensor([[1.0, 0.0, 0.0]]).expand(4, 3), rtol=0, atol=0)
         with patch.object(step.network, "forward", wraps=step.network.forward) as counted:
             output = step(
                 positions,

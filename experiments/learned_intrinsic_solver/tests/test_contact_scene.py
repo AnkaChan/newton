@@ -7,6 +7,7 @@ import importlib.util
 import json
 import math
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -17,7 +18,7 @@ if importlib.util.find_spec("torch") is None:
 
 import torch  # noqa: TID253
 
-from experiments.learned_intrinsic_solver.contact_energy import contact_energy, contact_penetration
+from experiments.learned_intrinsic_solver import contact_scene
 from experiments.learned_intrinsic_solver.contact_geometry import exposed_face_samples, sample_points
 from experiments.learned_intrinsic_solver.contact_scene import (
     KIND_PLANE,
@@ -26,6 +27,7 @@ from experiments.learned_intrinsic_solver.contact_scene import (
     POINT_BOX_DEPTH_MARGIN,
     POINT_BOX_LATERAL_MARGIN,
     POINT_CLEARANCE_CELLS,
+    POINT_NORMAL_MAX_ANGLE,
     ContactPairs,
     ContactPartners,
     detect_contacts,
@@ -149,6 +151,7 @@ class TestSampleContactPartners(unittest.TestCase):
         upper = rest.corner_rest_positions.max(axis=0)
         center = 0.5 * (lower + upper)
         box_lower = lower - np.array([POINT_BOX_LATERAL_MARGIN, POINT_BOX_DEPTH_MARGIN, POINT_BOX_LATERAL_MARGIN])
+        box_lower[2] = lower[2] + CELL_SIZE
         box_upper = upper + np.array([POINT_BOX_LATERAL_MARGIN, 0.0, POINT_BOX_LATERAL_MARGIN])
         clearance_lower = lower - POINT_CLEARANCE_CELLS * CELL_SIZE
         clearance_upper = upper + POINT_CLEARANCE_CELLS * CELL_SIZE
@@ -174,9 +177,10 @@ class TestSampleContactPartners(unittest.TestCase):
                 normals = partners.point_normals.double().numpy()
                 radii = partners.point_radii.double().numpy()
                 self.assertTrue(np.all(positions >= box_lower - 1e-6) and np.all(positions <= box_upper + 1e-6))
-                # No point inside the rest body or within one cell of it.
+                # No point inside the rest body or within one cell of it, and none in front of the clamped face.
                 inside = np.all((positions > clearance_lower) & (positions < clearance_upper), axis=1)
                 self.assertFalse(inside.any())
+                self.assertTrue(np.all(positions[:, 2] >= lower[2] + CELL_SIZE - 1e-9))
                 np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1e-5)
                 self.assertTrue(np.all(np.einsum("ij,ij->i", normals, center[None] - positions) >= 0.0))
                 self.assertTrue(np.all(radii >= 0.5 * CELL_SIZE - 1e-9) and np.all(radii <= 2.0 * CELL_SIZE + 1e-9))
@@ -190,6 +194,15 @@ class TestSampleContactPartners(unittest.TestCase):
         self.assertEqual(bare.point_count, 0)
         self.assertEqual((bare.ke, bare.kd, bare.mu), (with_scene.ke, with_scene.kd, with_scene.mu))
         self.assertGreater(bare.ke, 0.0)
+
+    def test_placement_failure_raises_after_the_attempt_budget(self):
+        """Raise ValueError when no normal can satisfy the cone within the position attempt budget."""
+        with (
+            patch.object(contact_scene, "POINT_NORMAL_MAX_ANGLE", 0.0),
+            patch.object(contact_scene, "POINT_PLACEMENT_ATTEMPTS", 20),
+            self.assertRaisesRegex(ValueError, "could not place static point"),
+        ):
+            _sample(3)
 
     def test_rejects_invalid_arguments(self):
         """Raise ValueError for bad seeds, scalars, probabilities and ranges."""
@@ -242,21 +255,28 @@ class TestSampleContactPartners(unittest.TestCase):
         self.assertTrue(0.7 <= plane_fraction <= 0.9, plane_fraction)
         self.assertTrue(20.0 <= mean_points <= 44.0, mean_points)
 
-    def test_canonical_grid_rest_shape_has_no_deep_static_point_penetration(self):
-        """Keep static-point penetration of the rest shape below 2 r on the canonical grid.
+    def test_canonical_grid_points_clear_the_rest_body_and_keep_the_coefficient_stream(self):
+        """Place every static point clear of the rest shape, facing its nearest face, behind the clamped end.
 
-        Before the clearance and the one-sided disk bound, 95% of default scenes
-        started with points inside the beam pairing with the far faces at about
-        25 r depth and kJ-scale contact energies.
+        Over 200 canonical (10, 10, 40) scenes with E = 1e5: no point is a
+        detection candidate of any rest surface sample within the widened band
+        ``gap < r + h`` (a downward sample velocity of ``(h - r) / dt`` turns
+        the detector's ``2 r + |v| dt`` band into exactly ``r + h``), every
+        point normal opposes the outward normal of its nearest rest sample
+        within 60 degrees, no point lies below ``z = h`` and the coefficient,
+        plane and count draws reproduce the documented ``SeedSequence`` order,
+        so the point rejection loop shifts none of them.
         """
         rest = generate_cuboid((10, 10, 40), cell_size=CELL_SIZE)
         faces = exposed_face_samples(rest)
         positions = torch.from_numpy(rest.corner_rest_positions.astype(np.float32))[None]
         samples = sample_points(positions, faces.corners)[0]
         lower = rest.corner_rest_positions.min(axis=0)
-        upper = rest.corner_rest_positions.max(axis=0)
-        deepest, largest_energy, scenes_with_pairs = 0.0, 0.0, 0
-        for seed in range(60):
+        widening = torch.zeros_like(samples)
+        widening[:, 1] = -(CELL_SIZE - RADIUS) / TIME_STEP
+        max_cos = -math.cos(math.radians(POINT_NORMAL_MAX_ANGLE))
+        scenes_with_candidates, counts = 0, []
+        for seed in range(200):
             partners = sample_contact_partners(
                 rest,
                 master_seed=2026,
@@ -264,36 +284,37 @@ class TestSampleContactPartners(unittest.TestCase):
                 youngs_modulus=YOUNGS_MODULUS,
                 cell_size=CELL_SIZE,
                 time_step=TIME_STEP,
-                plane_probability=0.0,
             )
-            points = partners.point_positions.numpy()
-            self.assertFalse(np.all((points > lower) & (points < upper), axis=1).any(), seed)
-            pairs = detect_contacts(samples, torch.zeros_like(samples), partners, radius=RADIUS, time_step=TIME_STEP)
-            count = pairs.sample_index.numel()
+            counts.append(partners.point_count)
+            rng = np.random.default_rng(np.random.SeedSequence([2026, seed, 2203]))
+            kappa = math.exp(rng.uniform(math.log(0.1), math.log(10.0)))
+            beta = float(rng.uniform(0.0, 1.0))
+            mu = float(rng.uniform(0.0, 1.0))
+            plane_present = bool(rng.random() < 0.8)
+            plane_height = float(rng.uniform(-0.35, -0.02))
+            count = int(rng.integers(0, 64, endpoint=True))
+            self.assertEqual(partners.ke, kappa * YOUNGS_MODULUS * CELL_SIZE, seed)
+            self.assertEqual(partners.kd, beta * partners.ke * TIME_STEP, seed)
+            self.assertEqual(partners.mu, mu, seed)
+            self.assertEqual(partners.plane_present, plane_present, seed)
+            self.assertAlmostEqual(float(partners.plane_point[1]) - lower[1], plane_height, places=6)
+            self.assertEqual(partners.point_count, count, seed)
             if not count:
                 continue
-            scenes_with_pairs += 1
-            mask = torch.ones(1, count, dtype=torch.bool)
-            arguments = (samples[None], pairs.sample_index[None], pairs.partner_point[None], pairs.partner_normal[None])
-            depth = contact_penetration(*arguments, mask, radius=RADIUS).max() / RADIUS
-            energy = contact_energy(
-                samples[None],
-                *arguments,
-                mask,
-                radius=RADIUS,
-                ke=partners.ke,
-                kd=partners.kd,
-                mu=partners.mu,
-                time_step=TIME_STEP,
-                friction_epsilon=1e-2,
-            )
-            deepest = max(deepest, float(depth))
-            largest_energy = max(largest_energy, float(energy[0]))
-        # Shallow touches through oblique normals are expected; deep pairs are not.
-        self.assertGreater(scenes_with_pairs, 0)
-        self.assertLessEqual(deepest, 2.0 + 1e-6, deepest)
-        # ke <= 10 E h = 25 kN/m and depth <= 2 r bound one pair at ke/2 (2 r)^2 = 7.8 J.
-        self.assertLess(largest_energy, 50.0, largest_energy)
+            pairs = detect_contacts(samples, widening, partners, radius=RADIUS, time_step=TIME_STEP)
+            point_pairs = int((pairs.kind == KIND_POINT).sum())
+            scenes_with_candidates += int(point_pairs > 0)
+            self.assertEqual(point_pairs, 0, seed)
+            points = partners.point_positions.double()
+            nearest = torch.argmin(torch.cdist(points, samples.double()), dim=1)
+            cosines = (partners.point_normals.double() * faces.rest_normals.double()[nearest]).sum(dim=1)
+            self.assertTrue(bool((cosines <= max_cos + 1e-6).all()), (seed, float(cosines.max())))
+            self.assertTrue(bool((points[:, 2] >= lower[2] + CELL_SIZE - 1e-9).all()), seed)
+        print(
+            f"\ncontact scenes (200 seeds, 10x10x40): scenes with a rest candidate {scenes_with_candidates / 200:.3f}, "
+            f"mean points {float(np.mean(counts)):.1f}"
+        )
+        self.assertTrue(20.0 <= float(np.mean(counts)) <= 44.0)
 
 
 class TestContactPairs(unittest.TestCase):
@@ -424,6 +445,38 @@ class TestDetectContacts(unittest.TestCase):
         counts = torch.bincount(pairs.sample_index, minlength=sample_count)
         self.assertEqual(counts.tolist(), [5] * sample_count)
         self.assertEqual(int((pairs.kind == KIND_PLANE).sum()), sample_count)
+
+    def test_sample_normals_drop_partners_that_do_not_oppose_the_face(self):
+        """Keep plane and point pairs on faces that oppose the partner normal and drop side and far faces."""
+        partners = _points_partners([[0.0, 0.0, 0.1]], [[0.0, 1.0, 0.0]], [0.02], plane=True, plane_y=0.0)
+        positions = [[0.0, 0.01, 0.0], [0.0, 0.01, 0.0], [0.0, 0.01, 0.0], [0.005, 0.01, 0.1], [0.005, 0.01, 0.1]]
+        normals = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]]
+        unfiltered = _detect(positions, partners=partners)
+        self.assertEqual(unfiltered.sample_index.tolist(), [0, 1, 2, 3, 3, 4, 4])
+        filtered = _detect(positions, partners=partners, sample_normals=torch.tensor(normals))
+        rows = list(zip(filtered.sample_index.tolist(), filtered.kind.tolist(), strict=True))
+        # Bottom faces (0, 3) keep the plane, side (1, 4) and top (2) faces lose it; only the bottom face at the
+        # point keeps the point pair, the side face there loses it.
+        self.assertEqual(rows, [(0, KIND_PLANE), (3, KIND_PLANE), (3, KIND_POINT)])
+        for field_filtered, field_unfiltered in zip(filtered, unfiltered, strict=True):
+            self.assertEqual(field_filtered.dtype, field_unfiltered.dtype)
+        # A grazing normal (exactly perpendicular) is dropped; a slight opposition is kept.
+        grazing = _detect(positions[:1], partners=partners, sample_normals=torch.tensor([[1.0, 0.0, 0.0]]))
+        self.assertEqual(grazing.sample_index.numel(), 0)
+        tilted = _detect(positions[:1], partners=partners, sample_normals=torch.tensor([[0.99, -0.01, 0.0]]))
+        self.assertEqual(tilted.kind.tolist(), [KIND_PLANE])
+        # Filtered candidates do not occupy the per-sample point slots.
+        depths = [0.004, 0.001, 0.006, 0.002, 0.005, 0.003]
+        stack = _points_partners(
+            [[0.0, -depth, 0.0] for depth in depths],
+            [[0.0, 1.0, 0.0]] * 3 + [[0.0, -1.0, 0.0]] * 3,
+            [RADIUS] * 6,
+        )
+        kept = _detect([[0.0, 0.0, 0.0]], partners=stack, sample_normals=torch.tensor([[0.0, -1.0, 0.0]]))
+        self.assertEqual(kept.partner_index.tolist(), [1, 0, 2])
+        for bad in (torch.zeros(4, 3), torch.zeros(5, 2), torch.full((5, 3), math.nan), [[0.0, 1.0, 0.0]] * 5):
+            with self.subTest(bad=type(bad)), self.assertRaises(ValueError):
+                _detect(positions, partners=partners, sample_normals=bad)
 
     def test_rejects_invalid_inputs(self):
         """Raise ValueError for bad shapes, non-finite positions and invalid scalars."""

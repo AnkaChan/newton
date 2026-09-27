@@ -37,18 +37,24 @@ class TestRenderLearned(unittest.TestCase):
         self.assertGreater(len(edges), 12)
 
     def test_camera_uses_every_saved_valid_frame(self):
-        """Frame a late large deformation with one camera used for the whole video."""
+        """Frame a late large deformation with one camera, unless the shape runs away."""
         positions = np.array(
             [
                 [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
-                [[0.0, 0.0, 0.0], [4.0, 0.0, 1.0]],
+                [[0.0, 0.0, 0.0], [2.0, 0.0, 1.0]],
             ],
             dtype=np.float32,
         )
         camera = _camera_for_trajectory(positions)
-        self.assertGreater(camera["target"][0], 1.0)
-        self.assertGreater(camera["distance"], 4.0)
-        self.assertEqual(camera["bounds_max"], [4.0, 0.0, 1.0])
+        self.assertGreater(camera["target"][0], 0.5)
+        self.assertGreater(camera["distance"], 2.0)
+        self.assertEqual(camera["bounds_max"], [2.0, 0.0, 1.0])
+        # A frame whose running box exceeds three rest diagonals is rendered but not framed.
+        runaway = positions.copy()
+        runaway[1, 1, 0] = 40.0
+        camera = _camera_for_trajectory(runaway)
+        self.assertEqual(camera["bounds_max"], [0.0, 0.0, 1.0])
+        self.assertEqual(camera["framed_frame_count"], 1)
 
 
 if __name__ == "__main__":

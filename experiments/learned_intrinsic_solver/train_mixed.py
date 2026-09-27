@@ -116,8 +116,12 @@ class MixedTrainConfig:
     """Sample a contact scene per trajectory, add its energy and feed contact tokens to the network."""
     contact_plane_probability: float = 0.8
     """Probability that a sampled scene contains the ground plane."""
-    contact_plane_height_range: tuple[float, float] = (-0.35, -0.02)
-    """Uniform plane height bounds relative to the rest y-minimum [m]."""
+    contact_plane_height_range: tuple[float, float] = (-0.15, -0.005)
+    """Uniform plane height bounds relative to the rest y-minimum [m].
+
+    Shallow enough that soft and moderately stiff beams reach the floor within
+    the longest training horizon (128 steps, 0.43 s).
+    """
     contact_max_points: int = 64
     """Largest static point count per scene; the count is uniform in ``{0, ..., max}``."""
     contact_point_radius_range: tuple[float, float] = (0.5, 2.0)

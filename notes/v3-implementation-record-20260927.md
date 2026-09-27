@@ -48,6 +48,49 @@ height `[-0.35, -0.02]` m below the rest y-minimum, 0–64 points, `r_p` in
 `[0.5 h, 2 h]`, `kappa` log-uniform `[0.1, 10]`, `beta` uniform `[0, 1]`, `mu`
 uniform `[0, 1]`, `M_pair = 4`, `M_cell = 24`, `friction_epsilon = 1e-2`.
 
+Second amendment (2026-09-27, after a read-only diagnostic of the running
+campaign; spec §3.3, §4 and §7 amended in place):
+
+- **Why.** The deepest pairs at the initial candidate were 100 % static-point
+  pairs with grazing normals (median `|cos|` 0.29), capped at `2 r` by the
+  one-sided rule; the one-cell clearance kept the *point* outside the body but
+  the disk *plane* still cut the body in 43 % of default scenes, 21 of 220
+  penetrating validation seeds had their deepest pair on the fully clamped -z
+  face, and L-BFGS on the true objective left the same penetration (data, not
+  solver). The floor never penetrated in 512 validation seeds.
+- **Sampler rejection loop** (`contact_scene.sample_contact_partners`,
+  `_draw_static_points`): points come from a spawned child of the scene seed so
+  `kappa`, `beta`, `mu`, the plane flag, the plane height and the count keep
+  their draws; a point is redrawn while its disk would be a detection candidate
+  of any rest surface sample in the band `-r <= gap < r + h` (`r = 0.5 h`,
+  shared helper `_point_candidates` with `detect_contacts`), while its normal
+  does not oppose the nearest rest face within 60° (`POINT_NORMAL_MAX_ANGLE`;
+  eight normal draws, then a new position), and the box starts at
+  `z = z_min + h` behind the clamped face; 1000 position draws raise
+  `ValueError`. Realized (200 canonical seeds): scenes with a rest candidate
+  61 % → 0 %, mean points 32.3 unchanged, 35 % of position draws rejected,
+  11 ms per scene.
+- **Normal filter in detection** (`detect_contacts(..., sample_normals=)`):
+  plane and point candidates require `n_partner . n_face < 0`;
+  `MixedHexSolverStep.prepare` passes `sample_normals` of the step-start
+  positions. Consequence visible in the tests: a floor within the band of a
+  cell's side faces now pairs with its bottom face only (4 instead of 12 pairs
+  on the (2, 1, 2) test grid).
+- **Plane height default** `MixedTrainConfig.contact_plane_height_range =
+  (-0.15, -0.005)` m and the same in `generated/training_v3_contact_config.json`
+  and `generated/smoke_v3_contact_config.json`; the sampler default keeps
+  `(-0.35, -0.02)`.
+- **Tests.** `test_contact_scene`: 200 canonical seeds with zero rest
+  candidates in the `r + h` band, cone and `z >= h` checks, and the coefficient
+  stream reproduced from the documented `SeedSequence` order; the superseded
+  "shallow touches expected" rest-shape test is removed; `sample_normals`
+  drops side and top faces for the plane and a side face for a point while
+  keeping the bottom face, and filtered candidates free their `M_pair` slots;
+  placement failure raises. `test_mixed_physics`: `prepare()` keeps the four
+  bottom faces of a floor 0.03 m below the grid and drops the eight side faces,
+  a disk beside the +x face pointing away yields no pairs and facing the body
+  yields exactly the two +x faces. `test_train_mixed`: new default.
+
 ## Validation
 
 - Unit tests: 550 pass on CPU (`python -m unittest discover -s experiments/learned_intrinsic_solver/tests -t .`),

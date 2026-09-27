@@ -153,7 +153,7 @@ class TestMixedTraining(unittest.TestCase):
         self.assertIs(config.contact, True)
         self.assertIs(config.checkpoint_chunks, False)
         self.assertEqual(config.contact_plane_probability, 0.8)
-        self.assertEqual(config.contact_plane_height_range, (-0.35, -0.02))
+        self.assertEqual(config.contact_plane_height_range, (-0.15, -0.005))
         self.assertEqual(config.contact_max_points, 64)
         self.assertEqual(config.contact_point_radius_range, (0.5, 2.0))
         self.assertEqual(config.contact_kappa_range, (0.1, 10.0))

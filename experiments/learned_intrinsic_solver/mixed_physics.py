@@ -38,7 +38,7 @@ from torch import Tensor, nn  # noqa: TID253
 
 from .contact_energy import contact_energy, contact_penetration
 from .contact_features import build_contact_tokens
-from .contact_geometry import exposed_face_samples, sample_points
+from .contact_geometry import exposed_face_samples, sample_normals, sample_points
 from .contact_scene import ContactPartners, detect_contacts
 from .damping import damping_metric_difference
 from .data import VoxelGridData
@@ -127,8 +127,9 @@ class MixedHexSolverStep(nn.Module):
 
     Contact uses one surface sample per exposed face (radius ``contact_radius``,
     default ``0.5 h``) against the static partners registered with each
-    context. :meth:`prepare` writes the frozen pair list of a physical step into
-    the payload; callers collate it into the padded batch that :meth:`energy`
+    context; a partner pairs with a sample only when its normal opposes the
+    sample's face normal. :meth:`prepare` writes the frozen pair list of a
+    physical step into the payload; callers collate it into the padded batch that :meth:`energy`
     and :meth:`forward` accept through ``contact``. When the network was built
     with ``contact_tokens=True`` the step also builds its per-cell contact
     tokens (``contact_tokens_per_cell`` slots).
@@ -761,8 +762,9 @@ class MixedHexSolverStep(nn.Module):
 
         Contact detection (:func:`.contact_scene.detect_contacts`) runs once
         here on the step-start sample positions with the sample velocities
-        (mean of the four corner velocities) widening the search band, so the
-        pair list is frozen for every inner update of the step. The result is
+        (mean of the four corner velocities) widening the search band and the
+        step-start face normals dropping partners that do not oppose a face,
+        so the pair list is frozen for every inner update of the step. The result is
         stored under ``contact_sample_index`` [Q] and ``contact_kind`` [Q]
         (int64), ``contact_partner_point`` [Q, 3], ``contact_partner_normal``
         [Q, 3] and ``contact_partner_radius`` [Q] (float32); ``Q`` is zero for
@@ -781,6 +783,7 @@ class MixedHexSolverStep(nn.Module):
                 radius=self.contact_radius,
                 time_step=self.time_step,
                 max_pairs_per_sample=self.contact_max_pairs,
+                sample_normals=sample_normals(x[None], corners, self.face_samples.rest_normals)[0],
             )
         with torch.no_grad(), context.lock:
             rigid = context.predictor.predict(x, velocity, force, self.time_step)

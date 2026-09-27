@@ -10,8 +10,14 @@ and up to 64 artificial static contact points with normals and a lateral
 radius of influence. Static points are drawn outside the rest body (one cell
 of clearance) and act as one-sided disks: a sample whose center lies more than
 its own radius behind the disk has passed through it and is not a candidate,
-so a point can never pull a far face of the body toward it. This module owns
-the per-scene partner record (:class:`ContactPartners`), the seeded scene generator
+so a point can never pull a far face of the body toward it. A point is
+rejected and redrawn while its disk would be a detection candidate against the
+rest surface samples or its normal does not oppose the nearest exposed face
+within :data:`POINT_NORMAL_MAX_ANGLE` degrees, and no point lies in front of
+the clamped z-minimum face, so no disk slices the rest body. The detector can
+in turn drop pairs whose partner normal does not oppose the sample's face
+normal. This module owns the per-scene partner record
+(:class:`ContactPartners`), the seeded scene generator
 (:func:`sample_contact_partners`), the frozen per-step pair list
 (:class:`ContactPairs`) and the CPU detector (:func:`detect_contacts`).
 
@@ -31,6 +37,7 @@ import numpy as np
 import torch  # noqa: TID253 -- Explicit opt-in PyTorch implementation.
 from torch import Tensor  # noqa: TID253
 
+from .contact_geometry import exposed_face_samples, sample_points
 from .data import VoxelGridData
 
 __all__ = [
@@ -41,6 +48,9 @@ __all__ = [
     "POINT_BOX_DEPTH_MARGIN",
     "POINT_BOX_LATERAL_MARGIN",
     "POINT_CLEARANCE_CELLS",
+    "POINT_NORMAL_MAX_ANGLE",
+    "POINT_PLACEMENT_ATTEMPTS",
+    "POINT_REJECTION_SAMPLE_RADIUS_CELLS",
     "ContactPairs",
     "ContactPartners",
     "detect_contacts",
@@ -73,8 +83,26 @@ box, so a point starts at least one cell (two sample radii) away from every
 rest surface sample.
 """
 
+POINT_NORMAL_MAX_ANGLE = 60.0
+"""Largest angle [deg] between a static point normal and the inward normal of its nearest rest sample.
+
+The disk must face the exposed face it is closest to instead of grazing it.
+"""
+
+POINT_REJECTION_SAMPLE_RADIUS_CELLS = 0.5
+"""Sample radius ``r`` used by the rest-shape rejection test, in units of ``cell_size``.
+
+A candidate point is redrawn while any rest surface sample lies within its
+disk band ``-r <= gap < r + cell_size``; the one-cell margin matches
+:data:`POINT_CLEARANCE_CELLS`.
+"""
+
+POINT_PLACEMENT_ATTEMPTS = 1000
+"""Position draws allowed per static point before :func:`sample_contact_partners` raises."""
+
 _PLANE_NORMAL = (0.0, 1.0, 0.0)
 _UNIT_NORMAL_TOLERANCE = 1e-3
+_NORMAL_ATTEMPTS_PER_POSITION = 8
 
 
 def _as_float32(value: Any, *, shape: tuple[int, ...], name: str) -> Tensor:
@@ -278,21 +306,33 @@ def sample_contact_partners(
 ) -> ContactPartners:
     """Draw one reproducible contact scene for a trajectory.
 
-    The generator is seeded from ``SeedSequence([master_seed, seed, 2203])``.
-    Coefficients are drawn first so they never depend on the plane or point
-    draws: ``ke = kappa * E * h`` with ``kappa`` log-uniform in ``kappa_range``,
-    ``kd = beta * ke * dt`` with ``beta`` uniform in ``beta_range`` and ``mu``
-    uniform in ``mu_range``. The plane, present with ``plane_probability``,
-    passes through the rest bounding-box center at a height uniform in
-    ``plane_height_range`` relative to the body's rest y-minimum; its height is
-    drawn even when the plane is absent. The point count is uniform in
-    ``{0, ..., max_points}``; positions are uniform in the rest bounding box
-    extended by :data:`POINT_BOX_LATERAL_MARGIN` in x and z and by
-    :data:`POINT_BOX_DEPTH_MARGIN` toward -y, minus the rest bounding box
-    grown by :data:`POINT_CLEARANCE_CELLS` cells (rejection sampling, so no
-    point lies inside or within one cell of the rest body); normals are uniform
-    on the sphere and flipped toward the rest bounding-box center, and radii
-    are uniform in ``point_radius_range`` times ``cell_size``.
+    The generator is seeded from ``SeedSequence([master_seed, seed, 2203])``
+    and draws, in this order, ``kappa``, ``beta``, ``mu``, the plane flag, the
+    plane height and the point count, so the coefficients never depend on the
+    plane or point draws: ``ke = kappa * E * h`` with ``kappa`` log-uniform in
+    ``kappa_range``, ``kd = beta * ke * dt`` with ``beta`` uniform in
+    ``beta_range`` and ``mu`` uniform in ``mu_range``. The plane, present with
+    ``plane_probability``, passes through the rest bounding-box center at a
+    height uniform in ``plane_height_range`` relative to the body's rest
+    y-minimum; its height is drawn even when the plane is absent. The point
+    count is uniform in ``{0, ..., max_points}``.
+
+    The points themselves come from the first spawned child of that seed
+    sequence, one point at a time, so their rejection loop never shifts the
+    draws above. A position is uniform in the rest bounding box extended by
+    :data:`POINT_BOX_LATERAL_MARGIN` in x and z and by
+    :data:`POINT_BOX_DEPTH_MARGIN` toward -y, restricted to
+    ``z >= z_min + cell_size`` (nothing in front of the clamped z-minimum
+    face) and outside the rest bounding box grown by
+    :data:`POINT_CLEARANCE_CELLS` cells. Its normal is uniform on the sphere,
+    flipped toward the rest bounding-box center and redrawn until it opposes
+    the outward normal of the nearest rest surface sample within
+    :data:`POINT_NORMAL_MAX_ANGLE` degrees; the radius is uniform in
+    ``point_radius_range`` times ``cell_size``. The point is then rejected and
+    the position redrawn if :func:`detect_contacts` on the resting rest-surface
+    samples (sample radius :data:`POINT_REJECTION_SAMPLE_RADIUS_CELLS` cells,
+    search band widened to ``r + cell_size``) would report any candidate, so
+    no disk slices or grazes the rest body.
 
     Args:
         rest: Rest geometry whose corner positions bound the scene.
@@ -314,9 +354,10 @@ def sample_contact_partners(
 
     Raises:
         ValueError: If the rest geometry, seeds, scalars or ranges are invalid,
-            or if ``max_points > 0`` and the clearance leaves no room for
-            points inside the box (``cell_size`` at least
-            :data:`POINT_BOX_DEPTH_MARGIN`).
+            if ``max_points > 0`` and the clearance leaves no room for points
+            inside the box (``cell_size`` at least
+            :data:`POINT_BOX_DEPTH_MARGIN`), or if a point cannot be placed
+            within :data:`POINT_PLACEMENT_ATTEMPTS` position draws.
     """
     if not isinstance(rest, VoxelGridData):
         raise ValueError("rest must be VoxelGridData")
@@ -338,7 +379,8 @@ def sample_contact_partners(
     beta_range = _ordered_range(beta_range, name="beta_range", minimum=0.0)
     mu_range = _ordered_range(mu_range, name="mu_range", minimum=0.0)
 
-    rng = np.random.default_rng(np.random.SeedSequence([master_seed, seed, 2203]))
+    root = np.random.SeedSequence([master_seed, seed, 2203])
+    rng = np.random.default_rng(root)
 
     kappa = math.exp(rng.uniform(math.log(kappa_range[0]), math.log(kappa_range[1])))
     beta = float(rng.uniform(*beta_range))
@@ -357,26 +399,33 @@ def sample_contact_partners(
     count = int(rng.integers(0, max_points, endpoint=True))
     box_lower = lower - np.array([POINT_BOX_LATERAL_MARGIN, POINT_BOX_DEPTH_MARGIN, POINT_BOX_LATERAL_MARGIN])
     box_upper = upper + np.array([POINT_BOX_LATERAL_MARGIN, 0.0, POINT_BOX_LATERAL_MARGIN])
+    # The clamped face is the z-minimum face: keep every point at least one cell behind it.
+    box_lower[2] = lower[2] + cell_size
     clearance_lower = lower - POINT_CLEARANCE_CELLS * cell_size
     clearance_upper = upper + POINT_CLEARANCE_CELLS * cell_size
     if max_points and np.all(clearance_lower <= box_lower) and np.all(clearance_upper >= box_upper):
         raise ValueError("cell_size is too large for the static point box: the clearance region covers it")
-    positions = rng.uniform(box_lower, box_upper, size=(count, 3))
-    # Redraw points inside the cleared body region until every point lies in the surrounding shell.
-    inside = np.all((positions > clearance_lower) & (positions < clearance_upper), axis=1)
-    while inside.any():
-        positions[inside] = rng.uniform(box_lower, box_upper, size=(int(inside.sum()), 3))
-        inside = np.all((positions > clearance_lower) & (positions < clearance_upper), axis=1)
-    normals = rng.normal(size=(count, 3))
-    norms = np.linalg.norm(normals, axis=1, keepdims=True)
-    degenerate = norms[:, 0] <= 0.0
-    normals[degenerate] = _PLANE_NORMAL
-    norms[degenerate] = 1.0
-    normals = normals / norms
-    # Flip each normal so it faces the body; points coincident with the center keep their draw.
-    facing_away = np.einsum("ij,ij->i", normals, center[None, :] - positions) < 0.0
-    normals[facing_away] *= -1.0
-    radii = rng.uniform(point_radius_range[0] * cell_size, point_radius_range[1] * cell_size, size=count)
+    if count:
+        faces = exposed_face_samples(rest)
+        rest_samples = sample_points(torch.from_numpy(corners)[None], faces.corners)[0]
+        points = _draw_static_points(
+            np.random.default_rng(root.spawn(1)[0]),
+            count,
+            box_lower=box_lower,
+            box_upper=box_upper,
+            clearance_lower=clearance_lower,
+            clearance_upper=clearance_upper,
+            center=center,
+            rest_samples=rest_samples,
+            rest_normals=faces.rest_normals.double(),
+            radius_range=(point_radius_range[0] * cell_size, point_radius_range[1] * cell_size),
+            cell_size=cell_size,
+        )
+        positions, normals, radii = points.positions, points.normals, points.radii
+    else:
+        positions = np.zeros((0, 3))
+        normals = np.zeros((0, 3))
+        radii = np.zeros((0,))
 
     return ContactPartners(
         plane_present=plane_present,
@@ -389,6 +438,129 @@ def sample_contact_partners(
         kd=kd,
         mu=mu,
     )
+
+
+class _StaticPoints(NamedTuple):
+    """Accepted static points of one scene and the number of position draws they took."""
+
+    positions: np.ndarray
+    normals: np.ndarray
+    radii: np.ndarray
+    attempts: int
+
+
+def _point_candidates(
+    positions: Tensor,
+    threshold: Tensor,
+    radius: float,
+    point_positions: Tensor,
+    point_normals: Tensor,
+    point_radii: Tensor,
+    sample_normals: Tensor | None = None,
+) -> tuple[Tensor, Tensor]:
+    """Return the ``[S, N]`` candidate mask and gaps of samples against static-point disks.
+
+    A sample is a candidate of a point when its lateral distance from the
+    point's axis is below ``r_p`` and ``-radius <= gap < threshold``; with
+    ``sample_normals`` the point normal must additionally oppose the sample's
+    face normal. All tensors are CPU float64; ``threshold`` has shape ``[S]``.
+    """
+    offsets = positions[:, None, :] - point_positions[None, :, :]
+    gap = (offsets * point_normals[None, :, :]).sum(dim=-1)
+    lateral = torch.linalg.vector_norm(offsets - gap[..., None] * point_normals[None, :, :], dim=-1)
+    candidate = (lateral < point_radii[None, :]) & (gap < threshold[:, None]) & (gap >= -radius)
+    if sample_normals is not None:
+        candidate &= (sample_normals @ point_normals.T) < 0.0
+    return candidate, gap
+
+
+def _draw_static_points(
+    rng: np.random.Generator,
+    count: int,
+    *,
+    box_lower: np.ndarray,
+    box_upper: np.ndarray,
+    clearance_lower: np.ndarray,
+    clearance_upper: np.ndarray,
+    center: np.ndarray,
+    rest_samples: Tensor,
+    rest_normals: Tensor,
+    radius_range: tuple[float, float],
+    cell_size: float,
+) -> _StaticPoints:
+    """Draw ``count`` static points one at a time, rejecting disks that reach the rest body.
+
+    Each position is uniform in the box and redrawn while it lies in the
+    cleared region, while no normal within :data:`_NORMAL_ATTEMPTS_PER_POSITION`
+    draws opposes the nearest rest sample's face normal within
+    :data:`POINT_NORMAL_MAX_ANGLE`, or while :func:`_point_candidates` reports
+    a rest sample inside the disk band ``-r <= gap < r + cell_size`` with
+    ``r`` of :data:`POINT_REJECTION_SAMPLE_RADIUS_CELLS` cells.
+
+    Args:
+        rng: Generator dedicated to the points so retries shift no other draw.
+        count: Number of points to place.
+        box_lower: Lower corner of the point box [m], shape [3].
+        box_upper: Upper corner of the point box [m], shape [3].
+        clearance_lower: Lower corner of the excluded cleared region [m], shape [3].
+        clearance_upper: Upper corner of the excluded cleared region [m], shape [3].
+        center: Rest bounding-box center the normals are flipped toward [m], shape [3].
+        rest_samples: Rest surface sample positions [m], float64, shape [S, 3].
+        rest_normals: Outward rest face normals, float64, shape [S, 3].
+        radius_range: Lateral radius bounds [m].
+        cell_size: Rest cell edge length h [m].
+
+    Raises:
+        ValueError: If a point finds no admissible placement within
+            :data:`POINT_PLACEMENT_ATTEMPTS` position draws.
+    """
+    radius = POINT_REJECTION_SAMPLE_RADIUS_CELLS * cell_size
+    threshold = torch.full((rest_samples.shape[0],), radius + cell_size, dtype=torch.float64)
+    max_cos = -math.cos(math.radians(POINT_NORMAL_MAX_ANGLE))
+    positions = np.zeros((count, 3))
+    normals = np.zeros((count, 3))
+    radii = np.zeros(count)
+    attempts = 0
+    for index in range(count):
+        for _ in range(POINT_PLACEMENT_ATTEMPTS):
+            attempts += 1
+            position = rng.uniform(box_lower, box_upper)
+            if np.all((position > clearance_lower) & (position < clearance_upper)):
+                continue
+            position_tensor = torch.from_numpy(position)
+            nearest = int(torch.argmin(torch.linalg.vector_norm(rest_samples - position_tensor, dim=1)))
+            face_normal = rest_normals[nearest].numpy()
+            for _ in range(_NORMAL_ATTEMPTS_PER_POSITION):
+                normal = rng.normal(size=3)
+                norm = float(np.linalg.norm(normal))
+                normal = np.array(_PLANE_NORMAL) if norm <= 0.0 else normal / norm
+                # Flip the normal so it faces the body; a point at the center keeps its draw.
+                if float(normal @ (center - position)) < 0.0:
+                    normal = -normal
+                if float(normal @ face_normal) <= max_cos:
+                    break
+            else:
+                continue
+            point_radius = float(rng.uniform(*radius_range))
+            candidate, _ = _point_candidates(
+                rest_samples,
+                threshold,
+                radius,
+                position_tensor[None],
+                torch.from_numpy(normal)[None],
+                torch.tensor([point_radius], dtype=torch.float64),
+            )
+            if not bool(candidate.any()):
+                positions[index] = position
+                normals[index] = normal
+                radii[index] = point_radius
+                break
+        else:
+            raise ValueError(
+                f"could not place static point {index} within {POINT_PLACEMENT_ATTEMPTS} draws: "
+                "the point box leaves no admissible disk outside the rest body"
+            )
+    return _StaticPoints(positions=positions, normals=normals, radii=radii, attempts=attempts)
 
 
 class ContactPairs(NamedTuple):
@@ -449,6 +621,7 @@ def detect_contacts(
     radius: float,
     time_step: float,
     max_pairs_per_sample: int = 4,
+    sample_normals: Tensor | None = None,
 ) -> ContactPairs:
     """Collect candidate pairs between surface samples and static partners.
 
@@ -461,10 +634,13 @@ def detect_contacts(
     ``-radius <= gap < radius + margin_s``: the disk is one-sided, and a sample
     whose sphere no longer reaches the disk plane from behind (a far face of the
     body, say) is not pulled toward it, so a point pair starts at most
-    ``2 radius`` deep. The plane has no such bound. Only the
-    ``max_pairs_per_sample`` nearest points by gap survive per sample, ties
-    resolved toward the lower point index. The result holds at most
-    ``S * (1 + max_pairs_per_sample)`` rows.
+    ``2 radius`` deep. The plane has no such bound. When ``sample_normals`` is
+    given, a plane or point pair is a candidate only if the partner normal
+    opposes the sample's face normal, ``n . n_s < 0``, so a partner cannot push
+    on a face it grazes or sees from behind. Only the ``max_pairs_per_sample``
+    nearest points by gap survive per sample, ties resolved toward the lower
+    point index. The result holds at most ``S * (1 + max_pairs_per_sample)``
+    rows.
 
     Args:
         sample_positions: Step-start sample positions [m], shape [S, 3].
@@ -473,6 +649,8 @@ def detect_contacts(
         radius: Sample radius r [m].
         time_step: Physical time step dt [s].
         max_pairs_per_sample: Cap on point pairs per sample.
+        sample_normals: Outward unit face normals of the samples, shape [S, 3];
+            None keeps every pair regardless of orientation.
 
     Returns:
         The candidate pairs, or :meth:`ContactPairs.empty` when nothing is near.
@@ -484,6 +662,10 @@ def detect_contacts(
     velocities = _detection_input(sample_velocities, name="sample_velocities")
     if positions.shape != velocities.shape:
         raise ValueError("sample_positions and sample_velocities must share shape [S, 3]")
+    if sample_normals is not None:
+        sample_normals = _detection_input(sample_normals, name="sample_normals")
+        if sample_normals.shape != positions.shape:
+            raise ValueError("sample_normals must share shape [S, 3] with sample_positions")
     if not isinstance(partners, ContactPartners):
         raise ValueError("partners must be ContactPartners")
     radius = _finite_scalar(radius, name="radius", minimum=0.0, strict=True)
@@ -506,7 +688,10 @@ def detect_contacts(
     if partners.plane_present:
         plane_normal = partners.plane_normal.double()
         plane_gap = (positions - partners.plane_point.double()) @ plane_normal
-        hit = torch.nonzero(plane_gap < threshold, as_tuple=False).flatten()
+        plane_hit = plane_gap < threshold
+        if sample_normals is not None:
+            plane_hit &= (sample_normals @ plane_normal) < 0.0
+        hit = torch.nonzero(plane_hit, as_tuple=False).flatten()
         if hit.numel():
             samples.append(hit)
             indices.append(torch.full_like(hit, -1))
@@ -521,10 +706,9 @@ def detect_contacts(
         point_positions = partners.point_positions.double()
         point_normals = partners.point_normals.double()
         point_radii = partners.point_radii.double()
-        offsets = positions[:, None, :] - point_positions[None, :, :]
-        point_gap = (offsets * point_normals[None, :, :]).sum(dim=-1)
-        lateral = torch.linalg.vector_norm(offsets - point_gap[..., None] * point_normals[None, :, :], dim=-1)
-        candidate = (lateral < point_radii[None, :]) & (point_gap < threshold[:, None]) & (point_gap >= -radius)
+        candidate, point_gap = _point_candidates(
+            positions, threshold, radius, point_positions, point_normals, point_radii, sample_normals
+        )
         ranked_gap, order = torch.sort(torch.where(candidate, point_gap, torch.inf), dim=1, stable=True)
         keep = min(max_pairs_per_sample, point_count)
         kept_gap = ranked_gap[:, :keep]

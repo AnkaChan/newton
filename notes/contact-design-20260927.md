@@ -96,6 +96,15 @@ sample whose sphere no longer reaches the disk plane from behind (a far face of
 the body) is not pulled toward the point and a point pair starts at most `2 r`
 deep. The plane keeps its unbounded half-space.
 
+Second amendment 2026-09-27 (campaign diagnostic): a pair of either kind is a
+candidate only if the partner normal opposes the sample's outward face normal,
+`n_q . n_s < 0`. Without it, the deepest pairs at the initial candidate were
+100 % static-point pairs with grazing normals (median `|cos(n_s, n_q)|` 0.29)
+that no displacement of the face can resolve, and a floor within the search
+band of a side face paired with that face although it cannot push on it.
+`detect_contacts` takes the face normals as the optional `sample_normals`
+argument; `MixedHexSolverStep.prepare` passes the step-start normals.
+
 ## 4. Detection
 
 Performed once per physical step by `_TrajectoryFactory.reset` and `advance`
@@ -109,6 +118,12 @@ the CPU preparation workers:
 4. write `contact_pairs` (sample index, partner index, kind) with at most
    `S * (1 + M_pair)` rows, padded with -1, plus `contact_partner_point [Q, 3]`
    and `contact_partner_normal [Q, 3]` for the Q kept pairs.
+
+Second amendment 2026-09-27: step 1 also evaluates the face normals
+`n_s(X_start)` (`contact_geometry.sample_normals`), and steps 2 and 3 keep a
+candidate only when `n_q . n_s < 0` (section 3.3); dropped candidates do not
+occupy the `M_pair` slots. The step-start normal is frozen with the pair list,
+so a face that turns away during the inner iterations simply has zero energy.
 
 `margin = r + |v_s| dt` where `v_s` is the sample's step-start velocity, so a fast
 free end cannot cross the search band within one step (the tip reaches about
@@ -200,10 +215,33 @@ is off the constructor is unchanged, so the existing tests keep running.
   the beam pairing with its far faces at about 25 r depth); normals uniform on
   the sphere, then flipped to point toward the beam's rest center; `r_p`
   uniform in `[0.5 h, 2 h]`;
+- second amendment 2026-09-27: points are drawn one at a time from a spawned
+  child of the scene seed (so `kappa`, `beta`, `mu`, the plane and the count
+  keep their draws) and rejected while (a) any rest surface sample would be a
+  detection candidate of the disk in the widened band `-r <= gap < r + h`,
+  `r = 0.5 h` (the one-cell box clearance only kept the point outside the
+  body; with random normals and `r_p` up to `2 h` the disk plane still cut the
+  body in 43 % of default scenes, and 61 % of scenes had a rest candidate),
+  (b) the normal does not oppose the outward normal of the nearest rest sample
+  within 60°, `n . n_face <= -cos 60°` (redraw the normal up to eight times,
+  then the position), or (c) `z < z_min + h`, in front of or on the clamped
+  face where no free corner can move; 1000 position draws without success raise.
+  Realized on the canonical grid over 200 seeds: 0 % of scenes with a rest
+  candidate (was 61 %), mean point count unchanged at 32.3, 35 % of position
+  draws rejected;
 - `ke = kappa * E * h` with `kappa` log-uniform in `[0.1, 10]` (E is the
   sampled Young's modulus, so contact stiffness scales with the material);
   `kd = beta * ke * dt` with `beta` uniform in `[0, 1]`; `mu` uniform in
   `[0, 1]`.
+
+Second amendment 2026-09-27 (trainer default, `MixedTrainConfig`): the plane
+height range is `[-0.15, -0.005]` m. In 512 validation seeds of the first
+campaign the floor never penetrated (the plane sat at least 0.02 m below the
+rest y-minimum while the initial displacements are 0.05-0.4 h RMS), so the floor
+part of the contact model was untested by the cheap validation; the shallower
+range lets soft and moderately stiff beams reach the floor within the longest
+training horizon (128 steps, 0.43 s). The sampler's own default keeps the
+original range for reproducibility of earlier scenes.
 
 Scene generation targets contact-rich data: the plane height and point box are
 chosen so that, under the current augmentation and gravity, at least half of the
