@@ -14,6 +14,13 @@ achieved world change of the center deformation as detached optimizer history,
 which is carried across physical steps and cleared only at trajectory reset.
 The per-update objective is the LeCO asinh form with the material-aware energy
 floor of the revised nine-value schema.
+
+Every trajectory draws a static contact scene (``contact_scene``): an optional
+ground plane and artificial static points with per-scene stiffness, damping
+and friction. The scene is registered with the physical context, stored in the
+payload as ``contact_partners`` and its frozen per-step pair list is collated
+into every batch so the contact energy, the contact conditioning channels and
+the network's contact tokens follow the physics (schema 4).
 """
 
 from __future__ import annotations
@@ -48,7 +55,7 @@ _LEGACY_CONFIG_FIELDS = ("candidate_probabilities", "geometry_backtracking")
 
 @dataclass(frozen=True)
 class MixedTrainConfig:
-    """Experimental V2 settings. Material is independently sampled per reset."""
+    """Experimental V2 settings. Material and the contact scene are independently sampled per reset."""
 
     cell_counts: tuple[int, int, int] = (10, 10, 40)
     cell_size: float = 0.025
@@ -59,6 +66,8 @@ class MixedTrainConfig:
     num_heads: int = 4
     hops: tuple[int, ...] = (1,)
     query_chunk_size: int = 128
+    checkpoint_chunks: bool = False
+    """Recompute attention chunks during backpropagation to trade compute for memory; outputs unchanged."""
     max_step_size: float = 0.05
     learning_rate: float = 1e-4
     energy_increase_weight: float = 1.0
@@ -101,8 +110,32 @@ class MixedTrainConfig:
     density_range: tuple[float, float] = (100.0, 10000.0)
     damping_range: tuple[float, float] = (10.0, 1000.0)
     """Independent log-uniform absolute VBD viscosity [Pa·s]."""
+    edge_network: bool = True
+    """Give every transformer block the zero-initialized state-dependent edge update (ablation A02)."""
+    contact: bool = True
+    """Sample a contact scene per trajectory, add its energy and feed contact tokens to the network."""
+    contact_plane_probability: float = 0.8
+    """Probability that a sampled scene contains the ground plane."""
+    contact_plane_height_range: tuple[float, float] = (-0.35, -0.02)
+    """Uniform plane height bounds relative to the rest y-minimum [m]."""
+    contact_max_points: int = 64
+    """Largest static point count per scene; the count is uniform in ``{0, ..., max}``."""
+    contact_point_radius_range: tuple[float, float] = (0.5, 2.0)
+    """Uniform lateral radius bounds of the static points in units of ``cell_size``."""
+    contact_kappa_range: tuple[float, float] = (0.1, 10.0)
+    """Log-uniform bounds of the stiffness factor ``kappa = ke / (E h)``."""
+    contact_beta_range: tuple[float, float] = (0.0, 1.0)
+    """Uniform bounds of the damping factor ``beta = kd / (ke dt)``."""
+    contact_mu_range: tuple[float, float] = (0.0, 1.0)
+    """Uniform bounds of the friction coefficient."""
+    contact_max_pairs: int = 4
+    """Largest number of static-point pairs kept per surface sample."""
+    contact_tokens_per_cell: int = 24
+    """Contact token slots per cell of the network's contact encoder."""
+    contact_friction_epsilon: float = 1e-2
+    """IPC friction smoothing band as a fraction of the time step."""
     feature_schema_version: int = features.FEATURE_SCHEMA_VERSION
-    """Only the revised nine-value schema (3) is supported; legacy runs restart."""
+    """Only the contact-aware schema (4) is supported; legacy runs restart."""
     strength_range: tuple[float, float] = (0.02, 0.1)
     velocity_dt_range: tuple[float, float] = (0.0, 0.1)
     perturbation_scale_range: tuple[float, float] = (0.0, 1.0)
@@ -127,6 +160,11 @@ class MixedTrainConfig:
             "strength_range",
             "velocity_dt_range",
             "perturbation_scale_range",
+            "contact_plane_height_range",
+            "contact_point_radius_range",
+            "contact_kappa_range",
+            "contact_beta_range",
+            "contact_mu_range",
         ):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         for name in (
@@ -149,13 +187,18 @@ class MixedTrainConfig:
             "cpu_threads",
             "preparation_workers",
             "stage_patience",
+            "contact_tokens_per_cell",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        limit = self.plateau_min_final_stage_epochs
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
-            raise ValueError("plateau_min_final_stage_epochs must be a nonnegative integer")
+        for name in ("plateau_min_final_stage_epochs", "contact_max_points", "contact_max_pairs"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer")
+        for name in ("edge_network", "contact", "checkpoint_chunks"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a bool")
         for name in ("cell_counts", "hops", "iteration_counts", "physical_step_counts"):
             values = getattr(self, name)
             if not values or any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in values):
@@ -166,10 +209,20 @@ class MixedTrainConfig:
             raise ValueError("V2 budgets are limited to K <= 32 and H <= 128")
         if 1 not in self.iteration_counts or min(self.physical_step_counts) > 8:
             raise ValueError("initial curriculum requires K=1 and an H <= 8")
-        for name in ("cell_size", "time_step", "max_step_size", "learning_rate", "energy_floor_scale"):
+        for name in (
+            "cell_size",
+            "time_step",
+            "max_step_size",
+            "learning_rate",
+            "energy_floor_scale",
+            "contact_friction_epsilon",
+        ):
             value = getattr(self, name)
             if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
+        probability = self.contact_plane_probability
+        if isinstance(probability, bool) or not math.isfinite(probability) or not 0 <= probability <= 1:
+            raise ValueError("contact_plane_probability must lie in [0, 1]")
         if self.lr_schedule not in ("cosine", "constant", "plateau"):
             raise ValueError("lr_schedule must be cosine, constant or plateau")
         if (
@@ -204,14 +257,32 @@ class MixedTrainConfig:
             bounds = getattr(self, name)
             if len(bounds) != 2 or not all(math.isfinite(v) for v in bounds) or not 0 <= bounds[0] <= bounds[1]:
                 raise ValueError(f"invalid {name}")
+        # Plane heights may be negative; radii and stiffness factors must be positive; beta and mu nonnegative.
+        for name, lowest in (
+            ("contact_plane_height_range", -math.inf),
+            ("contact_point_radius_range", 0.0),
+            ("contact_kappa_range", 0.0),
+            ("contact_beta_range", 0.0),
+            ("contact_mu_range", 0.0),
+        ):
+            bounds = getattr(self, name)
+            strict = name in ("contact_point_radius_range", "contact_kappa_range")
+            if (
+                len(bounds) != 2
+                or any(isinstance(v, bool) or not math.isfinite(v) for v in bounds)
+                or not bounds[0] <= bounds[1]
+                or bounds[0] < lowest
+                or (strict and bounds[0] <= lowest)
+            ):
+                raise ValueError(f"invalid {name}")
         self.material_ranges()
         if (
             isinstance(self.feature_schema_version, bool)
             or self.feature_schema_version != features.FEATURE_SCHEMA_VERSION
         ):
             raise ValueError(
-                f"feature_schema_version must be {features.FEATURE_SCHEMA_VERSION}: the revised nine-value "
-                "schema; legacy checkpoints require fresh initialization"
+                f"feature_schema_version must be {features.FEATURE_SCHEMA_VERSION}: the contact-aware revised "
+                "nine-value schema; legacy checkpoints require fresh initialization"
             )
 
     @property
@@ -240,6 +311,8 @@ class MixedTrainConfig:
         # Checkpoints written before AdamW and clipping used plain Adam without clipping.
         values.setdefault("weight_decay", 0.0)
         values.setdefault("gradient_clip_norm", None)
+        # Checkpoints written before the memory knob existed trained without chunk checkpointing.
+        values.setdefault("checkpoint_chunks", False)
         legacy = [name for name in _LEGACY_CONFIG_FIELDS if name in values]
         if values.get("feature_schema_version") != features.FEATURE_SCHEMA_VERSION or legacy:
             raise ValueError(
@@ -307,17 +380,58 @@ class _TrajectoryFactory:
             velocity_dt_range=c.velocity_dt_range,
             perturbation_scale_range=c.perturbation_scale_range,
         ).reset(2 * seed + self.seed_parity)
+        contact = self._contact_partners(seed, initial.material.youngs_modulus)
         key = f"{self.prefix}-{seed}"
         specification = asdict(initial.material)
-        self.step.register_context(key, **specification)
+        self.step.register_context(key, **specification, contact=contact)
         try:
             payload = self.step.prepare(key, torch.from_numpy(initial.positions), torch.from_numpy(initial.velocities))
-            payload.update(context_spec=specification, metadata=initial.metadata, seed=seed, physical_age=0)
+            payload.update(
+                context_spec=specification,
+                metadata={
+                    **initial.metadata,
+                    "contact": _contact_metadata(contact, initial.material.youngs_modulus, c),
+                },
+                contact_partners=contact.to_dict(),
+                seed=seed,
+                physical_age=0,
+            )
             payload.update(empty_history(self.cell_count))
             return self._candidate(payload)
         except BaseException:
             self.step.discard_context(key)
             raise
+
+    def _contact_partners(self, seed, youngs_modulus):
+        """Draw the trajectory's static contact scene; contact-free partners when contact is disabled.
+
+        The scene stream is ``[master_seed, seed, 2203]`` (see
+        :func:`.contact_scene.sample_contact_partners`), so training and
+        validation factories draw different scenes for the same seed.
+        """
+        from .contact_scene import (  # noqa: PLC0415 -- Optional training boundary.
+            ContactPartners,
+            sample_contact_partners,
+        )
+
+        c = self.config
+        if not c.contact:
+            return ContactPartners.contact_free()
+        return sample_contact_partners(
+            self.rest,
+            master_seed=self.master_seed,
+            seed=seed,
+            youngs_modulus=youngs_modulus,
+            cell_size=c.cell_size,
+            time_step=c.time_step,
+            plane_probability=c.contact_plane_probability,
+            plane_height_range=c.contact_plane_height_range,
+            max_points=c.contact_max_points,
+            point_radius_range=c.contact_point_radius_range,
+            kappa_range=c.contact_kappa_range,
+            beta_range=c.contact_beta_range,
+            mu_range=c.contact_mu_range,
+        )
 
     def advance(self, payload):
         from .history import carry_history  # noqa: PLC0415 -- Optional training boundary.
@@ -325,7 +439,7 @@ class _TrajectoryFactory:
 
         payload = _cpu(payload)
         prepared = self.step.advance(payload)
-        for key in ("context_spec", "metadata", "seed"):
+        for key in ("context_spec", "metadata", "seed", "contact_partners"):
             prepared[key] = payload[key]
         prepared["physical_age"] = payload["physical_age"] + 1
         carry_history(payload, prepared)
@@ -365,12 +479,83 @@ class _TrajectoryFactory:
         return payload
 
 
+def _contact_metadata(partners, youngs_modulus, config):
+    """Summarize one scene for the payload metadata: presence, count and its dimensionless coefficients."""
+    ke, kd = float(partners.ke), float(partners.kd)
+    return {
+        "plane_present": bool(partners.plane_present),
+        "point_count": int(partners.point_count),
+        "ke": ke,
+        "kd": kd,
+        "mu": float(partners.mu),
+        "kappa": ke / (youngs_modulus * config.cell_size),
+        "beta": kd / (ke * config.time_step) if ke > 0 else 0.0,
+    }
+
+
+def _saved_contact_partners(pool_state):
+    """Rebuild every checkpointed trajectory's :class:`.ContactPartners`, keyed by context id.
+
+    The pool drains preparation before it is checkpointed, so each record
+    carries the payload whose ``contact_partners`` was written at reset.
+    """
+    from .contact_scene import ContactPartners  # noqa: PLC0415 -- Optional training boundary.
+
+    partners = {}
+    for record in pool_state.get("records", []):
+        payload = record.get("payload") or {}
+        if "context_id" in payload and "contact_partners" in payload:
+            partners[payload["context_id"]] = ContactPartners.from_dict(payload["contact_partners"])
+    return partners
+
+
+_CONTACT_PAYLOAD_KEYS = (
+    ("sample_index", "contact_sample_index", ()),
+    ("kind", "contact_kind", ()),
+    ("partner_point", "contact_partner_point", (3,)),
+    ("partner_normal", "contact_partner_normal", (3,)),
+    ("partner_radius", "contact_partner_radius", ()),
+)
+"""Batch entry, payload key and trailing shape of every frozen contact pair tensor."""
+
+
+def _batch_contact(payloads, device):
+    """Collate the frozen contact pairs of a batch, zero-padded to the largest Q with a validity mask.
+
+    Returns None when no payload carries pair tensors (synthetic or legacy
+    payloads). A payload without pair tensors among others contributes zero
+    pairs; ``Q = 0`` for every payload yields ``[B, 0]`` entries, which the
+    step treats as no contact.
+    """
+    import torch
+
+    counts = [
+        int(payload["contact_sample_index"].shape[0]) if "contact_sample_index" in payload else None
+        for payload in payloads
+    ]
+    if all(count is None for count in counts):
+        return None
+    counts = [count or 0 for count in counts]
+    width = max(counts)
+    contact = {}
+    for name, key, tail in _CONTACT_PAYLOAD_KEYS:
+        dtype = torch.int64 if name in ("sample_index", "kind") else torch.float32
+        padded = torch.zeros((len(payloads), width, *tail), dtype=dtype)
+        for row, (payload, count) in enumerate(zip(payloads, counts, strict=True)):
+            if count:
+                padded[row, :count] = payload[key].detach().to(dtype)
+        contact[name] = padded.to(device)
+    contact["mask"] = (torch.arange(width)[None, :] < torch.tensor(counts)[:, None]).to(device)
+    return contact
+
+
 def _batch(records, device, *, cell_count=None):
-    """Collate detached payload tensors and the stacked optimizer history on ``device``.
+    """Collate detached payload tensors, the stacked optimizer history and the contact pairs on ``device``.
 
     ``cell_count`` validates stored history blocks; when omitted it is read
     from the first stored block, and payloads without any history entries
-    yield ``history=None`` (no history for the whole batch).
+    yield ``history=None`` (no history for the whole batch). ``contact`` is the
+    padded pair batch of :func:`_batch_contact` or None.
     """
     import torch
 
@@ -382,6 +567,7 @@ def _batch(records, device, *, cell_count=None):
         for name in ("candidate", "inertial_prediction", "fixed_positions", "physical_positions")
     }
     values["context_ids"] = tuple(p["context_id"] for p in payloads)
+    values["contact"] = _batch_contact(payloads, device)
     if cell_count is None:
         blocks = [p.get(HISTORY_KEYS[0]) for p in payloads]
         blocks = [block for block in blocks if isinstance(block, torch.Tensor) and block.ndim == 3]
@@ -404,6 +590,7 @@ def _checked_forward(module, step, batch):
         fixed_positions=batch["fixed_positions"],
         previous_positions=batch["physical_positions"],
         history=batch.get("history"),
+        contact=batch.get("contact"),
     )
     if not torch.isfinite(result.loss.total).all() or not torch.isfinite(result.positions).all():
         raise ValueError("nonfinite learned proposal; trajectory retained as a failure")
@@ -507,6 +694,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             "lr_final",
             "weight_decay",
             "gradient_clip_norm",
+            "checkpoint_chunks",
         }
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
         if any(saved_config.get(k) != v for k, v in asdict(config).items() if k not in allowed):
@@ -544,6 +732,9 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         hops=config.hops,
         max_step_size=config.max_step_size,
         query_chunk_size=config.query_chunk_size,
+        edge_network=config.edge_network,
+        checkpoint_chunks=config.checkpoint_chunks,
+        contact_tokens=config.contact,
     ).to(device)
     step = MixedHexSolverStep(
         rest,
@@ -552,6 +743,9 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         time_step=config.time_step,
         gravity=config.gravity,
         energy_floor_scale=config.energy_floor_scale,
+        contact_max_pairs=config.contact_max_pairs,
+        contact_tokens_per_cell=config.contact_tokens_per_cell,
+        contact_friction_epsilon=config.contact_friction_epsilon,
     ).to(device)
     cell_count = len(step.cell_corner_indices)
     factory = _TrajectoryFactory(step, rest, config, rank=rank)
@@ -582,8 +776,11 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             previous_stage, previous_stage_epochs = curriculum.stage, curriculum.stage_epochs
             overdue_advanced = curriculum.advance_if_overdue()
             state = saved["rank_states"][rank]
+            partners = _saved_contact_partners(state["pool"])
             for key, spec in state["context_specs"].items():
-                step.register_context(key, **spec)
+                if key not in partners:
+                    raise ValueError(f"checkpoint context {key!r} has no stored contact partners")
+                step.register_context(key, **spec, contact=partners[key])
             pool = ActiveTrajectoryPool.from_state_dict(
                 state["pool"],
                 reset=factory.reset,
@@ -734,6 +931,9 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             timings = Counter()
             step_size_min, step_size_max = math.inf, -math.inf
             gradient_norm_max = 0.0
+            contact_penetration_max = 0.0
+            contact_scenes = {}
+            contact_hits = {}
             update_count = 0
             for _ in range(config.queries_per_epoch // (config.batch_size * world_size)):
                 began = time.perf_counter()
@@ -747,6 +947,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                             batch["inertial_prediction"],
                             batch["context_ids"],
                             previous_positions=batch["physical_positions"],
+                            contact=batch["contact"],
                         ).total
                         floor = step.energy_floor(batch["context_ids"])
                     if not torch.isfinite(previous).all():
@@ -799,10 +1000,22 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 ties = (
                     result.tie_mask.sum().to(after.dtype) if result.tie_mask is not None else torch.zeros_like(after[0])
                 )
+                pair_counts = (
+                    batch["contact"]["mask"].sum(dim=1)
+                    if batch["contact"] is not None
+                    else torch.zeros(len(records), dtype=torch.int64, device=after.device)
+                )
+                pairs = pair_counts.sum().to(after.dtype)
+                pair_counts = pair_counts.tolist()
+                penetration = (
+                    result.contact_max_penetration.detach().max()
+                    if result.contact_max_penetration is not None
+                    else torch.zeros_like(after[0])
+                )
                 sums = torch.stack(
-                    (losses.detach().sum(), previous.sum(), after.sum(), residual.sum(), step_size.sum(), ties)
+                    (losses.detach().sum(), previous.sum(), after.sum(), residual.sum(), step_size.sum(), ties, pairs)
                 ).double()
-                extremes = torch.stack((-step_size.min(), step_size.max())).double()
+                extremes = torch.stack((-step_size.min(), step_size.max(), penetration)).double()
                 if world_size > 1:
                     dist.all_reduce(sums)
                     dist.all_reduce(extremes, op=dist.ReduceOp.MAX)
@@ -826,9 +1039,12 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                         "step_size_max": extremes[1],
                         "tie_cell_count": int(round(sums[5])),
                         "gradient_norm": gradient_norm,
+                        "contact_max_penetration_r": extremes[2],
+                        "contact_pair_mean": sums[6] / query_count,
                     }
                 )
                 gradient_norm_max = max(gradient_norm_max, gradient_norm)
+                contact_penetration_max = max(contact_penetration_max, extremes[2])
                 totals.update(
                     loss=sums[0],
                     gradient_norm_sum=gradient_norm,
@@ -852,6 +1068,10 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                         }
                     )
                     perturbations.append(record.payload["metadata"]["perturbation_scale"])
+                    scene = record.payload["metadata"].get("contact") or {}
+                    contact_scenes[record.seed] = bool(scene.get("plane_present")) or scene.get("point_count", 0) > 0
+                    # Realized contact: the trajectory carried at least one detected pair in some update.
+                    contact_hits[record.seed] = contact_hits.get(record.seed, False) or pair_counts[i] > 0
                     record.payload["candidate"] = result.positions[i].detach()
                 pool.finish_batch(records)
                 if rank == 0 and report["completed_updates"] % 8 == 0:
@@ -940,6 +1160,9 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 "tie_cell_count": totals["tie_cell_count"],
                 "gradient_norm_mean": totals["gradient_norm_sum"] / max(update_count, 1),
                 "gradient_norm_max": gradient_norm_max,
+                "contact_scene_fraction": sum(contact_scenes.values()) / len(contact_scenes) if contact_scenes else 0.0,
+                "contact_realized_fraction": sum(contact_hits.values()) / len(contact_hits) if contact_hits else 0.0,
+                "contact_max_penetration_r": contact_penetration_max,
                 "candidate_modes": dict(candidate_modes),
                 "seconds": time.perf_counter() - epoch_start,
                 "available_K": counts[0],

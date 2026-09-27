@@ -24,6 +24,7 @@ if importlib.util.find_spec("torch") is None:
 import torch  # noqa: TID253 -- Optional experimental training tests.
 
 from experiments.learned_intrinsic_solver import features, mixed_validation, train_mixed
+from experiments.learned_intrinsic_solver.contact_scene import ContactPartners, sample_contact_partners
 from experiments.learned_intrinsic_solver.curriculum import MixedCurriculum
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.history import HISTORY_KEYS, store_history
@@ -43,6 +44,15 @@ from experiments.learned_intrinsic_solver.train_mixed import (
 from experiments.learned_intrinsic_solver.training_schedule import PlateauController
 
 _REMOVED_UPDATE_KEYS = ("shortened_query_count", "mean_acceptance_scale")
+_CONTACT_PAYLOAD_KEYS = (
+    "contact_sample_index",
+    "contact_kind",
+    "contact_partner_point",
+    "contact_partner_normal",
+    "contact_partner_radius",
+)
+_FLOOR_SCENE = {"contact_plane_probability": 1.0, "contact_plane_height_range": (-0.02, -0.01)}
+"""Floor 1-2 cm below the rest bottom faces: inside r = 5 cm at reset, so every trajectory starts penetrating."""
 
 
 def _candidate_factory(rest, config):
@@ -100,6 +110,7 @@ class TestMixedTraining(unittest.TestCase):
         return MixedTrainConfig(**values)
 
     def _step(self, config):
+        """Build the network and step exactly as run_training does from ``config``."""
         rest = generate_cuboid(config.cell_counts, cell_size=config.cell_size)
         fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == 0)
         network = IntrinsicSolverNetwork(
@@ -109,22 +120,49 @@ class TestMixedTraining(unittest.TestCase):
             hidden_dim=config.hidden_dim,
             edge_hidden_dim=config.edge_hidden_dim,
             num_heads=config.num_heads,
+            edge_network=config.edge_network,
+            contact_tokens=config.contact,
         )
-        step = MixedHexSolverStep(rest, fixed, network=network, time_step=config.time_step)
+        step = MixedHexSolverStep(
+            rest,
+            fixed,
+            network=network,
+            time_step=config.time_step,
+            contact_max_pairs=config.contact_max_pairs,
+            contact_tokens_per_cell=config.contact_tokens_per_cell,
+            contact_friction_epsilon=config.contact_friction_epsilon,
+        )
         self.addCleanup(step.close)
         return step, rest
 
     def test_revised_schema_defaults_and_validation(self):
-        """Default to the revised nine-value schema with the new floor and validation settings."""
+        """Default to the contact-aware schema with the edge network, the floor and the validation settings."""
         config = MixedTrainConfig()
         self.assertEqual(config.feature_schema_version, features.FEATURE_SCHEMA_VERSION)
-        self.assertEqual((config.state_feature_dim, config.conditioning_dim), (features.STATE_FEATURE_DIM, 6))
+        self.assertEqual(
+            (config.state_feature_dim, config.conditioning_dim), (features.STATE_FEATURE_DIM, features.CONDITIONING_DIM)
+        )
+        self.assertEqual(config.conditioning_dim, 9)
         self.assertEqual(config.energy_floor_scale, 1.0)
         self.assertEqual(config.validation_full_count, 16)
         self.assertEqual(config.validation_full_interval, 5)
         self.assertEqual(config.plateau_min_final_stage_epochs, 20)
         self.assertEqual(config.stage_descent_rate, 0.8)
         self.assertEqual(config.stage_max_epochs, 20)
+        self.assertIs(config.edge_network, True)
+        self.assertIs(config.contact, True)
+        self.assertIs(config.checkpoint_chunks, False)
+        self.assertEqual(config.contact_plane_probability, 0.8)
+        self.assertEqual(config.contact_plane_height_range, (-0.35, -0.02))
+        self.assertEqual(config.contact_max_points, 64)
+        self.assertEqual(config.contact_point_radius_range, (0.5, 2.0))
+        self.assertEqual(config.contact_kappa_range, (0.1, 10.0))
+        self.assertEqual(config.contact_beta_range, (0.0, 1.0))
+        self.assertEqual(config.contact_mu_range, (0.0, 1.0))
+        self.assertEqual(config.contact_max_pairs, 4)
+        self.assertEqual(config.contact_tokens_per_cell, 24)
+        self.assertEqual(config.contact_friction_epsilon, 1e-2)
+        self.assertEqual((config.hops, config.hidden_dim, config.num_heads, config.max_step_size), ((1,), 128, 4, 0.05))
         self.assertFalse(hasattr(config, "candidate_probabilities"))
         self.assertFalse(hasattr(config, "geometry_backtracking"))
         self.assertEqual(MixedTrainConfig.from_checkpoint_config(asdict(config)), config)
@@ -137,10 +175,33 @@ class TestMixedTraining(unittest.TestCase):
             ("stage_max_epochs", 0),
             ("stage_max_epochs", 9),
             ("stage_max_epochs", 20.5),
+            ("edge_network", 1),
+            ("contact", "yes"),
+            ("checkpoint_chunks", 1),
+            ("contact_plane_probability", 1.5),
+            ("contact_plane_probability", -0.1),
+            ("contact_plane_probability", math.nan),
+            ("contact_plane_height_range", (0.0, -0.1)),
+            ("contact_plane_height_range", (-math.inf, 0.0)),
+            ("contact_max_points", -1),
+            ("contact_max_points", True),
+            ("contact_point_radius_range", (0.0, 1.0)),
+            ("contact_kappa_range", (0.0, 1.0)),
+            ("contact_beta_range", (-0.1, 1.0)),
+            ("contact_mu_range", (0.5, 0.1)),
+            ("contact_max_pairs", -1),
+            ("contact_tokens_per_cell", 0),
+            ("contact_friction_epsilon", 0.0),
         ):
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 MixedTrainConfig(**{field: value})
         self.assertEqual(MixedTrainConfig(plateau_min_final_stage_epochs=0).plateau_min_final_stage_epochs, 0)
+        sparse = MixedTrainConfig(contact_max_points=0, contact_max_pairs=0, contact_beta_range=(0.0, 0.0))
+        self.assertEqual((sparse.contact_max_points, sparse.contact_max_pairs), (0, 0))
+        self.assertEqual(MixedTrainConfig(contact_kappa_range=[0.5, 2]).contact_kappa_range, (0.5, 2))
+        # Checkpoints written before the memory knob default to dense backpropagation.
+        without_knob = {k: v for k, v in asdict(config).items() if k != "checkpoint_chunks"}
+        self.assertIs(MixedTrainConfig.from_checkpoint_config(without_knob).checkpoint_chunks, False)
 
     def test_legacy_checkpoint_configurations_are_rejected_explicitly(self):
         """Never reshape a 38/86-feature checkpoint into the revised schema."""
@@ -155,7 +216,7 @@ class TestMixedTraining(unittest.TestCase):
         for name, values in legacy_variants.items():
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "legacy"):
                 MixedTrainConfig.from_checkpoint_config(values)
-        for version in (1, 2, 4):
+        for version in (1, 2, 3, 5):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, "legacy"):
                 replace(self.config(1), feature_schema_version=version)
 
@@ -348,6 +409,10 @@ class TestMixedTraining(unittest.TestCase):
                 self.assertLessEqual(row["step_size_min"], row["step_size_mean"])
                 self.assertLessEqual(row["step_size_mean"], row["step_size_max"])
                 self.assertLess(row["step_size_max"], self.config(2).max_step_size)
+                self.assertTrue(
+                    math.isfinite(row["contact_max_penetration_r"]) and row["contact_max_penetration_r"] >= 0
+                )
+                self.assertTrue(math.isfinite(row["contact_pair_mean"]) and row["contact_pair_mean"] >= 0)
                 for key in _REMOVED_UPDATE_KEYS:
                     self.assertNotIn(key, row)
             for row in report["epochs"]:
@@ -357,8 +422,12 @@ class TestMixedTraining(unittest.TestCase):
                 self.assertTrue(set(row["candidate_modes"]) <= {"inertial", "perturbed_inertial"})
                 self.assertIn("selection", row["validation"])
                 self.assertIn("force_residual", row["validation"])
+                self.assertIn("penetration", row["validation"])
                 self.assertIn("allow_early_stop", row)
                 self.assertLessEqual(row["gradient_norm_mean"], row["gradient_norm_max"])
+                self.assertTrue(0.0 <= row["contact_scene_fraction"] <= 1.0)
+                self.assertTrue(0.0 <= row["contact_realized_fraction"] <= row["contact_scene_fraction"])
+                self.assertGreaterEqual(row["contact_max_penetration_r"], 0.0)
             self.assertIsNone(report["epochs"][0]["full_horizon_validation"])
             row = report["epochs"][1]
             full = row["full_horizon_validation"]
@@ -369,6 +438,7 @@ class TestMixedTraining(unittest.TestCase):
             )
             self.assertEqual((full["iterations"], full["physical_steps"]), (1, 2))
             self.assertIn("final_free_force_residual_norm_n", full)
+            self.assertIn("final_max_penetration_r", full)
             selection = report["epochs"][-1]["validation"]["selection"]
             if selection["eligible"]:
                 self.assertIsNotNone(report["best_selection"])
@@ -384,9 +454,250 @@ class TestMixedTraining(unittest.TestCase):
                 self.assertEqual(record["payload"]["history_axis_gradient_world"].device.type, "cpu")
                 self.assertEqual(record["payload"]["history_axis_gradient_world"].abs().sum().item() > 0, queried)
                 self.assertIn(record["payload"]["candidate_mode"], ("inertial", "perturbed_inertial"))
-            for name in ("report.json", "updates.csv", "epochs.csv", "loss_curve.svg", "residual_curve.svg"):
+                # The scene and its frozen pair list travel with the payload.
+                scene = ContactPartners.from_dict(record["payload"]["contact_partners"])
+                self.assertEqual(scene.to_dict(), record["payload"]["contact_partners"])
+                for key in _CONTACT_PAYLOAD_KEYS:
+                    self.assertEqual(record["payload"][key].device.type, "cpu")
+                self.assertIn("contact", record["payload"]["metadata"])
+            for name in (
+                "report.json",
+                "updates.csv",
+                "epochs.csv",
+                "loss_curve.svg",
+                "residual_curve.svg",
+                "penetration_curve.svg",
+            ):
                 self.assertTrue((output / name).is_file(), name)
             self.assertNotIn("shortened_query_count", (output / "updates.csv").read_text())
+            header = (output / "updates.csv").read_text().splitlines()[0]
+            self.assertIn("contact_max_penetration_r,contact_pair_mean", header)
+            self.assertIn(
+                "contact_scene_fraction,contact_realized_fraction,contact_max_penetration_r,"
+                "validation_final_max_penetration_r",
+                (output / "epochs.csv").read_text().splitlines()[0],
+            )
+
+    def test_contact_scenes_follow_the_seeded_generator_and_the_sampled_material(self):
+        """Register each trajectory's scene from [master_seed, seed, 2203] with ke scaled by its own Young's modulus."""
+        config = self.config(1)
+        step, rest = self._step(config)
+        training = _TrajectoryFactory(step, rest, config, rank=0)
+        validation = _TrajectoryFactory(step, rest, config, rank=0, validation=True)
+        for factory in (training, validation):
+            with self.subTest(validation=factory is validation):
+                payload = factory.reset(5)
+                material = payload["context_spec"]
+                youngs = (
+                    material["lame_mu"]
+                    * (3 * material["lame_lambda"] + 2 * material["lame_mu"])
+                    / (material["lame_lambda"] + material["lame_mu"])
+                )
+                expected = sample_contact_partners(
+                    rest,
+                    master_seed=factory.master_seed,
+                    seed=5,
+                    youngs_modulus=youngs,
+                    cell_size=config.cell_size,
+                    time_step=config.time_step,
+                    plane_probability=config.contact_plane_probability,
+                    plane_height_range=config.contact_plane_height_range,
+                    max_points=config.contact_max_points,
+                    point_radius_range=config.contact_point_radius_range,
+                    kappa_range=config.contact_kappa_range,
+                    beta_range=config.contact_beta_range,
+                    mu_range=config.contact_mu_range,
+                )
+                self.assertEqual(payload["contact_partners"], expected.to_dict())
+                scene = payload["metadata"]["contact"]
+                self.assertEqual(set(scene), {"plane_present", "point_count", "ke", "kd", "mu", "kappa", "beta"})
+                self.assertEqual(
+                    (scene["plane_present"], scene["point_count"]), (expected.plane_present, expected.point_count)
+                )
+                self.assertEqual((scene["ke"], scene["kd"], scene["mu"]), (expected.ke, expected.kd, expected.mu))
+                self.assertAlmostEqual(scene["kappa"], expected.ke / (youngs * config.cell_size), places=9)
+                self.assertAlmostEqual(scene["beta"], expected.kd / (expected.ke * config.time_step), places=9)
+                self.assertTrue(config.contact_kappa_range[0] <= scene["kappa"] <= config.contact_kappa_range[1])
+                # The step's conditioning carries the same ratios for the registered context.
+                batch = _batch([payload], torch.device("cpu"))
+                inputs = step.prepare_inputs(
+                    batch["candidate"],
+                    batch["inertial_prediction"],
+                    batch["context_ids"],
+                    previous_positions=batch["physical_positions"],
+                    contact=batch["contact"],
+                )
+                torch.testing.assert_close(
+                    inputs.conditioning[0, 0, 6:],
+                    torch.tensor([math.log1p(scene["kappa"]), scene["beta"], scene["mu"]], dtype=torch.float32),
+                    rtol=1e-5,
+                    atol=1e-6,
+                )
+                factory.retire(payload)
+        self.assertNotEqual(training.reset(5)["contact_partners"], validation.reset(5)["contact_partners"])
+        step.close()
+        self.assertEqual(step.context_specs, {})
+
+    def test_batch_collates_contact_pairs_padded_to_the_largest_count(self):
+        """Zero-pad the per-payload pair tensors to the batch maximum Q with a validity mask; Q = 0 is allowed."""
+        config = self.config(1, **_FLOOR_SCENE)
+        step, rest = self._step(config)
+        factory = _TrajectoryFactory(step, rest, config, rank=0)
+        payloads = [factory.reset(seed) for seed in range(2)]
+        self.addCleanup(lambda: [factory.retire(p) for p in payloads if p["context_id"] in step.context_specs])
+        counts = [int(p["contact_sample_index"].shape[0]) for p in payloads]
+        self.assertTrue(all(count >= 2 for count in counts), counts)
+        # Drop one pair from the second payload so the two rows need different padding.
+        for key in _CONTACT_PAYLOAD_KEYS:
+            payloads[1][key] = payloads[1][key][:-1]
+        counts[1] -= 1
+        batch = _batch(payloads, torch.device("cpu"))
+        contact = batch["contact"]
+        width = max(counts)
+        self.assertEqual(
+            set(contact), {"sample_index", "kind", "partner_point", "partner_normal", "partner_radius", "mask"}
+        )
+        self.assertEqual(contact["sample_index"].shape, (2, width))
+        self.assertEqual(contact["partner_point"].shape, (2, width, 3))
+        self.assertEqual((contact["sample_index"].dtype, contact["kind"].dtype), (torch.int64, torch.int64))
+        self.assertEqual(contact["partner_radius"].dtype, torch.float32)
+        self.assertEqual(contact["mask"].dtype, torch.bool)
+        self.assertEqual(contact["mask"].sum(1).tolist(), counts)
+        for row, payload in enumerate(payloads):
+            count = counts[row]
+            torch.testing.assert_close(
+                contact["sample_index"][row, :count], payload["contact_sample_index"], rtol=0, atol=0
+            )
+            torch.testing.assert_close(
+                contact["partner_point"][row, :count], payload["contact_partner_point"], rtol=0, atol=0
+            )
+            self.assertEqual(contact["partner_point"][row, count:].abs().sum().item(), 0.0)
+        # Payloads without pair tensors give None; a mixture treats the missing ones as empty.
+        plain = {k: v for k, v in payloads[0].items() if k not in _CONTACT_PAYLOAD_KEYS}
+        self.assertIsNone(_batch([plain], torch.device("cpu"))["contact"])
+        mixed = _batch([plain, payloads[1]], torch.device("cpu"))["contact"]
+        self.assertEqual(mixed["mask"].sum(1).tolist(), [0, counts[1]])
+        # Q = 0 everywhere yields empty [B, 0] entries, which the step treats as no contact.
+        for payload in payloads:
+            for key in _CONTACT_PAYLOAD_KEYS:
+                payload[key] = payload[key][:0]
+        empty = _batch(payloads, torch.device("cpu"))["contact"]
+        self.assertEqual(empty["sample_index"].shape, (2, 0))
+        self.assertEqual(empty["mask"].shape, (2, 0))
+        terms = step.energy(
+            batch["candidate"],
+            batch["inertial_prediction"],
+            batch["context_ids"],
+            previous_positions=batch["physical_positions"],
+            contact=empty,
+        )
+        torch.testing.assert_close(terms.contact, torch.zeros(2), rtol=0, atol=0)
+
+    def test_contact_smoke_with_a_guaranteed_floor_records_pairs_penetration_and_scenes(self):
+        """Run two tiny epochs on floor scenes: finite losses, pairs in every update, penetration metrics, full scene fraction."""
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            report = run_training(output, self.config(2, **_FLOOR_SCENE))
+            self.assertEqual(report["completed_epochs"], 2)
+            self.assertEqual(len(report["updates"]), 8)
+            for row in report["updates"]:
+                self.assertTrue(math.isfinite(row["loss"]))
+                self.assertTrue(math.isfinite(row["after_joule"]) and math.isfinite(row["before_joule"]))
+                # Two exposed bottom faces per object touch the floor, so every object carries at least two pairs.
+                self.assertGreaterEqual(row["contact_pair_mean"], 2.0)
+                self.assertTrue(math.isfinite(row["contact_max_penetration_r"]))
+            # 1-2 cm gap against r = 5 cm: the deepest penetration of the first update is 0.6-0.8 r.
+            self.assertGreater(max(row["contact_max_penetration_r"] for row in report["updates"]), 0.3)
+            for row in report["epochs"]:
+                self.assertEqual(row["contact_scene_fraction"], 1.0)
+                self.assertEqual(row["contact_realized_fraction"], 1.0)
+                self.assertGreater(row["contact_max_penetration_r"], 0.0)
+                validation = row["validation"]
+                curve = validation["penetration"]
+                self.assertEqual(len(curve), self.config(2).validation_iterations + 1)
+                self.assertEqual(set(curve[0]), {"iteration", "mean", "max", "valid_count"})
+                self.assertGreater(curve[0]["max"], 0.3)
+                self.assertTrue(all(point["valid_count"] == validation["sample_count"] for point in curve))
+                self.assertGreater(validation["physical_curves"][0]["max_penetration_r"]["mean"], 0.0)
+                for sample in validation["samples"]:
+                    self.assertGreater(sample["contact_energy_joule"][0], 0.0)
+                    self.assertEqual(len(sample["max_penetration_r"]), len(sample["energies"]))
+            full = report["epochs"][1]["full_horizon_validation"]
+            self.assertGreater(full["final_max_penetration_r"]["max"], 0.0)
+            self.assertIn("mean", full["final_max_penetration_r"])
+            svg = (output / "penetration_curve.svg").read_text()
+            self.assertIn('aria-label="max"', svg)
+            self.assertNotIn("Waiting for completed measurements", svg)
+            self.assertIn("Validation deepest contact penetration", (output / "index.html").read_text())
+            saved = torch.load(output / "checkpoints/latest.pt", weights_only=False)
+            for record in saved["rank_states"][0]["pool"]["records"]:
+                payload = record["payload"]
+                self.assertTrue(payload["contact_partners"]["plane_present"])
+                self.assertTrue(payload["metadata"]["contact"]["plane_present"])
+                self.assertGreaterEqual(payload["contact_sample_index"].shape[0], 2)
+            self.assertTrue(any(key.startswith("contact_encoder.") for key in saved["network_state"]))
+            epochs_csv = (output / "epochs.csv").read_text().splitlines()
+            self.assertEqual(len(epochs_csv), 3)
+            self.assertIn("1.0", epochs_csv[1])
+
+    def test_realized_contact_fraction_separates_scene_presence_from_detected_pairs(self):
+        """A floor far below every trajectory gives scene fraction 1 but realized contact 0 within the horizon."""
+        config = self.config(
+            1, contact_plane_probability=1.0, contact_plane_height_range=(-0.35, -0.34), contact_max_points=0
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            report = run_training(Path(directory), config)
+            self.assertTrue(all(row["contact_pair_mean"] == 0.0 for row in report["updates"]))
+            row = report["epochs"][0]
+            self.assertEqual(row["contact_scene_fraction"], 1.0)
+            self.assertEqual(row["contact_realized_fraction"], 0.0)
+            self.assertEqual(row["contact_max_penetration_r"], 0.0)
+
+    def test_contact_disabled_reproduces_the_schema_four_zero_path(self):
+        """Without contact: contact-free partners, no pairs, zero contact channels, no encoder, zero metrics."""
+        config = self.config(1, contact=False)
+        step, rest = self._step(config)
+        self.assertIsNone(step.network.contact_encoder)
+        factory = _TrajectoryFactory(step, rest, config, rank=0)
+        payload = factory.reset(3)
+        self.assertEqual(payload["contact_partners"], ContactPartners.contact_free().to_dict())
+        self.assertEqual(
+            payload["metadata"]["contact"],
+            {"plane_present": False, "point_count": 0, "ke": 0.0, "kd": 0.0, "mu": 0.0, "kappa": 0.0, "beta": 0.0},
+        )
+        self.assertEqual(payload["contact_sample_index"].shape, (0,))
+        batch = _batch([payload], torch.device("cpu"))
+        self.assertEqual(batch["contact"]["sample_index"].shape, (1, 0))
+        inputs = step.prepare_inputs(
+            batch["candidate"],
+            batch["inertial_prediction"],
+            batch["context_ids"],
+            previous_positions=batch["physical_positions"],
+            contact=batch["contact"],
+        )
+        self.assertEqual(inputs.conditioning.shape[-1], features.CONDITIONING_DIM)
+        torch.testing.assert_close(
+            inputs.conditioning[..., 6:], torch.zeros_like(inputs.conditioning[..., 6:]), rtol=0, atol=0
+        )
+        self.assertIsNone(inputs.contact_tokens)
+        result = _checked_forward(step, step, batch)
+        torch.testing.assert_close(result.contact_energy, torch.zeros(1), rtol=0, atol=0)
+        torch.testing.assert_close(result.contact_max_penetration, torch.zeros(1), rtol=0, atol=0)
+        factory.retire(payload)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            report = run_training(output, config)
+            self.assertTrue(all(row["contact_pair_mean"] == 0.0 for row in report["updates"]))
+            self.assertTrue(all(row["contact_max_penetration_r"] == 0.0 for row in report["updates"]))
+            row = report["epochs"][0]
+            self.assertEqual((row["contact_scene_fraction"], row["contact_max_penetration_r"]), (0.0, 0.0))
+            self.assertEqual(row["contact_realized_fraction"], 0.0)
+            self.assertTrue(all(point["max"] == 0.0 for point in row["validation"]["penetration"]))
+            saved = torch.load(output / "checkpoints/latest.pt", weights_only=False)
+            self.assertFalse(any(key.startswith("contact_encoder.") for key in saved["network_state"]))
+            for record in saved["rank_states"][0]["pool"]["records"]:
+                self.assertEqual(record["payload"]["contact_partners"], ContactPartners.contact_free().to_dict())
+                self.assertEqual(record["payload"]["contact_sample_index"].shape, (0,))
 
     def test_exact_resume_preserves_updates_and_active_trajectories(self):
         """A restart reproduces Adam and independently progressing pool members."""
@@ -398,9 +709,11 @@ class TestMixedTraining(unittest.TestCase):
             ),
         ):
             root = Path(directory)
-            full = run_training(root / "full", self.config(2))
-            run_training(root / "split", self.config(1))
-            resumed = run_training(root / "split", self.config(2), resume=root / "split/checkpoints/latest.pt")
+            full = run_training(root / "full", self.config(2, **_FLOOR_SCENE))
+            run_training(root / "split", self.config(1, **_FLOOR_SCENE))
+            resumed = run_training(
+                root / "split", self.config(2, **_FLOOR_SCENE), resume=root / "split/checkpoints/latest.pt"
+            )
             a = torch.load(root / "full/checkpoints/latest.pt", weights_only=False)
             b = torch.load(root / "split/checkpoints/latest.pt", weights_only=False)
             for key in a["network_state"]:
@@ -411,6 +724,7 @@ class TestMixedTraining(unittest.TestCase):
             self.assertEqual(a["curriculum_state"], b["curriculum_state"])
             self.assertEqual(a["controller_state"], b["controller_state"])
             self.assertEqual(full["updates"], resumed["updates"])
+            self.assertTrue(all(row["contact_pair_mean"] > 0 for row in full["updates"]))
             self.assertEqual(full["best_selection"], resumed["best_selection"])
             self.assertEqual(full["completed_updates"], 8)
             self.assertEqual(full["epochs"][-1]["query_count"], 8)
@@ -428,6 +742,12 @@ class TestMixedTraining(unittest.TestCase):
                     rtol=0,
                     atol=0,
                 )
+                # The contact scene and its frozen pair list survive the checkpoint round trip.
+                self.assertEqual(record_a["payload"]["contact_partners"], record_b["payload"]["contact_partners"])
+                self.assertEqual(record_a["payload"]["metadata"]["contact"], record_b["payload"]["metadata"]["contact"])
+                self.assertTrue(record_a["payload"]["contact_partners"]["plane_present"])
+                for key in _CONTACT_PAYLOAD_KEYS:
+                    torch.testing.assert_close(record_a["payload"][key], record_b["payload"][key], rtol=0, atol=0)
             for name in ("report.json", "updates.csv", "epochs.csv", "loss_curve.svg", "index.html"):
                 self.assertTrue((root / "split" / name).is_file(), name)
 
@@ -448,7 +768,29 @@ class TestMixedTraining(unittest.TestCase):
             torch.save(saved, legacy)
             with self.assertRaisesRegex(ValueError, "legacy"):
                 run_training(output, self.config(2), resume=legacy)
+            for field in ("contact", "edge_network", "contact_plane_probability", "contact_tokens_per_cell"):
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "resume configuration"):
+                    changed = (
+                        {field: not getattr(self.config(2), field)} if field in ("contact", "edge_network") else {}
+                    )
+                    if field == "contact_plane_probability":
+                        changed = {field: 0.5}
+                    elif field == "contact_tokens_per_cell":
+                        changed = {field: 12}
+                    run_training(output, replace(self.config(2), **changed), resume=checkpoint)
             self.assertEqual(before, checkpoint.read_bytes())
+
+    def test_resume_requires_the_stored_contact_scene_of_every_context(self):
+        """A checkpoint whose pool payload lost its contact partners is rejected instead of silently going contact-free."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_training(root / "base", self.config(1))
+            saved = torch.load(root / "base/checkpoints/latest.pt", weights_only=False)
+            del saved["rank_states"][0]["pool"]["records"][0]["payload"]["contact_partners"]
+            broken = root / "broken.pt"
+            torch.save(saved, broken)
+            with self.assertRaisesRegex(ValueError, "no stored contact partners"):
+                run_training(root / "resumed", self.config(2), resume=broken)
 
     def test_resume_updates_only_descent_gate_and_records_effective_boundary(self):
         """Change the gate without rewriting prior decisions or resetting training state."""
@@ -458,7 +800,10 @@ class TestMixedTraining(unittest.TestCase):
             run_training(output, original_config)
             checkpoint = output / "checkpoints/latest.pt"
             saved = torch.load(checkpoint, weights_only=False)
-            resumed = run_training(output, replace(original_config, stage_descent_rate=0.8), resume=checkpoint)
+            # The memory knob may change on resume: it does not alter outputs or gradients.
+            resumed = run_training(
+                output, replace(original_config, stage_descent_rate=0.8, checkpoint_chunks=True), resume=checkpoint
+            )
             restored = torch.load(output / "checkpoints/final.pt", weights_only=False)
 
             def assert_same(expected, actual):

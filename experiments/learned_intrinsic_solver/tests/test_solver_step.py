@@ -96,14 +96,14 @@ class TestLearnedHexSolverStep(unittest.TestCase):
         torch.testing.assert_close(frames @ local_axes.detach(), deformation, rtol=0, atol=atol)
 
     def test_default_network_uses_revised_schema_and_legacy_networks_are_rejected(self):
-        """Construct the 61/6/24 default and reject 38/5 and 86/6 networks or checkpoints explicitly."""
+        """Construct the 61/9/24 default and reject 38/5, 86/6 and 61/6 networks or checkpoints explicitly."""
         step = LearnedHexSolverStep(self.rest, self.fixed, **MATERIAL, time_step=0.04)
         self.assertEqual(
             (step.network.state_feature_dim, step.network.conditioning_dim, step.network.edge_input_dim),
             (features.STATE_FEATURE_DIM, features.CONDITIONING_DIM, features.EDGE_FEATURE_DIM),
         )
         self.assertEqual(step.conditioning.shape, (12, features.CONDITIONING_DIM))
-        for state, conditioning in ((38, 5), (86, 6), (61, 5), (60, 6)):
+        for state, conditioning in ((38, 5), (86, 6), (61, 6), (61, 5), (60, 9)):
             legacy = IntrinsicSolverNetwork(
                 self.rest.cell_counts, state, conditioning_dim=conditioning, hidden_dim=16, edge_hidden_dim=8
             )
@@ -124,7 +124,7 @@ class TestLearnedHexSolverStep(unittest.TestCase):
             )
 
     def test_per_cell_lame_conditioning_and_fusion_stiffness(self):
-        """Keep zero lambda finite, expose all six channels including zero viscosity, and keep fusion weights."""
+        """Keep zero lambda finite, expose all nine channels with zero viscosity and contact, and keep fusion weights."""
         rest = generate_cuboid((2, 1, 1), cell_size=0.025)
         fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == 0)
         step = LearnedHexSolverStep(
@@ -138,7 +138,8 @@ class TestLearnedHexSolverStep(unittest.TestCase):
         x = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)[None]
         inputs = step.prepare_inputs(x, x, previous_positions=x)
         expected = torch.tensor(
-            [[[0, np.log(2), 0, 0, 0, 0], [np.log(2), np.log(4), np.log(2), 0, 0, 0]]], dtype=torch.float32
+            [[[0, np.log(2), 0, 0, 0, 0, 0, 0, 0], [np.log(2), np.log(4), np.log(2), 0, 0, 0, 0, 0, 0]]],
+            dtype=torch.float32,
         )
         torch.testing.assert_close(inputs.conditioning, expected)
         torch.testing.assert_close(step.fusion_stiffness, torch.tensor([2e5, 6.75e5]))

@@ -20,6 +20,7 @@ if importlib.util.find_spec("torch") is None:
 import torch  # noqa: TID253
 
 from experiments.learned_intrinsic_solver import features
+from experiments.learned_intrinsic_solver.contact_scene import KIND_PLANE, ContactPartners
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.frames import (
     closest_proper_rotations,
@@ -27,7 +28,8 @@ from experiments.learned_intrinsic_solver.frames import (
     select_reference_corners,
 )
 from experiments.learned_intrinsic_solver.fusion import HexFusion
-from experiments.learned_intrinsic_solver.hex_energy import HexImplicitEulerLoss
+from experiments.learned_intrinsic_solver.hex_energy import HexImplicitEulerLoss, HexLossTerms
+from experiments.learned_intrinsic_solver.input_assembly import assemble_inputs
 from experiments.learned_intrinsic_solver.mixed_physics import MixedHexSolverStep, OptimizerHistory
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 from experiments.learned_intrinsic_solver.network_geometry import build_edge_features
@@ -57,6 +59,45 @@ def make_network(cell_counts, **kwargs):
         for layer in network.layers:
             layer.film.weight.normal_(std=0.01)
     return network
+
+
+def floor_partners(height, *, ke=500.0, kd=1.0, mu=0.3):
+    """Return partners with only a ground plane at ``height`` [m] and no static points."""
+    return ContactPartners(
+        plane_present=True,
+        plane_point=torch.tensor([0.0, height, 0.0]),
+        plane_normal=torch.tensor([0.0, 1.0, 0.0]),
+        point_positions=torch.zeros((0, 3)),
+        point_normals=torch.zeros((0, 3)),
+        point_radii=torch.zeros((0,)),
+        ke=ke,
+        kd=kd,
+        mu=mu,
+    )
+
+
+def contact_batch(payloads):
+    """Collate the contact pair tensors of several payloads, padded to the largest Q with a mask."""
+    counts = [int(payload["contact_sample_index"].shape[0]) for payload in payloads]
+    width = max(counts)
+
+    def pad(name, *tail):
+        rows = []
+        for payload in payloads:
+            value = payload[name]
+            padded = torch.zeros((width, *tail), dtype=value.dtype)
+            padded[: value.shape[0]] = value
+            rows.append(padded)
+        return torch.stack(rows)
+
+    return {
+        "sample_index": pad("contact_sample_index"),
+        "kind": pad("contact_kind"),
+        "partner_point": pad("contact_partner_point", 3),
+        "partner_normal": pad("contact_partner_normal", 3),
+        "partner_radius": pad("contact_partner_radius"),
+        "mask": torch.stack([torch.arange(width) < count for count in counts]),
+    }
 
 
 def fusion_weights(physical, cell_size):
@@ -197,8 +238,8 @@ class TestMixedHexSolverStep(unittest.TestCase):
         }
 
     def test_network_schema_and_removed_options_are_validated(self):
-        """Accept only the revised 61/6/24 schema and reject the removed backtracking controls."""
-        for state, conditioning, edge in ((38, 5, 24), (86, 6, 24), (61, 5, 24), (61, 6, 20), (60, 6, 24)):
+        """Accept only the schema-4 61/9/24 widths and reject the removed backtracking controls."""
+        for state, conditioning, edge in ((38, 5, 24), (86, 6, 24), (61, 6, 24), (61, 5, 24), (61, 9, 20), (60, 9, 24)):
             network = IntrinsicSolverNetwork(
                 self.rest.cell_counts,
                 state,
@@ -619,6 +660,11 @@ class TestMixedHexSolverStep(unittest.TestCase):
                 "inertial_prediction",
                 "fixed_positions",
                 "forces",
+                "contact_sample_index",
+                "contact_kind",
+                "contact_partner_point",
+                "contact_partner_normal",
+                "contact_partner_radius",
             },
         )
         self.assertEqual(payload["context_id"], "soft")
@@ -628,8 +674,12 @@ class TestMixedHexSolverStep(unittest.TestCase):
         for name, value in payload.items():
             if name != "context_id":
                 self.assertEqual(value.device.type, "cpu")
-                self.assertEqual(value.dtype, torch.float32)
+                expected_dtype = torch.int64 if name in ("contact_sample_index", "contact_kind") else torch.float32
+                self.assertEqual(value.dtype, expected_dtype, name)
                 self.assertFalse(value.requires_grad)
+        # A context registered without partners is contact-free: Q = 0.
+        self.assertEqual(payload["contact_sample_index"].shape, (0,))
+        self.assertEqual(payload["contact_partner_point"].shape, (0, 3))
         torch.save(payload, io.BytesIO())
 
     def test_advance_recomputes_native_problem_once_from_committed_candidate(self):
@@ -723,6 +773,372 @@ class TestMixedHexSolverStep(unittest.TestCase):
                 self.step(positions, positions, ("soft",), previous_positions=positions, history=history)
         with self.assertRaisesRegex(ValueError, "fixed_positions"):
             self.step(positions, positions, ("soft",), previous_positions=positions, fixed_positions=positions)
+
+
+class TestMixedHexSolverStepContact(unittest.TestCase):
+    """Contact handling of the mixed step: detection, energy, tokens, conditioning and diagnostics."""
+
+    def setUp(self):
+        """Build a (2, 1, 2) grid clamped at z = 0 whose bottom faces lie at y = 0, with r = 0.05 m."""
+        torch.manual_seed(404)
+        self.rest = generate_cuboid((2, 1, 2), cell_size=0.1)
+        self.fixed = np.flatnonzero(self.rest.corner_rest_positions[:, 2] == 0)
+        self.cell_count = len(self.rest.cell_corner_indices)
+        self.dt = 0.01
+        self.spec = dict(MATERIALS["soft"])
+        self.network = make_network(self.rest.cell_counts)
+        self.step = MixedHexSolverStep(self.rest, self.fixed, network=self.network, time_step=self.dt)
+        self.addCleanup(self.step.close)
+        self.rest_positions = torch.tensor(self.rest.corner_rest_positions, dtype=torch.float32)
+        self.bottom = torch.tensor(self.rest.corner_rest_positions[:, 1] == 0.0)
+        self.radius = 0.5 * self.rest.cell_size
+
+    def _contact_step(self, **kwargs):
+        """Return a step whose network consumes contact tokens, with a nonzero pooled projection."""
+        network = make_network(self.rest.cell_counts, contact_tokens=True)
+        with torch.no_grad():
+            network.contact_encoder.pool_projection.weight.normal_(std=0.1)
+        step = MixedHexSolverStep(self.rest, self.fixed, network=network, time_step=self.dt, **kwargs)
+        self.addCleanup(step.close)
+        return step
+
+    def _payloads(self, step, ids, velocities=None):
+        velocity = torch.zeros_like(self.rest_positions) if velocities is None else velocities
+        return [step.prepare(name, self.rest_positions, velocity) for name in ids]
+
+    @staticmethod
+    def _stack(payloads, name):
+        return torch.stack([payload[name] for payload in payloads])
+
+    def test_constructor_defaults_and_validation(self):
+        """Default r to 0.5 h, register the face tables as buffers and reject invalid contact parameters."""
+        self.assertEqual(self.step.contact_radius, self.radius)
+        self.assertEqual(self.step.contact_max_pairs, 4)
+        self.assertEqual(self.step.contact_tokens_per_cell, 24)
+        self.assertEqual(self.step.contact_friction_epsilon, 1e-2)
+        buffers = dict(self.step.named_buffers())
+        self.assertEqual(buffers["face_corners"].shape, (16, 4))
+        self.assertEqual(buffers["face_cell_index"].shape, (16,))
+        self.assertEqual(buffers["face_corners"].dtype, torch.int64)
+        custom = MixedHexSolverStep(
+            self.rest,
+            self.fixed,
+            network=self.network,
+            time_step=self.dt,
+            contact_radius=0.02,
+            contact_max_pairs=2,
+            contact_tokens_per_cell=6,
+            contact_friction_epsilon=0.5,
+        )
+        self.addCleanup(custom.close)
+        self.assertEqual(
+            (
+                custom.contact_radius,
+                custom.contact_max_pairs,
+                custom.contact_tokens_per_cell,
+                custom.contact_friction_epsilon,
+            ),
+            (0.02, 2, 6, 0.5),
+        )
+        for invalid in (
+            {"contact_radius": 0.0},
+            {"contact_radius": math.nan},
+            {"contact_max_pairs": -1},
+            {"contact_max_pairs": 2.0},
+            {"contact_tokens_per_cell": 0},
+            {"contact_friction_epsilon": 0.0},
+        ):
+            with self.subTest(**invalid), self.assertRaises(ValueError):
+                MixedHexSolverStep(self.rest, self.fixed, network=self.network, time_step=self.dt, **invalid)
+        with self.assertRaises(ValueError):
+            self.step.register_context("bad", **self.spec, contact={"plane_present": False})
+
+    def test_contact_free_context_reproduces_contact_less_objective(self):
+        """Give a zero contact term, total = elastic + inertia + damping, zero contact channels and diagnostics."""
+        self.step.register_context("free", **self.spec)
+        self.step.register_context("damped", damping=0.5, **self.spec)
+        ids = ("free", "damped")
+        payloads = self._payloads(self.step, ids)
+        positions = self._stack(payloads, "candidate")
+        positions[:, ~self.bottom, 1] -= 0.01
+        target = self._stack(payloads, "inertial_prediction")
+        previous = self._stack(payloads, "physical_positions")
+        terms = self.step.energy(positions, target, ids, previous_positions=previous)
+        self.assertIsInstance(terms, HexLossTerms)
+        self.assertEqual(terms.contact.shape, (2,))
+        torch.testing.assert_close(terms.contact, torch.zeros(2), rtol=0, atol=0)
+        torch.testing.assert_close(terms.total, terms.elastic + terms.inertia + terms.damping, rtol=0, atol=0)
+        self.assertGreater(terms.damping[1].item(), 0.0)
+        # A padded batch with Q = 0 pairs is the same as no contact argument.
+        contact = contact_batch(payloads)
+        self.assertEqual(contact["sample_index"].shape, (2, 0))
+        with_empty = self.step.energy(positions, target, ids, previous_positions=previous, contact=contact)
+        for name in HexLossTerms._fields:
+            torch.testing.assert_close(getattr(with_empty, name), getattr(terms, name), rtol=0, atol=0)
+        inputs = self.step.prepare_inputs(positions, target, ids, previous_positions=previous, contact=contact)
+        self.assertEqual(inputs.conditioning.shape, (2, self.cell_count, features.CONDITIONING_DIM))
+        torch.testing.assert_close(inputs.conditioning[..., 6:], torch.zeros(2, self.cell_count, 3), rtol=0, atol=0)
+        self.assertIsNone(inputs.contact_tokens)
+        self.assertIsNone(inputs.contact_mask)
+        output = self.step(
+            positions,
+            target,
+            ids,
+            previous_positions=previous,
+            fixed_positions=positions[:, self.fixed],
+            contact=contact,
+        )
+        torch.testing.assert_close(output.contact_energy, torch.zeros(2), rtol=0, atol=0)
+        torch.testing.assert_close(output.contact_max_penetration, torch.zeros(2), rtol=0, atol=0)
+        torch.testing.assert_close(output.loss.contact, torch.zeros(2), rtol=0, atol=0)
+        torch.testing.assert_close(
+            output.loss.total, output.loss.elastic + output.loss.inertia + output.loss.damping, rtol=0, atol=0
+        )
+        for name in ("contact_energy", "contact_max_penetration"):
+            self.assertFalse(getattr(output, name).requires_grad, name)
+
+    def test_prepare_detects_plane_pairs_within_search_band(self):
+        """Find the bottom faces when the floor lies within r + margin of them and nothing when it is far."""
+        threshold = 2 * self.radius
+        self.step.register_context("near", **self.spec, contact=floor_partners(-(threshold - 0.02)))
+        self.step.register_context("far", **self.spec, contact=floor_partners(-0.5))
+        self.step.register_context("band", **self.spec, contact=floor_partners(-(threshold + 0.005)))
+        near, far, band = self._payloads(self.step, ("near", "far", "band"))
+        for payload in (near, far, band):
+            for name in ("contact_sample_index", "contact_kind"):
+                self.assertEqual(payload[name].dtype, torch.int64)
+                self.assertEqual(payload[name].device.type, "cpu")
+            for name in ("contact_partner_point", "contact_partner_normal", "contact_partner_radius"):
+                self.assertEqual(payload[name].dtype, torch.float32)
+        # Only the four -y faces (gap 0.08 m) lie inside the band of 2 r = 0.1 m; side faces sit at gap 0.13 m.
+        self.assertEqual(near["contact_sample_index"].shape, (4,))
+        self.assertTrue((near["contact_kind"] == KIND_PLANE).all())
+        faces = self.step.face_samples.face_index[near["contact_sample_index"]]
+        self.assertEqual(faces.tolist(), [2, 2, 2, 2])
+        self.assertEqual(sorted(self.step.face_samples.cell_index[near["contact_sample_index"]].tolist()), [0, 1, 2, 3])
+        torch.testing.assert_close(near["contact_partner_normal"], torch.tensor([[0.0, 1.0, 0.0]] * 4), rtol=0, atol=0)
+        torch.testing.assert_close(
+            near["contact_partner_point"][:, 1], torch.full((4,), -(threshold - 0.02)), rtol=0, atol=1e-6
+        )
+        self.assertEqual(far["contact_sample_index"].shape, (0,))
+        self.assertEqual(band["contact_sample_index"].shape, (0,))
+        # A downward step-start velocity widens the band by |v| dt and captures the same floor.
+        velocity = torch.zeros_like(self.rest_positions)
+        velocity[:, 1] = -1.0
+        moving = self.step.prepare("band", self.rest_positions, velocity)
+        self.assertEqual(moving["contact_sample_index"].shape, (4,))
+        # advance() refreshes the pairs through prepare() on the committed candidate: sinking toward the far
+        # floor turns the empty pair list into a populated one that matches a direct prepare() call.
+        payload = dict(far)
+        payload["candidate"] = payload["candidate"].clone()
+        payload["candidate"][:, 1] -= 0.3
+        advanced = self.step.advance(payload)
+        expected_velocity = (payload["candidate"] - far["physical_positions"]) / self.dt
+        expected_velocity[self.fixed] = 0
+        expected = self.step.prepare("far", payload["candidate"], expected_velocity)
+        self.assertGreater(advanced["contact_sample_index"].shape[0], 0)
+        for name in ("contact_sample_index", "contact_kind", "contact_partner_point", "contact_partner_normal"):
+            torch.testing.assert_close(advanced[name], expected[name], rtol=0, atol=0)
+        torch.save(near, io.BytesIO())
+
+    def test_penetrating_floor_raises_energy_and_pushes_bottom_corners_upward(self):
+        """Add a positive contact energy for a penetrating floor whose force lifts the bottom corners."""
+        self.step.register_context("free", **self.spec)
+        self.step.register_context("floor", **self.spec, contact=floor_partners(-0.02))
+        ids = ("free", "floor")
+        payloads = self._payloads(self.step, ids)
+        contact = contact_batch(payloads)
+        self.assertEqual(contact["sample_index"].shape[1], 12)
+        self.assertEqual(contact["mask"].tolist(), [[False] * 12, [True] * 12])
+        # Evaluate at the step start so the friction and damping anchors coincide with the positions.
+        positions = self._stack(payloads, "physical_positions")
+        target = self._stack(payloads, "inertial_prediction")
+        previous = positions.clone()
+        terms = self.step.energy(positions, target, ids, previous_positions=previous, contact=contact)
+        self.assertEqual(terms.contact[0].item(), 0.0)
+        self.assertGreater(terms.contact[1].item(), 0.0)
+        torch.testing.assert_close(terms.total, terms.elastic + terms.inertia + terms.damping + terms.contact)
+        torch.testing.assert_close(terms.elastic[0], terms.elastic[1])
+        torch.testing.assert_close(terms.inertia[0], terms.inertia[1])
+        self.assertGreater(terms.total[1].item(), terms.total[0].item())
+        # Only the four bottom samples penetrate (depth d = r - gap = 0.03 m). At zero slip the IPC friction
+        # smoothing still contributes mu * ke * d * eps_u / 3 per pair with eps_u = friction_epsilon * dt.
+        depth, eps_u = 0.03, 1e-2 * self.dt
+        expected = 4 * (0.5 * 500.0 * depth**2 + 0.3 * 500.0 * depth * eps_u / 3)
+        self.assertAlmostEqual(terms.contact[1].item(), expected, places=6)
+        candidate = positions.clone().requires_grad_(True)
+        total = self.step.energy(candidate, target, ids, previous_positions=previous, contact=contact).contact.sum()
+        gradient = torch.autograd.grad(total, candidate)[0]
+        force = -gradient[1]
+        self.assertTrue((force[self.bottom, 1] > 0).all())
+        torch.testing.assert_close(force[~self.bottom], torch.zeros_like(force[~self.bottom]), rtol=0, atol=0)
+        torch.testing.assert_close(force[:, [0, 2]], torch.zeros_like(force[:, [0, 2]]), rtol=0, atol=0)
+        torch.testing.assert_close(gradient[0], torch.zeros_like(gradient[0]), rtol=0, atol=0)
+        with self.assertRaisesRegex(ValueError, "previous_positions"):
+            self.step.energy(positions, target, ids, contact=contact)
+        # The gradient feature of the network input includes the contact force.
+        inputs = self.step.prepare_inputs(positions, target, ids, previous_positions=previous, contact=contact)
+        plain = self.step.prepare_inputs(positions, target, ids, previous_positions=previous)
+        torch.testing.assert_close(inputs.position_gradient[0], plain.position_gradient[0], rtol=0, atol=0)
+        self.assertFalse(torch.allclose(inputs.position_gradient[1], plain.position_gradient[1]))
+        torch.testing.assert_close(
+            inputs.conditioning[1, 0, 6:],
+            torch.tensor([math.log1p(500.0 / (700.0 * 0.1)), 1.0 / (500.0 * self.dt), 0.3]),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        torch.testing.assert_close(inputs.conditioning[0, 0, 6:], torch.zeros(3), rtol=0, atol=0)
+
+    def test_forward_with_contact_network_builds_tokens_and_reports_penetration(self):
+        """Pass built tokens to a contact-token network and fill the contact energy and penetration outputs."""
+        step = self._contact_step(contact_tokens_per_cell=5)
+        step.register_context("free", **self.spec)
+        step.register_context("floor", **self.spec, contact=floor_partners(-0.02))
+        ids = ("free", "floor")
+        payloads = self._payloads(step, ids)
+        contact = contact_batch(payloads)
+        positions = self._stack(payloads, "candidate")
+        target = self._stack(payloads, "inertial_prediction")
+        previous = self._stack(payloads, "physical_positions")
+        inputs = step.prepare_inputs(positions, target, ids, previous_positions=previous, contact=contact)
+        self.assertEqual(inputs.contact_tokens.shape, (2, self.cell_count, 5, features.CONTACT_TOKEN_DIM))
+        self.assertEqual(inputs.contact_mask.shape, (2, self.cell_count, 5))
+        self.assertFalse(inputs.contact_tokens.requires_grad)
+        self.assertEqual(inputs.contact_mask[0].sum().item(), 0)
+        # Every cell owns three of the twelve floor pairs (its -y face and two side faces).
+        self.assertEqual(inputs.contact_mask[1].sum(-1).tolist(), [3] * self.cell_count)
+        kinds = inputs.contact_tokens[1][inputs.contact_mask[1]][:, 15:18]
+        torch.testing.assert_close(kinds, torch.tensor([[1.0, 0.0, 0.0]]).expand(12, 3), rtol=0, atol=0)
+        with patch.object(step.network, "forward", wraps=step.network.forward) as counted:
+            output = step(
+                positions,
+                target,
+                ids,
+                previous_positions=previous,
+                fixed_positions=positions[:, self.fixed],
+                contact=contact,
+            )
+        self.assertEqual(counted.call_count, 1)
+        passed = counted.call_args.kwargs
+        torch.testing.assert_close(passed["contact_tokens"], inputs.contact_tokens, rtol=0, atol=0)
+        self.assertEqual(passed["contact_mask"].tolist(), inputs.contact_mask.tolist())
+        self.assertEqual(output.contact_energy.shape, (2,))
+        self.assertEqual(output.contact_max_penetration.shape, (2,))
+        torch.testing.assert_close(output.contact_energy, output.loss.contact.detach(), rtol=0, atol=0)
+        self.assertEqual(output.contact_energy[0].item(), 0.0)
+        self.assertGreater(output.contact_energy[1].item(), 0.0)
+        self.assertEqual(output.contact_max_penetration[0].item(), 0.0)
+        self.assertGreater(output.contact_max_penetration[1].item(), 0.0)
+        self.assertLess(output.contact_max_penetration[1].item(), 1.0)
+        # Penetration is measured at the fused positions in units of r.
+        samples = step._sample_positions(output.positions.detach())
+        bottom = samples[1, contact["sample_index"][1]]
+        depth = torch.relu(self.radius - (bottom[:, 1] + 0.02)).max() / self.radius
+        self.assertAlmostEqual(output.contact_max_penetration[1].item(), depth.item(), places=5)
+        output.loss.total.sum().backward()
+        for name, parameter in step.network.named_parameters():
+            self.assertIsNotNone(parameter.grad, name)
+            self.assertTrue(torch.isfinite(parameter.grad).all(), name)
+        encoder = [p.grad.abs().sum().item() for n, p in step.network.named_parameters() if "contact_encoder" in n]
+        self.assertGreater(sum(encoder), 0)
+        # A contact-free batch keeps every encoder parameter in the graph (needed by DDP) with zero output.
+        step.network.zero_grad()
+        plain = step(
+            positions[:1],
+            target[:1],
+            ids[:1],
+            previous_positions=previous[:1],
+            fixed_positions=positions[:1, self.fixed],
+        )
+        plain.loss.total.sum().backward()
+        for name, parameter in step.network.named_parameters():
+            self.assertIsNotNone(parameter.grad, name)
+        torch.testing.assert_close(plain.contact_energy, torch.zeros(1), rtol=0, atol=0)
+        reference = self.step
+        reference.register_context("free", **self.spec)
+        baseline_inputs = reference.prepare_inputs(positions[:1], target[:1], ids[:1], previous_positions=previous[:1])
+        torch.testing.assert_close(
+            step.prepare_inputs(positions[:1], target[:1], ids[:1], previous_positions=previous[:1]).state_features,
+            baseline_inputs.state_features,
+            rtol=0,
+            atol=0,
+        )
+
+    def test_assemble_inputs_passes_contact_tokens_through(self):
+        """Return the supplied tokens and mask unchanged and refuse a half-supplied pair."""
+        self.step.register_context("free", **self.spec)
+        payload = self._payloads(self.step, ("free",))[0]
+        positions = payload["candidate"][None]
+        target = payload["inertial_prediction"][None]
+        previous = payload["physical_positions"][None]
+        tokens = torch.randn(1, self.cell_count, 3, features.CONTACT_TOKEN_DIM)
+        mask = torch.rand(1, self.cell_count, 3) < 0.5
+        contexts = self.step._lookup(("free",), 1)
+        conditioning = torch.zeros(1, self.cell_count, features.CONDITIONING_DIM)
+
+        def energy_total(candidate, y, start):
+            return self.step._energy(candidate, y, contexts, start).total
+
+        def project_gradient(gradient):
+            return contexts[0].fusion.project_gradient(gradient)
+
+        inputs = assemble_inputs(
+            self.step,
+            positions,
+            target,
+            previous,
+            energy_total=energy_total,
+            project_gradient=project_gradient,
+            conditioning=conditioning,
+            contact_tokens=tokens,
+            contact_mask=mask,
+        )
+        self.assertIs(inputs.contact_tokens, tokens)
+        self.assertIs(inputs.contact_mask, mask)
+        with self.assertRaisesRegex(ValueError, "contact_tokens"):
+            assemble_inputs(
+                self.step,
+                positions,
+                target,
+                previous,
+                energy_total=energy_total,
+                project_gradient=project_gradient,
+                conditioning=conditioning,
+                contact_tokens=tokens,
+            )
+
+    def test_contact_batch_validation(self):
+        """Reject malformed padded pair batches explicitly."""
+        self.step.register_context("floor", **self.spec, contact=floor_partners(-0.02))
+        payloads = self._payloads(self.step, ("floor",))
+        contact = contact_batch(payloads)
+        positions = self._stack(payloads, "candidate")
+        target = self._stack(payloads, "inertial_prediction")
+        previous = self._stack(payloads, "physical_positions")
+        good = self.step.energy(positions, target, ("floor",), previous_positions=previous, contact=contact)
+        self.assertGreater(good.contact.item(), 0.0)
+        broken = [
+            {key: value for key, value in contact.items() if key != "mask"},
+            {**contact, "mask": contact["mask"].float()},
+            {**contact, "partner_point": contact["partner_point"][:, :, :2]},
+            {**contact, "sample_index": contact["sample_index"].float()},
+            {**contact, "partner_radius": contact["partner_radius"].double()},
+            {**contact, "sample_index": contact["sample_index"].repeat(2, 1)},
+            {**contact, "partner_normal": contact["partner_normal"].clone().fill_(float("nan"))},
+            {**contact, "sample_index": torch.full_like(contact["sample_index"], 99)},
+            [contact],
+        ]
+        for index, bad in enumerate(broken):
+            with self.subTest(case=index), self.assertRaises(ValueError):
+                self.step.energy(positions, target, ("floor",), previous_positions=previous, contact=bad)
+        # Masked rows may hold arbitrary values.
+        poisoned = {name: value.clone() for name, value in contact.items()}
+        poisoned["mask"][0, :6] = False
+        poisoned["partner_point"][0, :6] = float("nan")
+        poisoned["sample_index"][0, :6] = -1
+        partial = self.step.energy(positions, target, ("floor",), previous_positions=previous, contact=poisoned)
+        self.assertTrue(torch.isfinite(partial.contact).all())
+        self.assertLess(partial.contact.item(), good.contact.item())
 
 
 if __name__ == "__main__":

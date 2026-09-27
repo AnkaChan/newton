@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build an offline HTML gallery for ten saved learned-solver simulations."""
+"""Build an offline HTML gallery for ten saved learned-solver simulations.
+
+Each card states the seed's contact scene from the simulation report: whether
+a floor is present and at which height, the number of static contact points,
+the friction coefficient and the deepest penetration reached in units of the
+surface sample radius r.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +21,24 @@ __all__ = ["build_gallery"]
 
 def _seconds(value):
     return f"{float(value):g} s"
+
+
+def _contact_summary(contact) -> str:
+    """Describe the contact scene of one simulation report in one sentence."""
+    if not isinstance(contact, dict):
+        return "Contact scene not recorded"
+    floor = (
+        f"Floor at y = {float(contact['plane_height']):.3f} m"
+        if contact.get("plane_present") and contact.get("plane_height") is not None
+        else ("Floor present" if contact.get("plane_present") else "No floor")
+    )
+    count = int(contact.get("point_count") or 0)
+    points = f"{count} static point{'s' if count != 1 else ''}"
+    mu = contact.get("mu")
+    friction = f"friction mu = {float(mu):.2f}" if mu is not None else "friction unavailable"
+    penetration = contact.get("max_penetration_r")
+    depth = f"max penetration {float(penetration):.2f} r" if penetration is not None else "max penetration unavailable"
+    return f"{floor} · {points} · {friction} · {depth}"
 
 
 def _stage_asset(source: Path, target: Path):
@@ -79,6 +103,7 @@ def build_gallery(
             raise ValueError(f"{stem} stopped early without a failure record")
         velocity_rms = simulation.get("initial_velocity_rms_m_per_s")
         velocity_max = simulation.get("initial_velocity_max_m_per_s")
+        contact = simulation.get("contact")
         row = {
             "seed": seed,
             "checkpoint_epoch": int(simulation["checkpoint_epoch"]),
@@ -90,6 +115,7 @@ def build_gallery(
             "initial_velocity_rms_m_per_s": velocity_rms,
             "initial_velocity_max_m_per_s": velocity_max,
             "failure": failure,
+            "contact": contact if isinstance(contact, dict) else None,
             "video": f"{stem}/{render['video']}",
         }
         rows.append(row)
@@ -115,6 +141,7 @@ def build_gallery(
             f"<p>Epoch {row['checkpoint_epoch']} checkpoint · {iterations} learned iterations per physical step · "
             f"dt = 1/300 s</p><p><strong>{_seconds(actual)} simulated</strong> · {_seconds(requested)} requested. "
             f"{html.escape(speed)}.</p>"
+            f'<p class="contact">{html.escape(_contact_summary(contact))}.</p>'
             f'<video controls preload="metadata" poster="{initial}"><source src="{video}" type="video/mp4">'
             f'<a href="{video}">Download video</a></video><div class="thumbnails">'
             f'<figure><img src="{initial}" alt="Initial state for seed {seed}"><figcaption>Initial state</figcaption></figure>'
@@ -144,9 +171,9 @@ body{{font:17px/1.5 system-ui,sans-serif;max-width:1200px;margin:28px auto;paddi
 h1{{line-height:1.2}} .lead{{max-width:85ch}} .card{{background:white;padding:22px;margin:24px 0;border-radius:12px;box-shadow:0 2px 14px #d8e2e8}}
 .badge{{font-size:.7em;color:#85501e;margin-left:1em}} video{{width:100%;max-height:650px;background:#14252c;border-radius:8px}}
 .thumbnails{{display:flex;gap:18px}} figure{{flex:1;margin:12px 0}} figure img{{width:100%;border-radius:6px}} figcaption{{font-size:.85em;color:#526976}}
-.failure{{background:#fff0df;padding:12px;overflow-wrap:anywhere}} a{{color:#087b91}}
+.failure{{background:#fff0df;padding:12px;overflow-wrap:anywhere}} a{{color:#087b91}} .contact{{color:#4d3b6b}}
 </style></head><body><p><a href="../index.html">← All solver experiments</a></p><h1>{len(rows)} learned-solver physical simulations</h1>
-<p class="lead">Epoch {summary["checkpoint_epoch"]} checkpoint. Each physical step uses two consecutive learned optimizer calls at dt = 1/300 s. The requested duration is 10 s per state; a failed simulation ends at its last valid physical state. Clips contain no repeated or padded frames. The camera stays fixed within each clip and shows the saved shape trajectory, surface voxel grid, and pinned corners.</p>
+<p class="lead">Epoch {summary["checkpoint_epoch"]} checkpoint. Each physical step uses two consecutive learned optimizer calls at dt = 1/300 s. The requested duration is 10 s per state; a failed simulation ends at its last valid physical state. Clips contain no repeated or padded frames. The camera stays fixed within each clip and shows the saved shape trajectory, surface voxel grid, and pinned corners, plus the seed's contact scene when it has one: the ground plane as a flat grey quad and the static contact points as small spheres with their normals.</p>
 <p>{complete_count} completed · {summary["failed_count"]} stopped early. Physical time appears in each video frame. Initial and final thumbnails are below each clip.</p>
 {"".join(cards)}<p><a href="gallery.json">Machine-readable results</a></p></body></html>"""
     temporary = output / "index.html.tmp"

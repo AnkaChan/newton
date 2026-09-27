@@ -80,14 +80,18 @@ def hex_gauss_quadrature(cell_size: float, *, dtype: np.dtype = np.float32) -> H
 class HexLossTerms(NamedTuple):
     """Return physical energies [J], each shape [B].
 
-    Experimental. ``damping=None`` supports legacy three-argument construction;
-    :class:`HexImplicitEulerLoss` always returns a damping tensor, including zero.
+    Experimental. ``damping=None`` and ``contact=None`` support legacy three-
+    and four-argument construction; :class:`HexImplicitEulerLoss` always
+    returns a damping tensor, including zero, and never a contact tensor. The
+    mixed-material step fills ``contact`` with the penalty contact energy
+    (zero when the scene has no contact pairs) and includes it in ``total``.
     """
 
     total: torch.Tensor
     elastic: torch.Tensor
     inertia: torch.Tensor
     damping: torch.Tensor | None = None
+    contact: torch.Tensor | None = None
 
 
 def _time_step_tensor(time_step, reference):

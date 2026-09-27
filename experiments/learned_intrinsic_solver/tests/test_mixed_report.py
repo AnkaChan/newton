@@ -22,6 +22,7 @@ _PUBLIC_FILES = {
     "loss_curve.svg",
     "validation_curve.svg",
     "residual_curve.svg",
+    "penetration_curve.svg",
 }
 
 
@@ -43,6 +44,11 @@ class TestMixedReport(unittest.TestCase):
                 {"iteration": 0, "mean": 3.0, "median": 2.5, "max": 7.0, "valid_count": 512, "failed_count": 0},
                 {"iteration": 50, "mean": None, "median": None, "max": None, "valid_count": 511, "failed_count": 1},
                 {"iteration": 100, "mean": 0.125, "median": 0.1, "max": 0.75, "valid_count": 512, "failed_count": 0},
+            ],
+            "penetration": [
+                {"iteration": 0, "mean": 0.2, "max": 0.5, "valid_count": 512},
+                {"iteration": 50, "mean": None, "max": None, "valid_count": 511},
+                {"iteration": 100, "mean": 0.05, "max": 0.1, "valid_count": 512},
             ],
             "selection": {
                 "metric": metric,
@@ -71,6 +77,9 @@ class TestMixedReport(unittest.TestCase):
                     "step_size_min": 0.02,
                     "step_size_max": 0.03,
                     "tie_cell_count": 3,
+                    "gradient_norm": 0.7,
+                    "contact_max_penetration_r": 0.3,
+                    "contact_pair_mean": 2.5,
                 }
             ],
             "epochs": [
@@ -84,6 +93,9 @@ class TestMixedReport(unittest.TestCase):
                     "step_size_min": 0.02,
                     "step_size_max": 0.03,
                     "tie_cell_count": 3,
+                    "contact_scene_fraction": 0.75,
+                    "contact_realized_fraction": 0.5,
+                    "contact_max_penetration_r": 0.3,
                     "candidate_modes": {"inertial": 4100, "perturbed_inertial": 4092},
                     "available_K": [1],
                     "available_H": [8],
@@ -97,6 +109,7 @@ class TestMixedReport(unittest.TestCase):
                         "physical_steps": 8,
                         "final_free_force_residual_norm_n": {"mean": 0.25, "median": 0.2, "max": 0.9},
                         "final_energy_joule": {"mean": 1.25, "median": 1.0, "max": 3.0},
+                        "final_max_penetration_r": {"mean": 0.02, "median": 0.01, "max": 0.06},
                         "seconds": 42.5,
                     },
                 }
@@ -128,6 +141,11 @@ class TestMixedReport(unittest.TestCase):
             self.assertIn("Physical survivors: 512 / 512", html)
             self.assertIn("Best so far: 0.125 N at epoch 1", html)
             self.assertIn("<td>Force residual (N)</td><td>0.125</td><td>0.1</td><td>0.75</td>", html)
+            self.assertIn("<td>Deepest penetration (r)</td><td>0.05</td><td>—</td><td>0.1</td>", html)
+            self.assertIn("Contact scenes among this epoch&#x27;s rank-0 trajectories: 75.0%", html)
+            self.assertIn("trajectories that made contact (at least one detected pair): 50.0%", html)
+            self.assertIn("deepest training penetration: 0.3 r", html)
+            self.assertIn("Validation deepest contact penetration (units of r)", html)
             self.assertIn("100", (output / "validation_curve.svg").read_text())
             residual = (output / "residual_curve.svg").read_text()
             self.assertIn("100", residual)
@@ -151,6 +169,28 @@ class TestMixedReport(unittest.TestCase):
             mean_path = next(part for part in residual.split("<path ") if 'aria-label="mean"' in part)
             self.assertEqual(mean_path.count("M"), 1)
             self.assertEqual(mean_path.count("L"), 2)
+
+    def test_penetration_curve_is_written_with_gaps_and_embedded(self):
+        """Plot mean and max penetration per iteration, leave gaps at incomplete iterations, and inline it."""
+        report = self._report()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_mixed_report(output, report)
+            svg = (output / "penetration_curve.svg").read_text()
+            self.assertIn("Validation deepest contact penetration (units of r)", svg)
+            self.assertIn('aria-label="mean"', svg)
+            self.assertIn('aria-label="max"', svg)
+            self.assertNotIn('aria-label="median"', svg)
+            max_path = next(part for part in svg.split("<path ") if 'aria-label="max"' in part)
+            self.assertEqual((max_path.count("M"), max_path.count("L")), (2, 0))
+            self.assertIn(svg, (output / "index.html").read_text())
+            # A validation without the penetration curve (or no validation at all) renders a waiting plot.
+            del report["epochs"][0]["validation"]["penetration"]
+            write_mixed_report(output, report)
+            self.assertIn("Waiting for completed measurements", (output / "penetration_curve.svg").read_text())
+            report["epochs"] = []
+            write_mixed_report(output, report)
+            self.assertIn("Waiting for completed measurements", (output / "penetration_curve.svg").read_text())
 
     def test_csv_tables_carry_residual_step_and_selection_columns_only(self):
         """Write the revised per-update and per-epoch columns without acceptance fields."""
@@ -176,9 +216,12 @@ class TestMixedReport(unittest.TestCase):
                     "step_size_max",
                     "tie_cell_count",
                     "gradient_norm",
+                    "contact_max_penetration_r",
+                    "contact_pair_mean",
                 ],
             )
             self.assertEqual((update["mean_force_residual_n"], update["tie_cell_count"]), ("0.5", "3"))
+            self.assertEqual((update["contact_max_penetration_r"], update["contact_pair_mean"]), ("0.3", "2.5"))
             with (output / "epochs.csv").open() as handle:
                 reader = csv.DictReader(handle)
                 epoch_columns = reader.fieldnames
@@ -196,7 +239,27 @@ class TestMixedReport(unittest.TestCase):
                 ("0.125", "True", "512", "512"),
             )
             self.assertEqual(epoch["step_size_max"], "0.03")
+            self.assertEqual(
+                epoch_columns[-4:],
+                [
+                    "contact_scene_fraction",
+                    "contact_realized_fraction",
+                    "contact_max_penetration_r",
+                    "validation_final_max_penetration_r",
+                ],
+            )
+            # The validation column is the maximum deepest penetration at the final validation iteration.
+            self.assertEqual(
+                (
+                    epoch["contact_scene_fraction"],
+                    epoch["contact_realized_fraction"],
+                    epoch["contact_max_penetration_r"],
+                    epoch["validation_final_max_penetration_r"],
+                ),
+                ("0.75", "0.5", "0.3", "0.1"),
+            )
             self.assertEqual(report["epochs"][0].get("selection_metric"), None)
+            self.assertEqual(report["epochs"][0].get("validation_final_max_penetration_r"), None)
 
     def test_full_horizon_table_uses_the_latest_completed_check(self):
         """Show K, H, survivors, final residual and seconds from the most recent full-horizon run."""
@@ -206,7 +269,8 @@ class TestMixedReport(unittest.TestCase):
             write_mixed_report(output, report)
             page = (output / "index.html").read_text()
             self.assertIn(
-                "<td>1</td><td>1</td><td>8</td><td>16 / 16</td><td>0.25 / 0.2 / 0.9</td><td>1.25</td><td>42.5</td>",
+                "<td>1</td><td>1</td><td>8</td><td>16 / 16</td><td>0.25 / 0.2 / 0.9</td><td>1.25</td>"
+                "<td>0.02 / 0.06</td><td>42.5</td>",
                 page,
             )
             later = copy.deepcopy(report["epochs"][0])

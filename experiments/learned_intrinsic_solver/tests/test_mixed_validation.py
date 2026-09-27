@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Check residual curves, selection eligibility, history carry and full-horizon validation."""
+"""Check residual curves, selection eligibility, history carry, contact diagnostics and full-horizon validation."""
 
 import importlib.util
 import math
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -64,9 +65,10 @@ class _AnalyticStep(torch.nn.Module):
     def _quadratic(self, positions):
         free = positions[:, 7, 0] - 1
         pinned = positions[:, 0, 0] - self.pin_target
-        return SimpleNamespace(total=free.square() + pinned.square())
+        total = free.square() + pinned.square()
+        return SimpleNamespace(total=total, contact=torch.zeros_like(total))
 
-    def energy(self, positions, inertial_prediction, context_ids, *, previous_positions=None):
+    def energy(self, positions, inertial_prediction, context_ids, *, previous_positions=None, contact=None):
         """Record the operands the validator differentiates; the quadratic itself ignores the anchor."""
         self.energy_calls.append(
             SimpleNamespace(
@@ -74,6 +76,7 @@ class _AnalyticStep(torch.nn.Module):
                 positions=positions.detach().clone(),
                 inertial_prediction=inertial_prediction.detach().clone(),
                 anchor=None if previous_positions is None else previous_positions.detach().clone(),
+                contact=contact,
             )
         )
         return self._quadratic(positions)
@@ -82,7 +85,15 @@ class _AnalyticStep(torch.nn.Module):
         return torch.full((len(context_ids),), _FLOOR)
 
     def forward(
-        self, positions, inertial_prediction, context_ids, *, fixed_positions, previous_positions, history=None
+        self,
+        positions,
+        inertial_prediction,
+        context_ids,
+        *,
+        fixed_positions,
+        previous_positions,
+        history=None,
+        contact=None,
     ):
         self.batch_sizes.append(len(context_ids))
         self.history_flags.append(None if history is None else history.valid.tolist())
@@ -105,6 +116,8 @@ class _AnalyticStep(torch.nn.Module):
             loss=self._quadratic(proposed),
             axis_gradient_world=gradient,
             achieved_axis_update_world=torch.zeros_like(gradient),
+            contact_energy=torch.zeros(len(context_ids)),
+            contact_max_penetration=torch.zeros(len(context_ids)),
         )
 
 
@@ -180,7 +193,11 @@ def _reference_residual_norms(step, batch, anchor):
     with torch.enable_grad():
         positions = batch["candidate"].detach().clone().requires_grad_(True)
         total = step.energy(
-            positions, batch["inertial_prediction"].detach(), batch["context_ids"], previous_positions=anchor.detach()
+            positions,
+            batch["inertial_prediction"].detach(),
+            batch["context_ids"],
+            previous_positions=anchor.detach(),
+            contact=batch.get("contact"),
         ).total
         gradient = torch.autograd.grad(total.sum(), positions)[0]
     gradient = gradient.detach().clone()
@@ -202,6 +219,15 @@ class TestMixedValidation(unittest.TestCase):
             self.assertEqual(sample["candidate_mode"], "inertial")
             self.assertAlmostEqual(sample["energy_floor_joule"], _FLOOR, places=12)
             self.assertEqual(len(sample["physical_records"]), 2)
+            # A contact-free scene records zero contact energy and zero penetration at every observation.
+            self.assertEqual(sample["contact_energy_joule"], [0.0] * 4)
+            self.assertEqual(sample["max_penetration_r"], [0.0] * 4)
+            self.assertEqual([record["max_penetration_r"] for record in sample["physical_records"]], [0.0, 0.0])
+            self.assertEqual([record["contact_energy_joule"] for record in sample["physical_records"]], [0.0, 0.0])
+        self.assertEqual(
+            report["penetration"],
+            [{"iteration": i, "mean": 0.0, "max": 0.0, "valid_count": 2} for i in range(4)],
+        )
         self.assertEqual([point["iteration"] for point in report["force_residual"]], [0, 1, 2, 3])
         self.assertEqual([point["mean"] for point in report["force_residual"]], [4.0, 2.0, 1.0, 0.5])
         self.assertEqual([point["max"] for point in report["force_residual"]], [4.0, 2.0, 1.0, 0.5])
@@ -227,6 +253,7 @@ class TestMixedValidation(unittest.TestCase):
             self.assertGreater(point["free_force_residual_norm_n"]["mean"], 0)
             self.assertGreater(point["displacement_rms_m"]["mean"], 0)
             self.assertEqual(point["inverted_sample_count"], 0)
+            self.assertEqual(point["max_penetration_r"], {"mean": 0.0, "median": 0.0, "max": 0.0})
         self.assertEqual(report["physical_curves"][0]["energy_joule"]["mean"], 1.0)
         self.assertEqual(report["physical_curves"][0]["free_force_residual_norm_n"]["mean"], 2.0)
         self.assertAlmostEqual(report["physical_curves"][0]["displacement_rms_m"]["mean"], math.sqrt(1 / 8), places=9)
@@ -300,6 +327,8 @@ class TestMixedValidation(unittest.TestCase):
         report = validate(step, _Factory(step), _config(), torch.device("cpu"), 0, 1)
         self.assertEqual([point["failed_count"] for point in report["force_residual"]], [0, 0, 1, 1])
         self.assertEqual([point["mean"] for point in report["force_residual"]], [4.0, 2.0, None, None])
+        self.assertEqual([point["max"] for point in report["penetration"]], [0.0, 0.0, None, None])
+        self.assertEqual([point["valid_count"] for point in report["penetration"]], [1, 1, 0, 0])
         self.assertEqual(report["selection"]["metric"], None)
         self.assertFalse(report["selection"]["eligible"])
         self.assertEqual(report["relative_energy"][0]["mean"], 1.0)
@@ -433,6 +462,7 @@ class TestFullHorizonValidation(unittest.TestCase):
                 "final_energy_joule",
                 "final_physical_residual",
                 "final_inverted_sample_count",
+                "final_max_penetration_r",
                 "physical_curves",
                 "samples",
                 "seconds",
@@ -457,6 +487,7 @@ class TestFullHorizonValidation(unittest.TestCase):
         self.assertEqual(report["physical_curves"][0]["free_force_residual_norm_n"]["mean"], 1.0)
         self.assertIsNone(report["final_free_force_residual_norm_n"]["mean"])
         self.assertIsNone(report["final_energy_joule"]["mean"])
+        self.assertIsNone(report["final_max_penetration_r"]["mean"])
         self.assertEqual(report["final_physical_residual"], report["physical_curves"][-1]["free_force_residual_norm_n"])
         self.assertEqual(report["final_inverted_sample_count"], 0)
         record = report["samples"][0]["physical_records"][0]
@@ -469,6 +500,8 @@ class TestFullHorizonValidation(unittest.TestCase):
                 "displacement_rms_m",
                 "inverted_cell_count",
                 "min_center_jacobian",
+                "contact_energy_joule",
+                "max_penetration_r",
             },
         )
         self.assertEqual(step.contexts, {})
@@ -493,6 +526,7 @@ class TestFullHorizonValidation(unittest.TestCase):
         self.assertEqual(report["failed_count"], 0)
         self.assertEqual(report["final_energy_joule"], {"mean": 0.25, "median": 0.25, "max": 0.25})
         self.assertEqual(report["final_free_force_residual_norm_n"], {"mean": 1.0, "median": 1.0, "max": 1.0})
+        self.assertEqual(report["final_max_penetration_r"], {"mean": 0.0, "median": 0.0, "max": 0.0})
         self.assertEqual(step.history_flags, [[False, False], [True, True]])
         self.assertEqual(step.history_markers, [[0.0, 0.0], [1.0, 1.0]])
         self.assertEqual(step.contexts, {})
@@ -608,8 +642,18 @@ class TestRealStepResidual(unittest.TestCase):
             hidden_dim=8,
             edge_hidden_dim=4,
             num_heads=2,
+            edge_network=config.edge_network,
+            contact_tokens=config.contact,
         )
-        step = MixedHexSolverStep(rest, fixed, network=network, time_step=config.time_step)
+        step = MixedHexSolverStep(
+            rest,
+            fixed,
+            network=network,
+            time_step=config.time_step,
+            contact_max_pairs=config.contact_max_pairs,
+            contact_tokens_per_cell=config.contact_tokens_per_cell,
+            contact_friction_epsilon=config.contact_friction_epsilon,
+        )
         self.addCleanup(step.close)
         # The correction and step heads start at zero; perturb every weight so the candidate moves.
         torch.manual_seed(0)
@@ -617,6 +661,42 @@ class TestRealStepResidual(unittest.TestCase):
             for parameter in step.network.parameters():
                 parameter.add_(0.05 * torch.randn_like(parameter))
         return step, rest
+
+    def test_guaranteed_floor_records_penetration_and_contact_energy(self):
+        """Record positive penetration and contact energy per iteration and per physical step on a floor scene.
+
+        The floor sits 1-2 cm below the rest bottom faces (r = 5 cm), so every
+        validation seed starts penetrating; the initial observation is measured
+        without a forward call and later ones come from the step output.
+        """
+        config = replace(self._config(), contact_plane_probability=1.0, contact_plane_height_range=(-0.02, -0.01))
+        step, rest = self._step(config)
+        factory = train_mixed._TrajectoryFactory(step, rest, config, rank=0, validation=True)
+        report = validate(step, factory, config, torch.device("cpu"), 0, 1)
+        self.assertEqual(report["failed_count"], 0)
+        iterations = config.validation_iterations
+        for sample in report["samples"]:
+            self.assertEqual(len(sample["max_penetration_r"]), iterations + 1)
+            self.assertEqual(len(sample["contact_energy_joule"]), iterations + 1)
+            self.assertTrue(all(math.isfinite(v) and v >= 0 for v in sample["max_penetration_r"]))
+            # 1-2 cm gap against r = 5 cm: the initial candidate penetrates by at least 0.6 r before any update
+            # (more when the shape augmentation pushes a face through the plane or a static point lies inside).
+            self.assertGreater(sample["max_penetration_r"][0], 0.3)
+            self.assertGreater(sample["contact_energy_joule"][0], 0.0)
+            self.assertEqual(len(sample["physical_records"]), config.validation_physical_steps)
+            self.assertGreater(sample["physical_records"][0]["max_penetration_r"], 0.0)
+            self.assertGreater(sample["physical_records"][0]["contact_energy_joule"], 0.0)
+        curve = report["penetration"]
+        self.assertEqual([point["iteration"] for point in curve], list(range(iterations + 1)))
+        self.assertTrue(all(point["valid_count"] == 2 for point in curve))
+        self.assertGreater(curve[0]["max"], 0.3)
+        self.assertGreaterEqual(curve[0]["max"], curve[0]["mean"])
+        self.assertGreater(report["physical_curves"][0]["max_penetration_r"]["mean"], 0.0)
+        full = validate_full_horizon(step, factory, config, torch.device("cpu"), 0, 1, iterations=1, physical_steps=2)
+        self.assertEqual(full["failed_count"], 0)
+        self.assertGreater(full["final_max_penetration_r"]["max"], 0.0)
+        self.assertGreaterEqual(full["final_max_penetration_r"]["max"], full["final_max_penetration_r"]["median"])
+        self.assertEqual(step.context_specs, {})
 
     def test_validator_residual_matches_the_real_step_with_the_physical_anchor(self):
         """Match the step's own pre-update residual and reject the candidate or Y as the damping anchor."""

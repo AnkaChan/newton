@@ -16,6 +16,7 @@ except ModuleNotFoundError as error:
     raise unittest.SkipTest("PyTorch is an optional dependency") from error
 
 from experiments.learned_intrinsic_solver import features
+from experiments.learned_intrinsic_solver.contact_network import ContactEncoder
 from experiments.learned_intrinsic_solver.distributed_probe import ProbeConfig, _network
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork, IntrinsicTransformerLayer
 from experiments.learned_intrinsic_solver.train_smoke import TrainSmokeConfig
@@ -159,14 +160,16 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
             torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
 
     def test_default_one_layer_radius_one_and_training_config(self):
-        """Use one masked 27-slot neighborhood with the revised 61-feature, six-channel width by default."""
+        """Use one masked 27-slot neighborhood with the revised 61-feature, nine-channel width by default."""
         model = IntrinsicSolverNetwork((3, 3, 3), features.STATE_FEATURE_DIM)
         self.assertEqual(model.conditioning_dim, features.CONDITIONING_DIM)
         self.assertEqual(TrainSmokeConfig().hops, (1,))
         self.assertEqual(model.hops, (1,))
         self.assertEqual(len(model.layers), 1)
-        self.assertEqual(sum(parameter.numel() for parameter in model.parameters()), 323214)
+        self.assertEqual(sum(parameter.numel() for parameter in model.parameters()), 323598)
         self.assertEqual(model.node_encoder[0].in_features, 9 + features.STATE_FEATURE_DIM)
+        self.assertFalse(model.contact_tokens)
+        self.assertIsNone(model.contact_encoder)
         self.assertEqual(model.condition_encoder[0].in_features, features.CONDITIONING_DIM)
         indices, mask = model.neighborhood(1)
         self.assertEqual(indices.shape, (27, 27))
@@ -279,6 +282,115 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
         self.assertEqual(output.local_target_axes.dtype, torch.float32)
         self.assertTrue(torch.isfinite(output.local_target_axes).all())
         self.assertEqual([model.neighborhood(h)[0].shape[1] for h in model.hops], [27])
+
+
+class TestContactTokenFlag(unittest.TestCase):
+    """Exercise the schema-4 contact token path of the solver network."""
+
+    GRID = (2, 2, 3)
+    STATE_DIM = 7
+
+    def setUp(self):
+        """Seed the fixtures so float32 comparisons are repeatable."""
+        torch.manual_seed(29)
+
+    def _network(self, seed, **flags):
+        torch.manual_seed(seed)
+        return IntrinsicSolverNetwork(self.GRID, self.STATE_DIM, hidden_dim=16, num_heads=4, **flags)
+
+    def _pair(self):
+        """Return a flag-off baseline and a flag-on variant sharing every common weight."""
+        baseline = self._network(5)
+        variant = self._network(5, contact_tokens=True)
+        state = {name: value for name, value in baseline.state_dict().items() if name != "node_encoder.0.weight"}
+        result = variant.load_state_dict(state, strict=False)
+        self.assertEqual(result.unexpected_keys, [])
+        self.assertTrue(
+            all(key.startswith("contact_encoder.") or key == "node_encoder.0.weight" for key in result.missing_keys)
+        )
+        with torch.no_grad():
+            width = baseline.node_encoder[0].in_features
+            variant.node_encoder[0].weight[:, :width].copy_(baseline.node_encoder[0].weight)
+            variant.node_encoder[0].weight[:, width:].normal_()
+            for model in (baseline, variant):
+                model.correction_head.weight.normal_(std=0.1)
+                model.step_head.weight.normal_(std=0.1)
+            variant.correction_head.weight.copy_(baseline.correction_head.weight)
+            variant.step_head.weight.copy_(baseline.step_head.weight)
+        return baseline, variant
+
+    def _inputs(self, model, batch=2, slots=3):
+        axes, state, edges, conditioning = TestIntrinsicSolverNetwork._inputs(model, batch=batch)
+        cells = math.prod(model.cell_counts)
+        tokens = torch.randn(batch, cells, slots, features.CONTACT_TOKEN_DIM)
+        mask = torch.rand(batch, cells, slots) < 0.5
+        mask[0, 0] = True
+        mask[-1, -1] = False
+        return axes, state, edges, conditioning, tokens, mask
+
+    def test_flag_widens_node_input_and_owns_encoder(self):
+        """Own a zero-initialized ContactEncoder and widen the node input by CONTACT_FEATURE_DIM."""
+        model = self._network(1, contact_tokens=True)
+        self.assertTrue(model.contact_tokens)
+        self.assertIsInstance(model.contact_encoder, ContactEncoder)
+        self.assertEqual(model.contact_encoder.output_dim, features.CONTACT_FEATURE_DIM)
+        self.assertEqual(model.node_encoder[0].in_features, 9 + self.STATE_DIM + features.CONTACT_FEATURE_DIM)
+        self.assertEqual(torch.count_nonzero(model.contact_encoder.pool_projection.weight).item(), 0)
+        with self.assertRaises(ValueError):
+            IntrinsicSolverNetwork(self.GRID, self.STATE_DIM, hidden_dim=16, contact_tokens=1)
+
+    def test_contact_free_scene_matches_flag_off_network_at_initialization(self):
+        """Reproduce the flag-off output with matching weights for omitted and all-masked tokens."""
+        baseline, variant = self._pair()
+        axes, state, edges, conditioning, tokens, mask = self._inputs(baseline)
+        expected = baseline(axes, state, edges, conditioning)
+        self.assertGreater(torch.count_nonzero(expected.axis_correction).item(), 0)
+        omitted = variant(axes, state, edges, conditioning)
+        for wanted, got in zip(expected, omitted, strict=True):
+            torch.testing.assert_close(got, wanted, rtol=0, atol=0)
+        masked = variant(axes, state, edges, conditioning, contact_tokens=tokens, contact_mask=torch.zeros_like(mask))
+        for wanted, got in zip(expected, masked, strict=True):
+            torch.testing.assert_close(got, wanted, rtol=0, atol=0)
+        # With the zero-initialized pool projection even valid tokens only add the count channel.
+        counted = variant(axes, state, edges, conditioning, contact_tokens=tokens, contact_mask=mask)
+        self.assertTrue(torch.isfinite(counted.local_target_axes).all())
+        self.assertFalse(torch.allclose(counted.local_target_axes, expected.local_target_axes))
+
+    def test_rejects_tokens_without_flag_and_half_supplied_inputs(self):
+        """Raise ValueError for tokens on a flag-off network and for tokens or mask given alone."""
+        baseline, variant = self._pair()
+        axes, state, edges, conditioning, tokens, mask = self._inputs(baseline)
+        with self.assertRaisesRegex(ValueError, "contact_tokens"):
+            baseline(axes, state, edges, conditioning, contact_tokens=tokens, contact_mask=mask)
+        with self.assertRaisesRegex(ValueError, "contact_tokens"):
+            baseline(axes, state, edges, conditioning, contact_mask=mask)
+        with self.assertRaises(ValueError):
+            variant(axes, state, edges, conditioning, contact_tokens=tokens)
+        with self.assertRaises(ValueError):
+            variant(axes, state, edges, conditioning, contact_mask=mask)
+        with self.assertRaises(ValueError):
+            variant(axes, state, edges, conditioning, contact_tokens=tokens[:, :1], contact_mask=mask[:, :1])
+
+    def test_trained_encoder_changes_output_and_receives_gradients(self):
+        """Let valid tokens alter predictions and train every contact encoder parameter."""
+        _, variant = self._pair()
+        with torch.no_grad():
+            variant.contact_encoder.pool_projection.weight.normal_(std=0.2)
+        axes, state, edges, conditioning, tokens, mask = self._inputs(variant)
+        tokens.requires_grad_()
+        clean = variant(axes, state, edges, conditioning)
+        output = variant(axes, state, edges, conditioning, contact_tokens=tokens, contact_mask=mask)
+        self.assertFalse(torch.allclose(output.local_target_axes, clean.local_target_axes))
+        (output.local_target_axes.square().mean() + output.step_size.mean()).backward()
+        contact_parameters = [(n, p) for n, p in variant.named_parameters() if n.startswith("contact_encoder.")]
+        self.assertGreater(len(contact_parameters), 0)
+        for name, parameter in contact_parameters:
+            self.assertIsNotNone(parameter.grad, name)
+            self.assertTrue(torch.isfinite(parameter.grad).all(), name)
+            self.assertGreater(parameter.grad.abs().sum().item(), 0, name)
+        self.assertTrue(torch.isfinite(tokens.grad).all())
+        self.assertEqual(torch.count_nonzero(tokens.grad[~mask]).item(), 0)
+        self.assertGreater(tokens.grad[mask].abs().sum().item(), 0)
 
 
 if __name__ == "__main__":

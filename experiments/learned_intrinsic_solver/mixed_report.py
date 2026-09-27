@@ -29,6 +29,8 @@ _UPDATE_COLUMNS = (
     "step_size_max",
     "tie_cell_count",
     "gradient_norm",
+    "contact_max_penetration_r",
+    "contact_pair_mean",
 )
 _EPOCH_COLUMNS = (
     "epoch",
@@ -46,6 +48,10 @@ _EPOCH_COLUMNS = (
     "selection_eligible",
     "physical_survivors",
     "sample_count",
+    "contact_scene_fraction",
+    "contact_realized_fraction",
+    "contact_max_penetration_r",
+    "validation_final_max_penetration_r",
 )
 
 
@@ -179,6 +185,26 @@ def _curve_plot(title, curves):
     )
 
 
+def _penetration_plot(curve):
+    """Plot the mean and maximum deepest penetration (units of r) per iteration of the latest validation."""
+    return _plot(
+        "Validation deepest contact penetration (units of r)",
+        [
+            (name, color, [(r.get("iteration"), r.get(name)) for r in curve if _finite(r.get("iteration"))])
+            for name, color in (("mean", "#2563eb"), ("max", "#c63645"))
+        ],
+        xlabel="Optimizer iteration",
+    )
+
+
+def _final_penetration(row):
+    """Return the maximum deepest penetration at the last validation iteration, or None."""
+    curve = _lookup(row, "validation", "penetration")
+    if isinstance(curve, list) and curve and isinstance(curve[-1], dict):
+        return curve[-1].get("max")
+    return None
+
+
 def _epoch_plot(rows):
     import matplotlib as mpl
     from matplotlib.figure import Figure
@@ -278,7 +304,7 @@ def _latest_full_horizon(rows):
 
 
 def write_mixed_report(output, report, *, updated_at=None):
-    """Write portable epoch metrics, three SVG plots and a page refreshing every 30s.
+    """Write portable epoch metrics, four SVG plots and a page refreshing every 30s.
 
     Experimental. Only report metrics are written; checkpoints and trajectory
     state are never read. ``updated_at`` denotes the source metrics timestamp,
@@ -300,6 +326,8 @@ def write_mixed_report(output, report, *, updated_at=None):
     endpoint = relative[-1] if relative else {}
     residual_curve = validation.get("force_residual", [])
     residual_endpoint = residual_curve[-1] if residual_curve else {}
+    penetration_curve = validation.get("penetration", [])
+    penetration_endpoint = penetration_curve[-1] if penetration_curve else {}
     selection = validation.get("selection") or {}
     best = report.get("best_selection") or {}
     validation_iterations = config.get("validation_iterations", 100)
@@ -318,9 +346,11 @@ def write_mixed_report(output, report, *, updated_at=None):
     loss_plot = _epoch_plot(rows)
     validation_plot = _curve_plot("Validation relative physical energy", relative)
     residual_plot = _curve_plot("Validation free-corner force residual (N)", residual_curve)
+    penetration_plot = _penetration_plot(penetration_curve)
     _atomic_text(output / "loss_curve.svg", loss_plot)
     _atomic_text(output / "validation_curve.svg", validation_plot)
     _atomic_text(output / "residual_curve.svg", residual_plot)
+    _atomic_text(output / "penetration_curve.svg", penetration_plot)
     epoch_rows = [
         {
             **row,
@@ -328,6 +358,7 @@ def write_mixed_report(output, report, *, updated_at=None):
             "selection_eligible": _lookup(row, "validation", "selection", "eligible"),
             "physical_survivors": _lookup(row, "validation", "physical_survivors"),
             "sample_count": _lookup(row, "validation", "sample_count"),
+            "validation_final_max_penetration_r": _final_penetration(row),
         }
         for row in rows
     ]
@@ -394,14 +425,31 @@ def write_mixed_report(output, report, *, updated_at=None):
     if full:
         final_residual = full.get("final_free_force_residual_norm_n") or {}
         final_energy = full.get("final_energy_joule") or {}
-        full_html = f"""<table><tr><th>Epoch</th><th>K</th><th>H</th><th>Survivors</th><th>Final residual mean / median / max (N)</th><th>Final energy mean (J)</th><th>Seconds</th></tr>
-<tr><td>{escape(full_epoch)}</td><td>{escape(full.get("iterations", "—"))}</td><td>{escape(full.get("physical_steps", "—"))}</td><td>{escape(full.get("physical_survivors", "—"))} / {escape(full.get("sample_count", "—"))}</td><td>{_number(final_residual.get("mean"))} / {_number(final_residual.get("median"))} / {_number(final_residual.get("max"))}</td><td>{_number(final_energy.get("mean"))}</td><td>{_number(full.get("seconds"))}</td></tr></table>"""
+        final_penetration = full.get("final_max_penetration_r") or {}
+        full_html = f"""<table><tr><th>Epoch</th><th>K</th><th>H</th><th>Survivors</th><th>Final residual mean / median / max (N)</th><th>Final energy mean (J)</th><th>Final penetration mean / max (r)</th><th>Seconds</th></tr>
+<tr><td>{escape(full_epoch)}</td><td>{escape(full.get("iterations", "—"))}</td><td>{escape(full.get("physical_steps", "—"))}</td><td>{escape(full.get("physical_survivors", "—"))} / {escape(full.get("sample_count", "—"))}</td><td>{_number(final_residual.get("mean"))} / {_number(final_residual.get("median"))} / {_number(final_residual.get("max"))}</td><td>{_number(final_energy.get("mean"))}</td><td>{_number(final_penetration.get("mean"))} / {_number(final_penetration.get("max"))}</td><td>{_number(full.get("seconds"))}</td></tr></table>"""
     else:
         full_html = '<p class="muted">No full-horizon validation has completed yet.</p>'
     residual_table = (
         f"<tr><td>Force residual (N)</td><td>{_number(residual_endpoint.get('mean'))}</td><td>{_number(residual_endpoint.get('median'))}</td><td>{_number(residual_endpoint.get('max'))}</td></tr>"
         if residual_endpoint
         else ""
+    )
+    if penetration_endpoint:
+        residual_table += f"<tr><td>Deepest penetration (r)</td><td>{_number(penetration_endpoint.get('mean'))}</td><td>—</td><td>{_number(penetration_endpoint.get('max'))}</td></tr>"
+    scene_fraction = latest.get("contact_scene_fraction")
+    realized_fraction = latest.get("contact_realized_fraction")
+    training_penetration = latest.get("contact_max_penetration_r")
+    realized_text = (
+        f"; trajectories that made contact (at least one detected pair): {realized_fraction:.1%}"
+        if _finite(realized_fraction)
+        else ""
+    )
+    contact_text = (
+        f"Contact scenes among this epoch's rank-0 trajectories: {scene_fraction:.1%}{realized_text}; "
+        f"deepest training penetration: {_number(training_penetration)} r."
+        if _finite(scene_fraction)
+        else "Contact statistics are not recorded for this epoch."
     )
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -431,12 +479,14 @@ Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(v
 <p class="muted">Epoch {escape(latest.get("epoch", "—"))}, {escape(validation.get("sample_count", 0))} fixed validation seeds. Each energy value is a per-trajectory physical energy ratio Eᵢ / E₀; the residual is the Euclidean norm of the free-corner position gradient [N]. Mean, median and maximum aggregate the per-trajectory values. Network weights stay fixed during validation.</p>
 <div class="legend"><span style="color:#2563eb">● Mean</span><span style="color:#16804a">● Median</span><span style="color:#c63645">● Maximum</span></div>{validation_plot}
 {residual_plot}
+{penetration_plot}
 <table><tr><th>At iteration {escape(endpoint.get("iteration", validation_iterations))}</th><th>Mean</th><th>Median</th><th>Maximum</th></tr><tr><td>Relative energy</td><td>{_number(endpoint.get("mean"))}</td><td>{_number(endpoint.get("median"))}</td><td>{_number(endpoint.get("max"))}</td></tr>{residual_table}</table>
-<p class="muted">Failed validation trajectories: {escape(validation.get("failed_count", "Not evaluated"))}; physical survivors: {survival_text}; near-zero initial energies: {escape(endpoint.get("near_zero_count", 0))}. Optimizer failures leave gaps from the failed iteration onward; near-zero initial energies are excluded from relative ratios but keep their residuals. Physical-rollout failures are counted separately in the report.</p>
+<p class="muted">Failed validation trajectories: {escape(validation.get("failed_count", "Not evaluated"))}; physical survivors: {survival_text}; near-zero initial energies: {escape(endpoint.get("near_zero_count", 0))}. Optimizer failures leave gaps from the failed iteration onward; near-zero initial energies are excluded from relative ratios but keep their residuals. Physical-rollout failures are counted separately in the report.<br>
+The penetration curve is the deepest penetration of any surface sample into its frozen contact partners, in units of the sample radius r (zero for contact-free scenes). {escape(contact_text)}</p>
 <h2>Latest full-horizon validation</h2>
 <p class="muted">Held-out seeds run K learned iterations on each of H physical steps at the largest currently available budgets; every {escape(config.get("validation_full_interval", "—"))} epochs and before curriculum advancement.</p>
 {full_html}</section>
-<p><a href="report.json">Metrics JSON</a> · <a href="progress.json">Live progress</a> · <a href="epochs.csv">Epoch CSV</a> · <a href="updates.csv">Update CSV</a> · <a href="loss_curve.svg">Training SVG</a> · <a href="validation_curve.svg">Validation SVG</a> · <a href="residual_curve.svg">Residual SVG</a></p>
+<p><a href="report.json">Metrics JSON</a> · <a href="progress.json">Live progress</a> · <a href="epochs.csv">Epoch CSV</a> · <a href="updates.csv">Update CSV</a> · <a href="loss_curve.svg">Training SVG</a> · <a href="validation_curve.svg">Validation SVG</a> · <a href="residual_curve.svg">Residual SVG</a> · <a href="penetration_curve.svg">Penetration SVG</a></p>
 <details><summary>Configuration</summary><p>{damping_text}</p><pre>{escape(json.dumps(config, indent=2))}</pre></details>
 <p class="muted">This page refreshes every 30 seconds. Curves update after each completed epoch.<br>
 Epoch in progress: {escape(progress.get("epoch", "Not started"))}. Training heartbeat: {escape(progress.get("updated_at", "Waiting"))}.<br>

@@ -10,6 +10,12 @@ history plumbing and physical advance as the trainer. Trajectories are written
 in the layout that ``render_learned`` and ``learned_simulation_gallery``
 consume. Network weights are never modified; a failed trajectory keeps its last
 valid frames and is reported instead of aborting the others.
+
+Contact (``notes/contact-design-20260927.md``) follows the trainer: the seed's
+static partners come from the trajectory factory, the frozen pairs of every
+physical step are collated into the padded ``batch["contact"]`` layout that
+``MixedHexSolverStep`` accepts, and the partners are saved with the trajectory
+so ``render_learned`` can draw the floor and the static points.
 """
 
 from __future__ import annotations
@@ -65,6 +71,8 @@ class _Trajectory:
     """Frames, timing and status of one seed's rollout."""
 
     def __init__(self, seed: int, payload: dict, dt: float):
+        from .contact_scene import ContactPartners  # noqa: PLC0415
+
         self.seed = seed
         self.payload = payload
         self.dt = dt
@@ -78,10 +86,50 @@ class _Trajectory:
         self.perturbation_scale = float(payload["metadata"].get("perturbation_scale", float("nan")))
         self.min_center_jacobian = math.inf
         self.energies: list[float] = []
+        partners = payload.get("contact_partners")
+        self.contact = ContactPartners.from_dict(partners) if partners is not None else ContactPartners.contact_free()
+        self.contact_metadata = dict(payload["metadata"].get("contact") or {})
+        self.max_penetration_r = 0.0
+        self.max_pair_count = 0
 
     @property
     def active(self) -> bool:
         return self.failure is None
+
+
+def _contact_batch(payloads: list[dict], device) -> dict:
+    """Collate the frozen contact pairs of ``payloads`` into the padded ``batch["contact"]`` layout.
+
+    Mirrors the trainer's collation: ``sample_index`` and ``kind`` [B, Q] int64,
+    ``partner_point`` and ``partner_normal`` [B, Q, 3] and ``partner_radius``
+    [B, Q] float32, ``mask`` [B, Q] bool, with ``Q`` the largest pair count in
+    the batch (zero when no payload has a pair).
+    """
+    import torch
+
+    counts = [
+        int(payload["contact_sample_index"].shape[0]) if "contact_sample_index" in payload else 0
+        for payload in payloads
+    ]
+    width = max(counts, default=0)
+
+    def pad(name, dtype, *tail):
+        rows = []
+        for payload, count in zip(payloads, counts, strict=True):
+            padded = torch.zeros((width, *tail), dtype=dtype)
+            if count:
+                padded[:count] = payload[name].detach().to(dtype)
+            rows.append(padded)
+        return torch.stack(rows).to(device)
+
+    return {
+        "sample_index": pad("contact_sample_index", torch.int64),
+        "kind": pad("contact_kind", torch.int64),
+        "partner_point": pad("contact_partner_point", torch.float32, 3),
+        "partner_normal": pad("contact_partner_normal", torch.float32, 3),
+        "partner_radius": pad("contact_partner_radius", torch.float32),
+        "mask": torch.stack([torch.arange(width) < count for count in counts]).to(device),
+    }
 
 
 def _run_query(step, trajectories, *, cell_count, device, train_mixed, history_module, features):
@@ -95,17 +143,25 @@ def _run_query(step, trajectories, *, cell_count, device, train_mixed, history_m
     def attempt(group):
         payloads = [t.payload for t in group]
         batch = train_mixed._batch(payloads, device, cell_count=cell_count)
+        # The trainer collates None for payloads without pair tensors; the step reads that as no contact.
+        if batch.get("contact") is None:
+            batch["contact"] = _contact_batch(payloads, device)
         result = train_mixed._checked_forward(step, step, batch)
         history_module.store_history(payloads, result)
         with torch.no_grad():
             deformation = features.center_deformation(result.positions, step.cell_corner_indices, step.center_gradients)
             jacobians = torch.linalg.det(deformation).min(dim=1).values.cpu().tolist()
             energies = result.loss.total.detach().cpu().tolist()
+            pair_counts = batch["contact"]["mask"].sum(dim=1).cpu().tolist()
+            penetration = result.contact_max_penetration
+            penetrations = [0.0] * len(group) if penetration is None else penetration.detach().cpu().tolist()
         for index, trajectory in enumerate(group):
             trajectory.payload["candidate"] = result.positions[index].detach()
             trajectory.calls += 1
             trajectory.min_center_jacobian = min(trajectory.min_center_jacobian, float(jacobians[index]))
             trajectory.energies.append(float(energies[index]))
+            trajectory.max_penetration_r = max(trajectory.max_penetration_r, float(penetrations[index]))
+            trajectory.max_pair_count = max(trajectory.max_pair_count, int(pair_counts[index]))
 
     try:
         attempt(active)
@@ -191,6 +247,9 @@ def run_rollouts(
             hops=config.hops,
             max_step_size=config.max_step_size,
             query_chunk_size=config.query_chunk_size,
+            edge_network=getattr(config, "edge_network", False),
+            checkpoint_chunks=getattr(config, "checkpoint_chunks", False),
+            contact_tokens=getattr(config, "contact", False),
         ).to(target)
         network.load_state_dict(saved["network_state"])
         step = MixedHexSolverStep(
@@ -200,6 +259,9 @@ def run_rollouts(
             time_step=dt,
             gravity=config.gravity,
             energy_floor_scale=config.energy_floor_scale,
+            contact_max_pairs=getattr(config, "contact_max_pairs", 4),
+            contact_tokens_per_cell=getattr(config, "contact_tokens_per_cell", 24),
+            contact_friction_epsilon=getattr(config, "contact_friction_epsilon", 1e-2),
         ).to(target)
         step.eval()
         parameter_digest = hashlib.sha256(
@@ -263,6 +325,7 @@ def run_rollouts(
                 trajectory.frames.append(trajectory.payload["physical_positions"].numpy().copy())
                 trajectory.times.append(trajectory.completed * dt)
             positions = np.stack(trajectory.frames).astype(np.float32)
+            contact = trajectory.contact
             report = {
                 "schema_version": 2,
                 "seed": trajectory.seed,
@@ -290,6 +353,18 @@ def run_rollouts(
                 "energy_first_joule": trajectory.energies[0] if trajectory.energies else None,
                 "energy_last_joule": trajectory.energies[-1] if trajectory.energies else None,
                 "energy_max_joule": max(trajectory.energies) if trajectory.energies else None,
+                "contact": {
+                    "plane_present": contact.plane_present,
+                    "plane_height": float(contact.plane_point[1]),
+                    "point_count": contact.point_count,
+                    "ke": contact.ke,
+                    "kd": contact.kd,
+                    "mu": contact.mu,
+                    "kappa": trajectory.contact_metadata.get("kappa"),
+                    "beta": trajectory.contact_metadata.get("beta"),
+                    "max_penetration_r": trajectory.max_penetration_r if trajectory.calls else None,
+                    "max_pair_count": trajectory.max_pair_count,
+                },
                 "elapsed_seconds": time.perf_counter() - started,
                 "gpu_peak_allocated_bytes": torch.cuda.max_memory_allocated(target) if target.type == "cuda" else 0,
                 "working_dtype": "float32",
@@ -303,6 +378,12 @@ def run_rollouts(
                 fixed_indices=fixed.astype(np.int64),
                 cell_counts=np.asarray(rest.cell_counts, dtype=np.int64),
                 cell_corner_indices=rest.cell_corner_indices.astype(np.int64),
+                contact_plane_present=np.asarray(contact.plane_present, dtype=bool),
+                contact_plane_point=contact.plane_point.numpy().astype(np.float32),
+                contact_plane_normal=contact.plane_normal.numpy().astype(np.float32),
+                contact_point_positions=contact.point_positions.numpy().astype(np.float32),
+                contact_point_normals=contact.point_normals.numpy().astype(np.float32),
+                contact_point_radii=contact.point_radii.numpy().astype(np.float32),
             )
             _atomic_json(directory / "report.json", report)
             reports.append(report)

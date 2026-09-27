@@ -3,13 +3,19 @@
 
 """Revised nine-value input schema for the learned hexahedral optimizer.
 
-This module is the single source of truth for the schema-3 node input layout
+This module is the single source of truth for the schema-4 node input layout
 and holds the pure feature functions that the mixed-material step composes.
 Every spatial matrix block is a 3x3 matrix expressed in the receiving cell's
 current proper frame ``R`` (world columns) and flattened row-major; see
 :func:`pack_state_features` for the exact packing order. Current axes
 ``A = R^T F`` are not part of the state vector: the network prepends them
-separately, so the complete node input has ``9 + STATE_FEATURE_DIM`` values.
+separately, so the node input has ``9 + STATE_FEATURE_DIM`` values, plus
+:data:`CONTACT_FEATURE_DIM` pooled contact channels that the network produces
+itself from :data:`CONTACT_TOKEN_DIM`-wide contact tokens when contact tokens
+are enabled (``contact_features.build_contact_tokens`` builds the tokens).
+Schema 4 also appends three dimensionless contact channels to the per-object
+conditioning; contact-free objects carry zeros there, so the schema-3 inputs
+are recovered exactly.
 
 Normalization follows the LeCO convention (plan: "Gradient inputs and
 normalization"): the current and previous axis gradients share the current
@@ -37,6 +43,8 @@ __all__ = [
     "CLIP",
     "CONDITIONING_CHANNELS",
     "CONDITIONING_DIM",
+    "CONTACT_FEATURE_DIM",
+    "CONTACT_TOKEN_DIM",
     "EDGE_FEATURE_DIM",
     "FEATURE_SCHEMA_VERSION",
     "MATRIX_BLOCKS",
@@ -46,6 +54,7 @@ __all__ = [
     "STATE_FEATURE_DIM",
     "center_deformation",
     "conditioning_channels",
+    "contact_ratios",
     "pack_state_features",
     "rms_normalize",
     "to_local",
@@ -79,17 +88,26 @@ CONDITIONING_CHANNELS = (
     "log_cell_size",
     "log_time_step",
     "log1p_damping",
+    "log1p_contact_kappa",
+    "contact_beta",
+    "contact_mu",
 )
 """Per-object conditioning channels in order; see :func:`conditioning_channels`."""
 
 CONDITIONING_DIM = len(CONDITIONING_CHANNELS)
-"""Number of conditioning channels (6)."""
+"""Number of conditioning channels (9): six material channels and three contact channels."""
+
+CONTACT_TOKEN_DIM = 19
+"""Channels per contact token; layout in :func:`contact_features.build_contact_tokens`."""
+
+CONTACT_FEATURE_DIM = 17
+"""Pooled contact channels per cell appended to the node input: 16 learned plus ``count / M``."""
 
 EDGE_FEATURE_DIM = 24
 """Directed-edge descriptor width from :func:`network_geometry.build_edge_features`."""
 
-FEATURE_SCHEMA_VERSION = 3
-"""Schema version stored in checkpoints; legacy 38/86 schemas are incompatible."""
+FEATURE_SCHEMA_VERSION = 4
+"""Schema version stored in checkpoints; schema 3 (six conditioning channels) and older are incompatible."""
 
 RMS_FLOOR = 1e-12
 """Lower bound on every input RMS before division."""
@@ -269,7 +287,7 @@ def pack_state_features(
     log_gradient_rms: torch.Tensor,
     history_valid: torch.Tensor,
 ) -> torch.Tensor:
-    """Pack the schema-3 per-cell state vector of width :data:`STATE_FEATURE_DIM`.
+    """Pack the per-cell state vector of width :data:`STATE_FEATURE_DIM`.
 
     Packing order along the last axis: ``inertial_axis_offset`` (9, row-major
     3x3), ``physical_axis_change`` (9), ``current_axis_gradient`` (9),
@@ -345,6 +363,78 @@ def pack_state_features(
     return torch.cat(columns, dim=-1)
 
 
+def _check_per_object_tensors(reference_name: str, reference: torch.Tensor, others) -> None:
+    """Require every named tensor to be a [B] floating tensor matching ``reference``."""
+    for name, tensor in ((reference_name, reference), *others):
+        _require_tensor(name, tensor)
+        if tensor.ndim != 1:
+            raise ValueError(f"{name} must have shape [B]")
+        if not tensor.is_floating_point() or tensor.dtype != reference.dtype:
+            raise TypeError(f"{name} must share the floating dtype of {reference_name}")
+        if tensor.shape != reference.shape:
+            raise ValueError(f"{name} must share the [B] shape of {reference_name}")
+        if tensor.device != reference.device:
+            raise ValueError(f"{name} must be on the same device as {reference_name}")
+
+
+def contact_ratios(
+    lame_lambda: torch.Tensor,
+    lame_mu: torch.Tensor,
+    contact_ke: torch.Tensor,
+    contact_kd: torch.Tensor,
+    contact_mu: torch.Tensor,
+    cell_size: float,
+    time_step: float,
+) -> torch.Tensor:
+    """Return the dimensionless contact ratios ``(kappa, beta, mu)`` per object, shape [B, 3].
+
+    ``kappa = ke / (E h)`` with the Young's modulus ``E = mu (3 lambda + 2 mu) /
+    (lambda + mu)`` of the Lamé pair, ``beta = kd / (ke dt)`` (exactly zero
+    where ``ke = 0``) and ``mu`` the friction coefficient unchanged. The
+    conditioning channel ``log1p_contact_kappa`` and the contact tokens both
+    derive from these ratios, so they share one definition. Material tensors
+    are not value-checked (contexts validate them).
+
+    Args:
+        lame_lambda: First Lamé parameter [Pa], shape [B].
+        lame_mu: Shear modulus [Pa], shape [B].
+        contact_ke: Contact stiffness [N/m], shape [B].
+        contact_kd: Contact damping [N s/m], shape [B].
+        contact_mu: Friction coefficient, shape [B].
+        cell_size: Positive finite rest voxel edge length [m].
+        time_step: Positive finite physical time step [s].
+
+    Returns:
+        ``(kappa, beta, mu)`` stacked along the last axis, shape [B, 3], in the
+        dtype and device of lame_mu.
+
+    Raises:
+        TypeError: If an input is not a floating tensor or dtypes differ.
+        ValueError: If shapes, devices, or the scalar arguments are invalid.
+    """
+    import torch
+
+    _check_per_object_tensors(
+        "lame_mu",
+        lame_mu,
+        (
+            ("lame_lambda", lame_lambda),
+            ("contact_ke", contact_ke),
+            ("contact_kd", contact_kd),
+            ("contact_mu", contact_mu),
+        ),
+    )
+    size = _require_positive_scalar("cell_size", cell_size)
+    step = _require_positive_scalar("time_step", time_step)
+    youngs_modulus = lame_mu * (3 * lame_lambda + 2 * lame_mu) / (lame_lambda + lame_mu)
+    kappa = contact_ke / (youngs_modulus * size)
+    stiff = contact_ke > 0
+    # Divide by one where ke = 0 so the unselected branch stays finite.
+    denominator = torch.where(stiff, contact_ke * step, torch.ones_like(contact_ke))
+    beta = torch.where(stiff, contact_kd / denominator, torch.zeros_like(contact_kd))
+    return torch.stack((kappa, beta, contact_mu), dim=-1)
+
+
 def conditioning_channels(
     lame_lambda: torch.Tensor,
     lame_mu: torch.Tensor,
@@ -352,16 +442,25 @@ def conditioning_channels(
     damping: torch.Tensor,
     cell_size: float,
     time_step: float,
+    *,
+    contact_ke: torch.Tensor | None = None,
+    contact_kd: torch.Tensor | None = None,
+    contact_mu: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Build the six per-object conditioning channels, shape [B, 6].
+    """Build the nine per-object conditioning channels, shape [B, 9].
 
     Channel order follows :data:`CONDITIONING_CHANNELS`::
 
         log1p(lambda / 1e5), log1p(mu / 1e5), log(rho / 1000),
-        log(h / 0.025), log(dt * 60), log1p(eta / (mu * dt))
+        log(h / 0.025), log(dt * 60), log1p(eta / (mu * dt)),
+        log1p(ke / (E h)), kd / (ke dt), mu_contact
 
-    The viscosity channel is dimensionless and does not rescale the physical
-    eta. Material tensors are not value-checked here (contexts validate them);
+    with the Young's modulus ``E = mu (3 lambda + 2 mu) / (lambda + mu)``; see
+    :func:`contact_ratios`. The viscosity and contact channels are
+    dimensionless and do not rescale the physical values. A contact argument
+    left at None means zeros for every object, so contact-free objects produce
+    ``log1p(0) = 0``, ``beta = 0`` and ``mu = 0`` in the last three channels.
+    Material tensors are not value-checked here (contexts validate them);
     nonpositive entries would produce nonfinite channels visibly. Callers expand
     the result to cells as needed.
 
@@ -372,9 +471,12 @@ def conditioning_channels(
         damping: Viscosity eta [Pa s], shape [B].
         cell_size: Positive finite rest voxel edge length [m].
         time_step: Positive finite physical time step [s].
+        contact_ke: Contact stiffness [N/m], shape [B]; None means zeros.
+        contact_kd: Contact damping [N s/m], shape [B]; None means zeros.
+        contact_mu: Contact friction coefficient, shape [B]; None means zeros.
 
     Returns:
-        Conditioning channels, shape [B, 6], in the dtype and device of lame_mu.
+        Conditioning channels, shape [B, 9], in the dtype and device of lame_mu.
 
     Raises:
         TypeError: If a material input is not a floating tensor or dtypes differ.
@@ -382,19 +484,13 @@ def conditioning_channels(
     """
     import torch
 
-    materials = (("lame_lambda", lame_lambda), ("lame_mu", lame_mu), ("density", density), ("damping", damping))
-    for name, tensor in materials:
-        _require_tensor(name, tensor)
-        if tensor.ndim != 1:
-            raise ValueError(f"{name} must have shape [B]")
-        if not tensor.is_floating_point() or tensor.dtype != lame_mu.dtype:
-            raise TypeError(f"{name} must share the floating dtype of lame_mu")
-        if tensor.shape != lame_mu.shape:
-            raise ValueError(f"{name} must share the [B] shape of lame_mu")
-        if tensor.device != lame_mu.device:
-            raise ValueError(f"{name} must be on the same device as lame_mu")
+    _check_per_object_tensors(
+        "lame_mu", lame_mu, (("lame_lambda", lame_lambda), ("density", density), ("damping", damping))
+    )
     size = _require_positive_scalar("cell_size", cell_size)
     step = _require_positive_scalar("time_step", time_step)
+    contact = [torch.zeros_like(lame_mu) if value is None else value for value in (contact_ke, contact_kd, contact_mu)]
+    ratios = contact_ratios(lame_lambda, lame_mu, *contact, size, step)
 
     channels = (
         (lame_lambda / _REFERENCE_LAME).log1p(),
@@ -403,5 +499,8 @@ def conditioning_channels(
         torch.full_like(lame_mu, math.log(size / _REFERENCE_CELL_SIZE)),
         torch.full_like(lame_mu, math.log(step / _REFERENCE_TIME_STEP)),
         (damping / (lame_mu * step)).log1p(),
+        ratios[:, 0].log1p(),
+        ratios[:, 1],
+        ratios[:, 2],
     )
     return torch.stack(channels, dim=-1)

@@ -24,17 +24,19 @@ class TestDampingTraining(unittest.TestCase):
         """Sample damping by default and reject pre-revision checkpoint layouts explicitly."""
         config = MixedTrainConfig()
         self.assertEqual(config.damping_range, (10.0, 1000.0))
-        self.assertEqual((config.state_feature_dim, config.conditioning_dim), (features.STATE_FEATURE_DIM, 6))
-        self.assertEqual(config.feature_schema_version, 3)
+        self.assertEqual(
+            (config.state_feature_dim, config.conditioning_dim), (features.STATE_FEATURE_DIM, features.CONDITIONING_DIM)
+        )
+        self.assertEqual(config.feature_schema_version, features.FEATURE_SCHEMA_VERSION)
         old = asdict(config)
         del old["damping_range"], old["feature_schema_version"]
         with self.assertRaisesRegex(ValueError, "legacy"):
             MixedTrainConfig.from_checkpoint_config(old)
-        for version in (1, 2):
+        for version in (1, 2, 3):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, "legacy"):
                 replace(config, feature_schema_version=version)
         zero_damping = replace(config, damping_range=(0.0, 0.0))
-        self.assertEqual((zero_damping.state_feature_dim, zero_damping.conditioning_dim), (61, 6))
+        self.assertEqual((zero_damping.state_feature_dim, zero_damping.conditioning_dim), (61, 9))
 
     def test_batch_preserves_physical_anchor_separately_from_candidate(self):
         """Collate the physical-step start without replacing it with an inner optimizer iterate."""

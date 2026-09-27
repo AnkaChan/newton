@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Experimental bounded verification of one mixed-pool Adam update.
+"""Experimental bounded verification of one mixed-pool AdamW update.
 
 Read initial and one-update checkpoints, concatenate the saved first dispatch
-from every rank, and perform one independent single-process global-mean update.
+from every rank, and perform one independent single-process global-mean update
+with the trainer's gradient clipping, contact pairs and decoupled weight decay.
 No pool callbacks, distributed collectives, or training campaign are launched.
 """
 
@@ -55,7 +56,7 @@ def _first_batches(initial, after):
     if initial["report"]["completed_updates"] != 0 or after["report"]["completed_updates"] != 1:
         raise ValueError("verification requires an initial checkpoint and exactly one update")
     if initial["optimizer_state"]["state"]:
-        raise ValueError("initial checkpoint must precede the first Adam update")
+        raise ValueError("initial checkpoint must precede the first AdamW update")
     config, world_size = initial["config"], initial["world_size"]
     if world_size < 1 or after["world_size"] != world_size:
         raise ValueError("initial and after checkpoints must have the same positive rank count")
@@ -85,6 +86,8 @@ def _first_batches(initial, after):
                 raise ValueError("global first batch must have distinct context identifiers")
             if context_id not in state["context_specs"]:
                 raise ValueError("initial dispatch has no serialized physical context")
+            if "contact_partners" not in payload:
+                raise ValueError("initial dispatch has no serialized contact partners")
             if payload.get("history_valid", False) or any(
                 bool((payload[name] != 0).any()) for name in HISTORY_KEYS[:2] if name in payload
             ):
@@ -148,16 +151,19 @@ def verify_first_update(
     moment_atol: float = 1e-7,
     moment_rtol: float = 5e-4,
 ) -> dict:
-    """Compare a saved first Adam update with one concatenated global batch.
+    """Compare a saved first AdamW update with one concatenated global batch.
 
     Experimental. The checkpoints must use the same configuration, contain
     zero and one completed updates respectively, and allocate exactly B times
     world-size queries per epoch. Inputs come from the first B dispatch records
-    in each initial rank pool. Only selected physical contexts are rebuilt.
+    in each initial rank pool. Only selected physical contexts are rebuilt,
+    each with the contact partners serialized in its dispatch payload, and the
+    frozen contact pairs of the dispatch enter the energy and the network.
 
     The network and physics run on the requested CPU or CUDA device in float32.
     The reference directly states the per-update LeCO objective with the
-    material-aware energy floor and one Adam update, without invoking the
+    material-aware energy floor, the configured gradient-norm clip and one
+    AdamW update at the first-epoch learning rate, without invoking the
     trainer's update loop or distributed reduction. The first dispatch carries
     no optimizer history, so its stacked history is all invalid. Equal full
     rank batches make the global sample mean the expected DDP mean.
@@ -170,22 +176,23 @@ def verify_first_update(
         device: Torch CPU or CUDA device for the independent reference.
         parameter_atol: Absolute parameter comparison tolerance.
         parameter_rtol: Relative parameter comparison tolerance.
-        moment_atol: Absolute Adam-moment comparison tolerance.
-        moment_rtol: Relative Adam-moment comparison tolerance and relative L2 bound.
+        moment_atol: Absolute AdamW-moment comparison tolerance.
+        moment_rtol: Relative AdamW-moment comparison tolerance and relative L2 bound.
 
     Returns:
         JSON-safe error statistics, batch identities, material diversity and
         saved rank fingerprint agreement. ``passed`` requires all comparisons,
-        exact Adam step counters, rank agreement and heterogeneous materials
+        exact AdamW step counters, rank agreement and heterogeneous materials
         when the global batch has more than one member.
     """
     import torch
 
-    from .data import generate_cuboid  # noqa: PLC0415 -- Keep optional execution imports local.
+    from .contact_scene import ContactPartners  # noqa: PLC0415 -- Keep optional execution imports local.
+    from .data import generate_cuboid  # noqa: PLC0415
     from .history import batch_history  # noqa: PLC0415
     from .mixed_physics import MixedHexSolverStep  # noqa: PLC0415
     from .network import IntrinsicSolverNetwork  # noqa: PLC0415
-    from .train_mixed import MixedTrainConfig  # noqa: PLC0415
+    from .train_mixed import MixedTrainConfig, _batch_contact, _scheduled_learning_rate  # noqa: PLC0415
 
     for value in (parameter_atol, parameter_rtol, moment_atol, moment_rtol):
         if not math.isfinite(value) or value < 0:
@@ -211,6 +218,8 @@ def verify_first_update(
             hops=tuple(config["hops"]),
             max_step_size=config["max_step_size"],
             query_chunk_size=config["query_chunk_size"],
+            edge_network=schema.edge_network,
+            contact_tokens=schema.contact,
         ).to(device=target_device, dtype=torch.float32)
         network.load_state_dict(saved_initial["network_state"])
         network.train()
@@ -226,19 +235,32 @@ def verify_first_update(
             time_step=config["time_step"],
             gravity=config["gravity"],
             energy_floor_scale=config["energy_floor_scale"],
+            contact_max_pairs=schema.contact_max_pairs,
+            contact_tokens_per_cell=schema.contact_tokens_per_cell,
+            contact_friction_epsilon=schema.contact_friction_epsilon,
         )
         try:
-            for name, specification in specifications.items():
-                step.register_context(name, **specification)
+            for record in records:
+                name = record["context_id"]
+                contact = ContactPartners.from_dict(record["contact_partners"])
+                step.register_context(name, **specifications[name], contact=contact)
             context_ids = tuple(record["context_id"] for record in records)
             candidate, inertial, prescribed, physical_start = (
                 torch.stack([record[name] for record in records]).to(target_device)
                 for name in ("candidate", "inertial_prediction", "fixed_positions", "physical_positions")
             )
             history = batch_history(records, target_device, cell_count=len(step.cell_corner_indices))
-            optimizer = torch.optim.Adam(network.parameters(), lr=config["learning_rate"])
+            contact = _batch_contact(records, target_device)
+            # The trainer sets the first epoch's rate from the schedule at zero completed epochs.
+            optimizer = torch.optim.AdamW(
+                network.parameters(),
+                lr=_scheduled_learning_rate(schema, 0, schema.learning_rate),
+                weight_decay=schema.weight_decay,
+            )
             with torch.no_grad():
-                original_energy = step.energy(candidate, inertial, context_ids, previous_positions=physical_start).total
+                original_energy = step.energy(
+                    candidate, inertial, context_ids, previous_positions=physical_start, contact=contact
+                ).total
                 floor = step.energy_floor(context_ids)
             with torch.autocast(device_type=target_device.type, enabled=False):
                 result = step(
@@ -248,6 +270,7 @@ def verify_first_update(
                     fixed_positions=prescribed,
                     previous_positions=physical_start,
                     history=history,
+                    contact=contact,
                 )
                 # Independently state the first-update LeCO objective: the energy
                 # before this update is the initial candidate energy, detached.
@@ -266,6 +289,10 @@ def verify_first_update(
             gradient_norm = math.sqrt(
                 sum(parameter.grad.detach().double().square().sum().item() for parameter in network.parameters())
             )
+            torch.nn.utils.clip_grad_norm_(
+                network.parameters(),
+                schema.gradient_clip_norm if schema.gradient_clip_norm is not None else math.inf,
+            )
             optimizer.step()
             parameters = _compare(
                 (
@@ -278,9 +305,9 @@ def verify_first_update(
             reference_optimizer = optimizer.state_dict()
             actual_optimizer = saved_after["optimizer_state"]
             if reference_optimizer["param_groups"] != actual_optimizer["param_groups"]:
-                raise ValueError("after checkpoint has incompatible Adam parameter groups")
+                raise ValueError("after checkpoint has incompatible AdamW parameter groups")
             if set(reference_optimizer["state"]) != set(actual_optimizer["state"]):
-                raise ValueError("after checkpoint is missing Adam parameter states")
+                raise ValueError("after checkpoint is missing AdamW parameter states")
             pairs = []
             for parameter_id, parameter_name in zip(
                 reference_optimizer["param_groups"][0]["params"], names, strict=True
@@ -288,7 +315,7 @@ def verify_first_update(
                 expected = reference_optimizer["state"][parameter_id]
                 actual = actual_optimizer["state"][parameter_id]
                 if set(expected) != set(actual):
-                    raise ValueError(f"after checkpoint has incompatible Adam state for {parameter_name}")
+                    raise ValueError(f"after checkpoint has incompatible AdamW state for {parameter_name}")
                 for field in expected:
                     pairs.append((f"{parameter_name}.{field}", expected[field], actual[field]))
             moments = _compare(pairs, atol=moment_atol, rtol=moment_rtol)

@@ -32,7 +32,7 @@ def _proper_rotations(*shape: int, dtype: torch.dtype = torch.float64) -> torch.
 
 class TestSchemaConstants(unittest.TestCase):
     def test_dimensions_and_order(self):
-        """Pin the schema-3 widths and packing order the network and trainer depend on."""
+        """Pin the schema-4 widths and packing order the network and trainer depend on."""
         self.assertEqual(
             features.MATRIX_BLOCKS,
             (
@@ -47,10 +47,25 @@ class TestSchemaConstants(unittest.TestCase):
         self.assertEqual(features.BOUNDARY_DIM, 14)
         self.assertEqual(features.SCALAR_FEATURES, ("log_gradient_rms", "history_valid"))
         self.assertEqual(features.STATE_FEATURE_DIM, 61)
-        self.assertEqual(features.CONDITIONING_DIM, 6)
-        self.assertEqual(len(features.CONDITIONING_CHANNELS), 6)
+        self.assertEqual(features.CONDITIONING_DIM, 9)
+        self.assertEqual(
+            features.CONDITIONING_CHANNELS,
+            (
+                "log1p_lame_lambda",
+                "log1p_lame_mu",
+                "log_density",
+                "log_cell_size",
+                "log_time_step",
+                "log1p_damping",
+                "log1p_contact_kappa",
+                "contact_beta",
+                "contact_mu",
+            ),
+        )
+        self.assertEqual(features.CONTACT_TOKEN_DIM, 19)
+        self.assertEqual(features.CONTACT_FEATURE_DIM, 17)
         self.assertEqual(features.EDGE_FEATURE_DIM, 24)
-        self.assertEqual(features.FEATURE_SCHEMA_VERSION, 3)
+        self.assertEqual(features.FEATURE_SCHEMA_VERSION, 4)
         self.assertEqual(features.RMS_FLOOR, 1e-12)
         self.assertEqual(features.CLIP, 10.0)
 
@@ -288,7 +303,7 @@ class TestToLocal(unittest.TestCase):
 
 class TestConditioningChannels(unittest.TestCase):
     def test_channel_formulas(self):
-        """Match the six documented channel formulas including log1p(eta / (mu dt))."""
+        """Match the nine documented channel formulas with zero contact channels when contact is omitted."""
         time_step = 1.0 / 60.0
         channels = features.conditioning_channels(
             torch.tensor([1e5, 2e5]),
@@ -298,11 +313,21 @@ class TestConditioningChannels(unittest.TestCase):
             0.025,
             time_step,
         )
-        self.assertEqual(channels.shape, (2, 6))
+        self.assertEqual(channels.shape, (2, 9))
         expected = torch.tensor(
             [
-                [math.log1p(1.0), math.log1p(1.0), 0.0, 0.0, 0.0, 0.0],
-                [math.log1p(2.0), math.log1p(0.5), math.log(2.0), 0.0, 0.0, math.log1p(3.0 / (5e4 * time_step))],
+                [math.log1p(1.0), math.log1p(1.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [
+                    math.log1p(2.0),
+                    math.log1p(0.5),
+                    math.log(2.0),
+                    0.0,
+                    0.0,
+                    math.log1p(3.0 / (5e4 * time_step)),
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
             ]
         )
         torch.testing.assert_close(channels, expected)
@@ -310,6 +335,38 @@ class TestConditioningChannels(unittest.TestCase):
             torch.tensor([1e5]), torch.tensor([1e5]), torch.tensor([1000.0]), torch.tensor([0.0]), 0.05, 1.0 / 300.0
         )
         torch.testing.assert_close(scaled[0, 3:5], torch.tensor([math.log(2.0), math.log(60.0 / 300.0)]))
+
+    def test_contact_channels_and_ratios(self):
+        """Append log1p(ke / (E h)), kd / (ke dt) and mu, with beta exactly zero where ke = 0."""
+        lam = torch.tensor([1e5, 2e5, 3e5])
+        mu = torch.tensor([1e5, 5e4, 2e5])
+        rho = torch.tensor([1000.0, 2000.0, 1500.0])
+        eta = torch.zeros(3)
+        ke = torch.tensor([2e3, 0.0, 5e2])
+        kd = torch.tensor([4.0, 7.0, 0.0])
+        friction = torch.tensor([0.3, 0.9, 0.0])
+        cell_size, time_step = 0.025, 1.0 / 300.0
+        ratios = features.contact_ratios(lam, mu, ke, kd, friction, cell_size, time_step)
+        self.assertEqual(ratios.shape, (3, 3))
+        youngs = mu * (3 * lam + 2 * mu) / (lam + mu)
+        torch.testing.assert_close(ratios[:, 0], ke / (youngs * cell_size))
+        torch.testing.assert_close(ratios[:, 1], torch.tensor([4.0 / (2e3 * time_step), 0.0, 0.0]))
+        torch.testing.assert_close(ratios[:, 2], friction)
+        self.assertTrue(torch.isfinite(ratios).all())
+        channels = features.conditioning_channels(
+            lam, mu, rho, eta, cell_size, time_step, contact_ke=ke, contact_kd=kd, contact_mu=friction
+        )
+        self.assertEqual(channels.shape, (3, 9))
+        baseline = features.conditioning_channels(lam, mu, rho, eta, cell_size, time_step)
+        torch.testing.assert_close(channels[:, :6], baseline[:, :6])
+        torch.testing.assert_close(channels[:, 6], ratios[:, 0].log1p())
+        torch.testing.assert_close(channels[:, 7:], ratios[:, 1:])
+        torch.testing.assert_close(baseline[:, 6:], torch.zeros(3, 3))
+        # E = 1e5 * (3e5 + 2e5) / 2e5 = 2.5e5 for the first object, so kappa = 2e3 / (2.5e5 * 0.025).
+        self.assertAlmostEqual(channels[0, 6].item(), math.log1p(2e3 / (2.5e5 * 0.025)), places=6)
+        partial = features.conditioning_channels(lam, mu, rho, eta, cell_size, time_step, contact_mu=friction)
+        torch.testing.assert_close(partial[:, 6:8], torch.zeros(3, 2))
+        torch.testing.assert_close(partial[:, 8], friction)
 
     def test_rejects_invalid_inputs(self):
         """Refuse nonpositive or nonfinite scalars and mismatched material tensors."""
@@ -326,6 +383,14 @@ class TestConditioningChannels(unittest.TestCase):
             features.conditioning_channels(lam[None], mu[None], rho[None], eta[None], 0.025, 0.01)
         with self.assertRaises(TypeError):
             features.conditioning_channels(lam.double(), mu, rho, eta, 0.025, 0.01)
+        with self.assertRaises(ValueError):
+            features.conditioning_channels(lam, mu, rho, eta, 0.025, 0.01, contact_ke=torch.tensor([1.0, 2.0]))
+        with self.assertRaises(TypeError):
+            features.conditioning_channels(lam, mu, rho, eta, 0.025, 0.01, contact_mu=torch.tensor([1.0]).double())
+        with self.assertRaises(ValueError):
+            features.contact_ratios(lam, mu, eta, eta, eta, 0.025, 0.0)
+        with self.assertRaises(ValueError):
+            features.contact_ratios(lam, mu, eta[None], eta, eta, 0.025, 0.01)
 
 
 if __name__ == "__main__":

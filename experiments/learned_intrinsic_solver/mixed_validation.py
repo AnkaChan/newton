@@ -12,6 +12,11 @@ optimization phase and requires that no sample failed and every physical
 trajectory survived. Inversion diagnostics are reported but never fail a
 sample. ``validate_full_horizon`` evaluates a distinct held-out subset at the
 full currently available K x H horizon and records its wall-clock cost.
+
+Contact diagnostics accompany every observation: the contact energy [J] and
+the deepest penetration of any surface sample into its frozen partners in
+units of the sample radius r (zero for contact-free scenes). They are reported
+as a per-iteration curve and per physical step, and never affect selection.
 """
 
 from __future__ import annotations
@@ -45,6 +50,8 @@ def _new_sample(seed) -> dict:
         "free_force_residual_norm_n": [],
         "inverted_cell_counts": [],
         "min_center_jacobians": [],
+        "contact_energy_joule": [],
+        "max_penetration_r": [],
         "displacement_rms": None,
         "error": None,
         "failure_iteration": None,
@@ -80,6 +87,7 @@ def _free_force_residual_norms(step, batch) -> list[float]:
             batch["inertial_prediction"].detach(),
             batch["context_ids"],
             previous_positions=batch["physical_positions"].detach(),
+            contact=batch.get("contact"),
         ).total
         gradient = torch.autograd.grad(energy.sum(), positions)[0]
     gradient = gradient.detach()
@@ -107,8 +115,52 @@ def _rms_displacement(current, start) -> list[float]:
     return (current - start).double().square().sum(-1).mean(-1).sqrt().cpu().tolist()
 
 
-def _record_iteration(step, batch, start, samples, energies) -> None:
-    """Append one complete observation for every sample, including all diagnostics."""
+def _contact_values(value, count, name) -> list[float]:
+    """Return a detached per-sample contact diagnostic as floats; None (no contact term) reads as zeros."""
+    import torch
+
+    if value is None:
+        return [0.0] * count
+    values = value.detach().double().cpu()
+    if values.shape != (count,) or not torch.isfinite(values).all():
+        raise ValueError(f"nonfinite or misshaped validation {name}")
+    return values.tolist()
+
+
+def _initial_penetration(step, batch):
+    """Return the deepest penetration in units of r of every initial candidate, or None without pairs.
+
+    Later observations take the value from the step output; the initial
+    candidate has no forward call, so it is measured here with the same public
+    geometry and penetration functions the step uses.
+    """
+    import torch
+
+    from .contact_energy import contact_penetration  # noqa: PLC0415 -- Optional training boundary.
+    from .contact_geometry import sample_points  # noqa: PLC0415 -- Optional training boundary.
+
+    contact = batch.get("contact")
+    if contact is None or contact["sample_index"].shape[1] == 0:
+        return None
+    with torch.no_grad():
+        positions = sample_points(batch["candidate"].detach(), step.face_corners)
+        depth = contact_penetration(
+            positions,
+            contact["sample_index"].to(torch.int64),
+            contact["partner_point"],
+            contact["partner_normal"],
+            contact["mask"],
+            radius=step.contact_radius,
+        )
+    return depth.amax(dim=1) / step.contact_radius
+
+
+def _record_iteration(step, batch, start, samples, energies, *, contact_energy, penetration) -> None:
+    """Append one complete observation for every sample, including all diagnostics.
+
+    ``contact_energy`` [J] and ``penetration`` (units of r) are detached [B]
+    tensors from the step, or None when the scene has no contact term.
+    """
     import torch
 
     if not torch.isfinite(energies).all():
@@ -117,6 +169,8 @@ def _record_iteration(step, batch, start, samples, energies) -> None:
     residuals = _free_force_residual_norms(step, batch)
     inverted, minima = _inversion_diagnostics(step, batch["candidate"])
     displacement = _rms_displacement(batch["candidate"], start)
+    contact = _contact_values(contact_energy, len(samples), "contact energy")
+    depth = _contact_values(penetration, len(samples), "penetration")
     for index, sample in enumerate(samples):
         sample["energies"].append(values[index])
         sample["displacements_rms_m"].append(displacement[index])
@@ -124,9 +178,11 @@ def _record_iteration(step, batch, start, samples, energies) -> None:
         sample["free_force_residual_norm_n"].append(residuals[index])
         sample["inverted_cell_counts"].append(inverted[index])
         sample["min_center_jacobians"].append(minima[index])
+        sample["contact_energy_joule"].append(contact[index])
+        sample["max_penetration_r"].append(depth[index])
 
 
-def _record_physical_step(step, batch, start, samples, energies, step_index) -> None:
+def _record_physical_step(step, batch, start, samples, energies, step_index, *, contact_energy, penetration) -> None:
     """Append the per-physical-step record after the inner updates and before advancing."""
     import torch
 
@@ -136,6 +192,8 @@ def _record_physical_step(step, batch, start, samples, energies, step_index) -> 
     residuals = _free_force_residual_norms(step, batch)
     inverted, minima = _inversion_diagnostics(step, batch["candidate"])
     displacement = _rms_displacement(batch["candidate"], start)
+    contact = _contact_values(contact_energy, len(samples), "contact energy")
+    depth = _contact_values(penetration, len(samples), "penetration")
     for index, sample in enumerate(samples):
         sample["physical_records"].append(
             {
@@ -145,6 +203,8 @@ def _record_physical_step(step, batch, start, samples, energies, step_index) -> 
                 "displacement_rms_m": displacement[index],
                 "inverted_cell_count": inverted[index],
                 "min_center_jacobian": minima[index],
+                "contact_energy_joule": contact[index],
+                "max_penetration_r": depth[index],
             }
         )
 
@@ -171,19 +231,36 @@ def _optimization(step, factory, seeds, samples, config, device):
         floors = step.energy_floor(batch["context_ids"]).detach().double().cpu().tolist()
         for sample, floor in zip(samples, floors, strict=True):
             sample["energy_floor_joule"] = floor
-        energies = step.energy(
+        terms = step.energy(
             start,
             batch["inertial_prediction"],
             batch["context_ids"],
             previous_positions=batch["physical_positions"],
-        ).total
-        _record_iteration(step, batch, start, samples, energies)
+            contact=batch.get("contact"),
+        )
+        _record_iteration(
+            step,
+            batch,
+            start,
+            samples,
+            terms.total,
+            contact_energy=terms.contact,
+            penetration=_initial_penetration(step, batch),
+        )
         for _ in range(config.validation_iterations):
             iteration += 1
             result = _checked_forward(step, step, batch)
             batch["candidate"] = result.positions.detach()
             _store_history(step, payloads, batch, result, device)
-            _record_iteration(step, batch, start, samples, result.loss.total)
+            _record_iteration(
+                step,
+                batch,
+                start,
+                samples,
+                result.loss.total,
+                contact_energy=result.contact_energy,
+                penetration=result.contact_max_penetration,
+            )
     except (RuntimeError, ValueError) as error:
         if len(seeds) > 1:
             raise
@@ -223,7 +300,16 @@ def _physical(step, factory, seeds, samples, device, *, iterations, physical_ste
                 result = _checked_forward(step, step, batch)
                 batch["candidate"] = result.positions.detach()
                 _store_history(step, payloads, batch, result, device)
-            _record_physical_step(step, batch, start, samples, result.loss.total, completed + 1)
+            _record_physical_step(
+                step,
+                batch,
+                start,
+                samples,
+                result.loss.total,
+                completed + 1,
+                contact_energy=result.contact_energy,
+                penetration=result.contact_max_penetration,
+            )
             for index, payload in enumerate(payloads):
                 payload["candidate"] = batch["candidate"][index].detach().cpu()
             completed += 1
@@ -250,8 +336,9 @@ def validation_chunk(step, factory, seeds, config, device):
     observations and attempts its physical rollout even if optimization failed.
     ``failure_iteration`` is zero for initialization failures and otherwise the
     one-based proposal index. ``physical_steps`` counts only completed steps.
-    Every recorded iteration carries energy, displacement, residual norm and
-    inversion diagnostics; ``physical_records`` holds one entry per completed
+    Every recorded iteration carries energy, displacement, residual norm,
+    inversion and contact diagnostics (``contact_energy_joule``,
+    ``max_penetration_r``); ``physical_records`` holds one entry per completed
     physical step.
     """
     import torch
@@ -325,6 +412,20 @@ def _iteration_curves(samples, iterations):
     return residual_curve, inversion_curve
 
 
+def _penetration_curve(samples, iterations):
+    """Summarize the deepest penetration (units of r) per iteration; incomplete iterations leave gaps."""
+    curve = []
+    for iteration in range(iterations + 1):
+        present = [sample for sample in samples if len(sample["max_penetration_r"]) > iteration]
+        statistics = _statistics(
+            [sample["max_penetration_r"][iteration] for sample in present], complete=len(present) == len(samples)
+        )
+        curve.append(
+            {"iteration": iteration, "mean": statistics["mean"], "max": statistics["max"], "valid_count": len(present)}
+        )
+    return curve
+
+
 def _physical_curves(samples, physical_steps):
     curves = []
     for index in range(physical_steps):
@@ -342,6 +443,9 @@ def _physical_curves(samples, physical_steps):
                 ),
                 "displacement_rms_m": _statistics(
                     [record["displacement_rms_m"] for record in records], complete=not missing
+                ),
+                "max_penetration_r": _statistics(
+                    [record["max_penetration_r"] for record in records], complete=not missing
                 ),
                 **_inversion_summary(
                     [record["inverted_cell_count"] for record in records],
@@ -468,6 +572,7 @@ def _summarize(samples, config, *, seconds):
         "relative_energy": curves,
         "force_residual": residual_curve,
         "inversion": inversion_curve,
+        "penetration": _penetration_curve(samples, iterations),
         "final_inverted_sample_count": inversion_curve[-1]["inverted_sample_count"],
         "selection": _selection(samples, iterations, failed_count=len(failed), physical_survivors=survivors),
         "near_zero": {
@@ -506,6 +611,7 @@ def _summarize_full_horizon(samples, *, iterations, physical_steps, seconds):
         "final_energy_joule": final["energy_joule"],
         "final_physical_residual": final["free_force_residual_norm_n"],
         "final_inverted_sample_count": final["inverted_sample_count"],
+        "final_max_penetration_r": final["max_penetration_r"],
         "physical_curves": curves,
         "samples": samples,
         "seconds": seconds,
@@ -549,8 +655,9 @@ def validate(step, factory, config, device, rank, world_size):
     """Aggregate experimental fixed-seed validation without erasing earlier successes.
 
     Every sample reports Euclidean free-corner force-residual norms [N] at every
-    iteration (``force_residual`` curve, iteration 0 = initial candidate) and
-    inversion diagnostics (``inversion`` curve). ``selection`` carries the
+    iteration (``force_residual`` curve, iteration 0 = initial candidate),
+    inversion diagnostics (``inversion`` curve) and the deepest contact
+    penetration in units of r (``penetration`` curve). ``selection`` carries the
     checkpoint-selection metric: the mean final residual over all samples,
     eligible only when no sample failed, every sample completed all iterations
     and every physical trajectory survived. ``mean_normalized_loss`` is the mean
@@ -583,7 +690,8 @@ def validate_full_horizon(step, factory, config, device, rank, world_size, *, it
     distributed round-robin over ranks. Each trajectory runs ``physical_steps``
     physical steps of ``iterations`` learned queries and records, per step, the
     final energy [J], the final free-corner residual norm [N], the RMS
-    displacement [m] and inversion diagnostics. Failed samples stay visible
+    displacement [m], inversion diagnostics and the contact energy and deepest
+    penetration (units of r). Failed samples stay visible
     with their error and completed steps; final statistics are None when any
     sample is incomplete. ``seconds`` is this rank's wall-clock cost.
 
@@ -601,9 +709,10 @@ def validate_full_horizon(step, factory, config, device, rank, world_size, *, it
     Returns:
         Summary with ``sample_count``, ``physical_survivors``, ``failed_count``,
         ``iterations``, ``physical_steps``, ``final_free_force_residual_norm_n``,
-        ``final_energy_joule`` (each ``{"mean", "median", "max"}``),
-        ``final_physical_residual``, ``final_inverted_sample_count``,
-        ``physical_curves``, ``samples`` and ``seconds``.
+        ``final_energy_joule``, ``final_max_penetration_r`` (each
+        ``{"mean", "median", "max"}``), ``final_physical_residual``,
+        ``final_inverted_sample_count``, ``physical_curves``, ``samples`` and
+        ``seconds``.
 
     Raises:
         ValueError: If ``iterations``, ``physical_steps`` or

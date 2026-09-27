@@ -53,6 +53,10 @@ class LearnedHexInputs(NamedTuple):
     position gradient of the physical objective [N] with prescribed rows
     zeroed, and the frame tie-break mask. ``tie_mask`` is None when the caller
     replayed supplied frames instead of decomposing the deformation.
+    ``contact_tokens`` [B, C, M, CONTACT_TOKEN_DIM] and ``contact_mask``
+    [B, C, M] are the detached per-cell contact tokens of schema 4 built by
+    :func:`.contact_features.build_contact_tokens`; both are None when the
+    network does not consume contact tokens.
     """
 
     frames: Tensor
@@ -63,6 +67,8 @@ class LearnedHexInputs(NamedTuple):
     axis_gradient_world: Tensor | None = None
     position_gradient: Tensor | None = None
     tie_mask: Tensor | None = None
+    contact_tokens: Tensor | None = None
+    contact_mask: Tensor | None = None
 
 
 class LearnedHexStepOutput(NamedTuple):
@@ -74,7 +80,11 @@ class LearnedHexStepOutput(NamedTuple):
     deformation produced by this fused update, the Euclidean norm of the
     free-corner position gradient at the pre-update candidate [N], and the
     frame tie-break mask. Positions and loss describe the fused update; no
-    acceptance scaling or geometry backtracking is applied.
+    acceptance scaling or geometry backtracking is applied. ``contact_energy``
+    [J] and ``contact_max_penetration`` (deepest penetration over the frozen
+    contact pairs at the fused positions, in units of the sample radius r) are
+    detached per-object diagnostics, shape [B], both zero when the batch has
+    no contact pairs and None for steps without contact handling.
     """
 
     positions: Tensor
@@ -87,6 +97,8 @@ class LearnedHexStepOutput(NamedTuple):
     achieved_axis_update_world: Tensor | None = None
     force_residual_norm: Tensor | None = None
     tie_mask: Tensor | None = None
+    contact_energy: Tensor | None = None
+    contact_max_penetration: Tensor | None = None
 
 
 class OptimizerHistory(NamedTuple):
@@ -193,8 +205,10 @@ def assemble_inputs(
     conditioning: Tensor,
     history: OptimizerHistory | None = None,
     frames: Tensor | None = None,
+    contact_tokens: Tensor | None = None,
+    contact_mask: Tensor | None = None,
 ) -> LearnedHexInputs:
-    """Compose the schema-3 network inputs for a batch of same-grid objects.
+    """Compose the network inputs for a batch of same-grid objects.
 
     ``step`` supplies the canonical-grid buffers and the network; it must expose
     ``cell_corner_indices`` [C, 8], ``center_gradients`` [8, 3],
@@ -224,12 +238,22 @@ def assemble_inputs(
         history: Validated detached history or None (zero blocks, flag 0).
         frames: Optional validated, detached proper rotations [B, C, 3, 3] to
             replay instead of decomposing ``F``; ``tie_mask`` is then None.
+        contact_tokens: Optional prepared contact tokens [B, C, M, CONTACT_TOKEN_DIM]
+            passed through unchanged; the assembly does not build them.
+        contact_mask: Boolean valid-token flags [B, C, M] accompanying
+            ``contact_tokens``; both or neither must be given.
 
     Returns:
         ``LearnedHexInputs`` with detached frames, differentiable local axes,
         packed state, edge and conditioning features, the detached world axis
-        gradient, the zero-pinned position gradient and the tie mask.
+        gradient, the zero-pinned position gradient, the tie mask and the
+        contact tokens as supplied.
+
+    Raises:
+        ValueError: If exactly one of ``contact_tokens`` and ``contact_mask`` is given.
     """
+    if (contact_tokens is None) != (contact_mask is None):
+        raise ValueError("contact_tokens and contact_mask must be given together")
     cells, gradients = step.cell_corner_indices, step.center_gradients
     deformation = center_deformation(positions, cells, gradients)
     tie_mask = None
@@ -281,4 +305,6 @@ def assemble_inputs(
         axis_gradient_world=world_gradient,
         position_gradient=position_gradient,
         tie_mask=tie_mask,
+        contact_tokens=contact_tokens,
+        contact_mask=contact_mask,
     )

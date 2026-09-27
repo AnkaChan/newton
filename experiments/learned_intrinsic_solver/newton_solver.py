@@ -156,7 +156,8 @@ class SolverLearnedIntrinsic(SolverBase):
     Args:
         model: CPU float32 Newton model with learned_intrinsic hex attributes.
         network: Optional existing revised-schema Torch network
-            (``features.STATE_FEATURE_DIM`` state and six conditioning inputs).
+            (``features.STATE_FEATURE_DIM`` state and ``features.CONDITIONING_DIM``
+            conditioning inputs).
         iterations: Positive number of learned optimization iterations per dt.
     """
 

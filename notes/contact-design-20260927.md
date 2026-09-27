@@ -90,6 +90,12 @@ where `p_q` is the plane's foot point of `x_s` for the plane and the static
 point for kind 1. A static point acts as a small disk: a pair is a candidate
 only when the lateral distance `| (x_s - p_q) - gap n_q | < r_p`.
 
+Amendment 2026-09-27 (review of the implementation): the disk is one-sided
+with thickness `r`. A static-point pair additionally requires `gap >= -r`, so a
+sample whose sphere no longer reaches the disk plane from behind (a far face of
+the body) is not pulled toward the point and a point pair starts at most `2 r`
+deep. The plane keeps its unbounded half-space.
+
 ## 4. Detection
 
 Performed once per physical step by `_TrajectoryFactory.reset` and `advance`
@@ -188,9 +194,12 @@ is off the constructor is unchanged, so the existing tests keep running.
   `[-0.35, -0.02]` m relative to the beam's rest y-minimum (the free end sags
   under gravity along -y and reaches it in a fraction of scenes);
 - `N` static points uniform in {0, ..., 64}, positions uniform in the box that
-  extends the rest body by 0.10 m in x and z and by 0.35 m in -y; normals
-  uniform on the sphere, then flipped to point toward the beam's rest center;
-  `r_p` uniform in `[0.5 h, 2 h]`;
+  extends the rest body by 0.10 m in x and z and by 0.35 m in -y, excluding the
+  rest bounding box grown by one cell `h` (amendment 2026-09-27: the original
+  box contained the body, so 95% of default scenes started with points inside
+  the beam pairing with its far faces at about 25 r depth); normals uniform on
+  the sphere, then flipped to point toward the beam's rest center; `r_p`
+  uniform in `[0.5 h, 2 h]`;
 - `ke = kappa * E * h` with `kappa` log-uniform in `[0.1, 10]` (E is the
   sampled Young's modulus, so contact stiffness scales with the material);
   `kd = beta * ke * dt` with `beta` uniform in `[0, 1]`; `mu` uniform in
@@ -198,8 +207,10 @@ is off the constructor is unchanged, so the existing tests keep running.
 
 Scene generation targets contact-rich data: the plane height and point box are
 chosen so that, under the current augmentation and gravity, at least half of the
-trajectories make contact within their horizon; the generator records the
-realized fraction per epoch so the balance can be tuned. All values are recorded
+trajectories make contact within their horizon; the trainer records both the
+scene fraction (`contact_scene_fraction`: plane or points present) and the
+realized fraction (`contact_realized_fraction`: trajectories with at least one
+detected pair in the epoch) so the balance can be tuned. All values are recorded
 in the trajectory metadata and in checkpoints through the payload, as the
 material is today. The ranges are provisional and are
 listed as such in the plan's implementation record when implemented.
