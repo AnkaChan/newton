@@ -52,7 +52,8 @@ def build_gallery(
         stem = f"seed_{seed}"
         simulation = json.loads((simulation_dir / stem / "report.json").read_text())
         render = json.loads((renders_dir / stem / "render.json").read_text())
-        if simulation["seed"] != seed or simulation["optimizer_iterations_per_step"] != 2:
+        iterations = int(simulation["optimizer_iterations_per_step"])
+        if simulation["seed"] != seed or iterations < 1:
             raise ValueError(f"{stem} has mismatched seed or learned iteration count")
         if abs(float(simulation["time_step"]) - 1 / 300) > 1e-10:
             raise ValueError(f"{stem} has an unexpected physical time step")
@@ -85,7 +86,7 @@ def build_gallery(
             "requested_duration_seconds": requested,
             "actual_duration_seconds": actual,
             "time_step": float(simulation["time_step"]),
-            "optimizer_iterations_per_step": 2,
+            "optimizer_iterations_per_step": iterations,
             "initial_velocity_rms_m_per_s": velocity_rms,
             "initial_velocity_max_m_per_s": velocity_max,
             "failure": failure,
@@ -111,7 +112,7 @@ def build_gallery(
         )
         cards.append(
             f'<article class="card"><h2>Seed {seed} <span class="badge">{title}</span></h2>'
-            f"<p>Epoch {row['checkpoint_epoch']} checkpoint · 2 learned iterations per physical step · "
+            f"<p>Epoch {row['checkpoint_epoch']} checkpoint · {iterations} learned iterations per physical step · "
             f"dt = 1/300 s</p><p><strong>{_seconds(actual)} simulated</strong> · {_seconds(requested)} requested. "
             f"{html.escape(speed)}.</p>"
             f'<video controls preload="metadata" poster="{initial}"><source src="{video}" type="video/mp4">'

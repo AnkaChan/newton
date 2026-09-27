@@ -87,6 +87,11 @@ class MixedTrainConfig:
     """Epoch interval of the full-horizon check; curriculum advancement also triggers it."""
     checkpoint_interval: int = 5
     early_stopping: bool = True
+    """Allow plateau/stall stopping before ``max_epochs``; False runs to the epoch cap."""
+    lr_schedule: str = "cosine"
+    """``cosine``: decay from learning_rate to lr_final over max_epochs; ``constant``; ``plateau``: legacy halving controller."""
+    lr_final: float = 1e-6
+    """Final learning rate of the cosine schedule [1/epoch units]."""
     youngs_modulus_range: tuple[float, float] = (1e3, 1e6)
     poissons_ratio_range: tuple[float, float] = (0.2, 0.49)
     density_range: tuple[float, float] = (100.0, 10000.0)
@@ -161,6 +166,14 @@ class MixedTrainConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
+        if self.lr_schedule not in ("cosine", "constant", "plateau"):
+            raise ValueError("lr_schedule must be cosine, constant or plateau")
+        if (
+            isinstance(self.lr_final, bool)
+            or not math.isfinite(self.lr_final)
+            or not 0 < self.lr_final <= self.learning_rate
+        ):
+            raise ValueError("lr_final must be finite, positive and at most learning_rate")
         if not math.isfinite(self.energy_increase_weight) or self.energy_increase_weight < 0:
             raise ValueError("energy_increase_weight must be finite and nonnegative")
         if not 0 <= self.stage_descent_rate <= 1:
@@ -209,6 +222,9 @@ class MixedTrainConfig:
                 ``candidate_probabilities``/``geometry_backtracking`` fields.
         """
         values = dict(values)
+        # Checkpoints written before the schedule option used the plateau controller.
+        values.setdefault("lr_schedule", "plateau")
+        values.setdefault("lr_final", 1e-6)
         legacy = [name for name in _LEGACY_CONFIG_FIELDS if name in values]
         if values.get("feature_schema_version") != features.FEATURE_SCHEMA_VERSION or legacy:
             raise ValueError(
@@ -410,6 +426,23 @@ def _allow_early_stop(config, curriculum) -> bool:
     )
 
 
+def _scheduled_learning_rate(config, epoch, plateau_rate):
+    """Return the learning rate for the epoch after ``epoch`` under the configured schedule.
+
+    ``cosine`` follows ``lr_final + (learning_rate - lr_final) * (1 + cos(pi * epoch / max_epochs)) / 2``
+    with ``epoch`` the number of completed epochs, so it starts at ``learning_rate`` and
+    reaches ``lr_final`` exactly at the epoch cap; ``constant`` keeps ``learning_rate``;
+    ``plateau`` returns the legacy controller's rate. Raising ``max_epochs`` on resume
+    stretches the cosine over the new cap from the current epoch onward.
+    """
+    if config.lr_schedule == "plateau":
+        return float(plateau_rate)
+    if config.lr_schedule == "constant":
+        return float(config.learning_rate)
+    fraction = min(max(epoch / config.max_epochs, 0.0), 1.0)
+    return float(config.lr_final + (config.learning_rate - config.lr_final) * (1 + math.cos(math.pi * fraction)) / 2)
+
+
 def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None = None):
     """Run an explicitly requested V2 campaign or a bounded verification run.
 
@@ -449,7 +482,15 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     if saved:
         if saved.get("format") != "mixed_pool_v2" or saved["world_size"] != world_size:
             raise ValueError("incompatible checkpoint format or rank count")
-        allowed = {"max_epochs", "verbose", "early_stopping", "stage_descent_rate", "stage_max_epochs"}
+        allowed = {
+            "max_epochs",
+            "verbose",
+            "early_stopping",
+            "stage_descent_rate",
+            "stage_max_epochs",
+            "lr_schedule",
+            "lr_final",
+        }
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
         if any(saved_config.get(k) != v for k, v in asdict(config).items() if k not in allowed):
             raise ValueError("resume configuration differs from saved physical/training configuration")
@@ -657,6 +698,11 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             _write_report(output, report)
         for epoch in range(report["completed_epochs"] + 1, config.max_epochs + 1):
             epoch_start = time.perf_counter()
+            # The rate for this epoch follows the schedule of the CURRENT configuration, so a
+            # resume with a changed schedule or epoch cap takes effect immediately and a resumed
+            # run matches an uninterrupted one with the same configuration.
+            for group in optimizer.param_groups:
+                group["lr"] = _scheduled_learning_rate(config, epoch - 1, controller.learning_rate)
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
             counts = curriculum.available_counts
@@ -804,8 +850,8 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             curriculum_decision = curriculum.observe(validation, full_horizon=full)
             allow_early_stop = _allow_early_stop(config, curriculum)
             decision = controller.observe(epoch, validation, allow_early_stop=allow_early_stop)
-            for group in optimizer.param_groups:
-                group["lr"] = decision["learning_rate"]
+            # Recorded as the rate the next epoch will use under the current schedule.
+            decision["learning_rate"] = _scheduled_learning_rate(config, epoch, decision["learning_rate"])
             diagnostics = {
                 "rank": rank,
                 "budgets": dict(budgets),

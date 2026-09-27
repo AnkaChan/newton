@@ -4,6 +4,7 @@
 """Validate detached mixed-query training and exact pool continuation."""
 
 import importlib.util
+import itertools
 import math
 import tempfile
 import unittest
@@ -14,6 +15,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+
+from experiments.learned_intrinsic_solver.train_mixed import MixedTrainConfig, _scheduled_learning_rate
 
 if importlib.util.find_spec("torch") is None:
     raise unittest.SkipTest("Optional PyTorch dependency is not installed")
@@ -711,6 +714,30 @@ class TestMixedTraining(unittest.TestCase):
                         (report["epochs"][1]["curriculum"]["stage"], report["epochs"][1]["curriculum"]["stage_epochs"]),
                         (final, stage_epochs + 1),
                     )
+
+
+class TestLearningRateSchedule(unittest.TestCase):
+    def test_cosine_constant_and_plateau_rates(self):
+        """Cosine runs from the initial rate to lr_final at the cap; constant and plateau pass through."""
+        cosine = MixedTrainConfig(learning_rate=1e-4, lr_final=1e-6, max_epochs=100, lr_schedule="cosine")
+        self.assertAlmostEqual(_scheduled_learning_rate(cosine, 0, 5e-5), 1e-4)
+        self.assertAlmostEqual(_scheduled_learning_rate(cosine, 50, 5e-5), 1e-6 + (1e-4 - 1e-6) / 2)
+        self.assertAlmostEqual(_scheduled_learning_rate(cosine, 100, 5e-5), 1e-6)
+        self.assertAlmostEqual(_scheduled_learning_rate(cosine, 250, 5e-5), 1e-6)
+        rates = [_scheduled_learning_rate(cosine, epoch, 0.0) for epoch in range(101)]
+        self.assertTrue(all(a >= b for a, b in itertools.pairwise(rates)))
+        constant = MixedTrainConfig(learning_rate=1e-4, lr_schedule="constant")
+        self.assertEqual(_scheduled_learning_rate(constant, 37, 5e-5), 1e-4)
+        plateau = MixedTrainConfig(learning_rate=1e-4, lr_schedule="plateau")
+        self.assertEqual(_scheduled_learning_rate(plateau, 37, 5e-5), 5e-5)
+        with self.assertRaises(ValueError):
+            MixedTrainConfig(lr_schedule="linear")
+        with self.assertRaises(ValueError):
+            MixedTrainConfig(learning_rate=1e-4, lr_final=1e-3)
+        saved = {k: v for k, v in asdict(MixedTrainConfig()).items() if k not in ("lr_schedule", "lr_final")}
+        legacy = MixedTrainConfig.from_checkpoint_config(saved)
+        self.assertEqual(legacy.lr_schedule, "plateau")
+        self.assertTrue(math.isfinite(legacy.lr_final))
 
 
 if __name__ == "__main__":
