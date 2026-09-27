@@ -294,12 +294,15 @@ def _epoch_plot(rows):
     return buffer.getvalue()
 
 
-def _latest_full_horizon(rows):
-    """Return (epoch, summary) of the most recent full-horizon validation, or (None, None)."""
+def _latest_summary(rows, key):
+    """Return (epoch, summary) of the most recent row whose ``key`` is a dict, or (None, None).
+
+    Rows of epochs that skipped validation carry ``None`` and are passed over.
+    """
     for row in reversed(rows):
-        full = row.get("full_horizon_validation")
-        if isinstance(full, dict):
-            return row.get("epoch"), full
+        summary = row.get(key)
+        if isinstance(summary, dict):
+            return row.get("epoch"), summary
     return None, None
 
 
@@ -309,6 +312,9 @@ def write_mixed_report(output, report, *, updated_at=None):
     Experimental. Only report metrics are written; checkpoints and trajectory
     state are never read. ``updated_at`` denotes the source metrics timestamp,
     while an optional ``publication`` block carries a separate mirror heartbeat.
+    Epoch rows whose ``validation`` is None (skipped validation) leave gaps in
+    the epoch plots and blank validation cells in ``epochs.csv``; the
+    validation section shows the most recent validated epoch.
 
     Args:
         output: Destination directory for public report artifacts.
@@ -321,7 +327,8 @@ def write_mixed_report(output, report, *, updated_at=None):
     latest = rows[-1] if rows else {}
     progress = report.get("progress", {})
     config = report.get("config", {})
-    validation = latest.get("validation") or {}
+    validation_epoch, validation = _latest_summary(rows, "validation")
+    validation = validation or {}
     relative = validation.get("relative_energy", [])
     endpoint = relative[-1] if relative else {}
     residual_curve = validation.get("force_residual", [])
@@ -330,7 +337,11 @@ def write_mixed_report(output, report, *, updated_at=None):
     penetration_endpoint = penetration_curve[-1] if penetration_curve else {}
     selection = validation.get("selection") or {}
     best = report.get("best_selection") or {}
-    validation_iterations = config.get("validation_iterations", 100)
+    # Label the shown validation by its own iteration count: after a resume with a changed budget
+    # the latest validated row can predate the configured ``validation_iterations``.
+    validation_iterations = residual_endpoint.get(
+        "iteration", endpoint.get("iteration", config.get("validation_iterations", 100))
+    )
     completed = report.get("completed_epochs", 0)
     maximum = config.get("max_epochs", 500)
     status = report.get("status", "preparing")
@@ -341,6 +352,12 @@ def write_mixed_report(output, report, *, updated_at=None):
     def escape(value):
         return html.escape(str(value))
 
+    validation_interval = config.get("validation_interval", 1)
+    interval_text = (
+        f" Validation runs every {escape(validation_interval)} epochs and on the final epoch."
+        if isinstance(validation_interval, int) and validation_interval > 1
+        else ""
+    )
     counts_k = progress.get("available_K", latest.get("available_K", [1]))
     counts_h = progress.get("available_H", latest.get("available_H", [8]))
     loss_plot = _epoch_plot(rows)
@@ -421,7 +438,25 @@ def write_mixed_report(output, report, *, updated_at=None):
         if _finite(best.get("metric"))
         else "No eligible epoch has been selected yet."
     )
-    full_epoch, full = _latest_full_horizon(rows)
+    history = report.get("best_selection_history") or []
+    reset = history[-1] if history and isinstance(history[-1], dict) else None
+    if reset:
+        previous = reset.get("record") or {}
+        best_text += (
+            f" Selection restarted after epoch {escape(reset.get('reset_at_epoch', '—'))}"
+            f" ({escape(reset.get('reason', 'reason not recorded'))}); "
+        ) + (
+            f"the earlier record was {_number(previous.get('metric'))} N at epoch {escape(previous.get('epoch', '—'))}."
+            if _finite(previous.get("metric"))
+            else "there was no earlier eligible record."
+        )
+    full_cap = config.get("validation_full_iterations")
+    full_budget_text = (
+        f"at the largest currently available H and at K capped at {escape(full_cap)}"
+        if isinstance(full_cap, int) and not isinstance(full_cap, bool)
+        else "at the largest currently available budgets"
+    )
+    full_epoch, full = _latest_summary(rows, "full_horizon_validation")
     if full:
         final_residual = full.get("final_free_force_residual_norm_n") or {}
         final_energy = full.get("final_energy_joule") or {}
@@ -464,7 +499,7 @@ a{{color:#087c91}}img,svg{{display:block;width:100%;height:auto;background:white
 <a href="/artifacts/learned-intrinsic-solver/index.html">← All solver experiments</a>
 <h1>LIDO-v2 — training the deformation optimizer</h1>
 <p class="status"><strong>{escape(phase.replace("_", " ").capitalize())}</strong> · {completed} / {maximum} completed epochs · {progress.get("completed_updates", report.get("completed_updates", 0))} Adam updates<br>
-{escape(config.get("queries_per_epoch", "—"))} training queries per epoch and {escape(config.get("validation_count", validation.get("sample_count", "—")))} fixed validation states. {escape(batch_text)}<br>
+{escape(config.get("queries_per_epoch", "—"))} training queries per epoch and {escape(config.get("validation_count", validation.get("sample_count", "—")))} fixed validation states.{interval_text} {escape(batch_text)}<br>
 Available solver iterations: K = {escape(counts_k)} · Physical timesteps: H = {escape(counts_h)}<br>
 Curriculum descent gate: {gate_text} · Hard cap: {escape(stage_limit_text)}</p>
 <p>Selection metric (mean free-corner force residual after {validation_iterations} iterations): {metric_text}, {eligibility_text}. Physical survivors: {survival_text}. {best_text}<br>
@@ -476,7 +511,7 @@ Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(v
 <p>Per-update loss = asinh(E_after / s) + &lambda; · max((E_after &minus; E_before) / s, 0) with s = max(|E_before|, floor), where E_before is the energy immediately before that update and floor = c · 2<sup>&minus;23</sup> · V · (&lambda;<sub>Lam&eacute;</sub> + 2&mu; + &eta;/dt + &rho;h<sup>2</sup>/dt<sup>2</sup>) is the material-aware float32 energy floor (c = {escape(config.get("energy_floor_scale", 1.0))}). The penalty weight is &lambda; = {escape(config.get("energy_increase_weight", 1.0))}.</p>
 <p>Validation reports the same per-update loss for the first update of each fixed seed. Missing measurements leave gaps. Training descent rate is not recorded; the descent panel shows validation only.</p></details>
 <section><h2>Latest validation: {validation_iterations} optimizer iterations</h2>
-<p class="muted">Epoch {escape(latest.get("epoch", "—"))}, {escape(validation.get("sample_count", 0))} fixed validation seeds. Each energy value is a per-trajectory physical energy ratio Eᵢ / E₀; the residual is the Euclidean norm of the free-corner position gradient [N]. Mean, median and maximum aggregate the per-trajectory values. Network weights stay fixed during validation.</p>
+<p class="muted">Epoch {escape(validation_epoch if validation_epoch is not None else "—")}, {escape(validation.get("sample_count", 0))} fixed validation seeds. Each energy value is a per-trajectory physical energy ratio Eᵢ / E₀; the residual is the Euclidean norm of the free-corner position gradient [N]. Mean, median and maximum aggregate the per-trajectory values. Network weights stay fixed during validation.</p>
 <div class="legend"><span style="color:#2563eb">● Mean</span><span style="color:#16804a">● Median</span><span style="color:#c63645">● Maximum</span></div>{validation_plot}
 {residual_plot}
 {penetration_plot}
@@ -484,7 +519,7 @@ Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(v
 <p class="muted">Failed validation trajectories: {escape(validation.get("failed_count", "Not evaluated"))}; physical survivors: {survival_text}; near-zero initial energies: {escape(endpoint.get("near_zero_count", 0))}. Optimizer failures leave gaps from the failed iteration onward; near-zero initial energies are excluded from relative ratios but keep their residuals. Physical-rollout failures are counted separately in the report.<br>
 The penetration curve is the deepest penetration of any surface sample into its frozen contact partners, in units of the sample radius r (zero for contact-free scenes). {escape(contact_text)}</p>
 <h2>Latest full-horizon validation</h2>
-<p class="muted">Held-out seeds run K learned iterations on each of H physical steps at the largest currently available budgets; every {escape(config.get("validation_full_interval", "—"))} epochs and before curriculum advancement.</p>
+<p class="muted">Held-out seeds run K learned iterations on each of H physical steps {full_budget_text}; every {escape(config.get("validation_full_interval", "—"))} epochs and before curriculum advancement.</p>
 {full_html}</section>
 <p><a href="report.json">Metrics JSON</a> · <a href="progress.json">Live progress</a> · <a href="epochs.csv">Epoch CSV</a> · <a href="updates.csv">Update CSV</a> · <a href="loss_curve.svg">Training SVG</a> · <a href="validation_curve.svg">Validation SVG</a> · <a href="residual_curve.svg">Residual SVG</a> · <a href="penetration_curve.svg">Penetration SVG</a></p>
 <details><summary>Configuration</summary><p>{damping_text}</p><pre>{escape(json.dumps(config, indent=2))}</pre></details>

@@ -111,6 +111,48 @@ class TestMixedCurriculum(unittest.TestCase):
         self.assertTrue(decision["full_horizon_qualified"])
         self.assertEqual(curriculum.stage, 1)
 
+    def test_skipped_epochs_count_residence_without_touching_the_streak_or_advancing(self):
+        """Epochs without validation add residence only; a cap reached there waits for the next observation."""
+        curriculum = MixedCurriculum(min_stage_epochs=3, patience=2)
+        self.assertEqual(curriculum.observe(_validation())["qualified_epochs"], 1)
+        self.assertEqual(
+            curriculum.skip(),
+            {
+                "stage": 0,
+                "advanced": False,
+                "advance_reason": None,
+                "qualified": False,
+                "full_horizon_qualified": None,
+                "stage_epochs": 2,
+                "qualified_epochs": 1,
+            },
+        )
+        # Residence 3 and the two-validation streak are both complete on the next validated epoch.
+        self.assertTrue(curriculum.needs_full_horizon(_validation()))
+        decision = curriculum.observe(_validation(), full_horizon=_full())
+        self.assertEqual((decision["advanced"], decision["advance_reason"], decision["stage"]), (True, "validation", 1))
+        # A hard cap reached on skipped epochs never promotes until validation observes it.
+        capped = MixedCurriculum(min_stage_epochs=1, patience=2, max_stage_epochs=2)
+        self.assertEqual(capped.skip()["stage_epochs"], 1)
+        self.assertEqual((capped.skip()["advanced"], capped.stage, capped.stage_epochs), (False, 0, 2))
+        self.assertTrue(capped.needs_full_horizon(_validation(failed_count=1)))
+        decision = capped.observe(_validation(failed_count=1), full_horizon=_full())
+        self.assertEqual(
+            (decision["advanced"], decision["advance_reason"], decision["stage"], decision["stage_epochs"]),
+            (True, "max_stage_epochs", 1, 0),
+        )
+        # Skipped epochs survive a checkpoint round trip like observed ones.
+        restored = MixedCurriculum()
+        restored.load_state_dict(capped.state_dict())
+        self.assertEqual(restored.skip(), capped.skip())
+        self.assertEqual(restored.state_dict(), capped.state_dict())
+        # The final stage keeps counting without advancing.
+        final = MixedCurriculum(min_stage_epochs=1, patience=1)
+        for _ in range(5):
+            final.observe(_validation(), full_horizon=_full())
+        self.assertEqual(final.stage, final.final_stage)
+        self.assertEqual((final.skip()["stage_epochs"], final.stage), (1, final.final_stage))
+
     def test_full_horizon_result_without_pending_advancement_is_recorded_only(self):
         """Report an interval-driven full check without touching the qualifying streak."""
         curriculum = MixedCurriculum(min_stage_epochs=5, patience=2)

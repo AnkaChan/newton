@@ -52,6 +52,21 @@ PERTURBED_CANDIDATE_PROBABILITY = 0.5
 
 _LEGACY_CONFIG_FIELDS = ("candidate_probabilities", "geometry_backtracking")
 
+_VALIDATION_BUDGET_FIELDS = (
+    "validation_count",
+    "validation_iterations",
+    "validation_interval",
+    "validation_physical_steps",
+    "validation_physical_iterations",
+    "validation_full_count",
+    "validation_full_interval",
+    "validation_full_iterations",
+)
+"""Validation settings that may change on resume; none of them affects a training update."""
+
+_SELECTION_BUDGET_FIELDS = ("validation_count", "validation_iterations")
+"""Validation settings whose change makes earlier checkpoint-selection metrics incomparable."""
+
 
 @dataclass(frozen=True)
 class MixedTrainConfig:
@@ -88,12 +103,27 @@ class MixedTrainConfig:
     physical_step_counts: tuple[int, ...] = (8, 16, 32, 64, 128)
     validation_count: int = 512
     validation_iterations: int = 100
+    validation_interval: int = 1
+    """Epoch interval of the cheap validation; the final epoch is always validated.
+
+    Epochs between validations skip validation entirely: they record
+    ``validation=None``, never select a best checkpoint and only count toward
+    curriculum stage residence.
+    """
     validation_physical_steps: int = 8
     validation_physical_iterations: int = 2
     validation_full_count: int = 16
     """Held-out seeds of the full-horizon check, disjoint from the cheap set."""
     validation_full_interval: int = 5
-    """Epoch interval of the full-horizon check; curriculum advancement also triggers it."""
+    """Epoch interval of the full-horizon check; curriculum advancement also triggers it.
+
+    Interval-driven checks run only on validated epochs, that is at epochs
+    divisible by both intervals; one that falls on a skipped epoch is not
+    deferred. A check the curriculum needs before advancing runs on the next
+    validated epoch.
+    """
+    validation_full_iterations: int | None = None
+    """Cap on K of the full-horizon check, ``min(largest available K, cap)``; None uses the largest available K."""
     checkpoint_interval: int = 5
     early_stopping: bool = True
     """Allow plateau/stall stopping before ``max_epochs``; False runs to the epoch cap."""
@@ -183,6 +213,7 @@ class MixedTrainConfig:
             "stage_epochs",
             "validation_count",
             "validation_iterations",
+            "validation_interval",
             "validation_physical_steps",
             "validation_physical_iterations",
             "validation_full_count",
@@ -253,6 +284,12 @@ class MixedTrainConfig:
             or self.stage_max_epochs < self.stage_epochs
         ):
             raise ValueError("stage_max_epochs must be None or an integer at least stage_epochs")
+        if self.validation_full_iterations is not None and (
+            isinstance(self.validation_full_iterations, bool)
+            or not isinstance(self.validation_full_iterations, int)
+            or self.validation_full_iterations < 1
+        ):
+            raise ValueError("validation_full_iterations must be None or a positive integer")
         if len(self.gravity) != 3 or not all(math.isfinite(v) for v in self.gravity):
             raise ValueError("gravity must be a finite three-vector")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
@@ -317,6 +354,9 @@ class MixedTrainConfig:
         values.setdefault("gradient_clip_norm", None)
         # Checkpoints written before the memory knob existed trained without chunk checkpointing.
         values.setdefault("checkpoint_chunks", False)
+        # Checkpoints written before the validation budget knobs validated every epoch at the largest K.
+        values.setdefault("validation_interval", 1)
+        values.setdefault("validation_full_iterations", None)
         legacy = [name for name in _LEGACY_CONFIG_FIELDS if name in values]
         if values.get("feature_schema_version") != features.FEATURE_SCHEMA_VERSION or legacy:
             raise ValueError(
@@ -610,8 +650,8 @@ def _write_report(output, report):
 
 
 def _selection_metric(validation):
-    """Return the finite selection metric when the validation is eligible, else None."""
-    selection = validation.get("selection") or {}
+    """Return the finite selection metric when the validation is eligible, else None (also for no validation)."""
+    selection = (validation or {}).get("selection") or {}
     metric = selection.get("metric")
     if selection.get("eligible") and isinstance(metric, (int, float)) and math.isfinite(metric):
         return float(metric)
@@ -630,6 +670,12 @@ def _allow_early_stop(config, curriculum) -> bool:
         and curriculum.stage == curriculum.final_stage
         and curriculum.stage_epochs >= config.plateau_min_final_stage_epochs
     )
+
+
+def _full_horizon_iterations(config, available_iterations):
+    """Return K of the full-horizon check: the largest available count, capped by ``validation_full_iterations``."""
+    largest = max(available_iterations)
+    return largest if config.validation_full_iterations is None else min(largest, config.validation_full_iterations)
 
 
 def _scheduled_learning_rate(config, epoch, plateau_rate):
@@ -653,18 +699,27 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     """Run an explicitly requested V2 campaign or a bounded verification run.
 
     Checkpoints restore the same rank count, curriculum, pool queues, optimizer
-    history and Adam sequence. The configured descent-rate gate and stage limit
-    may change on resume; the gate applies only to future validation and an
-    overdue hard limit promotes one stage immediately. These changes record
-    their epoch boundary. Native factors are rebuilt; they are never
+    history and Adam sequence. The configured descent-rate gate, stage limit
+    and validation budget may change on resume; the gate applies only to future
+    validation and an overdue hard limit promotes one stage immediately. These
+    changes record their epoch boundary. A changed ``validation_count`` or
+    ``validation_iterations`` makes earlier selection metrics incomparable, so
+    ``best_selection`` restarts from None, the previous record moves to
+    ``best_selection_history`` and the plateau controller forgets its best
+    metric and patience. Native factors are rebuilt; they are never
     serialized. Legacy checkpoints are rejected explicitly.
 
-    Every epoch runs the cheap validation; every ``validation_full_interval``
-    epochs, or when the curriculum could advance, the full-horizon check at the
-    largest available K and H follows. The best checkpoint is selected by the
-    validation ``selection`` metric (mean final free-corner force residual with
-    survival required). Plateau stopping is considered only after
-    ``plateau_min_final_stage_epochs`` epochs in the final curriculum stage.
+    Every ``validation_interval`` epochs, and on the final epoch, the cheap
+    validation runs; on validated epochs divisible by
+    ``validation_full_interval``, or when the curriculum could advance, the
+    full-horizon check at the largest available H and the largest available K
+    (capped by ``validation_full_iterations``) follows. Skipped epochs record
+    ``validation=None``, count toward curriculum stage residence only, never
+    select a checkpoint and are invisible to the plateau controller. The best
+    checkpoint is selected by the validation ``selection`` metric (mean final
+    free-corner force residual with survival required). Plateau stopping is
+    considered only after ``plateau_min_final_stage_epochs`` epochs in the
+    final curriculum stage.
     """
     import torch
     import torch.distributed as dist
@@ -699,6 +754,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             "weight_decay",
             "gradient_clip_norm",
             "checkpoint_chunks",
+            *_VALIDATION_BUDGET_FIELDS,
         }
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
         if any(saved_config.get(k) != v for k, v in asdict(config).items() if k not in allowed):
@@ -778,7 +834,9 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             curriculum.min_descent_rate = config.stage_descent_rate
             curriculum.max_stage_epochs = config.stage_max_epochs
             previous_stage, previous_stage_epochs = curriculum.stage, curriculum.stage_epochs
-            overdue_advanced = curriculum.advance_if_overdue()
+            # Only a changed cap promotes here. An unchanged cap reached on a skipped epoch waits for
+            # the next validated epoch and its full-horizon check, as the uninterrupted run would.
+            overdue_advanced = previous_stage_limit != config.stage_max_epochs and curriculum.advance_if_overdue()
             state = saved["rank_states"][rank]
             partners = _saved_contact_partners(state["pool"])
             for key, spec in state["context_specs"].items():
@@ -801,6 +859,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             for field, previous, current in (
                 ("stage_descent_rate", previous_descent_rate, config.stage_descent_rate),
                 ("stage_max_epochs", previous_stage_limit, config.stage_max_epochs),
+                *((field, saved_config[field], getattr(config, field)) for field in _VALIDATION_BUDGET_FIELDS),
             ):
                 if previous != current:
                     report.setdefault("configuration_changes", []).append(
@@ -825,6 +884,25 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                         "completed_updates": report["completed_updates"],
                     }
                 )
+            if any(saved_config[field] != getattr(config, field) for field in _SELECTION_BUDGET_FIELDS):
+                # Metrics measured under a different validation budget are not comparable: the best
+                # record and the controller's patience restart and best_validation.pt is rewritten at
+                # the first eligible epoch.
+                controller.reset_metric_history()
+                report.setdefault("best_selection_history", []).append(
+                    {
+                        "reset_at_epoch": report["completed_epochs"],
+                        "reason": "validation budget changed",
+                        "record": report.get("best_selection"),
+                    }
+                )
+                report["best_selection"] = None
+                if rank == 0 and config.verbose:
+                    print(
+                        f"resume: validation budget changed after epoch {report['completed_epochs']}; "
+                        f"best_selection reset (previous record: {report['best_selection_history'][-1]['record']})",
+                        flush=True,
+                    )
             report["config"] = asdict(config)
             report["status"] = "running"
         else:
@@ -1083,29 +1161,39 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                         output, report, phase="training", epoch=epoch, available_K=counts[0], available_H=counts[1]
                     )
                 del result, loss, losses, records, batch, previous, floor, after, residual, step_size, payloads
-            if rank == 0:
-                write_progress(
-                    output, report, phase="validation", epoch=epoch, available_K=counts[0], available_H=counts[1]
+            validated = epoch % config.validation_interval == 0 or epoch == config.max_epochs
+            if validated:
+                if rank == 0:
+                    write_progress(
+                        output, report, phase="validation", epoch=epoch, available_K=counts[0], available_H=counts[1]
+                    )
+                validation = _validate(step, validation_factory, config, device, rank, world_size)
+                need_full = epoch % config.validation_full_interval == 0 or curriculum.needs_full_horizon(validation)
+                full = (
+                    validate_full_horizon(
+                        step,
+                        validation_factory,
+                        config,
+                        device,
+                        rank,
+                        world_size,
+                        iterations=_full_horizon_iterations(config, counts[0]),
+                        physical_steps=max(counts[1]),
+                    )
+                    if need_full
+                    else None
                 )
-            validation = _validate(step, validation_factory, config, device, rank, world_size)
-            need_full = epoch % config.validation_full_interval == 0 or curriculum.needs_full_horizon(validation)
-            full = (
-                validate_full_horizon(
-                    step,
-                    validation_factory,
-                    config,
-                    device,
-                    rank,
-                    world_size,
-                    iterations=max(counts[0]),
-                    physical_steps=max(counts[1]),
-                )
-                if need_full
-                else None
-            )
-            curriculum_decision = curriculum.observe(validation, full_horizon=full)
-            allow_early_stop = _allow_early_stop(config, curriculum)
-            decision = controller.observe(epoch, validation, allow_early_stop=allow_early_stop)
+                curriculum_decision = curriculum.observe(validation, full_horizon=full)
+                allow_early_stop = _allow_early_stop(config, curriculum)
+                decision = controller.observe(epoch, validation, allow_early_stop=allow_early_stop)
+            else:
+                # No validation work: the curriculum counts stage residence only, the controller
+                # never sees this epoch and no full-horizon check runs; one the curriculum needs
+                # before advancing runs on the next validated epoch.
+                validation = full = None
+                curriculum_decision = curriculum.skip()
+                allow_early_stop = False
+                decision = {"learning_rate": controller.learning_rate, "stop": False, "status": "running"}
             # Recorded as the rate the next epoch will use under the current schedule.
             decision["learning_rate"] = _scheduled_learning_rate(config, epoch, decision["learning_rate"])
             diagnostics = {
@@ -1197,7 +1285,13 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 checkpoint(f"epoch_{epoch:04d}.pt")
             if rank == 0:
                 _write_report(output, report)
-                if config.verbose:
+                if config.verbose and validation is None:
+                    print(
+                        f"epoch {epoch}: loss={row['loss']:.6g}, K={counts[0]}, H={counts[1]}, "
+                        f"validation skipped (every {config.validation_interval} epochs)",
+                        flush=True,
+                    )
+                elif config.verbose:
                     selection = validation.get("selection") or {}
                     print(
                         f"epoch {epoch}: loss={row['loss']:.6g}, K={counts[0]}, H={counts[1]}, "

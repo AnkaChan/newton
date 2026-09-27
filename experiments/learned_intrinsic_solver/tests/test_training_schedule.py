@@ -79,6 +79,40 @@ class TestTrainingSchedule(unittest.TestCase):
                 fresh.observe(1, validation(metric))
                 self.assertIsNone(fresh.best_loss)
 
+    def test_only_validated_epochs_are_observed_and_must_increase(self):
+        """Skipped epochs are absent: patience counts validations while the cap follows the training epoch."""
+        controller = PlateauController(min_epochs=1, max_epochs=8, lr_patience=2)
+        controller.observe(2, validation(1.0))
+        controller.observe(4, validation(1.0))
+        result = controller.observe(6, validation(1.0))
+        # Two non-improving validations, not four elapsed epochs, trigger the halving.
+        self.assertEqual((controller.bad_epochs, result["learning_rate"], controller.last_epoch), (2, 5e-5, 6))
+        self.assertEqual(controller.observe(8, validation(1.0))["status"], "epoch_limit")
+        for epoch in (8, 3, 0):
+            with self.subTest(epoch=epoch), self.assertRaisesRegex(ValueError, "increase"):
+                controller.observe(epoch, validation())
+        with self.assertRaises(ValueError):
+            PlateauController().observe(0, validation())
+
+    def test_reset_metric_history_forgets_the_best_and_patience_but_keeps_the_learning_rate(self):
+        """A changed validation budget restarts comparisons without undoing learning-rate reductions."""
+        controller = PlateauController(min_epochs=1, max_epochs=50, lr_patience=2)
+        controller.observe(1, validation(1.0))
+        controller.observe(2, validation(1.0, descent=0.5))
+        controller.observe(3, validation(1.0))
+        self.assertEqual((controller.best_loss, controller.bad_epochs, controller.reductions), (1.0, 2, 1))
+        self.assertEqual((controller.learning_rate, controller.recent_good), (5e-5, [True, False, True]))
+        controller.reset_metric_history()
+        self.assertEqual(
+            (controller.best_loss, controller.bad_epochs, controller.lr_bad_epochs, controller.recent_good),
+            (None, 0, 0, []),
+        )
+        self.assertEqual((controller.reductions, controller.learning_rate, controller.last_epoch), (1, 5e-5, 3))
+        # A worse metric under the new budget is the new best rather than a bad epoch.
+        result = controller.observe(4, validation(2.0))
+        self.assertEqual((controller.best_loss, controller.bad_epochs, result["learning_rate"]), (2.0, 0, 5e-5))
+        self.assertEqual(set(controller.state_dict()), set(PlateauController().state_dict()))
+
     def test_resume_matches_uninterrupted_schedule(self):
         controller = PlateauController()
         for epoch in range(1, 13):

@@ -44,8 +44,12 @@ class MixedCurriculum:
     surviving; a missing or failed full check blocks that route and resets the
     qualifying streak, but never vetoes the hard cap. ``needs_full_horizon``
     tells the trainer when the next observation could advance so the check can
-    run first. The component supplies available counts only: callers apply
-    changes to new resets, leaving the K/H choices of active trajectories
+    run first. Epochs without validation (``skip``) count toward stage
+    residence only: they leave the qualifying streak untouched and never
+    advance, so a hard-cap promotion that falls due on such an epoch waits for
+    the next observation, which the trainer precedes with the full-horizon
+    check as usual. The component supplies available counts only: callers
+    apply changes to new resets, leaving the K/H choices of active trajectories
     intact. Defaults are configurable implementation choices rather than fixed
     training-campaign settings.
 
@@ -210,6 +214,26 @@ class MixedCurriculum:
             "advance_reason": reason,
             "qualified": bool(qualified),
             "full_horizon_qualified": full_qualified,
+            "stage_epochs": self.stage_epochs,
+            "qualified_epochs": self.qualified_epochs,
+        }
+
+    def skip(self) -> dict:
+        """Count one epoch without validation toward stage residence and report progress.
+
+        The qualifying streak is neither extended nor reset and the stage never
+        changes here, even when the hard residence limit is reached: the next
+        ``observe`` applies it after the trainer's full-horizon check. The
+        returned dictionary has the keys of ``observe`` with ``qualified`` and
+        ``advanced`` false and ``full_horizon_qualified`` None.
+        """
+        self.stage_epochs += 1
+        return {
+            "stage": self.stage,
+            "advanced": False,
+            "advance_reason": None,
+            "qualified": False,
+            "full_horizon_qualified": None,
             "stage_epochs": self.stage_epochs,
             "qualified_epochs": self.qualified_epochs,
         }

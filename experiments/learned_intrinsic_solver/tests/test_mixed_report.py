@@ -290,6 +290,110 @@ class TestMixedReport(unittest.TestCase):
             self.assertIn("No full-horizon validation has completed yet.", page)
             self.assertIn("No eligible epoch has been selected yet.", page)
 
+    def test_rows_without_validation_leave_gaps_and_show_the_latest_validated_epoch(self):
+        """A skipped-validation row writes blank validation cells and keeps the last validated epoch's section."""
+        report = self._report()
+        report["config"]["validation_interval"] = 2
+        skipped = copy.deepcopy(report["epochs"][0])
+        skipped.update(epoch=2, validation=None, full_horizon_validation=None, learning_rate=9e-5)
+        report["epochs"].append(skipped)
+        report["completed_epochs"] = 2
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_mixed_report(output, report)
+            with (output / "epochs.csv").open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual([row["epoch"] for row in rows], ["1", "2"])
+            self.assertEqual([row["selection_metric"] for row in rows], ["0.125", ""])
+            self.assertEqual(
+                tuple(
+                    rows[1][key]
+                    for key in (
+                        "selection_eligible",
+                        "physical_survivors",
+                        "sample_count",
+                        "validation_final_max_penetration_r",
+                    )
+                ),
+                ("", "", "", ""),
+            )
+            self.assertEqual(rows[1]["loss"], "-0.25")
+            page = (output / "index.html").read_text()
+            self.assertIn("2 / 500", page)
+            self.assertIn("Validation runs every 2 epochs and on the final epoch.", page)
+            self.assertIn("Epoch 1, 512 fixed validation seeds", page)
+            self.assertIn("0.125 N, eligible for checkpoint selection", page)
+            self.assertIn("<td>1</td><td>1</td><td>8</td><td>16 / 16</td>", page)
+            self.assertIn("100", (output / "validation_curve.svg").read_text())
+            self.assertIn("<svg", (output / "loss_curve.svg").read_text())
+            self.assertIsNone(json.loads((output / "report.json").read_text())["epochs"][1]["validation"])
+            # Without an interval above one the note is absent and a run without any validation still renders.
+            del report["config"]["validation_interval"]
+            report["epochs"][0].update(validation=None, full_horizon_validation=None)
+            report["best_selection"] = None
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertNotIn("Validation runs every", page)
+            self.assertIn("Epoch —, 0 fixed validation seeds", page)
+            self.assertIn("No eligible epoch has been selected yet.", page)
+            self.assertIn("Waiting for completed measurements", (output / "residual_curve.svg").read_text())
+
+    def test_selection_reset_history_and_the_shown_validation_budget_are_labelled(self):
+        """Name the earlier record after a selection reset; label the shown validation and full check by their budgets."""
+        report = self._report()
+        report["config"].update(
+            validation_count=128, validation_iterations=32, validation_interval=4, validation_full_iterations=8
+        )
+        earlier = report["best_selection"]
+        report["best_selection"] = None
+        report["best_selection_history"] = [
+            {"reset_at_epoch": 1, "reason": "validation budget changed", "record": earlier}
+        ]
+        skipped = copy.deepcopy(report["epochs"][0])
+        skipped.update(epoch=2, validation=None, full_horizon_validation=None)
+        report["epochs"].append(skipped)
+        report["completed_epochs"] = 2
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertIn(
+                "No eligible epoch has been selected yet. Selection restarted after epoch 1 (validation budget "
+                "changed); the earlier record was 0.125 N at epoch 1.",
+                page,
+            )
+            # The shown validation is the epoch-1 row measured over 100 iterations, not the configured 32.
+            self.assertIn("Latest validation: 100 optimizer iterations", page)
+            self.assertIn("force residual after 100 iterations", page)
+            self.assertIn("<th>At iteration 100</th>", page)
+            self.assertIn("Epoch 1, 512 fixed validation seeds", page)
+            self.assertIn("128 fixed validation states. Validation runs every 4 epochs", page)
+            self.assertIn("at the largest currently available H and at K capped at 8;", page)
+            self.assertNotIn("largest currently available budgets", page)
+            # A new best after the reset keeps the note; a reset without an earlier record says so.
+            report["best_selection"] = {"epoch": 2, "metric": 0.5}
+            report["best_selection_history"].append(
+                {"reset_at_epoch": 2, "reason": "validation budget changed", "record": None}
+            )
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertIn(
+                "Best so far: 0.5 N at epoch 2. Selection restarted after epoch 2 (validation budget changed); "
+                "there was no earlier eligible record.",
+                page,
+            )
+            # Without a validated epoch the labels fall back to the configured budget; without a cap or a
+            # reset the prose is unchanged.
+            report["epochs"][0].update(validation=None, full_horizon_validation=None)
+            del report["config"]["validation_full_iterations"]
+            del report["best_selection_history"]
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertIn("Latest validation: 32 optimizer iterations", page)
+            self.assertIn("<th>At iteration 32</th>", page)
+            self.assertIn("at the largest currently available budgets;", page)
+            self.assertNotIn("Selection restarted", page)
+
     def test_progress_keeps_physical_curriculum_and_latest_update(self):
         """Publish lightweight progress with actual current K/H and update counters."""
 

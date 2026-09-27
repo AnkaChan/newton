@@ -3,8 +3,10 @@
 
 """Validate detached mixed-query training and exact pool continuation."""
 
+import csv
 import importlib.util
 import itertools
+import json
 import math
 import tempfile
 import unittest
@@ -37,6 +39,7 @@ from experiments.learned_intrinsic_solver.train_mixed import (
     _allow_early_stop,
     _batch,
     _checked_forward,
+    _full_horizon_iterations,
     _TrajectoryFactory,
     local_objective,
     run_training,
@@ -146,6 +149,7 @@ class TestMixedTraining(unittest.TestCase):
         self.assertEqual(config.energy_floor_scale, 1.0)
         self.assertEqual(config.validation_full_count, 16)
         self.assertEqual(config.validation_full_interval, 5)
+        self.assertEqual((config.validation_interval, config.validation_full_iterations), (1, None))
         self.assertEqual(config.plateau_min_final_stage_epochs, 20)
         self.assertEqual(config.stage_descent_rate, 0.8)
         self.assertEqual(config.stage_max_epochs, 20)
@@ -171,6 +175,12 @@ class TestMixedTraining(unittest.TestCase):
             ("energy_floor_scale", math.inf),
             ("validation_full_count", 0),
             ("validation_full_interval", True),
+            ("validation_interval", 0),
+            ("validation_interval", True),
+            ("validation_interval", 2.0),
+            ("validation_full_iterations", 0),
+            ("validation_full_iterations", True),
+            ("validation_full_iterations", 2.5),
             ("plateau_min_final_stage_epochs", -1),
             ("stage_max_epochs", 0),
             ("stage_max_epochs", 9),
@@ -202,6 +212,12 @@ class TestMixedTraining(unittest.TestCase):
         # Checkpoints written before the memory knob default to dense backpropagation.
         without_knob = {k: v for k, v in asdict(config).items() if k != "checkpoint_chunks"}
         self.assertIs(MixedTrainConfig.from_checkpoint_config(without_knob).checkpoint_chunks, False)
+        # Checkpoints written before the validation budget knobs validated every epoch at the largest K.
+        budget_knobs = ("validation_interval", "validation_full_iterations")
+        without_budget = {k: v for k, v in asdict(config).items() if k not in budget_knobs}
+        rebuilt = MixedTrainConfig.from_checkpoint_config(without_budget)
+        self.assertEqual((rebuilt.validation_interval, rebuilt.validation_full_iterations), (1, None))
+        self.assertEqual(MixedTrainConfig(validation_interval=4, validation_full_iterations=8).validation_interval, 4)
 
     def test_legacy_checkpoint_configurations_are_rejected_explicitly(self):
         """Never reshape a 38/86-feature checkpoint into the revised schema."""
@@ -994,6 +1010,233 @@ class TestMixedTraining(unittest.TestCase):
             saved = torch.load(output / "checkpoints/best_validation.pt", weights_only=False)
             self.assertEqual(saved["report"]["completed_epochs"], 3)
             self.assertEqual(saved["report"]["best_selection"]["epoch"], 3)
+
+    def test_validation_interval_skips_epochs_and_writes_reports_with_gaps(self):
+        """Validate on interval epochs and the final epoch only; skipped rows carry None and never become best."""
+        script = [(True, 1.0), (True, 0.5)]
+        real_validate = train_mixed._validate
+        real_full = mixed_validation.validate_full_horizon
+        validated, full_calls = [], []
+
+        def scripted(*args, **kwargs):
+            summary = real_validate(*args, **kwargs)
+            eligible, metric = script[len(validated)]
+            validated.append(metric)
+            summary["selection"] = dict(summary["selection"], metric=metric, eligible=eligible)
+            return summary
+
+        def counted_full(*args, **kwargs):
+            full_calls.append(kwargs)
+            return real_full(*args, **kwargs)
+
+        config = self.config(3, validation_interval=2, validation_full_interval=2)
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(train_mixed, "_validate", scripted),
+            patch.object(mixed_validation, "validate_full_horizon", counted_full),
+        ):
+            output = Path(directory)
+            report = run_training(output, config)
+            # Epoch 1 skips validation entirely; epoch 2 is an interval epoch and epoch 3 the final one.
+            self.assertEqual(validated, [1.0, 0.5])
+            rows = report["epochs"]
+            self.assertEqual([row["epoch"] for row in rows], [1, 2, 3])
+            self.assertIsNone(rows[0]["validation"])
+            self.assertIsNone(rows[0]["full_horizon_validation"])
+            self.assertIsInstance(rows[1]["validation"], dict)
+            self.assertIsInstance(rows[2]["validation"], dict)
+            # Full-horizon checks happen on validated epochs only; the interval-2 check runs at epoch 2.
+            self.assertIsNotNone(rows[1]["full_horizon_validation"])
+            self.assertEqual(len(full_calls), sum(row["full_horizon_validation"] is not None for row in rows))
+            # The skipped epoch counts toward stage residence without qualifying or advancing.
+            self.assertEqual(
+                rows[0]["curriculum"],
+                {
+                    "stage": 0,
+                    "advanced": False,
+                    "advance_reason": None,
+                    "qualified": False,
+                    "full_horizon_qualified": None,
+                    "stage_epochs": 1,
+                    "qualified_epochs": 0,
+                },
+            )
+            self.assertEqual(rows[1]["curriculum"]["stage_epochs"], 2)
+            self.assertFalse(rows[0]["allow_early_stop"])
+            # The cosine schedule is by epoch and unchanged by skipped validation.
+            self.assertEqual(
+                [row["learning_rate"] for row in rows],
+                [_scheduled_learning_rate(config, epoch, 0.0) for epoch in (1, 2, 3)],
+            )
+            self.assertEqual((report["best_selection"]["epoch"], report["best_selection"]["metric"]), (3, 0.5))
+            self.assertEqual(report["status"], "epoch_limit")
+            self.assertTrue((output / "checkpoints/best_validation.pt").is_file())
+            best = torch.load(output / "checkpoints/best_validation.pt", weights_only=False)
+            self.assertEqual(best["report"]["completed_epochs"], 3)
+            # The controller saw two validations at training epochs 2 and 3, both improvements.
+            controller = torch.load(output / "checkpoints/latest.pt", weights_only=False)["controller_state"]
+            self.assertEqual((controller["last_epoch"], controller["best_loss"], controller["bad_epochs"]), (3, 0.5, 0))
+            with (output / "epochs.csv").open() as handle:
+                csv_rows = list(csv.DictReader(handle))
+            self.assertEqual([r["selection_metric"] for r in csv_rows], ["", "1.0", "0.5"])
+            self.assertEqual([r["sample_count"] for r in csv_rows], ["", "2", "2"])
+            self.assertEqual(csv_rows[0]["query_count"], "8")
+            page = (output / "index.html").read_text()
+            self.assertIn("Validation runs every 2 epochs and on the final epoch.", page)
+            for name in ("report.json", "loss_curve.svg", "validation_curve.svg", "residual_curve.svg"):
+                self.assertTrue((output / name).is_file(), name)
+            self.assertIsNone(json.loads((output / "report.json").read_text())["epochs"][0]["validation"])
+
+    def test_skipped_epochs_count_stage_residence_and_defer_the_cap_to_a_validated_epoch(self):
+        """Residence grows on skipped epochs; a cap reached there promotes at the next validated epoch after the full check."""
+        real_validate = train_mixed._validate
+
+        def stalled(*args, **kwargs):
+            # Never qualifies, so only the hard residence limit can advance the stage.
+            return {**real_validate(*args, **kwargs), "descent_rate": 0.0}
+
+        config = self.config(4, validation_interval=2, validation_full_interval=50, stage_max_epochs=1)
+        with tempfile.TemporaryDirectory() as directory, patch.object(train_mixed, "_validate", stalled):
+            report = run_training(Path(directory), config)
+        rows = report["epochs"]
+        decisions = [row["curriculum"] for row in rows]
+        # Epochs 1 and 3 reach the one-epoch cap without validation and wait; epochs 2 and 4 run the
+        # full-horizon check first and then promote by the cap.
+        self.assertEqual([d["stage_epochs"] for d in decisions], [1, 0, 1, 0])
+        self.assertEqual([d["advanced"] for d in decisions], [False, True, False, True])
+        self.assertEqual([d["advance_reason"] for d in decisions], [None, "max_stage_epochs", None, "max_stage_epochs"])
+        self.assertEqual([d["stage"] for d in decisions], [0, 1, 1, 2])
+        self.assertEqual([row["full_horizon_validation"] is not None for row in rows], [False, True, False, True])
+        self.assertEqual([list(row["available_K"]) for row in rows], [[1], [1], [1, 2], [1, 2]])
+        self.assertEqual([row["validation"] is None for row in rows], [True, False, True, False])
+
+    def test_resume_after_a_skipped_epoch_keeps_an_unchanged_cap_for_the_next_validated_epoch(self):
+        """Resuming from a skipped epoch that reached the unchanged cap reproduces the uninterrupted run exactly."""
+        config = self.config(
+            2, validation_interval=2, checkpoint_interval=1, stage_max_epochs=1, validation_full_interval=50
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            straight = run_training(root / "straight", config)
+            checkpoint = root / "straight/checkpoints/epoch_0001.pt"
+            saved = torch.load(checkpoint, weights_only=False)
+            # Epoch 1 skipped validation and reached the one-epoch cap, so the checkpoint holds an overdue stage.
+            self.assertIsNone(saved["report"]["epochs"][0]["validation"])
+            self.assertEqual((saved["curriculum_state"]["stage"], saved["curriculum_state"]["stage_epochs"]), (0, 1))
+            resumed = run_training(root / "resumed", config, resume=checkpoint)
+            # The unchanged cap promotes at epoch 2 after the full-horizon check, never at resume.
+            self.assertNotIn("curriculum_events", resumed)
+            self.assertEqual(
+                [row["curriculum"] for row in resumed["epochs"]], [row["curriculum"] for row in straight["epochs"]]
+            )
+            self.assertEqual([list(row["available_K"]) for row in resumed["epochs"]], [[1], [1]])
+            self.assertEqual(
+                (resumed["epochs"][1]["curriculum"]["advanced"], resumed["epochs"][1]["curriculum"]["advance_reason"]),
+                (True, "max_stage_epochs"),
+            )
+            self.assertIsNotNone(resumed["epochs"][1]["full_horizon_validation"])
+            self.assertEqual(resumed["updates"], straight["updates"])
+            self.assertEqual(resumed["best_selection"], straight["best_selection"])
+            latest = torch.load(root / "resumed/checkpoints/latest.pt", weights_only=False)
+            reference = torch.load(root / "straight/checkpoints/latest.pt", weights_only=False)
+            for name in ("curriculum_state", "controller_state"):
+                self.assertEqual(latest[name], reference[name], name)
+
+    def test_resume_accepts_a_changed_validation_budget_and_resets_the_selection_record(self):
+        """Every validation setting may change on resume; an incomparable best record and the plateau patience restart."""
+        real_validate = train_mixed._validate
+        metric = [0.5]
+
+        def eligible(*args, **kwargs):
+            summary = real_validate(*args, **kwargs)
+            summary["selection"] = dict(summary["selection"], metric=metric[0], eligible=True)
+            return summary
+
+        changes = {
+            "validation_count": 3,
+            "validation_iterations": 2,
+            "validation_interval": 2,
+            "validation_physical_steps": 1,
+            "validation_physical_iterations": 1,
+            "validation_full_count": 2,
+            "validation_full_interval": 3,
+            "validation_full_iterations": 1,
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(train_mixed, "_validate", eligible):
+            output = Path(directory)
+            base = run_training(output, self.config(1))
+            checkpoint = output / "checkpoints/latest.pt"
+            self.assertEqual(base["best_selection"]["epoch"], 1)
+            self.assertEqual(torch.load(checkpoint, weights_only=False)["controller_state"]["best_loss"], 0.5)
+            with self.assertRaisesRegex(ValueError, "resume configuration"):
+                run_training(output, self.config(2, learning_rate=2e-4), resume=checkpoint)
+            # The cheaper budget measures a larger residual that must not be judged against the old best.
+            metric[0] = 1.0
+            resumed = run_training(output, self.config(3, **changes), resume=checkpoint)
+            self.assertEqual(resumed["completed_epochs"], 3)
+            self.assertEqual(
+                resumed["best_selection_history"],
+                [{"reset_at_epoch": 1, "reason": "validation budget changed", "record": base["best_selection"]}],
+            )
+            # Epoch 2 is the first validated epoch under the new budget and becomes the new best; the
+            # equal metric of epoch 3 does not replace it.
+            self.assertEqual(resumed["best_selection"]["epoch"], 2)
+            self.assertEqual(resumed["epochs"][1]["validation"]["sample_count"], 3)
+            self.assertEqual(len(resumed["epochs"][1]["validation"]["force_residual"]), 3)
+            best = torch.load(output / "checkpoints/best_validation.pt", weights_only=False)
+            self.assertEqual(best["report"]["completed_epochs"], 2)
+            self.assertEqual(best["config"]["validation_iterations"], 2)
+            # The controller forgot the old best too: epoch 2 improved from nothing and only epoch 3's
+            # equal metric counts against patience.
+            controller = torch.load(output / "checkpoints/latest.pt", weights_only=False)["controller_state"]
+            self.assertEqual(
+                (
+                    controller["best_loss"],
+                    controller["bad_epochs"],
+                    controller["lr_bad_epochs"],
+                    controller["last_epoch"],
+                ),
+                (1.0, 1, 1, 3),
+            )
+            self.assertEqual(len(controller["recent_good"]), 2)
+            full = resumed["epochs"][2]["full_horizon_validation"]
+            self.assertEqual((full["iterations"], full["sample_count"]), (1, 2))
+            recorded = {change["field"]: change for change in resumed["configuration_changes"]}
+            self.assertEqual(set(recorded), set(changes))
+            for field, current in changes.items():
+                self.assertEqual(
+                    (recorded[field]["previous"], recorded[field]["current"], recorded[field]["effective_from_epoch"]),
+                    (getattr(self.config(1), field), current, 2),
+                )
+            # An unchanged budget keeps the record, the controller's patience and writes no history.
+            again = run_training(output, self.config(4, **changes), resume=output / "checkpoints/latest.pt")
+            self.assertEqual(again["best_selection"], resumed["best_selection"])
+            self.assertEqual(len(again["best_selection_history"]), 1)
+            controller = torch.load(output / "checkpoints/latest.pt", weights_only=False)["controller_state"]
+            self.assertEqual((controller["best_loss"], controller["bad_epochs"]), (1.0, 2))
+
+    def test_full_horizon_iterations_cap_limits_k_below_the_largest_available(self):
+        """validation_full_iterations caps the full check's K and the summary records the capped value."""
+        config = self.config(1, validation_full_interval=1)
+        self.assertEqual(_full_horizon_iterations(config, (1, 2, 4)), 4)
+        self.assertEqual(_full_horizon_iterations(replace(config, validation_full_iterations=2), (1, 2, 4)), 2)
+        self.assertEqual(_full_horizon_iterations(replace(config, validation_full_iterations=8), (1, 2, 4)), 4)
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
+                "experiments.learned_intrinsic_solver.curriculum.MixedCurriculum.available_counts",
+                new=property(lambda self: ((1, 2), (1, 2))),
+            ),
+        ):
+            root = Path(directory)
+            capped = run_training(root / "capped", replace(config, validation_full_iterations=1))
+            uncapped = run_training(root / "uncapped", config)
+        for report, expected in ((capped, 1), (uncapped, 2)):
+            with self.subTest(expected=expected):
+                row = report["epochs"][0]
+                full = row["full_horizon_validation"]
+                self.assertEqual(max(row["available_K"]), 2)
+                self.assertEqual((full["iterations"], full["physical_steps"]), (expected, 2))
 
     @staticmethod
     def _curriculum_at(stage, stage_epochs):

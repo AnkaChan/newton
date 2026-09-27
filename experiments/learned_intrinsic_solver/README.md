@@ -872,7 +872,17 @@ noisy inertial, previous-position, and rigid candidates in that order.
 
 Validation regenerates fixed held-out starts and freezes weights for 100
 optimizer iterations plus an eight-step physical rollout with two optimizer
-iterations per step by default. The report includes relative energy curves,
+iterations per step by default. `validation_interval` runs this cheap
+validation only every N epochs (and always on the final epoch); skipped epochs
+record `validation: null`, never select a checkpoint, are invisible to the
+plateau controller and count toward curriculum stage residence only, so a
+validation- or cap-gated stage advance waits for the next validated epoch. The
+full-horizon check runs on validated epochs at the largest available H and at
+the largest available K capped by `validation_full_iterations`. All
+`validation_*` settings may change on resume; a changed `validation_count` or
+`validation_iterations` makes earlier selection metrics incomparable, so
+`best_selection` restarts and the previous record is kept in
+`best_selection_history`. The report includes relative energy curves,
 separate optimizer/physical failure counts, trajectory survival, sampled budgets
 and ages, per-rank material/perturbation histograms, and timing. Near-zero initial
 energies have absolute energy, displacement and free-corner force-residual

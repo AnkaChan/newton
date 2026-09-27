@@ -38,8 +38,12 @@ class PlateauController:
     at least 0.8. Stopping requires ``allow_early_stop``, the minimum epoch
     count, ``stop_patience`` bad epochs and at least two learning-rate
     reductions; it reports ``plateau_converged`` when the last five epochs were
-    good and ``stalled`` otherwise. ``best_loss`` keeps its attribute name for
-    checkpoint compatibility but stores the best selection metric.
+    good and ``stalled`` otherwise. Only validated epochs are observed: epochs
+    that skipped validation are absent from the sequence and count neither as
+    improvements nor against patience. ``reset_metric_history`` forgets the
+    best metric and patience when the validation budget changes. ``best_loss``
+    keeps its attribute name for checkpoint compatibility but stores the best
+    selection metric.
     """
 
     def __init__(
@@ -74,7 +78,8 @@ class PlateauController:
         """Consume validation, retaining learning-rate reductions when stopping is disabled.
 
         Args:
-            epoch: One-based consecutive validation epoch.
+            epoch: One-based training epoch of this validation, greater than
+                the previously observed epoch.
             validation: Summary from ``mixed_validation.validate`` with
                 ``selection``, ``physical_survivors``, ``sample_count`` and
                 ``descent_rate``.
@@ -85,8 +90,8 @@ class PlateauController:
             ``{"learning_rate", "stop", "status"}`` with status ``running``,
             ``plateau_converged``, ``stalled`` or ``epoch_limit``.
         """
-        if epoch != self.last_epoch + 1:
-            raise ValueError("validation epochs must be consecutive and start at one")
+        if epoch <= self.last_epoch:
+            raise ValueError("validation epochs must increase")
         self.last_epoch = epoch
         metric = _selection_metric(validation)
         complete = metric is not None
@@ -124,6 +129,18 @@ class PlateauController:
         elif epoch >= self.max_epochs:
             status = "epoch_limit"
         return {"learning_rate": self.learning_rate, "stop": status != "running", "status": status}
+
+    def reset_metric_history(self) -> None:
+        """Forget the best metric, patience counters and recent-quality history.
+
+        The learning rate, its reduction count and the last observed epoch are
+        kept. Call this when the validation budget changes on resume so that
+        metrics measured under the new budget are not compared with the old
+        best.
+        """
+        self.best_loss = None
+        self.bad_epochs = self.lr_bad_epochs = 0
+        self.recent_good = []
 
     def state_dict(self) -> dict:
         """Return a small, serializable controller state."""
