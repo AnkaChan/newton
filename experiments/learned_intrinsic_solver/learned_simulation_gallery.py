@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build an offline HTML gallery for ten saved learned-solver simulations.
+"""Build an offline HTML gallery for saved learned-solver simulations.
 
 Each card states the seed's contact scene from the simulation report: whether
 a floor is present and at which height, the number of static contact points,
@@ -64,8 +64,8 @@ def build_gallery(
         seeds = sorted(
             int(path.parent.name.removeprefix("seed_")) for path in simulation_dir.glob("seed_*/report.json")
         )
-        if len(seeds) != 10 or len(set(seeds)) != 10:
-            raise ValueError("the simulation gallery requires ten distinct seed reports")
+        if not seeds or len(set(seeds)) != len(seeds):
+            raise ValueError("the simulation gallery requires at least one seed report with distinct seeds")
     else:
         seeds = list(expected_seeds)
         if not seeds or len(set(seeds)) != len(seeds):
@@ -165,6 +165,12 @@ def build_gallery(
     temporary = output / "gallery.json.tmp"
     temporary.write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
     temporary.replace(output / "gallery.json")
+    iterations_text = "/".join(
+        str(value) for value in sorted({int(row["optimizer_iterations_per_step"]) for row in rows})
+    )
+    duration_text = "/".join(
+        f"{value:g}" for value in sorted({float(row["requested_duration_seconds"]) for row in rows})
+    )
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Learned intrinsic solver · physical simulation videos</title><style>
 body{{font:17px/1.5 system-ui,sans-serif;max-width:1200px;margin:28px auto;padding:0 18px;color:#223844;background:#f5f8fa}}
@@ -173,7 +179,7 @@ h1{{line-height:1.2}} .lead{{max-width:85ch}} .card{{background:white;padding:22
 .thumbnails{{display:flex;gap:18px}} figure{{flex:1;margin:12px 0}} figure img{{width:100%;border-radius:6px}} figcaption{{font-size:.85em;color:#526976}}
 .failure{{background:#fff0df;padding:12px;overflow-wrap:anywhere}} a{{color:#087b91}} .contact{{color:#4d3b6b}}
 </style></head><body><p><a href="../index.html">← All solver experiments</a></p><h1>{len(rows)} learned-solver physical simulations</h1>
-<p class="lead">Epoch {summary["checkpoint_epoch"]} checkpoint. Each physical step uses two consecutive learned optimizer calls at dt = 1/300 s. The requested duration is 10 s per state; a failed simulation ends at its last valid physical state. Clips contain no repeated or padded frames. The camera stays fixed within each clip and shows the saved shape trajectory, surface voxel grid, and pinned corners, plus the seed's contact scene when it has one: the ground plane as a flat grey quad and the static contact points as small spheres with their normals.</p>
+<p class="lead">Epoch {summary["checkpoint_epoch"]} checkpoint. Each physical step uses {iterations_text} learned optimizer iteration(s) at dt = 1/300 s. The requested duration is {duration_text} s per state; a failed simulation ends at its last valid physical state. Clips contain no repeated or padded frames. The camera stays fixed within each clip and shows the saved shape trajectory, surface voxel grid, and pinned corners, plus the seed's contact scene when it has one: the ground plane as a flat grey quad and the static contact points as small spheres with their normals.</p>
 <p>{complete_count} completed · {summary["failed_count"]} stopped early. Physical time appears in each video frame. Initial and final thumbnails are below each clip.</p>
 {"".join(cards)}<p><a href="gallery.json">Machine-readable results</a></p></body></html>"""
     temporary = output / "index.html.tmp"
