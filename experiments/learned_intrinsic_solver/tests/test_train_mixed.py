@@ -343,6 +343,7 @@ class TestMixedTraining(unittest.TestCase):
             for row in report["updates"]:
                 for key in ("loss", "before_joule", "after_joule", "mean_force_residual_n", "tie_cell_count"):
                     self.assertIn(key, row)
+                self.assertTrue(math.isfinite(row["gradient_norm"]) and row["gradient_norm"] >= 0)
                 self.assertGreaterEqual(row["mean_force_residual_n"], 0)
                 self.assertLessEqual(row["step_size_min"], row["step_size_mean"])
                 self.assertLessEqual(row["step_size_mean"], row["step_size_max"])
@@ -357,6 +358,7 @@ class TestMixedTraining(unittest.TestCase):
                 self.assertIn("selection", row["validation"])
                 self.assertIn("force_residual", row["validation"])
                 self.assertIn("allow_early_stop", row)
+                self.assertLessEqual(row["gradient_norm_mean"], row["gradient_norm_max"])
             self.assertIsNone(report["epochs"][0]["full_horizon_validation"])
             row = report["epochs"][1]
             full = row["full_horizon_validation"]
@@ -738,6 +740,18 @@ class TestLearningRateSchedule(unittest.TestCase):
         legacy = MixedTrainConfig.from_checkpoint_config(saved)
         self.assertEqual(legacy.lr_schedule, "plateau")
         self.assertTrue(math.isfinite(legacy.lr_final))
+
+    def test_weight_decay_and_clipping_defaults_and_legacy_values(self):
+        """AdamW decay and clipping follow LeCO by default; older checkpoints rebuild plain Adam without clipping."""
+        config = MixedTrainConfig()
+        self.assertEqual((config.weight_decay, config.gradient_clip_norm, config.lr_final), (1e-6, 1.0, 2.5e-5))
+        self.assertIsNone(MixedTrainConfig(gradient_clip_norm=None).gradient_clip_norm)
+        for bad in ({"weight_decay": -1e-6}, {"gradient_clip_norm": 0.0}, {"gradient_clip_norm": math.inf}):
+            with self.assertRaises(ValueError):
+                MixedTrainConfig(**bad)
+        saved = {k: v for k, v in asdict(MixedTrainConfig()).items() if k not in ("weight_decay", "gradient_clip_norm")}
+        legacy = MixedTrainConfig.from_checkpoint_config(saved)
+        self.assertEqual((legacy.weight_decay, legacy.gradient_clip_norm), (0.0, None))
 
 
 if __name__ == "__main__":

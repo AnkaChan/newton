@@ -90,8 +90,12 @@ class MixedTrainConfig:
     """Allow plateau/stall stopping before ``max_epochs``; False runs to the epoch cap."""
     lr_schedule: str = "cosine"
     """``cosine``: decay from learning_rate to lr_final over max_epochs; ``constant``; ``plateau``: legacy halving controller."""
-    lr_final: float = 1e-6
-    """Final learning rate of the cosine schedule [1/epoch units]."""
+    lr_final: float = 2.5e-5
+    """Learning rate the cosine schedule reaches at ``max_epochs``."""
+    weight_decay: float = 1e-6
+    """Decoupled (AdamW) weight decay; 0 reproduces plain Adam."""
+    gradient_clip_norm: float | None = 1.0
+    """Clip the global gradient norm to this value before each update; None disables clipping."""
     youngs_modulus_range: tuple[float, float] = (1e3, 1e6)
     poissons_ratio_range: tuple[float, float] = (0.2, 0.49)
     density_range: tuple[float, float] = (100.0, 10000.0)
@@ -174,6 +178,14 @@ class MixedTrainConfig:
             or not 0 < self.lr_final <= self.learning_rate
         ):
             raise ValueError("lr_final must be finite, positive and at most learning_rate")
+        if isinstance(self.weight_decay, bool) or not math.isfinite(self.weight_decay) or self.weight_decay < 0:
+            raise ValueError("weight_decay must be finite and nonnegative")
+        if self.gradient_clip_norm is not None and (
+            isinstance(self.gradient_clip_norm, bool)
+            or not math.isfinite(self.gradient_clip_norm)
+            or self.gradient_clip_norm <= 0
+        ):
+            raise ValueError("gradient_clip_norm must be None or finite and positive")
         if not math.isfinite(self.energy_increase_weight) or self.energy_increase_weight < 0:
             raise ValueError("energy_increase_weight must be finite and nonnegative")
         if not 0 <= self.stage_descent_rate <= 1:
@@ -225,6 +237,9 @@ class MixedTrainConfig:
         # Checkpoints written before the schedule option used the plateau controller.
         values.setdefault("lr_schedule", "plateau")
         values.setdefault("lr_final", 1e-6)
+        # Checkpoints written before AdamW and clipping used plain Adam without clipping.
+        values.setdefault("weight_decay", 0.0)
+        values.setdefault("gradient_clip_norm", None)
         legacy = [name for name in _LEGACY_CONFIG_FIELDS if name in values]
         if values.get("feature_schema_version") != features.FEATURE_SCHEMA_VERSION or legacy:
             raise ValueError(
@@ -490,6 +505,8 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             "stage_max_epochs",
             "lr_schedule",
             "lr_final",
+            "weight_decay",
+            "gradient_clip_norm",
         }
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
         if any(saved_config.get(k) != v for k, v in asdict(config).items() if k not in allowed):
@@ -539,7 +556,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     cell_count = len(step.cell_corner_indices)
     factory = _TrajectoryFactory(step, rest, config, rank=rank)
     validation_factory = _TrajectoryFactory(step, rest, config, rank=rank, validation=True)
-    optimizer = torch.optim.Adam(network.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.AdamW(network.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     controller = PlateauController(
         config.learning_rate, min_epochs=1, max_epochs=config.max_epochs, min_lr=min(1e-6, config.learning_rate)
     )
@@ -703,6 +720,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             # run matches an uninterrupted one with the same configuration.
             for group in optimizer.param_groups:
                 group["lr"] = _scheduled_learning_rate(config, epoch - 1, controller.learning_rate)
+                group["weight_decay"] = config.weight_decay
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
             counts = curriculum.available_counts
@@ -715,6 +733,8 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             budgets, ages, steps, modes, materials, perturbations = Counter(), Counter(), Counter(), Counter(), [], []
             timings = Counter()
             step_size_min, step_size_max = math.inf, -math.inf
+            gradient_norm_max = 0.0
+            update_count = 0
             for _ in range(config.queries_per_epoch // (config.batch_size * world_size)):
                 began = time.perf_counter()
                 error, records = None, None
@@ -763,6 +783,14 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 failures = _all_ranks_ok(gradient_error, device, world_size)
                 if failures:
                     raise RuntimeError(f"backward failed: {failures}")
+                # Gradients are identical on all ranks after the DDP all-reduce, so this is the
+                # global norm before clipping; an infinite bound only measures it.
+                gradient_norm = float(
+                    torch.nn.utils.clip_grad_norm_(
+                        network.parameters(),
+                        config.gradient_clip_norm if config.gradient_clip_norm is not None else math.inf,
+                    )
+                )
                 optimizer.step()
                 timings["backward_and_adam_seconds"] += time.perf_counter() - began
                 after = result.loss.total.detach()
@@ -784,6 +812,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 step_size_min = min(step_size_min, -extremes[0])
                 step_size_max = max(step_size_max, extremes[1])
                 report["completed_updates"] += 1
+                update_count += 1
                 report["updates"].append(
                     {
                         "update": report["completed_updates"],
@@ -796,10 +825,13 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                         "step_size_min": -extremes[0],
                         "step_size_max": extremes[1],
                         "tie_cell_count": int(round(sums[5])),
+                        "gradient_norm": gradient_norm,
                     }
                 )
+                gradient_norm_max = max(gradient_norm_max, gradient_norm)
                 totals.update(
                     loss=sums[0],
+                    gradient_norm_sum=gradient_norm,
                     query_count=query_count,
                     force_residual_sum=sums[3],
                     step_size_sum=sums[4],
@@ -906,6 +938,8 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 "step_size_min": step_size_min,
                 "step_size_max": step_size_max,
                 "tie_cell_count": totals["tie_cell_count"],
+                "gradient_norm_mean": totals["gradient_norm_sum"] / max(update_count, 1),
+                "gradient_norm_max": gradient_norm_max,
                 "candidate_modes": dict(candidate_modes),
                 "seconds": time.perf_counter() - epoch_start,
                 "available_K": counts[0],

@@ -175,6 +175,7 @@ class TestMixedReport(unittest.TestCase):
                     "step_size_min",
                     "step_size_max",
                     "tie_cell_count",
+                    "gradient_norm",
                 ],
             )
             self.assertEqual((update["mean_force_residual_n"], update["tie_cell_count"]), ("0.5", "3"))

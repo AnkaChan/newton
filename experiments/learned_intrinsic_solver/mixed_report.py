@@ -28,6 +28,7 @@ _UPDATE_COLUMNS = (
     "step_size_min",
     "step_size_max",
     "tie_cell_count",
+    "gradient_norm",
 )
 _EPOCH_COLUMNS = (
     "epoch",
@@ -39,6 +40,8 @@ _EPOCH_COLUMNS = (
     "step_size_min",
     "step_size_max",
     "tie_cell_count",
+    "gradient_norm_mean",
+    "gradient_norm_max",
     "selection_metric",
     "selection_eligible",
     "physical_survivors",
@@ -243,9 +246,18 @@ def _epoch_plot(rows):
         axes[2, 0].set_ylabel("Physical survivors (%)")
         axes[2, 0].set_ylim(-2, 102)
         axes[2, 0].legend()
-        axes[2, 1].plot(epochs, values("learning_rate"), ".-", color="#7052a3")
-        axes[2, 1].set_ylabel("Adam learning rate after epoch")
+        axes[2, 1].plot(epochs, values("learning_rate"), ".-", color="#7052a3", label="Learning rate")
+        axes[2, 1].set_ylabel("Learning rate after epoch")
         axes[2, 1].set_yscale("log")
+        if any(_finite(row.get("gradient_norm_mean")) for row in rows):
+            twin = axes[2, 1].twinx()
+            twin.plot(epochs, values("gradient_norm_mean"), ".-", color="#d26a25", label="Gradient norm (epoch mean)")
+            twin.plot(epochs, values("gradient_norm_max"), "_", color="#d26a25", label="Gradient norm (epoch max)")
+            twin.set_ylabel("Global gradient norm before clipping")
+            twin.set_yscale("log")
+            handles, labels = axes[2, 1].get_legend_handles_labels()
+            more, more_labels = twin.get_legend_handles_labels()
+            axes[2, 1].legend(handles + more, labels + more_labels, loc="upper right")
         for axis in axes.flat:
             axis.set_xlabel("Completed epoch")
             axis.xaxis.set_major_locator(MaxNLocator(integer=True))
