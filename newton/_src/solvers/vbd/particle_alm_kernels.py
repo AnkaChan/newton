@@ -28,11 +28,16 @@ class ParticleElasticityAlmState:
     tet_lambda_pressure: wp.array[float]
     tet_rho_mu: wp.array[float]
     tet_rho_pressure: wp.array[float]
+    tri_lambda_stretch: wp.array[float]
+    tri_lambda_area: wp.array[float]
+    tri_rho_stretch: wp.array[float]
+    tri_rho_area: wp.array[float]
     spring_lambda: wp.array[float]
     spring_rho: wp.array[float]
     bend_lambda: wp.array[float]
     bend_rho: wp.array[float]
     tet_pending: wp.array[int]
+    tri_pending: wp.array[int]
     spring_pending: wp.array[int]
     bend_pending: wp.array[int]
 
@@ -83,6 +88,117 @@ def _particle_mobility(particle: int, inv_mass: wp.array[float], flags: wp.array
 def _bounded_rho(value: wp.float64) -> float:
     """Round positive metrics into the finite float32 range without retiring rows."""
     return float(wp.clamp(value, wp.float64(1.401298464324817e-45), wp.float64(3.4028234663852886e38)))
+
+
+@wp.func
+def _bounded_cloth_rho(inertia: wp.float64, material_k: float) -> float:
+    # As for springs, before float32 saturation retain at least 90% of row
+    # curvature and reduce a fixed-pose stress error by at least 90% per update.
+    return _bounded_rho(wp.max(inertia, wp.float64(9.0) * wp.float64(material_k)))
+
+
+@wp.func
+def particle_alm_triangle_geometry(f0: wp.vec3, f1: wp.vec3):
+    """Return objective norm/area invariants and area gradients for F=[f0,f1]."""
+    a = wp.dot(f0, f0)
+    b = wp.dot(f1, f1)
+    c = wp.dot(f0, f1)
+    norm = wp.sqrt(a + b)
+    area = wp.sqrt(wp.max(a * b - c * c, 1.0e-20))
+    return norm, area, (b * f0 - c * f1) / area, (a * f1 - c * f0) / area
+
+
+@wp.func
+def _triangle_deformation(face: int, pos: wp.array[wp.vec3], indices: wp.array2d[int], pose: wp.mat22):
+    x0 = pos[indices[face, 0]]
+    e1 = pos[indices[face, 1]] - x0
+    e2 = pos[indices[face, 2]] - x0
+    return e1 * pose[0, 0] + e2 * pose[1, 0], e1 * pose[0, 1] + e2 * pose[1, 1]
+
+
+@wp.kernel
+def _prepare_triangles(
+    pos: wp.array[wp.vec3],
+    indices: wp.array2d[int],
+    poses: wp.array[wp.mat22],
+    areas: wp.array[float],
+    materials: wp.array2d[float],
+    inv_mass: wp.array[float],
+    flags: wp.array[int],
+    dt: float,
+    state: ParticleElasticityAlmState,
+):
+    face = wp.tid()
+    mu = materials[face, 0]
+    area_k = mu + materials[face, 1]
+    pose = poses[face]
+    f0, f1 = _triangle_deformation(face, pos, indices, pose)
+    norm, area, g0, g1 = particle_alm_triangle_geometry(f0, f1)
+    mobility_norm = float(0.0)
+    mobility_area = float(0.0)
+    for vertex in range(3):
+        w = -(pose[0] + pose[1])
+        if vertex > 0:
+            w = pose[vertex - 1]
+        gn = (w[0] * f0 + w[1] * f1) / wp.max(norm, 1.0e-10)
+        ga = w[0] * g0 + w[1] * g1
+        mobility = _particle_mobility(indices[face, vertex], inv_mass, flags)
+        mobility_norm += mobility * wp.dot(gn, gn)
+        mobility_area += mobility * wp.dot(ga, ga)
+    pending = state.tri_pending[face]
+    denominator = wp.float64(areas[face]) * wp.float64(dt) * wp.float64(dt)
+    state.tri_rho_stretch[face] = 0.0
+    if mu > 0.0 and norm > 1.0e-10 and areas[face] > 0.0 and mobility_norm > 0.0:
+        state.tri_rho_stretch[face] = _bounded_cloth_rho(
+            wp.float64(state.rho_scale) / (denominator * wp.float64(mobility_norm)), mu
+        )
+        if (pending & 1) != 0:
+            state.tri_lambda_stretch[face] = mu * norm
+        pending = pending & ~1
+    else:
+        state.tri_lambda_stretch[face] = 0.0
+        pending = pending | 1
+    state.tri_rho_area[face] = 0.0
+    if area_k > 0.0 and area > 1.0e-10 and areas[face] > 0.0 and mobility_area > 0.0:
+        state.tri_rho_area[face] = _bounded_cloth_rho(
+            wp.float64(state.rho_scale) / (denominator * wp.float64(mobility_area)), area_k
+        )
+        if (pending & 2) != 0:
+            state.tri_lambda_area[face] = area_k * (area - 1.0) - area_k * (mu / wp.max(area_k, 1.0e-6))
+        pending = pending & ~2
+    else:
+        state.tri_lambda_area[face] = 0.0
+        pending = pending | 2
+    state.tri_pending[face] = pending
+
+
+@wp.kernel
+def _update_triangles(
+    pos: wp.array[wp.vec3],
+    indices: wp.array2d[int],
+    poses: wp.array[wp.mat22],
+    materials: wp.array2d[float],
+    state: ParticleElasticityAlmState,
+):
+    face = wp.tid()
+    mu = materials[face, 0]
+    area_k = mu + materials[face, 1]
+    f0, f1 = _triangle_deformation(face, pos, indices, poses[face])
+    norm, area, _g0, _g1 = particle_alm_triangle_geometry(f0, f1)
+    if norm > 1.0e-10:
+        state.tri_lambda_stretch[face] = particle_alm_ascent(
+            state.tri_lambda_stretch[face], norm, mu, state.tri_rho_stretch[face]
+        )
+    else:
+        state.tri_lambda_stretch[face] = 0.0
+        state.tri_pending[face] = state.tri_pending[face] | 1
+    if area > 1.0e-10 and area_k > 0.0:
+        state.tri_lambda_area[face] = particle_alm_ascent(
+            state.tri_lambda_area[face], (area - 1.0) - mu / wp.max(area_k, 1.0e-6), area_k, state.tri_rho_area[face]
+        )
+    else:
+        state.tri_lambda_area[face] = 0.0
+        state.tri_pending[face] = state.tri_pending[face] | 2
 
 
 @wp.func
@@ -290,8 +406,8 @@ def _prepare_bends(
     )
     material_k = properties[edge, 0] * rest_length[edge]
     if material_k > 0.0 and valid != 0 and mobility > 0.0:
-        state.bend_rho[edge] = _bounded_rho(
-            wp.float64(state.rho_scale) / (wp.float64(dt) * wp.float64(dt) * wp.float64(mobility))
+        state.bend_rho[edge] = _bounded_cloth_rho(
+            wp.float64(state.rho_scale) / (wp.float64(dt) * wp.float64(dt) * wp.float64(mobility)), material_k
         )
         if state.bend_pending[edge] != 0:
             state.bend_lambda[edge] = material_k * (theta - rest_angle[edge])
@@ -338,11 +454,24 @@ def _reset_history(
     world_count: int,
     particle_world: wp.array[int],
     tet_indices: wp.array2d[int],
+    tri_indices: wp.array2d[int],
     spring_indices: wp.array[int],
     bend_indices: wp.array2d[int],
     state: ParticleElasticityAlmState,
 ):
     element = wp.tid()
+    if element < state.tri_pending.shape[0]:
+        selected = bool(False)
+        for vertex in range(3):
+            selected = selected or _reset_world_selected(
+                particle_world[tri_indices[element, vertex]], world_mask, reset_all, world_count
+            )
+        if selected:
+            state.tri_pending[element] = 3
+            state.tri_lambda_stretch[element] = 0.0
+            state.tri_lambda_area[element] = 0.0
+            state.tri_rho_stretch[element] = 0.0
+            state.tri_rho_area[element] = 0.0
     if element < state.tet_pending.shape[0]:
         selected = bool(False)
         for vertex in range(4):
@@ -386,6 +515,20 @@ def create_particle_elasticity_alm_state(model, enabled: bool, deviatoric: bool,
     float32 = np.finfo(np.float32)
     if not math.isfinite(rho_scale) or rho_scale < float(float32.smallest_subnormal) or rho_scale > float(float32.max):
         raise ValueError("particle_elasticity_alm_rho_scale must be positive and finite in float32")
+    if enabled and model.tri_count:
+        materials = model.tri_materials.numpy()[:, :2].astype(np.float64)
+        mu = materials[:, 0]
+        area_k = materials[:, 1] + mu
+        inactive = (mu == 0.0) & (area_k == 0.0)
+        if (
+            not np.isfinite(materials).all()
+            or np.any(mu < 0.0)
+            or np.any((area_k <= 0.0) & ~inactive)
+            or np.any(area_k > float32.max)
+        ):
+            raise ValueError(
+                "Particle elasticity ALM requires nonnegative triangle mu and positive finite lambda + mu, or an all-zero material"
+            )
     if enabled and model.tet_count:
         materials = model.tet_materials.numpy()[:, :2].astype(np.float64)
         mu = materials[:, 0]
@@ -422,17 +565,23 @@ def create_particle_elasticity_alm_state(model, enabled: bool, deviatoric: bool,
     state.deviatoric = int(deviatoric)
     state.rho_scale = rho_scale
     tet_count = model.tet_count if enabled else 0
+    tri_count = model.tri_count if enabled else 0
     spring_count = model.spring_count if enabled else 0
     bend_count = model.edge_count if enabled else 0
     state.tet_lambda_mu = wp.zeros(tet_count if deviatoric else 0, dtype=wp.mat33, device=model.device)
     state.tet_lambda_pressure = wp.zeros(tet_count, dtype=float, device=model.device)
     state.tet_rho_mu = wp.zeros(tet_count if deviatoric else 0, dtype=float, device=model.device)
     state.tet_rho_pressure = wp.zeros(tet_count, dtype=float, device=model.device)
+    state.tri_lambda_stretch = wp.zeros(tri_count, dtype=float, device=model.device)
+    state.tri_lambda_area = wp.zeros(tri_count, dtype=float, device=model.device)
+    state.tri_rho_stretch = wp.zeros(tri_count, dtype=float, device=model.device)
+    state.tri_rho_area = wp.zeros(tri_count, dtype=float, device=model.device)
     state.spring_lambda = wp.zeros(spring_count, dtype=float, device=model.device)
     state.spring_rho = wp.zeros(spring_count, dtype=float, device=model.device)
     state.bend_lambda = wp.zeros(bend_count, dtype=float, device=model.device)
     state.bend_rho = wp.zeros(bend_count, dtype=float, device=model.device)
     state.tet_pending = wp.full(tet_count, 3 if deviatoric else 2, dtype=int, device=model.device)
+    state.tri_pending = wp.full(tri_count, 3, dtype=int, device=model.device)
     state.spring_pending = wp.ones(spring_count, dtype=int, device=model.device)
     state.bend_pending = wp.ones(bend_count, dtype=int, device=model.device)
     return state
@@ -444,6 +593,23 @@ def prepare_particle_elasticity_alm(model, pos: wp.array, dt: float, state: Part
         return
     if not math.isfinite(dt) or dt <= 0.0:
         raise ValueError("Particle elasticity ALM requires a positive finite timestep")
+    if model.tri_count:
+        wp.launch(
+            _prepare_triangles,
+            model.tri_count,
+            inputs=[
+                pos,
+                model.tri_indices,
+                model.tri_poses,
+                model.tri_areas,
+                model.tri_materials,
+                model.particle_inv_mass,
+                model.particle_flags,
+                dt,
+                state,
+            ],
+            device=model.device,
+        )
     if model.tet_count:
         wp.launch(
             _prepare_tets,
@@ -499,6 +665,13 @@ def update_particle_elasticity_alm(model, pos: wp.array, state: ParticleElastici
     """Advance each element's dual once after a complete primal color sweep."""
     if not state.enabled:
         return
+    if model.tri_count:
+        wp.launch(
+            _update_triangles,
+            model.tri_count,
+            inputs=[pos, model.tri_indices, model.tri_poses, model.tri_materials, state],
+            device=model.device,
+        )
     if model.tet_count:
         wp.launch(
             _update_tets,
@@ -533,7 +706,7 @@ def reset_particle_elasticity_alm(model, world_mask: wp.array | None, state: Par
     """Invalidate selected histories in place for reseeding after user pose edits."""
     if not state.enabled:
         return
-    count = max(model.tet_count, model.spring_count, model.edge_count)
+    count = max(model.tet_count, model.tri_count, model.spring_count, model.edge_count)
     if count:
         wp.launch(
             _reset_history,
@@ -544,6 +717,7 @@ def reset_particle_elasticity_alm(model, world_mask: wp.array | None, state: Par
                 model.world_count,
                 model.particle_world,
                 model.tet_indices,
+                model.tri_indices,
                 model.spring_indices,
                 model.edge_indices,
                 state,

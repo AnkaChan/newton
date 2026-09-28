@@ -47,6 +47,40 @@ def _hinge_model(*, rest=0.0, stiffness=10.0, mass=1.0):
 
 
 class TestParticleAlmKernels(unittest.TestCase):
+    def test_small_hinge_stress_tracks_ten_sweeps(self):
+        """A light, centimeter-scale hinge must not lose its authored moment."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        size = 0.01
+        for point in [(0.0, size, 0.0), (0.0, -size, 0.0), (0.0, 0.0, 0.0), (size, 0.0, 0.0)]:
+            builder.add_particle(wp.vec3(point), wp.vec3(0.0), mass=1.0e-6)
+        builder.add_edge(0, 1, 2, 3, rest=0.0, edge_ke=200.0, edge_kd=0.0)
+        model = builder.finalize(device="cpu")
+        state = alm.create_particle_elasticity_alm_state(model, True, False, 1.0)
+        alm.prepare_particle_elasticity_alm(model, model.particle_q, 1.0 / 600.0, state)
+        angle = 0.02
+        points = model.particle_q.numpy()
+        points[1] = (0.0, -size * np.cos(angle), size * np.sin(angle))
+        pos = wp.array(points, dtype=wp.vec3, device="cpu")
+        for _ in range(10):
+            alm.update_particle_elasticity_alm(model, pos, state)
+        expected_moment = -200.0 * size * angle
+        self.assertAlmostEqual(float(state.bend_lambda.numpy()[0]), expected_moment, delta=0.01 * abs(expected_moment))
+
+    def test_invalid_triangle_material_is_rejected(self):
+        """Enabling ALM must validate membrane coefficients as it does tet coefficients."""
+        builder = newton.ModelBuilder()
+        for point in [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]:
+            builder.add_particle(wp.vec3(point), wp.vec3(0.0), mass=1.0)
+        builder.add_triangle(0, 1, 2, tri_ke=12.0, tri_ka=18.0)
+        model = builder.finalize(device="cpu")
+        for mu, lame in [(-1.0, 18.0), (12.0, -12.0), (np.nan, 18.0), (12.0, np.inf)]:
+            with self.subTest(mu=mu, lame=lame):
+                materials = model.tri_materials.numpy()
+                materials[0, :2] = (mu, lame)
+                model.tri_materials.assign(materials)
+                with self.assertRaises(ValueError):
+                    alm.create_particle_elasticity_alm_state(model, True, False, 1.0)
+
     def test_coefficients_and_matrix_ascent(self):
         """Preserve compliant recurrence and finite coefficients at extreme ratios."""
         stiffness = np.array([4.0, 4.0, 1.0e30, 1.0e-20, 3.0e38, 0.0, 4.0], dtype=np.float32)
@@ -151,15 +185,15 @@ class TestParticleAlmKernels(unittest.TestCase):
     def test_hinge_angle_sign_and_mobility(self):
         """Match the existing raw hinge angle and mobility at a right-angle fold."""
         model = _hinge_model()
-        state = alm.create_particle_elasticity_alm_state(model, True, True, 1.0)
+        state = alm.create_particle_elasticity_alm_state(model, True, True, 4.0)
         alm.prepare_particle_elasticity_alm(model, model.particle_q, 0.1, state)
         np.testing.assert_allclose(state.bend_lambda.numpy(), [-5.0 * np.pi], rtol=1.0e-6)
-        np.testing.assert_allclose(state.bend_rho.numpy(), [25.0], rtol=1.0e-6)
+        np.testing.assert_allclose(state.bend_rho.numpy(), [100.0], rtol=1.0e-6)
         pos_np = model.particle_q.numpy()
         pos_np[1] = (0.0, -1.0, 0.0)
         pos = wp.array(pos_np, dtype=wp.vec3, device="cpu")
         alm.update_particle_elasticity_alm(model, pos, state)
-        np.testing.assert_allclose(state.bend_lambda.numpy(), [-5.0 * np.pi * 2.0 / 7.0], rtol=1.0e-6)
+        np.testing.assert_allclose(state.bend_lambda.numpy(), [-5.0 * np.pi / 11.0], rtol=1.0e-6)
 
     def test_hinge_raw_angle_and_inactive_rows(self):
         """Preserve raw elastic angle residuals and clear zero or immobile line rows."""

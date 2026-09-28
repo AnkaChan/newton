@@ -585,7 +585,7 @@ def _test_compute_force_element_adjacency(
 
 
 @wp.func
-def evaluate_neo_hookean_membrane_force_hessian(
+def evaluate_neo_hookean_membrane_force_hessian_alm(
     face: int,
     v_order: int,
     pos: wp.array[wp.vec3],
@@ -597,6 +597,7 @@ def evaluate_neo_hookean_membrane_force_hessian(
     lmbd: float,
     damping: float,
     dt: float,
+    elasticity_alm: ParticleElasticityAlmState,
 ):
     # Stable Neo-Hookean energy for 2D membranes (Smith et al. 2018 adapted to shells):
     #   psi = (mu/2)(I_c - 2) + (lambda/2)(J_s - alpha)^2
@@ -644,8 +645,23 @@ def evaluate_neo_hookean_membrane_force_hessian(
 
     # First Piola-Kirchhoff stress: P = mu*F + lambda*(J_s - alpha)*[g0, g1]
     s = lmbd_nh * (J_s - alpha)
-    P_col0 = mu_nh * f0 + s * g0
-    P_col1 = mu_nh * f1 + s * g1
+    mu_eval = mu_nh
+    norm_curvature = float(0.0)
+    if elasticity_alm.enabled != 0:
+        # The exact energy is quadratic in ||F||_F and J_s-alpha. Scalar
+        # invariant histories rotate with the current geometry, unlike a
+        # stored world-space 3x2 stress. The stretch target remains zero.
+        norm_squared = wp.max(f0_dot_f0 + f1_dot_f1, 1.0e-20)
+        norm = wp.sqrt(norm_squared)
+        scale_mu, k_mu, _ = particle_alm_coefficients(mu_nh, elasticity_alm.tri_rho_stretch[face])
+        stress_mu = k_mu * norm + scale_mu * elasticity_alm.tri_lambda_stretch[face]
+        mu_eval = stress_mu / norm
+        norm_curvature = (k_mu - mu_eval) / norm_squared
+        scale_area, k_area, _ = particle_alm_coefficients(lmbd_nh, elasticity_alm.tri_rho_area[face])
+        s = k_area * ((J_s - 1.0) - mu_nh / lmbd_safe) + scale_area * elasticity_alm.tri_lambda_area[face]
+        lmbd_nh = k_area
+    P_col0 = mu_eval * f0 + s * g0
+    P_col1 = mu_eval * f1 + s * g1
 
     # Vertex selection masks
     mask0 = float(v_order == 0)
@@ -675,12 +691,15 @@ def evaluate_neo_hookean_membrane_force_hessian(
     # Cross-column vector for cofactor-derivative contraction
     w = f1 * df0_dx - f0 * df1_dx
 
-    I_coeff = mu_nh * (df0_dx_sq + df1_dx_sq) + r * (
+    I_coeff = mu_eval * (df0_dx_sq + df1_dx_sq) + r * (
         df0_dx_sq * f1_dot_f1 + df1_dx_sq * f0_dot_f0 - 2.0 * df0_dx * df1_dx * f0_dot_f1
     )
 
     I33 = wp.identity(n=3, dtype=float)
     hessian = I_coeff * I33 + c1 * wp.outer(dJ_dx, dJ_dx) - r * wp.outer(w, w)
+    if elasticity_alm.enabled != 0:
+        norm_gradient_numerator = df0_dx * f0 + df1_dx * f1
+        hessian += norm_curvature * wp.outer(norm_gradient_numerator, norm_gradient_numerator)
 
     # Objective damping based on the metric C = F^T F, so rigid rotations do not damp.
     if damping > 0.0:
@@ -715,6 +734,36 @@ def evaluate_neo_hookean_membrane_force_hessian(
     hessian *= area
 
     return force, hessian
+
+
+@wp.func
+def evaluate_neo_hookean_membrane_force_hessian(
+    face: int,
+    v_order: int,
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    tri_pose: wp.mat22,
+    area: float,
+    mu: float,
+    lmbd: float,
+    damping: float,
+    dt: float,
+):
+    return evaluate_neo_hookean_membrane_force_hessian_alm(
+        face,
+        v_order,
+        pos,
+        pos_anchor,
+        tri_indices,
+        tri_pose,
+        area,
+        mu,
+        lmbd,
+        damping,
+        dt,
+        ParticleElasticityAlmState(),
+    )
 
 
 @wp.func
@@ -2509,19 +2558,35 @@ def make_solve_elasticity_tile(
                         # fmt: on
 
                         if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                            f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
-                                tri_index,
-                                vertex_order,
-                                pos,
-                                pos_prev,
-                                tri_indices,
-                                tri_poses[tri_index],
-                                tri_areas[tri_index],
-                                tri_materials[tri_index, 0],
-                                tri_materials[tri_index, 1],
-                                tri_materials[tri_index, 2],
-                                dt,
-                            )
+                            if wp.static(include_alm):
+                                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian_alm(
+                                    tri_index,
+                                    vertex_order,
+                                    pos,
+                                    pos_prev,
+                                    tri_indices,
+                                    tri_poses[tri_index],
+                                    tri_areas[tri_index],
+                                    tri_materials[tri_index, 0],
+                                    tri_materials[tri_index, 1],
+                                    tri_materials[tri_index, 2],
+                                    dt,
+                                    elasticity_alm,
+                                )
+                            else:
+                                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                                    tri_index,
+                                    vertex_order,
+                                    pos,
+                                    pos_prev,
+                                    tri_indices,
+                                    tri_poses[tri_index],
+                                    tri_areas[tri_index],
+                                    tri_materials[tri_index, 0],
+                                    tri_materials[tri_index, 1],
+                                    tri_materials[tri_index, 2],
+                                    dt,
+                                )
 
                             f += f_tri
                             h += h_tri
@@ -2732,7 +2797,7 @@ def solve_elasticity(
             # fmt: on
 
             if tri_materials[tri_index, 0] > 0.0 or tri_materials[tri_index, 1] > 0.0:
-                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian(
+                f_tri, h_tri = evaluate_neo_hookean_membrane_force_hessian_alm(
                     tri_index,
                     vertex_order,
                     pos,
@@ -2744,6 +2809,7 @@ def solve_elasticity(
                     tri_materials[tri_index, 1],
                     tri_materials[tri_index, 2],
                     dt,
+                    elasticity_alm,
                 )
 
                 f = f + f_tri

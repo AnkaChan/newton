@@ -418,8 +418,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 materials (e.g. a tetrahedra-only model compiles without triangle/edge code paths);
                 rebuild the solver after changing triangle or edge stiffness.
             particle_elasticity_alm: Enable experimental compliant ALM for tetrahedral
-                elasticity, spring stretch, and dihedral bending. Triangle membrane,
-                damping, contacts, and penetration-free truncation retain their current
+                elasticity, triangle membrane stretch/area, spring stretch, and dihedral
+                bending. Damping, contacts, and penetration-free truncation retain their current
                 formulations. Element stress history persists across steps; call
                 :meth:`reset` after discontinuous state edits. Rebuild the solver after
                 changing element topology or material coefficients. Repeated-interval
@@ -437,8 +437,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 can produce transient forces during rotation at finite iteration counts.
                 Pressure-only mode avoids this matrix-history effect.
             particle_elasticity_alm_rho_scale: Positive finite multiplier for the
-                inertia-derived ALM penalty metric. Spring metrics additionally have a
-                floor of nine times their material stiffness. Does not change converged
+                inertia-derived ALM penalty metric. Triangle, spring, and bending metrics
+                additionally have a floor of nine times their row material stiffness.
+                Does not change converged
                 material stiffness. Only used when ``particle_elasticity_alm=True``.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh

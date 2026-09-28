@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reconstruct the documented pinned-bag fixture and compare current ALM bending.
+"""Reconstruct the documented pinned-bag fixture and compare current ALM elasticity.
 
 The missing May fixture was derived from sources/bag_parent.py. This driver
 retains that parent's geometry, contents, and contact parameters, removes its
@@ -220,9 +220,14 @@ def run(args):
             "rho_max": float(rho.max()),
             "history_abs_max": float(np.abs(history).max()),
         }
+        for name in ("tri_lambda_stretch", "tri_lambda_area", "tri_rho_stretch", "tri_rho_area"):
+            values = getattr(state, name).numpy()
+            assert np.isfinite(values).all() and np.any(values != 0.0), name
+            alm_stats[name] = {"min": float(values.min()), "max": float(values.max())}
     result = {
         "stiffness": args.stiffness,
         "alm": args.alm,
+        "alm_scope": "triangle_and_bending",
         "params": sim.params,
         "frames": args.frames,
         "solver_steps": args.frames * 10,
@@ -267,5 +272,5 @@ if __name__ == "__main__":
     parser.add_argument("--stiffness", type=float, required=True)
     parser.add_argument("--alm", choices=["off", "on"], required=True)
     parser.add_argument("--frames", type=int, default=360)
-    parser.add_argument("--output", type=Path, default=ROOT / "results")
+    parser.add_argument("--output", type=Path, default=ROOT / "results-triangle-bending")
     run(parser.parse_args())

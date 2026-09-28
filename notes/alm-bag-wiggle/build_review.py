@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -13,19 +14,20 @@ import imageio_ffmpeg
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "results"
+OUT = ROOT / "results-triangle-bending"
 STIFFNESSES = [1000, 10000, 100000, 1000000, 10000000]
 
 
-def main():
+def main(output=OUT):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    out = output
     cases = []
     for stiffness in STIFFNESSES:
-        pair = [json.loads((OUT / f"ke{stiffness}_{mode}.json").read_text()) for mode in ("off", "on")]
+        pair = [json.loads((out / f"ke{stiffness}_{mode}.json").read_text()) for mode in ("off", "on")]
         assert pair[0]["model_sha256"] == pair[1]["model_sha256"]
         for result in pair:
             assert result["frames"] == 360 and result["solver_steps"] == 3600
@@ -36,7 +38,24 @@ def main():
             assert np.isfinite([list(row.values()) for row in result["rows"]]).all()
         cases.append(pair)
 
-    segments = OUT / "segments.txt"
+    triangle_alm = cases[0][1].get("alm_scope") == "triangle_and_bending"
+    scope = "triangle membrane and dihedral bending" if triangle_alm else "dihedral bending only"
+    on_label = "ALM on (triangles + bending)" if triangle_alm else "ALM on (bending)"
+    if triangle_alm:
+        scope_note = (
+            "<strong>ALM now covers triangle stretch/area and dihedral bending.</strong> "
+            "Triangle histories use objective scalar invariants; both triangle and bending rows use "
+            "a material-based rho floor to limit stress lag. Contact and damping algorithms are identical in both panels. "
+            '<a href="../../alm-triangle-bending.md">Implementation and derivation</a> · '
+            '<a href="../results/index.html">Previous bending-only comparison</a>. '
+        )
+    else:
+        scope_note = (
+            "<strong>This historical run used bending ALM only.</strong> Triangle membrane elasticity "
+            "was unchanged in both panels. "
+        )
+
+    segments = out / "segments.txt"
     segments.write_text("".join(f"file 'ke{value}_comparison.mp4'\n" for value in STIFFNESSES))
     subprocess.run(
         [
@@ -63,7 +82,7 @@ def main():
             "yuv420p",
             "-movflags",
             "+faststart",
-            str(OUT / "alm_bag_stiffness_comparison.mp4"),
+            str(out / "alm_bag_stiffness_comparison.mp4"),
         ],
         check=True,
     )
@@ -76,16 +95,16 @@ def main():
         ("relative edge change", "rad", "rad"),
         strict=True,
     ):
-        for index, mode, color in ((0, "ALM off", "#c46b2d"), (1, "ALM on (bending)", "#008f94")):
+        for index, mode, color in ((0, "ALM off", "#c46b2d"), (1, on_label, "#008f94")):
             axis.semilogx(
                 STIFFNESSES, [pair[index]["summary"][key]["mean"] for pair in cases], "o-", color=color, label=mode
             )
         axis.set(title=title, xlabel="Triangle stiffness tri_ke", ylabel=f"Mean RMS ({unit})")
         axis.grid(alpha=0.25)
     axes[0].legend(fontsize=8)
-    fig.savefig(OUT / "mean_deformation.svg")
+    fig.savefig(out / "mean_deformation.svg")
     plt.close(fig)
-    svg = OUT / "mean_deformation.svg"
+    svg = out / "mean_deformation.svg"
     svg.write_text("\n".join(line.rstrip() for line in svg.read_text().splitlines()) + "\n")
 
     rows = []
@@ -100,7 +119,7 @@ def main():
             values.extend([f"{a * scale:.4f}", f"{b * scale:.4f}", f"{b / a:.2f}x"])
         rows.append(f"<tr><td>{stiffness:.0e}</td>" + "".join(f"<td>{x}</td>" for x in values) + "</tr>")
         summaries.append(summary)
-    (OUT / "summary.json").write_text(json.dumps(summaries, indent=2) + "\n")
+    (out / "summary.json").write_text(json.dumps(summaries, indent=2) + "\n")
     buttons = "".join(f'<button onclick="jump({i * 6})">tri_ke {s:.0e}</button>' for i, s in enumerate(STIFFNESSES))
     downloads = "".join(
         f'<tr><td>{s:.0e}</td><td><a href="ke{s}_comparison.mp4">Side-by-side MP4</a></td>'
@@ -125,19 +144,17 @@ img{{width:100%;background:white;border-radius:8px}}code{{color:#97dbde}}details
 <p class="muted">PINNED BAG RIGIDITY SWEEP · LOCAL COMPARISON</p><h1>ALM off / ALM on</h1>
 <p>Five stiffnesses, identical initial models and prescribed motion. Each pair runs for 6 seconds:
 1 second settling, then 5 seconds wiggling. Both use <strong>10 substeps &times; 10 iterations</strong> per frame at 60 fps.</p>
-<p class="notice"><strong>ALM affects bending only in this scene.</strong> Triangle membrane elasticity is not implemented in the current ALM branch.
-Both panels use the same triangle stretch/area model and contact algorithms. The missing May fixture was reconstructed from its archived parent scene
+<p class="notice">{scope_note}The missing May fixture was reconstructed from its archived parent scene
 and saved pin-motion notes; this is not an exact replay of the original scene file.</p>
 <nav aria-label="Stiffness chapters">{buttons}</nav>
 <video id="comparison" src="alm_bag_stiffness_comparison.mp4" poster="ke1000_frame180.png" controls muted playsinline preload="metadata"></video>
-<p class="muted">Left: ALM off. Right: ALM on (dihedral bending, rho scale 1.0, history retained).
+<p class="muted">Left: ALM off. Right: ALM on ({scope}, rho scale 1.0, history retained).
 Fixed camera and synchronized playback. Each stiffness occupies 6 seconds of the 30-second video.</p>
 <p><a href="alm_bag_stiffness_comparison.mp4">Open or download the full MP4</a></p>
 <h2>Deformation across the stiffness sweep</h2>
-<p>With the current ALM bending implementation, mean bend deformation increases at all five stiffnesses.
-At <code>tri_ke = 1e5</code>, it rises from {summaries[2]["bend_score"]["off"]:.4f} to {summaries[2]["bend_score"]["on"]:.4f} rad
+<p>At <code>tri_ke = 1e5</code>, mean bend deformation changes from {summaries[2]["bend_score"]["off"]:.4f} to {summaries[2]["bend_score"]["on"]:.4f} rad
 ({summaries[2]["bend_score"]["on_over_off"]:.1f}x), while mean stretch changes from {100 * summaries[2]["stretch_score"]["off"]:.3f}%
-to {100 * summaries[2]["stretch_score"]["on"]:.3f}%. The high-stiffness stretch plateau remains.</p>
+to {100 * summaries[2]["stretch_score"]["on"]:.3f}%.</p>
 <p>These are geometric deformation metrics, <strong>not force residuals or convergence errors</strong>.
 Reduced stretch alone does not establish a better solution: changes in bending and contact can redistribute deformation.</p>
 <img src="mean_deformation.svg" alt="Mean stretch, triangle angle change, and bend, comparing ALM off and on over the five triangle stiffnesses">
@@ -153,7 +170,7 @@ There is no ground or gripper. The rim moves along x with amplitude 0.07 m, freq
 and a 0.6-second linear ramp after the first second. Displacement and analytic velocity are sampled once per frame and applied before every substep.</p>
 <p>The parent source is <code>{first["parent_revision"][:12]}</code>, with only its USD import moved into the loading function.
 The wrapper removes the ground and omits the gripper, then applies the documented pins and schedule.
-Solver source is <code>{first["newton_revision"][:12]}</code>; no solver code was changed for this experiment.
+Solver source is <code>{first["newton_revision"][:12]}</code>; both modes run on that same revision.
 Contact uses the existing self-contact/DAT and legacy rigid contact settings from the parent, identically in both modes.
 There are no spring or tetrahedral elements in this model.</p>
 <p>All 36,000 solver steps completed with finite saved positions. Paired model hashes match, pins stay within 1 micrometer
@@ -164,10 +181,12 @@ of the prescribed locations, and ALM bending multipliers become nonzero. This is
 <p><a href="../README.md">Reproduction commands and source notes</a> · <a href="summary.json">Summary JSON</a></p>
 </main><script>function jump(t){{const v=document.getElementById('comparison');v.currentTime=t;v.play().catch(()=>{{}});}}</script></body></html>
 """
-    (OUT / "index.html").write_text(html)
+    (out / "index.html").write_text(html)
     print(json.dumps(summaries, indent=2))
-    print(OUT / "index.html")
+    print(out / "index.html")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=OUT)
+    main(parser.parse_args().output)
