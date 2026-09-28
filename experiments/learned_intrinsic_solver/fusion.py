@@ -3,10 +3,14 @@
 
 """Experimental incremental hexahedral fusion with a CPU sparse-solve bridge.
 
-Eight Gauss samples per cell fit a single target increment to shared-corner
-displacements. This is a reconstruction layer, not the physical implicit-Euler
-objective. CPU and CUDA tensors retain their device and precision; a cached
-CPU sparse factorization supplies first-order forward and adjoint solves.
+Eight Gauss samples per cell fit a per-cell target increment to shared-corner
+displacements. The target is either one 3x3 gradient increment copied to all
+eight Gauss points (three affine modes) or seven mode vectors that also fix
+the bilinear and trilinear warping of the cell, so the per-cell fit is exact
+and only shared-corner agreement remains. This is a reconstruction layer, not
+the physical implicit-Euler objective. CPU and CUDA tensors retain their
+device and precision; a cached CPU sparse factorization supplies first-order
+forward and adjoint solves.
 """
 
 from __future__ import annotations
@@ -25,6 +29,38 @@ if TYPE_CHECKING:
 
 __all__ = ["HexFusion"]
 
+# Material-axis pairs (b, c) of the bilinear warping modes xi^b xi^c, in the
+# shared seven-vector order w_12, w_13, w_23 (zero-based axes).
+_WARPING_PAIRS = ((0, 1), (0, 2), (1, 2))
+
+
+def _mode_gradient_directions(points: np.ndarray, target_modes: int) -> np.ndarray:
+    """Return the dimensionless mode gradient directions ``g_m(xi_q)``.
+
+    Mode ``m`` contributes ``v_m g_m(xi_q)^T`` to the deformation gradient at
+    the reference point ``xi_q``: ``g_a = e_a`` for the three affine modes and,
+    for seven modes, ``(xi^c e_b + xi^b e_c)`` for the bilinear pairs
+    ``(1, 2), (1, 3), (2, 3)`` followed by ``(xi^2 xi^3, xi^1 xi^3, xi^1 xi^2)``
+    for the trilinear mode.
+
+    Args:
+        points: Reference Gauss points in [-1, 1]^3, shape [Q, 3].
+        target_modes: 3 or 7.
+
+    Returns:
+        Directions with shape [Q, target_modes, 3], indexed [point, mode, axis].
+    """
+    directions = np.zeros((len(points), target_modes, 3), dtype=points.dtype)
+    directions[:, :3] = np.eye(3, dtype=points.dtype)
+    if target_modes == 7:
+        for column, (first, second) in enumerate(_WARPING_PAIRS, start=3):
+            directions[:, column, first] = points[:, second]
+            directions[:, column, second] = points[:, first]
+        directions[:, 6, 0] = points[:, 1] * points[:, 2]
+        directions[:, 6, 1] = points[:, 0] * points[:, 2]
+        directions[:, 6, 2] = points[:, 0] * points[:, 1]
+    return directions
+
 
 def _columns(values: np.ndarray) -> np.ndarray:
     """Pack batch and world coordinates as sparse-solve right-hand sides."""
@@ -38,12 +74,13 @@ def _batch(columns: np.ndarray, batch_count: int) -> np.ndarray:
 
 class _FusionSolve(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, fusion, base_positions, world_axis_increments, fixed_positions):
+    def forward(ctx, fusion, base_positions, world_targets, fixed_positions):
         device = base_positions.device
         fixed, free = fusion._indices(device)
-        increments = world_axis_increments.detach().cpu().contiguous().numpy()
+        targets = world_targets.detach().cpu().contiguous().numpy()
         batch_count = base_positions.shape[0]
-        target_rows = increments.swapaxes(-1, -2).reshape(batch_count, 3 * fusion.cell_count, 3)
+        # Rows run over (cell, mode) with world components as right-hand sides.
+        target_rows = targets.swapaxes(-1, -2).reshape(batch_count, fusion.target_modes * fusion.cell_count, 3)
         # The solve needs only targets and boundary displacement, not all base
         # coordinates. Keep the full position array on its original device.
         fixed_delta = (fixed_positions - base_positions[:, fixed]).detach().cpu().contiguous().numpy()
@@ -93,15 +130,50 @@ class HexFusion:
     positions remain available across the device transfers. The CPU bridge
     performs synchronous transfers and does not support CUDA graph capture.
     ``project_gradient`` exposes the same transpose solve as a detached
-    operator that maps free-corner position gradients to axis increments.
+    operator that maps free-corner position gradients to target gradients.
 
-    The minimized objective is the cell-weighted average of
-    ``||grad(delta_position) - world_axis_increment||^2`` over all eight Gauss
-    points. Fixed displacements are prescribed positions minus base positions.
+    The minimized objective is the cell-weighted average over all eight Gauss
+    points of ``||grad(delta_position)(xi_q) - Delta F_{c,q}||^2``, where the
+    Gauss-point target ``Delta F_{c,q}`` is assembled from the cell's target
+    vectors. Fixed displacements are prescribed positions minus base positions.
     The result adds the solved increment to the base, so a zero target exactly
     preserves a warped base when its fixed positions are already satisfied.
-    A unique fit does not imply that one target per cell can express every
-    possible corner update. Non-inversion and physical descent are not enforced.
+    With three modes a unique fit does not imply that one 3x3 target per cell
+    can express every possible corner update; with seven modes every
+    single-cell corner update is expressible and only shared-corner agreement
+    remains. Non-inversion and physical descent are not enforced.
+
+    Target modes. Cell corners carry reference coordinates ``xi_k`` in
+    ``{-1, +1}^3`` in the z-fast corner order of ``rest.cell_corner_indices``
+    (local corner ``k = 4x + 2y + z`` has ``xi_k = (2x - 1, 2y - 1, 2z - 1)``).
+    The eight scalar corner modes ``1, xi^1, xi^2, xi^3, xi^1 xi^2, xi^1 xi^3,
+    xi^2 xi^3, xi^1 xi^2 xi^3`` span the trilinear space exactly, and with
+    mode coefficients ``c_m = (1/8) sum_k e_m(xi_k) x_k`` the target vectors
+    are ``v_m = (2 / h) c_m`` for ``m = 1..7``: the three columns of the centre
+    deformation gradient ``a_1, a_2, a_3`` followed by the warping vectors
+    ``w_12, w_13, w_23, w_123``. Targets are packed as ``[..., 3, target_modes]``
+    with ``v_m`` in columns, so ``[..., :, :3]`` is the centre 3x3 increment
+    and ``target_modes=3`` is exactly the affine-only representation. The
+    deformation gradient implied at a reference point is
+    ``Delta F(xi) = sum_m v_m g_m(xi)^T`` with the dimensionless directions
+    ``g_a = e_a``, ``g_bc = xi^c e_b + xi^b e_c`` and
+    ``g_123 = (xi^2 xi^3, xi^1 xi^3, xi^1 xi^2)``, independent of ``h``.
+
+    Operator construction. ``G`` is the sparse Gauss-point gradient operator
+    whose row ``(c, q, i)`` holds ``dN_k/dX_i(xi_q)`` for the eight corners
+    ``k`` of cell ``c``, so ``G d`` stacks material-axis column ``i`` of the
+    trilinear displacement gradient at every Gauss point; the world component
+    is the right-hand-side column. With the row weights ``w_c wq_q`` (cell
+    weight times normalised quadrature weight) the stiffness is
+    ``K = G^T W G``; unknowns are corners and ``K`` does not depend on the
+    mode count. Targets enter through the sparse mode operator ``M`` with one
+    column per ``(c, m)`` and entries ``M[(c, q, i), (c, m)] = w_c wq_q
+    g_m,i(xi_q)``; for three modes ``M`` is the weighted copy of the single
+    3x3 increment to all eight Gauss points. The free-corner normal equations
+    read ``K_ff d_f = B v - K_fp d_p`` with the target operator
+    ``B = (G^T M)_f``, and ``project_gradient`` applies the adjoint
+    ``B^T K_ff^{-T}``. Only ``B`` changes with ``target_modes``; the system
+    size, sparsity pattern and cached factor are identical.
 
     Args:
         rest: Cubic material grid with shared rest corners [m] and cell topology.
@@ -115,9 +187,12 @@ class HexFusion:
         dtype: Working tensor precision. Float32 uses single-precision sparse
             operators, factorization, forward solves, and adjoint solves.
             Float64 is also supported for reference checks.
+        target_modes: Number of target vectors per cell, 3 (affine only,
+            the default) or 7 (affine plus bilinear and trilinear warping).
 
     Raises:
-        ValueError: If topology, weights, constraints, or precision are invalid.
+        ValueError: If topology, weights, constraints, precision, or the mode
+            count are invalid.
     """
 
     def __init__(
@@ -127,11 +202,15 @@ class HexFusion:
         *,
         cell_weights=None,
         dtype: torch.dtype = torch.float32,
+        target_modes: int = 3,
     ):
         from scipy import sparse
 
         if dtype not in (torch.float32, torch.float64):
             raise ValueError("HexFusion supports only torch.float32 and torch.float64")
+        if isinstance(target_modes, bool) or target_modes not in (3, 7):
+            raise ValueError("target_modes must be 3 (affine) or 7 (affine plus warping)")
+        self.target_modes = int(target_modes)
         self.dtype = dtype
         self._numpy_dtype = np.dtype(np.float32 if dtype == torch.float32 else np.float64)
         positions = np.asarray(rest.corner_rest_positions)
@@ -191,15 +270,27 @@ class HexFusion:
         ).tocsr()
         row_weights = np.repeat((weights[:, None] * quadrature_weights[None]).reshape(-1), 3)
         stiffness = (gradient_operator.T @ gradient_operator.multiply(row_weights[:, None])).tocsc()
-        target_columns = np.broadcast_to(
-            np.arange(self.cell_count * 3).reshape(self.cell_count, 1, 3), (self.cell_count, 8, 3)
+        # Mode operator M: row (c, q, i) couples to column (c, m) with weight
+        # w_c wq_q g_m,i(xi_q). Structural zeros of the directions are dropped so
+        # the three-mode operator is the weighted repeat of one 3x3 per cell.
+        modes = self.target_modes
+        directions = _mode_gradient_directions(np.asarray(quadrature.points, dtype=self._numpy_dtype), modes)
+        entry_shape = (self.cell_count, 8, 3, modes)
+        mode_rows = np.repeat(np.arange(row_count), modes)
+        mode_columns = np.broadcast_to(
+            (np.arange(self.cell_count) * modes)[:, None, None, None] + np.arange(modes)[None, None, None, :],
+            entry_shape,
         ).reshape(-1)
-        weighted_repeat = sparse.coo_matrix(
-            (row_weights, (np.arange(row_count), target_columns)),
-            shape=(row_count, self.cell_count * 3),
+        mode_values = (
+            weights[:, None, None, None] * quadrature_weights[None, :, None, None] * directions.transpose(0, 2, 1)[None]
+        ).reshape(-1)
+        mode_mask = np.broadcast_to(directions.transpose(0, 2, 1)[None] != 0, entry_shape).reshape(-1)
+        mode_operator = sparse.coo_matrix(
+            (mode_values[mode_mask], (mode_rows[mode_mask], mode_columns[mode_mask])),
+            shape=(row_count, self.cell_count * modes),
             dtype=self._numpy_dtype,
         ).tocsr()
-        target_operator = (gradient_operator.T @ weighted_repeat).tocsr()
+        target_operator = (gradient_operator.T @ mode_operator).tocsr()
         self._target_operator = target_operator[self._free].tocsr()
         self._fixed_coupling = stiffness[self._free][:, self._fixed].tocsr()
         self._free_stiffness = stiffness[self._free][:, self._free].tocsc()
@@ -237,7 +328,7 @@ class HexFusion:
         return self._device_indices[device]
 
     def _adjoint_targets(self, free_gradient: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-        """Pull free-corner cotangents back to axis increments through the transpose solve.
+        """Pull free-corner cotangents back to target vectors through the transpose solve.
 
         Args:
             free_gradient: Free-corner position cotangents, shape [B, F, 3], in
@@ -246,28 +337,30 @@ class HexFusion:
 
         Returns:
             The packed adjoint columns ``K_ff^{-T} g_free`` with shape [F, 3B]
-            and the axis-increment gradients ``unpack(B^T K_ff^{-T} g_free)``
-            with shape [B, C, 3, 3] (axes in columns), both as CPU NumPy arrays
-            in the working precision.
+            and the target gradients ``unpack(B^T K_ff^{-T} g_free)`` with
+            shape [B, C, 3, target_modes] (mode vectors in columns), both as
+            CPU NumPy arrays in the working precision.
         """
         batch_count = free_gradient.shape[0]
         columns = _columns(free_gradient.detach().cpu().contiguous().numpy())
         adjoint = self._solve(columns, transpose=True)
         target_rows = _batch(self._target_operator.T @ adjoint, batch_count)
-        return adjoint, target_rows.reshape(batch_count, self.cell_count, 3, 3).swapaxes(-1, -2)
+        return adjoint, target_rows.reshape(batch_count, self.cell_count, self.target_modes, 3).swapaxes(-1, -2)
 
     def fuse(
         self,
         base_positions: torch.Tensor,
-        world_axis_increments: torch.Tensor,
+        world_targets: torch.Tensor,
         fixed_positions: torch.Tensor,
     ) -> torch.Tensor:
         """Return a differentiable compatible update of shared corner positions.
 
         Args:
             base_positions: Current world corner positions [m], shape [B, P, 3].
-            world_axis_increments: Dimensionless world deformation-gradient
-                increments, shape [B, C, 3, 3], with material axes in columns.
+            world_targets: Dimensionless world target vectors, shape
+                [B, C, 3, target_modes], with the mode vectors in columns: the
+                three deformation-gradient axis increments followed, for seven
+                modes, by the warping increments ``w_12, w_13, w_23, w_123``.
                 Any frame detachment must happen before constructing this input.
             fixed_positions: Prescribed world positions [m], shape [B, K, 3],
                 following ``fixed_indices`` order. These values always win.
@@ -284,7 +377,7 @@ class HexFusion:
         """
         tensors = (
             ("base_positions", base_positions),
-            ("world_axis_increments", world_axis_increments),
+            ("world_targets", world_targets),
             ("fixed_positions", fixed_positions),
         )
         for name, tensor in tensors:
@@ -301,23 +394,25 @@ class HexFusion:
         ):
             raise ValueError("base_positions must have shape [B, P, 3] with B > 0")
         batch_count = base_positions.shape[0]
-        if world_axis_increments.shape != (batch_count, self.cell_count, 3, 3):
-            raise ValueError("world_axis_increments must have shape [B, C, 3, 3]")
+        if world_targets.shape != (batch_count, self.cell_count, 3, self.target_modes):
+            raise ValueError(f"world_targets must have shape [B, C, 3, {self.target_modes}]")
         if fixed_positions.shape != (batch_count, len(self._fixed), 3):
             raise ValueError("fixed_positions must have shape [B, K, 3]")
-        return _FusionSolve.apply(self, base_positions, world_axis_increments, fixed_positions)
+        return _FusionSolve.apply(self, base_positions, world_targets, fixed_positions)
 
     def project_gradient(self, position_gradient: torch.Tensor) -> torch.Tensor:
-        """Return axis-increment gradients ``unpack(B^T K_ff^{-T} g_free)``.
+        """Return target gradients ``unpack(B^T K_ff^{-T} g_free)``.
 
-        This is the adjoint of the increment-to-position map behind ``fuse``
-        for a frozen base and frozen prescribed positions: for every increment
-        ``D``, ``<project_gradient(g), D>`` equals
+        This is the adjoint of the target-to-position map behind ``fuse`` for
+        a frozen base and frozen prescribed positions: for every target ``D``,
+        ``<project_gradient(g), D>`` equals
         ``<g_free, fuse(base, D, fixed) - fuse(base, 0, fixed)>``. It runs the
         cached factor's transpose solve through the same code path as the
         autograd backward of ``fuse``, so it matches
-        ``autograd.grad(<g, fuse(base, D, fixed)>, D)`` for any ``D``. No extra
-        stiffness or volume factor is applied.
+        ``autograd.grad(<g, fuse(base, D, fixed)>, D)`` for any ``D``. With
+        seven modes the transpose solve is followed by the mode adjoint, so
+        the warping columns hold the gradient projected onto the warping modes.
+        No extra stiffness or volume factor is applied.
 
         Args:
             position_gradient: World position gradient of the physical
@@ -326,9 +421,9 @@ class HexFusion:
                 discarded.
 
         Returns:
-            Detached axis-increment gradients [J], shape [B, C, 3, 3], on the
-            input device in the working precision, in the same world matrix
-            layout as ``world_axis_increments`` in ``fuse`` (axes in columns).
+            Detached target gradients [J], shape [B, C, 3, target_modes], on
+            the input device in the working precision, in the same world
+            layout as ``world_targets`` in ``fuse`` (mode vectors in columns).
 
         Raises:
             TypeError: If the input is not a tensor in the chosen precision.

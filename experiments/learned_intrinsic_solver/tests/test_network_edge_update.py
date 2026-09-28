@@ -21,7 +21,8 @@ STATE_DIM = 5
 
 def _inputs(model, batch=2, requires_grad=False):
     count = math.prod(model.cell_counts)
-    axes = torch.eye(3).expand(batch, count, 3, 3).clone()
+    # Centre axes start at the identity; any warping columns start at zero.
+    axes = torch.eye(3, model.target_modes).expand(batch, count, 3, model.target_modes).clone()
     state = torch.randn(batch, count, model.state_feature_dim)
     conditioning = torch.randn(batch, count, model.conditioning_dim)
     edges = {}
@@ -197,9 +198,9 @@ class TestNetworkEdgeUpdate(unittest.TestCase):
         """Seed the network fixtures for repeatable float32 comparisons."""
         torch.manual_seed(41)
 
-    def _pair(self, **variant_flags):
-        baseline = _network(7)
-        variant = _network(7, **variant_flags)
+    def _pair(self, target_modes=3, **variant_flags):
+        baseline = _network(7, target_modes=target_modes)
+        variant = _network(7, target_modes=target_modes, **variant_flags)
         result = variant.load_state_dict(baseline.state_dict(), strict=False)
         self.assertEqual(result.unexpected_keys, [])
         self.assertEqual(sorted(result.missing_keys), _edge_update_keys(variant))
@@ -228,6 +229,25 @@ class TestNetworkEdgeUpdate(unittest.TestCase):
         self.assertGreater(torch.count_nonzero(expected.axis_correction).item(), 0)
         for wanted, got in zip(expected, actual, strict=True):
             torch.testing.assert_close(got, wanted, rtol=0, atol=0)
+
+    def test_identity_at_initialization_with_seven_modes(self):
+        """Start bit-identical to the geometry-only network when seven target vectors are predicted."""
+        baseline, variant = self._pair(target_modes=7, edge_network=True)
+        self.assertEqual(variant.target_modes, 7)
+        self.assertEqual(variant.correction_head.out_features, 21)
+        axes, state, edges, conditioning = _inputs(baseline)
+        self.assertEqual(axes.shape, (2, 12, 3, 7))
+        axes = axes + 0.1 * torch.randn_like(axes)
+        expected = baseline(axes, state, edges, conditioning)
+        actual = variant(axes, state, edges, conditioning)
+        self.assertEqual(actual.local_target_axes.shape, (2, 12, 3, 7))
+        self.assertGreater(torch.count_nonzero(expected.axis_correction[..., 3:]).item(), 0)
+        for wanted, got in zip(expected, actual, strict=True):
+            torch.testing.assert_close(got, wanted, rtol=0, atol=0)
+        _perturb_edge_update(variant, 13)
+        changed = variant(axes, state, edges, conditioning)
+        self.assertTrue(torch.isfinite(changed.local_target_axes).all())
+        self.assertFalse(torch.allclose(changed.local_target_axes, expected.local_target_axes))
 
     def test_perturbed_edge_update_changes_output_and_receives_gradients(self):
         """Let the state-dependent path alter predictions and train all of its parameters."""

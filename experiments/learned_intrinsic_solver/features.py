@@ -1,15 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Revised nine-value input schema for the learned hexahedral optimizer.
+"""Node input schema for the learned hexahedral optimizer.
 
-This module is the single source of truth for the schema-5 node input layout
-and holds the pure feature functions that the mixed-material step composes.
-Every spatial matrix block is a 3x3 matrix expressed in the receiving cell's
-current proper frame ``R`` (world columns) and flattened row-major; see
-:func:`pack_state_features` for the exact packing order. Current axes
-``A = R^T F`` are not part of the state vector: the network prepends them
-separately, so the node input has ``9 + STATE_FEATURE_DIM`` values, plus
+This module is the single source of truth for the node input layout and holds
+the pure feature functions that the mixed-material step composes. Every
+spatial block is a ``3 x m`` matrix ``V`` whose ``m >= 1`` columns are world
+target vectors of one cell: for ``m = 3`` the columns of the centre
+deformation gradient ``F`` (the axes ``a_1, a_2, a_3``); for ``m = 7``
+(:data:`TARGET_MODES_DEFAULT`) those three axes followed by the four warping
+vectors ``w_12, w_13, w_23, w_123`` of the trilinear cell map, so ``V[:, :3]``
+is always the centre ``F``. Each block is expressed in the receiving cell's
+current proper frame ``R`` (world columns) as ``R^T V`` and flattened
+row-major; see :func:`pack_state_features` for the exact packing order. The
+current local targets ``R^T V`` are not part of the state vector: the network
+prepends them separately, so the node input has ``target_dim(m) +
+state_feature_dim(m)`` values (``9 + STATE_FEATURE_DIM`` for the legacy
+three-mode schema), plus
 :data:`CONTACT_FEATURE_DIM` pooled contact channels that the network produces
 itself from :data:`CONTACT_TOKEN_DIM`-wide contact tokens when contact tokens
 are enabled (``contact_features.build_contact_tokens`` builds the tokens).
@@ -36,7 +43,7 @@ decide what enters autograd.
 from __future__ import annotations
 
 import math
-from numbers import Real
+from numbers import Integral, Real
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -56,11 +63,14 @@ __all__ = [
     "RMS_FLOOR",
     "SCALAR_FEATURES",
     "STATE_FEATURE_DIM",
+    "TARGET_MODES_DEFAULT",
     "center_deformation",
     "conditioning_channels",
     "contact_ratios",
     "pack_state_features",
     "rms_normalize",
+    "state_feature_dim",
+    "target_dim",
     "to_local",
 ]
 
@@ -71,10 +81,7 @@ MATRIX_BLOCKS = (
     "previous_axis_gradient",
     "previous_axis_update",
 )
-"""Nine-value matrix blocks in packing order; each is ``R^T M`` flattened row-major."""
-
-MATRIX_FEATURE_DIM = 9 * len(MATRIX_BLOCKS)
-"""Width of the five matrix blocks (45)."""
+"""Matrix blocks in packing order; each is a ``3 x m`` world block ``V`` stored as ``R^T V`` flattened row-major."""
 
 BOUNDARY_DIM = 14
 """Six exposed-face flags followed by eight fixed-corner flags in z-fast corner order."""
@@ -82,8 +89,56 @@ BOUNDARY_DIM = 14
 SCALAR_FEATURES = ("log_gradient_rms", "history_valid")
 """Trailing per-cell scalars: natural log of the object gradient RMS and the history flag."""
 
-STATE_FEATURE_DIM = MATRIX_FEATURE_DIM + BOUNDARY_DIM + len(SCALAR_FEATURES)
-"""Total state width (61): 45 matrix components, 14 boundary flags, 2 scalars."""
+TARGET_MODES_DEFAULT = 7
+"""Target vectors per cell in the seven-mode schema: three axes plus the warping vectors ``w_12, w_13, w_23, w_123``."""
+
+
+def _require_modes(modes) -> int:
+    if isinstance(modes, bool) or not isinstance(modes, Integral) or modes < 1:
+        raise ValueError("modes must be a positive integer")
+    return int(modes)
+
+
+def target_dim(modes: int) -> int:
+    """Return the per-cell target width ``3 * modes`` for ``modes`` world target vectors.
+
+    Args:
+        modes: Number of target vectors per cell: 3 for the centre axes alone,
+            :data:`TARGET_MODES_DEFAULT` with the four warping vectors.
+
+    Returns:
+        Number of scalar targets per cell (9 for 3 modes, 21 for 7).
+
+    Raises:
+        ValueError: If modes is not a positive integer.
+    """
+    return 3 * _require_modes(modes)
+
+
+def state_feature_dim(modes: int) -> int:
+    """Return the state width of :func:`pack_state_features` for ``modes`` target vectors per cell.
+
+    Each of the five :data:`MATRIX_BLOCKS` packs ``target_dim(modes)`` values,
+    followed by :data:`BOUNDARY_DIM` boundary flags and the
+    :data:`SCALAR_FEATURES`.
+
+    Args:
+        modes: Number of target vectors per cell.
+
+    Returns:
+        State width (61 for 3 modes, 121 for 7).
+
+    Raises:
+        ValueError: If modes is not a positive integer.
+    """
+    return len(MATRIX_BLOCKS) * target_dim(modes) + BOUNDARY_DIM + len(SCALAR_FEATURES)
+
+
+MATRIX_FEATURE_DIM = len(MATRIX_BLOCKS) * target_dim(3)
+"""Width of the five matrix blocks in the legacy three-mode schema (45)."""
+
+STATE_FEATURE_DIM = state_feature_dim(3)
+"""Legacy three-mode state width (61): 45 matrix components, 14 boundary flags, 2 scalars."""
 
 CONDITIONING_CHANNELS = (
     "log1p_lame_ratio",
@@ -135,15 +190,15 @@ def _require_tensor(name: str, value) -> None:
 
 
 def _require_cell_matrices(name: str, value, *, like: torch.Tensor | None = None) -> None:
-    """Check a floating [B, C, 3, 3] tensor, optionally matching a reference tensor."""
+    """Check a floating [B, C, 3, m] tensor with m >= 1, optionally matching a reference tensor."""
     _require_tensor(name, value)
-    if value.ndim != 4 or value.shape[-2:] != (3, 3):
-        raise ValueError(f"{name} must have shape [B, C, 3, 3]")
+    if value.ndim != 4 or value.shape[-2] != 3 or value.shape[-1] < 1:
+        raise ValueError(f"{name} must have shape [B, C, 3, m] with m >= 1")
     if not value.is_floating_point():
         raise TypeError(f"{name} must have a floating dtype")
     if like is not None:
         if value.shape != like.shape:
-            raise ValueError(f"{name} must share the [B, C, 3, 3] shape of the other matrix blocks")
+            raise ValueError(f"{name} must share the [B, C, 3, m] shape of the other matrix blocks")
         if value.dtype != like.dtype:
             raise TypeError(f"{name} must share the dtype of the other matrix blocks")
         if value.device != like.device:
@@ -232,30 +287,40 @@ def center_deformation(
 
 
 def to_local(frames: torch.Tensor, world_matrices: torch.Tensor) -> torch.Tensor:
-    """Express world 3x3 matrices in each cell's frame as ``R^T @ M``.
+    """Express world target vectors in each cell's frame as ``R^T @ V``.
 
-    Frames store proper rotations with world columns. Axis differences, axis
-    gradients, and achieved axis updates all transform as ``R^T M`` under a
-    frame change, so one function serves every matrix block. Nothing is
+    Frames store proper rotations with world columns. ``V`` holds ``m >= 1``
+    world vectors in its columns: a deformation gradient, axis difference,
+    gradient or update for ``m = 3``, or the axes and warping vectors of the
+    seven-mode basis for ``m = 7``. Every column transforms as ``R^T v`` under
+    a frame change, so one function serves every block and
+    ``to_local(R, V)[..., :k]`` equals ``to_local(R, V[..., :k])``. Nothing is
     detached here; callers freeze frames before use.
 
     Args:
         frames: Local-to-world rotations, shape [..., 3, 3].
-        world_matrices: World matrices with axes in columns, same shape as frames.
+        world_matrices: World vectors in columns, shape [..., 3, m] with the
+            leading dimensions of frames and any ``m >= 1``.
 
     Returns:
-        Local matrices ``R^T M`` with the shape of the inputs.
+        Local matrices ``R^T V``, shape [..., 3, m].
 
     Raises:
         TypeError: If an input is not a floating tensor or the dtypes differ.
-        ValueError: If the shapes are not equal trailing-(3, 3) shapes.
+        ValueError: If frames is not [..., 3, 3], world_matrices is not
+            [..., 3, m] with the leading shape of frames and ``m >= 1``, or
+            the devices differ.
     """
     _require_tensor("frames", frames)
     _require_tensor("world_matrices", world_matrices)
     if frames.ndim < 2 or frames.shape[-2:] != (3, 3):
         raise ValueError("frames must have shape [..., 3, 3]")
-    if world_matrices.shape != frames.shape:
-        raise ValueError("world_matrices must share the shape of frames")
+    if (
+        world_matrices.ndim != frames.ndim
+        or world_matrices.shape[:-1] != frames.shape[:-1]
+        or world_matrices.shape[-1] < 1
+    ):
+        raise ValueError("world_matrices must have shape [..., 3, m] with m >= 1 and the leading shape of frames")
     if not frames.is_floating_point() or world_matrices.dtype != frames.dtype:
         raise TypeError("frames and world_matrices must share one floating dtype")
     if world_matrices.device != frames.device:
@@ -267,7 +332,8 @@ def rms_normalize(values: torch.Tensor, *, rms: torch.Tensor | None = None) -> t
     """Normalize a per-object matrix field by a floored RMS and clip the result.
 
     The RMS is the root mean square over every cell matrix component of one
-    object, ``sqrt(mean_{c,i,j} values^2)``, floored at :data:`RMS_FLOOR` so a
+    object, ``sqrt(mean_{c,i,j} values^2)`` across all ``3 m`` components of
+    every cell, floored at :data:`RMS_FLOOR` so a
     measured zero stays finite: zero input yields zero output and an RMS equal
     to the floor. Pass ``rms`` to reuse another field's statistics, as the
     previous gradient does with the current gradient RMS; the supplied RMS is
@@ -275,7 +341,7 @@ def rms_normalize(values: torch.Tensor, *, rms: torch.Tensor | None = None) -> t
     ``+/-CLIP`` acts on the components as given, so pass local-frame values.
 
     Args:
-        values: Local-frame matrix field, shape [B, C, 3, 3].
+        values: Local-frame matrix field, shape [B, C, 3, m] with ``m >= 1``.
         rms: Optional per-object RMS with one value per object (any shape with B
             elements, e.g. [B] or [B, 1, 1, 1]); computed from ``values`` when None.
 
@@ -285,7 +351,7 @@ def rms_normalize(values: torch.Tensor, *, rms: torch.Tensor | None = None) -> t
 
     Raises:
         TypeError: If values is not a floating tensor.
-        ValueError: If values is not [B, C, 3, 3] or rms does not hold B values.
+        ValueError: If values is not [B, C, 3, m] or rms does not hold B values.
     """
     _require_cell_matrices("values", values)
     batch_count = values.shape[0]
@@ -309,34 +375,39 @@ def pack_state_features(
     log_gradient_rms: torch.Tensor,
     history_valid: torch.Tensor,
 ) -> torch.Tensor:
-    """Pack the per-cell state vector of width :data:`STATE_FEATURE_DIM`.
+    """Pack the per-cell state vector of width ``state_feature_dim(m)``.
 
-    Packing order along the last axis: ``inertial_axis_offset`` (9, row-major
-    3x3), ``physical_axis_change`` (9), ``current_axis_gradient`` (9),
-    ``previous_axis_gradient`` (9), ``previous_axis_update`` (9), exposed-face
-    flags (6), fixed-corner flags (8), ``log_gradient_rms`` (1, broadcast per
-    cell), ``history_valid`` (1, exactly 1.0 or 0.0). All matrix blocks must
-    already be expressed in the receiving local frame and normalized by the
-    caller. Objects whose ``history_valid`` is false have both history blocks
-    written as zeros regardless of the tensors supplied, so a missing history is
-    always distinguishable from a measured zero.
+    The five matrix blocks are ``[B, C, 3, m]`` local-frame blocks ``R^T V``
+    with one common ``m >= 1`` (3 for the legacy axes-only schema, 7 with the
+    warping vectors). Packing order along the last axis:
+    ``inertial_axis_offset`` (``3 m``, row-major so component ``[i, j]`` lands
+    at ``m i + j``), ``physical_axis_change`` (``3 m``),
+    ``current_axis_gradient`` (``3 m``), ``previous_axis_gradient`` (``3 m``),
+    ``previous_axis_update`` (``3 m``), exposed-face flags (6), fixed-corner
+    flags (8), ``log_gradient_rms`` (1, broadcast per cell), ``history_valid``
+    (1, exactly 1.0 or 0.0). For ``m = 3`` this is the schema-5 layout of
+    width :data:`STATE_FEATURE_DIM`. All matrix blocks must already be
+    expressed in the receiving local frame and normalized by the caller.
+    Objects whose ``history_valid`` is false have both history blocks written
+    as zeros regardless of the tensors supplied, so a missing history is always
+    distinguishable from a measured zero.
 
     Args:
-        inertial_axis_offset: ``R^T (F_target - F_current)``, shape [B, C, 3, 3].
-        physical_axis_change: ``R^T (F_current - F_previous)``, shape [B, C, 3, 3].
-        current_axis_gradient: Normalized current local axis gradient, shape [B, C, 3, 3].
-        previous_axis_gradient: Normalized previous gradient in the current frame, shape [B, C, 3, 3].
-        previous_axis_update: Normalized previous achieved update in the current frame, shape [B, C, 3, 3].
+        inertial_axis_offset: ``R^T (V_target - V_current)``, shape [B, C, 3, m].
+        physical_axis_change: ``R^T (V_current - V_previous)``, shape [B, C, 3, m].
+        current_axis_gradient: Normalized current local target gradient, shape [B, C, 3, m].
+        previous_axis_gradient: Normalized previous gradient in the current frame, shape [B, C, 3, m].
+        previous_axis_update: Normalized previous achieved update in the current frame, shape [B, C, 3, m].
         boundary_features: Boundary flags, shape [C, 14] shared across objects or [B, C, 14].
         log_gradient_rms: Natural log of the current gradient RMS, one value per object.
         history_valid: One flag per object; boolean, or numeric where nonzero means valid.
 
     Returns:
-        State features, shape [B, C, STATE_FEATURE_DIM], in the dtype of the matrix blocks.
+        State features, shape [B, C, state_feature_dim(m)], in the dtype of the matrix blocks.
 
     Raises:
         TypeError: If an input is not a tensor or dtypes are incompatible.
-        ValueError: If shapes or devices are incompatible.
+        ValueError: If shapes or devices are incompatible, including blocks whose ``m`` differ.
     """
     import torch
 

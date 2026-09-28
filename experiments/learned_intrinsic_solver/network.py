@@ -265,12 +265,19 @@ class IntrinsicTransformerLayer(nn.Module):
 
 
 class IntrinsicSolverOutput(NamedTuple):
-    """Experimental local deformation targets; these are not integrated positions."""
+    """Experimental local deformation targets; these are not integrated positions.
+
+    Every matrix packs the target vectors as columns in the shared mode order:
+    columns 0..2 are the centre deformation-gradient axes and any further
+    columns are the bilinear and trilinear warping vectors, so ``[..., :, :3]``
+    is always the affine part. With ``target_modes = 3`` the shapes reduce to
+    the historical ``[B, N, 3, 3]``.
+    """
 
     local_target_axes: Tensor
-    """Dimensionless target matrices with axes as columns, shape [B, N, 3, 3]."""
+    """Dimensionless target vectors as columns, shape [B, N, 3, target_modes]."""
     axis_correction: Tensor
-    """Dimensionless corrections with joint nine-value norm below one, shape [B, N, 3, 3]."""
+    """Dimensionless corrections with joint 3 * target_modes value norm below one, shape [B, N, 3, target_modes]."""
     step_size: Tensor
     """Dimensionless per-cell step in (0, max_step_size), shape [B, N]."""
 
@@ -284,10 +291,21 @@ class IntrinsicSolverNetwork(nn.Module):
     and masks are registered buffers, so state_dict and device moves retain
     them. Do not use this topology to connect separate or empty material cells.
 
-    Scalar/node feature normalization is caller-owned. Current axes are always
-    encoded and need not be repeated in state_features. A shared edge MLP is
-    evaluated once per distinct hop, with separate bias/value projections in
-    each layer. Shared scalar conditioning drives each layer's FiLM.
+    Scalar/node feature normalization is caller-owned. The current target
+    vectors are always encoded and need not be repeated in state_features. A
+    shared edge MLP is evaluated once per distinct hop, with separate
+    bias/value projections in each layer. Shared scalar conditioning drives
+    each layer's FiLM.
+
+    ``target_modes`` selects how many local target vectors each cell predicts.
+    Each vector has three components and the vectors are packed as the columns
+    of a ``[3, target_modes]`` matrix in a fixed order: the three centre
+    deformation-gradient axes first, then any warping vectors (the bilinear
+    pair modes and the trilinear mode of the corner basis). The default of
+    three keeps the affine-only behaviour and is numerically identical to the
+    network before this option existed; seven adds the four warping vectors.
+    The network treats the vectors as plain input channels and output
+    channels; their geometric meaning belongs to the caller's basis.
 
     With ``contact_tokens`` enabled the network owns a
     :class:`.contact_network.ContactEncoder` that pools every cell's masked
@@ -297,16 +315,19 @@ class IntrinsicSolverNetwork(nn.Module):
     masked) produces the same output as the flag-off network with matching
     weights at initialization.
 
-    The correction head starts at zero, so initial local targets equal current
-    axes. This does not guarantee a no-op after global fusion. The step head is
-    applied per cell: every cell receives its own bounded sigmoid step in
-    (0, max_step_size), equal to 0.5 * max_step_size at the zero initialization.
-    This per-cell step controller is an experimental configurable choice, not a
-    guarantee of physical stability or energy descent.
+    The correction head starts at zero, so initial local targets equal the
+    current vectors. This does not guarantee a no-op after global fusion. The
+    step head is applied per cell: every cell receives its own bounded sigmoid
+    step in (0, max_step_size), equal to 0.5 * max_step_size at the zero
+    initialization. This per-cell step controller is an experimental
+    configurable choice, not a guarantee of physical stability or energy descent.
 
     Args:
         cell_counts: Positive cell counts along material x, y, z; z varies fastest.
-        state_feature_dim: Additional prepared per-cell features, excluding axes.
+        state_feature_dim: Additional prepared per-cell features, excluding the
+            target vectors.
+        target_modes: Number of three-component target vectors per cell; 3
+            predicts the centre axes only, 7 adds the four warping vectors.
         conditioning_dim: Prepared dimensionless material, scale and contact
             channels; the revised schema supplies features.CONDITIONING_DIM.
         hidden_dim: Cell-token width.
@@ -331,6 +352,7 @@ class IntrinsicSolverNetwork(nn.Module):
         cell_counts: tuple[int, int, int],
         state_feature_dim: int,
         *,
+        target_modes: int = 3,
         conditioning_dim: int = CONDITIONING_DIM,
         hidden_dim: int = 128,
         num_heads: int = 4,
@@ -346,6 +368,7 @@ class IntrinsicSolverNetwork(nn.Module):
         super().__init__()
         _integer(state_feature_dim, "state_feature_dim", minimum=0)
         for name, value in (
+            ("target_modes", target_modes),
             ("conditioning_dim", conditioning_dim),
             ("hidden_dim", hidden_dim),
             ("edge_input_dim", edge_input_dim),
@@ -369,6 +392,7 @@ class IntrinsicSolverNetwork(nn.Module):
             self.register_buffer(f"neighbor_indices_{hop}", indices)
             self.register_buffer(f"neighbor_mask_{hop}", mask)
         self.state_feature_dim = state_feature_dim
+        self.target_modes = target_modes
         self.conditioning_dim = conditioning_dim
         self.edge_input_dim = edge_input_dim
         self.max_step_size = float(max_step_size)
@@ -376,7 +400,7 @@ class IntrinsicSolverNetwork(nn.Module):
         self.checkpoint_chunks = checkpoint_chunks
         self.contact_tokens = contact_tokens
         self.contact_encoder = None
-        node_input_dim = 9 + state_feature_dim
+        node_input_dim = 3 * target_modes + state_feature_dim
         if contact_tokens:
             self.contact_encoder = ContactEncoder(token_dim=CONTACT_TOKEN_DIM)
             if self.contact_encoder.output_dim != CONTACT_FEATURE_DIM:
@@ -404,7 +428,7 @@ class IntrinsicSolverNetwork(nn.Module):
             for _ in self.hops
         )
         self.output_norm = nn.LayerNorm(hidden_dim)
-        self.correction_head = nn.Linear(hidden_dim, 9)
+        self.correction_head = nn.Linear(hidden_dim, 3 * target_modes)
         self.step_head = nn.Linear(hidden_dim, 1)
         nn.init.zeros_(self.correction_head.weight)
         nn.init.zeros_(self.correction_head.bias)
@@ -443,10 +467,11 @@ class IntrinsicSolverNetwork(nn.Module):
         contact_tokens: Tensor | None = None,
         contact_mask: Tensor | None = None,
     ) -> IntrinsicSolverOutput:
-        """Predict local targets in the same fixed frames as the input axes.
+        """Predict local targets in the same fixed frames as the input vectors.
 
         Args:
-            local_axes: Current dimensionless axes as columns, shape [B, N, 3, 3].
+            local_axes: Current dimensionless target vectors as columns, shape
+                [B, N, 3, target_modes]; columns 0..2 are the centre axes.
             state_features: Additional normalized inputs, shape [B, N, state_feature_dim].
                 Examples include inertial offsets/rest length, boundary flags,
                 and normalized optimizer history; the layout is caller-defined.
@@ -462,7 +487,8 @@ class IntrinsicSolverNetwork(nn.Module):
                 ``contact_tokens``.
 
         Returns:
-            Local targets, bounded corrections, and a per-cell step [B, N] with
+            Local targets and bounded corrections, both [B, N, 3, target_modes],
+            and a per-cell step [B, N] with
             target = local_axes + step_size[..., None, None] * axis_correction.
             Frame extraction and global reconstruction are external operations.
 
@@ -472,8 +498,9 @@ class IntrinsicSolverNetwork(nn.Module):
                 two contact arguments is given.
         """
         cells = prod(self.cell_counts)
-        if local_axes.ndim != 4 or local_axes.shape[1:] != (cells, 3, 3) or not local_axes.shape[0]:
-            raise ValueError("local_axes must have shape [nonempty_batch, cell_count, 3, 3]")
+        modes = self.target_modes
+        if local_axes.ndim != 4 or local_axes.shape[1:] != (cells, 3, modes) or not local_axes.shape[0]:
+            raise ValueError(f"local_axes must have shape [nonempty_batch, cell_count, 3, {modes}]")
         batch = local_axes.shape[0]
         if state_features.shape != (batch, cells, self.state_feature_dim):
             raise ValueError("state_features must match the batch, cells, and configured feature count")
@@ -499,7 +526,7 @@ class IntrinsicSolverNetwork(nn.Module):
             features = layer(features, encoded_edges[hop], indices, mask, conditioning=condition)
         features = self.output_norm(features)
         raw = self.correction_head(features)
-        correction = (raw / torch.sqrt(1 + raw.square().sum(dim=-1, keepdim=True))).reshape(batch, cells, 3, 3)
+        correction = (raw / torch.sqrt(1 + raw.square().sum(dim=-1, keepdim=True))).reshape(batch, cells, 3, modes)
         step_size = self.max_step_size * self.step_head(features).squeeze(-1).sigmoid()
         target = local_axes + step_size[..., None, None] * correction
         return IntrinsicSolverOutput(target, correction, step_size)

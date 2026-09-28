@@ -130,7 +130,8 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
     @staticmethod
     def _inputs(model, batch=2):
         count = math.prod(model.cell_counts)
-        axes = torch.eye(3).expand(batch, count, 3, 3).clone()
+        # Centre axes start at the identity; any warping columns start at zero.
+        axes = torch.eye(3, model.target_modes).expand(batch, count, 3, model.target_modes).clone()
         state = torch.randn(batch, count, model.state_feature_dim)
         conditioning = torch.randn(batch, count, model.conditioning_dim)
         edges = {}
@@ -391,6 +392,158 @@ class TestContactTokenFlag(unittest.TestCase):
         self.assertTrue(torch.isfinite(tokens.grad).all())
         self.assertEqual(torch.count_nonzero(tokens.grad[~mask]).item(), 0)
         self.assertGreater(tokens.grad[mask].abs().sum().item(), 0)
+
+
+class TestTargetModes(unittest.TestCase):
+    """Exercise the v4 seven-vector target head next to the legacy three-axis path."""
+
+    GRID = (2, 2, 3)
+    STATE_DIM = 7
+
+    def setUp(self):
+        """Seed the fixtures so float32 comparisons are repeatable."""
+        torch.manual_seed(37)
+
+    def _network(self, seed, **flags):
+        torch.manual_seed(seed)
+        return IntrinsicSolverNetwork(self.GRID, self.STATE_DIM, hidden_dim=16, num_heads=4, **flags)
+
+    @staticmethod
+    def _perturb_heads(model, seed):
+        with torch.no_grad():
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(seed)
+                model.correction_head.weight.normal_(std=0.1)
+                model.step_head.weight.normal_(std=0.1)
+
+    def test_seven_modes_shapes_and_widths(self):
+        """Read and predict [B, N, 3, 7] with a 21-wide head whose first three columns stay the centre axes."""
+        model = self._network(1, target_modes=7)
+        self.assertEqual(model.target_modes, 7)
+        self.assertEqual(model.node_encoder[0].in_features, 21 + self.STATE_DIM)
+        self.assertEqual(model.correction_head.out_features, 21)
+        axes, state, edges, conditioning = TestIntrinsicSolverNetwork._inputs(model)
+        self.assertEqual(axes.shape, (2, 12, 3, 7))
+        torch.testing.assert_close(axes[..., :3], torch.eye(3).expand(2, 12, 3, 3))
+        self.assertEqual(torch.count_nonzero(axes[..., 3:]).item(), 0)
+        self._perturb_heads(model, 2)
+        output = model(axes, state, edges, conditioning)
+        self.assertEqual(output.local_target_axes.shape, (2, 12, 3, 7))
+        self.assertEqual(output.axis_correction.shape, (2, 12, 3, 7))
+        self.assertEqual(output.step_size.shape, (2, 12))
+        self.assertGreater(torch.count_nonzero(output.axis_correction[..., 3:]).item(), 0)
+        norms = torch.linalg.vector_norm(output.axis_correction.flatten(-2), dim=-1)
+        self.assertEqual(norms.shape, (2, 12))
+        self.assertTrue((norms < 1).all())
+        expected = axes + output.step_size[..., None, None] * output.axis_correction
+        torch.testing.assert_close(output.local_target_axes, expected)
+        with self.assertRaisesRegex(ValueError, r"3, 7"):
+            model(axes[..., :3], state, edges, conditioning)
+        legacy = self._network(1)
+        with self.assertRaisesRegex(ValueError, r"3, 3"):
+            legacy(axes, state, edges, conditioning)
+
+    def test_rejects_invalid_target_modes(self):
+        """Refuse non-positive, boolean, float, and string mode counts."""
+        for bad in (0, -1, True, 3.0, "7"):
+            with self.subTest(target_modes=bad):
+                with self.assertRaisesRegex(ValueError, "target_modes"):
+                    IntrinsicSolverNetwork(self.GRID, self.STATE_DIM, hidden_dim=16, target_modes=bad)
+        for modes in (1, 2, 7):
+            model = IntrinsicSolverNetwork(self.GRID, self.STATE_DIM, hidden_dim=16, target_modes=modes)
+            self.assertEqual(model.correction_head.out_features, 3 * modes)
+
+    def test_default_is_bit_identical_to_explicit_three_modes(self):
+        """Keep the default network, its parameters, and its outputs unchanged by the new option."""
+        default = self._network(5)
+        explicit = self._network(5, target_modes=3)
+        self.assertEqual(default.target_modes, 3)
+        self.assertEqual(default.node_encoder[0].in_features, 9 + self.STATE_DIM)
+        self.assertEqual(default.correction_head.out_features, 9)
+        default_state, explicit_state = default.state_dict(), explicit.state_dict()
+        self.assertEqual(list(default_state), list(explicit_state))
+        for key, value in default_state.items():
+            torch.testing.assert_close(explicit_state[key], value, rtol=0, atol=0, msg=key)
+        self._perturb_heads(default, 6)
+        self._perturb_heads(explicit, 6)
+        axes, state, edges, conditioning = TestIntrinsicSolverNetwork._inputs(default)
+        axes = axes + 0.1 * torch.randn_like(axes)
+        expected = default(axes, state, edges, conditioning)
+        actual = explicit(axes, state, edges, conditioning)
+        self.assertGreater(torch.count_nonzero(expected.axis_correction).item(), 0)
+        for wanted, got in zip(expected, actual, strict=True):
+            torch.testing.assert_close(got, wanted, rtol=0, atol=0)
+
+    def test_zero_initialized_head_returns_input_for_both_mode_counts(self):
+        """Return the input vectors exactly with zero corrections and a half-maximum step for m = 3 and m = 7."""
+        for modes in (3, 7):
+            with self.subTest(target_modes=modes):
+                model = self._network(9, target_modes=modes, max_step_size=0.4)
+                self.assertEqual(torch.count_nonzero(model.correction_head.weight).item(), 0)
+                self.assertEqual(torch.count_nonzero(model.correction_head.bias).item(), 0)
+                axes, state, edges, conditioning = TestIntrinsicSolverNetwork._inputs(model)
+                axes = axes + 0.3 * torch.randn_like(axes)
+                output = model(axes, state, edges, conditioning)
+                self.assertEqual(output.local_target_axes.shape, (2, 12, 3, modes))
+                torch.testing.assert_close(output.local_target_axes, axes, rtol=0, atol=0)
+                self.assertEqual(torch.count_nonzero(output.axis_correction).item(), 0)
+                torch.testing.assert_close(output.step_size, torch.full((2, 12), 0.2), rtol=0, atol=0)
+
+    def test_v4_width_forward_backward_smoke(self):
+        """Train one step at the v4 width (192 hidden, 6 heads, 96 edge) with warping modes, edge network, and contact tokens."""
+        v4 = {"hidden_dim": 192, "num_heads": 6, "edge_hidden_dim": 96}
+        baseline = {"hidden_dim": 128, "num_heads": 4, "edge_hidden_dim": 64}
+        flags = {"target_modes": 7, "edge_network": True, "contact_tokens": True}
+        counts = {}
+        for label, width in (("baseline", baseline), ("v4", v4)):
+            torch.manual_seed(11)
+            model = IntrinsicSolverNetwork(self.GRID, self.STATE_DIM, **width, **flags)
+            counts[label] = sum(parameter.numel() for parameter in model.parameters())
+            torch.manual_seed(11)
+            affine = IntrinsicSolverNetwork(self.GRID, self.STATE_DIM, **width, **{**flags, "target_modes": 3})
+            affine_count = sum(parameter.numel() for parameter in affine.parameters())
+            # The extra modes only widen the node encoder input and the correction head.
+            self.assertEqual(counts[label] - affine_count, 24 * width["hidden_dim"] + 12)
+        self.assertEqual(counts["baseline"], 428522)
+        self.assertEqual(counts["v4"], 881484)
+
+        torch.manual_seed(13)
+        model = IntrinsicSolverNetwork(self.GRID, self.STATE_DIM, **v4, **flags)
+        self.assertEqual(len(model.layers), 1)
+        self.assertEqual(model.layers[0].num_heads, 6)
+        self.assertEqual(model.layers[0].head_dim, 32)
+        self.assertEqual(model.layers[0].edge_dim, 96)
+        self.assertEqual(model.node_encoder[0].in_features, 21 + self.STATE_DIM + features.CONTACT_FEATURE_DIM)
+        self._perturb_heads(model, 14)
+        with torch.no_grad():
+            model.layers[0].edge_update[2].weight.normal_(std=0.1)
+            model.layers[0].film.weight.normal_(std=0.01)
+            model.contact_encoder.pool_projection.weight.normal_(std=0.2)
+        axes, state, edges, conditioning = TestIntrinsicSolverNetwork._inputs(model)
+        axes = (axes + 0.1 * torch.randn_like(axes)).requires_grad_()
+        state.requires_grad_()
+        conditioning.requires_grad_()
+        for values in edges.values():
+            values.requires_grad_()
+        tokens = torch.randn(2, 12, 3, features.CONTACT_TOKEN_DIM, requires_grad=True)
+        mask = torch.rand(2, 12, 3) < 0.5
+        mask[0, 0] = True
+        output = model(axes, state, edges, conditioning, contact_tokens=tokens, contact_mask=mask)
+        self.assertEqual(output.local_target_axes.shape, (2, 12, 3, 7))
+        self.assertEqual(output.axis_correction.shape, (2, 12, 3, 7))
+        self.assertEqual(output.step_size.shape, (2, 12))
+        for value in output:
+            self.assertTrue(torch.isfinite(value).all())
+        loss = (output.local_target_axes - (axes.detach() + 0.1)).square().mean() + output.step_size.mean()
+        loss.backward()
+        for name, parameter in model.named_parameters():
+            self.assertIsNotNone(parameter.grad, name)
+            self.assertTrue(torch.isfinite(parameter.grad).all(), name)
+        self.assertGreater(model.correction_head.weight.grad.abs().sum().item(), 0)
+        for value in (axes, state, conditioning, tokens, *edges.values()):
+            self.assertTrue(torch.isfinite(value.grad).all())
+            self.assertGreater(value.grad.abs().sum().item(), 0)
+        self.assertEqual(torch.count_nonzero(tokens.grad[~mask]).item(), 0)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Check the revised nine-value feature schema constants and pure functions on the CPU."""
+"""Check the feature schema constants and pure functions on the CPU for three and seven target modes."""
 
 import importlib.util
 import math
@@ -67,6 +67,24 @@ class TestSchemaConstants(unittest.TestCase):
         self.assertEqual(features.RMS_FLOOR, 1e-12)
         self.assertEqual(features.CLIP, 10.0)
 
+    def test_mode_dependent_widths(self):
+        """Derive 3 m targets and 15 m + 16 state values per cell from the mode count, 61 and 121 for 3 and 7."""
+        self.assertEqual(features.TARGET_MODES_DEFAULT, 7)
+        self.assertEqual(features.target_dim(3), 9)
+        self.assertEqual(features.target_dim(7), 21)
+        self.assertEqual(features.target_dim(features.TARGET_MODES_DEFAULT), 21)
+        self.assertEqual(features.state_feature_dim(3), 61)
+        self.assertEqual(features.state_feature_dim(3), features.STATE_FEATURE_DIM)
+        self.assertEqual(features.state_feature_dim(7), 121)
+        self.assertEqual(features.state_feature_dim(7), 5 * 21 + 14 + 2)
+        self.assertEqual(features.state_feature_dim(1), 5 * 3 + 14 + 2)
+        self.assertEqual(features.MATRIX_FEATURE_DIM, len(features.MATRIX_BLOCKS) * features.target_dim(3))
+        for modes in (0, -3, 2.5, True, "7", None):
+            with self.subTest(modes=modes), self.assertRaises(ValueError):
+                features.state_feature_dim(modes)
+            with self.subTest(modes=modes), self.assertRaises(ValueError):
+                features.target_dim(modes)
+
 
 class TestPackStateFeatures(unittest.TestCase):
     def setUp(self):
@@ -126,6 +144,63 @@ class TestPackStateFeatures(unittest.TestCase):
             boundary_features=self.boundary[None].expand(self.batch, -1, -1).clone(),
         )
         torch.testing.assert_close(state, reference)
+
+    def _seven_mode_blocks(self):
+        count = self.batch * self.cells * 21
+        return {
+            name: 1000.0 * index + torch.arange(count, dtype=torch.float32).reshape(self.batch, self.cells, 3, 7)
+            for index, name in enumerate(features.MATRIX_BLOCKS)
+        }
+
+    def test_seven_mode_packing_order_and_width(self):
+        """Pack five row-major 3x7 blocks (21 values each, [i, j] at 7 i + j) ahead of the flags and scalars."""
+        blocks = self._seven_mode_blocks()
+        state = self._pack(**blocks)
+        self.assertEqual(state.shape, (self.batch, self.cells, features.state_feature_dim(7)))
+        self.assertEqual(state.shape[-1], 121)
+        self.assertEqual(state.dtype, torch.float32)
+        for index, name in enumerate(features.MATRIX_BLOCKS):
+            block = blocks[name]
+            torch.testing.assert_close(state[..., 21 * index : 21 * index + 21], block.flatten(-2))
+            for i in range(3):
+                for j in range(7):
+                    torch.testing.assert_close(state[..., 21 * index + 7 * i + j], block[..., i, j])
+        torch.testing.assert_close(state[..., 105:111], self.boundary[None, :, :6].expand(self.batch, -1, -1))
+        torch.testing.assert_close(state[..., 111:119], self.boundary[None, :, 6:].expand(self.batch, -1, -1))
+        torch.testing.assert_close(state[..., 119], self.log_rms[:, None].expand(-1, self.cells))
+        torch.testing.assert_close(state[..., 120], torch.ones(self.batch, self.cells))
+        # The history flag zeroes the 42 history values (blocks 3 and 4) of objects without history.
+        partial = self._pack(**blocks, history_valid=torch.tensor([True, False]))
+        torch.testing.assert_close(partial[0], state[0])
+        self.assertTrue((partial[1, :, 63:105] == 0).all())
+        torch.testing.assert_close(partial[1, :, :63], state[1, :, :63])
+        torch.testing.assert_close(partial[1, :, 105:120], state[1, :, 105:120])
+        torch.testing.assert_close(partial[1, :, 120], torch.zeros(self.cells))
+
+    def test_single_mode_blocks_pack(self):
+        """Accept m = 1 blocks and pack three values per block."""
+        blocks = {name: torch.randn(self.batch, self.cells, 3, 1) for name in features.MATRIX_BLOCKS}
+        state = self._pack(**blocks)
+        self.assertEqual(state.shape, (self.batch, self.cells, features.state_feature_dim(1)))
+        torch.testing.assert_close(state[..., 3:6], blocks["physical_axis_change"][..., 0])
+
+    def test_rejects_mismatched_modes_across_blocks(self):
+        """Refuse blocks whose mode count differs from the first block, and degenerate or non-3-row blocks."""
+        seven = self._seven_mode_blocks()
+        with self.assertRaises(ValueError):
+            self._pack(inertial_axis_offset=seven["inertial_axis_offset"])
+        with self.assertRaises(ValueError):
+            self._pack(**dict(seven, previous_axis_update=self.blocks["previous_axis_update"]))
+        with self.assertRaises(ValueError):
+            self._pack(**dict(seven, current_axis_gradient=seven["current_axis_gradient"][..., :5]))
+        with self.assertRaises(ValueError):
+            self._pack(**{name: block[..., :0] for name, block in seven.items()})
+        with self.assertRaises(ValueError):
+            self._pack(**{name: block[..., :2, :] for name, block in seven.items()})
+        with self.assertRaises(ValueError):
+            self._pack(**{name: block.flatten(-2) for name, block in seven.items()})
+        with self.assertRaises(TypeError):
+            self._pack(**dict(seven, physical_axis_change=seven["physical_axis_change"].double()))
 
     def test_rejects_malformed_inputs(self):
         """Refuse mismatched block shapes, boundary widths, and per-object scalar counts."""
@@ -197,12 +272,50 @@ class TestRmsNormalize(unittest.TestCase):
         _, floored = features.rms_normalize(previous, rms=torch.zeros(2))
         torch.testing.assert_close(floored, torch.full((2, 1, 1, 1), 1e-12))
 
+    def test_seven_mode_blocks(self):
+        """Take the RMS over all 21 components of every cell for [B, C, 3, 7] fields and clip them alike."""
+        values = torch.zeros(2, 4, 3, 7)
+        values[0] = 2.0
+        values[1, 3, 2, 6] = math.sqrt(4 * 21.0)
+        normalized, rms = features.rms_normalize(values)
+        self.assertEqual(rms.shape, (2, 1, 1, 1))
+        self.assertEqual(normalized.shape, (2, 4, 3, 7))
+        torch.testing.assert_close(rms.flatten(), torch.tensor([2.0, 1.0]))
+        torch.testing.assert_close(normalized[0], torch.ones(4, 3, 7))
+        torch.testing.assert_close(normalized[1, 3, 2, 6], torch.tensor(math.sqrt(84.0)))
+        self.assertEqual((normalized[1] != 0).sum().item(), 1)
+        torch.manual_seed(9)
+        field = torch.randn(3, 5, 3, 7, dtype=torch.float64)
+        normalized, rms = features.rms_normalize(field)
+        torch.testing.assert_close(rms.flatten(), field.square().mean(dim=(1, 2, 3)).sqrt())
+        torch.testing.assert_close(normalized, field / rms)
+        # The warping columns count towards the RMS, so the axes-only RMS differs unless they vanish.
+        _, axes_rms = features.rms_normalize(field[..., :3])
+        self.assertFalse(torch.allclose(axes_rms, rms))
+        spiky = torch.zeros(1, 2, 3, 7)
+        spiky[0, 1, 0, 5] = 1e3
+        clipped, supplied = features.rms_normalize(spiky, rms=torch.ones(1))
+        torch.testing.assert_close(supplied, torch.ones(1, 1, 1, 1))
+        self.assertEqual(clipped.max().item(), 10.0)
+        _, reused = features.rms_normalize(field, rms=rms)
+        torch.testing.assert_close(reused, rms)
+        _, floored = features.rms_normalize(torch.zeros(2, 4, 3, 7))
+        torch.testing.assert_close(floored, torch.full((2, 1, 1, 1), 1e-12))
+
     def test_rejects_bad_shapes(self):
-        """Refuse non-[B, C, 3, 3] fields and RMS tensors with the wrong element count."""
+        """Refuse fields that are not [B, C, 3, m] with m >= 1 and RMS tensors with the wrong element count."""
         with self.assertRaises(ValueError):
             features.rms_normalize(torch.zeros(2, 3, 9))
         with self.assertRaises(ValueError):
+            features.rms_normalize(torch.zeros(2, 3, 21))
+        with self.assertRaises(ValueError):
+            features.rms_normalize(torch.zeros(2, 3, 7, 3))
+        with self.assertRaises(ValueError):
+            features.rms_normalize(torch.zeros(2, 3, 3, 0))
+        with self.assertRaises(ValueError):
             features.rms_normalize(torch.zeros(2, 3, 3, 3), rms=torch.ones(3))
+        with self.assertRaises(ValueError):
+            features.rms_normalize(torch.zeros(2, 3, 3, 7), rms=torch.ones(3))
         with self.assertRaises(TypeError):
             features.rms_normalize(torch.zeros(2, 3, 3, 3, dtype=torch.long))
 
@@ -286,17 +399,51 @@ class TestToLocal(unittest.TestCase):
             features.to_local(frames, frames), torch.eye(3, dtype=torch.float64).expand(2, 4, 3, 3)
         )
 
+    def test_seven_mode_columns_rotate_independently(self):
+        """Apply R^T to each of the seven columns of a [.., 3, 7] block; the first three match the 3x3 path."""
+        torch.manual_seed(13)
+        frames = _proper_rotations(2, 4)
+        world = torch.randn(2, 4, 3, 7, dtype=torch.float64)
+        local = features.to_local(frames, world)
+        self.assertEqual(local.shape, (2, 4, 3, 7))
+        self.assertEqual(local.dtype, torch.float64)
+        for column in range(7):
+            expected = torch.einsum("bcji,bcj->bci", frames, world[..., column])
+            torch.testing.assert_close(local[..., column], expected)
+        torch.testing.assert_close(local[..., :3], features.to_local(frames, world[..., :3]))
+        torch.testing.assert_close(local[..., 3:], features.to_local(frames, world[..., 3:]))
+        torch.testing.assert_close(frames @ local, world, atol=1e-12, rtol=0.0)
+        # Column norms are preserved by a proper rotation, and the identity frame leaves the block unchanged.
+        torch.testing.assert_close(local.norm(dim=-2), world.norm(dim=-2))
+        identity = torch.eye(3, dtype=torch.float64).expand(2, 4, 3, 3)
+        torch.testing.assert_close(features.to_local(identity, world), world)
+        single = features.to_local(frames, world[..., :1])
+        self.assertEqual(single.shape, (2, 4, 3, 1))
+        torch.testing.assert_close(single, local[..., :1])
+
     def test_rejects_shape_and_dtype_mismatch(self):
-        """Refuse mismatched shapes, non-3x3 trailing dimensions, and dtype mixtures."""
+        """Refuse mismatched leading shapes, non-3x3 frames, blocks without three rows or columns, and dtype mixtures."""
         frames = _proper_rotations(2, 4)
         with self.assertRaises(ValueError):
             features.to_local(frames, torch.zeros(2, 3, 3, 3, dtype=torch.float64))
+        with self.assertRaises(ValueError):
+            features.to_local(frames, torch.zeros(2, 3, 3, 7, dtype=torch.float64))
+        with self.assertRaises(ValueError):
+            features.to_local(frames, torch.zeros(2, 4, 3, 0, dtype=torch.float64))
+        with self.assertRaises(ValueError):
+            features.to_local(frames, torch.zeros(2, 4, 2, 7, dtype=torch.float64))
+        with self.assertRaises(ValueError):
+            features.to_local(frames, torch.zeros(2, 4, 7, 3, dtype=torch.float64))
+        with self.assertRaises(ValueError):
+            features.to_local(frames, torch.zeros(4, 3, 7, dtype=torch.float64))
         with self.assertRaises(ValueError):
             features.to_local(
                 torch.zeros(2, 4, 3, 2, dtype=torch.float64), torch.zeros(2, 4, 3, 2, dtype=torch.float64)
             )
         with self.assertRaises(TypeError):
             features.to_local(frames, torch.zeros(2, 4, 3, 3))
+        with self.assertRaises(TypeError):
+            features.to_local(frames, torch.zeros(2, 4, 3, 7))
 
 
 class TestConditioningChannels(unittest.TestCase):
