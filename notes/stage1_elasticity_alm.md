@@ -1,5 +1,10 @@
 # Stage 1: elasticity ALM experiment
 
+**Current extension:** [triangle membrane and bending ALM](alm-triangle-bending.md)
+adds objective triangle stretch/area rows and a material-based bending metric
+floor. The stage-1 measurements and implementation description below record
+the earlier tetrahedron/spring/hinge implementation.
+
 The stage 1 implementation adds opt-in compliant ALM for tet pressure, optional
 tet matrix stress, spring stretch, and dihedral bending. The initial ALM default
 uses tet pressure only, based on the rotation measurement below. Ordinary

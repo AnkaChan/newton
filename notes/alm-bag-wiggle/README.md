@@ -1,10 +1,12 @@
 # Pinned-bag ALM comparison
 
-Open `results/index.html` locally. The full MP4 has five consecutive six-second
+Open `results-triangle-bending/index.html` for the current comparison. The
+earlier bending-only comparison remains in `results/index.html`. Each full MP4 has five consecutive six-second
 chapters, each showing ALM off on the left and ALM on on the right.
 
-Current particle ALM changes only dihedral bending in this bag. Triangle membrane
-ALM is unimplemented; this scene has no springs or tetrahedra. The geometric
+Current particle ALM covers both triangle membrane and dihedral bending in this
+bag; this scene has no springs or tetrahedra. See
+[the triangle/bending derivation](../alm-triangle-bending.md). The geometric
 stretch/shear/bend scores are deformation measures, not force residuals.
 
 The May 26 scene file was untracked and is absent from this VM. `run_case.py`
@@ -24,6 +26,8 @@ this same schedule and the current solver branch.
 the rest state as frame zero. Seed 42, 60 fps, 360 frames, 10 substeps, 10 VBD
 iterations, triangle damping 0.1, bending stiffness 200, and bending damping
 0.02 are fixed. ALM uses rho scale 1.0 and retains history throughout each run.
+The new comparison uses the material-based metric floor for triangle and bending
+rows. The earlier comparison used inertia-only bending metrics and no triangle ALM.
 
 Run from the isolated worktree with Warp 1.17.0, NumPy, usd-core, matplotlib,
 pyglet, imageio, and imageio-ffmpeg installed in its environment:

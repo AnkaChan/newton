@@ -100,6 +100,48 @@ def _loaded_spring(test, device):
     test.assertAlmostEqual(float(output.particle_q.numpy()[1, 0]), 1.0 + 1.0 / 1100.0, delta=1.0e-6)
 
 
+def _triangle_model(device, *, mu=1000.0, lame=2000.0, pinned=True):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for i, point in enumerate([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]):
+        builder.add_particle(wp.vec3(point), wp.vec3(0.0), mass=0.0 if pinned and i < 2 else 1.0)
+    builder.add_triangle(0, 1, 2, tri_ke=mu, tri_ka=lame, tri_kd=0.0)
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def _loaded_triangle(test, device):
+    """The membrane ALM solve must reach the original implicit response at high stiffness."""
+    for mu in (1000.0, 1.0e6):
+        model = _triangle_model(device, mu=mu, lame=2 * mu)
+        solver = _alm_solver(test, model, iterations=40)
+        state, output = model.state(), model.state()
+        force = np.zeros((3, 3), dtype=np.float32)
+        force[2, 1] = -100.0
+        state.particle_f.assign(force)
+        solver.step(state, output, None, None, 0.01)
+        # F=diag(1,y): E=A*(mu+K_area)*(y-1)^2/2, A=1/2.
+        expected_y = 1.0 - 100.0 / (10000.0 + 2.0 * mu)
+        np.testing.assert_allclose(output.particle_q.numpy()[:2], model.particle_q.numpy()[:2], atol=1e-7)
+        test.assertAlmostEqual(float(output.particle_q.numpy()[2, 1]), expected_y, delta=3e-6)
+        test.assertGreater(abs(float(solver._particle_elasticity_alm_state.tri_lambda_area.numpy()[0])), 0.0)
+
+
+def _triangle_rotation_with_history(test, device):
+    """A resting membrane must remain at rest when its seeded history is rotated."""
+    model = _triangle_model(device, pinned=False)
+    solver = _alm_solver(test, model, iterations=5)
+    state, output = model.state(), model.state()
+    solver.step(state, output, None, None, 0.01)
+    rotation = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+    rotated = model.particle_q.numpy() @ rotation.T
+    state.particle_q.assign(rotated)
+    for _ in range(20):
+        solver.step(state, output, None, None, 0.01)
+        state, output = output, state
+    np.testing.assert_allclose(state.particle_q.numpy(), rotated, atol=3e-6)
+    np.testing.assert_allclose(state.particle_qd.numpy(), 0.0, atol=4e-5)
+
+
 def _reset_selected_world(test, device):
     """Rebaseline selected tet histories from post-reset edits and retain other worlds."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -167,6 +209,32 @@ def _captured_steps_and_reset(test, device):
                 wp.capture_launch(capture.graph)
                 np.testing.assert_array_equal(graph_states[0].particle_q.numpy(), eager_states[0].particle_q.numpy())
                 np.testing.assert_array_equal(graph_states[0].particle_qd.numpy(), eager_states[0].particle_qd.numpy())
+
+
+def _captured_triangle_steps_and_reset(test, device):
+    """Capture membrane preparation, ascent, and reset without stale history pointers."""
+    model = _triangle_model(device)
+    eager = _alm_solver(test, model, iterations=3)
+    captured = _alm_solver(test, model, iterations=3)
+    states = [[model.state(), model.state()] for _ in range(2)]
+    mask = wp.zeros(model.world_count + 1, dtype=wp.bool, device=device)
+    for solver, pair in zip((eager, captured), states, strict=True):
+        for state in pair:
+            state.particle_f.assign(np.array([[0, 0, 0], [0, 0, 0], [0, -100, 0]], dtype=np.float32))
+        solver.step(pair[0], pair[1], None, None, 0.02)
+        solver.reset(pair[0])
+    with wp.ScopedCapture(device=device) as capture:
+        captured.reset(states[1][0], world_mask=mask, flags=0)
+        captured.step(states[1][0], states[1][1], None, None, 0.02)
+        captured.step(states[1][1], states[1][0], None, None, 0.02)
+    for replay in range(8):
+        mask.assign(np.full(model.world_count + 1, replay == 4, dtype=bool))
+        eager.reset(states[0][0], world_mask=mask, flags=0)
+        eager.step(states[0][0], states[0][1], None, None, 0.02)
+        eager.step(states[0][1], states[0][0], None, None, 0.02)
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(states[0][0].particle_q.numpy(), states[1][0].particle_q.numpy())
+        np.testing.assert_array_equal(states[0][0].particle_qd.numpy(), states[1][0].particle_qd.numpy())
 
 
 def _tile_matches_scalar(test, device):
@@ -264,6 +332,10 @@ devices = get_test_devices()
 add_function_test(TestSolverVBDElasticityALM, "test_seeded_rest", _seeded_rest, devices=devices)
 add_function_test(TestSolverVBDElasticityALM, "test_loaded_tet", _loaded_tet, devices=devices)
 add_function_test(TestSolverVBDElasticityALM, "test_loaded_spring", _loaded_spring, devices=devices)
+add_function_test(TestSolverVBDElasticityALM, "test_loaded_triangle", _loaded_triangle, devices=devices)
+add_function_test(
+    TestSolverVBDElasticityALM, "test_triangle_rotation_with_history", _triangle_rotation_with_history, devices=devices
+)
 add_function_test(TestSolverVBDElasticityALM, "test_reset_selected_world", _reset_selected_world, devices=devices)
 add_function_test(TestSolverVBDElasticityALM, "test_unsupported_restart", _unsupported_restart, devices=devices)
 add_function_test(
@@ -275,6 +347,12 @@ add_function_test(
     TestSolverVBDElasticityALM, "test_captured_steps_and_reset", _captured_steps_and_reset, devices=cuda_devices
 )
 add_function_test(TestSolverVBDElasticityALM, "test_tile_matches_scalar", _tile_matches_scalar, devices=cuda_devices)
+add_function_test(
+    TestSolverVBDElasticityALM,
+    "test_captured_triangle_steps_and_reset",
+    _captured_triangle_steps_and_reset,
+    devices=cuda_devices,
+)
 
 
 if __name__ == "__main__":

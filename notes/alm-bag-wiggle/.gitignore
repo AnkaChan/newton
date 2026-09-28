@@ -1,3 +1,6 @@
 results/*.mp4
 results/*.png
 results/*.npz
+results-triangle-bending/*.mp4
+results-triangle-bending/*.png
+results-triangle-bending/*.npz

@@ -28,6 +28,7 @@ def render(args):
     sim = Bag(args.stiffness, False)
     stem = f"ke{int(args.stiffness)}"
     results = [json.loads((args.output / f"{stem}_{mode}.json").read_text()) for mode in ("off", "on")]
+    triangle_alm = results[1].get("alm_scope") == "triangle_and_bending"
     trajectories = [np.load(args.output / f"{stem}_{mode}.npz") for mode in ("off", "on")]
     assert results[0]["model_sha256"] == results[1]["model_sha256"]
     np.testing.assert_array_equal(trajectories[0]["particle_q"][0], trajectories[1]["particle_q"][0])
@@ -65,7 +66,8 @@ def render(args):
                     panel = Image.fromarray(viewer.get_frame().numpy())
                     draw = ImageDraw.Draw(panel)
                     draw.rectangle((0, 0, 960, 103), fill=(18, 25, 36))
-                    title = "ALM OFF" if index == 0 else "ALM ON  |  bending only"
+                    scope = "triangles + bending" if triangle_alm else "bending only"
+                    title = "ALM OFF" if index == 0 else f"ALM ON  |  {scope}"
                     color = (241, 169, 101) if index == 0 else (93, 213, 212)
                     draw.text((22, 12), title, font=title_font, fill=color)
                     draw.text(
@@ -74,9 +76,10 @@ def render(args):
                         font=font,
                         fill="white",
                     )
+                    method = "triangle + bending ALM" if triangle_alm and index == 1 else "standard triangle membrane"
                     draw.text(
                         (22, 81),
-                        "10 substeps x 10 iterations | triangle membrane unchanged",
+                        f"10 substeps x 10 iterations | {method}",
                         font=small_font,
                         fill=(187, 199, 215),
                     )
@@ -114,6 +117,6 @@ def render(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stiffness", type=float, required=True)
-    parser.add_argument("--output", type=Path, default=ROOT / "results")
+    parser.add_argument("--output", type=Path, default=ROOT / "results-triangle-bending")
     parser.add_argument("--frames", type=int)
     render(parser.parse_args())
