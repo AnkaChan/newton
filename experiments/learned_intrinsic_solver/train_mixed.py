@@ -20,7 +20,8 @@ ground plane and artificial static points with per-scene stiffness, damping
 and friction. The scene is registered with the physical context, stored in the
 payload as ``contact_partners`` and its frozen per-step pair list is collated
 into every batch so the contact energy, the contact conditioning channels and
-the network's contact tokens follow the physics (schema 5).
+the network's contact tokens follow the physics (introduced with schema 5,
+kept by schema 6).
 
 Two training regimes share this loop. The ``pool`` regime draws an open-ended
 stream of trajectories with curriculum-capped budgets and counts an epoch as
@@ -29,6 +30,16 @@ same ``state_count`` training initial states every epoch, samples per state
 and epoch a budget ``K x H <= budget_cap`` under a fixed growth timetable
 (:func:`sample_epoch_jobs`), balances the states over ranks and pads every
 rank to a common number of full-size updates (:func:`assign_jobs`).
+
+Schema 6 (``notes/v4-plan-20260928.md``): every cell carries ``target_modes``
+world target vectors (7: the three centre axes plus the four warping vectors of
+:mod:`.hex_modes`; 3 keeps the affine-only layout for ablations), the network
+and the physics step are built for that mode count and the history blocks are
+``[C, 3, target_modes]``. Every trajectory samples its own gravity magnitude
+(log-uniform in ``gravity_magnitude_range`` along -y) and registers it with its
+physical context, so the dimensionless groups of the conditioning are covered
+at a fixed cell size and time step. ``selection_source`` chooses whether the
+cheap validation or the full-horizon check picks the best checkpoint.
 """
 
 from __future__ import annotations
@@ -75,7 +86,7 @@ PERTURBED_CANDIDATE_PROBABILITY = 0.5
 _LEGACY_CONFIG_FIELDS = ("candidate_probabilities", "geometry_backtracking")
 
 CONDITION_ENCODER_REINIT_STD = 0.02
-"""Weight scale of a re-initialised condition-encoder input layer in a schema-4 -> 5 weights-only start.
+"""Weight scale of a re-initialised condition-encoder input layer in a listed cross-schema weights-only start.
 
 The loaded FiLM layers were trained on the encoder's output and are no longer
 zero-initialised, so a default (Kaiming-uniform, std about 0.22 for seven
@@ -84,12 +95,15 @@ weight scale with a zero bias keeps the code near the encoder's second-layer
 bias at first; the dependence on the new channels is relearned from there.
 """
 
-_WEIGHTS_ONLY_SCHEMA_MIGRATIONS = {(4, 5): ("condition_encoder.0.weight",)}
+_WEIGHTS_ONLY_SCHEMA_MIGRATIONS: dict[tuple[int, int], tuple[str, ...]] = {}
 """Tensors a weights-only start may re-initialise per ``(source, current)`` feature schema.
 
-Schema 4 -> 5 replaced the nine conditioning channels by seven dimensionless
-ones: only the condition encoder's input weight changes shape, ``[H, 9]`` ->
-``[H, 7]``. Every other schema pair must match tensor for tensor.
+Schema 6 lists no migration: the seven-mode layout changes the state input
+width and the output head, so v4 starts fresh (``notes/v4-plan-20260928.md``)
+and every weights-only start must match tensor for tensor. Schema 4 -> 5
+listed ``condition_encoder.0.weight`` (``[H, 9]`` -> ``[H, 7]``); the
+mechanism (:func:`migrate_weights_only_checkpoint`) stays for a future schema
+pair that changes only a listed layer.
 """
 
 _VALIDATION_BUDGET_FIELDS = (
@@ -105,7 +119,13 @@ _VALIDATION_BUDGET_FIELDS = (
 """Validation settings that may change on resume; none of them affects a training update."""
 
 _SELECTION_BUDGET_FIELDS = ("validation_count", "validation_iterations")
-"""Validation settings whose change makes earlier checkpoint-selection metrics incomparable."""
+"""Cheap-validation settings whose change makes earlier checkpoint-selection metrics incomparable."""
+
+_FULL_HORIZON_SELECTION_BUDGET_FIELDS = ("validation_full_count", "validation_full_iterations")
+"""Full-horizon settings whose change makes earlier checkpoint-selection metrics incomparable."""
+
+_SELECTION_SOURCES = ("cheap", "full_horizon")
+"""Validation summaries that may select the best checkpoint (``MixedTrainConfig.selection_source``)."""
 
 _ARCHITECTURE_FIELDS = (
     "cell_counts",
@@ -119,6 +139,7 @@ _ARCHITECTURE_FIELDS = (
     "query_chunk_size",
     "max_step_size",
     "feature_schema_version",
+    "target_modes",
     "edge_network",
     "contact",
 )
@@ -142,6 +163,26 @@ class MixedTrainConfig:
     cell_size: float = 0.025
     time_step: float = 1 / 300
     gravity: tuple[float, float, float] = (0.0, -9.81, 0.0)
+    """Default world acceleration [m/s^2] of the physics step; every trajectory context samples its own.
+
+    See ``gravity_magnitude_range``; this vector only serves contexts registered
+    without a gravity of their own (none in the trainer).
+    """
+    gravity_magnitude_range: tuple[float, float] = (2.0, 40.0)
+    """Log-uniform bounds of the per-state gravity magnitude ``|g|`` [m/s^2], applied along -y.
+
+    Each trajectory draws its magnitude once at reset from
+    ``SeedSequence([master_seed, seed, 4409])`` and registers ``(0, -|g|, 0)``
+    with its physical context, so the conditioning group ``|g| dt^2 / h`` (and
+    with it the effective cell size and time step of the normalised network)
+    varies over the training states. Equal bounds give a constant magnitude.
+    """
+    target_modes: int = features.TARGET_MODES_DEFAULT
+    """Target vectors per cell: 7 (centre axes plus the four warping vectors) or 3 (affine-only ablation).
+
+    The network, the physics step and the history blocks are built for this
+    count; ``state_feature_dim`` follows it.
+    """
     hidden_dim: int = 128
     edge_hidden_dim: int = 64
     num_heads: int = 4
@@ -207,6 +248,16 @@ class MixedTrainConfig:
     """
     validation_full_iterations: int | None = None
     """Cap on K of the full-horizon check, ``min(largest available K, cap)``; None uses the largest available K."""
+    selection_source: str = "cheap"
+    """Validation summary that selects the best checkpoint: ``cheap`` or ``full_horizon``.
+
+    ``cheap`` uses the cheap validation's ``selection`` record (mean final
+    free-corner residual of the frozen-problem phase, survival required).
+    ``full_horizon`` uses the full-horizon check's ``selection`` record (mean
+    final free-corner residual after the last physical step, every sample
+    alive); epochs without a full-horizon check are never selected and the
+    record keeps the check's budget, final energy and deepest penetration.
+    """
     checkpoint_interval: int = 5
     updates_history_limit: int = 8192
     """Most recent per-update rows kept in ``report["updates"]`` (report.json, checkpoints, updates.csv).
@@ -259,10 +310,10 @@ class MixedTrainConfig:
     contact_friction_epsilon: float = 1e-2
     """IPC friction smoothing band as a fraction of the time step."""
     feature_schema_version: int = features.FEATURE_SCHEMA_VERSION
-    """Only schema 5 (dimensionless conditioning, history in ``mu h^3``) is supported.
+    """Only schema 6 (seven-mode targets, per-context gravity) is supported.
 
-    A schema-4 checkpoint may seed a weights-only start (its condition-encoder
-    input layer is re-initialised); older runs restart.
+    Schema-5 and older checkpoints change the network's input width and output
+    head, so they cannot seed a run and v4 starts fresh.
     """
     strength_range: tuple[float, float] = (0.02, 0.1)
     velocity_dt_range: tuple[float, float] = (0.0, 0.1)
@@ -278,6 +329,7 @@ class MixedTrainConfig:
         for name in (
             "cell_counts",
             "gravity",
+            "gravity_magnitude_range",
             "hops",
             "iteration_counts",
             "physical_step_counts",
@@ -328,6 +380,14 @@ class MixedTrainConfig:
                 raise ValueError(f"{name} must be a positive integer")
         if self.regime not in ("pool", "fixed_states"):
             raise ValueError("regime must be pool or fixed_states")
+        if self.selection_source not in _SELECTION_SOURCES:
+            raise ValueError("selection_source must be cheap or full_horizon")
+        if (
+            isinstance(self.target_modes, bool)
+            or not isinstance(self.target_modes, int)
+            or self.target_modes not in (3, 7)
+        ):
+            raise ValueError("target_modes must be 3 (affine axes) or 7 (axes plus warping vectors)")
         if not self.growth_stages:
             raise ValueError("growth_stages must not be empty")
         previous = (1, 1)
@@ -405,6 +465,15 @@ class MixedTrainConfig:
             raise ValueError("validation_full_iterations must be None or a positive integer")
         if len(self.gravity) != 3 or not all(math.isfinite(v) for v in self.gravity):
             raise ValueError("gravity must be a finite three-vector")
+        bounds = self.gravity_magnitude_range
+        if (
+            len(bounds) != 2
+            or any(isinstance(v, bool) or not math.isfinite(v) for v in bounds)
+            or not 0 <= bounds[0] <= bounds[1]
+            or (bounds[0] == 0 and bounds[1] > 0)
+        ):
+            # Log-uniform sampling needs positive bounds; (0, 0) is the constant zero-gravity case.
+            raise ValueError("gravity_magnitude_range must be finite bounds 0 < low <= high, or equal bounds")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
             raise ValueError("seed must be a nonnegative integer")
         for name in ("strength_range", "velocity_dt_range", "perturbation_scale_range"):
@@ -435,15 +504,14 @@ class MixedTrainConfig:
             or self.feature_schema_version != features.FEATURE_SCHEMA_VERSION
         ):
             raise ValueError(
-                f"feature_schema_version must be {features.FEATURE_SCHEMA_VERSION}: the contact-aware revised "
-                "nine-value schema with dimensionless conditioning; legacy checkpoints require fresh "
-                "initialization (a schema-4 checkpoint may seed a weights-only start)"
+                f"feature_schema_version must be {features.FEATURE_SCHEMA_VERSION}: the seven-mode schema with "
+                "per-context gravity and dimensionless conditioning; legacy checkpoints require fresh initialization"
             )
 
     @property
     def state_feature_dim(self):
-        """Return the revised per-cell state width."""
-        return features.STATE_FEATURE_DIM
+        """Return the per-cell state width of ``target_modes`` (121 for seven modes, 61 for three)."""
+        return features.state_feature_dim(self.target_modes)
 
     @property
     def conditioning_dim(self):
@@ -476,12 +544,19 @@ class MixedTrainConfig:
             values.setdefault(name, default)
         # Checkpoints written before the update window kept every update row.
         values.setdefault("updates_history_limit", cls.updates_history_limit)
+        # Configurations written before the seven-mode schema trained three affine modes at one constant
+        # gravity and selected on the cheap validation.
+        values.setdefault("target_modes", 3)
+        if "gravity_magnitude_range" not in values:
+            magnitude = math.sqrt(sum(float(v) ** 2 for v in values.get("gravity", cls.gravity)))
+            values["gravity_magnitude_range"] = (magnitude, magnitude)
+        values.setdefault("selection_source", "cheap")
         legacy = [name for name in _LEGACY_CONFIG_FIELDS if name in values]
         if values.get("feature_schema_version") != features.FEATURE_SCHEMA_VERSION or legacy:
             raise ValueError(
-                "incompatible legacy checkpoint; start a fresh run (a schema-4 checkpoint may seed a weights-only "
-                f"start): the revised nine-value schema (feature_schema_version {features.FEATURE_SCHEMA_VERSION}, "
-                f"dimensionless conditioning) has no {', '.join(_LEGACY_CONFIG_FIELDS)}"
+                "incompatible legacy checkpoint; start a fresh run: the seven-mode schema (feature_schema_version "
+                f"{features.FEATURE_SCHEMA_VERSION}, per-context gravity, dimensionless conditioning) changes the "
+                f"network's input width and output head and has no {', '.join(_LEGACY_CONFIG_FIELDS)}"
             )
         return cls(**values)
 
@@ -532,6 +607,7 @@ class _TrajectoryFactory:
         # Preparation workers use CPU topology without synchronizing CUDA.
         self.fixed_indices = step.fixed_indices.detach().cpu().clone()
         self.cell_count = len(step.cell_corner_indices)
+        self.target_modes = step.target_modes
         # Job lists may run one seed twice at once (filler jobs), so each reset needs its own
         # context key; ``next`` on a count is atomic under the GIL for the worker threads.
         self._context_ids = itertools.count() if unique_contexts else None
@@ -553,10 +629,12 @@ class _TrajectoryFactory:
             perturbation_scale_range=c.perturbation_scale_range,
         ).reset(2 * seed + self.seed_parity)
         contact = self._contact_partners(seed, initial.material.youngs_modulus)
+        gravity = self._gravity(seed)
         key = f"{self.prefix}-{seed}"
         if self._context_ids is not None:
             key = f"{key}-{next(self._context_ids)}"
-        specification = asdict(initial.material)
+        # The specification mirrors ``step.context_specs[key]`` so a checkpoint rebuilds the context from it.
+        specification = {**asdict(initial.material), "gravity": gravity}
         self.step.register_context(key, **specification, contact=contact)
         try:
             payload = self.step.prepare(key, torch.from_numpy(initial.positions), torch.from_numpy(initial.velocities))
@@ -565,16 +643,34 @@ class _TrajectoryFactory:
                 metadata={
                     **initial.metadata,
                     "contact": _contact_metadata(contact, initial.material.youngs_modulus, c),
+                    "gravity": list(gravity),
+                    "gravity_magnitude": -gravity[1],
                 },
                 contact_partners=contact.to_dict(),
                 seed=seed,
                 physical_age=0,
             )
-            payload.update(empty_history(self.cell_count))
+            payload.update(empty_history(self.cell_count, self.target_modes))
             return self._candidate(payload)
         except BaseException:
             self.step.discard_context(key)
             raise
+
+    def _gravity(self, seed):
+        """Draw the trajectory's gravity [m/s^2]: magnitude log-uniform in ``gravity_magnitude_range`` along -y.
+
+        The stream is ``SeedSequence([master_seed, seed, 4409])``, so training
+        and validation factories draw different magnitudes for the same seed
+        and a state keeps its gravity across epochs and resumes. Equal bounds
+        give the constant magnitude without consuming the stream.
+        """
+        low, high = self.config.gravity_magnitude_range
+        if low == high:
+            magnitude = float(low)
+        else:
+            rng = np.random.default_rng(np.random.SeedSequence([self.master_seed, seed, 4409]))
+            magnitude = float(np.exp(rng.uniform(np.log(low), np.log(high))))
+        return (0.0, -magnitude, 0.0)
 
     def _contact_partners(self, seed, youngs_modulus):
         """Draw the trajectory's static contact scene; contact-free partners when contact is disabled.
@@ -731,12 +827,15 @@ def _batch_contact(payloads, device):
     return contact
 
 
-def _batch(records, device, *, cell_count=None):
+def _batch(records, device, *, cell_count=None, modes=None):
     """Collate detached payload tensors, the stacked optimizer history and the contact pairs on ``device``.
 
     ``cell_count`` validates stored history blocks; when omitted it is read
     from the first stored block, and payloads without any history entries
-    yield ``history=None`` (no history for the whole batch). ``contact`` is the
+    yield ``history=None`` (no history for the whole batch). ``modes`` fixes
+    the mode count ``m`` of the ``[C, 3, m]`` history blocks (pass the step's
+    ``target_modes``); when omitted it is read from the first stored block and
+    falls back to the legacy 3 when no payload stores one. ``contact`` is the
     padded pair batch of :func:`_batch_contact` or None.
     """
     import torch
@@ -757,7 +856,9 @@ def _batch(records, device, *, cell_count=None):
             cell_count = int(blocks[0].shape[0])
         elif any(p.get("history_valid", False) for p in payloads):
             raise ValueError("payload history_valid is set without stored history blocks")
-    values["history"] = batch_history(payloads, device, cell_count=cell_count) if cell_count is not None else None
+    values["history"] = (
+        batch_history(payloads, device, cell_count=cell_count, modes=modes) if cell_count is not None else None
+    )
     return values
 
 
@@ -794,6 +895,60 @@ def _selection_metric(validation):
     if selection.get("eligible") and isinstance(metric, (int, float)) and math.isfinite(metric):
         return float(metric)
     return None
+
+
+def _selection_budget_fields(config):
+    """Return the validation settings whose change makes ``config.selection_source``'s metrics incomparable."""
+    return (
+        _FULL_HORIZON_SELECTION_BUDGET_FIELDS if config.selection_source == "full_horizon" else _SELECTION_BUDGET_FIELDS
+    )
+
+
+def _selecting_summary(config, validation, full):
+    """Return the validation summary ``config.selection_source`` selects from; None when it did not run."""
+    return full if config.selection_source == "full_horizon" else validation
+
+
+def _full_horizon_budget_changed(config, best, summary) -> bool:
+    """Return whether this epoch's full-horizon check ran at another budget ``(K, H)`` than ``best`` records.
+
+    Under the fixed-state growth timetable (and the pool curriculum) the
+    check's horizon ``H`` and iteration count ``K`` grow with the stage, and the
+    mean final-step residual grows steeply with ``H``, so a record measured at
+    a shorter horizon would hold the selection for the rest of the run. Only
+    the full-horizon source is budget dependent: the cheap validation runs at
+    the configured budget every time. False when nothing is recorded or the
+    check did not run.
+    """
+    if config.selection_source != "full_horizon" or best is None or summary is None:
+        return False
+    return (best["iterations"], best["physical_steps"]) != (summary["iterations"], summary["physical_steps"])
+
+
+def _best_selection_record(config, epoch, summary, completed_updates):
+    """Return the ``best_selection`` entry of ``epoch`` from the selecting summary.
+
+    The full-horizon source adds the check's budget (K, H), its sample and
+    survivor counts and the final energy [J] and deepest penetration (units of
+    r) statistics beside the metric, so the record explains the choice.
+    """
+    record = {
+        "epoch": epoch,
+        "source": config.selection_source,
+        "metric": _selection_metric(summary),
+        "aggregation": summary["selection"].get("aggregation"),
+        "completed_updates": completed_updates,
+    }
+    if config.selection_source == "full_horizon":
+        record.update(
+            iterations=summary["iterations"],
+            physical_steps=summary["physical_steps"],
+            sample_count=summary["sample_count"],
+            physical_survivors=summary["physical_survivors"],
+            final_energy_joule=summary["final_energy_joule"],
+            final_max_penetration_r=summary["final_max_penetration_r"],
+        )
+    return record
 
 
 def _allow_early_stop(config, curriculum) -> bool:
@@ -997,6 +1152,7 @@ def _build_network(config):
     return IntrinsicSolverNetwork(
         config.cell_counts,
         config.state_feature_dim,
+        target_modes=config.target_modes,
         conditioning_dim=config.conditioning_dim,
         hidden_dim=config.hidden_dim,
         edge_hidden_dim=config.edge_hidden_dim,
@@ -1138,22 +1294,27 @@ def run_training(
     controller and pool are new, only the architecture fields
     (``_ARCHITECTURE_FIELDS``) must match and the origin is recorded under
     ``report["initialized_from"]`` together with every differing field. The
-    learning rate follows the new schedule from epoch 1. A schema-4 checkpoint
-    (nine conditioning channels) may seed a weights-only start of the current
-    schema 5: :func:`migrate_weights_only_checkpoint` copies every tensor of
-    matching shape, re-initialises the condition encoder's input layer and
-    zeroes its AdamW moments, and the record lands in ``initialized_from``.
-    A full resume across schemas stays rejected.
+    learning rate follows the new schedule from epoch 1.
+    :func:`migrate_weights_only_checkpoint` compares the checkpoint tensor for
+    tensor with the freshly built network; schema 6 lists no cross-schema
+    migration, so the checkpoint must carry the same schema and architecture
+    (``target_modes`` included). A full resume across schemas stays rejected.
 
     Checkpoints restore the same rank count, curriculum, pool queues, optimizer
     history and Adam sequence. The configured descent-rate gate, stage limit
     and validation budget may change on resume; the gate applies only to future
     validation and an overdue hard limit promotes one stage immediately. These
-    changes record their epoch boundary. A changed ``validation_count`` or
-    ``validation_iterations`` makes earlier selection metrics incomparable, so
-    ``best_selection`` restarts from None, the previous record moves to
-    ``best_selection_history`` and the plateau controller forgets its best
-    metric and patience. Native factors are rebuilt; they are never
+    changes record their epoch boundary. A changed ``selection_source`` or a
+    changed budget of the selecting summary (``validation_count`` and
+    ``validation_iterations`` for the cheap validation, ``validation_full_count``
+    and ``validation_full_iterations`` for the full-horizon check) makes earlier
+    selection metrics incomparable, so ``best_selection`` restarts from None,
+    the previous record moves to ``best_selection_history`` and the plateau
+    controller forgets its best metric and patience. Within a run, a
+    full-horizon check at another ``(K, H)`` than the current record's (the
+    budget grows with the stage) restarts the record the same way (reason
+    ``full-horizon budget changed``), so the best checkpoint always tracks
+    the current horizon. Native factors are rebuilt; they are never
     serialized. Legacy checkpoints are rejected explicitly.
 
     Every ``validation_interval`` epochs, and on the final epoch, the cheap
@@ -1163,10 +1324,14 @@ def run_training(
     (capped by ``validation_full_iterations``) follows. Skipped epochs record
     ``validation=None``, count toward curriculum stage residence only, never
     select a checkpoint and are invisible to the plateau controller. The best
-    checkpoint is selected by the validation ``selection`` metric (mean final
-    free-corner force residual with survival required). Plateau stopping is
-    considered only after ``plateau_min_final_stage_epochs`` epochs in the
-    final curriculum stage.
+    checkpoint is selected by the ``selection`` metric of the summary
+    ``config.selection_source`` names: the cheap validation's mean final
+    free-corner force residual with survival required, or the full-horizon
+    check's mean final-step residual with every sample alive (only epochs on
+    which the check ran are candidates; the record keeps the check's budget,
+    final energy and deepest penetration). Plateau stopping is considered only
+    after ``plateau_min_final_stage_epochs`` epochs in the final curriculum
+    stage.
     """
     import torch
     import torch.distributed as dist
@@ -1239,6 +1404,7 @@ def run_training(
             "gradient_clip_norm",
             "checkpoint_chunks",
             "updates_history_limit",
+            "selection_source",
             *_VALIDATION_BUDGET_FIELDS,
         }
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
@@ -1302,6 +1468,7 @@ def run_training(
         contact_max_pairs=config.contact_max_pairs,
         contact_tokens_per_cell=config.contact_tokens_per_cell,
         contact_friction_epsilon=config.contact_friction_epsilon,
+        target_modes=config.target_modes,
     ).to(device)
     cell_count = len(step.cell_corner_indices)
     factory = _TrajectoryFactory(
@@ -1399,6 +1566,7 @@ def run_training(
             for field, previous, current in (
                 ("stage_descent_rate", previous_descent_rate, config.stage_descent_rate),
                 ("stage_max_epochs", previous_stage_limit, config.stage_max_epochs),
+                ("selection_source", saved_config["selection_source"], config.selection_source),
                 *((field, saved_config[field], getattr(config, field)) for field in _VALIDATION_BUDGET_FIELDS),
             ):
                 if previous != current:
@@ -1424,15 +1592,18 @@ def run_training(
                         "completed_updates": report["completed_updates"],
                     }
                 )
-            if any(saved_config[field] != getattr(config, field) for field in _SELECTION_BUDGET_FIELDS):
-                # Metrics measured under a different validation budget are not comparable: the best
-                # record and the controller's patience restart and best_validation.pt is rewritten at
-                # the first eligible epoch.
+            source_changed = saved_config["selection_source"] != config.selection_source
+            if source_changed or any(
+                saved_config[field] != getattr(config, field) for field in _selection_budget_fields(config)
+            ):
+                # Metrics measured by another summary or under a different validation budget are not
+                # comparable: the best record and the controller's patience restart and
+                # best_validation.pt is rewritten at the first eligible epoch.
                 controller.reset_metric_history()
                 report.setdefault("best_selection_history", []).append(
                     {
                         "reset_at_epoch": report["completed_epochs"],
-                        "reason": "validation budget changed",
+                        "reason": "selection source changed" if source_changed else "validation budget changed",
                         "record": report.get("best_selection"),
                     }
                 )
@@ -1600,7 +1771,7 @@ def run_training(
                 error, records = None, None
                 try:
                     records = pool.take_batch()
-                    batch = _batch(records, device, cell_count=cell_count)
+                    batch = _batch(records, device, cell_count=cell_count, modes=step.target_modes)
                     with torch.no_grad():
                         previous = step.energy(
                             batch["candidate"],
@@ -1722,11 +1893,13 @@ def run_training(
                     ages[str(record.inner_iteration)] += 1
                     steps[str(record.physical_step)] += 1
                     modes[record.payload["candidate_mode"]] += 1
+                    specification = record.payload["context_spec"]
                     materials.append(
                         {
                             "damping": 0.0,
-                            **record.payload["context_spec"],
+                            **{name: value for name, value in specification.items() if name != "gravity"},
                             **record.payload["metadata"]["material_parameters"],
+                            "gravity_magnitude": math.sqrt(sum(float(v) ** 2 for v in specification["gravity"])),
                         }
                     )
                     perturbations.append(record.payload["metadata"]["perturbation_scale"])
@@ -1818,6 +1991,7 @@ def run_training(
                 ("poissons_ratio", config.poissons_ratio_range, False),
                 ("density", config.density_range, True),
                 ("damping", config.damping_range, True),
+                ("gravity_magnitude", config.gravity_magnitude_range, True),
             ):
                 # Constant configured materials still need nonzero histogram bins.
                 if bounds[0] == bounds[1]:
@@ -1836,16 +2010,34 @@ def run_training(
             candidate_modes = Counter()
             for part in rank_diagnostics:
                 candidate_modes.update(part["candidate_modes"])
-            metric = _selection_metric(validation)
+            selecting = _selecting_summary(config, validation, full)
+            if _full_horizon_budget_changed(config, report.get("best_selection"), selecting):
+                # A record measured at a shorter horizon is not comparable with this check: the
+                # best restarts at the new budget exactly as a resume with a changed validation
+                # budget, and best_validation.pt is rewritten at the first eligible epoch.
+                report.setdefault("best_selection_history", []).append(
+                    {
+                        "reset_at_epoch": epoch - 1,
+                        "reason": "full-horizon budget changed",
+                        "record": report["best_selection"],
+                        "iterations": selecting["iterations"],
+                        "physical_steps": selecting["physical_steps"],
+                    }
+                )
+                report["best_selection"] = None
+                best_metric = None
+                if rank == 0 and config.verbose:
+                    print(
+                        f"epoch {epoch}: full-horizon check budget changed to K={selecting['iterations']}, "
+                        f"H={selecting['physical_steps']}; best_selection reset "
+                        f"(previous record: {report['best_selection_history'][-1]['record']})",
+                        flush=True,
+                    )
+            metric = _selection_metric(selecting)
             is_best = metric is not None and (best_metric is None or metric < best_metric)
             if is_best:
                 best_metric = metric
-                report["best_selection"] = {
-                    "epoch": epoch,
-                    "metric": metric,
-                    "aggregation": validation["selection"].get("aggregation"),
-                    "completed_updates": report["completed_updates"],
-                }
+                report["best_selection"] = _best_selection_record(config, epoch, selecting, report["completed_updates"])
             row = {
                 "epoch": epoch,
                 "loss": totals["loss"] / totals["query_count"],
@@ -1905,9 +2097,18 @@ def run_training(
                     )
                 elif config.verbose:
                     selection = validation.get("selection") or {}
+                    full_text = ""
+                    if config.selection_source == "full_horizon":
+                        full_selection = (full or {}).get("selection") or {}
+                        full_text = (
+                            f"full-horizon selection={full_selection.get('metric')} "
+                            f"(eligible={full_selection.get('eligible')}), "
+                            if full is not None
+                            else "full-horizon selection not evaluated, "
+                        )
                     print(
                         f"epoch {epoch}: loss={row['loss']:.6g}, {stage_text}K={counts[0]}, H={counts[1]}, "
-                        f"selection={selection.get('metric')} (eligible={selection.get('eligible')}), "
+                        f"{full_text}cheap selection={selection.get('metric')} (eligible={selection.get('eligible')}), "
                         f"validation failures={validation['failed_count']}",
                         flush=True,
                     )

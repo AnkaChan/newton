@@ -17,7 +17,7 @@ if importlib.util.find_spec("torch") is None:
 
 import torch  # noqa: TID253
 
-from experiments.learned_intrinsic_solver import features, input_assembly
+from experiments.learned_intrinsic_solver import features, hex_modes, input_assembly
 from experiments.learned_intrinsic_solver.frames import (
     closest_proper_rotations,
     reference_rotation,
@@ -25,7 +25,7 @@ from experiments.learned_intrinsic_solver.frames import (
 )
 from experiments.learned_intrinsic_solver.input_assembly import OptimizerHistory
 from experiments.learned_intrinsic_solver.mixed_physics import MixedHexSolverStep
-from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
+from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork, IntrinsicSolverOutput
 from experiments.learned_intrinsic_solver.solver_step import LearnedHexSolverStep
 
 MATERIAL = {"lame_lambda": 1000.0 * 0.3 / (1.3 * 0.4), "lame_mu": 1000.0 / 2.6, "density": 100.0}
@@ -34,11 +34,12 @@ PREVIOUS_GRADIENT_SLICE = slice(27, 36)
 PREVIOUS_UPDATE_SLICE = slice(36, 45)
 
 
-def revised_network(cell_counts, *, dtype=torch.float32, nonzero_head=False, **kwargs):
-    """Build a small revised-schema network, optionally with nonzero heads."""
+def revised_network(cell_counts, *, dtype=torch.float32, nonzero_head=False, target_modes=3, **kwargs):
+    """Build a small revised-schema network with ``target_modes`` modes, optionally with nonzero heads."""
     model = IntrinsicSolverNetwork(
         cell_counts,
-        features.STATE_FEATURE_DIM,
+        features.state_feature_dim(target_modes),
+        target_modes=target_modes,
         conditioning_dim=features.CONDITIONING_DIM,
         hidden_dim=16,
         edge_hidden_dim=8,
@@ -61,10 +62,19 @@ class TestLearnedHexSolverStep(unittest.TestCase):
         self.rest = generate_cuboid((2, 2, 3), cell_size=0.1)
         self.fixed = np.flatnonzero(self.rest.corner_rest_positions[:, 2] == 0)
 
-    def _fixture(self, *, dtype=torch.float32, nonzero_head=False, damping=0.0):
-        model = revised_network(self.rest.cell_counts, dtype=dtype, nonzero_head=nonzero_head)
+    def _fixture(self, *, dtype=torch.float32, nonzero_head=False, damping=0.0, target_modes=3):
+        model = revised_network(
+            self.rest.cell_counts, dtype=dtype, nonzero_head=nonzero_head, target_modes=target_modes
+        )
         step = LearnedHexSolverStep(
-            self.rest, self.fixed, **MATERIAL, time_step=0.04, damping=damping, network=model, dtype=dtype
+            self.rest,
+            self.fixed,
+            **MATERIAL,
+            time_step=0.04,
+            damping=damping,
+            network=model,
+            dtype=dtype,
+            target_modes=target_modes,
         )
         previous = torch.tensor(self.rest.corner_rest_positions, dtype=dtype).unsqueeze(0)
         x = previous.clone()
@@ -540,6 +550,144 @@ class TestLearnedHexSolverStep(unittest.TestCase):
             minus = step(x - epsilon * direction, y, previous_positions=previous, frames=frames).loss.total.sum()
         numerical = ((plus - minus) / (2 * epsilon)).item()
         self.assertAlmostEqual(analytical, numerical, delta=max(1e-9, abs(analytical) * 1e-6))
+
+    def test_seven_mode_step_exposes_mode_blocks_and_validates_the_network(self):
+        """Run the seven-mode step: [B, C, 3, 7] axes, targets, gradients and history, 121 state values."""
+        default = LearnedHexSolverStep(self.rest, self.fixed, **MATERIAL, time_step=0.04, target_modes=7)
+        self.assertEqual((default.target_modes, default.fusion.target_modes, default.network.target_modes), (7, 7, 7))
+        self.assertEqual(default.network.state_feature_dim, features.state_feature_dim(7))
+        self.assertEqual(default.network.node_encoder[0].in_features, 21 + 121)
+        with self.assertRaisesRegex(ValueError, "schema"):
+            LearnedHexSolverStep(
+                self.rest,
+                self.fixed,
+                **MATERIAL,
+                time_step=0.04,
+                network=revised_network(self.rest.cell_counts),
+                target_modes=7,
+            )
+        with self.assertRaisesRegex(ValueError, "schema"):
+            LearnedHexSolverStep(
+                self.rest,
+                self.fixed,
+                **MATERIAL,
+                time_step=0.04,
+                network=revised_network(self.rest.cell_counts, target_modes=7),
+            )
+        wide = IntrinsicSolverNetwork(
+            self.rest.cell_counts, features.state_feature_dim(7), hidden_dim=16, edge_hidden_dim=8
+        )
+        with self.assertRaisesRegex(ValueError, "schema"):
+            LearnedHexSolverStep(self.rest, self.fixed, **MATERIAL, time_step=0.04, network=wide, target_modes=7)
+        for bad in (5, 1, True, "7"):
+            with self.subTest(target_modes=bad), self.assertRaisesRegex(ValueError, "target_modes"):
+                LearnedHexSolverStep(self.rest, self.fixed, **MATERIAL, time_step=0.04, target_modes=bad)
+
+        step, x, y, previous = self._fixture(dtype=torch.float64, nonzero_head=True, target_modes=7)
+        three, _, _, _ = self._fixture(dtype=torch.float64, nonzero_head=True)
+        x.requires_grad_()
+        inputs = step.prepare_inputs(x, y, previous_positions=previous)
+        reference = three.prepare_inputs(x, y, previous_positions=previous)
+        self.assertEqual(inputs.local_axes.shape, (1, 12, 3, 7))
+        self.assertEqual(inputs.state_features.shape, (1, 12, 121))
+        self.assertEqual(inputs.axis_gradient_world.shape, (1, 12, 3, 7))
+        self.assertTrue(inputs.local_axes.requires_grad)
+        vectors = hex_modes.mode_vectors(x, step.cell_corner_indices, step.cell_size)
+        torch.testing.assert_close(inputs.frames @ inputs.local_axes, vectors, rtol=0, atol=1e-12)
+        self.assertGreater(vectors[..., 3:].abs().max().item(), 1e-4, "the fixture warps its cells")
+        # The frame is still the closest rotation of the centre F, and the affine parts agree with the 3-mode step.
+        torch.testing.assert_close(inputs.frames, reference.frames, rtol=0, atol=1e-12)
+        torch.testing.assert_close(inputs.local_axes[..., :3], reference.local_axes, rtol=0, atol=1e-12)
+        for block in range(2):
+            seven_block = inputs.state_features[..., 21 * block : 21 * block + 21].reshape(1, 12, 3, 7)
+            three_block = reference.state_features[..., 9 * block : 9 * block + 9].reshape(1, 12, 3, 3)
+            torch.testing.assert_close(seven_block[..., :3], three_block, rtol=0, atol=1e-12)
+        torch.testing.assert_close(inputs.state_features[..., 105:119], step.boundary_features[None])
+        self.assertEqual(inputs.state_features[..., 120].unique().tolist(), [0.0])
+        # The gradient feature is the 7-mode adjoint projection: affine columns as before, warping columns live.
+        torch.testing.assert_close(
+            inputs.axis_gradient_world[..., :3], reference.axis_gradient_world, rtol=1e-10, atol=1e-12
+        )
+        self.assertGreater(inputs.axis_gradient_world[..., 3:].abs().max().item(), 0)
+        local = inputs.frames.transpose(-1, -2) @ inputs.axis_gradient_world
+        rms = local.square().mean().sqrt()
+        torch.testing.assert_close(inputs.state_features[..., 42:63].reshape(1, 12, 3, 7), (local / rms).clamp(-10, 10))
+        torch.testing.assert_close(inputs.state_features[..., 119], rms.log().expand(1, 12))
+
+        result = step(x, y, previous_positions=previous)
+        self.assertEqual(result.local_target_axes.shape, (1, 12, 3, 7))
+        self.assertEqual(result.axis_correction.shape, (1, 12, 3, 7))
+        self.assertEqual(result.achieved_axis_update_world.shape, (1, 12, 3, 7))
+        self.assertTrue(torch.isfinite(result.positions).all())
+        torch.testing.assert_close(result.positions[:, self.fixed], x[:, self.fixed], rtol=0, atol=0)
+        energy = step.energy(result.positions.detach(), y, previous_positions=previous)
+        torch.testing.assert_close(energy.total, result.loss.total.detach(), rtol=0, atol=0)
+        achieved = hex_modes.mode_vectors(result.positions.detach(), step.cell_corner_indices, step.cell_size) - vectors
+        torch.testing.assert_close(result.achieved_axis_update_world, achieved, rtol=0, atol=1e-12)
+        self.assertGreater(result.achieved_axis_update_world[..., 3:].abs().max().item(), 0)
+        result.loss.total.sum().backward()
+        gradient = step.network.correction_head.weight.grad
+        warping_rows = torch.arange(21).reshape(3, 7)[:, 3:].flatten()
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertGreater(gradient[warping_rows].abs().sum().item(), 0)
+        history = OptimizerHistory(result.axis_gradient_world, result.achieved_axis_update_world, torch.tensor([True]))
+        second = step.prepare_inputs(result.positions.detach(), y, previous_positions=previous, history=history)
+        self.assertEqual(second.state_features[..., 120].unique().tolist(), [1.0])
+        self.assertGreater(second.state_features[..., 84:105].abs().max().item(), 0)
+        legacy = OptimizerHistory(
+            torch.zeros(1, 12, 3, 3, dtype=torch.float64),
+            torch.zeros(1, 12, 3, 3, dtype=torch.float64),
+            torch.tensor([True]),
+        )
+        with self.assertRaisesRegex(ValueError, r"\[B, C, 3, 7\]"):
+            step.prepare_inputs(x, y, previous_positions=previous, history=legacy)
+
+    def test_seven_modes_reproduce_three_modes_for_affine_only_targets(self):
+        """Match the three-mode step when the warping outputs are zero: identical zero-increment fusions and
+        1e-6 agreement for a hand-set affine increment fed through both fusions."""
+        three = LearnedHexSolverStep(
+            self.rest, self.fixed, **MATERIAL, time_step=0.04, network=revised_network(self.rest.cell_counts)
+        )
+        seven = LearnedHexSolverStep(
+            self.rest,
+            self.fixed,
+            **MATERIAL,
+            time_step=0.04,
+            network=revised_network(self.rest.cell_counts, target_modes=7),
+            target_modes=7,
+        )
+        _, x, y, previous = self._fixture()
+        pins = x[:, self.fixed] + torch.tensor([0.002, -0.001, 0.0015])
+        # Zero-initialised heads: targets equal the inputs, so both steps fuse a zero increment with displaced pins.
+        a = three(x, y, previous_positions=previous, fixed_positions=pins)
+        b = seven(x, y, previous_positions=previous, fixed_positions=pins)
+        self.assertGreater((a.positions - x).abs().max().item(), 1e-4, "the displaced pins move the free corners")
+        torch.testing.assert_close(b.positions, a.positions, rtol=0, atol=0)
+        torch.testing.assert_close(b.loss.total, a.loss.total, rtol=0, atol=0)
+        torch.testing.assert_close(
+            b.achieved_axis_update_world[..., :3], a.achieved_axis_update_world, rtol=0, atol=1e-6
+        )
+        # A hand-set affine-only local increment through the whole update path of both steps.
+        delta = 0.01 * torch.randn((1, 12, 3, 3), generator=torch.Generator().manual_seed(4))
+
+        def affine_only(local_axes, state_features, edge_features, conditioning, **kwargs):
+            correction = torch.zeros_like(local_axes)
+            correction[..., :3] = delta
+            return IntrinsicSolverOutput(local_axes + correction, correction, torch.ones(local_axes.shape[:2]))
+
+        with patch.object(three.network, "forward", affine_only), patch.object(seven.network, "forward", affine_only):
+            a = three(x, y, previous_positions=previous, fixed_positions=pins)
+            b = seven(x, y, previous_positions=previous, fixed_positions=pins)
+        self.assertGreater((a.positions - x).abs().max().item(), 1e-3, "the increment moves the free corners")
+        torch.testing.assert_close(b.positions, a.positions, rtol=0, atol=1e-6)
+        torch.testing.assert_close(b.loss.total, a.loss.total, rtol=1e-5, atol=1e-9)
+        # ... and directly through the two fusion operators with the same world increment.
+        world = a.frames @ delta
+        padded = torch.zeros((1, 12, 3, 7))
+        padded[..., :3] = world
+        torch.testing.assert_close(
+            seven.fusion.fuse(x, padded, pins), three.fusion.fuse(x, world, pins), rtol=0, atol=1e-6
+        )
 
 
 if __name__ == "__main__":

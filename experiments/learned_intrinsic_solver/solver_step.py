@@ -8,15 +8,17 @@ reference gradient checks. Torch work runs on the network's CPU or CUDA device.
 The fixed PARDISO factorization stays on CPU with a custom forward/adjoint bridge;
 construct a new step to change dtype, material, or constraints.
 
-The single-material step consumes the same revised nine-value input schema as
-the mixed-material step (:mod:`.features`, :mod:`.input_assembly`): cell frames
-are the closest proper rotations to the current center deformation with the
+The single-material step consumes the same mode-vector input schema as the
+mixed-material step (:mod:`.features`, :mod:`.input_assembly`): every cell
+carries ``target_modes`` world target vectors (the three centre axes of ``F``,
+or those plus the four warping vectors of :mod:`.hex_modes`); cell frames are
+the closest proper rotations to the current center deformation with the
 clamped-face tie-break (:mod:`.frames`), recomputed per call without
 differentiation; the gradient input is the detached position gradient of the
-complete physical objective projected through the fusion adjoint; inverted and
-collapsed candidates are accepted by the frames and the stable Neo-Hookean
-energy. The network, other geometric features, corner reconstruction, and
-energy remain connected.
+complete physical objective projected through the fusion adjoint onto the
+target modes; inverted and collapsed candidates are accepted by the frames and
+the stable Neo-Hookean energy. The network, other geometric features, corner
+reconstruction, and energy remain connected.
 """
 
 import torch  # noqa: TID253 -- Explicit opt-in PyTorch nn.Module implementation.
@@ -27,9 +29,8 @@ from .features import (
     CONDITIONING_DIM,
     EDGE_FEATURE_DIM,
     FEATURE_SCHEMA_VERSION,
-    STATE_FEATURE_DIM,
-    center_deformation,
     conditioning_channels,
+    state_feature_dim,
 )
 from .frames import select_reference_corners
 from .fusion import HexFusion
@@ -40,20 +41,27 @@ from .input_assembly import (
     OptimizerHistory,
     assemble_inputs,
     check_history,
+    target_vectors,
 )
 from .network import IntrinsicSolverNetwork
 
 __all__ = ["LearnedHexInputs", "LearnedHexSolverStep", "LearnedHexStepOutput"]
 
 
-def _schema_error(network: IntrinsicSolverNetwork) -> str:
-    schema = (network.state_feature_dim, network.conditioning_dim, network.edge_input_dim)
+def _schema_error(network: IntrinsicSolverNetwork, target_modes: int) -> str:
+    schema = (network.state_feature_dim, network.conditioning_dim, network.edge_input_dim, network.target_modes)
     return (
-        f"network must use the revised schema {FEATURE_SCHEMA_VERSION}: {STATE_FEATURE_DIM} state, "
-        f"{CONDITIONING_DIM} conditioning and {EDGE_FEATURE_DIM} edge inputs, got "
-        f"{schema[0]}/{schema[1]}/{schema[2]}; legacy 38/5 and 86/6 networks and their checkpoints are not "
-        "supported and require fresh initialization"
+        f"network must use the revised schema {FEATURE_SCHEMA_VERSION} with target_modes {target_modes}: "
+        f"{state_feature_dim(target_modes)} state, {CONDITIONING_DIM} conditioning and {EDGE_FEATURE_DIM} edge "
+        f"inputs and {target_modes} target modes, got {schema[0]}/{schema[1]}/{schema[2]} with {schema[3]} modes; "
+        "legacy 38/5 and 86/6 networks and their checkpoints are not supported and require fresh initialization"
     )
+
+
+def _check_target_modes(target_modes) -> int:
+    if isinstance(target_modes, bool) or target_modes not in (3, 7):
+        raise ValueError("target_modes must be 3 (affine axes) or 7 (axes plus warping vectors)")
+    return int(target_modes)
 
 
 class LearnedHexSolverStep(nn.Module):
@@ -71,18 +79,20 @@ class LearnedHexSolverStep(nn.Module):
     acceptance/line search and contact remain outside this module. At least
     one corner must be prescribed.
 
-    Inputs follow the revised schema shared with the mixed-material step
-    through :func:`.input_assembly.assemble_inputs`:
-    :data:`.features.STATE_FEATURE_DIM` state features (inertial axis offset,
-    physical axis change, normalized current and previous axis gradients,
-    normalized previous achieved update, exposed faces, fixed-corner flags,
-    log gradient RMS and the history flag; packing in
-    :func:`.features.pack_state_features`), the nine local axes prepended by
-    the network, :data:`.features.EDGE_FEATURE_DIM` edge inputs and the
-    dimensionless conditioning channels of
-    :func:`.features.conditioning_channels`. The viscosity channel is always
-    present; damping may be zero. Legacy 38/5, 86/6 and 61/9 networks and their
-    checkpoints are rejected explicitly.
+    Inputs follow the mode-vector schema shared with the mixed-material step
+    through :func:`.input_assembly.assemble_inputs`: with ``m = target_modes``
+    world target vectors per cell (:func:`.input_assembly.target_vectors`),
+    ``features.state_feature_dim(m)`` state features (inertial axis offset,
+    physical axis change, normalized current and previous target gradients,
+    normalized previous achieved update, all ``[3, m]`` blocks in the local
+    frame, exposed faces, fixed-corner flags, log gradient RMS and the history
+    flag; packing in :func:`.features.pack_state_features`), the ``3 m`` local
+    target vectors prepended by the network,
+    :data:`.features.EDGE_FEATURE_DIM` edge inputs and the dimensionless
+    conditioning channels of :func:`.features.conditioning_channels`. The
+    viscosity channel is always present; damping may be zero. The network's
+    ``target_modes`` and state width must agree with the step's; legacy 38/5,
+    86/6 and 61/9 networks and their checkpoints are rejected explicitly.
 
     The objective and the fusion are evaluated in SI: fused positions and
     energies agree with the mixed-material step because a homogeneous body's
@@ -107,6 +117,11 @@ class LearnedHexSolverStep(nn.Module):
         gravity: World acceleration [m/s^2]; only its magnitude enters the
             conditioning channel ``log1p(|g| dt^2 / h)``. The energy has no
             gravity term (it sits in the inertial prediction).
+        target_modes: Target vectors per cell: 3 (the centre axes of ``F``,
+            the legacy affine-only schema and default) or 7 (axes plus the
+            warping vectors ``w_12, w_13, w_23, w_123`` of :mod:`.hex_modes`).
+            The fusion, the history blocks and the network's ``target_modes``
+            follow this value.
 
     Attributes:
         energy_unit: ``S h^3`` [J] with ``S`` the shear modulus, the unit of the
@@ -115,9 +130,11 @@ class LearnedHexSolverStep(nn.Module):
             only case the mixed step represents; a convention for per-cell
             moduli).
         network: Optional revised-schema network on CPU or CUDA in the chosen
-            dtype. Its device determines geometry, network, and energy
-            execution. Default is the CPU one-block [1] baseline.
+            dtype with ``target_modes`` modes. Its device determines geometry,
+            network, and energy execution. Default is the CPU one-block [1]
+            baseline for ``target_modes``.
         dtype: Working Torch dtype; float32 default, float64 reference only.
+        target_modes: Mode count ``m`` of this step (3 or 7).
     """
 
     def __init__(
@@ -133,8 +150,10 @@ class LearnedHexSolverStep(nn.Module):
         gravity=(0.0, -9.81, 0.0),
         network: IntrinsicSolverNetwork | None = None,
         dtype: torch.dtype = torch.float32,
+        target_modes: int = 3,
     ):
         super().__init__()
+        self.target_modes = _check_target_modes(target_modes)
         try:
             gravity_tensor = torch.as_tensor(gravity, dtype=torch.float64).detach().cpu()
         except (TypeError, ValueError, RuntimeError) as error:
@@ -154,21 +173,35 @@ class LearnedHexSolverStep(nn.Module):
         mu_fraction = (mu / material_scale) / (lam / material_scale + mu / material_scale)
         fusion_stiffness = mu * (3 - mu_fraction)
         self.register_buffer("fusion_stiffness", fusion_stiffness)
-        self.fusion = HexFusion(rest, fixed_indices, cell_weights=fusion_stiffness * rest.cell_size**3, dtype=dtype)
+        self.fusion = HexFusion(
+            rest,
+            fixed_indices,
+            cell_weights=fusion_stiffness * rest.cell_size**3,
+            dtype=dtype,
+            target_modes=self.target_modes,
+        )
         self.cell_size = rest.cell_size
         self.time_step = float(time_step)
         self.network = (
             network
             if network is not None
-            else IntrinsicSolverNetwork(rest.cell_counts, STATE_FEATURE_DIM, conditioning_dim=CONDITIONING_DIM).to(
-                dtype=dtype
-            )
+            else IntrinsicSolverNetwork(
+                rest.cell_counts,
+                state_feature_dim(self.target_modes),
+                target_modes=self.target_modes,
+                conditioning_dim=CONDITIONING_DIM,
+            ).to(dtype=dtype)
         )
         if self.network.cell_counts != rest.cell_counts:
             raise ValueError("network cell_counts must match the rest grid")
-        schema = (self.network.state_feature_dim, self.network.conditioning_dim, self.network.edge_input_dim)
-        if schema != (STATE_FEATURE_DIM, CONDITIONING_DIM, EDGE_FEATURE_DIM):
-            raise ValueError(_schema_error(self.network))
+        schema = (
+            self.network.state_feature_dim,
+            self.network.conditioning_dim,
+            self.network.edge_input_dim,
+            self.network.target_modes,
+        )
+        if schema != (state_feature_dim(self.target_modes), CONDITIONING_DIM, EDGE_FEATURE_DIM, self.target_modes):
+            raise ValueError(_schema_error(self.network, self.target_modes))
         device = next(self.network.parameters()).device
         if device.type not in ("cpu", "cuda") or any(
             p.device != device or p.dtype != dtype for p in self.network.parameters()
@@ -262,7 +295,9 @@ class LearnedHexSolverStep(nn.Module):
         Frames are the closest proper rotations to the center deformation F of
         each cell (:func:`.frames.closest_proper_rotations`); inverted cells
         get a right-handed frame whose local axes ``A = R^T F`` carry the
-        negative determinant. Ambiguous cells use the reference frame built from
+        negative determinant. With seven modes the local axes ``R^T V`` also
+        hold the four warping vectors in the same frame, shape [B, C, 3, 7].
+        Ambiguous cells use the reference frame built from
         ``reference_corners`` at the current positions when that buffer is
         nonempty. Frames and the gradient feature are detached so the
         decomposition is frozen for this query's backward pass. The state
@@ -280,15 +315,15 @@ class LearnedHexSolverStep(nn.Module):
                 proper orthonormal rotations on the input dtype/device and
                 detached; supply these to replay the same frozen frame.
             history: Detached previous-query history in the units this step
-                returns (``axis_gradient_world`` in :attr:`energy_unit`), or
-                None for no history on the whole batch (zero blocks,
-                ``history_valid = 0``).
+                returns (``axis_gradient_world`` in :attr:`energy_unit`) with
+                ``[B, C, 3, target_modes]`` blocks, or None for no history on
+                the whole batch (zero blocks, ``history_valid = 0``).
 
         Returns:
-            Frozen frames, differentiable local axes, packed features, the
-            detached world axis gradient [``energy_unit``] and zero-pinned
-            position gradient [N], and the tie-break mask [B,C] (None when
-            frames were supplied).
+            Frozen frames, differentiable local axes [B, C, 3, target_modes],
+            packed features, the detached world target gradient
+            [``energy_unit``, same shape] and zero-pinned position gradient
+            [N], and the tie-break mask [B,C] (None when frames were supplied).
 
         Raises:
             ValueError: Malformed, mismatched or nonfinite inputs, missing
@@ -298,7 +333,14 @@ class LearnedHexSolverStep(nn.Module):
         """
         self._check_query(positions, inertial_prediction, previous_positions)
         batch, cells = positions.shape[0], len(self.cell_corner_indices)
-        history = check_history(history, batch=batch, cell_count=cells, dtype=positions.dtype, device=positions.device)
+        history = check_history(
+            history,
+            batch=batch,
+            cell_count=cells,
+            dtype=positions.dtype,
+            device=positions.device,
+            modes=self.target_modes,
+        )
         if frames is not None:
             self._check_rotations(frames, (batch, cells, 3, 3), positions)
             frames = frames.detach()
@@ -349,14 +391,14 @@ class LearnedHexSolverStep(nn.Module):
         Returns:
             Proposed global positions and per-object physical energy terms.
             ``step_size`` is the per-cell step [B,C]. The detached diagnostics
-            are filled: ``axis_gradient_world`` (this query's world axis
-            gradient feature in units of :attr:`energy_unit`),
-            ``achieved_axis_update_world`` (world change
-            of the center deformation from ``positions`` to the fused output,
-            including any rigid delta applied in fusion), ``force_residual_norm``
-            (norm of the zero-pinned position gradient at the pre-update
-            candidate [N]) and ``tie_mask``. No state is mutated or physical
-            time advanced.
+            are filled: ``axis_gradient_world`` (this query's world target
+            gradient feature in units of :attr:`energy_unit`, shape
+            [B, C, 3, target_modes]), ``achieved_axis_update_world`` (world
+            change of the ``target_modes`` target vectors from ``positions`` to
+            the fused output, same shape, including any rigid delta applied in
+            fusion), ``force_residual_norm`` (norm of the zero-pinned position
+            gradient at the pre-update candidate [N]) and ``tie_mask``. No
+            state is mutated or physical time advanced.
         """
         if not isinstance(detach_energy_target, bool):
             raise TypeError("detach_energy_target must be boolean")
@@ -387,9 +429,7 @@ class LearnedHexSolverStep(nn.Module):
         energy_previous = previous_positions.detach() if detach_energy_target else previous_positions
         loss = self.energy(fused, energy_target, previous_positions=energy_previous)
         with torch.no_grad():
-            achieved = center_deformation(
-                fused.detach(), self.cell_corner_indices, self.center_gradients
-            ) - center_deformation(positions.detach(), self.cell_corner_indices, self.center_gradients)
+            achieved = target_vectors(self, fused.detach()) - target_vectors(self, positions.detach())
             residual = torch.linalg.vector_norm(inputs.position_gradient.flatten(1), dim=1)
         return LearnedHexStepOutput(
             fused,

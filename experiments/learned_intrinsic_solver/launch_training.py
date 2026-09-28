@@ -22,6 +22,44 @@ from .launch_distributed_probe import _run_workers
 
 __all__ = ["launch_training"]
 
+GPU_LOCK_DIRECTORY = Path("/tmp/gpu-locks")
+"""Lock directory of ``gpu-claim.sh``: ``gpu-N.lock`` is flocked while an occupying shell lives."""
+
+
+def _held_gpu_locks(workers, lock_directory):
+    """Return ``(gpu_indices, held)``: the GPU indices considered and those whose claim lock is held.
+
+    The indices are ``0 .. workers - 1`` plus every ``gpu-N.lock`` present in
+    ``lock_directory``; a missing lock file is free. Each present lock is
+    probed with a non-blocking exclusive ``flock`` that is released at once,
+    so the probe never claims a GPU. ``held`` maps the index to the
+    ``gpu-N.info`` text of the holder (or ``"no info"``).
+    """
+    import fcntl  # noqa: PLC0415 -- POSIX only, like the claim script.
+
+    indices = set(range(workers))
+    for path in lock_directory.glob("gpu-*.lock"):
+        suffix = path.stem[len("gpu-") :]
+        if suffix.isdigit():
+            indices.add(int(suffix))
+    held = {}
+    for index in sorted(indices):
+        path = lock_directory / f"gpu-{index}.lock"
+        if not path.is_file():
+            continue
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                info = lock_directory / f"gpu-{index}.info"
+                held[index] = info.read_text().strip() if info.is_file() else "no info"
+            else:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+    return sorted(indices), held
+
 
 def _check_forwarded_arguments(arguments):
     for argument in arguments:
@@ -48,6 +86,8 @@ def launch_training(
     training_arguments: tuple[str, ...] = (),
     gpu_claim: Path | None = None,
     pipeline: str = "epochs",
+    require_free_gpus: bool = False,
+    gpu_lock_directory: Path | None = None,
 ) -> dict:
     """Run one, two, or four exclusively claimed GPU ranks under supervision.
 
@@ -57,6 +97,13 @@ def launch_training(
     trainer's weights-only initialization): the output path must be fresh, the
     ranks receive ``--resume <checkpoint> --resume-weights-only`` and
     ``launcher.json`` records ``resume_weights_only``.
+
+    Every rank claims a GPU with ``gpu-claim.sh`` in occupy mode and exits when
+    none is free, which for a fresh run leaves the created output directory
+    behind. With ``require_free_gpus`` the launcher first probes the claim locks
+    in ``gpu_lock_directory`` (default :data:`GPU_LOCK_DIRECTORY`) and raises
+    ``RuntimeError`` naming the holders when fewer than ``workers`` GPUs are
+    free, before anything is written.
     """
     if isinstance(workers, bool) or workers not in (1, 2, 4):
         raise ValueError("workers must be one, two, or four")
@@ -91,6 +138,16 @@ def launch_training(
     gpu_claim = Path(gpu_claim).resolve()
     if not gpu_claim.is_file():
         raise FileNotFoundError(f"GPU claim script not found: {gpu_claim}")
+    if require_free_gpus:
+        lock_directory = GPU_LOCK_DIRECTORY if gpu_lock_directory is None else Path(gpu_lock_directory)
+        indices, held = _held_gpu_locks(workers, lock_directory)
+        free = len(indices) - len(held)
+        if free < workers:
+            holders = "; ".join(f"GPU {index}: {text}" for index, text in held.items())
+            raise RuntimeError(
+                f"{workers} free GPUs required but {free} of {len(indices)} are free ({lock_directory}); "
+                f"held: {holders}. Stop the holders (or wait for their shells to exit) and retry."
+            )
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -168,6 +225,11 @@ def _main():
         help="initialize a fresh mixed run's network and optimizer from --resume (any run's checkpoint)",
     )
     parser.add_argument("--pipeline", choices=("epochs", "mixed"), default="epochs")
+    parser.add_argument(
+        "--require-free-gpus",
+        action="store_true",
+        help="refuse to start (before creating the output) unless --workers GPU claim locks are free",
+    )
     args, remaining = parser.parse_known_args()
     if remaining[:1] == ["--"]:
         remaining = remaining[1:]
@@ -179,6 +241,7 @@ def _main():
         resume_weights_only=args.resume_weights_only,
         pipeline=args.pipeline,
         training_arguments=tuple(remaining),
+        require_free_gpus=args.require_free_gpus,
     )
     print(json.dumps(result, indent=2))
     raise SystemExit(0 if result["passed"] else 1)

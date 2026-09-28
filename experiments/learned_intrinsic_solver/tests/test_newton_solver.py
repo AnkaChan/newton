@@ -269,6 +269,48 @@ class TestNewtonLearnedSolver(unittest.TestCase):
         torch.testing.assert_close(third.loss.elastic, second.loss.elastic * 2, rtol=2e-4, atol=2e-7)
         torch.testing.assert_close(third.loss.inertia, second.loss.inertia, rtol=2e-4, atol=2e-7)
 
+    def test_seven_mode_network_drives_the_learned_step_and_shares_the_rigid_initializer(self):
+        """Follow the network's target_modes: seven-mode step, fusion and history, with the same rigid candidate."""
+        network = IntrinsicSolverNetwork(
+            self.rest.cell_counts,
+            features.state_feature_dim(7),
+            target_modes=7,
+            conditioning_dim=features.CONDITIONING_DIM,
+            hidden_dim=16,
+            edge_hidden_dim=8,
+        )
+        with torch.no_grad():
+            network.correction_head.weight.normal_(std=0.002)
+        solver = SolverLearnedIntrinsic(self.model, network=network, iterations=2)
+        problem = solver.prepare_problem(self.state, 0.01)
+        self.assertEqual(problem.optimizer.target_modes, 7)
+        self.assertEqual(problem.optimizer.fusion.target_modes, 7)
+        self.assertEqual(problem.optimizer.network.state_feature_dim, 121)
+        candidate = solver.initialize_candidate(problem)
+        self.assertTrue(torch.isfinite(candidate).all())
+        # The zero-increment rigid initializer does not depend on the mode count.
+        three = self._solver()
+        torch.testing.assert_close(candidate, three.initialize_candidate(three.prepare_problem(self.state, 0.01)))
+        result = solver.solve(problem)
+        self.assertEqual(len(result.updates), 2)
+        for update in result.updates:
+            self.assertEqual(update.local_target_axes.shape, (1, 12, 3, 7))
+            self.assertEqual(update.axis_correction.shape, (1, 12, 3, 7))
+            self.assertEqual(update.achieved_axis_update_world.shape, (1, 12, 3, 7))
+            self.assertTrue(torch.isfinite(update.loss.total).all())
+        self.assertEqual(result.history.axis_gradient_world.shape, (1, 12, 3, 7))
+        self.assertTrue(result.history.valid.all())
+        self.assertTrue(torch.isfinite(result.positions).all())
+        result.loss.total.sum().backward()
+        gradient = network.correction_head.weight.grad
+        self.assertEqual(gradient.shape[0], 21)
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertGreater(gradient.norm().item(), 0)
+        solver.last_result = None
+        solver.step(self.state, self.output, None, None, 0.01)
+        self.assertTrue(np.isfinite(self.output.particle_q.numpy()).all())
+        self.assertEqual(solver.last_result.history.axis_update_world.shape, (1, 12, 3, 7))
+
     def test_invalid_step_does_not_commit_output(self):
         """Reject invalid dt and populated contacts before touching output state."""
         solver = self._solver()

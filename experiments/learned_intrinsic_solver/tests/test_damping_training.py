@@ -25,18 +25,21 @@ class TestDampingTraining(unittest.TestCase):
         config = MixedTrainConfig()
         self.assertEqual(config.damping_range, (10.0, 1000.0))
         self.assertEqual(
-            (config.state_feature_dim, config.conditioning_dim), (features.STATE_FEATURE_DIM, features.CONDITIONING_DIM)
+            (config.state_feature_dim, config.conditioning_dim),
+            (features.state_feature_dim(config.target_modes), features.CONDITIONING_DIM),
         )
         self.assertEqual(config.feature_schema_version, features.FEATURE_SCHEMA_VERSION)
         old = asdict(config)
         del old["damping_range"], old["feature_schema_version"]
         with self.assertRaisesRegex(ValueError, "legacy"):
             MixedTrainConfig.from_checkpoint_config(old)
-        for version in (1, 2, 3, 4):
+        for version in (1, 2, 3, 4, 5):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, "legacy"):
                 replace(config, feature_schema_version=version)
         zero_damping = replace(config, damping_range=(0.0, 0.0))
-        self.assertEqual((zero_damping.state_feature_dim, zero_damping.conditioning_dim), (61, 7))
+        # Seven modes (schema 6) pack five 21-value blocks: 121 state inputs; three modes keep the 61 of schema 5.
+        self.assertEqual((zero_damping.state_feature_dim, zero_damping.conditioning_dim), (121, 7))
+        self.assertEqual(replace(zero_damping, target_modes=3).state_feature_dim, 61)
 
     def test_batch_preserves_physical_anchor_separately_from_candidate(self):
         """Collate the physical-step start without replacing it with an inner optimizer iterate."""

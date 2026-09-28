@@ -94,12 +94,13 @@ def _floor(height: float, youngs: float, cell_size: float, time_step: float) -> 
     )
 
 
-def _network(seed: int, *, contact_tokens: bool) -> IntrinsicSolverNetwork:
+def _network(seed: int, *, contact_tokens: bool, target_modes: int = 3) -> IntrinsicSolverNetwork:
     """Return a small revised-schema network with nonzero heads so the update depends on every input."""
     torch.manual_seed(seed)
     network = IntrinsicSolverNetwork(
         CELL_COUNTS,
-        features.STATE_FEATURE_DIM,
+        features.state_feature_dim(target_modes),
+        target_modes=target_modes,
         conditioning_dim=features.CONDITIONING_DIM,
         hidden_dim=16,
         edge_hidden_dim=8,
@@ -130,7 +131,9 @@ class TestNormalisedPhysics(unittest.TestCase):
         self.fixed = np.flatnonzero(self.rest.corner_rest_positions[:, 2] == 0)
         self.generator = torch.Generator().manual_seed(7)
 
-    def _step(self, rest, network, *, time_step=TIME_STEP, gravity=GRAVITY, friction_epsilon=FRICTION_EPSILON):
+    def _step(
+        self, rest, network, *, time_step=TIME_STEP, gravity=GRAVITY, friction_epsilon=FRICTION_EPSILON, target_modes=3
+    ):
         step = MixedHexSolverStep(
             rest,
             self.fixed,
@@ -138,6 +141,7 @@ class TestNormalisedPhysics(unittest.TestCase):
             time_step=time_step,
             gravity=gravity,
             contact_friction_epsilon=friction_epsilon,
+            target_modes=target_modes,
         )
         self.addCleanup(step.close)
         return step
@@ -231,9 +235,18 @@ class TestNormalisedPhysics(unittest.TestCase):
             self.assertLessEqual(value, RTOL, term)
 
     def test_forward_matches_a_direct_si_fusion_and_gradient(self):
-        """The fused positions equal an SI-grid fusion of the network increment; the residual is the SI gradient norm."""
-        network = _network(2, contact_tokens=True)
-        step = self._step(self.rest, network)
+        """The fused positions equal an SI-grid fusion of the network increment; the residual is the SI gradient norm.
+
+        Checked for the three-mode and the seven-mode step, each against an
+        SI-grid fusion with the same mode count.
+        """
+        for target_modes in (3, 7):
+            with self.subTest(target_modes=target_modes):
+                self._check_forward_matches_a_direct_si_fusion(target_modes)
+
+    def _check_forward_matches_a_direct_si_fusion(self, target_modes: int):
+        network = _network(2, contact_tokens=True, target_modes=target_modes)
+        step = self._step(self.rest, network, target_modes=target_modes)
         material = _material(1e4, 0.3, 1000.0, 10.0)
         floor = _floor(-0.3 * CELL_SIZE, 1e4, CELL_SIZE, TIME_STEP)
         step.register_context("beam", **material, contact=floor)
@@ -261,8 +274,12 @@ class TestNormalisedPhysics(unittest.TestCase):
             contact_mask=inputs.contact_mask,
         )
         increment = inputs.frames @ (prediction.local_target_axes - inputs.local_axes)
+        self.assertEqual(increment.shape[-1], target_modes)
         physical_fusion = HexFusion(
-            self.rest, self.fixed, cell_weights=torch.full((len(self.rest.cell_corner_indices),), 3.0)
+            self.rest,
+            self.fixed,
+            cell_weights=torch.full((len(self.rest.cell_corner_indices),), 3.0),
+            target_modes=target_modes,
         )
         expected = physical_fusion.fuse(candidate, increment.detach(), batch["fixed_positions"])
         deviation = (output.positions.detach() - expected).abs().max().item() / CELL_SIZE
@@ -278,7 +295,9 @@ class TestNormalisedPhysics(unittest.TestCase):
         reference, contact_term = self._reference_terms(step, material, floor, output.positions.detach(), batch)
         energy = _deviation(output.loss.total, reference.total + contact_term)
         self.assertGreater(output.loss.contact.item(), 0.0, "contact is active at the fused positions")
-        print(f"forward: positions / h {deviation:.2e}, residual {residual:.2e}, energy {energy:.2e}")
+        print(
+            f"forward ({target_modes} modes): positions / h {deviation:.2e}, residual {residual:.2e}, energy {energy:.2e}"
+        )
         self.assertLessEqual(deviation, RTOL)
         self.assertLessEqual(residual, RTOL)
         self.assertLessEqual(energy, RTOL)

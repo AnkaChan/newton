@@ -78,6 +78,58 @@ class TestHistoryPlumbing(unittest.TestCase):
         with self.assertRaises(ValueError):
             store_history(payloads[:1], result)
 
+    def test_seven_mode_blocks_round_trip_and_the_mode_count_is_read_from_the_tensors(self):
+        """Store, batch and carry [C, 3, 7] blocks; infer m from stored blocks and fall back to three without any."""
+        empty = empty_history(4, 7)
+        self.assertEqual(empty["history_axis_gradient_world"].shape, (4, 3, 7))
+        self.assertEqual(empty["history_axis_update_world"].shape, (4, 3, 7))
+        self.assertFalse(empty["history_valid"])
+        for modes in (0, -1, True, 2.5):
+            with self.subTest(modes=modes), self.assertRaises(ValueError):
+                empty_history(4, modes)
+        generator = torch.Generator().manual_seed(3)
+        gradient = torch.randn((2, 4, 3, 7), generator=generator, requires_grad=True)
+        update = torch.randn((2, 4, 3, 7), generator=generator, requires_grad=True)
+        result = SimpleNamespace(axis_gradient_world=gradient, achieved_axis_update_world=update)
+        payloads = [empty_history(4, 7), {}]
+        store_history(payloads, result)
+        for index, payload in enumerate(payloads):
+            self.assertTrue(payload["history_valid"])
+            self.assertEqual(payload["history_axis_gradient_world"].shape, (4, 3, 7))
+            self.assertFalse(payload["history_axis_update_world"].requires_grad)
+            self.assertTrue(torch.equal(payload["history_axis_update_world"], update[index].detach()))
+        history = batch_history(payloads, torch.device("cpu"), cell_count=4)
+        self.assertEqual(history.axis_gradient_world.shape, (2, 4, 3, 7))
+        self.assertTrue(history.valid.all())
+        self.assertTrue(torch.equal(history.axis_gradient_world, gradient.detach()))
+        self.assertTrue(torch.equal(history.axis_update_world, update.detach()))
+        # Invalid or empty payloads take seven-mode zeros when another payload stores a seven-mode block.
+        mixed = batch_history([empty_history(4, 7), {}, payloads[1]], torch.device("cpu"), cell_count=4)
+        self.assertEqual(mixed.axis_update_world.shape, (3, 4, 3, 7))
+        self.assertEqual(mixed.valid.tolist(), [False, False, True])
+        self.assertTrue(torch.equal(mixed.axis_update_world[:2], torch.zeros(2, 4, 3, 7)))
+        explicit = batch_history([{}], torch.device("cpu"), cell_count=4, modes=7)
+        self.assertEqual(explicit.axis_gradient_world.shape, (1, 4, 3, 7))
+        # An explicit mode count is authoritative: valid blocks of another width are rejected.
+        with self.assertRaisesRegex(ValueError, r"\[C, 3, 3\]"):
+            batch_history(payloads, torch.device("cpu"), cell_count=4, modes=3)
+        with self.assertRaises(ValueError):
+            batch_history(payloads, torch.device("cpu"), cell_count=4, modes=0)
+        # Without any stored block the legacy three-mode zeros are produced.
+        legacy = batch_history([{}, {"history_valid": False}], torch.device("cpu"), cell_count=4)
+        self.assertEqual(legacy.axis_gradient_world.shape, (2, 4, 3, 3))
+        advanced = {}
+        carry_history(payloads[0], advanced)
+        self.assertEqual(advanced["history_axis_gradient_world"].shape, (4, 3, 7))
+        self.assertIs(advanced["history_axis_update_world"], payloads[0]["history_axis_update_world"])
+        with self.assertRaises(ValueError):
+            store_history(
+                payloads,
+                SimpleNamespace(
+                    axis_gradient_world=torch.zeros(2, 4, 7, 3), achieved_axis_update_world=torch.zeros(2, 4, 7, 3)
+                ),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,7 +40,7 @@ if importlib.util.find_spec("torch") is None:
 import torch  # noqa: TID253 -- Optional experimental training tests.
 
 from experiments.learned_intrinsic_solver import launch_training as launcher_module
-from experiments.learned_intrinsic_solver import train_epochs, train_mixed
+from experiments.learned_intrinsic_solver import mixed_validation, train_epochs, train_mixed
 from experiments.learned_intrinsic_solver.launch_training import launch_training
 from experiments.learned_intrinsic_solver.train_mixed import run_training
 from experiments.learned_intrinsic_solver.trajectory_pool import ActiveTrajectoryPool
@@ -446,6 +446,99 @@ class TestFixedStateTraining(unittest.TestCase):
             self.assertEqual(progress["available_H"], [4])
             self.assertEqual(progress["regime"], report["epochs"][-1]["regime"])
 
+    def test_fixed_state_training_selects_on_the_full_horizon_check_at_seven_modes(self):
+        """Train two tiny seven-mode epochs, select the best checkpoint on the full-horizon check and sample gravity per state."""
+        config = self.config(target_modes=7, selection_source="full_horizon", validation_full_interval=1)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            report = run_training(output, config)
+            self.assertEqual(report["completed_epochs"], 2)
+            self.assertEqual(report["config"]["target_modes"], 7)
+            self.assertEqual(report["parameter_count"], sum(p.numel() for p in _build_network(config).parameters()))
+            aggregation = mixed_validation.FULL_HORIZON_SELECTION_AGGREGATION
+            eligible = {}
+            for row in report["epochs"]:
+                full = row["full_horizon_validation"]
+                self.assertEqual(
+                    (full["iterations"], full["physical_steps"], full["sample_count"]),
+                    (min(max(row["available_K"]), 8), max(row["available_H"]), 1),
+                )
+                selection = full["selection"]
+                self.assertEqual(set(selection), {"metric", "eligible", "aggregation", "survival_required"})
+                self.assertEqual((selection["aggregation"], selection["survival_required"]), (aggregation, True))
+                self.assertIs(selection["eligible"], full["physical_survivors"] == full["sample_count"] == 1)
+                if selection["eligible"]:
+                    self.assertEqual(selection["metric"], full["final_free_force_residual_norm_n"]["mean"])
+                    eligible[row["epoch"]] = selection["metric"]
+                # Gravity is drawn per state inside the configured range and differs between the six states.
+                ranges = row["rank_0_material_ranges"]["gravity_magnitude"]
+                self.assertTrue(2.0 <= ranges[0] < ranges[1] <= 40.0, ranges)
+                histogram = row["rank_diagnostics"][0]["material_histograms"]["gravity_magnitude"]
+                self.assertEqual(sum(histogram["counts"]), row["query_count"])
+                self.assertEqual((histogram["edges"][0], histogram["edges"][-1]), (2.0, 40.0))
+            # Epoch 2 checks at (K, H) = (2, 4) after epoch 1's (1, 2): the longer horizon measures a larger
+            # residual, so the epoch-1 record retires whatever its metric and only epoch 2 can be the best.
+            self.assertIn(2, eligible, "the epoch-2 full-horizon check is expected to survive")
+            if 1 in eligible:
+                (reset,) = report["best_selection_history"]
+                self.assertEqual(
+                    (reset["reset_at_epoch"], reset["reason"], reset["iterations"], reset["physical_steps"]),
+                    (1, "full-horizon budget changed", 2, 4),
+                )
+                self.assertEqual((reset["record"]["epoch"], reset["record"]["metric"]), (1, eligible[1]))
+            else:
+                self.assertNotIn("best_selection_history", report)
+            best = report["best_selection"]
+            best_epoch = 2
+            self.assertEqual(
+                (best["epoch"], best["metric"], best["source"]), (best_epoch, eligible[best_epoch], "full_horizon")
+            )
+            full = report["epochs"][best_epoch - 1]["full_horizon_validation"]
+            self.assertEqual(best["aggregation"], aggregation)
+            self.assertEqual((best["iterations"], best["physical_steps"]), (full["iterations"], full["physical_steps"]))
+            self.assertEqual((best["sample_count"], best["physical_survivors"]), (1, 1))
+            self.assertEqual(best["final_energy_joule"], full["final_energy_joule"])
+            self.assertEqual(best["final_max_penetration_r"], full["final_max_penetration_r"])
+            self.assertTrue(all(isinstance(best["final_energy_joule"][k], float) for k in ("mean", "median", "max")))
+            self.assertTrue(
+                all(isinstance(best["final_max_penetration_r"][k], float) for k in ("mean", "median", "max"))
+            )
+            self.assertGreaterEqual(best["final_max_penetration_r"]["max"], 0.0)
+            saved = torch.load(output / "checkpoints/best_validation.pt", weights_only=False)
+            self.assertEqual(saved["report"]["best_selection"], best)
+            self.assertEqual(saved["report"]["completed_epochs"], best_epoch)
+            self.assertEqual(saved["network_state"]["correction_head.weight"].shape[0], 21)
+            for name in ("initial.pt", "latest.pt", "final.pt"):
+                self.assertTrue((output / "checkpoints" / name).is_file(), name)
+            with (output / "epochs.csv").open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(
+                [row["full_horizon_selection_metric"] for row in rows],
+                [str(row["full_horizon_validation"]["selection"]["metric"]) for row in report["epochs"]],
+            )
+            html = (output / "index.html").read_text()
+            self.assertIn("Selection metric (full-horizon check", html)
+            self.assertIn("full-horizon check, K = ", html)
+
+    def test_full_horizon_selection_skips_epochs_without_the_check(self):
+        """Never select an epoch whose full-horizon check did not run, however good its cheap validation."""
+        config = self.config(selection_source="full_horizon", validation_full_interval=2)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            report = run_training(output, config)
+            self.assertIsNone(report["epochs"][0]["full_horizon_validation"])
+            self.assertTrue(report["epochs"][0]["validation"]["selection"]["eligible"])
+            full = report["epochs"][1]["full_horizon_validation"]
+            best = report["best_selection"]
+            if full["selection"]["eligible"]:
+                self.assertEqual(
+                    (best["epoch"], best["metric"], best["source"]), (2, full["selection"]["metric"], "full_horizon")
+                )
+                self.assertTrue((output / "checkpoints/best_validation.pt").is_file())
+            else:
+                self.assertIsNone(best)
+                self.assertFalse((output / "checkpoints/best_validation.pt").exists())
+
     def test_unserved_queries_fail_through_the_coordinated_gate_and_keep_the_stage_in_the_heartbeat(self):
         """Route a pool invariant violation through _all_ranks_ok like every other loop failure; the failed heartbeat keeps the regime."""
         config = self.config(max_epochs=1)
@@ -582,9 +675,17 @@ class TestFixedStateTraining(unittest.TestCase):
             self.assertEqual(resumed["completed_updates"], total)
             self.assertEqual([row["update"] for row in resumed["updates"]], [total - 1, total])
 
-    def test_weights_only_start_from_a_schema_four_checkpoint_reinitializes_the_condition_encoder_input(self):
-        """Copy every matching tensor of a schema-4 checkpoint, redraw condition_encoder.0 and zero its moments."""
+    def test_weights_only_start_with_a_listed_schema_migration_reinitializes_the_condition_encoder_input(self):
+        """Copy every matching tensor of a listed cross-schema checkpoint, redraw condition_encoder.0 and zero its moments.
+
+        Schema 6 lists no migration (v4 starts fresh), so the mechanism is
+        exercised with a synthetic ``(4, 6)`` listing; the unpatched trainer
+        must reject the same schema-4 checkpoint as legacy.
+        """
         config = self.config(max_epochs=1)
+        current = train_mixed.features.FEATURE_SCHEMA_VERSION
+        listing = {(4, current): ("condition_encoder.0.weight",)}
+        self.assertEqual(train_mixed._WEIGHTS_ONLY_SCHEMA_MIGRATIONS, {})
         torch.manual_seed(5)
         network = _build_network(config)
         optimizer = torch.optim.AdamW(network.parameters(), lr=1e-4, weight_decay=1e-6)
@@ -613,6 +714,15 @@ class TestFixedStateTraining(unittest.TestCase):
             root = Path(directory)
             checkpoint = root / "schema4.pt"
             torch.save(source, checkpoint)
+            # Without a listed migration the checkpoint is a plain architecture mismatch and a legacy start.
+            with self.assertRaisesRegex(ValueError, "architecture.*condition_encoder.0.weight"):
+                migrate_weights_only_checkpoint(source, _build_network(config), source_schema_version=4)
+            with self.assertRaisesRegex(ValueError, "legacy"):
+                run_training(root / "unlisted", config, resume=checkpoint, resume_weights_only=True)
+            self.assertFalse((root / "unlisted").exists())
+            patched = patch.dict(train_mixed._WEIGHTS_ONLY_SCHEMA_MIGRATIONS, listing, clear=True)
+            patched.start()
+            self.addCleanup(patched.stop)
             # The migration function alone, as the offline dry check exercises it.
             fresh = _build_network(config)
             states = migrate_weights_only_checkpoint(source, fresh, source_schema_version=4)
@@ -624,7 +734,8 @@ class TestFixedStateTraining(unittest.TestCase):
                 {"condition_encoder.0.weight": {"checkpoint": [hidden, 9], "current": [hidden, 7]}},
             )
             self.assertEqual(
-                (states.migration["source_feature_schema_version"], states.migration["feature_schema_version"]), (4, 5)
+                (states.migration["source_feature_schema_version"], states.migration["feature_schema_version"]),
+                (4, current),
             )
             self.assertEqual(states.migration["loaded_parameter_count"], len(network_state) - 2)
             self.assertEqual(states.migration["condition_encoder_reinit_std"], CONDITION_ENCODER_REINIT_STD)
@@ -650,12 +761,12 @@ class TestFixedStateTraining(unittest.TestCase):
             loaded.load_state_dict(states.optimizer_state)
             # Same-schema and unlisted mismatches keep the strict architecture check.
             same = migrate_weights_only_checkpoint(
-                {**source, "network_state": fresh.state_dict()}, _build_network(config), source_schema_version=5
+                {**source, "network_state": fresh.state_dict()}, _build_network(config), source_schema_version=current
             )
             self.assertEqual(same.migration["reinitialized_parameters"], [])
             self.assertIsNone(same.migration["condition_encoder_reinit_std"])
             with self.assertRaisesRegex(ValueError, "architecture.*condition_encoder.0.weight"):
-                migrate_weights_only_checkpoint(source, _build_network(config), source_schema_version=5)
+                migrate_weights_only_checkpoint(source, _build_network(config), source_schema_version=current)
             mangled = dict(network_state, **{"correction_head.bias": torch.zeros(10)})
             with self.assertRaisesRegex(ValueError, "architecture.*correction_head.bias"):
                 migrate_weights_only_checkpoint(
@@ -679,11 +790,13 @@ class TestFixedStateTraining(unittest.TestCase):
             report = run_training(root / "fixed", config, resume=checkpoint, resume_weights_only=True)
             origin = report["initialized_from"]
             self.assertEqual(origin["source_feature_schema_version"], 4)
-            self.assertEqual(origin["feature_schema_version"], 5)
+            self.assertEqual(origin["feature_schema_version"], current)
             self.assertEqual(
                 origin["reinitialized_parameters"], ["condition_encoder.0.bias", "condition_encoder.0.weight"]
             )
-            self.assertEqual(origin["config_differences"]["feature_schema_version"], {"checkpoint": 4, "current": 5})
+            self.assertEqual(
+                origin["config_differences"]["feature_schema_version"], {"checkpoint": 4, "current": current}
+            )
             self.assertEqual((origin["completed_epochs"], origin["completed_updates"]), (3, 12))
             initial = torch.load(root / "fixed/checkpoints/initial.pt", weights_only=False)
             self.assertEqual(initial["report"]["initialized_from"], origin)

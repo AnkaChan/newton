@@ -3,9 +3,11 @@
 
 """Experimental heterogeneous physical contexts sharing one batched network.
 
-Geometry, the revised nine-value input schema, and eight-point hex energy use
-batched float32 Torch. Contexts are ordinary Python objects, excluded from
-module state and DDP broadcasts; each owns a native Newton rigid predictor.
+Geometry, the mode-vector input schema (``target_modes`` world target vectors
+per cell, see :mod:`.input_assembly`) and eight-point hex energy use batched
+float32 Torch. Contexts are ordinary Python objects, excluded from module
+state and DDP broadcasts; each owns a native Newton rigid predictor and its
+own gravity vector.
 
 The public API of :class:`MixedHexSolverStep` is in SI units (metres, seconds,
 pascals, joules, newtons), but the objective, the fusion and the network inputs
@@ -71,10 +73,9 @@ from .features import (
     CONTACT_TOKEN_DIM,
     EDGE_FEATURE_DIM,
     FEATURE_SCHEMA_VERSION,
-    STATE_FEATURE_DIM,
-    center_deformation,
     conditioning_channels,
     contact_ratios,
+    state_feature_dim,
 )
 from .frames import select_reference_corners
 from .fusion import HexFusion
@@ -85,6 +86,7 @@ from .input_assembly import (
     OptimizerHistory,
     assemble_inputs,
     check_history,
+    target_vectors,
 )
 from .network import IntrinsicSolverNetwork
 from .rigid_predictor import RigidPosePredictor
@@ -102,8 +104,8 @@ _CONTACT_BATCH_KEYS = ("sample_index", "kind", "partner_point", "partner_normal"
 class _PhysicalContext:
     """One registered material: the SI record behind the API and its normalised copy behind the objective."""
 
-    specification: dict[str, float]
-    """SI material and damping as registered; ``context_specs`` returns copies."""
+    specification: dict[str, float | tuple[float, float, float]]
+    """SI material, damping and gravity as registered; ``context_specs`` returns copies."""
     material: Tensor
     """SI ``(lambda, mu, rho, eta)`` float32 [4]; the energy floor and the stress unit ``S = mu`` read it."""
     unit_material: Tensor
@@ -121,6 +123,10 @@ class _PhysicalContext:
     """Dimensionless conditioning channels of :func:`.features.conditioning_channels`, shape [CONDITIONING_DIM]."""
     contact_ratios: Tensor
     """Dimensionless ``(kappa, beta, mu_f)`` of :func:`.features.contact_ratios` for the contact tokens, shape [3]."""
+    gravity: tuple[float, float, float]
+    """SI gravity [m/s^2] of this context as float64-derived floats; the conditioning and the predictor read it."""
+    gravity_cpu: Tensor
+    """Float32 CPU copy of ``gravity`` that the inertial prediction of :meth:`MixedHexSolverStep.prepare` adds."""
     lock: threading.RLock = field(default_factory=threading.RLock)
 
 
@@ -135,6 +141,18 @@ class _UnitGeometry(NamedTuple):
     fixed_indices: Tensor
     boundary_features: Tensor
     network: IntrinsicSolverNetwork
+    target_modes: int
+
+
+def _gravity_vector(gravity) -> Tensor:
+    """Return a finite SI gravity three-vector as a detached float64 CPU tensor, or raise ValueError."""
+    try:
+        vector = torch.as_tensor(gravity, dtype=torch.float64, device="cpu").detach().clone()
+    except (TypeError, ValueError, RuntimeError) as error:
+        raise ValueError("gravity must be a finite three-vector") from error
+    if vector.shape != (3,) or not torch.isfinite(vector).all():
+        raise ValueError("gravity must be a finite three-vector")
+    return vector
 
 
 def _positive_scalar(name: str, value) -> float:
@@ -152,12 +170,14 @@ def _nonnegative_integer(name: str, value, *, minimum: int = 0) -> int:
 class MixedHexSolverStep(nn.Module):
     """Apply one learned update to objects with distinct homogeneous materials.
 
-    Experimental. All objects share a canonical grid, pin indices, gravity and
-    timestep. Each batch evaluates the shared network exactly once. Register
-    material contexts on CPU before using their IDs; registration and physical
-    preparation never read trainable weights. Contexts may be created by worker
-    threads while another batch runs. Wrap this module with DDP using
-    ``broadcast_buffers=False`` and checkpoint ``context_specs`` separately.
+    Experimental. All objects share a canonical grid, pin indices and
+    timestep; every context carries its own gravity (the constructor's value
+    is the default for contexts registered without one). Each batch evaluates
+    the shared network exactly once. Register material contexts on CPU before
+    using their IDs; registration and physical preparation never read
+    trainable weights. Contexts may be created by worker threads while another
+    batch runs. Wrap this module with DDP using ``broadcast_buffers=False``
+    and checkpoint ``context_specs`` separately.
 
     Inputs and outputs are SI; the objective, the fusion and the network inputs
     are evaluated in cell units (module docstring). Positions, the inertial
@@ -165,25 +185,31 @@ class MixedHexSolverStep(nn.Module):
     divided by ``h`` on the way in; energies are multiplied by ``S h^3`` (``S =
     mu`` of the context), the force residual by ``S h^2`` and fused positions
     by ``h`` on the way out, with the prescribed corners re-assigned exactly.
-    The world axis gradient (``axis_gradient_world`` of the inputs and the
-    output, and hence the optimizer history) and the achieved axis update stay
-    in normalised units: the history is RMS-normalised against the current
-    gradient when it is consumed, so only consistency within an object
-    matters, and the achieved update is a difference of deformation gradients,
-    which is dimensionless in either space. ``position_gradient`` of the
-    inputs is converted to newtons like the force residual.
+    The world target gradient (``axis_gradient_world`` of the inputs and the
+    output, and hence the optimizer history) and the achieved target update
+    stay in normalised units: the history is RMS-normalised against the
+    current gradient when it is consumed, so only consistency within an object
+    matters, and the achieved update is a difference of target vectors
+    (:func:`.input_assembly.target_vectors` on the unit grid), which is
+    dimensionless in either space. ``position_gradient`` of the inputs is
+    converted to newtons like the force residual.
 
-    Only the revised schema is supported: :data:`features.STATE_FEATURE_DIM`
-    state inputs (five nine-value matrix blocks in the receiving frame,
-    boundary flags, log gradient RMS and the history flag), the
+    Every cell carries ``target_modes`` world target vectors: the three centre
+    axes of ``F`` (``target_modes = 3``, the legacy nine-value schema) or those
+    plus the four warping vectors of :mod:`.hex_modes` (``target_modes = 7``).
+    The network must match: ``features.state_feature_dim(target_modes)``
+    state inputs (five ``[3, target_modes]`` matrix blocks in the receiving
+    frame, boundary flags, log gradient RMS and the history flag), the
     :data:`features.CONDITIONING_DIM` dimensionless conditioning channels
-    (including the three contact channels) and 24 edge inputs. Frames are the
-    closest proper rotations of the cell-center deformation; ties are broken
-    with the reference built from three prescribed corners of the clamped face
-    when :func:`frames.select_reference_corners` finds them, otherwise the plain
-    formula is kept. The frame decomposition and the gradient feature are
-    frozen for the query; the network, local axes, fusion and energy remain
-    differentiable to every network parameter.
+    (including the three contact channels), 24 edge inputs and the same
+    ``target_modes``. The shared unit-grid fusion, the history blocks and the
+    achieved update use the same mode count. Frames are the closest proper
+    rotations of the cell-center deformation (the first three target vectors);
+    ties are broken with the reference built from three prescribed corners of
+    the clamped face when :func:`frames.select_reference_corners` finds them,
+    otherwise the plain formula is kept. The frame decomposition and the
+    gradient feature are frozen for the query; the network, local axes, fusion
+    and energy remain differentiable to every network parameter.
 
     The rigid predictor only initializes the candidate. The physical inertial
     target stays unchanged through learned updates. Inverted or collapsed
@@ -203,15 +229,19 @@ class MixedHexSolverStep(nn.Module):
     Args:
         rest: Canonical cubic hexahedral rest grid [m].
         fixed_indices: Unique prescribed corner indices, at least one.
-        network: Shared float32 network with the revised schema, on CPU or CUDA.
+        network: Shared float32 network with the revised schema and
+            ``target_modes`` modes, on CPU or CUDA.
         time_step: Positive physical timestep [s].
-        gravity: World acceleration [m/s^2].
+        gravity: Default world acceleration [m/s^2] for contexts registered
+            without their own ``gravity``.
         energy_floor_scale: Positive multiplier ``c`` of the material-aware
             energy floor returned by :meth:`energy_floor`.
         contact_radius: Surface sample radius r [m]; None means ``0.5 * cell_size``.
         contact_max_pairs: Largest number of static-point pairs kept per sample.
         contact_tokens_per_cell: Token slots M per cell for the contact encoder.
         contact_friction_epsilon: IPC friction smoothing band as a fraction of the time step.
+        target_modes: Target vectors per cell, 3 (affine axes, the default)
+            or 7 (axes plus warping vectors); the network must agree.
     """
 
     def __init__(
@@ -227,8 +257,12 @@ class MixedHexSolverStep(nn.Module):
         contact_max_pairs: int = 4,
         contact_tokens_per_cell: int = 24,
         contact_friction_epsilon: float = 1e-2,
+        target_modes: int = 3,
     ):
         super().__init__()
+        if isinstance(target_modes, bool) or target_modes not in (3, 7):
+            raise ValueError("target_modes must be 3 (affine axes) or 7 (axes plus warping vectors)")
+        self.target_modes = int(target_modes)
         _positive_scalar("time_step", time_step)
         _positive_scalar("energy_floor_scale", energy_floor_scale)
         self.contact_radius = (
@@ -241,12 +275,15 @@ class MixedHexSolverStep(nn.Module):
         self.contact_friction_epsilon = _positive_scalar("contact_friction_epsilon", contact_friction_epsilon)
         if network.cell_counts != rest.cell_counts:
             raise ValueError("network cell_counts must match the rest grid")
-        schema = (network.state_feature_dim, network.conditioning_dim, network.edge_input_dim)
-        if schema != (STATE_FEATURE_DIM, CONDITIONING_DIM, EDGE_FEATURE_DIM):
+        schema = (network.state_feature_dim, network.conditioning_dim, network.edge_input_dim, network.target_modes)
+        expected_state = state_feature_dim(self.target_modes)
+        if schema != (expected_state, CONDITIONING_DIM, EDGE_FEATURE_DIM, self.target_modes):
             raise ValueError(
-                f"network must use the revised schema {FEATURE_SCHEMA_VERSION}: {STATE_FEATURE_DIM} state, "
-                f"{CONDITIONING_DIM} conditioning and {EDGE_FEATURE_DIM} edge inputs, got "
-                f"{schema[0]}/{schema[1]}/{schema[2]}; legacy 38/5, 86/6 and 61/9 networks are not supported"
+                f"network must use the revised schema {FEATURE_SCHEMA_VERSION} with target_modes "
+                f"{self.target_modes}: {expected_state} state, {CONDITIONING_DIM} conditioning and "
+                f"{EDGE_FEATURE_DIM} edge inputs and {self.target_modes} target modes, got "
+                f"{schema[0]}/{schema[1]}/{schema[2]} with {schema[3]} modes; legacy 38/5, 86/6 and 61/9 networks "
+                "are not supported"
             )
         device = next(network.parameters()).device
         if device.type not in ("cpu", "cuda") or any(
@@ -268,18 +305,12 @@ class MixedHexSolverStep(nn.Module):
             or len(np.unique(fixed)) != len(fixed)
         ):
             raise ValueError("fixed_indices must contain unique in-range corner indices and at least one pin")
-        try:
-            gravity_tensor = torch.as_tensor(gravity, dtype=torch.float64, device="cpu").detach().clone()
-        except (TypeError, ValueError, RuntimeError) as error:
-            raise ValueError("gravity must be a finite three-vector") from error
-        if gravity_tensor.shape != (3,) or not torch.isfinite(gravity_tensor).all():
-            raise ValueError("gravity must be a finite three-vector")
+        gravity_tensor = _gravity_vector(gravity)
         self._rest = rest
         self._fixed_cpu = torch.tensor(fixed.copy(), dtype=torch.long)
-        # The float64 tuple feeds the conditioning (the same value LearnedHexSolverStep forms, so the gravity
-        # channel agrees between the two steps bit for bit); the float32 copy feeds the inertial prediction.
+        # The default gravity of register_context: the float64 tuple feeds the conditioning (the same value
+        # LearnedHexSolverStep forms, so the gravity channel agrees between the two steps bit for bit).
         self.gravity = tuple(float(value) for value in gravity_tensor.tolist())
-        self._gravity_cpu = gravity_tensor.to(torch.float32)
         self.time_step = float(time_step)
         self.cell_size = rest.cell_size
         self.energy_floor_scale = float(energy_floor_scale)
@@ -333,18 +364,24 @@ class MixedHexSolverStep(nn.Module):
         )
         self.register_buffer("unit_center_gradients", signs / 4, persistent=False)
         # Gravity has no term in the objective (it sits in the SI inertial prediction of prepare), so only the
-        # conditioning sees it, through the group |g| dt^2 / h that features.conditioning_channels forms.
+        # conditioning sees it, per context, through the group |g| dt^2 / h that features.conditioning_channels forms.
         self._unit_radius = self.contact_radius / h
         self._unit_friction_epsilon = self.contact_friction_epsilon * dt / h
         # One factor serves every context: the physical weights ``stiffness h^3`` of a homogeneous body are
         # uniform, and a weighted least-squares fit is invariant under a uniform rescaling of its weights, so
         # unit weights on the unit grid reproduce every former per-material fit (tests/test_scaling_invariance.py).
-        self._fusion = HexFusion(self._unit_rest, self._fixed_cpu)
+        self._fusion = HexFusion(self._unit_rest, self._fixed_cpu, target_modes=self.target_modes)
         self.to(device=device)
 
     @property
-    def context_specs(self) -> dict[str, dict[str, float]]:
-        """Return independent material [Pa, kg/m^3] and damping [Pa*s] specifications."""
+    def context_specs(self) -> dict[str, dict[str, float | tuple[float, float, float]]]:
+        """Return independent material [Pa, kg/m^3], damping [Pa*s] and gravity [m/s^2] specifications.
+
+        Each entry has the keyword arguments of :meth:`register_context` except
+        ``contact``: ``lame_lambda``, ``lame_mu``, ``density``, ``damping`` and
+        the ``gravity`` three-tuple, so ``register_context(name, **spec,
+        contact=...)`` rebuilds the context.
+        """
         with self._contexts_lock:
             return {name: context.specification.copy() for name, context in self._contexts.items()}
 
@@ -357,14 +394,18 @@ class MixedHexSolverStep(nn.Module):
         density: float,
         damping: float = 0.0,
         contact: ContactPartners | None = None,
+        gravity=None,
     ) -> None:
         """Build one CPU material/predictor context without consulting weights.
 
         The SI material is kept for the API (``context_specs``, the energy
         floor, the rigid predictor) and stored a second time in cell units for
         the objective; the dimensionless conditioning and contact ratios are
-        computed once here. No sparse factor is built: every context shares
-        the module's unit fusion factor.
+        computed once here. Gravity is a per-context quantity: it drives the
+        context's rigid predictor and the inertial prediction of
+        :meth:`prepare` and enters the conditioning channel ``log1p(|g| dt^2 /
+        h)``. No sparse factor is built: every context shares the module's
+        unit fusion factor.
 
         Args:
             context_id: Unique nonempty identifier for replay payloads.
@@ -376,6 +417,14 @@ class MixedHexSolverStep(nn.Module):
             contact: Static contact partners of this context's scene; None
                 registers :meth:`.ContactPartners.contact_free` (no plane, no
                 points, zero coefficients).
+            gravity: World acceleration [m/s^2] of this context as a finite
+                three-vector (sequence or tensor); None uses the constructor's
+                ``gravity``.
+
+        Raises:
+            ValueError: If the identifier is taken or empty, a material value
+                is outside its physical range, ``contact`` has the wrong type
+                or ``gravity`` is not a finite three-vector.
         """
         if not isinstance(context_id, str) or not context_id:
             raise ValueError("context_id must be a nonempty string")
@@ -390,6 +439,9 @@ class MixedHexSolverStep(nn.Module):
             if value < 0 or (name not in ("lame_lambda", "damping") and value == 0):
                 raise ValueError(f"{name} is outside the physical range")
         specification = {name: float(value) for name, value in specification.items()}
+        gravity_tensor = _gravity_vector(self.gravity if gravity is None else gravity)
+        gravity_vector = tuple(float(value) for value in gravity_tensor.tolist())
+        specification["gravity"] = gravity_vector
         damping_tensor = torch.tensor(damping, dtype=torch.float32)
         if not torch.isfinite(damping_tensor):
             raise ValueError("damping must remain finite in float32")
@@ -429,13 +481,13 @@ class MixedHexSolverStep(nn.Module):
                 *material[None].unbind(-1),
                 h,
                 dt,
-                self.gravity,
+                gravity_vector,
                 contact_ke=coefficients[:, 0],
                 contact_kd=coefficients[:, 1],
                 contact_mu=coefficients[:, 2],
             )[0]
             ratios = contact_ratios(material[None, 0], material[None, 1], *coefficients.unbind(-1), h, dt)[0]
-            predictor = RigidPosePredictor(mass, gravity=self.gravity)
+            predictor = RigidPosePredictor(mass, gravity=gravity_vector)
             context = _PhysicalContext(
                 specification,
                 material,
@@ -447,6 +499,8 @@ class MixedHexSolverStep(nn.Module):
                 unit_contact,
                 conditioning,
                 ratios,
+                gravity_vector,
+                gravity_tensor.to(torch.float32),
             )
             with self._contexts_lock:
                 self._contexts[context_id] = context
@@ -497,6 +551,7 @@ class MixedHexSolverStep(nn.Module):
             cell_count=len(self.cell_corner_indices),
             dtype=torch.float32,
             device=positions.device,
+            modes=self.target_modes,
         )
 
     def _check_contact(self, contact, positions: Tensor) -> dict[str, Tensor] | None:
@@ -595,6 +650,7 @@ class MixedHexSolverStep(nn.Module):
             self.fixed_indices,
             self.boundary_features,
             self.network,
+            self.target_modes,
         )
 
     def _sample_positions(self, positions: Tensor) -> Tensor:
@@ -641,11 +697,11 @@ class MixedHexSolverStep(nn.Module):
                 from :meth:`prepare` payloads, or None; ``Q = 0`` means no contact.
 
         Returns:
-            Frozen frames, differentiable local axes, packed state, edge and
-            conditioning features, plus the detached normalised world axis
-            gradient, the zero-pinned position gradient [N], the frame tie
-            mask and, when the network consumes contact tokens, the detached
-            tokens and their mask.
+            Frozen frames, differentiable local axes [B, C, 3, target_modes],
+            packed state, edge and conditioning features, plus the detached
+            normalised world target gradient (same shape), the zero-pinned
+            position gradient [N], the frame tie mask and, when the network
+            consumes contact tokens, the detached tokens and their mask.
         """
         self._check_positions(positions, "positions")
         self._check_positions(inertial_prediction, "inertial_prediction")
@@ -886,13 +942,14 @@ class MixedHexSolverStep(nn.Module):
 
         Returns:
             Fused positions [m] (prescribed rows exactly ``fixed_positions``),
-            raw network outputs, frozen frames and energies [J], plus detached
-            diagnostics: the normalised world axis gradient feature, the
-            achieved world change of the center deformation (dimensionless),
-            the free-corner force residual norm [N] at the pre-update
-            candidate, the tie mask, the contact energy [J] and the deepest
-            penetration in units of r at the fused positions (both zero
-            without contact pairs).
+            raw network outputs [B, C, 3, target_modes], frozen frames and
+            energies [J], plus detached diagnostics: the normalised world
+            target gradient feature [B, C, 3, target_modes], the achieved
+            world change of the target vectors on the unit grid (same shape,
+            dimensionless), the free-corner force residual norm [N] at the
+            pre-update candidate, the tie mask, the contact energy [J] and the
+            deepest penetration in units of r at the fused positions (both
+            zero without contact pairs).
         """
         self._check_positions(positions, "positions")
         self._check_positions(inertial_prediction, "inertial_prediction")
@@ -939,10 +996,8 @@ class MixedHexSolverStep(nn.Module):
         loss = self._energy(fused, inertial_prediction, contexts, previous_positions, contact)
         with torch.no_grad():
             (unit_fused,) = self._to_unit(fused.detach())
-            cells, gradients = self.cell_corner_indices, self.unit_center_gradients
-            achieved = center_deformation(unit_fused, cells, gradients) - center_deformation(
-                unit_positions.detach(), cells, gradients
-            )
+            geometry = self._unit_geometry()
+            achieved = target_vectors(geometry, unit_fused) - target_vectors(geometry, unit_positions.detach())
             residual = torch.linalg.vector_norm(inputs.position_gradient.flatten(1), dim=1)
             penetration = self._contact_max_penetration(unit_fused, unit_contact)
         return LearnedHexStepOutput(
@@ -977,9 +1032,10 @@ class MixedHexSolverStep(nn.Module):
         and int64 contact indices. The payload contains only a context
         identifier and tensors, with no model, factor or native handle. The
         rigid predictor and the inertial prediction work on the SI data with
-        the SI masses and gravity; only the candidate fusion runs in cell units
-        through the shared factor. Positive pin masses participate in momentum
-        and inertia. Prescribed corners keep their input positions in the
+        the SI masses and the context's gravity; only the candidate fusion (a
+        zero increment of ``target_modes`` modes) runs in cell units through
+        the shared factor. Positive pin masses participate in momentum and
+        inertia. Prescribed corners keep their input positions in the
         initialized candidate. ``physical_positions`` remains the physical-step
         anchor for every inner update. The rigid initializer never writes
         optimizer history.
@@ -1013,7 +1069,7 @@ class MixedHexSolverStep(nn.Module):
             rigid = context.predictor.predict(x, velocity, force, self.time_step)
             fixed_positions = x[self._fixed_cpu].clone()[None]
             base = x[None] @ rigid.rigid_delta_rotation.transpose(-1, -2) + rigid.rigid_delta_translation[:, None]
-            zero_increment = x.new_zeros((1, len(self._rest.cell_corner_indices), 3, 3))
+            zero_increment = x.new_zeros((1, len(self._rest.cell_corner_indices), 3, self.target_modes))
             unit_base, unit_fixed = self._to_unit(base, fixed_positions)
             candidate = self._from_unit_positions(
                 self._fusion.fuse(unit_base, zero_increment, unit_fixed), fixed_positions
@@ -1022,7 +1078,7 @@ class MixedHexSolverStep(nn.Module):
                 x[None],
                 velocity[None],
                 self.time_step,
-                explicit_acceleration=self._gravity_cpu + force / context.mass[:, None],
+                explicit_acceleration=context.gravity_cpu + force / context.mass[:, None],
             )[0]
         return {
             "context_id": context_id,

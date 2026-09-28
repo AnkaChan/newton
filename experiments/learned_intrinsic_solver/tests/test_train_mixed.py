@@ -29,7 +29,7 @@ from experiments.learned_intrinsic_solver import features, mixed_validation, tra
 from experiments.learned_intrinsic_solver.contact_scene import ContactPartners, sample_contact_partners
 from experiments.learned_intrinsic_solver.curriculum import MixedCurriculum
 from experiments.learned_intrinsic_solver.data import generate_cuboid
-from experiments.learned_intrinsic_solver.history import HISTORY_KEYS, store_history
+from experiments.learned_intrinsic_solver.history import HISTORY_KEYS, empty_history, store_history
 from experiments.learned_intrinsic_solver.mixed_physics import MixedHexSolverStep
 from experiments.learned_intrinsic_solver.multiscale import generate_multiscale, screen_geometry
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
@@ -39,6 +39,7 @@ from experiments.learned_intrinsic_solver.train_mixed import (
     _allow_early_stop,
     _batch,
     _checked_forward,
+    _full_horizon_budget_changed,
     _full_horizon_iterations,
     _TrajectoryFactory,
     local_objective,
@@ -63,6 +64,7 @@ def _candidate_factory(rest, config, **options):
     step = SimpleNamespace(
         fixed_indices=torch.tensor(np.flatnonzero(rest.corner_rest_positions[:, 2] == 0), dtype=torch.long),
         cell_corner_indices=torch.zeros(len(rest.cell_corner_indices), 8, dtype=torch.long),
+        target_modes=config.target_modes,
     )
     return _TrajectoryFactory(step, rest, config, rank=0, **options)
 
@@ -134,6 +136,7 @@ class TestMixedTraining(unittest.TestCase):
         network = IntrinsicSolverNetwork(
             rest.cell_counts,
             config.state_feature_dim,
+            target_modes=config.target_modes,
             conditioning_dim=config.conditioning_dim,
             hidden_dim=config.hidden_dim,
             edge_hidden_dim=config.edge_hidden_dim,
@@ -146,21 +149,29 @@ class TestMixedTraining(unittest.TestCase):
             fixed,
             network=network,
             time_step=config.time_step,
+            gravity=config.gravity,
             contact_max_pairs=config.contact_max_pairs,
             contact_tokens_per_cell=config.contact_tokens_per_cell,
             contact_friction_epsilon=config.contact_friction_epsilon,
+            target_modes=config.target_modes,
         )
         self.addCleanup(step.close)
         return step, rest
 
     def test_revised_schema_defaults_and_validation(self):
-        """Default to the contact-aware schema with the edge network, the floor and the validation settings."""
+        """Default to the seven-mode schema 6 with the edge network, the floor and the validation settings."""
         config = MixedTrainConfig()
         self.assertEqual(config.feature_schema_version, features.FEATURE_SCHEMA_VERSION)
         self.assertEqual(
-            (config.state_feature_dim, config.conditioning_dim), (features.STATE_FEATURE_DIM, features.CONDITIONING_DIM)
+            (config.state_feature_dim, config.conditioning_dim),
+            (features.state_feature_dim(7), features.CONDITIONING_DIM),
         )
-        self.assertEqual((config.feature_schema_version, config.conditioning_dim), (5, 7))
+        self.assertEqual((config.feature_schema_version, config.conditioning_dim), (6, 7))
+        self.assertEqual((config.target_modes, config.state_feature_dim), (7, 121))
+        self.assertEqual(MixedTrainConfig(target_modes=3).state_feature_dim, features.STATE_FEATURE_DIM)
+        self.assertEqual(config.gravity_magnitude_range, (2.0, 40.0))
+        self.assertEqual(config.gravity, (0.0, -9.81, 0.0))
+        self.assertEqual(config.selection_source, "cheap")
         self.assertEqual(config.energy_floor_scale, 1.0)
         self.assertEqual(config.validation_full_count, 16)
         self.assertEqual(config.validation_full_interval, 5)
@@ -217,9 +228,34 @@ class TestMixedTraining(unittest.TestCase):
             ("contact_max_pairs", -1),
             ("contact_tokens_per_cell", 0),
             ("contact_friction_epsilon", 0.0),
+            ("target_modes", 5),
+            ("target_modes", True),
+            ("target_modes", 7.0),
+            ("target_modes", "7"),
+            ("selection_source", "best"),
+            ("selection_source", None),
+            ("gravity_magnitude_range", (0.0, 1.0)),
+            ("gravity_magnitude_range", (5.0, 2.0)),
+            ("gravity_magnitude_range", (-1.0, -1.0)),
+            ("gravity_magnitude_range", (math.nan, 1.0)),
+            ("gravity_magnitude_range", (1.0, math.inf)),
+            ("gravity_magnitude_range", (1.0,)),
         ):
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 MixedTrainConfig(**{field: value})
+        # Equal bounds are the constant-gravity case (zero included); JSON lists become tuples.
+        self.assertEqual(MixedTrainConfig(gravity_magnitude_range=(9.81, 9.81)).gravity_magnitude_range, (9.81, 9.81))
+        self.assertEqual(MixedTrainConfig(gravity_magnitude_range=(0.0, 0.0)).gravity_magnitude_range, (0.0, 0.0))
+        self.assertEqual(MixedTrainConfig(gravity_magnitude_range=[2, 40]).gravity_magnitude_range, (2, 40))
+        self.assertEqual(MixedTrainConfig(selection_source="full_horizon").selection_source, "full_horizon")
+        # Configurations written before schema 6 trained three modes at one constant gravity and selected cheaply.
+        legacy_keys = ("target_modes", "gravity_magnitude_range", "selection_source")
+        rebuilt = MixedTrainConfig.from_checkpoint_config(
+            {k: v for k, v in asdict(config).items() if k not in legacy_keys} | {"gravity": (0.0, -3.0, 4.0)}
+        )
+        self.assertEqual(
+            (rebuilt.target_modes, rebuilt.gravity_magnitude_range, rebuilt.selection_source), (3, (5.0, 5.0), "cheap")
+        )
         self.assertEqual(MixedTrainConfig(plateau_min_final_stage_epochs=0).plateau_min_final_stage_epochs, 0)
         sparse = MixedTrainConfig(contact_max_points=0, contact_max_pairs=0, contact_beta_range=(0.0, 0.0))
         self.assertEqual((sparse.contact_max_points, sparse.contact_max_pairs), (0, 0))
@@ -235,12 +271,13 @@ class TestMixedTraining(unittest.TestCase):
         self.assertEqual(MixedTrainConfig(validation_interval=4, validation_full_iterations=8).validation_interval, 4)
 
     def test_legacy_checkpoint_configurations_are_rejected_explicitly(self):
-        """Never reshape a 38/86-feature checkpoint into the revised schema."""
+        """Never reshape a schema-5 or older checkpoint into the seven-mode schema 6."""
         current = asdict(self.config(1))
         legacy_variants = {
             "schema_1": {**current, "feature_schema_version": 1},
             "schema_2": {**current, "feature_schema_version": 2},
             "schema_4": {**current, "feature_schema_version": 4},
+            "schema_5": {**current, "feature_schema_version": 5},
             "missing_schema": {k: v for k, v in current.items() if k != "feature_schema_version"},
             "candidate_probabilities": {**current, "candidate_probabilities": (0.5, 0.35, 0.1, 0.05)},
             "geometry_backtracking": {**current, "geometry_backtracking": False},
@@ -248,7 +285,7 @@ class TestMixedTraining(unittest.TestCase):
         for name, values in legacy_variants.items():
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "legacy"):
                 MixedTrainConfig.from_checkpoint_config(values)
-        for version in (1, 2, 3, 4, 6):
+        for version in (1, 2, 3, 4, 5, 7):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, "legacy"):
                 replace(self.config(1), feature_schema_version=version)
 
@@ -386,7 +423,7 @@ class TestMixedTraining(unittest.TestCase):
         self.addCleanup(lambda: step.context_specs and factory.retire(payload))
         self.assertFalse(payload["history_valid"])
         for name in HISTORY_KEYS[:2]:
-            self.assertEqual(payload[name].shape, (cells, 3, 3))
+            self.assertEqual(payload[name].shape, (cells, 3, config.target_modes))
             self.assertEqual(payload[name].abs().sum().item(), 0.0)
         batch = _batch([payload], torch.device("cpu"), cell_count=cells)
         self.assertEqual(batch["history"].valid.tolist(), [False])
@@ -463,6 +500,31 @@ class TestMixedTraining(unittest.TestCase):
         with self.assertRaises(ValueError):
             _batch([{**records[1], "history_valid": True}], torch.device("cpu"))
 
+    def test_batch_zero_history_blocks_follow_the_requested_modes(self):
+        """Payloads without stored blocks collate into the step's mode count when ``modes`` is given, not the legacy 3."""
+        config = self.config(1, contact=False)
+        step, rest = self._step(config)
+        payload = _TrajectoryFactory(step, rest, config, rank=0).reset(0)
+        for key in HISTORY_KEYS:
+            payload.pop(key, None)
+        cells = len(rest.cell_corner_indices)
+        # Without ``modes`` the zero blocks fall back to three modes, which the seven-mode step rejects.
+        inferred = _batch([payload], torch.device("cpu"), cell_count=cells)
+        self.assertEqual(tuple(inferred["history"].axis_gradient_world.shape), (1, cells, 3, 3))
+        with self.assertRaisesRegex(ValueError, r"\[B, C, 3, 7\]"):
+            _checked_forward(step, step, inferred)
+        batch = _batch([payload], torch.device("cpu"), cell_count=cells, modes=step.target_modes)
+        history = batch["history"]
+        self.assertEqual(tuple(history.axis_gradient_world.shape), (1, cells, 3, 7))
+        self.assertEqual(tuple(history.axis_update_world.shape), (1, cells, 3, 7))
+        self.assertEqual(history.valid.tolist(), [False])
+        result = _checked_forward(step, step, batch)
+        self.assertEqual(tuple(result.axis_gradient_world.shape), (1, cells, 3, 7))
+        # A stored block of another mode count is rejected instead of being reshaped silently.
+        stale = {**payload, **empty_history(cells, 3), "history_valid": True}
+        with self.assertRaises(ValueError):
+            _batch([stale], torch.device("cpu"), cell_count=cells, modes=step.target_modes)
+
     def test_training_smoke_reports_residuals_history_and_selection(self):
         """Run two tiny CPU epochs end to end and check the revised report and checkpoints."""
         with tempfile.TemporaryDirectory() as directory:
@@ -508,9 +570,14 @@ class TestMixedTraining(unittest.TestCase):
             self.assertEqual((full["iterations"], full["physical_steps"]), (1, 2))
             self.assertIn("final_free_force_residual_norm_n", full)
             self.assertIn("final_max_penetration_r", full)
+            self.assertEqual(
+                set(full["selection"]), {"metric", "eligible", "aggregation", "survival_required"}, full["selection"]
+            )
+            self.assertEqual(full["selection"]["aggregation"], mixed_validation.FULL_HORIZON_SELECTION_AGGREGATION)
             selection = report["epochs"][-1]["validation"]["selection"]
             if selection["eligible"]:
                 self.assertIsNotNone(report["best_selection"])
+                self.assertEqual(report["best_selection"]["source"], "cheap")
                 self.assertTrue((output / "checkpoints/best_validation.pt").is_file())
                 self.assertLessEqual(report["best_selection"]["metric"], selection["metric"])
             saved = torch.load(output / "checkpoints/latest.pt", weights_only=False)
@@ -1064,6 +1131,207 @@ class TestMixedTraining(unittest.TestCase):
             saved = torch.load(output / "checkpoints/best_validation.pt", weights_only=False)
             self.assertEqual(saved["report"]["completed_epochs"], 3)
             self.assertEqual(saved["report"]["best_selection"]["epoch"], 3)
+
+    def test_full_horizon_selection_requires_the_check_its_eligibility_and_strict_improvement(self):
+        """Select on the full-horizon check when configured: ineligible checks never win, ties keep the earlier best."""
+        script = [(True, 1.0), (False, 0.1), (True, 0.5), (True, 0.5)]
+        real_full = mixed_validation.validate_full_horizon
+        calls = []
+
+        def scripted(*args, **kwargs):
+            summary = real_full(*args, **kwargs)
+            eligible, metric = script[len(calls)]
+            calls.append(metric)
+            summary["selection"] = dict(summary["selection"], metric=metric, eligible=eligible)
+            if not eligible:
+                summary["physical_survivors"] = summary["sample_count"] - 1
+            return summary
+
+        config = self.config(
+            4,
+            regime="fixed_states",
+            state_count=4,
+            budget_cap=4,
+            growth_stages=((1, 2),),
+            selection_source="full_horizon",
+            validation_full_interval=1,
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(mixed_validation, "validate_full_horizon", scripted),
+        ):
+            output = Path(directory)
+            report = run_training(output, config)
+            self.assertEqual(calls, [1.0, 0.1, 0.5, 0.5])
+            rows = report["epochs"]
+            self.assertEqual(
+                [
+                    (
+                        row["full_horizon_validation"]["selection"]["eligible"],
+                        row["full_horizon_validation"]["selection"]["metric"],
+                    )
+                    for row in rows
+                ],
+                script,
+            )
+            best = report["best_selection"]
+            self.assertEqual(
+                (best["epoch"], best["metric"], best["source"], best["aggregation"]),
+                (3, 0.5, "full_horizon", mixed_validation.FULL_HORIZON_SELECTION_AGGREGATION),
+            )
+            full = rows[2]["full_horizon_validation"]
+            self.assertEqual(
+                (best["iterations"], best["physical_steps"], best["sample_count"], best["physical_survivors"]),
+                (full["iterations"], full["physical_steps"], full["sample_count"], full["physical_survivors"]),
+            )
+            self.assertEqual(best["final_energy_joule"], full["final_energy_joule"])
+            self.assertEqual(best["final_max_penetration_r"], full["final_max_penetration_r"])
+            self.assertEqual(set(best["final_energy_joule"]), {"mean", "median", "max"})
+            self.assertEqual(
+                best["completed_updates"], sum(row["query_count"] for row in rows[:3]) // config.batch_size
+            )
+            saved = torch.load(output / "checkpoints/best_validation.pt", weights_only=False)
+            self.assertEqual(saved["report"]["completed_epochs"], 3)
+            self.assertEqual(saved["report"]["best_selection"], best)
+            # The cheap validation still runs for the curves and keeps its own record.
+            self.assertTrue(all(set(row["validation"]["selection"]) >= {"metric", "eligible"} for row in rows))
+
+    def test_full_horizon_budget_change_is_detected_for_the_full_horizon_source_only(self):
+        """Compare the record's (K, H) with the check's; the cheap source and missing inputs never reset."""
+        full = self.config(1, selection_source="full_horizon")
+        cheap = self.config(1, selection_source="cheap")
+        record = {"iterations": 1, "physical_steps": 8}
+        self.assertFalse(_full_horizon_budget_changed(full, record, {"iterations": 1, "physical_steps": 8}))
+        self.assertTrue(_full_horizon_budget_changed(full, record, {"iterations": 2, "physical_steps": 16}))
+        self.assertTrue(_full_horizon_budget_changed(full, record, {"iterations": 1, "physical_steps": 16}))
+        self.assertFalse(_full_horizon_budget_changed(full, None, {"iterations": 2, "physical_steps": 16}))
+        self.assertFalse(_full_horizon_budget_changed(full, record, None))
+        self.assertFalse(_full_horizon_budget_changed(cheap, record, {"iterations": 2, "physical_steps": 16}))
+
+    def test_full_horizon_selection_restarts_when_the_check_budget_grows(self):
+        """A record measured at a shorter horizon never holds the selection once the check runs at a larger (K, H)."""
+        # Stage 0 checks at (K, H) = (1, 2), stage 1 at (2, 4); the longer horizon measures larger residuals.
+        script = [(True, 1.0), (True, 0.9), (False, 5.0), (True, 4.0)]
+        real_full = mixed_validation.validate_full_horizon
+        calls = []
+
+        def scripted(*args, **kwargs):
+            summary = real_full(*args, **kwargs)
+            eligible, metric = script[len(calls)]
+            calls.append((kwargs["iterations"], kwargs["physical_steps"]))
+            summary["selection"] = dict(summary["selection"], metric=metric, eligible=eligible)
+            if not eligible:
+                summary["physical_survivors"] = summary["sample_count"] - 1
+            return summary
+
+        config = self.config(
+            4,
+            regime="fixed_states",
+            state_count=4,
+            budget_cap=8,
+            growth_stages=((1, 2), (2, 4)),
+            growth_stage_epochs=2,
+            selection_source="full_horizon",
+            validation_full_interval=1,
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(mixed_validation, "validate_full_horizon", scripted),
+        ):
+            output = Path(directory)
+            report = run_training(output, config)
+            self.assertEqual(calls, [(1, 2), (1, 2), (2, 4), (2, 4)])
+            # Epoch 3 is the first check at the larger budget: the epoch-2 record retires although that
+            # check is ineligible, and epoch 4 becomes the best despite its larger metric.
+            self.assertEqual(len(report["best_selection_history"]), 1)
+            reset = report["best_selection_history"][0]
+            self.assertEqual(
+                (reset["reset_at_epoch"], reset["reason"], reset["iterations"], reset["physical_steps"]),
+                (2, "full-horizon budget changed", 2, 4),
+            )
+            retired = reset["record"]
+            self.assertEqual(
+                (retired["epoch"], retired["metric"], retired["iterations"], retired["physical_steps"]),
+                (2, 0.9, 1, 2),
+            )
+            best = report["best_selection"]
+            self.assertEqual(
+                (best["epoch"], best["metric"], best["iterations"], best["physical_steps"], best["source"]),
+                (4, 4.0, 2, 4, "full_horizon"),
+            )
+            saved = torch.load(output / "checkpoints/best_validation.pt", weights_only=False)
+            self.assertEqual(saved["report"]["completed_epochs"], 4)
+            self.assertEqual(saved["report"]["best_selection"], best)
+            self.assertEqual(saved["report"]["best_selection_history"], [reset])
+
+    def test_gravity_is_sampled_per_state_registered_with_the_context_and_seen_by_the_network(self):
+        """Draw |g| log-uniformly per trajectory along -y, record it, and condition the network on it."""
+        config = self.config(1, contact=False)
+        step, rest = self._step(config)
+        h, dt = config.cell_size, config.time_step
+        low, high = config.gravity_magnitude_range
+        factory = _TrajectoryFactory(step, rest, config, rank=0)
+        validation = _TrajectoryFactory(step, rest, config, rank=0, validation=True)
+        payloads = [factory.reset(seed) for seed in range(4)]
+        magnitudes = []
+        for seed, payload in enumerate(payloads):
+            gravity = payload["context_spec"]["gravity"]
+            self.assertEqual(payload["metadata"]["gravity"], list(gravity))
+            self.assertEqual(step.context_specs[payload["context_id"]]["gravity"], gravity)
+            self.assertEqual((gravity[0], gravity[2]), (0.0, 0.0))
+            self.assertTrue(low <= -gravity[1] <= high, gravity)
+            self.assertEqual(payload["metadata"]["gravity_magnitude"], -gravity[1])
+            # The documented stream: SeedSequence([master_seed, seed, 4409]), log-uniform in the range.
+            rng = np.random.default_rng(np.random.SeedSequence([factory.master_seed, seed, 4409]))
+            self.assertEqual(-gravity[1], float(np.exp(rng.uniform(np.log(low), np.log(high)))))
+            self.assertEqual(factory._gravity(seed), gravity)
+            magnitudes.append(-gravity[1])
+            # Seven-mode history blocks accompany the seven-mode step.
+            self.assertEqual(tuple(payload["history_axis_gradient_world"].shape), (len(rest.cell_corner_indices), 3, 7))
+            # The inertial prediction of the free corners falls by g dt^2 on top of the velocity term.
+            free = torch.ones(payload["physical_positions"].shape[0], dtype=torch.bool)
+            free[step.fixed_indices] = False
+            drift = payload["inertial_prediction"] - payload["physical_positions"] - dt * payload["velocities"]
+            torch.testing.assert_close(
+                drift[free],
+                torch.tensor(gravity, dtype=torch.float32).expand(int(free.sum()), 3) * dt**2,
+                rtol=1e-5,
+                atol=1e-7,
+            )
+        self.assertEqual(len(set(magnitudes)), 4)
+        held_out = validation.reset(0)
+        self.assertNotEqual(held_out["context_spec"]["gravity"], payloads[0]["context_spec"]["gravity"])
+        # The conditioning channel of every context follows its own gravity and nothing else changes.
+        ids = tuple(payload["context_id"] for payload in payloads)
+        x = torch.stack([payload["candidate"] for payload in payloads])
+        inputs = step.prepare_inputs(x, x, ids, previous_positions=x)
+        channel = features.CONDITIONING_CHANNELS.index("log1p_gravity_ratio")
+        expected = torch.cat(
+            [
+                features.conditioning_channels(
+                    *(
+                        torch.tensor([payload["context_spec"][name]])
+                        for name in ("lame_lambda", "lame_mu", "density", "damping")
+                    ),
+                    h,
+                    dt,
+                    payload["context_spec"]["gravity"],
+                )
+                for payload in payloads
+            ]
+        )
+        torch.testing.assert_close(inputs.conditioning[:, 0], expected, rtol=0, atol=0)
+        self.assertEqual(inputs.conditioning[:, 0, channel].unique().numel(), 4)
+        for payload in (*payloads, held_out):
+            factory.retire(payload)
+        # Equal bounds give every state the same constant gravity without consuming the stream.
+        constant = _TrajectoryFactory(step, rest, replace(config, gravity_magnitude_range=(9.81, 9.81)), rank=0)
+        for seed in range(3):
+            payload = constant.reset(seed)
+            self.assertEqual(payload["context_spec"]["gravity"], (0.0, -9.81, 0.0))
+            self.assertEqual(payload["metadata"]["gravity"], [0.0, -9.81, 0.0])
+            constant.retire(payload)
+        self.assertEqual(step.context_specs, {})
 
     def test_validation_interval_skips_epochs_and_writes_reports_with_gaps(self):
         """Validate on interval epochs and the final epoch only; skipped rows carry None and never become best."""

@@ -157,8 +157,10 @@ def verify_first_update(
     zero and one completed updates respectively, and allocate exactly B times
     world-size queries per epoch. Inputs come from the first B dispatch records
     in each initial rank pool. Only selected physical contexts are rebuilt,
-    each with the contact partners serialized in its dispatch payload, and the
-    frozen contact pairs of the dispatch enter the energy and the network.
+    each with the contact partners serialized in its dispatch payload and the
+    gravity of its serialized specification, and the frozen contact pairs of
+    the dispatch enter the energy and the network. The network and the step
+    use the checkpoint's ``target_modes``.
 
     The network and physics run on the requested CPU or CUDA device in float32.
     The reference directly states the per-update LeCO objective with the
@@ -211,6 +213,7 @@ def verify_first_update(
         network = IntrinsicSolverNetwork(
             tuple(config["cell_counts"]),
             schema.state_feature_dim,
+            target_modes=schema.target_modes,
             conditioning_dim=schema.conditioning_dim,
             hidden_dim=config["hidden_dim"],
             edge_hidden_dim=config["edge_hidden_dim"],
@@ -238,6 +241,7 @@ def verify_first_update(
             contact_max_pairs=schema.contact_max_pairs,
             contact_tokens_per_cell=schema.contact_tokens_per_cell,
             contact_friction_epsilon=schema.contact_friction_epsilon,
+            target_modes=schema.target_modes,
         )
         try:
             for record in records:
@@ -249,7 +253,9 @@ def verify_first_update(
                 torch.stack([record[name] for record in records]).to(target_device)
                 for name in ("candidate", "inertial_prediction", "fixed_positions", "physical_positions")
             )
-            history = batch_history(records, target_device, cell_count=len(step.cell_corner_indices))
+            history = batch_history(
+                records, target_device, cell_count=len(step.cell_corner_indices), modes=step.target_modes
+            )
             contact = _batch_contact(records, target_device)
             # The trainer sets the first epoch's rate from the schedule at zero completed epochs.
             optimizer = torch.optim.AdamW(

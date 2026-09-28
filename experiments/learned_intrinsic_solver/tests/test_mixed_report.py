@@ -110,6 +110,12 @@ class TestMixedReport(unittest.TestCase):
                         "final_free_force_residual_norm_n": {"mean": 0.25, "median": 0.2, "max": 0.9},
                         "final_energy_joule": {"mean": 1.25, "median": 1.0, "max": 3.0},
                         "final_max_penetration_r": {"mean": 0.02, "median": 0.01, "max": 0.06},
+                        "selection": {
+                            "metric": 0.25,
+                            "eligible": True,
+                            "aggregation": "mean_final_step_free_force_residual_norm_n",
+                            "survival_required": True,
+                        },
                         "seconds": 42.5,
                     },
                 }
@@ -239,9 +245,10 @@ class TestMixedReport(unittest.TestCase):
                 ("0.125", "True", "512", "512"),
             )
             self.assertEqual(epoch["step_size_max"], "0.03")
-            # The fixed-state regime columns follow every pool-regime column and stay blank for pool runs.
+            # The fixed-state regime columns follow every pool-regime column and stay blank for pool runs; the
+            # full-horizon selection columns of schema 6 come last.
             self.assertEqual(
-                epoch_columns[-8:],
+                epoch_columns[-10:],
                 [
                     "contact_scene_fraction",
                     "contact_realized_fraction",
@@ -251,9 +258,14 @@ class TestMixedReport(unittest.TestCase):
                     "regime_k_max",
                     "regime_h_max",
                     "regime_updates",
+                    "full_horizon_selection_metric",
+                    "full_horizon_selection_eligible",
                 ],
             )
             self.assertEqual((epoch["regime_stage"], epoch["regime_updates"]), ("", ""))
+            self.assertEqual(
+                (epoch["full_horizon_selection_metric"], epoch["full_horizon_selection_eligible"]), ("0.25", "True")
+            )
             # The validation column is the maximum deepest penetration at the final validation iteration.
             self.assertEqual(
                 (
@@ -295,6 +307,76 @@ class TestMixedReport(unittest.TestCase):
             page = (output / "index.html").read_text()
             self.assertIn("No full-horizon validation has completed yet.", page)
             self.assertIn("No eligible epoch has been selected yet.", page)
+
+    def test_selection_source_names_the_selecting_summary_and_its_record(self):
+        """Name the summary that selects the best checkpoint, its metric and, for the full-horizon source, its record."""
+        report = self._report()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            # The legacy default: the cheap validation selects; the full-horizon check is shown for comparison.
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertIn(
+                "Selection metric (cheap validation: mean free-corner force residual after 100 iterations): "
+                "0.125 N, eligible for checkpoint selection. Physical survivors: 512 / 512. "
+                "Best so far: 0.125 N at epoch 1.",
+                page,
+            )
+            self.assertIn("squares mark full-horizon checks", page)
+            svg = (output / "loss_curve.svg").read_text()
+            self.assertIn("Cheap validation, final iteration (selects)", svg)
+            self.assertNotIn("Full horizon, final step (selects)", svg)
+            # The v4 source: the full-horizon check selects and its record explains the choice.
+            report["config"]["selection_source"] = "full_horizon"
+            report["best_selection"] = {
+                "epoch": 1,
+                "source": "full_horizon",
+                "metric": 0.25,
+                "aggregation": "mean_final_step_free_force_residual_norm_n",
+                "completed_updates": 128,
+                "iterations": 1,
+                "physical_steps": 8,
+                "sample_count": 16,
+                "physical_survivors": 16,
+                "final_energy_joule": {"mean": 1.25, "median": 1.0, "max": 3.0},
+                "final_max_penetration_r": {"mean": 0.02, "median": 0.01, "max": 0.06},
+            }
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertIn(
+                "Selection metric (full-horizon check: mean final free-corner force residual after K = 1 learned "
+                "iterations on each of H = 8 physical steps, epoch 1): 0.25 N, eligible for checkpoint selection. "
+                "Full-horizon survivors: 16 / 16. Best so far: 0.25 N at epoch 1 (full-horizon check, K = 1, H = 8; "
+                "final energy mean 1.25 J; deepest penetration mean 0.02 / max 0.06 r).",
+                page,
+            )
+            self.assertIn(
+                "Cheap validation metric (mean free-corner force residual after 100 iterations): 0.125 N, "
+                "all trajectories survived. Physical survivors: 512 / 512.",
+                page,
+            )
+            self.assertIn("The best checkpoint is selected on the full-horizon check", page)
+            self.assertNotIn("squares mark full-horizon checks", page)
+            svg = (output / "loss_curve.svg").read_text()
+            self.assertIn("Full horizon, final step (selects)", svg)
+            self.assertNotIn("Cheap validation, final iteration (selects)", svg)
+            # An ineligible full-horizon check and no record yet.
+            report["epochs"][0]["full_horizon_validation"]["selection"] = {"metric": None, "eligible": False}
+            report["epochs"][0]["full_horizon_validation"]["physical_survivors"] = 15
+            report["best_selection"] = None
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertIn(
+                "Unavailable, not eligible (a failed or incomplete trajectory). Full-horizon survivors: 15 / 16. "
+                "No eligible epoch has been selected yet.",
+                page,
+            )
+            # Before any full-horizon check the headline says so instead of failing.
+            report["epochs"][0]["full_horizon_validation"] = None
+            write_mixed_report(output, report)
+            page = (output / "index.html").read_text()
+            self.assertIn("after not evaluated yet): Unavailable, eligibility not recorded.", page)
+            self.assertIn("Full-horizon survivors: Not evaluated.", page)
 
     def test_rows_without_validation_leave_gaps_and_show_the_latest_validated_epoch(self):
         """A skipped-validation row writes blank validation cells and keeps the last validated epoch's section."""

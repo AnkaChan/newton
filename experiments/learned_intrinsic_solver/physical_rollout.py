@@ -192,7 +192,9 @@ class PhysicalRollout:
         rotation = torch.stack(rotations)
         translation = torch.stack(translations)
         base = positions @ rotation.transpose(-1, -2) + translation[:, None, :]
-        zero_increment = base.new_zeros((positions.shape[0], step.energy.cell_corner_indices.shape[0], 3, 3))
+        zero_increment = base.new_zeros(
+            (positions.shape[0], step.energy.cell_corner_indices.shape[0], 3, step.target_modes)
+        )
         initial = step.fusion.fuse(base, zero_increment, fixed_positions)
         solve = self.unrolled.backward_detached if backward_each_iteration else self.unrolled
         solved = solve(

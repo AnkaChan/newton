@@ -3,6 +3,7 @@
 
 """CPU launcher contracts; no GPU claims or workers are started."""
 
+import fcntl
 import json
 import os
 import sys
@@ -128,6 +129,52 @@ class TestLaunchTraining(unittest.TestCase):
             run.assert_not_called()
             self.assertEqual(list(output.iterdir()), [])
 
+    def test_require_free_gpus_refuses_held_claim_locks_before_creating_the_output(self):
+        """A held gpu-claim.sh occupy lock stops the launch with the holder named; free locks and no flag proceed."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            claim = root / "gpu-claim.sh"
+            claim.touch()
+            locks = root / "gpu-locks"
+            locks.mkdir()
+            for index in range(4):
+                (locks / f"gpu-{index}.lock").touch()
+            (locks / "gpu-1.info").write_text("agent=learned-intrinsic-train-1 pid=7 mode=occupy claimed=now\n")
+            holder = os.open(locks / "gpu-1.lock", os.O_RDONLY)
+            fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                with patch.object(launcher_module, "_run_workers", return_value=_WORKER_RESULT) as run:
+                    with self.assertRaisesRegex(
+                        RuntimeError, r"3 of 4 are free.*GPU 1: agent=learned-intrinsic-train-1"
+                    ):
+                        launch_training(
+                            root / "run", workers=4, gpu_claim=claim, require_free_gpus=True, gpu_lock_directory=locks
+                        )
+                    run.assert_not_called()
+                    self.assertFalse((root / "run").exists())
+                    # Two ranks fit beside the held lock; the probe itself never claims a GPU.
+                    launch_training(
+                        root / "two", workers=2, gpu_claim=claim, require_free_gpus=True, gpu_lock_directory=locks
+                    )
+                    self.assertEqual(run.call_count, 1)
+                    self.assertEqual(
+                        launcher_module._held_gpu_locks(4, locks),
+                        ([0, 1, 2, 3], {1: "agent=learned-intrinsic-train-1 pid=7 mode=occupy claimed=now"}),
+                    )
+                    # Without the flag the launch behaves as before and the ranks fail at their claims.
+                    launch_training(root / "unguarded", workers=4, gpu_claim=claim, gpu_lock_directory=locks)
+                    self.assertEqual(run.call_count, 2)
+            finally:
+                fcntl.flock(holder, fcntl.LOCK_UN)
+                os.close(holder)
+            with patch.object(launcher_module, "_run_workers", return_value=_WORKER_RESULT) as run:
+                launch_training(
+                    root / "four", workers=4, gpu_claim=claim, require_free_gpus=True, gpu_lock_directory=locks
+                )
+            run.assert_called_once()
+            # Lock files without a holder and absent files both count as free.
+            self.assertEqual(launcher_module._held_gpu_locks(4, root / "missing-locks"), ([0, 1, 2, 3], {}))
+
     def test_cli_forwards_training_arguments_without_abbreviating_launcher_flags(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "run"
@@ -135,7 +182,17 @@ class TestLaunchTraining(unittest.TestCase):
                 patch.object(
                     sys,
                     "argv",
-                    ["launch_training", "--output", str(output), "--workers", "2", "--", "--max-epochs", "30"],
+                    [
+                        "launch_training",
+                        "--output",
+                        str(output),
+                        "--workers",
+                        "2",
+                        "--require-free-gpus",
+                        "--",
+                        "--max-epochs",
+                        "30",
+                    ],
                 ),
                 patch.object(launcher_module, "launch_training", return_value={"passed": True}) as launch,
             ):
@@ -145,6 +202,7 @@ class TestLaunchTraining(unittest.TestCase):
             self.assertEqual(launch.call_args.args, (output,))
             self.assertEqual(launch.call_args.kwargs["workers"], 2)
             self.assertEqual(launch.call_args.kwargs["training_arguments"], ("--max-epochs", "30"))
+            self.assertIs(launch.call_args.kwargs["require_free_gpus"], True)
             with patch.object(sys, "argv", ["launch_training", "--out", str(output)]):
                 with self.assertRaises(SystemExit) as rejected:
                     launcher_module._main()

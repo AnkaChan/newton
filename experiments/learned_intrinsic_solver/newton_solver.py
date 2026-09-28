@@ -67,15 +67,16 @@ class LearnedOptimizerUpdate(NamedTuple):
 
     current_positions, positions, and direction are [1,P,3] [m], with
     direction = positions - current_positions and zero direction at pins.
-    Local target axes and corrections are dimensionless [1,C,3,3]; frames
-    are frozen [1,C,3,3] rotations. step_size is the dimensionless per-cell
-    step [1,C]. loss is the post-update energy [J]. An untrained proposal
-    need not descend. The trailing detached diagnostics mirror
-    ``LearnedHexStepOutput``: this query's world axis gradient feature [J],
-    the achieved world change of the center deformation, the free-corner
-    force residual norm [N] at the pre-update candidate, and the frame tie
-    mask (None when frames were replayed). The first two form the optimizer
-    history consumed by the next query.
+    Local target axes and corrections are dimensionless [1,C,3,m] with ``m``
+    the optimizer's ``target_modes``; frames are frozen [1,C,3,3] rotations.
+    step_size is the dimensionless per-cell step [1,C]. loss is the
+    post-update energy [J]. An untrained proposal need not descend. The
+    trailing detached diagnostics mirror ``LearnedHexStepOutput``: this
+    query's world target gradient feature [1,C,3,m] in the optimizer's
+    ``energy_unit``, the achieved world change of the ``m`` target vectors,
+    the free-corner force residual norm [N] at the pre-update candidate, and
+    the frame tie mask (None when frames were replayed). The first two form
+    the optimizer history consumed by the next query.
     """
 
     current_positions: torch.Tensor
@@ -156,8 +157,10 @@ class SolverLearnedIntrinsic(SolverBase):
     Args:
         model: CPU float32 Newton model with learned_intrinsic hex attributes.
         network: Optional existing revised-schema Torch network
-            (``features.STATE_FEATURE_DIM`` state and ``features.CONDITIONING_DIM``
-            conditioning inputs).
+            (``features.state_feature_dim(target_modes)`` state and
+            ``features.CONDITIONING_DIM`` conditioning inputs); the learned
+            step follows the network's ``target_modes`` (3 or 7). The default
+            is the three-mode ``features.STATE_FEATURE_DIM`` network.
         iterations: Positive number of learned optimization iterations per dt.
     """
 
@@ -281,6 +284,7 @@ class SolverLearnedIntrinsic(SolverBase):
                 time_step=dt,
                 gravity=gravity,
                 network=self.network,
+                target_modes=self.network.target_modes,
             )
             mass = self._mass.to(device)
             if not torch.allclose(step.energy.lumped_mass, mass, rtol=2e-5, atol=0):
@@ -388,7 +392,7 @@ class SolverLearnedIntrinsic(SolverBase):
             + rigid.rigid_delta_translation[:, None, :]
         )
         count = len(problem.optimizer.energy.cell_corner_indices)
-        zero_increment = base.new_zeros((1, count, 3, 3))
+        zero_increment = base.new_zeros((1, count, 3, problem.optimizer.target_modes))
         return problem.optimizer.fusion.fuse(base, zero_increment, problem.fixed_positions)
 
     def propose_update(

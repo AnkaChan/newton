@@ -16,6 +16,12 @@ static partners come from the trajectory factory, the frozen pairs of every
 physical step are collated into the padded ``batch["contact"]`` layout that
 ``MixedHexSolverStep`` accepts, and the partners are saved with the trajectory
 so ``render_learned`` can draw the floor and the static points.
+
+The network and the step are rebuilt with the checkpoint's ``target_modes``
+(schema 6). Each seed's gravity is the one its validation context sampled
+(``metadata["gravity"]``, see ``MixedTrainConfig.gravity_magnitude_range``);
+the report records it, falling back to the step's default when the metadata
+carries none.
 """
 
 from __future__ import annotations
@@ -70,12 +76,13 @@ def _schedule(duration: float, dt: float, fps: int) -> tuple[int, int]:
 class _Trajectory:
     """Frames, timing and status of one seed's rollout."""
 
-    def __init__(self, seed: int, payload: dict, dt: float):
+    def __init__(self, seed: int, payload: dict, dt: float, *, default_gravity=(0.0, -9.81, 0.0)):
         from .contact_scene import ContactPartners  # noqa: PLC0415
 
         self.seed = seed
         self.payload = payload
         self.dt = dt
+        self.gravity = [float(value) for value in payload["metadata"].get("gravity", default_gravity)]
         start = payload["physical_positions"].numpy().copy()
         self.frames = [start]
         self.times = [0.0]
@@ -240,6 +247,7 @@ def run_rollouts(
         network = IntrinsicSolverNetwork(
             config.cell_counts,
             config.state_feature_dim,
+            target_modes=config.target_modes,
             conditioning_dim=config.conditioning_dim,
             hidden_dim=config.hidden_dim,
             edge_hidden_dim=config.edge_hidden_dim,
@@ -262,6 +270,7 @@ def run_rollouts(
             contact_max_pairs=getattr(config, "contact_max_pairs", 4),
             contact_tokens_per_cell=getattr(config, "contact_tokens_per_cell", 24),
             contact_friction_epsilon=getattr(config, "contact_friction_epsilon", 1e-2),
+            target_modes=config.target_modes,
         ).to(target)
         step.eval()
         parameter_digest = hashlib.sha256(
@@ -269,7 +278,7 @@ def run_rollouts(
         ).hexdigest()
         factory = train_mixed._TrajectoryFactory(step, rest, config, rank=0, validation=True)
         cell_count = len(step.cell_corner_indices)
-        trajectories = [_Trajectory(seed, factory.reset(seed), dt) for seed in seeds]
+        trajectories = [_Trajectory(seed, factory.reset(seed), dt, default_gravity=step.gravity) for seed in seeds]
         rest_positions = rest.corner_rest_positions.astype(np.float32)
         with torch.no_grad(), torch.autocast(device_type=target.type, enabled=False):
             for step_number in range(1, requested_steps + 1):
@@ -346,6 +355,8 @@ def run_rollouts(
                 "frame_rate": fps,
                 "saved_frame_count": len(trajectory.frames),
                 "material": trajectory.material,
+                "gravity": trajectory.gravity,
+                "target_modes": step.target_modes,
                 "perturbation_scale": trajectory.perturbation_scale,
                 "min_center_jacobian": (
                     trajectory.min_center_jacobian if math.isfinite(trajectory.min_center_jacobian) else None

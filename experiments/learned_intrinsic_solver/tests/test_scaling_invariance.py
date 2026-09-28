@@ -244,11 +244,12 @@ def _floor_partners(scene: Scene, *, height: float) -> ContactPartners:
     )
 
 
-def _network(cell_counts, *, contact_tokens: bool = False) -> IntrinsicSolverNetwork:
+def _network(cell_counts, *, contact_tokens: bool = False, target_modes: int = 3) -> IntrinsicSolverNetwork:
     """Return a tiny revised-schema network; the mixed step needs one even when forward is never called."""
     return IntrinsicSolverNetwork(
         cell_counts,
-        features.STATE_FEATURE_DIM,
+        features.state_feature_dim(target_modes),
+        target_modes=target_modes,
         conditioning_dim=features.CONDITIONING_DIM,
         hidden_dim=16,
         edge_hidden_dim=8,
@@ -256,9 +257,10 @@ def _network(cell_counts, *, contact_tokens: bool = False) -> IntrinsicSolverNet
     )
 
 
-def _state_column(name: str) -> int:
-    """Return the column of the trailing scalar ``name`` in the packed state features."""
-    return features.MATRIX_FEATURE_DIM + features.BOUNDARY_DIM + features.SCALAR_FEATURES.index(name)
+def _state_column(name: str, target_modes: int = 3) -> int:
+    """Return the column of the trailing scalar ``name`` in the packed state features of ``target_modes`` modes."""
+    matrix_width = len(features.MATRIX_BLOCKS) * features.target_dim(target_modes)
+    return matrix_width + features.BOUNDARY_DIM + features.SCALAR_FEATURES.index(name)
 
 
 def _pairs(payload) -> list[tuple[int, int]]:
@@ -373,16 +375,17 @@ class TestScalingInvariance(unittest.TestCase):
         self.fixed = np.flatnonzero(self.rest.corner_rest_positions[:, 2] == 0)
         self.generator = torch.Generator().manual_seed(2026)
 
-    def _mixed_steps(self, scene: Scene, *, contact_tokens: bool = False):
+    def _mixed_steps(self, scene: Scene, *, contact_tokens: bool = False, target_modes: int = 3):
         """Return (physical, normalised) mixed steps sharing one network, each with a "beam" floor-contact context.
 
         Gravity and the friction band are constructor constants of the step,
         so the normalised copy is built with g' = g dt^2 / h and
         friction_epsilon' = friction_epsilon dt / h; the floor lies 0.3 h under
-        the rest bottom face in both spaces.
+        the rest bottom face in both spaces. ``target_modes`` selects the
+        three- or seven-mode step and network.
         """
         unit = scene.normalised()
-        network = _network(CELL_COUNTS, contact_tokens=contact_tokens)
+        network = _network(CELL_COUNTS, contact_tokens=contact_tokens, target_modes=target_modes)
         steps = []
         for rest, material, height in ((self.rest, scene, -0.3 * scene.cell_size), (self.unit_rest, unit, -0.3)):
             step = MixedHexSolverStep(
@@ -392,6 +395,7 @@ class TestScalingInvariance(unittest.TestCase):
                 time_step=material.time_step,
                 gravity=material.gravity,
                 contact_friction_epsilon=material.friction_epsilon,
+                target_modes=target_modes,
             )
             self.addCleanup(step.close)
             step.register_context(
@@ -828,9 +832,15 @@ class TestScalingInvariance(unittest.TestCase):
         step'.energy(X / h, ...)``, which the trajectory test only implies at
         two independently converged minimisers.
         """
+        for target_modes in (3, 7):
+            with self.subTest(target_modes=target_modes):
+                self._check_network_inputs_are_invariant(target_modes)
+
+    def _check_network_inputs_are_invariant(self, target_modes: int):
         scene = _scene(1e4, 0.3, 1000.0, 10.0)
         h, dt = scene.cell_size, scene.time_step
-        physical, normalised = self._mixed_steps(scene, contact_tokens=True)
+        width = features.target_dim(target_modes)
+        physical, normalised = self._mixed_steps(scene, contact_tokens=True, target_modes=target_modes)
         pinned, _ = self._free_corners()
         positions, velocity = self._initial_state(pinned)
         payload = physical.prepare("beam", positions.float(), velocity.float())
@@ -850,6 +860,8 @@ class TestScalingInvariance(unittest.TestCase):
             )
 
         physical_inputs, unit_inputs = inputs(physical, batch), inputs(normalised, unit_batch)
+        self.assertEqual(physical_inputs.local_axes.shape[-1], target_modes)
+        self.assertEqual(physical_inputs.state_features.shape[-1], features.state_feature_dim(target_modes))
         deviation = {
             "frames": _deviation(physical_inputs.frames, unit_inputs.frames),
             "local_axes": _deviation(physical_inputs.local_axes, unit_inputs.local_axes),
@@ -862,11 +874,12 @@ class TestScalingInvariance(unittest.TestCase):
         # The matrix blocks are dimensionless with natural scale one (F differences, RMS-normalised gradients), so
         # they are compared absolutely, as the trajectory test compares F.
         for block, name in enumerate(features.MATRIX_BLOCKS):
-            columns = slice(9 * block, 9 * block + 9)
+            columns = slice(width * block, width * block + width)
             deviation[name] = (state[..., columns] - unit_state[..., columns]).abs().max().item()
-        boundary = slice(features.MATRIX_FEATURE_DIM, features.MATRIX_FEATURE_DIM + features.BOUNDARY_DIM)
+        matrix_width = len(features.MATRIX_BLOCKS) * width
+        boundary = slice(matrix_width, matrix_width + features.BOUNDARY_DIM)
         self.assertTrue(torch.equal(state[..., boundary], unit_state[..., boundary]), "boundary flags")
-        history = _state_column("history_valid")
+        history = _state_column("history_valid", target_modes)
         self.assertTrue(torch.equal(state[..., history], unit_state[..., history]), "history flag")
         for hop, edges in physical_inputs.edge_features.items():
             deviation[f"edge_features_hop{hop}"] = _deviation(edges, unit_inputs.edge_features[hop])
@@ -876,15 +889,15 @@ class TestScalingInvariance(unittest.TestCase):
         unit_tokens = torch.where(unit_inputs.contact_mask[..., None], unit_inputs.contact_tokens, 0.0)
         deviation["contact_tokens"] = _deviation(tokens, unit_tokens)
         # The gradient block is non-trivial, so its agreement is a statement about the RMS normalisation.
-        gradient_block = 9 * features.MATRIX_BLOCKS.index("current_axis_gradient")
-        self.assertGreater(unit_state[..., gradient_block : gradient_block + 9].abs().max().item(), 1.0)
-        print(f"network inputs, max deviation (relative, matrix blocks absolute): {deviation}")
+        gradient_block = width * features.MATRIX_BLOCKS.index("current_axis_gradient")
+        self.assertGreater(unit_state[..., gradient_block : gradient_block + width].abs().max().item(), 1.0)
+        print(f"network inputs ({target_modes} modes), max deviation (relative, matrix blocks absolute): {deviation}")
         for name, value in deviation.items():
             self.assertLessEqual(value, FLOAT32_RTOL, name)
 
         # The former hidden absolute scale: the log RMS is now dimensionless and coincides. Its value is far from
         # log(mu h^3) apart, so the agreement is not accidental.
-        column = _state_column("log_gradient_rms")
+        column = _state_column("log_gradient_rms", target_modes)
         log_rms, unit_log_rms = state[..., column], unit_state[..., column]
         self.assertEqual(log_rms.unique().numel(), 1, "log_gradient_rms is broadcast per object")
         offset = (log_rms[0, 0] - unit_log_rms[0, 0]).item()
@@ -935,11 +948,18 @@ class TestScalingInvariance(unittest.TestCase):
         are about 1e-6 to 1e-5, and without the polish phase they reach the
         1e-4 float32 line-search stall. Only the minimiser is shared between
         the spaces: the L-BFGS iterates are not scale-covariant (module
-        docstring) and are not compared.
+        docstring) and are not compared. The seven-mode step shares the
+        unit-grid factor and fuses a seven-mode zero increment in ``prepare``,
+        so the same identities hold for it.
         """
+        for target_modes in (3, 7):
+            with self.subTest(target_modes=target_modes):
+                self._check_plain_optimizer_trajectory(target_modes)
+
+    def _check_plain_optimizer_trajectory(self, target_modes: int):
         scene = _scene(1e4, 0.3, 1000.0, 10.0)
         h, dt = scene.cell_size, scene.time_step
-        physical, normalised = self._mixed_steps(scene)
+        physical, normalised = self._mixed_steps(scene, target_modes=target_modes)
         pinned, free = self._free_corners()
         positions, velocity = self._initial_state(pinned)
         payload = physical.prepare("beam", positions.float(), velocity.float())
@@ -994,7 +1014,7 @@ class TestScalingInvariance(unittest.TestCase):
                 payload["velocities"].double() - scene.velocity_scale * unit_payload["velocities"].double()
             ).abs().max().item() / scene.velocity_scale
             print(
-                f"trajectory step {step_index}: max deviations {deviation}; "
+                f"trajectory step {step_index} ({target_modes} modes): max deviations {deviation}; "
                 f"final |grad|_max / (mu h^2) = {residual / scene.force_scale:.2e} physical, "
                 f"{unit_residual:.2e} normalised"
             )

@@ -150,8 +150,8 @@ def _rollout_batch(step, batch, iterations, device, *, rank=0, batch_number=0):
     count = len(seeds)
     cells = step.cell_corner_indices.shape[0]
     history = OptimizerHistory(
-        positions.new_zeros((count, cells, 3, 3)),
-        positions.new_zeros((count, cells, 3, 3)),
+        positions.new_zeros((count, cells, 3, step.target_modes)),
+        positions.new_zeros((count, cells, 3, step.target_modes)),
         torch.zeros(count, dtype=torch.bool, device=device),
     )
     energies = np.full((iterations + 1, count), np.nan, dtype=np.float64)

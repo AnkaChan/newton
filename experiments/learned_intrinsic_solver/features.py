@@ -163,14 +163,22 @@ CONTACT_FEATURE_DIM = 17
 EDGE_FEATURE_DIM = 24
 """Directed-edge descriptor width from :func:`network_geometry.build_edge_features`."""
 
-FEATURE_SCHEMA_VERSION = 5
+FEATURE_SCHEMA_VERSION = 6
 """Schema version stored in checkpoints.
 
-Schema 5: the seven dimensionless conditioning channels above, a dimensionless
-``log_gradient_rms`` and optimizer history (``axis_gradient_world``) in units
-of ``mu h^3``. Schema 4 (nine channels with absolute material references,
-history in joules) and older are incompatible; a schema-4 checkpoint may only
-seed a weights-only start (see ``train_mixed``).
+Schema 6: :data:`TARGET_MODES_DEFAULT` (seven) target vectors per cell, so the
+per-cell targets carry ``target_dim(7) = 21`` values and the five
+:data:`MATRIX_BLOCKS` are 21-value blocks in the same seven-vector basis
+(``state_feature_dim(7) = 121``; node input ``21 + 121`` plus the contact
+channels), and gravity is a per-context quantity of the mixed step (its
+``log1p_gravity_ratio`` channel, inertial prediction and rigid predictor read
+the context's gravity). The conditioning channels, the LeCO normalisation and
+the history unit ``mu h^3`` are those of schema 5. Schema 5 (three modes,
+nine-value blocks, ``state_feature_dim(3) = 61``, one gravity per step) has a
+different output head and node input width, so its checkpoints are not
+loadable; schema 4 and older were already incompatible. Steps built with
+``target_modes = 3`` still produce the schema-5 layout for ablations and
+legacy tests.
 """
 
 RMS_FLOOR = 1e-12

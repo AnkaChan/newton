@@ -80,6 +80,21 @@ class TestMixedTrainingReference(unittest.TestCase):
         recorded = self.after["report"]["updates"][0]["loss"]
         self.assertAlmostEqual(report["reference_loss"], recorded, places=5)
 
+    def test_seven_and_three_mode_checkpoints_both_verify(self):
+        """Verify the class run's seven-mode update and a three-mode (affine-only ablation) run alike."""
+        self.assertEqual(self.initial["config"]["target_modes"], 7)
+        self.assertEqual(self.initial["network_state"]["correction_head.weight"].shape[0], 21)
+        config = replace(MixedTrainConfig.from_checkpoint_config(self.initial["config"]), target_modes=3)
+        output = self.root / "three-modes"
+        run_training(output, config)
+        report = verify_first_update(output / "checkpoints/initial.pt", output / "checkpoints/latest.pt")
+        self.assertTrue(report["passed"], report)
+        three = torch.load(output / "checkpoints/initial.pt", map_location="cpu", weights_only=False)
+        self.assertEqual(three["network_state"]["correction_head.weight"].shape[0], 9)
+        # Every rebuilt context carries the gravity its trajectory sampled.
+        specs = three["rank_states"][0]["context_specs"]
+        self.assertTrue(all(len(spec["gravity"]) == 3 and spec["gravity"][1] < 0 for spec in specs.values()), specs)
+
     def test_different_viscosities_are_heterogeneous_materials(self):
         """Accept a real matching update whose only material variation is viscosity."""
         config = replace(

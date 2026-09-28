@@ -108,12 +108,49 @@ class TestEvaluateRollout(unittest.TestCase):
                     device="cpu",
                 )
 
+    def test_history_blocks_follow_the_step_target_modes(self):
+        """A seven-mode step receives [B, C, 3, 7] history blocks and its outputs are carried without reshaping."""
+        shapes = []
+
+        class Step:
+            cell_corner_indices = torch.zeros((2, 8), dtype=torch.long)
+            target_modes = 7
+
+            def energy(self, positions, inertial, *, previous_positions=None):
+                return SimpleNamespace(total=10 + positions[:, 0, 0])
+
+            def __call__(self, positions, inertial, *, fixed_positions, previous_positions=None, history=None):
+                shapes.append((tuple(history.axis_gradient_world.shape), tuple(history.axis_update_world.shape)))
+                proposed = positions + 1
+                count = positions.shape[0]
+                return SimpleNamespace(
+                    positions=proposed,
+                    loss=SimpleNamespace(total=10 + proposed[:, 0, 0]),
+                    axis_gradient_world=torch.full((count, 2, 3, 7), 2.0),
+                    achieved_axis_update_world=torch.full((count, 2, 3, 7), 3.0),
+                )
+
+        positions = torch.tensor([[[1.0, 0, 0]], [[2.0, 0, 0]]])
+        batch = {
+            "positions": positions,
+            "inertial_prediction": positions.clone(),
+            "previous_positions": positions.clone(),
+            "fixed_positions": positions.clone(),
+            "physical_seeds": [10000, 10001],
+        }
+        with patch("experiments.learned_intrinsic_solver.train_epochs._screen_output"):
+            _, energies, _, failures = _rollout_batch(Step(), batch, 2, torch.device("cpu"))
+        self.assertEqual(failures, [])
+        self.assertEqual(shapes, [((2, 2, 3, 7), (2, 2, 3, 7))] * 2)
+        self.assertEqual(energies[:, 0].tolist(), [11, 12, 13])
+
     def test_invalid_query_stops_at_first_failure_and_preserves_survivor(self):
         """Split a failing batch, carry per-query history, and leave future energies missing only for the failure."""
         history_flags = []
 
         class Step:
             cell_corner_indices = torch.zeros((1, 8), dtype=torch.long)
+            target_modes = 3
 
             def energy(self, positions, inertial, *, previous_positions=None):
                 return SimpleNamespace(total=10 + positions[:, 0, 0])

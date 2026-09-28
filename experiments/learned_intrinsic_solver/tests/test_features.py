@@ -32,7 +32,7 @@ def _proper_rotations(*shape: int, dtype: torch.dtype = torch.float64) -> torch.
 
 class TestSchemaConstants(unittest.TestCase):
     def test_dimensions_and_order(self):
-        """Pin the schema-5 widths and packing order the network and trainer depend on."""
+        """Pin the legacy three-mode widths, the packing order and the schema-6 version the trainer depends on."""
         self.assertEqual(
             features.MATRIX_BLOCKS,
             (
@@ -63,7 +63,7 @@ class TestSchemaConstants(unittest.TestCase):
         self.assertEqual(features.CONTACT_TOKEN_DIM, 19)
         self.assertEqual(features.CONTACT_FEATURE_DIM, 17)
         self.assertEqual(features.EDGE_FEATURE_DIM, 24)
-        self.assertEqual(features.FEATURE_SCHEMA_VERSION, 5)
+        self.assertEqual(features.FEATURE_SCHEMA_VERSION, 6)
         self.assertEqual(features.RMS_FLOOR, 1e-12)
         self.assertEqual(features.CLIP, 10.0)
 

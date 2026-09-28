@@ -60,12 +60,15 @@ class TestMixedTrainingFailures(unittest.TestCase):
         network = IntrinsicSolverNetwork(
             rest.cell_counts,
             config.state_feature_dim,
+            target_modes=config.target_modes,
             conditioning_dim=config.conditioning_dim,
             hidden_dim=8,
             edge_hidden_dim=4,
             num_heads=2,
         )
-        step = MixedHexSolverStep(rest, fixed, network=network, time_step=config.time_step)
+        step = MixedHexSolverStep(
+            rest, fixed, network=network, time_step=config.time_step, target_modes=config.target_modes
+        )
         self.addCleanup(step.close)
         return step, rest
 
@@ -215,6 +218,7 @@ class TestMixedTrainingFailures(unittest.TestCase):
             self.assertEqual(actual["inner_iteration"], 0)
             payload = actual["payload"]
             self.assertEqual(failure["context_specs"][payload["context_id"]], payload["context_spec"])
+            self.assertEqual(payload["context_spec"]["gravity"], tuple(payload["metadata"]["gravity"]))
             for key in ("candidate", "physical_positions", "velocities", "inertial_prediction", "fixed_positions"):
                 torch.testing.assert_close(payload[key], saved["payload"][key], rtol=0, atol=0)
             self.assertFalse(payload["history_valid"])

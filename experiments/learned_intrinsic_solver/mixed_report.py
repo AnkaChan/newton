@@ -57,6 +57,9 @@ _EPOCH_COLUMNS = (
     "regime_k_max",
     "regime_h_max",
     "regime_updates",
+    # Full-horizon selection columns (schema 6), appended after the regime columns for the same reason.
+    "full_horizon_selection_metric",
+    "full_horizon_selection_eligible",
 )
 
 
@@ -273,7 +276,49 @@ def _final_penetration(row):
     return None
 
 
-def _epoch_plot(rows):
+def _selection_source(report):
+    """Return the summary that selects the best checkpoint: the configured source, else the record's, else cheap."""
+    config = report.get("config") or {}
+    best = report.get("best_selection") or {}
+    source = config.get("selection_source") or best.get("source") or "cheap"
+    return source if source in ("cheap", "full_horizon") else "cheap"
+
+
+def _survival_text(summary):
+    """Return ``survivors / samples`` of a validation summary, or a placeholder when it was not evaluated."""
+    survivors = summary.get("physical_survivors")
+    sample_count = summary.get("sample_count")
+    if isinstance(survivors, int) and isinstance(sample_count, int):
+        return f"{survivors} / {sample_count}"
+    return "Not evaluated"
+
+
+def _eligibility_text(eligible, *, selecting):
+    """Describe a selection record's eligibility; a non-selecting summary is described without the selection role."""
+    if eligible is True:
+        return "eligible for checkpoint selection" if selecting else "all trajectories survived"
+    if eligible is False:
+        return "not eligible (a failed or incomplete trajectory)" if selecting else "a failed or incomplete trajectory"
+    return "eligibility not recorded"
+
+
+def _best_text(best, source):
+    """Describe the best record; the full-horizon source adds its budget, final energy and deepest penetration."""
+    if not _finite(best.get("metric")):
+        return "No eligible epoch has been selected yet."
+    text = f"Best so far: {_number(best.get('metric'))} N at epoch {html.escape(str(best.get('epoch')))}"
+    if source == "full_horizon" and best.get("source") == "full_horizon":
+        energy = best.get("final_energy_joule") or {}
+        penetration = best.get("final_max_penetration_r") or {}
+        text += (
+            f" (full-horizon check, K = {html.escape(str(best.get('iterations', '—')))}, "
+            f"H = {html.escape(str(best.get('physical_steps', '—')))}; final energy mean {_number(energy.get('mean'))} J; "
+            f"deepest penetration mean {_number(penetration.get('mean'))} / max {_number(penetration.get('max'))} r)"
+        )
+    return text + "."
+
+
+def _epoch_plot(rows, *, selection_source="cheap"):
     import matplotlib as mpl
     from matplotlib.figure import Figure
     from matplotlib.ticker import MaxNLocator
@@ -314,9 +359,22 @@ def _epoch_plot(rows):
         axes[1, 0].set_ylabel("Validation mean physical energy (J)")
         axes[1, 0].legend()
         metric = values("validation", "selection", "metric")
-        axes[1, 1].plot(epochs, metric, ".-", color="#7052a3", label="Cheap validation, final iteration")
+        full_selects = selection_source == "full_horizon"
+        axes[1, 1].plot(
+            epochs,
+            metric,
+            ".-",
+            color="#7052a3",
+            label="Cheap validation, final iteration" + ("" if full_selects else " (selects)"),
+        )
         full = values("full_horizon_validation", "final_free_force_residual_norm_n", "mean")
-        axes[1, 1].plot(epochs, full, "s", color="#c63645", label="Full horizon, final step")
+        axes[1, 1].plot(
+            epochs,
+            full,
+            "s",
+            color="#c63645",
+            label="Full horizon, final step" + (" (selects)" if full_selects else ""),
+        )
         axes[1, 1].set_ylabel("Selection metric: mean final force residual (N)")
         if any(_finite(value) and value > 0 for value in metric + full):
             axes[1, 1].set_yscale("log")
@@ -405,6 +463,10 @@ def write_mixed_report(output, report, *, updated_at=None):
     penetration_endpoint = penetration_curve[-1] if penetration_curve else {}
     selection = validation.get("selection") or {}
     best = report.get("best_selection") or {}
+    selection_source = _selection_source(report)
+    full_epoch, full = _latest_summary(rows, "full_horizon_validation")
+    full = full or {}
+    full_selection = full.get("selection") or {}
     # Label the shown validation by its own iteration count: after a resume with a changed budget
     # the latest validated row can predate the configured ``validation_iterations``.
     validation_iterations = residual_endpoint.get(
@@ -428,7 +490,7 @@ def write_mixed_report(output, report, *, updated_at=None):
     )
     counts_k = progress.get("available_K", latest.get("available_K", [1]))
     counts_h = progress.get("available_H", latest.get("available_H", [8]))
-    loss_plot = _epoch_plot(rows)
+    loss_plot = _epoch_plot(rows, selection_source=selection_source)
     validation_plot = _curve_plot("Validation relative physical energy", relative)
     residual_plot = _curve_plot("Validation free-corner force residual (N)", residual_curve)
     penetration_plot = _penetration_plot(penetration_curve)
@@ -448,6 +510,8 @@ def write_mixed_report(output, report, *, updated_at=None):
             "regime_k_max": _lookup(row, "regime", "k_max"),
             "regime_h_max": _lookup(row, "regime", "h_max"),
             "regime_updates": _lookup(row, "regime", "updates"),
+            "full_horizon_selection_metric": _lookup(row, "full_horizon_validation", "selection", "metric"),
+            "full_horizon_selection_eligible": _lookup(row, "full_horizon_validation", "selection", "eligible"),
         }
         for row in rows
     ]
@@ -488,28 +552,12 @@ def write_mixed_report(output, report, *, updated_at=None):
         if isinstance(batch_size, int)
         else ""
     )
-    survivors = validation.get("physical_survivors")
-    sample_count = validation.get("sample_count")
-    survival_text = (
-        f"{survivors} / {sample_count}"
-        if isinstance(survivors, int) and isinstance(sample_count, int)
-        else "Not evaluated"
-    )
+    survival_text = _survival_text(validation)
     metric = selection.get("metric")
     metric_text = f"{_number(metric)} N" if _finite(metric) else "Unavailable"
-    eligible = selection.get("eligible")
-    eligibility_text = (
-        "eligible for checkpoint selection"
-        if eligible is True
-        else "not eligible (a failed or incomplete trajectory)"
-        if eligible is False
-        else "eligibility not recorded"
-    )
-    best_text = (
-        f"Best so far: {_number(best.get('metric'))} N at epoch {escape(best.get('epoch'))}."
-        if _finite(best.get("metric"))
-        else "No eligible epoch has been selected yet."
-    )
+    cheap_selects = selection_source == "cheap"
+    eligibility_text = _eligibility_text(selection.get("eligible"), selecting=cheap_selects)
+    best_text = _best_text(best, selection_source)
     history = report.get("best_selection_history") or []
     reset = history[-1] if history and isinstance(history[-1], dict) else None
     if reset:
@@ -522,13 +570,42 @@ def write_mixed_report(output, report, *, updated_at=None):
             if _finite(previous.get("metric"))
             else "there was no earlier eligible record."
         )
+    cheap_text = (
+        f"{'Selection metric (cheap validation: ' if cheap_selects else 'Cheap validation metric ('}"
+        f"mean free-corner force residual after {validation_iterations} iterations): {metric_text}, "
+        f"{eligibility_text}. Physical survivors: {survival_text}."
+    )
+    if cheap_selects:
+        selection_text = f"{cheap_text} {best_text}"
+        selection_note = (
+            "The selection metric is the mean final free-corner force residual of the cheap validation; "
+            "squares mark full-horizon checks."
+        )
+    else:
+        full_metric = full_selection.get("metric")
+        full_metric_text = f"{_number(full_metric)} N" if _finite(full_metric) else "Unavailable"
+        full_budget = (
+            f"K = {escape(full.get('iterations', '—'))} learned iterations on each of "
+            f"H = {escape(full.get('physical_steps', '—'))} physical steps, epoch {escape(full_epoch)}"
+            if full
+            else "not evaluated yet"
+        )
+        selection_text = (
+            f"Selection metric (full-horizon check: mean final free-corner force residual after {full_budget}): "
+            f"{full_metric_text}, {_eligibility_text(full_selection.get('eligible'), selecting=True)}. "
+            f"Full-horizon survivors: {_survival_text(full)}. {best_text}<br>\n{cheap_text}"
+        )
+        selection_note = (
+            "The best checkpoint is selected on the full-horizon check (squares: mean final free-corner force "
+            "residual after the last physical step, every sample alive); the cheap validation's final-iteration "
+            "residual is shown for comparison."
+        )
     full_cap = config.get("validation_full_iterations")
     full_budget_text = (
         f"at the largest currently available H and at K capped at {escape(full_cap)}"
         if isinstance(full_cap, int) and not isinstance(full_cap, bool)
         else "at the largest currently available budgets"
     )
-    full_epoch, full = _latest_summary(rows, "full_horizon_validation")
     if full:
         final_residual = full.get("final_free_force_residual_norm_n") or {}
         final_energy = full.get("final_energy_joule") or {}
@@ -583,10 +660,10 @@ a{{color:#087c91}}img,svg{{display:block;width:100%;height:auto;background:white
 {budget_text} and {escape(config.get("validation_count", validation.get("sample_count", "—")))} fixed validation states.{interval_text} {escape(batch_text)}<br>
 Available solver iterations: K = {escape(counts_k)} · Physical timesteps: H = {escape(counts_h)}<br>
 {schedule_text}{origin_text}</p>
-<p>Selection metric (mean free-corner force residual after {validation_iterations} iterations): {metric_text}, {eligibility_text}. Physical survivors: {survival_text}. {best_text}<br>
+<p>{selection_text}<br>
 Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(validation.get("mean_after_joule"))} J after one update. Descent: {descent_text}; first-update failures: {escape(validation.get("first_update_failed_count", "Not evaluated"))}; all validation failures: {escape(validation.get("failed_count", "Not evaluated"))}.</p>
 {failure_html}<img src="loss_curve.svg" alt="Training objective and validation first-update objective, validation descent rate, physical energy, selection metric, physical survivors, and learning rate by epoch">
-<p class="muted">Lower objective is better. The training objective includes an uphill penalty; validation shows the first update on fixed seeds with the same form. The selection metric is the mean final free-corner force residual of the cheap validation; squares mark full-horizon checks. The learning rate is recorded after each epoch's scheduler decision.</p>
+<p class="muted">Lower objective is better. The training objective includes an uphill penalty; validation shows the first update on fixed seeds with the same form. {selection_note} The learning rate is recorded after each epoch's scheduler decision.</p>
 <details><summary>How the loss curves are computed</summary>
 <p>Mean local training loss averages all queried trajectories and ranks in each completed epoch. Epochs mix solver ages, physical timesteps and curriculum stages.</p>
 <p>Per-update loss = asinh(E_after / s) + &lambda; · max((E_after &minus; E_before) / s, 0) with s = max(|E_before|, floor), where E_before is the energy immediately before that update and floor = c · 2<sup>&minus;23</sup> · V · (&lambda;<sub>Lam&eacute;</sub> + 2&mu; + &eta;/dt + &rho;h<sup>2</sup>/dt<sup>2</sup>) is the material-aware float32 energy floor (c = {escape(config.get("energy_floor_scale", 1.0))}). The penalty weight is &lambda; = {escape(config.get("energy_increase_weight", 1.0))}.</p>

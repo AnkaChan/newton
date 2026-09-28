@@ -45,19 +45,21 @@ _TINY = {
     "validation_physical_iterations": 2,
     "validation_full_count": 1,
     "validation_full_interval": 2,
+    "target_modes": 7,
     "device": "cpu",
     "cpu_threads": 1,
     "preparation_workers": 1,
     "verbose": False,
     "early_stopping": False,
 }
-"""Two-cell CPU configuration shared by the rollout tests."""
+"""Two-cell seven-mode CPU configuration shared by the rollout tests."""
 
 
 def _network(config: MixedTrainConfig) -> IntrinsicSolverNetwork:
     return IntrinsicSolverNetwork(
         config.cell_counts,
         config.state_feature_dim,
+        target_modes=config.target_modes,
         conditioning_dim=config.conditioning_dim,
         hidden_dim=config.hidden_dim,
         edge_hidden_dim=config.edge_hidden_dim,
@@ -160,7 +162,12 @@ class TestMixedRolloutContact(unittest.TestCase):
         rest = generate_cuboid(config.cell_counts, cell_size=config.cell_size)
         fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == rest.corner_rest_positions[:, 2].min())
         step = MixedHexSolverStep(
-            rest, fixed, network=_network(config), time_step=config.time_step, gravity=config.gravity
+            rest,
+            fixed,
+            network=_network(config),
+            time_step=config.time_step,
+            gravity=config.gravity,
+            target_modes=config.target_modes,
         )
         step.eval()
         factory = train_mixed._TrajectoryFactory(step, rest, config, rank=0, validation=True)
@@ -183,9 +190,15 @@ class TestMixedRolloutContact(unittest.TestCase):
         self.assertEqual(len(trajectory.energies), 1)
 
     def test_rollout_saves_contact_partners_and_reports_penetration(self):
-        """Write the seed's plane and static points beside the frames and summarize contact in report.json."""
+        """Write the seed's plane and static points beside the frames and summarize contact, gravity and modes in report.json.
+
+        The checkpoint is a seven-mode (schema 6) configuration, so the rollout
+        rebuilds a seven-mode network and step; each seed's gravity is the one
+        its validation context sampled.
+        """
         config = MixedTrainConfig(**_TINY)
         network = _network(config)
+        self.assertEqual(network.target_modes, 7)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checkpoint = root / "checkpoint.pt"
@@ -203,8 +216,15 @@ class TestMixedRolloutContact(unittest.TestCase):
                 checkpoint, root / "rollout", seeds=(0, 1), iterations=1, duration=2 * dt, fps=300, device="cpu"
             )
             self.assertEqual([report["seed"] for report in reports], [0, 1])
+            low, high = config.gravity_magnitude_range
+            gravities = []
             for report in reports:
                 self.assertEqual(report["status"], "complete", report["failure"])
+                self.assertEqual(report["target_modes"], 7)
+                gravity = report["gravity"]
+                self.assertEqual((len(gravity), gravity[0], gravity[2]), (3, 0.0, 0.0))
+                self.assertTrue(low <= -gravity[1] <= high, gravity)
+                gravities.append(tuple(gravity))
                 block = report["contact"]
                 self.assertLessEqual(
                     {"plane_present", "plane_height", "point_count", "ke", "kd", "mu", "max_penetration_r"}, set(block)
@@ -228,6 +248,8 @@ class TestMixedRolloutContact(unittest.TestCase):
                 self.assertAlmostEqual(float(contact.plane_point[1]), block["plane_height"], places=6)
                 written = json.loads((trajectory.parent / "report.json").read_text())
                 self.assertEqual(written["contact"], block)
+                self.assertEqual((written["gravity"], written["target_modes"]), (report["gravity"], 7))
+            self.assertEqual(len(set(gravities)), 2)
 
 
 if __name__ == "__main__":

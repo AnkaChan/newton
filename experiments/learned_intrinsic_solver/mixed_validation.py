@@ -11,7 +11,10 @@ Checkpoint selection uses the mean final residual of the frozen-problem
 optimization phase and requires that no sample failed and every physical
 trajectory survived. Inversion diagnostics are reported but never fail a
 sample. ``validate_full_horizon`` evaluates a distinct held-out subset at the
-full currently available K x H horizon and records its wall-clock cost.
+full currently available K x H horizon, records its wall-clock cost and
+carries its own ``selection`` record (mean final-step residual, every sample
+alive) so the trainer may select the best checkpoint on either summary
+(``MixedTrainConfig.selection_source``).
 
 Contact diagnostics accompany every observation: the contact energy [J] and
 the deepest penetration of any surface sample into its frozen partners in
@@ -28,11 +31,19 @@ from numbers import Integral
 
 import numpy as np
 
-__all__ = ["SELECTION_AGGREGATION", "validate", "validate_full_horizon", "validation_chunk"]
+__all__ = [
+    "FULL_HORIZON_SELECTION_AGGREGATION",
+    "SELECTION_AGGREGATION",
+    "validate",
+    "validate_full_horizon",
+    "validation_chunk",
+]
 
 _NEAR_ZERO_ENERGY = 1e-8
 SELECTION_AGGREGATION = "mean_final_free_force_residual_norm_n"
 """Checkpoint-selection metric: mean over all samples of the final optimization-phase residual [N]."""
+FULL_HORIZON_SELECTION_AGGREGATION = "mean_final_step_free_force_residual_norm_n"
+"""Full-horizon selection metric: mean over all samples of the residual [N] after the last physical step."""
 
 
 def _positive_integer(value) -> bool:
@@ -214,7 +225,9 @@ def _store_history(step, payloads, batch, result, device) -> None:
     from . import history as history_module  # noqa: PLC0415 -- Optional training boundary.
 
     history_module.store_history(payloads, result)
-    batch["history"] = history_module.batch_history(payloads, device, cell_count=len(step.cell_corner_indices))
+    batch["history"] = history_module.batch_history(
+        payloads, device, cell_count=len(step.cell_corner_indices), modes=step.target_modes
+    )
 
 
 def _optimization(step, factory, seeds, samples, config, device):
@@ -226,7 +239,7 @@ def _optimization(step, factory, seeds, samples, config, device):
         for seed in seeds:
             payloads.append(factory.reset(seed))
         _describe(samples, payloads)
-        batch = _batch(payloads, device)
+        batch = _batch(payloads, device, cell_count=len(step.cell_corner_indices), modes=step.target_modes)
         start = batch["candidate"].clone()
         floors = step.energy_floor(batch["context_ids"]).detach().double().cpu().tolist()
         for sample, floor in zip(samples, floors, strict=True):
@@ -293,7 +306,7 @@ def _physical(step, factory, seeds, samples, device, *, iterations, physical_ste
         _describe(samples, payloads)
         start = None
         for physical in range(physical_steps):
-            batch = _batch(payloads, device)
+            batch = _batch(payloads, device, cell_count=len(step.cell_corner_indices), modes=step.target_modes)
             if start is None:
                 start = batch["physical_positions"].clone()
             for _ in range(iterations):
@@ -594,6 +607,22 @@ def _summarize(samples, config, *, seconds):
     }
 
 
+def _full_horizon_selection(samples, final, *, failed_count, physical_survivors):
+    """Build the full-horizon selection record: the mean final-step residual, eligible only when every sample survived.
+
+    Mirrors :func:`_selection`; ``final`` is the last entry of the physical
+    curves, whose statistics are None unless every sample reached the last step.
+    """
+    metric = final["free_force_residual_norm_n"]["mean"]
+    complete = bool(samples) and metric is not None
+    return {
+        "metric": float(metric) if complete else None,
+        "eligible": bool(complete and failed_count == 0 and physical_survivors == len(samples)),
+        "aggregation": FULL_HORIZON_SELECTION_AGGREGATION,
+        "survival_required": True,
+    }
+
+
 def _summarize_full_horizon(samples, *, iterations, physical_steps, seconds):
     failed = [sample for sample in samples if sample["physical_error"]]
     survivors = sum(
@@ -612,6 +641,7 @@ def _summarize_full_horizon(samples, *, iterations, physical_steps, seconds):
         "final_physical_residual": final["free_force_residual_norm_n"],
         "final_inverted_sample_count": final["inverted_sample_count"],
         "final_max_penetration_r": final["max_penetration_r"],
+        "selection": _full_horizon_selection(samples, final, failed_count=len(failed), physical_survivors=survivors),
         "physical_curves": curves,
         "samples": samples,
         "seconds": seconds,
@@ -693,7 +723,10 @@ def validate_full_horizon(step, factory, config, device, rank, world_size, *, it
     displacement [m], inversion diagnostics and the contact energy and deepest
     penetration (units of r). Failed samples stay visible
     with their error and completed steps; final statistics are None when any
-    sample is incomplete. ``seconds`` is this rank's wall-clock cost.
+    sample is incomplete. ``selection`` mirrors the cheap validation's record:
+    the metric is the mean final-step residual over all samples, eligible only
+    when no sample failed and every sample completed all steps. ``seconds`` is
+    this rank's wall-clock cost.
 
     Args:
         step: Mixed solver step in any mode; evaluation mode is restored afterwards.
@@ -711,8 +744,8 @@ def validate_full_horizon(step, factory, config, device, rank, world_size, *, it
         ``iterations``, ``physical_steps``, ``final_free_force_residual_norm_n``,
         ``final_energy_joule``, ``final_max_penetration_r`` (each
         ``{"mean", "median", "max"}``), ``final_physical_residual``,
-        ``final_inverted_sample_count``, ``physical_curves``, ``samples`` and
-        ``seconds``.
+        ``final_inverted_sample_count``, ``selection``, ``physical_curves``,
+        ``samples`` and ``seconds``.
 
     Raises:
         ValueError: If ``iterations``, ``physical_steps`` or

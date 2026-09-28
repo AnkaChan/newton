@@ -21,6 +21,7 @@ from experiments.learned_intrinsic_solver import history, mixed_validation, trai
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.mixed_physics import MixedHexSolverStep
 from experiments.learned_intrinsic_solver.mixed_validation import (
+    FULL_HORIZON_SELECTION_AGGREGATION,
     SELECTION_AGGREGATION,
     _full_horizon_seeds,
     validate,
@@ -56,6 +57,8 @@ class _AnalyticStep(torch.nn.Module):
         self.energy_calls = []
         self.register_buffer("fixed_indices", torch.tensor([0]))
         self.register_buffer("cell_corner_indices", torch.arange(8).reshape(1, 8))
+        # Three-mode history blocks: the validator collates payload history for this mode count.
+        self.target_modes = 3
         self.register_buffer(
             "rest", torch.tensor([[x, y, z] for x in (0.0, 1.0) for y in (0.0, 1.0) for z in (0.0, 1.0)])
         )
@@ -463,6 +466,7 @@ class TestFullHorizonValidation(unittest.TestCase):
                 "final_physical_residual",
                 "final_inverted_sample_count",
                 "final_max_penetration_r",
+                "selection",
                 "physical_curves",
                 "samples",
                 "seconds",
@@ -471,6 +475,17 @@ class TestFullHorizonValidation(unittest.TestCase):
         self.assertEqual(report["sample_count"], 3)
         self.assertEqual(report["physical_survivors"], 2)
         self.assertEqual(report["failed_count"], 1)
+        # A dead trajectory leaves the final statistics incomplete: no metric, not eligible.
+        self.assertEqual(
+            report["selection"],
+            {
+                "metric": None,
+                "eligible": False,
+                "aggregation": FULL_HORIZON_SELECTION_AGGREGATION,
+                "survival_required": True,
+            },
+        )
+        self.assertEqual(FULL_HORIZON_SELECTION_AGGREGATION, "mean_final_step_free_force_residual_norm_n")
         self.assertEqual(report["iterations"], 2)
         self.assertEqual(report["physical_steps"], 3)
         self.assertGreaterEqual(report["seconds"], 0.0)
@@ -527,6 +542,16 @@ class TestFullHorizonValidation(unittest.TestCase):
         self.assertEqual(report["final_energy_joule"], {"mean": 0.25, "median": 0.25, "max": 0.25})
         self.assertEqual(report["final_free_force_residual_norm_n"], {"mean": 1.0, "median": 1.0, "max": 1.0})
         self.assertEqual(report["final_max_penetration_r"], {"mean": 0.0, "median": 0.0, "max": 0.0})
+        # Every sample alive: the selection record carries the mean final-step residual and is eligible.
+        self.assertEqual(
+            report["selection"],
+            {
+                "metric": 1.0,
+                "eligible": True,
+                "aggregation": FULL_HORIZON_SELECTION_AGGREGATION,
+                "survival_required": True,
+            },
+        )
         self.assertEqual(step.history_flags, [[False, False], [True, True]])
         self.assertEqual(step.history_markers, [[0.0, 0.0], [1.0, 1.0]])
         self.assertEqual(step.contexts, {})
@@ -556,6 +581,7 @@ class TestFullHorizonValidation(unittest.TestCase):
         )
         self.assertEqual(report["final_free_force_residual_norm_n"], {"mean": 2.0, "median": 1.0, "max": 4.0})
         self.assertEqual(report["final_energy_joule"], {"mean": 1.5, "median": 0.25, "max": 4.0})
+        self.assertEqual((report["selection"]["metric"], report["selection"]["eligible"]), (2.0, True))
         self.assertEqual(step.contexts, {})
 
     def test_seeds_are_distributed_round_robin_and_arguments_are_validated(self):
@@ -601,6 +627,7 @@ class TestFullHorizonValidation(unittest.TestCase):
         self.assertEqual(empty["sample_count"], 0)
         self.assertEqual(empty["physical_survivors"], 0)
         self.assertIsNone(empty["final_free_force_residual_norm_n"]["mean"])
+        self.assertEqual((empty["selection"]["metric"], empty["selection"]["eligible"]), (None, False))
 
 
 class TestRealStepResidual(unittest.TestCase):
@@ -638,6 +665,7 @@ class TestRealStepResidual(unittest.TestCase):
         network = IntrinsicSolverNetwork(
             rest.cell_counts,
             config.state_feature_dim,
+            target_modes=config.target_modes,
             conditioning_dim=config.conditioning_dim,
             hidden_dim=8,
             edge_hidden_dim=4,
@@ -653,6 +681,7 @@ class TestRealStepResidual(unittest.TestCase):
             contact_max_pairs=config.contact_max_pairs,
             contact_tokens_per_cell=config.contact_tokens_per_cell,
             contact_friction_epsilon=config.contact_friction_epsilon,
+            target_modes=config.target_modes,
         )
         self.addCleanup(step.close)
         # The correction and step heads start at zero; perturb every weight so the candidate moves.

@@ -86,6 +86,26 @@ class TestPhysicalRollout(unittest.TestCase):
             )
         self.assertTrue(window.objective.requires_grad)
 
+    def test_initial_increment_follows_the_step_target_modes(self):
+        """A seven-mode network drives the rollout: the zero increment of the rigid guess matches the fusion."""
+        network = IntrinsicSolverNetwork(
+            self.rest.cell_counts,
+            features.state_feature_dim(7),
+            target_modes=7,
+            conditioning_dim=features.CONDITIONING_DIM,
+            hidden_dim=16,
+            edge_hidden_dim=8,
+        )
+        solver = SolverLearnedIntrinsic(self.model, network=network, iterations=1)
+        step = solver._step_for_dt(self.dt)
+        self.assertEqual(step.target_modes, 7)
+        rollout = PhysicalRollout(solver, UnrolledHexSolver(step), time_step=self.dt)
+        windows = list(rollout.windows(self.x, self.v, forces=self.f, physical_steps=2, iterations=1))
+        cells = len(self.rest.cell_corner_indices)
+        for physical in windows[0].steps:
+            self.assertEqual(tuple(physical.history.axis_gradient_world.shape), (1, cells, 3, 7))
+            torch.testing.assert_close(physical.positions[:, self.fixed], self.x[:, self.fixed], rtol=0, atol=0)
+
     def test_history_is_carried_across_physical_steps_and_cleared_for_a_new_rollout(self):
         """Consume each query's detached history in the next query, across steps and windows, until a new rollout."""
         records = []

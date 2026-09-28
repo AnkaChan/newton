@@ -19,7 +19,7 @@ if importlib.util.find_spec("torch") is None:
 
 import torch  # noqa: TID253
 
-from experiments.learned_intrinsic_solver import features
+from experiments.learned_intrinsic_solver import features, hex_modes
 from experiments.learned_intrinsic_solver.contact_geometry import sample_points
 from experiments.learned_intrinsic_solver.contact_scene import KIND_PLANE, KIND_POINT, ContactPartners, detect_contacts
 from experiments.learned_intrinsic_solver.data import generate_cuboid
@@ -32,7 +32,7 @@ from experiments.learned_intrinsic_solver.fusion import HexFusion
 from experiments.learned_intrinsic_solver.hex_energy import HexImplicitEulerLoss, HexLossTerms
 from experiments.learned_intrinsic_solver.input_assembly import assemble_inputs
 from experiments.learned_intrinsic_solver.mixed_physics import MixedHexSolverStep, OptimizerHistory
-from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
+from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork, IntrinsicSolverOutput
 from experiments.learned_intrinsic_solver.network_geometry import build_edge_features
 from experiments.learned_intrinsic_solver.newton_model import build_newton_hex_model
 from experiments.learned_intrinsic_solver.newton_solver import SolverLearnedIntrinsic
@@ -44,11 +44,12 @@ MATERIALS = {
 }
 
 
-def make_network(cell_counts, **kwargs):
-    """Build a small revised-schema network with nonzero heads so outputs vary per cell."""
+def make_network(cell_counts, *, target_modes=3, **kwargs):
+    """Build a small revised-schema network with ``target_modes`` modes and nonzero heads so outputs vary per cell."""
     network = IntrinsicSolverNetwork(
         cell_counts,
-        features.STATE_FEATURE_DIM,
+        features.state_feature_dim(target_modes),
+        target_modes=target_modes,
         conditioning_dim=features.CONDITIONING_DIM,
         hidden_dim=16,
         edge_hidden_dim=8,
@@ -729,7 +730,8 @@ class TestMixedHexSolverStep(unittest.TestCase):
                 any(part in name for part in ("lame", "density", "lumped_mass", "conditioning", "fusion")), name
             )
         self.assertEqual(
-            json.loads(json.dumps(self.step.context_specs))["soft"], {**self.specs["soft"], "damping": 0.0}
+            json.loads(json.dumps(self.step.context_specs))["soft"],
+            {**self.specs["soft"], "damping": 0.0, "gravity": [0.0, -9.81, 0.0]},
         )
         snapshot = self.step.context_specs
         snapshot["soft"]["density"] = -1
@@ -865,6 +867,228 @@ class TestMixedHexSolverStep(unittest.TestCase):
                 self.step(positions, positions, ("soft",), previous_positions=positions, history=history)
         with self.assertRaisesRegex(ValueError, "fixed_positions"):
             self.step(positions, positions, ("soft",), previous_positions=positions, fixed_positions=positions)
+
+    def _seven_mode_step(self, network):
+        step = MixedHexSolverStep(
+            self.rest, self.fixed, network=network, time_step=self.dt, gravity=self.gravity, target_modes=7
+        )
+        self.addCleanup(step.close)
+        for name, spec in self.specs.items():
+            step.register_context(name, **spec)
+        return step
+
+    def test_target_modes_must_match_the_network(self):
+        """Reject a network whose mode count or state width disagrees with the step, and invalid mode counts."""
+        with self.assertRaisesRegex(ValueError, "schema"):
+            MixedHexSolverStep(self.rest, self.fixed, network=self.network, time_step=self.dt, target_modes=7)
+        seven = make_network(self.rest.cell_counts, target_modes=7)
+        with self.assertRaisesRegex(ValueError, "schema"):
+            MixedHexSolverStep(self.rest, self.fixed, network=seven, time_step=self.dt)
+        wide = IntrinsicSolverNetwork(
+            self.rest.cell_counts, features.state_feature_dim(7), hidden_dim=16, edge_hidden_dim=8
+        )
+        with self.assertRaisesRegex(ValueError, "schema"):
+            MixedHexSolverStep(self.rest, self.fixed, network=wide, time_step=self.dt, target_modes=7)
+        for bad in (5, 1, True, "7"):
+            with self.subTest(target_modes=bad), self.assertRaisesRegex(ValueError, "target_modes"):
+                MixedHexSolverStep(self.rest, self.fixed, network=seven, time_step=self.dt, target_modes=bad)
+        step = self._seven_mode_step(seven)
+        self.assertEqual((step.target_modes, step.network.target_modes), (7, 7))
+
+    def test_seven_mode_forward_shapes_energy_and_history(self):
+        """Run the seven-mode mixed step on the tiny grid: [B, C, 3, 7] blocks, finite fused positions,
+        an energy that energy() reproduces exactly and a history that round-trips through forward."""
+        network = make_network(self.rest.cell_counts, target_modes=7, contact_tokens=True)
+        self.assertEqual(
+            network.node_encoder[0].in_features, 21 + features.state_feature_dim(7) + features.CONTACT_FEATURE_DIM
+        )
+        step = self._seven_mode_step(network)
+        ids = ("soft", "stiff")
+        positions, target, previous = self._batch(ids)
+        pins = positions[:, self.fixed].clone()
+        cells, h = self.cell_count, self.rest.cell_size
+        inputs = step.prepare_inputs(positions, target, ids, previous_positions=previous)
+        self.assertEqual(inputs.local_axes.shape, (2, cells, 3, 7))
+        self.assertEqual(inputs.state_features.shape, (2, cells, 121))
+        self.assertEqual(inputs.axis_gradient_world.shape, (2, cells, 3, 7))
+        self.assertEqual(inputs.contact_tokens.shape[:2], (2, cells))
+        corners = step.cell_corner_indices
+        vectors = hex_modes.mode_vectors(positions / h, corners, 1.0)
+        torch.testing.assert_close(inputs.frames @ inputs.local_axes, vectors, rtol=0, atol=2e-6)
+        self.assertGreater(vectors[..., 3:].abs().max().item(), 1e-5, "the fixture warps its cells")
+        expected_frames = closest_proper_rotations(
+            vectors[..., :3], reference_rotation(positions / h, step.reference_corners)
+        ).frames
+        torch.testing.assert_close(inputs.frames, expected_frames, rtol=0, atol=0)
+        offset = inputs.frames.transpose(-1, -2) @ (hex_modes.mode_vectors(target / h, corners, 1.0) - vectors)
+        torch.testing.assert_close(inputs.state_features[..., :21], offset.flatten(-2), rtol=1e-6, atol=1e-6)
+        torch.testing.assert_close(inputs.state_features[..., 63:105], torch.zeros(2, cells, 42), rtol=0, atol=0)
+        torch.testing.assert_close(inputs.state_features[..., 120], torch.zeros(2, cells), rtol=0, atol=0)
+        # The gradient feature is the seven-mode adjoint projection: affine columns match the three-mode step.
+        reference = self.step.prepare_inputs(positions, target, ids, previous_positions=previous)
+        scale = reference.axis_gradient_world.abs().max().item()
+        torch.testing.assert_close(
+            inputs.axis_gradient_world[..., :3], reference.axis_gradient_world, rtol=1e-5, atol=1e-5 * scale
+        )
+        self.assertGreater(inputs.axis_gradient_world[..., 3:].abs().max().item(), 0)
+        torch.testing.assert_close(inputs.position_gradient, reference.position_gradient, rtol=1e-6, atol=1e-6)
+
+        output = step(positions, target, ids, previous_positions=previous, fixed_positions=pins)
+        self.assertEqual(output.local_target_axes.shape, (2, cells, 3, 7))
+        self.assertEqual(output.axis_correction.shape, (2, cells, 3, 7))
+        self.assertEqual(output.achieved_axis_update_world.shape, (2, cells, 3, 7))
+        self.assertEqual(output.step_size.shape, (2, cells))
+        self.assertTrue(torch.isfinite(output.positions).all())
+        torch.testing.assert_close(output.positions[:, self.fixed], pins, rtol=0, atol=0)
+        self.assertGreater((output.positions.detach() - positions).abs().max().item(), 0)
+        energy = step.energy(output.positions.detach(), target, ids, previous_positions=previous)
+        torch.testing.assert_close(energy.total, output.loss.total.detach(), rtol=0, atol=0)
+        achieved = hex_modes.mode_vectors(output.positions.detach() / h, corners, 1.0) - vectors
+        torch.testing.assert_close(output.achieved_axis_update_world, achieved, rtol=0, atol=2e-6)
+        self.assertGreater(output.achieved_axis_update_world[..., 3:].abs().max().item(), 0)
+        output.loss.total.sum().backward()
+        gradient = network.correction_head.weight.grad
+        warping_rows = torch.arange(21).reshape(3, 7)[:, 3:].flatten()
+        self.assertTrue(torch.isfinite(gradient).all())
+        self.assertGreater(gradient[warping_rows].abs().sum().item(), 0)
+        for name, parameter in network.named_parameters():
+            self.assertIsNotNone(parameter.grad, name)
+        history = OptimizerHistory(
+            output.axis_gradient_world, output.achieved_axis_update_world, torch.tensor([True, False])
+        )
+        second = step.prepare_inputs(
+            output.positions.detach(), target, ids, previous_positions=previous, history=history
+        )
+        torch.testing.assert_close(second.state_features[:, :, 120], torch.tensor([[1.0] * cells, [0.0] * cells]))
+        self.assertGreater(second.state_features[0, :, 84:105].abs().max().item(), 0)
+        torch.testing.assert_close(second.state_features[1, :, 63:105], torch.zeros(cells, 42), rtol=0, atol=0)
+        legacy = OptimizerHistory(torch.zeros(2, cells, 3, 3), torch.zeros(2, cells, 3, 3), torch.tensor([True, True]))
+        with self.assertRaisesRegex(ValueError, r"\[B, C, 3, 7\]"):
+            step.prepare_inputs(positions, target, ids, previous_positions=previous, history=legacy)
+        # prepare() fuses a seven-mode zero increment and yields the same candidate as the three-mode step.
+        payload = step.prepare("soft", self.x, self.velocity, forces=self.forces)
+        reference_payload = self.step.prepare("soft", self.x, self.velocity, forces=self.forces)
+        torch.testing.assert_close(payload["candidate"], reference_payload["candidate"], rtol=0, atol=0)
+
+    def test_seven_modes_reproduce_three_modes_for_affine_only_targets(self):
+        """Match the three-mode step when the warping outputs are zero: identical zero-increment fusions and
+        1e-6 agreement for a hand-set affine increment fed through both fusions."""
+        three_network = IntrinsicSolverNetwork(
+            self.rest.cell_counts, features.STATE_FEATURE_DIM, hidden_dim=16, edge_hidden_dim=8
+        )
+        seven_network = IntrinsicSolverNetwork(
+            self.rest.cell_counts, features.state_feature_dim(7), target_modes=7, hidden_dim=16, edge_hidden_dim=8
+        )
+        three = MixedHexSolverStep(self.rest, self.fixed, network=three_network, time_step=self.dt)
+        self.addCleanup(three.close)
+        seven = MixedHexSolverStep(self.rest, self.fixed, network=seven_network, time_step=self.dt, target_modes=7)
+        self.addCleanup(seven.close)
+        for step in (three, seven):
+            for name, spec in self.specs.items():
+                step.register_context(name, **spec)
+        ids = ("soft", "stiff")
+        positions, target, previous = self._batch(ids)
+        pins = positions[:, self.fixed] + torch.tensor([0.002, -0.001, 0.0015])
+        # Zero-initialised heads: targets equal the inputs, so both steps fuse a zero increment with displaced pins.
+        a = three(positions, target, ids, previous_positions=previous, fixed_positions=pins)
+        b = seven(positions, target, ids, previous_positions=previous, fixed_positions=pins)
+        self.assertGreater((a.positions - positions).abs().max().item(), 1e-4, "the displaced pins move corners")
+        torch.testing.assert_close(b.positions, a.positions, rtol=0, atol=0)
+        torch.testing.assert_close(b.loss.total, a.loss.total, rtol=0, atol=0)
+        torch.testing.assert_close(b.frames, a.frames, rtol=0, atol=0)
+        # A hand-set affine-only local increment through the whole update path of both steps.
+        delta = 0.01 * torch.randn((2, self.cell_count, 3, 3), generator=torch.Generator().manual_seed(4))
+
+        def affine_only(local_axes, state_features, edge_features, conditioning, **kwargs):
+            correction = torch.zeros_like(local_axes)
+            correction[..., :3] = delta
+            return IntrinsicSolverOutput(local_axes + correction, correction, torch.ones(local_axes.shape[:2]))
+
+        with patch.object(three_network, "forward", affine_only), patch.object(seven_network, "forward", affine_only):
+            a = three(positions, target, ids, previous_positions=previous, fixed_positions=pins)
+            b = seven(positions, target, ids, previous_positions=previous, fixed_positions=pins)
+        self.assertGreater((a.positions - positions).abs().max().item(), 1e-3, "the increment moves the corners")
+        torch.testing.assert_close(b.positions, a.positions, rtol=0, atol=1e-6)
+        torch.testing.assert_close(b.loss.total, a.loss.total, rtol=1e-5, atol=1e-9)
+        # ... and directly through the two shared unit-grid fusions with the same world increment.
+        h = self.rest.cell_size
+        world = a.frames @ delta
+        padded = torch.zeros((2, self.cell_count, 3, 7))
+        padded[..., :3] = world
+        torch.testing.assert_close(
+            seven._fusion.fuse(positions / h, padded, pins / h),
+            three._fusion.fuse(positions / h, world, pins / h),
+            rtol=0,
+            atol=1e-6,
+        )
+
+    def test_per_context_gravity_drives_prediction_conditioning_predictor_and_specs(self):
+        """Give every context its own gravity: inertial prediction, conditioning channel, rigid predictor
+        and context_specs follow it; None falls back to the step's constructor gravity."""
+        rest = generate_cuboid((2, 1, 1), cell_size=0.025)
+        fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == 0)
+        h, dt = rest.cell_size, 1.0 / 300.0
+        network = make_network(rest.cell_counts)
+        step = MixedHexSolverStep(rest, fixed, network=network, time_step=dt, gravity=(0.0, -9.81, 0.0))
+        self.addCleanup(step.close)
+        spec = self.specs["soft"]
+        gravities = {"earth": (0.0, -9.81, 0.0), "heavy": (0.0, -30.0, 0.0), "tilted": (1.0, -2.0, 0.5)}
+        step.register_context("earth", **spec)
+        step.register_context("heavy", **spec, gravity=(0.0, -30.0, 0.0))
+        step.register_context("tilted", **spec, gravity=torch.tensor([1.0, -2.0, 0.5]))
+        specs = step.context_specs
+        for name, gravity in gravities.items():
+            self.assertEqual(specs[name]["gravity"], gravity, name)
+            self.assertTrue(all(isinstance(value, float) for value in specs[name]["gravity"]), name)
+        self.assertEqual(set(specs["heavy"]), {"lame_lambda", "lame_mu", "density", "damping", "gravity"})
+        # A reported specification rebuilds an identical context.
+        step.register_context("rebuilt", **specs["heavy"])
+        self.assertEqual(step.context_specs["rebuilt"], specs["heavy"])
+        ids = tuple(gravities)
+        x = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)[None].repeat(len(ids), 1, 1)
+        inputs = step.prepare_inputs(x, x, ids, previous_positions=x)
+        channel = features.CONDITIONING_CHANNELS.index("log1p_gravity_ratio")
+        material = torch.tensor([[spec["lame_lambda"], spec["lame_mu"], spec["density"], 0.0]], dtype=torch.float32)
+        expected = torch.stack(
+            [features.conditioning_channels(*material.unbind(-1), h, dt, gravity)[0] for gravity in gravities.values()]
+        )
+        torch.testing.assert_close(inputs.conditioning[:, 0], expected, rtol=0, atol=0)
+        self.assertEqual(inputs.conditioning[:, 0, channel].unique().numel(), 3)
+        others = [index for index in range(features.CONDITIONING_DIM) if index != channel]
+        torch.testing.assert_close(
+            inputs.conditioning[1:, :, others], inputs.conditioning[:1, :, others].expand(2, -1, -1), rtol=0, atol=0
+        )
+        # The single-material step at the same gravity forms the same channel bit for bit.
+        single = LearnedHexSolverStep(rest, fixed, **spec, time_step=dt, gravity=(0.0, -30.0, 0.0), network=network)
+        torch.testing.assert_close(inputs.conditioning[1, :, channel], single.conditioning[:, channel], rtol=0, atol=0)
+        # prepare() adds the context's g dt^2 to the inertial prediction and drives the predictor with it.
+        velocity = torch.zeros_like(x[0])
+        payloads = {name: step.prepare(name, x[0], velocity) for name in ids}
+        for name, gravity in gravities.items():
+            drop = torch.tensor(gravity, dtype=torch.float32) * dt**2
+            torch.testing.assert_close(
+                payloads[name]["inertial_prediction"] - x[0], drop.expand_as(x[0]), rtol=0, atol=1e-8, msg=name
+            )
+            model_gravity = step._contexts[name].predictor.model.gravity.numpy()[0]
+            np.testing.assert_allclose(model_gravity, np.array(gravity, dtype=np.float32), rtol=0, atol=0, err_msg=name)
+        heavy = build_newton_hex_model(rest, fixed, gravity=(0.0, -30.0, 0.0), **spec)
+        state = heavy.state()
+        state.particle_q.assign(x[0].numpy())
+        state.particle_qd.assign(velocity.numpy())
+        solver = SolverLearnedIntrinsic(
+            heavy, network=IntrinsicSolverNetwork(rest.cell_counts, features.STATE_FEATURE_DIM)
+        )
+        problem = solver.prepare_problem(state, dt)
+        torch.testing.assert_close(
+            payloads["heavy"]["inertial_prediction"], problem.inertial_prediction[0], rtol=2e-6, atol=5e-8
+        )
+        torch.testing.assert_close(
+            payloads["heavy"]["candidate"], solver.initialize_candidate(problem)[0], rtol=2e-6, atol=5e-8
+        )
+        for bad in ((0.0, -9.81), "g", (0.0, math.nan, 0.0), ((0.0, 1.0), 2.0)):
+            with self.subTest(gravity=bad), self.assertRaisesRegex(ValueError, "gravity"):
+                step.register_context(f"bad-{bad!r}", **spec, gravity=bad)
+        self.assertNotIn("bad-'g'", step.context_specs)
 
 
 class TestMixedHexSolverStepContact(unittest.TestCase):
