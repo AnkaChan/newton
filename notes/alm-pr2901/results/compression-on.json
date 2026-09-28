@@ -1,0 +1,70 @@
+{
+  "case": "compression",
+  "mode": "on",
+  "frames": 400,
+  "source_sha256": "8fc81ba0a5f25e8883b75a4a49941401aff5fffd17ad81b87d1c95b835d6ab14",
+  "checks_run": true,
+  "original_checks_passed": true,
+  "failures": [],
+  "runs": [
+    {
+      "name": "compression50",
+      "mode": "on",
+      "steps": 2000,
+      "dt": 0.0033333334140479565,
+      "iterations": 30,
+      "vertices": 343,
+      "tets": 1080,
+      "csv": "compression50-on.csv",
+      "initial_model_sha256": "b1206fcf9880c3d212db08c8b2b3f6899c68cbb9406b4979e0c863f866f5df9a",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.0012822948949123508,
+      "residual_rms_median_N": 0.001310766725759113,
+      "residual_rms_p95_N": 0.0015353340025056658,
+      "residual_rms_final_N": 0.001154614261896665,
+      "relative_to_initial_median": 0.0014455564537587545,
+      "minimum_det_F": 0.4496059172989514,
+      "maximum_free_speed_m_s": 2.5309292587596945,
+      "last_step_rho_pressure_min_max": [
+        224995.78125,
+        1349998.875
+      ]
+    },
+    {
+      "name": "compression90",
+      "mode": "on",
+      "steps": 2000,
+      "dt": 0.0033333334140479565,
+      "iterations": 30,
+      "vertices": 343,
+      "tets": 1080,
+      "csv": "compression90-on.csv",
+      "initial_model_sha256": "b1206fcf9880c3d212db08c8b2b3f6899c68cbb9406b4979e0c863f866f5df9a",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.001251271477719461,
+      "residual_rms_median_N": 0.001277236175326591,
+      "residual_rms_p95_N": 0.001527236402881331,
+      "residual_rms_final_N": 0.001060985475770344,
+      "relative_to_initial_median": 0.0011574742371206798,
+      "minimum_det_F": -0.7003845186063262,
+      "maximum_free_speed_m_s": 4.983417438099534,
+      "last_step_rho_pressure_min_max": [
+        224996.359375,
+        1349998.875
+      ]
+    }
+  ],
+  "instrumented_wall_seconds": 7.717946048825979,
+  "final_position_bounds": [
+    [
+      -2.7981434413959505e-07,
+      -4.7559458948853717e-07,
+      1.0
+    ],
+    [
+      0.3000001609325409,
+      0.3000001609325409,
+      1.3000022172927856
+    ]
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "pr": "https://github.com/newton-physics/newton/pull/2901",
+  "pr_sha": "c1d64b742085400f95b1595f8b3bb2c767a29560",
+  "solver_revision": "5ea785cd8808347a34f1d021d61b89af7c708c94",
+  "newton_source": "/home/horde/Code/Graphics/newton-working-copies/alm-dat-walkthrough/newton/__init__.py",
+  "warp_version": "1.17.0",
+  "device": "NVIDIA L40",
+  "validation": {
+    "gpu_matches_float64_numpy": true,
+    "energy_gradient_relative_error": 2.5406309935657e-10
+  },
+  "alm_mode": "pressure-only; rho_scale=1; persistent history; no inter-step resets",
+  "residual": "r = f_elastic(original law) + f_damping - m*(x-x_hat)/dt^2; x_hat is native float32 predictor, forces evaluated in float64; free vertices only",
+  "normalization": "RMS = ||r||_2/sqrt(number of free vertices); relative = ||r||_2/max(||r(x_start)||_2,1e-12 N)",
+  "measurement": "Every physical solver.step, including each frame substep. Each mode follows its own continuous trajectory. Equal iteration counts; instrumented wall time is not a speed benchmark."
+}

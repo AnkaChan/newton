@@ -1,0 +1,38 @@
+[
+  {
+    "case": "beam_extension",
+    "alm": false,
+    "frames": 4,
+    "positions_velocities_bitwise_equal": true
+  },
+  {
+    "case": "beam_extension",
+    "alm": true,
+    "frames": 4,
+    "positions_velocities_bitwise_equal": true
+  },
+  {
+    "case": "beam_stretch",
+    "alm": false,
+    "frames": 4,
+    "positions_velocities_bitwise_equal": true
+  },
+  {
+    "case": "beam_stretch",
+    "alm": true,
+    "frames": 4,
+    "positions_velocities_bitwise_equal": true
+  },
+  {
+    "case": "cube_compression",
+    "alm": false,
+    "frames": 152,
+    "positions_velocities_bitwise_equal": true
+  },
+  {
+    "case": "cube_compression",
+    "alm": true,
+    "frames": 152,
+    "positions_velocities_bitwise_equal": true
+  }
+]

@@ -1,0 +1,100 @@
+{
+  "case": "refinement",
+  "mode": "off",
+  "frames": 50,
+  "source_sha256": "1b8d93ceb961bd9af10e6776d13f24bc7bfb623900007dfd9840879cacb5eb91",
+  "checks_run": true,
+  "original_checks_passed": true,
+  "failures": [],
+  "runs": [
+    {
+      "name": "refinement_visual",
+      "mode": "off",
+      "steps": 300,
+      "dt": 0.0027777778450399637,
+      "iterations": 100,
+      "vertices": 525,
+      "tets": 1600,
+      "csv": "refinement_visual-off.csv",
+      "initial_model_sha256": "0a085664a27558c97305dd6c79aadd3e6e70c358cdc41b902e3fed7c5a6cb390",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.09509595555415622,
+      "residual_rms_median_N": 0.09566033821272725,
+      "residual_rms_p95_N": 0.10348850542956071,
+      "residual_rms_final_N": 0.10689462045070024,
+      "relative_to_initial_median": 0.056396812058874014,
+      "minimum_det_F": 0.9985045108861165,
+      "maximum_free_speed_m_s": 0.29410924922611964
+    },
+    {
+      "name": "refinement_coarse",
+      "mode": "off",
+      "steps": 900,
+      "dt": 0.0027777778450399637,
+      "iterations": 50,
+      "vertices": 99,
+      "tets": 200,
+      "csv": "refinement_coarse-off.csv",
+      "initial_model_sha256": "7b98767a9fdd3585a3874dbc720964171a64c16dbde1bc7147bfece9c46ca129",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.13857976634739638,
+      "residual_rms_median_N": 0.14447539864861814,
+      "residual_rms_p95_N": 0.17786670715128403,
+      "residual_rms_final_N": 0.01292514197326793,
+      "relative_to_initial_median": 0.29059276438494475,
+      "minimum_det_F": 0.9999989544691946,
+      "maximum_free_speed_m_s": 0.4059970559107258
+    },
+    {
+      "name": "refinement_medium",
+      "mode": "off",
+      "steps": 900,
+      "dt": 0.0027777778450399637,
+      "iterations": 100,
+      "vertices": 525,
+      "tets": 1600,
+      "csv": "refinement_medium-off.csv",
+      "initial_model_sha256": "0a085664a27558c97305dd6c79aadd3e6e70c358cdc41b902e3fed7c5a6cb390",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.08556413653782219,
+      "residual_rms_median_N": 0.09292186228791374,
+      "residual_rms_p95_N": 0.10379498397638856,
+      "residual_rms_final_N": 0.05095233765117066,
+      "relative_to_initial_median": 1.9247541102446712,
+      "minimum_det_F": 0.9984878320415955,
+      "maximum_free_speed_m_s": 0.29410924922611964
+    },
+    {
+      "name": "refinement_fine",
+      "mode": "off",
+      "steps": 900,
+      "dt": 0.0027777778450399637,
+      "iterations": 200,
+      "vertices": 3321,
+      "tets": 12800,
+      "csv": "refinement_fine-off.csv",
+      "initial_model_sha256": "aee1c81535e579936aa3ff2e54931f3d07afa161c69303adf9231675244694b1",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.06729621732711524,
+      "residual_rms_median_N": 0.06934045604173775,
+      "residual_rms_p95_N": 0.07309665277011759,
+      "residual_rms_final_N": 0.058656034458611,
+      "relative_to_initial_median": 1.3511027292482005,
+      "minimum_det_F": 0.9987880662233855,
+      "maximum_free_speed_m_s": 0.27830910635830874
+    }
+  ],
+  "instrumented_wall_seconds": 24.817147348076105,
+  "final_position_bounds": [
+    [
+      0.0,
+      0.0,
+      1.9328538179397583
+    ],
+    [
+      0.20000000298023224,
+      0.20000000298023224,
+      3.0
+    ]
+  ]
+}
