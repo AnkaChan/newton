@@ -15,12 +15,23 @@ files it references, and emits ONE offline HTML file with:
 
 Usage:
     python build_walkthrough_html.py --md docs/review.md [--out review.html]
-        [--root <repo-root>] [--embed extra/file.py ...] [--title "..."]
+        [--root <repo-root>] [--embed extra/file.py ...] [--title "..."] [--math]
 
 Source files are auto-discovered: every ``*.py:<line>`` reference in the
 Markdown is resolved against --root (direct relative path first, then a
 unique-basename match via ``git ls-files``). Add --embed for files you want
 browsable that the text never references by line.
+
+``--math`` (opt-in) turns on LaTeX. TeX spans in prose, bullets, tables and
+headings -- ``$...$`` and backslash-paren inline, ``$$...$$`` and
+backslash-bracket display -- are swapped for placeholders before the inline
+formatter runs and restored afterwards, so underscores, asterisks and backticks
+inside a formula stay literal and ``< > &`` are HTML-escaped for MathJax to read
+back. Inline code wins over math (a ``$`` inside backticks is code), a
+backslash-escaped dollar never opens a span, and code excerpts are never touched. The page then loads
+MathJax 3 (tex-chtml) from the jsdelivr CDN, so a math page needs network
+access to render formulas. Without the flag the output is byte-identical to the
+math-free generator.
 """
 
 from __future__ import annotations
@@ -35,6 +46,14 @@ import sys
 
 FILE_REF = re.compile(r"\b([\w./-]+\.py):(\d+)(?:-(\d+))?\b")
 CAPTION = re.compile(r"^\(`([\w./-]+\.py):([\d,\s-]+)`(?:,?\s*(.*?))?\)$")
+# --math only. Alternatives 1-2 are inline code (kept verbatim so a $ inside
+# backticks stays code); the rest are TeX spans: $$..$$, \[..\], \(..\) and
+# $..$ with no whitespace inside the delimiters and no backslash before the
+# opening dollar (\$ stays a literal dollar, MathJax processEscapes renders it).
+MATH_SPAN = re.compile(
+    r"``.+?``|`[^`]+`|\$\$.+?\$\$|\\\[.+?\\\]|\\\(.+?\\\)|(?<!\\)\$(?!\s)(?:[^$\\]|\\.)+?(?<!\s)\$",
+    re.S,
+)
 BUILD_WARNINGS: list[str] = []
 
 
@@ -80,9 +99,11 @@ class Resolver:
 
 
 class Builder:
-    def __init__(self, resolver: Resolver):
+    def __init__(self, resolver: Resolver, math: bool = False):
         self.rz = resolver
         self.used_files: set[str] = set()
+        self.math = math
+        self.math_spans = 0
 
     # ---- inline formatting -------------------------------------------------
     def linkify_ref(self, m: re.Match) -> str:
@@ -98,6 +119,12 @@ class Builder:
         return FILE_REF.sub(self.linkify_ref, s)
 
     def inline(self, s: str) -> str:
+        if self.math:
+            s, stash = self._stash_math(s)
+            return self._restore_math(self._inline_plain(s), stash)
+        return self._inline_plain(s)
+
+    def _inline_plain(self, s: str) -> str:
         s = esc(s)
         out, pos = [], 0
         for m in re.finditer(r"``(.+?)``|`([^`]+)`", s):
@@ -107,6 +134,23 @@ class Builder:
             pos = m.end()
         out.append(self._bold(s[pos:]))
         return "".join(out)
+
+    # ---- math (--math only) ------------------------------------------------
+    def _stash_math(self, s: str) -> tuple[str, list[str]]:
+        """Swap TeX spans for NUL-delimited placeholders; inline code is left in place."""
+        stash: list[str] = []
+
+        def keep(m: re.Match) -> str:
+            if m.group(0).startswith("`"):
+                return m.group(0)
+            stash.append(m.group(0))
+            return f"\x00{len(stash) - 1}\x00"
+
+        return MATH_SPAN.sub(keep, s), stash
+
+    def _restore_math(self, s: str, stash: list[str]) -> str:
+        self.math_spans += len(stash)
+        return re.sub(r"\x00(\d+)\x00", lambda m: esc(stash[int(m.group(1))]), s)
 
     # ---- code excerpts -----------------------------------------------------
     @staticmethod
@@ -316,6 +360,11 @@ def main() -> int:
     ap.add_argument("--prefer", nargs="*", default=[], help="path prefixes that win basename ambiguities")
     ap.add_argument("--comments", default=None, help="comments sidecar JSON (default: <md>.comments.json)")
     ap.add_argument("--title", default=None, help="override page title")
+    ap.add_argument(
+        "--math",
+        action="store_true",
+        help="render LaTeX with MathJax 3 (jsdelivr CDN); protects $..$, $$..$$, \\(..\\), \\[..\\] from the formatter",
+    )
     args = ap.parse_args()
 
     md_path = pathlib.Path(args.md).resolve()
@@ -336,7 +385,7 @@ def main() -> int:
             root = md_path.parent.parent
     out_path = pathlib.Path(args.out) if args.out else md_path.with_suffix(".html")
 
-    builder = Builder(Resolver(root, args.prefer))
+    builder = Builder(Resolver(root, args.prefer), math=args.math)
     body, toc, md_title = builder.build_body(md_path.read_text(), root)
     for extra in args.embed:
         p = builder.rz.resolve(extra)
@@ -355,6 +404,7 @@ def main() -> int:
     page = page.replace("/*BODY*/", body)
     page = page.replace("/*SOURCES*/", json.dumps(sources))
     page = page.replace("/*ROOT*/", str(root))
+    page = page.replace("/*MATHJAX*/", MATHJAX_HEAD if args.math else "")
     comments_path = pathlib.Path(args.comments) if args.comments else md_path.with_suffix(".comments.json")
     comments = json.loads(comments_path.read_text()) if comments_path.exists() else {"inbox": [], "threads": []}
     page = page.replace("/*COMMENTS*/", json.dumps(comments))
@@ -363,8 +413,9 @@ def main() -> int:
     problems = validate(out_path)
     n_code = page.count('<figure class="code"')
     n_ref = page.count('class="ref"')
+    math_note = f", {builder.math_spans} math spans (MathJax)" if args.math else ""
     print(f"wrote {out_path} ({out_path.stat().st_size / 1024:.0f} KB): "
-          f"{n_code} excerpts, {n_ref} code links, {len(sources)} sources embedded")
+          f"{n_code} excerpts, {n_ref} code links, {len(sources)} sources embedded{math_note}")
     if problems:
         print("VALIDATION PROBLEMS:", problems, file=sys.stderr)
         return 1
@@ -375,6 +426,16 @@ def main() -> int:
         return 1
     return 0
 
+
+# Injected at /*MATHJAX*/ (between </style> and </head>) only with --math.
+# Code excerpts and the source viewer (table.pysrc) are excluded from typesetting.
+MATHJAX_HEAD = r"""
+<script>
+window.MathJax={tex:{inlineMath:[['$','$'],['\\(','\\)']],displayMath:[['$$','$$'],['\\[','\\]']],processEscapes:true},
+options:{ignoreHtmlClass:'pysrc|tex2jax_ignore',skipHtmlTags:['script','noscript','style','textarea','pre','code']}};
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+"""
 
 TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -455,7 +516,7 @@ padding:3px 12px;cursor:pointer}
 #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#22304a;color:var(--acc);
 padding:8px 18px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:99}
 #toast.show{opacity:1}
-</style></head><body>
+</style>/*MATHJAX*/</head><body>
 <nav id="side"><h1>/*TITLE*/</h1>/*TOC*/</nav>
 <main id="main">/*BODY*/</main>
 <div id="viewer"><div id="vhead"><span id="vtitle"></span>
