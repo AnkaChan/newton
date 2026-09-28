@@ -1,0 +1,93 @@
+{
+  "newton_revision": "60407c40f184c0cb4f38b139f181b03812e9bdf3",
+  "solver_steps_total": 36000,
+  "cases": [
+    {
+      "stiffness": 1000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "previous_off_mean_relative_change": {
+        "stretch_score": 0.006067433673918821,
+        "shear_score": 0.008776173320132585,
+        "bend_score": 0.005170260768697199
+      },
+      "previous_off_first_particle_difference_frame": 8,
+      "previous_off_first_difference_m": 2.9802322387695312e-08
+    },
+    {
+      "stiffness": 10000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "previous_off_mean_relative_change": {
+        "stretch_score": 0.0008377703392885572,
+        "shear_score": 0.0013803621755830164,
+        "bend_score": -0.00019614095003872567
+      },
+      "previous_off_first_particle_difference_frame": 6,
+      "previous_off_first_difference_m": 5.960464477539063e-08
+    },
+    {
+      "stiffness": 100000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "previous_off_mean_relative_change": {
+        "stretch_score": -0.0002252448675746921,
+        "shear_score": 0.0002666429443141105,
+        "bend_score": -0.000671492151908204
+      },
+      "previous_off_first_particle_difference_frame": 5,
+      "previous_off_first_difference_m": 1.4901161193847656e-08
+    },
+    {
+      "stiffness": 1000000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "previous_off_mean_relative_change": {
+        "stretch_score": 0.00040567612275510534,
+        "shear_score": 0.0002532431254498313,
+        "bend_score": 0.0005266117568354378
+      },
+      "previous_off_first_particle_difference_frame": 6,
+      "previous_off_first_difference_m": 2.9802322387695312e-08
+    },
+    {
+      "stiffness": 10000000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "previous_off_mean_relative_change": {
+        "stretch_score": 0.000821069302755939,
+        "shear_score": 0.0035663882803860236,
+        "bend_score": 0.009954410623266963
+      },
+      "previous_off_first_particle_difference_frame": 6,
+      "previous_off_first_difference_m": 7.450580596923828e-09
+    }
+  ],
+  "tests": {
+    "count": 178,
+    "result": "OK",
+    "duration_s": 333.65,
+    "modules": [
+      "newton.tests.test_particle_alm_kernels",
+      "newton.tests.test_particle_alm_membrane",
+      "newton.tests.test_solver_vbd_alm",
+      "newton.tests.test_solver_vbd"
+    ],
+    "devices": [
+      "cpu",
+      "cuda:0"
+    ]
+  },
+  "precommit": "passed",
+  "note": "Historical off trajectories are not bitwise identical; tiny initial differences grow in the contact simulation. Both current comparison modes use the same revision, geometry, and motion. These are geometric deformation scores, not equilibrium residuals."
+}

@@ -1,0 +1,8 @@
+{
+  "video_duration_s": 30,
+  "chapter_seek_works": true,
+  "all_local_links_exist": true,
+  "all_images_loaded": true,
+  "desktop_and_mobile_no_overflow": true,
+  "javascript_errors": []
+}

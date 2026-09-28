@@ -54,6 +54,25 @@ def main(output=OUT):
             "<strong>This historical run used bending ALM only.</strong> Triangle membrane elasticity "
             "was unchanged in both panels. "
         )
+    implementation = ""
+    if triangle_alm:
+        implementation = """<details><summary>What changed in the implementation</summary>
+<p>For each triangle, the existing Neo-Hookean energy is quadratic in two scalar rows:
+<code>C_stretch = ||F||</code> and <code>C_area = J - (1 + mu/K)</code>, where
+<code>J = sqrt(det(FᵀF))</code> and <code>K = tri_ka + tri_ke</code>.
+Their stiffnesses are <code>mu = tri_ke</code> and <code>K</code>.
+Both rows are invariant under rigid rotation, so retained history has no world-space orientation.</p>
+<p>For either row, the transmitted stress is <code>t = k*rho/(k+rho)*C + k/(k+rho)*lambda</code>.
+Each full color sweep updates <code>lambda = t</code>. At a fixed point this recovers the original
+material stress <code>k*C</code>. The implementation includes the derivative of the normalized stretch gradient.</p>
+<p>Bending already had ALM, but its inertia-based rho could be far below material stiffness on light,
+small hinges. Ten updates then transmitted only 0.003% of the expected moment in a regression fixture.
+Triangle and bending rows now use <code>rho = max(rho_inertia, 9*k)</code>, following the existing spring policy.
+This limits fixed-pose stress retention to 10% per update before float32 saturation. It does not guarantee
+faster convergence of the coupled position solve.</p>
+<p>Validation: 178 ALM and VBD tests passed on CPU/CUDA, including energy derivatives, retained-history
+rotation, loaded-triangle response, selective reset, tile agreement, and CUDA graph replay. Repository checks passed.
+The tetrahedral SVD replacement and ALM contact remain unimplemented.</p></details>"""
 
     segments = out / "segments.txt"
     segments.write_text("".join(f"file 'ke{value}_comparison.mp4'\n" for value in STIFFNESSES))
@@ -120,6 +139,12 @@ def main(output=OUT):
         rows.append(f"<tr><td>{stiffness:.0e}</td>" + "".join(f"<td>{x}</td>" for x in values) + "</tr>")
         summaries.append(summary)
     (out / "summary.json").write_text(json.dumps(summaries, indent=2) + "\n")
+    result_note = ""
+    if triangle_alm:
+        result_note = (
+            "<p>The earlier large bending softening is absent. Differences from ALM off are modest; "
+            "the high-stiffness stretch plateau and growth in bending deformation remain.</p>"
+        )
     buttons = "".join(f'<button onclick="jump({i * 6})">tri_ke {s:.0e}</button>' for i, s in enumerate(STIFFNESSES))
     downloads = "".join(
         f'<tr><td>{s:.0e}</td><td><a href="ke{s}_comparison.mp4">Side-by-side MP4</a></td>'
@@ -151,10 +176,12 @@ and saved pin-motion notes; this is not an exact replay of the original scene fi
 <p class="muted">Left: ALM off. Right: ALM on ({scope}, rho scale 1.0, history retained).
 Fixed camera and synchronized playback. Each stiffness occupies 6 seconds of the 30-second video.</p>
 <p><a href="alm_bag_stiffness_comparison.mp4">Open or download the full MP4</a></p>
+{implementation}
 <h2>Deformation across the stiffness sweep</h2>
 <p>At <code>tri_ke = 1e5</code>, mean bend deformation changes from {summaries[2]["bend_score"]["off"]:.4f} to {summaries[2]["bend_score"]["on"]:.4f} rad
-({summaries[2]["bend_score"]["on_over_off"]:.1f}x), while mean stretch changes from {100 * summaries[2]["stretch_score"]["off"]:.3f}%
+({summaries[2]["bend_score"]["on_over_off"]:.2f}x), while mean stretch changes from {100 * summaries[2]["stretch_score"]["off"]:.3f}%
 to {100 * summaries[2]["stretch_score"]["on"]:.3f}%.</p>
+{result_note}
 <p>These are geometric deformation metrics, <strong>not force residuals or convergence errors</strong>.
 Reduced stretch alone does not establish a better solution: changes in bending and contact can redistribute deformation.</p>
 <img src="mean_deformation.svg" alt="Mean stretch, triangle angle change, and bend, comparing ALM off and on over the five triangle stiffnesses">
@@ -174,7 +201,7 @@ Solver source is <code>{first["newton_revision"][:12]}</code>; both modes run on
 Contact uses the existing self-contact/DAT and legacy rigid contact settings from the parent, identically in both modes.
 There are no spring or tetrahedral elements in this model.</p>
 <p>All 36,000 solver steps completed with finite saved positions. Paired model hashes match, pins stay within 1 micrometer
-of the prescribed locations, and ALM bending multipliers become nonzero. This is an equal-iteration comparison; no GPU speed claim is made.</p>
+of the prescribed locations, and ALM histories become nonzero. This is an equal-iteration comparison; no GPU speed claim is made.</p>
 </details>
 <h2>Per-stiffness videos and raw data</h2><div class="scroll"><table><thead><tr><th>tri_ke</th><th>Video</th><th>Per-frame data</th><th>Settings / provenance</th></tr></thead>
 <tbody>{downloads}</tbody></table></div>

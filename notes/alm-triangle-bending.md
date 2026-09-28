@@ -96,6 +96,28 @@ reset, disabled storage, loaded-triangle analytic response, CPU/CUDA tile
 agreement, and captured replay with an in-graph reset. The small-hinge
 stress test and invalid triangle material checks fail on the preceding code.
 
-The earlier [bending-only bag comparison](alm-bag-wiggle/results/index.html)
-is preserved. New runs belong in a separate result directory so that
-the original measurement is not overwritten.
+All 178 tests in the ALM element, membrane, ALM solver, and general VBD suites
+passed on CPU/CUDA. Repository pre-commit checks passed.
+
+## Pinned-bag result
+
+The [local HTML and side-by-side video](alm-bag-wiggle/results-triangle-bending/index.html)
+compare ALM off with triangle-plus-bending ALM at revision `60407c40`. Both use
+10 substeps and 10 iterations, 360 frames at 60 fps, the same reconstructed
+May fixture, and unchanged contact settings. All 36,000 solver steps completed
+with finite saved states. The earlier
+[bending-only comparison](alm-bag-wiggle/results/index.html) is preserved.
+
+| Triangle stiffness | Mean stretch off | Mean stretch on | Mean bend off (rad) | Mean bend on (rad) |
+| --- | --- | --- | --- | --- |
+| 1e3 | 10.7540% | 9.9276% | 0.010860 | 0.010257 |
+| 1e4 | 1.4536% | 1.3569% | 0.008075 | 0.007596 |
+| 1e5 | 0.5618% | 0.5453% | 0.014873 | 0.014526 |
+| 1e6 | 0.5454% | 0.5372% | 0.044861 | 0.044611 |
+| 1e7 | 0.5578% | 0.5485% | 0.178796 | 0.173909 |
+
+The previous large bending softening is absent. The change relative to ALM off
+is modest: mean stretch decreases 1.5–7.7% and mean bend decreases 0.6–5.9%.
+The high-stiffness stretch plateau and growth in bend deformation remain.
+These are geometric deformation scores, not equilibrium residuals, and this
+single equal-iteration sweep does not establish a convergence or speed benefit.

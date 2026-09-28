@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pinned bag · ALM on / off</title><style>
+*{box-sizing:border-box}body{margin:0;background:#101823;color:#eaf0f7;font:16px/1.55 system-ui,sans-serif}
+main{max-width:1500px;margin:auto;padding:30px 24px}h1{font-size:32px;margin:0}h2{font-size:22px}
+p{max-width:1100px}a{color:#77dedd}.muted{color:#b7c6d8}.notice{border-left:4px solid #e7ae64;padding:10px 18px;background:#242a32}
+video{width:100%;background:#121925;border:1px solid #415165;border-radius:8px}nav{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}
+button{color:#eaf0f7;background:#253647;border:1px solid #617c96;padding:10px 18px;border-radius:6px;cursor:pointer}
+button:hover{background:#36546b}.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:10px;border-bottom:1px solid #364657}th:first-child,td:first-child{text-align:left}
+img{width:100%;background:white;border-radius:8px}code{color:#97dbde}details{margin-top:24px}
+@media(max-width:600px){main{padding:20px 12px}h1{font-size:26px}td,th{padding:7px;font-size:13px}}
+</style></head><body><main>
+<p class="muted">PINNED BAG RIGIDITY SWEEP · LOCAL COMPARISON</p><h1>ALM off / ALM on</h1>
+<p>Five stiffnesses, identical initial models and prescribed motion. Each pair runs for 6 seconds:
+1 second settling, then 5 seconds wiggling. Both use <strong>10 substeps &times; 10 iterations</strong> per frame at 60 fps.</p>
+<p class="notice"><strong>ALM now covers triangle stretch/area and dihedral bending.</strong> Triangle histories use objective scalar invariants; both triangle and bending rows use a material-based rho floor to limit stress lag. Contact and damping algorithms are identical in both panels. <a href="../../alm-triangle-bending.md">Implementation and derivation</a> · <a href="../results/index.html">Previous bending-only comparison</a>. The missing May fixture was reconstructed from its archived parent scene
+and saved pin-motion notes; this is not an exact replay of the original scene file.</p>
+<nav aria-label="Stiffness chapters"><button onclick="jump(0)">tri_ke 1e+03</button><button onclick="jump(6)">tri_ke 1e+04</button><button onclick="jump(12)">tri_ke 1e+05</button><button onclick="jump(18)">tri_ke 1e+06</button><button onclick="jump(24)">tri_ke 1e+07</button></nav>
+<video id="comparison" src="alm_bag_stiffness_comparison.mp4" poster="ke1000_frame180.png" controls muted playsinline preload="metadata"></video>
+<p class="muted">Left: ALM off. Right: ALM on (triangle membrane and dihedral bending, rho scale 1.0, history retained).
+Fixed camera and synchronized playback. Each stiffness occupies 6 seconds of the 30-second video.</p>
+<p><a href="alm_bag_stiffness_comparison.mp4">Open or download the full MP4</a></p>
+<details><summary>What changed in the implementation</summary>
+<p>For each triangle, the existing Neo-Hookean energy is quadratic in two scalar rows:
+<code>C_stretch = ||F||</code> and <code>C_area = J - (1 + mu/K)</code>, where
+<code>J = sqrt(det(FᵀF))</code> and <code>K = tri_ka + tri_ke</code>.
+Their stiffnesses are <code>mu = tri_ke</code> and <code>K</code>.
+Both rows are invariant under rigid rotation, so retained history has no world-space orientation.</p>
+<p>For either row, the transmitted stress is <code>t = k*rho/(k+rho)*C + k/(k+rho)*lambda</code>.
+Each full color sweep updates <code>lambda = t</code>. At a fixed point this recovers the original
+material stress <code>k*C</code>. The implementation includes the derivative of the normalized stretch gradient.</p>
+<p>Bending already had ALM, but its inertia-based rho could be far below material stiffness on light,
+small hinges. Ten updates then transmitted only 0.003% of the expected moment in a regression fixture.
+Triangle and bending rows now use <code>rho = max(rho_inertia, 9*k)</code>, following the existing spring policy.
+This limits fixed-pose stress retention to 10% per update before float32 saturation. It does not guarantee
+faster convergence of the coupled position solve.</p>
+<p>Validation: 178 ALM and VBD tests passed on CPU/CUDA, including energy derivatives, retained-history
+rotation, loaded-triangle response, selective reset, tile agreement, and CUDA graph replay. Repository checks passed.
+The tetrahedral SVD replacement and ALM contact remain unimplemented.</p></details>
+<h2>Deformation across the stiffness sweep</h2>
+<p>At <code>tri_ke = 1e5</code>, mean bend deformation changes from 0.0149 to 0.0145 rad
+(0.98x), while mean stretch changes from 0.562%
+to 0.545%.</p>
+<p>The earlier large bending softening is absent. Differences from ALM off are modest; the high-stiffness stretch plateau and growth in bending deformation remain.</p>
+<p>These are geometric deformation metrics, <strong>not force residuals or convergence errors</strong>.
+Reduced stretch alone does not establish a better solution: changes in bending and contact can redistribute deformation.</p>
+<img src="mean_deformation.svg" alt="Mean stretch, triangle angle change, and bend, comparing ALM off and on over the five triangle stiffnesses">
+<div class="scroll"><table><thead><tr><th>tri_ke</th><th>Stretch off %</th><th>Stretch on %</th><th>On/off</th>
+<th>Bend off rad</th><th>Bend on rad</th><th>On/off</th></tr></thead><tbody><tr><td>1e+03</td><td>10.7540</td><td>9.9276</td><td>0.92x</td><td>0.0109</td><td>0.0103</td><td>0.94x</td></tr><tr><td>1e+04</td><td>1.4536</td><td>1.3569</td><td>0.93x</td><td>0.0081</td><td>0.0076</td><td>0.94x</td></tr><tr><td>1e+05</td><td>0.5618</td><td>0.5453</td><td>0.97x</td><td>0.0149</td><td>0.0145</td><td>0.98x</td></tr><tr><td>1e+06</td><td>0.5454</td><td>0.5372</td><td>0.98x</td><td>0.0449</td><td>0.0446</td><td>0.99x</td></tr><tr><td>1e+07</td><td>0.5578</td><td>0.5485</td><td>0.98x</td><td>0.1788</td><td>0.1739</td><td>0.97x</td></tr></tbody></table></div>
+<p class="muted">Arithmetic means over 361 samples, including the initial rest state and the final state at 6 seconds.</p>
+<details open><summary>Settings and reconstruction</summary>
+<p><code>tri_ke = 1e3, 1e4, 1e5, 1e6, 1e7</code>; <code>tri_ka = 0.2 &times; tri_ke</code>;
+<code>edge_ke = 200</code>; triangle damping 0.1; bending damping 0.02; density 0.08; seed 42.</p>
+<p>The 0.22 &times; 0.14 &times; 0.32 m box bag has resolution 18, 1657 vertices,
+3240 triangles, 72 pinned rim vertices, and three rigid contents (bear mesh, cone, sphere).
+There is no ground or gripper. The rim moves along x with amplitude 0.07 m, frequency 0.85 Hz,
+and a 0.6-second linear ramp after the first second. Displacement and analytic velocity are sampled once per frame and applied before every substep.</p>
+<p>The parent source is <code>be3e604b4f77</code>, with only its USD import moved into the loading function.
+The wrapper removes the ground and omits the gripper, then applies the documented pins and schedule.
+Solver source is <code>60407c40f184</code>; both modes run on that same revision.
+Contact uses the existing self-contact/DAT and legacy rigid contact settings from the parent, identically in both modes.
+There are no spring or tetrahedral elements in this model.</p>
+<p>All 36,000 solver steps completed with finite saved positions. Paired model hashes match, pins stay within 1 micrometer
+of the prescribed locations, and ALM histories become nonzero. This is an equal-iteration comparison; no GPU speed claim is made.</p>
+</details>
+<h2>Per-stiffness videos and raw data</h2><div class="scroll"><table><thead><tr><th>tri_ke</th><th>Video</th><th>Per-frame data</th><th>Settings / provenance</th></tr></thead>
+<tbody><tr><td>1e+03</td><td><a href="ke1000_comparison.mp4">Side-by-side MP4</a></td><td><a href="ke1000_off.csv">Off CSV</a> · <a href="ke1000_on.csv">On CSV</a></td><td><a href="ke1000_off.json">Off metadata</a> · <a href="ke1000_on.json">On metadata</a></td></tr><tr><td>1e+04</td><td><a href="ke10000_comparison.mp4">Side-by-side MP4</a></td><td><a href="ke10000_off.csv">Off CSV</a> · <a href="ke10000_on.csv">On CSV</a></td><td><a href="ke10000_off.json">Off metadata</a> · <a href="ke10000_on.json">On metadata</a></td></tr><tr><td>1e+05</td><td><a href="ke100000_comparison.mp4">Side-by-side MP4</a></td><td><a href="ke100000_off.csv">Off CSV</a> · <a href="ke100000_on.csv">On CSV</a></td><td><a href="ke100000_off.json">Off metadata</a> · <a href="ke100000_on.json">On metadata</a></td></tr><tr><td>1e+06</td><td><a href="ke1000000_comparison.mp4">Side-by-side MP4</a></td><td><a href="ke1000000_off.csv">Off CSV</a> · <a href="ke1000000_on.csv">On CSV</a></td><td><a href="ke1000000_off.json">Off metadata</a> · <a href="ke1000000_on.json">On metadata</a></td></tr><tr><td>1e+07</td><td><a href="ke10000000_comparison.mp4">Side-by-side MP4</a></td><td><a href="ke10000000_off.csv">Off CSV</a> · <a href="ke10000000_on.csv">On CSV</a></td><td><a href="ke10000000_off.json">Off metadata</a> · <a href="ke10000000_on.json">On metadata</a></td></tr></tbody></table></div>
+<p><a href="../README.md">Reproduction commands and source notes</a> · <a href="summary.json">Summary JSON</a></p>
+</main><script>function jump(t){const v=document.getElementById('comparison');v.currentTime=t;v.play().catch(()=>{});}</script></body></html>
