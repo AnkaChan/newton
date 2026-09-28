@@ -1,0 +1,47 @@
+{
+  "case": "stretch",
+  "mode": "on",
+  "frames": 400,
+  "source_sha256": "c6cb6d2b3c2928f0b484d8315430e22e6779f4572c7194c140e3d06aedf1fc87",
+  "checks_run": true,
+  "original_checks_passed": true,
+  "failures": [],
+  "runs": [
+    {
+      "name": "stretch",
+      "mode": "on",
+      "steps": 2000,
+      "dt": 0.0033333334140479565,
+      "iterations": 20,
+      "vertices": 176,
+      "tets": 450,
+      "csv": "stretch-on.csv",
+      "initial_model_sha256": "6683e4b0f3d7c02a4d85d81960d2f8f05779290091890102984aaf37b8b60042",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.0013516900489042602,
+      "residual_rms_median_N": 0.0013776494181069426,
+      "residual_rms_p95_N": 0.0016030936285019435,
+      "residual_rms_final_N": 0.001495006304025608,
+      "relative_to_initial_median": 0.0005215714390706804,
+      "minimum_det_F": 0.9150099978664891,
+      "maximum_free_speed_m_s": 0.23783939333623483,
+      "last_step_rho_pressure_min_max": [
+        130201.84375,
+        1350001.5
+      ]
+    }
+  ],
+  "instrumented_wall_seconds": 2.5588549114763737,
+  "final_position_bounds": [
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      1.0,
+      0.15000000596046448,
+      1.149999976158142
+    ]
+  ]
+}

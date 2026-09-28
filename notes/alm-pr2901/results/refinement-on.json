@@ -1,0 +1,116 @@
+{
+  "case": "refinement",
+  "mode": "on",
+  "frames": 50,
+  "source_sha256": "1b8d93ceb961bd9af10e6776d13f24bc7bfb623900007dfd9840879cacb5eb91",
+  "checks_run": true,
+  "original_checks_passed": true,
+  "failures": [],
+  "runs": [
+    {
+      "name": "refinement_visual",
+      "mode": "on",
+      "steps": 300,
+      "dt": 0.0027777778450399637,
+      "iterations": 100,
+      "vertices": 525,
+      "tets": 1600,
+      "csv": "refinement_visual-on.csv",
+      "initial_model_sha256": "0a085664a27558c97305dd6c79aadd3e6e70c358cdc41b902e3fed7c5a6cb390",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.09541311164880255,
+      "residual_rms_median_N": 0.09563145443498514,
+      "residual_rms_p95_N": 0.10404798795767232,
+      "residual_rms_final_N": 0.1059418574559211,
+      "relative_to_initial_median": 0.05679122613167778,
+      "minimum_det_F": 0.9984920667514336,
+      "maximum_free_speed_m_s": 0.2940665099295625,
+      "last_step_rho_pressure_min_max": [
+        292850.4375,
+        1943998.5
+      ]
+    },
+    {
+      "name": "refinement_coarse",
+      "mode": "on",
+      "steps": 900,
+      "dt": 0.0027777778450399637,
+      "iterations": 50,
+      "vertices": 99,
+      "tets": 200,
+      "csv": "refinement_coarse-on.csv",
+      "initial_model_sha256": "7b98767a9fdd3585a3874dbc720964171a64c16dbde1bc7147bfece9c46ca129",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.1450631593715273,
+      "residual_rms_median_N": 0.14838392360370212,
+      "residual_rms_p95_N": 0.18576927962334747,
+      "residual_rms_final_N": 0.03903119214952111,
+      "relative_to_initial_median": 0.29497060249179885,
+      "minimum_det_F": 0.9999990197934668,
+      "maximum_free_speed_m_s": 0.40595421584295044,
+      "last_step_rho_pressure_min_max": [
+        1145895.75,
+        7775992.5
+      ]
+    },
+    {
+      "name": "refinement_medium",
+      "mode": "on",
+      "steps": 900,
+      "dt": 0.0027777778450399637,
+      "iterations": 100,
+      "vertices": 525,
+      "tets": 1600,
+      "csv": "refinement_medium-on.csv",
+      "initial_model_sha256": "0a085664a27558c97305dd6c79aadd3e6e70c358cdc41b902e3fed7c5a6cb390",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.08508449946054987,
+      "residual_rms_median_N": 0.09187410598619107,
+      "residual_rms_p95_N": 0.10387567482978412,
+      "residual_rms_final_N": 0.05461917561724281,
+      "relative_to_initial_median": 1.904459029493217,
+      "minimum_det_F": 0.9984876428197649,
+      "maximum_free_speed_m_s": 0.2940665099295625,
+      "last_step_rho_pressure_min_max": [
+        292498.46875,
+        1943998.5
+      ]
+    },
+    {
+      "name": "refinement_fine",
+      "mode": "on",
+      "steps": 900,
+      "dt": 0.0027777778450399637,
+      "iterations": 200,
+      "vertices": 3321,
+      "tets": 12800,
+      "csv": "refinement_fine-on.csv",
+      "initial_model_sha256": "aee1c81535e579936aa3ff2e54931f3d07afa161c69303adf9231675244694b1",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.06703141117008159,
+      "residual_rms_median_N": 0.06910174711764566,
+      "residual_rms_p95_N": 0.07288735563751521,
+      "residual_rms_final_N": 0.05965078733698009,
+      "relative_to_initial_median": 1.3452748270064854,
+      "minimum_det_F": 0.9987980791119746,
+      "maximum_free_speed_m_s": 0.2779657888919728,
+      "last_step_rho_pressure_min_max": [
+        72303.6640625,
+        486002.1875
+      ]
+    }
+  ],
+  "instrumented_wall_seconds": 27.62743080407381,
+  "final_position_bounds": [
+    [
+      0.0,
+      0.0,
+      1.9328597784042358
+    ],
+    [
+      0.20000000298023224,
+      0.20000000298023224,
+      3.0
+    ]
+  ]
+}

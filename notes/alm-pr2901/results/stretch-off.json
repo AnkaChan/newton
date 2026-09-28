@@ -1,0 +1,43 @@
+{
+  "case": "stretch",
+  "mode": "off",
+  "frames": 400,
+  "source_sha256": "c6cb6d2b3c2928f0b484d8315430e22e6779f4572c7194c140e3d06aedf1fc87",
+  "checks_run": true,
+  "original_checks_passed": true,
+  "failures": [],
+  "runs": [
+    {
+      "name": "stretch",
+      "mode": "off",
+      "steps": 2000,
+      "dt": 0.0033333334140479565,
+      "iterations": 20,
+      "vertices": 176,
+      "tets": 450,
+      "csv": "stretch-off.csv",
+      "initial_model_sha256": "6683e4b0f3d7c02a4d85d81960d2f8f05779290091890102984aaf37b8b60042",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.001240365454434678,
+      "residual_rms_median_N": 0.001258726605901009,
+      "residual_rms_p95_N": 0.0014405162680233216,
+      "residual_rms_final_N": 0.001370590779730051,
+      "relative_to_initial_median": 0.0005077746597698732,
+      "minimum_det_F": 0.9150143843983853,
+      "maximum_free_speed_m_s": 0.237839211720132
+    }
+  ],
+  "instrumented_wall_seconds": 2.2181023843586445,
+  "final_position_bounds": [
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      1.0,
+      0.15000000596046448,
+      1.149999976158142
+    ]
+  ]
+}

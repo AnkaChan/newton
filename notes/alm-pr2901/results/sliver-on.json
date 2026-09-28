@@ -1,0 +1,47 @@
+{
+  "case": "sliver",
+  "mode": "on",
+  "frames": 200,
+  "source_sha256": "a8715835247c29f94610737499b4503c8a127fae432e802a27cc80c364b2b2cc",
+  "checks_run": true,
+  "original_checks_passed": true,
+  "failures": [],
+  "runs": [
+    {
+      "name": "sliver",
+      "mode": "on",
+      "steps": 1200,
+      "dt": 0.0027777778450399637,
+      "iterations": 20,
+      "vertices": 99,
+      "tets": 200,
+      "csv": "sliver-on.csv",
+      "initial_model_sha256": "ae06c9e600a2be9af1ca1fdaf5b7afcf98b583a4142b190f25c03b5f0491312e",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 16.990854687463933,
+      "residual_rms_median_N": 17.041561872394837,
+      "residual_rms_p95_N": 17.189585046820582,
+      "residual_rms_final_N": 17.04624320785945,
+      "relative_to_initial_median": 1.0030311906184948,
+      "minimum_det_F": 0.9873685784813292,
+      "maximum_free_speed_m_s": 0.060825670138900126,
+      "last_step_rho_pressure_min_max": [
+        154457.015625,
+        311039.6875
+      ]
+    }
+  ],
+  "instrumented_wall_seconds": 1.4922398589551449,
+  "final_position_bounds": [
+    [
+      0.0,
+      0.0,
+      1.9891741275787354
+    ],
+    [
+      0.4000000059604645,
+      0.4000000059604645,
+      2.200000047683716
+    ]
+  ]
+}

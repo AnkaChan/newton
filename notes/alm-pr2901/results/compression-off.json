@@ -1,0 +1,62 @@
+{
+  "case": "compression",
+  "mode": "off",
+  "frames": 400,
+  "source_sha256": "8fc81ba0a5f25e8883b75a4a49941401aff5fffd17ad81b87d1c95b835d6ab14",
+  "checks_run": true,
+  "original_checks_passed": true,
+  "failures": [],
+  "runs": [
+    {
+      "name": "compression50",
+      "mode": "off",
+      "steps": 2000,
+      "dt": 0.0033333334140479565,
+      "iterations": 30,
+      "vertices": 343,
+      "tets": 1080,
+      "csv": "compression50-off.csv",
+      "initial_model_sha256": "b1206fcf9880c3d212db08c8b2b3f6899c68cbb9406b4979e0c863f866f5df9a",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.0012845048333735818,
+      "residual_rms_median_N": 0.0013102325653247416,
+      "residual_rms_p95_N": 0.0015433508916481088,
+      "residual_rms_final_N": 0.0012690124895706773,
+      "relative_to_initial_median": 0.0014483830499670068,
+      "minimum_det_F": 0.4496183356039022,
+      "maximum_free_speed_m_s": 2.5309287615002285
+    },
+    {
+      "name": "compression90",
+      "mode": "off",
+      "steps": 2000,
+      "dt": 0.0033333334140479565,
+      "iterations": 30,
+      "vertices": 343,
+      "tets": 1080,
+      "csv": "compression90-off.csv",
+      "initial_model_sha256": "b1206fcf9880c3d212db08c8b2b3f6899c68cbb9406b4979e0c863f866f5df9a",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.0012588246808950666,
+      "residual_rms_median_N": 0.0012981986157454303,
+      "residual_rms_p95_N": 0.0015216999095893139,
+      "residual_rms_final_N": 0.00122700225977353,
+      "relative_to_initial_median": 0.0011770136683035798,
+      "minimum_det_F": -0.7005853732003847,
+      "maximum_free_speed_m_s": 4.985238478675983
+    }
+  ],
+  "instrumented_wall_seconds": 7.072748202830553,
+  "final_position_bounds": [
+    [
+      0.0,
+      -6.101529379520798e-07,
+      1.0
+    ],
+    [
+      0.3000008463859558,
+      0.30000001192092896,
+      1.3000009059906006
+    ]
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "case": "twist",
+  "mode": "off",
+  "frames": 400,
+  "source_sha256": "455770dc4bc83b3a6d2b7c8f30e3c9601f224dfba65b1ac5e4d1f764a32284df",
+  "checks_run": true,
+  "original_checks_passed": true,
+  "failures": [],
+  "runs": [
+    {
+      "name": "twist",
+      "mode": "off",
+      "steps": 2000,
+      "dt": 0.0033333334140479565,
+      "iterations": 20,
+      "vertices": 272,
+      "tets": 720,
+      "csv": "twist-off.csv",
+      "initial_model_sha256": "3efdb8388863d914660e8224d16511a6f6e4949ba3e6a010c9287d84e65a5295",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 0.0007184351624844519,
+      "residual_rms_median_N": 0.0007235823492241515,
+      "residual_rms_p95_N": 0.0007713996522538659,
+      "residual_rms_final_N": 0.0006993092538918968,
+      "relative_to_initial_median": 0.0003311384369542966,
+      "minimum_det_F": 0.7682958364153466,
+      "maximum_free_speed_m_s": 0.23845251189284064
+    }
+  ],
+  "instrumented_wall_seconds": 2.8445847146213055,
+  "final_position_bounds": [
+    [
+      -0.028506746515631676,
+      -0.028303973376750946,
+      1.0
+    ],
+    [
+      0.17850497364997864,
+      0.1783035844564438,
+      1.7999999523162842
+    ]
+  ]
+}

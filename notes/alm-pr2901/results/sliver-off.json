@@ -1,0 +1,43 @@
+{
+  "case": "sliver",
+  "mode": "off",
+  "frames": 200,
+  "source_sha256": "a8715835247c29f94610737499b4503c8a127fae432e802a27cc80c364b2b2cc",
+  "checks_run": true,
+  "original_checks_passed": true,
+  "failures": [],
+  "runs": [
+    {
+      "name": "sliver",
+      "mode": "off",
+      "steps": 1200,
+      "dt": 0.0027777778450399637,
+      "iterations": 20,
+      "vertices": 99,
+      "tets": 200,
+      "csv": "sliver-off.csv",
+      "initial_model_sha256": "ae06c9e600a2be9af1ca1fdaf5b7afcf98b583a4142b190f25c03b5f0491312e",
+      "contact_count_max": 0.0,
+      "residual_rms_mean_N": 17.116656463505855,
+      "residual_rms_median_N": 17.16706647467869,
+      "residual_rms_p95_N": 17.311874279351155,
+      "residual_rms_final_N": 17.219047575730308,
+      "relative_to_initial_median": 1.0026145027540077,
+      "minimum_det_F": 0.9873390779074568,
+      "maximum_free_speed_m_s": 0.06103958818257096
+    }
+  ],
+  "instrumented_wall_seconds": 1.4071604274213314,
+  "final_position_bounds": [
+    [
+      0.0,
+      0.0,
+      1.989129662513733
+    ],
+    [
+      0.4000000059604645,
+      0.4000000059604645,
+      2.200000047683716
+    ]
+  ]
+}
