@@ -307,8 +307,8 @@ class IntrinsicSolverNetwork(nn.Module):
     Args:
         cell_counts: Positive cell counts along material x, y, z; z varies fastest.
         state_feature_dim: Additional prepared per-cell features, excluding axes.
-        conditioning_dim: Prepared material/size/timestep/viscosity/contact
-            scalar channels; the revised schema supplies nine (features.CONDITIONING_DIM).
+        conditioning_dim: Prepared dimensionless material, scale and contact
+            channels; the revised schema supplies features.CONDITIONING_DIM.
         hidden_dim: Cell-token width.
         num_heads: Attention heads per block.
         edge_input_dim: Raw directed edge channels; network_geometry supplies 24.

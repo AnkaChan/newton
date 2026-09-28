@@ -108,3 +108,65 @@ campaign; spec §3.3, §4 and §7 amended in place):
   `generated/resume_training_v3_contact.sh <checkpoint>`.
 - tmux `LIDO-v3` (training) and `LIDO-v3-web` (publisher); dashboard slug
   `learned-intrinsic-training-v3`.
+
+## Implementation record — normalised physics, schema 5 (2026-09-28)
+
+Landed uncommitted in worktree `learned-instrinic-solver` on top of `14dc83c1` (the fixed-state regime),
+together with the trainer changes recorded in `notes/epoch-regime-20260927.md`.
+
+- **Units.** `MixedHexSolverStep` evaluates the objective, the fusion and the network inputs in cell
+  units (`h = 1`, `mu = 1`, `dt = 1`) behind an unchanged SI API: material `lambda' = lambda/mu`,
+  `rho' = rho h^2/(mu dt^2)`, `eta' = eta/(mu dt)`, contact `ke' = ke/(mu h)`, `kd' = kd/(mu h dt)`,
+  `friction_epsilon' = friction_epsilon dt/h`; energies scale back by `mu h^3` (total rebuilt as the exact
+  float32 sum of the parts), the force residual and `position_gradient` by `mu h^2` (newtons), fused
+  positions by `h` with prescribed rows copied bit-exactly. Measured against a float64 SI reference:
+  elastic 2.1e-6, inertia 4.8e-7, damping 1.6e-6, contact 2.5e-7, total 3.5e-7 relative; two scenes
+  related by the law give identical inputs to float32 rounding, energy x8 and residual x4 exactly.
+- **Conditioning (schema 5).** `features.CONDITIONING_CHANNELS = (log1p_lame_ratio, log_inertia_ratio,
+  log1p_gravity_ratio, log1p_viscosity_ratio, log1p_contact_kappa, contact_beta, contact_mu)`,
+  `CONDITIONING_DIM = 7`; `conditioning_channels(..., gravity)` takes the SI gravity (magnitude or
+  vector, only `|g|` enters). The SI reference constants of schema 4 are gone. `log_gradient_rms` and
+  the RMS-normalised gradient blocks, `axis_gradient_world` and the optimizer history are expressed in
+  `mu h^3`; `LearnedHexSolverStep` (deployment path) divides its SI projected gradient by
+  `energy_unit = mean(lame_mu) h^3` so both steps feed a network identical inputs (test_solver_step
+  cross-check compares every state column; `test_normalised_physics` checks the single step at `h` and
+  `2h`). `FEATURE_SCHEMA_VERSION = 5`; schema-4 checkpoints, pools and their joule histories are rejected
+  for a full resume (`MixedTrainConfig.from_checkpoint_config`, both steps' schema check, which names
+  61/9 as legacy).
+- **Shared factor.** One `HexFusion` on the unit grid with unit weights is built in the constructor and
+  shared by every context (`register_context` builds no factor: 17.7 -> 5.7 ms per registration on
+  (4,4,40), the rest is the rigid predictor). The unit lattice is generated exactly
+  (`generate_cuboid(cell_counts, 1.0, origin/h)`), so far origins pass the canonical check.
+- **Partial load (run 3 start).** `train_mixed.migrate_weights_only_checkpoint` implements the
+  weights-only start from run 2's schema-4 `best_validation.pt`: every state-dict tensor whose name and
+  shape match is copied (58 tensors, 647,326 elements incl. the two neighbour buffers);
+  `condition_encoder.0.weight` ([128, 9] -> [128, 7]) is the only shape mismatch and the layer is redrawn
+  with weight std `CONDITION_ENCODER_REINIT_STD = 0.02` and zero bias (both tensors recorded under
+  `report["initialized_from"]["reinitialized_parameters"]`, with `source_feature_schema_version = 4`,
+  `shape_mismatches` and the copied counts); the AdamW state loads for all 58 parameters with the moments
+  of the two re-initialised tensors zeroed at the new shape and their step counters (7680) kept. Any
+  other shape mismatch, and any other schema pair, keeps the strict "requires the checkpoint
+  architecture" rejection; a full resume across schemas is rejected as legacy. Why the small scale: the
+  loaded FiLM layers are trained (no longer zero-initialised), so a default first layer (std about 0.22)
+  would drive them with random codes; with std 0.02 the code starts near the encoder's second-layer
+  bias and the dependence on the new channels is relearned. Consequence of keeping the step counters:
+  Adam's bias correction is inactive for the two fresh tensors, so their first updates are up to about
+  6 x lr (the standard warm-start behaviour) until their moments fill in.
+- **Offline dry check (CPU, no training, 2026-09-28)** with `generated/training_v3_fixed_config.json`
+  (schema 5, `updates_history_limit` 8192): architecture fields all match; config differences are
+  max_epochs 500 -> 60, regime pool -> fixed_states, validation_count 512 -> 64, validation_iterations
+  100 -> 32, validation_full_count 16 -> 8, validation_full_iterations None -> 8, feature_schema_version
+  4 -> 5; re-initialised `['condition_encoder.0.bias', 'condition_encoder.0.weight']`, 58 tensors copied
+  bit-identically, redrawn weight std 0.0197; strict `load_state_dict` and `AdamW.load_state_dict` succeed
+  and one in-memory step with synthetic gradients runs (a [128, 9] moment would have failed there).
+  Parameter count 432,350 (run 2: 432,606; the 256 lost weights are the two removed input columns).
+- **Consumers.** `mixed_validation` (SI residual via `step.energy`), `simulate_mixed`,
+  `mixed_training_reference` (7-wide network from `config.conditioning_dim`; schema-4 artefacts are
+  rejected explicitly), `evaluate_rollout`/`replay_rollout`/`unrolled_solver` (LearnedHexSolverStep, history
+  in the step's unit) needed no code change; `history.store_history` documents the unit. Run-2 artefacts
+  are replayed with a checkout of `14dc83c1` or earlier.
+- **Tests.** Whole suite on CPU after the change: see the epoch-regime note for the final `Ran` line.
+  The nine schema-4 pins (`test_train_mixed`, `test_damping_training`, `test_damping_solver`,
+  `test_mixed_damping`) now address channels by `features.CONDITIONING_CHANNELS.index(...)`, convert the
+  joule reference by `mu h^3` where the gradient feature is compared, and compare the float32 mixed energy
+  with a float64 SI reference at rtol 1e-5 (measured 3e-6).

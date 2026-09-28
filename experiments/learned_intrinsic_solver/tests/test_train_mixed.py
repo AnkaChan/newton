@@ -31,7 +31,7 @@ from experiments.learned_intrinsic_solver.curriculum import MixedCurriculum
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.history import HISTORY_KEYS, store_history
 from experiments.learned_intrinsic_solver.mixed_physics import MixedHexSolverStep
-from experiments.learned_intrinsic_solver.multiscale import screen_geometry
+from experiments.learned_intrinsic_solver.multiscale import generate_multiscale, screen_geometry
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 from experiments.learned_intrinsic_solver.train_mixed import (
     PERTURBED_CANDIDATE_PROBABILITY,
@@ -58,13 +58,28 @@ _FLOOR_SCENE = {"contact_plane_probability": 1.0, "contact_plane_height_range": 
 """Floor 1-2 cm below the rest bottom faces: inside r = 5 cm at reset, so every trajectory starts penetrating."""
 
 
-def _candidate_factory(rest, config):
+def _candidate_factory(rest, config, **options):
     """Build a factory around a stand-in step exposing only CPU topology."""
     step = SimpleNamespace(
         fixed_indices=torch.tensor(np.flatnonzero(rest.corner_rest_positions[:, 2] == 0), dtype=torch.long),
         cell_corner_indices=torch.zeros(len(rest.cell_corner_indices), 8, dtype=torch.long),
     )
-    return _TrajectoryFactory(step, rest, config, rank=0)
+    return _TrajectoryFactory(step, rest, config, rank=0, **options)
+
+
+def _documented_candidate(rest, config, base, fixed, entropy):
+    """Reproduce ``_TrajectoryFactory._candidate`` from its documented seed sequence ``[*entropy, 911]``."""
+    rng = np.random.default_rng(np.random.SeedSequence([*entropy, 911]))
+    candidate = base.clone()
+    perturbed = rng.random() < PERTURBED_CANDIDATE_PROBABILITY
+    if perturbed:
+        sample = generate_multiscale(rest, seed=int(rng.integers(2**32)), strength=0.1)
+        noise = sample.positions - rest.corner_rest_positions
+        rms = float(np.sqrt(np.mean(np.sum(noise**2, axis=-1))))
+        noise *= float(rng.uniform(0.01, 0.1) * config.cell_size) / rms if rms else 0
+        candidate = candidate + torch.from_numpy(noise.astype(np.float32))
+    candidate[fixed] = base[fixed]
+    return candidate, "perturbed_inertial" if perturbed else "inertial"
 
 
 def _payload(seed, inertial, fixed, *, physical=None, physical_age=0):
@@ -145,7 +160,7 @@ class TestMixedTraining(unittest.TestCase):
         self.assertEqual(
             (config.state_feature_dim, config.conditioning_dim), (features.STATE_FEATURE_DIM, features.CONDITIONING_DIM)
         )
-        self.assertEqual(config.conditioning_dim, 9)
+        self.assertEqual((config.feature_schema_version, config.conditioning_dim), (5, 7))
         self.assertEqual(config.energy_floor_scale, 1.0)
         self.assertEqual(config.validation_full_count, 16)
         self.assertEqual(config.validation_full_interval, 5)
@@ -225,6 +240,7 @@ class TestMixedTraining(unittest.TestCase):
         legacy_variants = {
             "schema_1": {**current, "feature_schema_version": 1},
             "schema_2": {**current, "feature_schema_version": 2},
+            "schema_4": {**current, "feature_schema_version": 4},
             "missing_schema": {k: v for k, v in current.items() if k != "feature_schema_version"},
             "candidate_probabilities": {**current, "candidate_probabilities": (0.5, 0.35, 0.1, 0.05)},
             "geometry_backtracking": {**current, "geometry_backtracking": False},
@@ -232,7 +248,7 @@ class TestMixedTraining(unittest.TestCase):
         for name, values in legacy_variants.items():
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "legacy"):
                 MixedTrainConfig.from_checkpoint_config(values)
-        for version in (1, 2, 3, 5):
+        for version in (1, 2, 3, 4, 6):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, "legacy"):
                 replace(self.config(1), feature_schema_version=version)
 
@@ -293,6 +309,43 @@ class TestMixedTraining(unittest.TestCase):
             torch.equal(different["candidate"], factory._candidate(_payload(0, base, fixed))["candidate"])
             and different["candidate_mode"] == "inertial"
         )
+
+    def test_fixed_state_candidates_are_redrawn_per_epoch_and_the_pool_stream_is_unchanged(self):
+        """Seed the candidate stream with the epoch only for epoch_candidates factories; the pool stream is bit-identical."""
+        rest = generate_cuboid((1, 1, 2), cell_size=0.1)
+        config = self.config(1)
+        pool_factory = _candidate_factory(rest, config)
+        pool_factory.epoch = 7  # Ignored without epoch_candidates.
+        fixed_factory = _candidate_factory(rest, replace(config, regime="fixed_states"), epoch_candidates=True)
+        fixed = pool_factory.fixed_indices
+        base = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)
+        base[:, 0] += 0.3 * base[:, 2]
+        with self.assertRaisesRegex(ValueError, "epoch"):
+            fixed_factory._candidate(_payload(0, base, fixed))
+        seeds, identical = 60, 0
+        for seed in range(seeds):
+            for age in (0, 1):
+                pooled = pool_factory._candidate(_payload(seed, base, fixed, physical_age=age))
+                candidate, mode = _documented_candidate(rest, config, base, fixed, [config.seed, seed, age])
+                torch.testing.assert_close(pooled["candidate"], candidate, rtol=0, atol=0)
+                self.assertEqual(pooled["candidate_mode"], mode)
+            drawn = {}
+            for epoch in (1, 2, 1):
+                fixed_factory.epoch = epoch
+                prepared = fixed_factory._candidate(_payload(seed, base, fixed))
+                candidate, mode = _documented_candidate(rest, config, base, fixed, [config.seed, seed, 0, epoch])
+                torch.testing.assert_close(prepared["candidate"], candidate, rtol=0, atol=0)
+                self.assertEqual(prepared["candidate_mode"], mode)
+                torch.testing.assert_close(prepared["candidate"][fixed], base[fixed], rtol=0, atol=0)
+                if epoch in drawn:  # The same epoch reproduces its draw exactly.
+                    torch.testing.assert_close(prepared["candidate"], drawn[epoch]["candidate"], rtol=0, atol=0)
+                drawn[epoch] = prepared
+            if torch.equal(drawn[1]["candidate"], drawn[2]["candidate"]):
+                identical += 1
+                self.assertEqual((drawn[1]["candidate_mode"], drawn[2]["candidate_mode"]), ("inertial", "inertial"))
+        # Two epochs coincide only when both draw the noise-free inertial mode (probability one quarter).
+        self.assertLess(identical, seeds // 2)
+        self.assertGreater(identical, 0)
 
     def test_inverted_perturbed_candidate_is_accepted_without_fallback(self):
         """Keep inverted candidates; only nonfinite initializations raise."""
@@ -544,7 +597,7 @@ class TestMixedTraining(unittest.TestCase):
                     contact=batch["contact"],
                 )
                 torch.testing.assert_close(
-                    inputs.conditioning[0, 0, 6:],
+                    inputs.conditioning[0, 0, features.CONDITIONING_CHANNELS.index("log1p_contact_kappa") :],
                     torch.tensor([math.log1p(scene["kappa"]), scene["beta"], scene["mu"]], dtype=torch.float32),
                     rtol=1e-5,
                     atol=1e-6,
@@ -692,8 +745,9 @@ class TestMixedTraining(unittest.TestCase):
             contact=batch["contact"],
         )
         self.assertEqual(inputs.conditioning.shape[-1], features.CONDITIONING_DIM)
+        contact = features.CONDITIONING_CHANNELS.index("log1p_contact_kappa")
         torch.testing.assert_close(
-            inputs.conditioning[..., 6:], torch.zeros_like(inputs.conditioning[..., 6:]), rtol=0, atol=0
+            inputs.conditioning[..., contact:], torch.zeros_like(inputs.conditioning[..., contact:]), rtol=0, atol=0
         )
         self.assertIsNone(inputs.contact_tokens)
         result = _checked_forward(step, step, batch)

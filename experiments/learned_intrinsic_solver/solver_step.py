@@ -78,10 +78,23 @@ class LearnedHexSolverStep(nn.Module):
     normalized previous achieved update, exposed faces, fixed-corner flags,
     log gradient RMS and the history flag; packing in
     :func:`.features.pack_state_features`), the nine local axes prepended by
-    the network, :data:`.features.EDGE_FEATURE_DIM` edge inputs and the six
-    conditioning channels of :func:`.features.conditioning_channels`. The
-    viscosity channel is always present; damping may be zero. Legacy 38/5 and
-    86/6 networks and their checkpoints are rejected explicitly.
+    the network, :data:`.features.EDGE_FEATURE_DIM` edge inputs and the
+    dimensionless conditioning channels of
+    :func:`.features.conditioning_channels`. The viscosity channel is always
+    present; damping may be zero. Legacy 38/5, 86/6 and 61/9 networks and their
+    checkpoints are rejected explicitly.
+
+    The objective and the fusion are evaluated in SI: fused positions and
+    energies agree with the mixed-material step because a homogeneous body's
+    physical fusion weights are uniform and a uniform rescaling of the weights
+    leaves the fit unchanged. The one network input that is not dimensionless
+    by construction, the fusion-projected gradient feature (its RMS-normalised
+    block and the scalar ``log_gradient_rms``), is expressed in the mixed
+    step's energy unit ``S h^3`` (:attr:`energy_unit`, ``S`` the shear
+    modulus), so a network trained through :class:`.mixed_physics.MixedHexSolverStep`
+    receives identical inputs here. ``axis_gradient_world`` and the optimizer
+    history it feeds use that unit as well; ``position_gradient`` and the force
+    residual stay in newtons.
 
     Args:
         rest: Canonical full cuboid with cubic cells and z-fast corner ordering.
@@ -91,6 +104,16 @@ class LearnedHexSolverStep(nn.Module):
         density: Scalar or per-cell rest density [kg/m^3].
         time_step: Positive physical time step [s].
         damping: Nonnegative scalar or per-cell metric viscosity [Pa*s].
+        gravity: World acceleration [m/s^2]; only its magnitude enters the
+            conditioning channel ``log1p(|g| dt^2 / h)``. The energy has no
+            gravity term (it sits in the inertial prediction).
+
+    Attributes:
+        energy_unit: ``S h^3`` [J] with ``S`` the shear modulus, the unit of the
+            gradient feature and of ``axis_gradient_world``. ``S`` is the
+            cell-volume mean of ``lame_mu`` (exact for homogeneous bodies, the
+            only case the mixed step represents; a convention for per-cell
+            moduli).
         network: Optional revised-schema network on CPU or CUDA in the chosen
             dtype. Its device determines geometry, network, and energy
             execution. Default is the CPU one-block [1] baseline.
@@ -107,14 +130,24 @@ class LearnedHexSolverStep(nn.Module):
         density,
         time_step: float,
         damping=0.0,
+        gravity=(0.0, -9.81, 0.0),
         network: IntrinsicSolverNetwork | None = None,
         dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
+        try:
+            gravity_tensor = torch.as_tensor(gravity, dtype=torch.float64).detach().cpu()
+        except (TypeError, ValueError, RuntimeError) as error:
+            raise ValueError("gravity must be a finite three-vector") from error
+        if gravity_tensor.shape != (3,) or not torch.isfinite(gravity_tensor).all():
+            raise ValueError("gravity must be a finite three-vector")
+        self.gravity = tuple(float(value) for value in gravity_tensor.tolist())
         self.energy = HexImplicitEulerLoss(rest, lame_lambda, lame_mu, density, time_step, damping=damping, dtype=dtype)
         lam = self.energy.lame_lambda
         mu = self.energy.lame_mu
         rho = self.energy.density
+        # The float64 mean of identical float32 moduli is exact, so a homogeneous body gets S = mu bit for bit.
+        self.energy_unit = mu.double().mean().item() * rest.cell_size**3
         # Preserve the former E*V fusion weights using the equivalent Young
         # stiffness. The constitutive law and network use Lamé inputs directly.
         material_scale = torch.maximum(lam, mu)
@@ -164,10 +197,10 @@ class LearnedHexSolverStep(nn.Module):
             (torch.as_tensor(rest.cell_exposed_faces, dtype=dtype), flags[self.cell_corner_indices]), -1
         )
         self.register_buffer("boundary_features", boundaries)
-        # Per-cell material channels [C, 6]; the viscosity channel is present even at zero damping.
+        # Per-cell dimensionless channels [C, CONDITIONING_DIM]; the viscosity channel is present at zero damping.
         self.register_buffer(
             "conditioning",
-            conditioning_channels(lam, mu, rho, self.energy.damping, rest.cell_size, self.time_step),
+            conditioning_channels(lam, mu, rho, self.energy.damping, rest.cell_size, self.time_step, self.gravity),
         )
         self.to(device=device)
 
@@ -206,6 +239,15 @@ class LearnedHexSolverStep(nn.Module):
     def _energy_total(self, positions: Tensor, inertial_prediction: Tensor, previous_positions: Tensor) -> Tensor:
         return self.energy(positions, inertial_prediction, previous_positions=previous_positions).total
 
+    def _project_gradient(self, position_gradient: Tensor) -> Tensor:
+        """Project the SI position gradient [N] through the fusion adjoint and express it in ``energy_unit``.
+
+        For a homogeneous body the SI fusion weights are uniform, so this equals
+        the projection of the normalised gradient through the mixed step's
+        unit-weight factor to float32 rounding.
+        """
+        return self.fusion.project_gradient(position_gradient) / self.energy_unit
+
     def prepare_inputs(
         self,
         positions: Tensor,
@@ -224,7 +266,9 @@ class LearnedHexSolverStep(nn.Module):
         ``reference_corners`` at the current positions when that buffer is
         nonempty. Frames and the gradient feature are detached so the
         decomposition is frozen for this query's backward pass. The state
-        packing is documented in :func:`.input_assembly.assemble_inputs`.
+        packing is documented in :func:`.input_assembly.assemble_inputs`; the
+        gradient feature and ``axis_gradient_world`` are in units of
+        :attr:`energy_unit`, ``position_gradient`` in newtons.
 
         Args:
             positions: Candidate world corner positions [m], shape [B,P,3].
@@ -235,13 +279,16 @@ class LearnedHexSolverStep(nn.Module):
             frames: Optional precomputed rotations [B,C,3,3], validated as
                 proper orthonormal rotations on the input dtype/device and
                 detached; supply these to replay the same frozen frame.
-            history: Detached previous-query history, or None for no history
-                on the whole batch (zero blocks, ``history_valid = 0``).
+            history: Detached previous-query history in the units this step
+                returns (``axis_gradient_world`` in :attr:`energy_unit`), or
+                None for no history on the whole batch (zero blocks,
+                ``history_valid = 0``).
 
         Returns:
             Frozen frames, differentiable local axes, packed features, the
-            detached world axis gradient and zero-pinned position gradient, and
-            the tie-break mask [B,C] (None when frames were supplied).
+            detached world axis gradient [``energy_unit``] and zero-pinned
+            position gradient [N], and the tie-break mask [B,C] (None when
+            frames were supplied).
 
         Raises:
             ValueError: Malformed, mismatched or nonfinite inputs, missing
@@ -261,7 +308,7 @@ class LearnedHexSolverStep(nn.Module):
             inertial_prediction,
             previous_positions,
             energy_total=self._energy_total,
-            project_gradient=self.fusion.project_gradient,
+            project_gradient=self._project_gradient,
             conditioning=self.conditioning[None].expand(batch, -1, -1),
             history=history,
             frames=frames,
@@ -303,7 +350,8 @@ class LearnedHexSolverStep(nn.Module):
             Proposed global positions and per-object physical energy terms.
             ``step_size`` is the per-cell step [B,C]. The detached diagnostics
             are filled: ``axis_gradient_world`` (this query's world axis
-            gradient feature [J]), ``achieved_axis_update_world`` (world change
+            gradient feature in units of :attr:`energy_unit`),
+            ``achieved_axis_update_world`` (world change
             of the center deformation from ``positions`` to the fused output,
             including any rigid delta applied in fusion), ``force_residual_norm``
             (norm of the zero-pinned position gradient at the pre-update

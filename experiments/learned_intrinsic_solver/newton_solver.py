@@ -176,6 +176,7 @@ class SolverLearnedIntrinsic(SolverBase):
         self.last_result: LearnedNewtonStepResult | None = None
         self.learned_step: LearnedHexSolverStep | None = None
         self._time_step: float | None = None
+        self._step_gravity: tuple[float, float, float] | None = None
         self._configure_model()
 
     def _configure_model(self) -> None:
@@ -249,6 +250,7 @@ class SolverLearnedIntrinsic(SolverBase):
             raise ValueError("network cell counts must match the model")
         self.learned_step = None
         self._time_step = None
+        self._step_gravity = None
         self.last_result = None
 
     def _gravity(self) -> np.ndarray:
@@ -261,7 +263,14 @@ class SolverLearnedIntrinsic(SolverBase):
         import torch
 
         device = next(self.network.parameters()).device
-        if self.learned_step is None or dt != self._time_step or self.learned_step.rest_positions.device != device:
+        # Gravity enters the conditioning channels, so a runtime change of model gravity rebuilds the step.
+        gravity = tuple(float(value) for value in self._gravity())
+        if (
+            self.learned_step is None
+            or dt != self._time_step
+            or gravity != self._step_gravity
+            or self.learned_step.rest_positions.device != device
+        ):
             step = LearnedHexSolverStep(
                 self._rest,
                 self._fixed,
@@ -270,6 +279,7 @@ class SolverLearnedIntrinsic(SolverBase):
                 density=self._density,
                 damping=self._damping,
                 time_step=dt,
+                gravity=gravity,
                 network=self.network,
             )
             mass = self._mass.to(device)
@@ -280,6 +290,7 @@ class SolverLearnedIntrinsic(SolverBase):
             step.energy.lumped_mass.copy_(mass)
             self.learned_step = step
             self._time_step = dt
+            self._step_gravity = gravity
         return self.learned_step
 
     def _check_state(self, state: newton.State) -> None:

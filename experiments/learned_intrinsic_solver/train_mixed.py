@@ -20,7 +20,7 @@ ground plane and artificial static points with per-scene stiffness, damping
 and friction. The scene is registered with the physical context, stored in the
 payload as ``contact_partners`` and its frozen per-step pair list is collated
 into every batch so the contact energy, the contact conditioning channels and
-the network's contact tokens follow the physics (schema 4).
+the network's contact tokens follow the physics (schema 5).
 
 Two training regimes share this loop. The ``pool`` regime draws an open-ended
 stream of trajectories with curriculum-capped budgets and counts an epoch as
@@ -45,6 +45,7 @@ import time
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
@@ -55,12 +56,15 @@ from .mixed_validation import validate as _validate
 from .mixed_validation import validation_chunk as _validation_chunk  # noqa: F401 -- Keep the existing test seam.
 
 __all__ = [
+    "CONDITION_ENCODER_REINIT_STD",
     "PERTURBED_CANDIDATE_PROBABILITY",
     "JobAssignment",
     "MixedTrainConfig",
+    "WeightsOnlyStates",
     "assign_jobs",
     "fixed_state_stage",
     "local_objective",
+    "migrate_weights_only_checkpoint",
     "run_training",
     "sample_epoch_jobs",
 ]
@@ -69,6 +73,24 @@ PERTURBED_CANDIDATE_PROBABILITY = 0.5
 """Probability that a new candidate adds smooth multiscale noise to the inertial prediction."""
 
 _LEGACY_CONFIG_FIELDS = ("candidate_probabilities", "geometry_backtracking")
+
+CONDITION_ENCODER_REINIT_STD = 0.02
+"""Weight scale of a re-initialised condition-encoder input layer in a schema-4 -> 5 weights-only start.
+
+The loaded FiLM layers were trained on the encoder's output and are no longer
+zero-initialised, so a default (Kaiming-uniform, std about 0.22 for seven
+inputs) first layer would drive them with random conditioning codes. A small
+weight scale with a zero bias keeps the code near the encoder's second-layer
+bias at first; the dependence on the new channels is relearned from there.
+"""
+
+_WEIGHTS_ONLY_SCHEMA_MIGRATIONS = {(4, 5): ("condition_encoder.0.weight",)}
+"""Tensors a weights-only start may re-initialise per ``(source, current)`` feature schema.
+
+Schema 4 -> 5 replaced the nine conditioning channels by seven dimensionless
+ones: only the condition encoder's input weight changes shape, ``[H, 9]`` ->
+``[H, 7]``. Every other schema pair must match tensor for tensor.
+"""
 
 _VALIDATION_BUDGET_FIELDS = (
     "validation_count",
@@ -186,6 +208,13 @@ class MixedTrainConfig:
     validation_full_iterations: int | None = None
     """Cap on K of the full-horizon check, ``min(largest available K, cap)``; None uses the largest available K."""
     checkpoint_interval: int = 5
+    updates_history_limit: int = 8192
+    """Most recent per-update rows kept in ``report["updates"]`` (report.json, checkpoints, updates.csv).
+
+    Epoch rows are never trimmed. The fixed-state regime performs about 590k
+    updates per campaign, so the window keeps the report and every checkpoint
+    bounded; the dashboard reads only the latest rows.
+    """
     early_stopping: bool = True
     """Allow plateau/stall stopping before ``max_epochs``; False runs to the epoch cap."""
     lr_schedule: str = "cosine"
@@ -230,7 +259,11 @@ class MixedTrainConfig:
     contact_friction_epsilon: float = 1e-2
     """IPC friction smoothing band as a fraction of the time step."""
     feature_schema_version: int = features.FEATURE_SCHEMA_VERSION
-    """Only the contact-aware schema (4) is supported; legacy runs restart."""
+    """Only schema 5 (dimensionless conditioning, history in ``mu h^3``) is supported.
+
+    A schema-4 checkpoint may seed a weights-only start (its condition-encoder
+    input layer is re-initialised); older runs restart.
+    """
     strength_range: tuple[float, float] = (0.02, 0.1)
     velocity_dt_range: tuple[float, float] = (0.0, 0.1)
     perturbation_scale_range: tuple[float, float] = (0.0, 1.0)
@@ -288,6 +321,7 @@ class MixedTrainConfig:
             "state_count",
             "budget_cap",
             "growth_stage_epochs",
+            "updates_history_limit",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -402,7 +436,8 @@ class MixedTrainConfig:
         ):
             raise ValueError(
                 f"feature_schema_version must be {features.FEATURE_SCHEMA_VERSION}: the contact-aware revised "
-                "nine-value schema; legacy checkpoints require fresh initialization"
+                "nine-value schema with dimensionless conditioning; legacy checkpoints require fresh "
+                "initialization (a schema-4 checkpoint may seed a weights-only start)"
             )
 
     @property
@@ -439,11 +474,14 @@ class MixedTrainConfig:
         # Checkpoints written before the fixed-state regime trained with the open-ended pool.
         for name, default in _REGIME_DEFAULTS.items():
             values.setdefault(name, default)
+        # Checkpoints written before the update window kept every update row.
+        values.setdefault("updates_history_limit", cls.updates_history_limit)
         legacy = [name for name in _LEGACY_CONFIG_FIELDS if name in values]
         if values.get("feature_schema_version") != features.FEATURE_SCHEMA_VERSION or legacy:
             raise ValueError(
-                "incompatible legacy checkpoint; start a fresh run: the revised nine-value schema "
-                f"(feature_schema_version {features.FEATURE_SCHEMA_VERSION}) has no {', '.join(_LEGACY_CONFIG_FIELDS)}"
+                "incompatible legacy checkpoint; start a fresh run (a schema-4 checkpoint may seed a weights-only "
+                f"start): the revised nine-value schema (feature_schema_version {features.FEATURE_SCHEMA_VERSION}, "
+                f"dimensionless conditioning) has no {', '.join(_LEGACY_CONFIG_FIELDS)}"
             )
         return cls(**values)
 
@@ -481,11 +519,16 @@ def local_objective(after, before, floor, *, increase_weight=1.0):
 class _TrajectoryFactory:
     """Prepare detached CPU trajectories without accessing network parameters."""
 
-    def __init__(self, step, rest, config, *, rank, validation=False, unique_contexts=False):
+    def __init__(self, step, rest, config, *, rank, validation=False, unique_contexts=False, epoch_candidates=False):
         self.step, self.rest, self.config = step, rest, config
         self.prefix = f"{'validation' if validation else 'train'}-{rank}"
         self.master_seed = config.seed + (1000000007 if validation else 0)
         self.seed_parity = int(validation)
+        # The fixed-state regime redraws every state's candidate stream per epoch (see ``_candidate``); the
+        # trainer sets ``epoch`` at the start of each epoch. The pool regime and validation keep the
+        # epoch-free stream, so their candidates are unchanged.
+        self.epoch_candidates = epoch_candidates
+        self.epoch = None
         # Preparation workers use CPU topology without synchronizing CUDA.
         self.fixed_indices = step.fixed_indices.detach().cpu().clone()
         self.cell_count = len(step.cell_corner_indices)
@@ -587,14 +630,22 @@ class _TrajectoryFactory:
         1-10 percent of the cell size. The rigid initializer computed by
         ``prepare`` is replaced and never used as the learned candidate.
         Only a nonfinite candidate raises.
+
+        The stream is ``SeedSequence([master_seed, seed, physical_age, 911])``;
+        with ``epoch_candidates`` (the fixed-state training factory) it is
+        ``SeedSequence([master_seed, seed, physical_age, epoch, 911])`` so a
+        state reused every epoch draws a different mode and noise each time.
         """
         import torch
 
         from .multiscale import generate_multiscale  # noqa: PLC0415 -- Optional training boundary.
 
-        rng = np.random.default_rng(
-            np.random.SeedSequence([self.master_seed, payload["seed"], payload["physical_age"], 911])
-        )
+        entropy = [self.master_seed, payload["seed"], payload["physical_age"]]
+        if self.epoch_candidates:
+            if self.epoch is None:
+                raise ValueError("epoch must be set before drawing epoch-seeded candidates")
+            entropy.append(self.epoch)
+        rng = np.random.default_rng(np.random.SeedSequence([*entropy, 911]))
         perturbed = rng.random() < PERTURBED_CANDIDATE_PROBABILITY
         candidate = payload["inertial_prediction"].clone()
         if perturbed:
@@ -923,6 +974,141 @@ def _parameter_shape_mismatches(saved_state, current_state):
     ]
 
 
+def _weights_only_source_values(saved_config):
+    """Return the checkpoint configuration a weights-only start rebuilds, and the checkpoint's schema.
+
+    A source schema that ``_WEIGHTS_ONLY_SCHEMA_MIGRATIONS`` maps to the
+    current one is rebuilt as the current schema so that the remaining
+    architecture fields can be compared; every other legacy schema is rejected
+    by :meth:`MixedTrainConfig.from_checkpoint_config` as before.
+    """
+    values = dict(saved_config)
+    source = values.get("feature_schema_version")
+    current = features.FEATURE_SCHEMA_VERSION
+    if source != current and (source, current) in _WEIGHTS_ONLY_SCHEMA_MIGRATIONS:
+        values["feature_schema_version"] = current
+    return values, source
+
+
+def _build_network(config):
+    """Build the solver network of ``config`` on the CPU, as the trainer and the offline dry check do."""
+    from .network import IntrinsicSolverNetwork  # noqa: PLC0415 -- Optional training boundary.
+
+    return IntrinsicSolverNetwork(
+        config.cell_counts,
+        config.state_feature_dim,
+        conditioning_dim=config.conditioning_dim,
+        hidden_dim=config.hidden_dim,
+        edge_hidden_dim=config.edge_hidden_dim,
+        num_heads=config.num_heads,
+        hops=config.hops,
+        max_step_size=config.max_step_size,
+        query_chunk_size=config.query_chunk_size,
+        edge_network=config.edge_network,
+        checkpoint_chunks=config.checkpoint_chunks,
+        contact_tokens=config.contact,
+    )
+
+
+class WeightsOnlyStates(NamedTuple):
+    """States a weights-only start loads, and the record of what was not copied from the checkpoint."""
+
+    network_state: dict
+    """Network state dict to load strictly: copied tensors plus the re-initialised ones."""
+    optimizer_state: dict
+    """AdamW state dict to load: saved moments, zeroed for the re-initialised parameters."""
+    migration: dict
+    """Record for ``report["initialized_from"]``: schemas, copied count, re-initialised names and shapes."""
+
+
+def migrate_weights_only_checkpoint(saved, network, *, source_schema_version):
+    """Return the states a weights-only start loads into ``network`` from the checkpoint ``saved``.
+
+    Every network tensor whose name and shape match is copied. A tensor whose
+    shape differs is tolerated only when ``_WEIGHTS_ONLY_SCHEMA_MIGRATIONS``
+    lists it for ``(source_schema_version, current schema)``; it keeps the
+    freshly built network's default initialisation, except that a
+    re-initialised condition-encoder input layer is drawn with weight std
+    :data:`CONDITION_ENCODER_REINIT_STD` and a zero bias (both tensors then
+    count as re-initialised, see the constant's note on the trained FiLM
+    layers). The AdamW state is kept for every parameter; the moments
+    (``exp_avg``, ``exp_avg_sq``) of the re-initialised parameters are reset to
+    zeros of the new shape while their step counters are kept, so the shared
+    Adam sequence continues.
+
+    Args:
+        saved: Checkpoint dictionary with ``network_state`` and ``optimizer_state``.
+        network: Freshly built network of the current configuration.
+        source_schema_version: ``feature_schema_version`` of the checkpoint.
+
+    Returns:
+        :class:`WeightsOnlyStates`. ``migration`` holds
+        ``source_feature_schema_version``, ``feature_schema_version``,
+        ``loaded_parameter_count`` and ``loaded_element_count`` (state-dict
+        tensors copied and their elements, buffers included),
+        ``reinitialized_parameters`` (sorted names),
+        ``shape_mismatches`` (checkpoint and current shapes) and
+        ``condition_encoder_reinit_std`` (None when no encoder layer was re-initialised).
+
+    Raises:
+        ValueError: A tensor is missing on either side, or differs in shape
+            without a listed migration.
+    """
+    import torch
+
+    saved_state = saved["network_state"]
+    current_state = network.state_dict()
+    mismatched = _parameter_shape_mismatches(saved_state, current_state)
+    allowed = _WEIGHTS_ONLY_SCHEMA_MIGRATIONS.get((source_schema_version, features.FEATURE_SCHEMA_VERSION), ())
+    unexpected = [
+        name for name in mismatched if name not in allowed or name not in saved_state or name not in current_state
+    ]
+    if unexpected:
+        raise ValueError(
+            "weights-only initialization requires the checkpoint architecture; "
+            f"parameters missing or differing in shape: {unexpected}"
+        )
+    reinitialized = set(mismatched)
+    network_state = {
+        name: (current_state[name] if name in reinitialized else saved_state[name]).detach().clone()
+        for name in current_state
+    }
+    encoder_layers = sorted({name.rsplit(".", 1)[0] for name in mismatched if name.startswith("condition_encoder.")})
+    for layer in encoder_layers:
+        weight, bias = f"{layer}.weight", f"{layer}.bias"
+        network_state[weight] = torch.randn_like(current_state[weight]) * CONDITION_ENCODER_REINIT_STD
+        if bias in current_state:
+            network_state[bias] = torch.zeros_like(current_state[bias])
+            reinitialized.add(bias)
+    parameter_names = [name for name, _ in network.named_parameters()]
+    state = dict(saved["optimizer_state"].get("state", {}))
+    for name in sorted(reinitialized):
+        if name not in parameter_names:
+            continue
+        index = parameter_names.index(name)
+        if index in state:
+            entry = dict(state[index])
+            for moment in ("exp_avg", "exp_avg_sq"):
+                if moment in entry:
+                    entry[moment] = torch.zeros_like(network_state[name])
+            state[index] = entry
+    optimizer_state = {**saved["optimizer_state"], "state": state}
+    copied = [name for name in network_state if name not in reinitialized]
+    migration = {
+        "source_feature_schema_version": source_schema_version,
+        "feature_schema_version": features.FEATURE_SCHEMA_VERSION,
+        "loaded_parameter_count": len(copied),
+        "loaded_element_count": int(sum(network_state[name].numel() for name in copied)),
+        "reinitialized_parameters": sorted(reinitialized),
+        "shape_mismatches": {
+            name: {"checkpoint": list(saved_state[name].shape), "current": list(current_state[name].shape)}
+            for name in mismatched
+        },
+        "condition_encoder_reinit_std": CONDITION_ENCODER_REINIT_STD if encoder_layers else None,
+    }
+    return WeightsOnlyStates(network_state, optimizer_state, migration)
+
+
 def _allow_early_stop_fixed(config, epoch):
     """Return whether plateau stopping may be considered after ``epoch`` in the fixed-state regime.
 
@@ -952,7 +1138,12 @@ def run_training(
     controller and pool are new, only the architecture fields
     (``_ARCHITECTURE_FIELDS``) must match and the origin is recorded under
     ``report["initialized_from"]`` together with every differing field. The
-    learning rate follows the new schedule from epoch 1.
+    learning rate follows the new schedule from epoch 1. A schema-4 checkpoint
+    (nine conditioning channels) may seed a weights-only start of the current
+    schema 5: :func:`migrate_weights_only_checkpoint` copies every tensor of
+    matching shape, re-initialises the condition encoder's input layer and
+    zeroes its AdamW moments, and the record lands in ``initialized_from``.
+    A full resume across schemas stays rejected.
 
     Checkpoints restore the same rank count, curriculum, pool queues, optimizer
     history and Adam sequence. The configured descent-rate gate, stage limit
@@ -986,7 +1177,6 @@ def run_training(
     from .history import store_history  # noqa: PLC0415 -- Optional training boundary.
     from .mixed_physics import MixedHexSolverStep  # noqa: PLC0415 -- Optional training boundary.
     from .mixed_validation import validate_full_horizon  # noqa: PLC0415 -- Optional training boundary.
-    from .network import IntrinsicSolverNetwork  # noqa: PLC0415 -- Optional training boundary.
     from .train_epochs import _all_ranks_ok, _atomic_torch, _cpu  # noqa: PLC0415 -- Optional training boundary.
     from .training_schedule import PlateauController  # noqa: PLC0415 -- Optional training boundary.
     from .trajectory_pool import ActiveTrajectoryPool  # noqa: PLC0415 -- Optional training boundary.
@@ -1005,9 +1195,16 @@ def run_training(
     if saved and resume_weights_only:
         if saved.get("format") != "mixed_pool_v2":
             raise ValueError("incompatible checkpoint format")
-        saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
+        saved_values, source_schema = _weights_only_source_values(saved["config"])
+        saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved_values))
+        # The record keeps the checkpoint's own schema; a listed migration compares the other fields.
+        saved_config["feature_schema_version"] = source_schema
         current_config = asdict(config)
-        mismatched = [name for name in _ARCHITECTURE_FIELDS if saved_config[name] != current_config[name]]
+        mismatched = [
+            name
+            for name in _ARCHITECTURE_FIELDS
+            if name != "feature_schema_version" and saved_config[name] != current_config[name]
+        ]
         if mismatched:
             raise ValueError(
                 f"weights-only initialization requires the checkpoint architecture; differing: {mismatched}"
@@ -1041,6 +1238,7 @@ def run_training(
             "weight_decay",
             "gradient_clip_norm",
             "checkpoint_chunks",
+            "updates_history_limit",
             *_VALIDATION_BUDGET_FIELDS,
         }
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
@@ -1069,32 +1267,31 @@ def run_training(
     torch.manual_seed(config.seed)
     rest = generate_cuboid(config.cell_counts, cell_size=config.cell_size)
     fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == rest.corner_rest_positions[:, 2].min())
-    network = IntrinsicSolverNetwork(
-        config.cell_counts,
-        config.state_feature_dim,
-        conditioning_dim=config.conditioning_dim,
-        hidden_dim=config.hidden_dim,
-        edge_hidden_dim=config.edge_hidden_dim,
-        num_heads=config.num_heads,
-        hops=config.hops,
-        max_step_size=config.max_step_size,
-        query_chunk_size=config.query_chunk_size,
-        edge_network=config.edge_network,
-        checkpoint_chunks=config.checkpoint_chunks,
-        contact_tokens=config.contact,
-    ).to(device)
+    network = _build_network(config).to(device)
     if initial_weights is not None:
         # The architecture fields do not cover every parameter shape (a feature change without a
-        # schema bump keeps them equal), so compare the tensors themselves before touching the output.
-        mismatched = _parameter_shape_mismatches(initial_weights["network_state"], network.state_dict())
-        if mismatched:
+        # schema bump keeps them equal), so compare the tensors themselves before touching the output;
+        # only the listed schema migration may re-initialise tensors.
+        try:
+            initial_weights = migrate_weights_only_checkpoint(
+                initial_weights, network, source_schema_version=source_schema
+            )
+        except ValueError:
             if owned_group:
                 dist.destroy_process_group()
-            raise ValueError(
-                "weights-only initialization requires the checkpoint architecture; "
-                f"parameters missing or differing in shape: {mismatched}"
-            )
+            raise
+        initialized_from.update(initial_weights.migration)
         initialized_from["sha256"] = hashlib.sha256(Path(resume).read_bytes()).hexdigest()
+        if rank == 0 and config.verbose and initial_weights.migration["reinitialized_parameters"]:
+            migration = initial_weights.migration
+            print(
+                f"weights-only start from a schema-{source_schema} checkpoint: copied "
+                f"{migration['loaded_parameter_count']} tensors, re-initialised "
+                f"{migration['reinitialized_parameters']} (condition encoder input layer: weight std "
+                f"{CONDITION_ENCODER_REINIT_STD}, zero bias); AdamW moments of those parameters reset to zero, "
+                "step counters kept",
+                flush=True,
+            )
     step = MixedHexSolverStep(
         rest,
         fixed,
@@ -1107,7 +1304,9 @@ def run_training(
         contact_friction_epsilon=config.contact_friction_epsilon,
     ).to(device)
     cell_count = len(step.cell_corner_indices)
-    factory = _TrajectoryFactory(step, rest, config, rank=rank, unique_contexts=fixed_states)
+    factory = _TrajectoryFactory(
+        step, rest, config, rank=rank, unique_contexts=fixed_states, epoch_candidates=fixed_states
+    )
     validation_factory = _TrajectoryFactory(step, rest, config, rank=rank, validation=True)
     optimizer = torch.optim.AdamW(network.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     controller = PlateauController(
@@ -1195,6 +1394,8 @@ def run_training(
             if device.type == "cuda":
                 torch.cuda.set_rng_state(state["cuda_rng"], device)
             report = saved["report"]
+            # The update window applies to the loaded rows too (it may shrink on resume).
+            del report["updates"][: max(len(report["updates"]) - config.updates_history_limit, 0)]
             for field, previous, current in (
                 ("stage_descent_rate", previous_descent_rate, config.stage_descent_rate),
                 ("stage_max_epochs", previous_stage_limit, config.stage_max_epochs),
@@ -1262,8 +1463,8 @@ def run_training(
                 )
             if initial_weights is not None:
                 # AdamW moments carry over; the schedule overwrites the group rates at epoch 1.
-                network.load_state_dict(initial_weights["network_state"])
-                optimizer.load_state_dict(initial_weights["optimizer_state"])
+                network.load_state_dict(initial_weights.network_state)
+                optimizer.load_state_dict(initial_weights.optimizer_state)
             report = {
                 "format": "mixed_pool_v2",
                 "config": asdict(config),
@@ -1354,6 +1555,7 @@ def run_training(
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
             if fixed_states:
+                factory.epoch = epoch
                 counts = available_counts(epoch)
                 assignment = assign_jobs(
                     sample_epoch_jobs(config, epoch, config.seed),
@@ -1501,6 +1703,8 @@ def run_training(
                         "contact_pair_mean": sums[6] / query_count,
                     }
                 )
+                if len(report["updates"]) > config.updates_history_limit:
+                    del report["updates"][: len(report["updates"]) - config.updates_history_limit]
                 gradient_norm_max = max(gradient_norm_max, gradient_norm)
                 contact_penetration_max = max(contact_penetration_max, extremes[2])
                 totals.update(

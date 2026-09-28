@@ -23,11 +23,14 @@ import numpy as np
 
 from experiments.learned_intrinsic_solver.train_mixed import (
     _ARCHITECTURE_FIELDS,
+    CONDITION_ENCODER_REINIT_STD,
     JobAssignment,
     MixedTrainConfig,
+    _build_network,
     _fixed_state_counts,
     assign_jobs,
     fixed_state_stage,
+    migrate_weights_only_checkpoint,
     sample_epoch_jobs,
 )
 
@@ -358,6 +361,8 @@ class TestFixedStateTraining(unittest.TestCase):
             {"budget_cap": 0},
             {"state_count": 0},
             {"growth_stage_epochs": 0},
+            {"updates_history_limit": 0},
+            {"updates_history_limit": True},
         ):
             with self.subTest(**overrides), self.assertRaises(ValueError):
                 MixedTrainConfig(**overrides)
@@ -547,6 +552,156 @@ class TestFixedStateTraining(unittest.TestCase):
             )
             with self.assertRaises(FileExistsError):
                 run_training(root / "fixed", fixed_config, resume=checkpoint, resume_weights_only=True)
+
+    def test_update_rows_keep_only_the_most_recent_window(self):
+        """Keep the last ``updates_history_limit`` update rows, consecutively indexed, in the report, checkpoints and CSV."""
+        config = self.config(updates_history_limit=3)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            report = run_training(output, config)
+            total = report["completed_updates"]
+            self.assertGreater(total, 3)
+            self.assertEqual([row["update"] for row in report["updates"]], [total - 2, total - 1, total])
+            self.assertEqual(len(report["epochs"]), 2)
+            written = json.loads((output / "report.json").read_text())
+            self.assertEqual([row["update"] for row in written["updates"]], [total - 2, total - 1, total])
+            saved = torch.load(output / "checkpoints/final.pt", weights_only=False)
+            self.assertEqual([row["update"] for row in saved["report"]["updates"]], [total - 2, total - 1, total])
+            with (output / "updates.csv").open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual([int(row["update"]) for row in rows], [total - 2, total - 1, total])
+            progress = json.loads((output / "progress.json").read_text())
+            self.assertEqual(progress["latest_batch_loss"], report["updates"][-1]["loss"])
+            # The window may shrink on resume; it is not an architecture or physics field.
+            run_training(output / "split", replace(config, max_epochs=1))
+            resumed = run_training(
+                output / "split",
+                replace(config, updates_history_limit=2),
+                resume=output / "split/checkpoints/latest.pt",
+            )
+            self.assertEqual(resumed["completed_updates"], total)
+            self.assertEqual([row["update"] for row in resumed["updates"]], [total - 1, total])
+
+    def test_weights_only_start_from_a_schema_four_checkpoint_reinitializes_the_condition_encoder_input(self):
+        """Copy every matching tensor of a schema-4 checkpoint, redraw condition_encoder.0 and zero its moments."""
+        config = self.config(max_epochs=1)
+        torch.manual_seed(5)
+        network = _build_network(config)
+        optimizer = torch.optim.AdamW(network.parameters(), lr=1e-4, weight_decay=1e-6)
+        for _ in range(3):  # Give every parameter Adam moments and a step counter.
+            for parameter in network.parameters():
+                parameter.grad = torch.randn_like(parameter)
+            optimizer.step()
+        names = [name for name, _ in network.named_parameters()]
+        weight_index = names.index("condition_encoder.0.weight")
+        bias_index = names.index("condition_encoder.0.bias")
+        hidden = config.hidden_dim
+        network_state = {name: value.clone() for name, value in network.state_dict().items()}
+        network_state["condition_encoder.0.weight"] = torch.randn(hidden, 9)
+        optimizer_state = optimizer.state_dict()
+        for moment in ("exp_avg", "exp_avg_sq"):
+            optimizer_state["state"][weight_index][moment] = torch.rand(hidden, 9)
+        source = {
+            "format": "mixed_pool_v2",
+            "config": {**asdict(config), "feature_schema_version": 4},
+            "world_size": 1,
+            "network_state": network_state,
+            "optimizer_state": optimizer_state,
+            "report": {"completed_epochs": 3, "completed_updates": 12, "best_selection": None},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "schema4.pt"
+            torch.save(source, checkpoint)
+            # The migration function alone, as the offline dry check exercises it.
+            fresh = _build_network(config)
+            states = migrate_weights_only_checkpoint(source, fresh, source_schema_version=4)
+            self.assertEqual(
+                states.migration["reinitialized_parameters"], ["condition_encoder.0.bias", "condition_encoder.0.weight"]
+            )
+            self.assertEqual(
+                states.migration["shape_mismatches"],
+                {"condition_encoder.0.weight": {"checkpoint": [hidden, 9], "current": [hidden, 7]}},
+            )
+            self.assertEqual(
+                (states.migration["source_feature_schema_version"], states.migration["feature_schema_version"]), (4, 5)
+            )
+            self.assertEqual(states.migration["loaded_parameter_count"], len(network_state) - 2)
+            self.assertEqual(states.migration["condition_encoder_reinit_std"], CONDITION_ENCODER_REINIT_STD)
+            for name, value in network_state.items():
+                if name not in states.migration["reinitialized_parameters"]:
+                    torch.testing.assert_close(states.network_state[name], value, rtol=0, atol=0)
+            self.assertEqual(states.network_state["condition_encoder.0.weight"].shape, (hidden, 7))
+            self.assertLess(states.network_state["condition_encoder.0.weight"].abs().max().item(), 0.2)
+            self.assertGreater(states.network_state["condition_encoder.0.weight"].std().item(), 0.005)
+            torch.testing.assert_close(states.network_state["condition_encoder.0.bias"], torch.zeros(hidden))
+            for index in (weight_index, bias_index):
+                entry = states.optimizer_state["state"][index]
+                shape = states.network_state[names[index]].shape
+                torch.testing.assert_close(entry["exp_avg"], torch.zeros(shape), rtol=0, atol=0)
+                torch.testing.assert_close(entry["exp_avg_sq"], torch.zeros(shape), rtol=0, atol=0)
+                torch.testing.assert_close(entry["step"], optimizer_state["state"][index]["step"], rtol=0, atol=0)
+            for index, entry in optimizer_state["state"].items():
+                if index not in (weight_index, bias_index):
+                    for key, value in entry.items():
+                        torch.testing.assert_close(states.optimizer_state["state"][index][key], value, rtol=0, atol=0)
+            fresh.load_state_dict(states.network_state)
+            loaded = torch.optim.AdamW(fresh.parameters(), lr=1e-4, weight_decay=1e-6)
+            loaded.load_state_dict(states.optimizer_state)
+            # Same-schema and unlisted mismatches keep the strict architecture check.
+            same = migrate_weights_only_checkpoint(
+                {**source, "network_state": fresh.state_dict()}, _build_network(config), source_schema_version=5
+            )
+            self.assertEqual(same.migration["reinitialized_parameters"], [])
+            self.assertIsNone(same.migration["condition_encoder_reinit_std"])
+            with self.assertRaisesRegex(ValueError, "architecture.*condition_encoder.0.weight"):
+                migrate_weights_only_checkpoint(source, _build_network(config), source_schema_version=5)
+            mangled = dict(network_state, **{"correction_head.bias": torch.zeros(10)})
+            with self.assertRaisesRegex(ValueError, "architecture.*correction_head.bias"):
+                migrate_weights_only_checkpoint(
+                    {**source, "network_state": mangled}, _build_network(config), source_schema_version=4
+                )
+            # The trainer: a full resume across schemas stays rejected, the weights-only start records the load.
+            with self.assertRaisesRegex(ValueError, "legacy"):
+                run_training(root / "resumed", config, resume=checkpoint)
+            with self.assertRaisesRegex(ValueError, "legacy"):
+                run_training(
+                    root / "rejected",
+                    config,
+                    resume=self._with_schema(source, 3, root / "schema3.pt"),
+                    resume_weights_only=True,
+                )
+            with self.assertRaisesRegex(ValueError, "architecture"):
+                run_training(
+                    root / "rejected", replace(config, hidden_dim=16), resume=checkpoint, resume_weights_only=True
+                )
+            self.assertFalse((root / "rejected").exists())
+            report = run_training(root / "fixed", config, resume=checkpoint, resume_weights_only=True)
+            origin = report["initialized_from"]
+            self.assertEqual(origin["source_feature_schema_version"], 4)
+            self.assertEqual(origin["feature_schema_version"], 5)
+            self.assertEqual(
+                origin["reinitialized_parameters"], ["condition_encoder.0.bias", "condition_encoder.0.weight"]
+            )
+            self.assertEqual(origin["config_differences"]["feature_schema_version"], {"checkpoint": 4, "current": 5})
+            self.assertEqual((origin["completed_epochs"], origin["completed_updates"]), (3, 12))
+            initial = torch.load(root / "fixed/checkpoints/initial.pt", weights_only=False)
+            self.assertEqual(initial["report"]["initialized_from"], origin)
+            for name, value in network_state.items():
+                if name not in origin["reinitialized_parameters"]:
+                    torch.testing.assert_close(initial["network_state"][name], value, rtol=0, atol=0)
+            torch.testing.assert_close(initial["network_state"]["condition_encoder.0.bias"], torch.zeros(hidden))
+            self.assertEqual(initial["network_state"]["condition_encoder.0.weight"].shape, (hidden, 7))
+            entry = initial["optimizer_state"]["state"][weight_index]
+            torch.testing.assert_close(entry["exp_avg_sq"], torch.zeros(hidden, 7), rtol=0, atol=0)
+            torch.testing.assert_close(entry["step"], optimizer_state["state"][weight_index]["step"], rtol=0, atol=0)
+            self.assertEqual(report["completed_epochs"], 1)
+
+    @staticmethod
+    def _with_schema(source, version, path):
+        """Write ``source`` with another saved schema version and return the path."""
+        torch.save({**source, "config": {**source["config"], "feature_schema_version": version}}, path)
+        return path
 
 
 class TestWeightsOnlyCommandLines(unittest.TestCase):

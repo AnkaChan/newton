@@ -71,7 +71,9 @@ class TestDampingSolver(unittest.TestCase):
         step, candidate, inertial, previous = self._step()
         inputs = step.prepare_inputs(candidate, inertial, previous_positions=previous)
         self.assertEqual(inputs.state_features.shape, (1, 2, features.STATE_FEATURE_DIM))
-        torch.testing.assert_close(inputs.conditioning[..., 5], candidate.new_full((1, 2), np.log1p(4 / 6)))
+        viscosity = features.CONDITIONING_CHANNELS.index("log1p_viscosity_ratio")
+        others = [index for index in range(features.CONDITIONING_DIM) if index != viscosity]
+        torch.testing.assert_close(inputs.conditioning[..., viscosity], candidate.new_full((1, 2), np.log1p(4 / 6)))
         change = inputs.frames @ inputs.state_features[..., 9:18].reshape(1, 2, 3, 3)
         expected_change = torch.zeros(1, 2, 3, 3, dtype=candidate.dtype)
         expected_change[..., 0, 2] = 0.05
@@ -80,8 +82,8 @@ class TestDampingSolver(unittest.TestCase):
         undamped.network.load_state_dict(step.network.state_dict())
         plain = undamped.prepare_inputs(candidate, inertial, previous_positions=previous)
         torch.testing.assert_close(plain.state_features[..., :18], inputs.state_features[..., :18], rtol=0, atol=0)
-        torch.testing.assert_close(plain.conditioning[..., :5], inputs.conditioning[..., :5], rtol=0, atol=0)
-        torch.testing.assert_close(plain.conditioning[..., 5], torch.zeros(1, 2, dtype=candidate.dtype))
+        torch.testing.assert_close(plain.conditioning[..., others], inputs.conditioning[..., others], rtol=0, atol=0)
+        torch.testing.assert_close(plain.conditioning[..., viscosity], torch.zeros(1, 2, dtype=candidate.dtype))
         # Damping changes the physical gradient, hence the normalized gradient block and its log RMS.
         self.assertGreater((plain.state_features[..., 18:27] - inputs.state_features[..., 18:27]).abs().max(), 0)
         saved_y = inertial.clone()

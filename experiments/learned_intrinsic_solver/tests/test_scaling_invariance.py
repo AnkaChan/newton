@@ -35,16 +35,16 @@ trajectory test appends a fixed-step L-BFGS polish that works from gradient
 differences alone and reaches about 1e-6 h. The float64 one-step minimiser of
 the negative test has no such limit and agrees to 1e-6.
 
-One hidden absolute scale exists outside the energy and is documented rather
-than fixed here: the network state feature ``log_gradient_rms`` is the log of
-the fusion-projected axis gradient in joules and differs by exactly ``log(mu
-h^3)`` between the two spaces, in addition to the five conditioning channels
-that carry ``log h``, ``log dt`` and absolute material logs. Absolute
-constants that never enter the energy are not covered: the static-point
-sampling box margins of :mod:`contact_scene` (0.10 m and 0.35 m), its plane
-partner radius placeholder (1e9 m, saturating the token channel in both
-spaces), ``features.RMS_FLOOR`` (1e-12 J) and the 1e-12 degeneracy guards of
-the geometry helpers.
+Since :class:`mixed_physics.MixedHexSolverStep` evaluates its objective, fusion
+and network inputs in cell units (``tests/test_normalised_physics.py`` checks
+the SI equivalence), every network input coincides between the two spaces,
+including the state scalar ``log_gradient_rms`` and all conditioning channels
+of :func:`features.conditioning_channels`, which are the dimensionless groups
+of the law. Absolute constants that never enter the energy are not covered:
+the static-point sampling box margins of :mod:`contact_scene` (0.10 m and
+0.35 m), its plane partner radius placeholder (1e9 m, saturating the token
+channel in both spaces), ``features.RMS_FLOOR`` (1e-12, now in cell units) and
+the 1e-12 degeneracy guards of the geometry helpers.
 """
 
 import importlib.util
@@ -741,7 +741,7 @@ class TestScalingInvariance(unittest.TestCase):
             self.assertFalse(math.isclose(scene.groups()["Lambda"], scene.partially_normalised().groups()["Lambda"]))
 
     def test_energy_floor_and_conditioning_channels(self):
-        """MixedHexSolverStep.energy_floor scales with mu h^3; only four of nine conditioning channels are invariant."""
+        """MixedHexSolverStep.energy_floor scales with mu h^3 and every conditioning channel is invariant."""
         scenes = [
             _scene(1e3, 0.3, 100.0, 0.0),
             _scene(1e6, 0.45, 5000.0, 300.0),
@@ -796,6 +796,7 @@ class TestScalingInvariance(unittest.TestCase):
                 column("damping"),
                 cell_size,
                 time_step,
+                materials[0].gravity,
                 contact_ke=column("contact_ke"),
                 contact_kd=column("contact_kd"),
                 contact_mu=column("contact_mu"),
@@ -803,35 +804,27 @@ class TestScalingInvariance(unittest.TestCase):
 
         conditioning = channels(scenes, CELL_SIZE, TIME_STEP)
         unit_conditioning = channels(units, 1.0, 1.0)
-        dimensionless = {"log1p_damping", "log1p_contact_kappa", "contact_beta", "contact_mu"}
-        differing = set()
+        # Every channel is a dimensionless group of the law, so the two spaces agree column by column.
         for column, name in enumerate(features.CONDITIONING_CHANNELS):
-            same = torch.allclose(conditioning[:, column], unit_conditioning[:, column], rtol=1e-9, atol=1e-12)
-            if name in dimensionless:
-                self.assertTrue(same, f"{name} is dimensionless and must coincide")
-            elif not same:
-                differing.add(name)
-        print(f"conditioning channels that carry an absolute scale today: {sorted(differing)}")
-        # Not part of the law: this records the current behaviour of features.conditioning_channels, whose
-        # remaining channels are log1p(lambda / 1e5), log1p(mu / 1e5), log(rho / 1000), log(h / 0.025) and
-        # log(60 dt). They are the to-do list of the note's implementation sketch (replace them by the groups
-        # lambda / mu, Lambda, Gamma and Xi); this assertion flips, and should be deleted, when that lands.
-        self.assertEqual(differing, set(features.CONDITIONING_CHANNELS) - dimensionless)
+            torch.testing.assert_close(
+                conditioning[:, column], unit_conditioning[:, column], rtol=1e-9, atol=1e-12, msg=name
+            )
+        self.assertTrue((conditioning[:, :5] != 0).any(dim=0).all(), "every material and contact group is exercised")
+        # A scene rescaled in h alone (rho, g, dt unchanged) is a different problem and gets different channels.
+        self.assertFalse(torch.allclose(channels(scenes, 2 * CELL_SIZE, TIME_STEP), conditioning))
 
-    def test_network_inputs_are_invariant_except_log_gradient_rms(self):
-        """MixedHexSolverStep.prepare_inputs is scale-free except for ``log_gradient_rms`` and five conditioning channels.
+    def test_network_inputs_are_invariant(self):
+        """Every network input of MixedHexSolverStep.prepare_inputs is scale-free, ``log_gradient_rms`` included.
 
-        Documents a hidden absolute scale in production code that the note's
-        "what already is dimensionless" section misses: the state scalar
-        ``log_gradient_rms`` (:func:`input_assembly.assemble_inputs`) is the
-        log of the RMS of the fusion-projected axis gradient in joules, so it
-        differs by exactly ``log(mu h^3)`` between the two spaces. Every other
-        network input coincides in float32: frames, local axes, the five
-        matrix blocks (the gradient blocks are RMS-normalised), boundary
-        flags, edge features and contact tokens, while the diagnostics scale
-        as forces (position gradient, mu h^2) and energies (axis gradient, mu
-        h^3). The test also checks the float32 mixed-step objective term by
-        term at a common state, ``step.energy(X, ...) = mu h^3
+        The step evaluates the objective and the fusion in cell units, so the
+        state scalar ``log_gradient_rms`` is the log RMS of the normalised
+        axis gradient and coincides between the two spaces, as do frames,
+        local axes, the five matrix blocks, boundary flags, edge features,
+        contact tokens and all conditioning channels. ``axis_gradient_world``
+        is reported in cell units and coincides too; ``position_gradient`` is
+        reported in newtons and scales with ``mu h^2`` like the force
+        residual. The test also checks the float32 mixed-step objective
+        term by term at a common state, ``step.energy(X, ...) = mu h^3
         step'.energy(X / h, ...)``, which the trajectory test only implies at
         two independently converged minimisers.
         """
@@ -860,12 +853,10 @@ class TestScalingInvariance(unittest.TestCase):
         deviation = {
             "frames": _deviation(physical_inputs.frames, unit_inputs.frames),
             "local_axes": _deviation(physical_inputs.local_axes, unit_inputs.local_axes),
-            "position_gradient_over_mu_h2": _deviation(
+            "position_gradient": _deviation(
                 physical_inputs.position_gradient, scene.force_scale * unit_inputs.position_gradient
             ),
-            "axis_gradient_over_mu_h3": _deviation(
-                physical_inputs.axis_gradient_world, scene.energy_scale * unit_inputs.axis_gradient_world
-            ),
+            "axis_gradient_world": _deviation(physical_inputs.axis_gradient_world, unit_inputs.axis_gradient_world),
         }
         state, unit_state = physical_inputs.state_features, unit_inputs.state_features
         # The matrix blocks are dimensionless with natural scale one (F differences, RMS-normalised gradients), so
@@ -891,27 +882,22 @@ class TestScalingInvariance(unittest.TestCase):
         for name, value in deviation.items():
             self.assertLessEqual(value, FLOAT32_RTOL, name)
 
-        # The hidden absolute scale: one value per object, offset by log(mu h^3) exactly.
+        # The former hidden absolute scale: the log RMS is now dimensionless and coincides. Its value is far from
+        # log(mu h^3) apart, so the agreement is not accidental.
         column = _state_column("log_gradient_rms")
         log_rms, unit_log_rms = state[..., column], unit_state[..., column]
         self.assertEqual(log_rms.unique().numel(), 1, "log_gradient_rms is broadcast per object")
         offset = (log_rms[0, 0] - unit_log_rms[0, 0]).item()
         print(
             f"log_gradient_rms: physical {log_rms[0, 0].item():+.6f}, normalised {unit_log_rms[0, 0].item():+.6f}, "
-            f"offset {offset:+.6f} versus log(mu h^3) = {math.log(scene.energy_scale):+.6f}"
+            f"offset {offset:+.2e} (log(mu h^3) = {math.log(scene.energy_scale):+.6f} would be the SI offset)"
         )
-        self.assertAlmostEqual(offset, math.log(scene.energy_scale), delta=FLOAT32_RTOL)
-        self.assertGreater(abs(offset), 1.0, "the offset is far from zero for this scene")
-        # The conditioning agrees only in its four dimensionless channels (see the floor test for the full list).
-        conditioning, unit_conditioning = physical_inputs.conditioning[0, 0], unit_inputs.conditioning[0, 0]
-        same = {
-            name
-            for name, value, unit_value in zip(
-                features.CONDITIONING_CHANNELS, conditioning.tolist(), unit_conditioning.tolist(), strict=True
-            )
-            if abs(value - unit_value) <= 1e-6
-        }
-        self.assertEqual(same, {"log1p_damping", "log1p_contact_kappa", "contact_beta", "contact_mu"})
+        self.assertLessEqual(abs(offset), FLOAT32_RTOL)
+        self.assertGreater(abs(math.log(scene.energy_scale)), 1.0, "an SI log RMS would be far off for this scene")
+        # Every conditioning channel coincides (the floor test checks the function on several materials).
+        torch.testing.assert_close(
+            physical_inputs.conditioning[0, 0], unit_inputs.conditioning[0, 0], rtol=0, atol=1e-6
+        )
 
         # Float32 objective of the mixed step at a common state (the rigid candidate plus 2 % h smooth noise).
         common = batch["candidate"] + _smooth_field(self.rest, self.generator, amplitude=0.02 * h, dtype=torch.float32)

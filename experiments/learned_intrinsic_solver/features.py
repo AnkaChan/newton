@@ -3,7 +3,7 @@
 
 """Revised nine-value input schema for the learned hexahedral optimizer.
 
-This module is the single source of truth for the schema-4 node input layout
+This module is the single source of truth for the schema-5 node input layout
 and holds the pure feature functions that the mixed-material step composes.
 Every spatial matrix block is a 3x3 matrix expressed in the receiving cell's
 current proper frame ``R`` (world columns) and flattened row-major; see
@@ -13,9 +13,13 @@ separately, so the node input has ``9 + STATE_FEATURE_DIM`` values, plus
 :data:`CONTACT_FEATURE_DIM` pooled contact channels that the network produces
 itself from :data:`CONTACT_TOKEN_DIM`-wide contact tokens when contact tokens
 are enabled (``contact_features.build_contact_tokens`` builds the tokens).
-Schema 4 also appends three dimensionless contact channels to the per-object
-conditioning; contact-free objects carry zeros there, so the schema-3 inputs
-are recovered exactly.
+The per-object conditioning (:func:`conditioning_channels`) consists of
+dimensionless groups only: the Lamé ratio, the inertia-to-stiffness ratio
+``rho h^2 / (mu dt^2)``, the gravity drop per step in cell units ``|g| dt^2 /
+h``, the viscosity ratio ``eta / (mu dt)`` and the three contact ratios of
+:func:`contact_ratios`. Two scenes related by the cell-normalisation law of
+``notes/ideas/idea-normalize-cells.md`` therefore receive identical
+conditioning; contact-free objects carry zeros in the contact channels.
 
 Normalization follows the LeCO convention (plan: "Gradient inputs and
 normalization"): the current and previous axis gradients share the current
@@ -82,20 +86,18 @@ STATE_FEATURE_DIM = MATRIX_FEATURE_DIM + BOUNDARY_DIM + len(SCALAR_FEATURES)
 """Total state width (61): 45 matrix components, 14 boundary flags, 2 scalars."""
 
 CONDITIONING_CHANNELS = (
-    "log1p_lame_lambda",
-    "log1p_lame_mu",
-    "log_density",
-    "log_cell_size",
-    "log_time_step",
-    "log1p_damping",
+    "log1p_lame_ratio",
+    "log_inertia_ratio",
+    "log1p_gravity_ratio",
+    "log1p_viscosity_ratio",
     "log1p_contact_kappa",
     "contact_beta",
     "contact_mu",
 )
-"""Per-object conditioning channels in order; see :func:`conditioning_channels`."""
+"""Per-object dimensionless conditioning channels in order; see :func:`conditioning_channels`."""
 
 CONDITIONING_DIM = len(CONDITIONING_CHANNELS)
-"""Number of conditioning channels (9): six material channels and three contact channels."""
+"""Number of conditioning channels (7): four material/scale groups and three contact ratios."""
 
 CONTACT_TOKEN_DIM = 19
 """Channels per contact token; layout in :func:`contact_features.build_contact_tokens`."""
@@ -106,8 +108,15 @@ CONTACT_FEATURE_DIM = 17
 EDGE_FEATURE_DIM = 24
 """Directed-edge descriptor width from :func:`network_geometry.build_edge_features`."""
 
-FEATURE_SCHEMA_VERSION = 4
-"""Schema version stored in checkpoints; schema 3 (six conditioning channels) and older are incompatible."""
+FEATURE_SCHEMA_VERSION = 5
+"""Schema version stored in checkpoints.
+
+Schema 5: the seven dimensionless conditioning channels above, a dimensionless
+``log_gradient_rms`` and optimizer history (``axis_gradient_world``) in units
+of ``mu h^3``. Schema 4 (nine channels with absolute material references,
+history in joules) and older are incompatible; a schema-4 checkpoint may only
+seed a weights-only start (see ``train_mixed``).
+"""
 
 RMS_FLOOR = 1e-12
 """Lower bound on every input RMS before division."""
@@ -115,10 +124,6 @@ RMS_FLOOR = 1e-12
 CLIP = 10.0
 """Symmetric clip applied to normalized local-frame components."""
 
-_REFERENCE_LAME = 1e5
-_REFERENCE_DENSITY = 1000.0
-_REFERENCE_CELL_SIZE = 0.025
-_REFERENCE_TIME_STEP = 1.0 / 60.0
 _HISTORY_BLOCKS = ("previous_axis_gradient", "previous_axis_update")
 
 
@@ -157,6 +162,23 @@ def _require_positive_scalar(name: str, value) -> float:
     if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be a positive finite number")
     return float(value)
+
+
+def _gravity_magnitude(gravity) -> float:
+    """Return ``|g|`` from a nonnegative finite magnitude or a finite three-vector (sequence or tensor)."""
+    import torch
+
+    if isinstance(gravity, Real) and not isinstance(gravity, bool):
+        if not math.isfinite(gravity) or gravity < 0:
+            raise ValueError("gravity must be a nonnegative finite magnitude or a finite three-vector")
+        return float(gravity)
+    try:
+        vector = torch.as_tensor(gravity, dtype=torch.float64).detach().cpu()
+    except (TypeError, ValueError, RuntimeError) as error:
+        raise ValueError("gravity must be a nonnegative finite magnitude or a finite three-vector") from error
+    if vector.shape != (3,) or not torch.isfinite(vector).all():
+        raise ValueError("gravity must be a nonnegative finite magnitude or a finite three-vector")
+    return float(torch.linalg.vector_norm(vector))
 
 
 def center_deformation(
@@ -442,27 +464,33 @@ def conditioning_channels(
     damping: torch.Tensor,
     cell_size: float,
     time_step: float,
+    gravity,
     *,
     contact_ke: torch.Tensor | None = None,
     contact_kd: torch.Tensor | None = None,
     contact_mu: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Build the nine per-object conditioning channels, shape [B, 9].
+    """Build the seven dimensionless per-object conditioning channels, shape [B, 7].
 
     Channel order follows :data:`CONDITIONING_CHANNELS`::
 
-        log1p(lambda / 1e5), log1p(mu / 1e5), log(rho / 1000),
-        log(h / 0.025), log(dt * 60), log1p(eta / (mu * dt)),
-        log1p(ke / (E h)), kd / (ke dt), mu_contact
+        log1p(lambda / mu), log(rho h^2 / (mu dt^2)), log1p(|g| dt^2 / h),
+        log1p(eta / (mu dt)), log1p(ke / (E h)), kd / (ke dt), mu_contact
 
     with the Young's modulus ``E = mu (3 lambda + 2 mu) / (lambda + mu)``; see
-    :func:`contact_ratios`. The viscosity and contact channels are
-    dimensionless and do not rescale the physical values. A contact argument
-    left at None means zeros for every object, so contact-free objects produce
-    ``log1p(0) = 0``, ``beta = 0`` and ``mu = 0`` in the last three channels.
-    Material tensors are not value-checked here (contexts validate them);
-    nonpositive entries would produce nonfinite channels visibly. Callers expand
-    the result to cells as needed.
+    :func:`contact_ratios`. Every channel is a dimensionless group of the
+    cell-normalisation law (``notes/ideas/idea-normalize-cells.md``): a scene
+    and its normalised copy (``h' = dt' = mu' = 1`` with ``rho' = rho h^2 / (mu
+    dt^2)``, ``g' = g dt^2 / h``, ``eta' = eta / (mu dt)``, ``ke' = ke / (mu
+    h)``, ``kd' = kd / (mu h dt)``) produce identical channels, so no absolute
+    reference scale enters the network. ``log1p`` is used wherever the ratio
+    may legitimately be zero (``lambda = 0``, zero gravity, zero viscosity,
+    no contact); the inertia ratio is strictly positive and uses ``log``. A
+    contact argument left at None means zeros for every object, so
+    contact-free objects produce ``log1p(0) = 0``, ``beta = 0`` and ``mu = 0``
+    in the last three channels. Material tensors are not value-checked here
+    (contexts validate them); nonpositive entries would produce nonfinite
+    channels visibly. Callers expand the result to cells as needed.
 
     Args:
         lame_lambda: First Lamé parameter [Pa], shape [B].
@@ -471,12 +499,15 @@ def conditioning_channels(
         damping: Viscosity eta [Pa s], shape [B].
         cell_size: Positive finite rest voxel edge length [m].
         time_step: Positive finite physical time step [s].
+        gravity: Gravitational acceleration [m/s^2] as a nonnegative finite
+            magnitude or a finite three-vector (sequence or tensor); only
+            ``|g|`` enters the channel.
         contact_ke: Contact stiffness [N/m], shape [B]; None means zeros.
         contact_kd: Contact damping [N s/m], shape [B]; None means zeros.
         contact_mu: Contact friction coefficient, shape [B]; None means zeros.
 
     Returns:
-        Conditioning channels, shape [B, 9], in the dtype and device of lame_mu.
+        Conditioning channels, shape [B, 7], in the dtype and device of lame_mu.
 
     Raises:
         TypeError: If a material input is not a floating tensor or dtypes differ.
@@ -489,15 +520,14 @@ def conditioning_channels(
     )
     size = _require_positive_scalar("cell_size", cell_size)
     step = _require_positive_scalar("time_step", time_step)
+    magnitude = _gravity_magnitude(gravity)
     contact = [torch.zeros_like(lame_mu) if value is None else value for value in (contact_ke, contact_kd, contact_mu)]
     ratios = contact_ratios(lame_lambda, lame_mu, *contact, size, step)
 
     channels = (
-        (lame_lambda / _REFERENCE_LAME).log1p(),
-        (lame_mu / _REFERENCE_LAME).log1p(),
-        (density / _REFERENCE_DENSITY).log(),
-        torch.full_like(lame_mu, math.log(size / _REFERENCE_CELL_SIZE)),
-        torch.full_like(lame_mu, math.log(step / _REFERENCE_TIME_STEP)),
+        (lame_lambda / lame_mu).log1p(),
+        (density * size**2 / (lame_mu * step**2)).log(),
+        torch.full_like(lame_mu, math.log1p(magnitude * step**2 / size)),
         (damping / (lame_mu * step)).log1p(),
         ratios[:, 0].log1p(),
         ratios[:, 1],

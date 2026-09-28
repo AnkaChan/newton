@@ -160,3 +160,37 @@ shared use of the physics step.
   shape check the start now fails cleanly with the architecture `ValueError` instead of a raw size
   mismatch, but run 3 cannot start from the run-2 weights until that edit is reverted, stashed or
   landed with a schema bump and a retrain.
+
+### Implementation record — 2026-09-28, schema 5 and the two open design questions
+
+Uncommitted in the same worktree, on top of `14dc83c1`. The normalised physics landed with
+`features.FEATURE_SCHEMA_VERSION = 5` (see `notes/v3-implementation-record-20260927.md`, "normalised
+physics"), which resolves the launch blocker: run 3 starts weights-only from run 2's schema-4
+`best_validation.pt` through `train_mixed.migrate_weights_only_checkpoint` (58 tensors copied,
+`condition_encoder.0` redrawn with weight std 0.02 and zero bias, its AdamW moments zeroed, step counters
+kept; recorded under `report["initialized_from"]`). `generated/training_v3_fixed_config.json` carries
+`feature_schema_version 5` and `updates_history_limit 8192`; `generated/start_training_v3_fixed.sh` is
+unchanged apart from its header comment. The offline dry check of exactly that code path passed on the CPU.
+
+- **Per-epoch candidates (question 1).** The fixed-state training factory is built with
+  `epoch_candidates=True` and the trainer sets `factory.epoch = epoch` before `pool.set_jobs`; its
+  candidate stream is `SeedSequence([master_seed, seed, physical_age, epoch, 911])`, so a fixed state
+  draws a different inertial/perturbed choice and noise every epoch. Within one epoch a filler job
+  `(seed, 1, 1)` still shares its seed's first candidate (same epoch, same physical age); across epochs
+  every state's candidates differ. The pool regime and both validation factories keep the epoch-free
+  stream `[master_seed, seed, physical_age, 911]` bit for bit (validation stays comparable across
+  epochs). Drawing before the epoch is set raises. Test: `test_train_mixed` reproduces both streams from
+  their documented sequences over 60 seeds and two epochs.
+- **Bounded update rows (question 2).** `MixedTrainConfig.updates_history_limit: int = 8192` (validated
+  positive; a resume may change it) keeps only the most recent rows in `report["updates"]`, hence in
+  `report.json`, every checkpoint and `updates.csv`; epoch rows are untouched, `progress.json` reads the
+  latest row as before and the loss-curve panel plots epoch rows, so the dashboard is unaffected. A
+  resumed report is trimmed to the current limit. Test: `test_fixed_state_regime` checks the last N
+  consecutive indices in the report, `report.json`, `final.pt` and the CSV, and the shrink on resume.
+- **Verification** (CPU, `CUDA_VISIBLE_DEVICES=""`): targeted modules after the change —
+  `test_features + test_damping_training + test_damping_solver + test_mixed_damping + test_mixed_physics`:
+  62 OK; `test_train_mixed`: 33 OK; `test_fixed_state_regime`: 20 OK (two new tests); consumer and
+  solver-step modules (`test_mixed_training_reference`, `test_training_cli`, `test_launch_training`,
+  `test_mixed_report`, `test_newton_solver`, `test_unrolled_solver`, `test_solver_step`,
+  `test_scaling_invariance`, `test_normalised_physics`, `test_mixed_validation`, `test_replay_rollout`,
+  `test_evaluate_rollout`): 103 OK. Whole suite (`python -m unittest discover -s experiments/learned_intrinsic_solver/tests -t .`): `Ran 604 tests in 163.615s — OK (skipped=5)`; `uvx ruff check` clean on the package, `ruff format --check` clean on every touched file.

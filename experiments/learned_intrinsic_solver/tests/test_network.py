@@ -160,13 +160,13 @@ class TestIntrinsicSolverNetwork(unittest.TestCase):
             torch.testing.assert_close(actual, wanted, rtol=0, atol=0)
 
     def test_default_one_layer_radius_one_and_training_config(self):
-        """Use one masked 27-slot neighborhood with the revised 61-feature, nine-channel width by default."""
+        """Use one masked 27-slot neighborhood with the revised 61-feature, seven-channel width by default."""
         model = IntrinsicSolverNetwork((3, 3, 3), features.STATE_FEATURE_DIM)
         self.assertEqual(model.conditioning_dim, features.CONDITIONING_DIM)
         self.assertEqual(TrainSmokeConfig().hops, (1,))
         self.assertEqual(model.hops, (1,))
         self.assertEqual(len(model.layers), 1)
-        self.assertEqual(sum(parameter.numel() for parameter in model.parameters()), 323598)
+        self.assertEqual(sum(parameter.numel() for parameter in model.parameters()), 323342)
         self.assertEqual(model.node_encoder[0].in_features, 9 + features.STATE_FEATURE_DIM)
         self.assertFalse(model.contact_tokens)
         self.assertIsNone(model.contact_encoder)

@@ -32,7 +32,7 @@ def _proper_rotations(*shape: int, dtype: torch.dtype = torch.float64) -> torch.
 
 class TestSchemaConstants(unittest.TestCase):
     def test_dimensions_and_order(self):
-        """Pin the schema-4 widths and packing order the network and trainer depend on."""
+        """Pin the schema-5 widths and packing order the network and trainer depend on."""
         self.assertEqual(
             features.MATRIX_BLOCKS,
             (
@@ -47,16 +47,14 @@ class TestSchemaConstants(unittest.TestCase):
         self.assertEqual(features.BOUNDARY_DIM, 14)
         self.assertEqual(features.SCALAR_FEATURES, ("log_gradient_rms", "history_valid"))
         self.assertEqual(features.STATE_FEATURE_DIM, 61)
-        self.assertEqual(features.CONDITIONING_DIM, 9)
+        self.assertEqual(features.CONDITIONING_DIM, 7)
         self.assertEqual(
             features.CONDITIONING_CHANNELS,
             (
-                "log1p_lame_lambda",
-                "log1p_lame_mu",
-                "log_density",
-                "log_cell_size",
-                "log_time_step",
-                "log1p_damping",
+                "log1p_lame_ratio",
+                "log_inertia_ratio",
+                "log1p_gravity_ratio",
+                "log1p_viscosity_ratio",
                 "log1p_contact_kappa",
                 "contact_beta",
                 "contact_mu",
@@ -65,7 +63,7 @@ class TestSchemaConstants(unittest.TestCase):
         self.assertEqual(features.CONTACT_TOKEN_DIM, 19)
         self.assertEqual(features.CONTACT_FEATURE_DIM, 17)
         self.assertEqual(features.EDGE_FEATURE_DIM, 24)
-        self.assertEqual(features.FEATURE_SCHEMA_VERSION, 4)
+        self.assertEqual(features.FEATURE_SCHEMA_VERSION, 5)
         self.assertEqual(features.RMS_FLOOR, 1e-12)
         self.assertEqual(features.CLIP, 10.0)
 
@@ -303,38 +301,69 @@ class TestToLocal(unittest.TestCase):
 
 class TestConditioningChannels(unittest.TestCase):
     def test_channel_formulas(self):
-        """Match the nine documented channel formulas with zero contact channels when contact is omitted."""
-        time_step = 1.0 / 60.0
-        channels = features.conditioning_channels(
-            torch.tensor([1e5, 2e5]),
-            torch.tensor([1e5, 5e4]),
-            torch.tensor([1000.0, 2000.0]),
-            torch.tensor([0.0, 3.0]),
-            0.025,
-            time_step,
-        )
-        self.assertEqual(channels.shape, (2, 9))
-        expected = torch.tensor(
-            [
-                [math.log1p(1.0), math.log1p(1.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [
-                    math.log1p(2.0),
-                    math.log1p(0.5),
-                    math.log(2.0),
-                    0.0,
-                    0.0,
-                    math.log1p(3.0 / (5e4 * time_step)),
-                    0.0,
-                    0.0,
-                    0.0,
-                ],
-            ]
+        """Match the seven documented dimensionless groups, with zero contact channels when contact is omitted."""
+        h, dt, g = 0.025, 1.0 / 60.0, 9.81
+        lam = torch.tensor([1e5, 2e5])
+        mu = torch.tensor([1e5, 5e4])
+        rho = torch.tensor([1000.0, 2000.0])
+        eta = torch.tensor([0.0, 3.0])
+        channels = features.conditioning_channels(lam, mu, rho, eta, h, dt, g)
+        self.assertEqual(channels.shape, (2, 7))
+        expected = torch.stack(
+            (
+                (lam / mu).log1p(),
+                (rho * h**2 / (mu * dt**2)).log(),
+                torch.full((2,), math.log1p(g * dt**2 / h)),
+                (eta / (mu * dt)).log1p(),
+                torch.zeros(2),
+                torch.zeros(2),
+                torch.zeros(2),
+            ),
+            dim=-1,
         )
         torch.testing.assert_close(channels, expected)
-        scaled = features.conditioning_channels(
-            torch.tensor([1e5]), torch.tensor([1e5]), torch.tensor([1000.0]), torch.tensor([0.0]), 0.05, 1.0 / 300.0
+        self.assertAlmostEqual(channels[0, 0].item(), math.log(2.0), places=6)
+        self.assertAlmostEqual(channels[1, 3].item(), math.log1p(3.0 / (5e4 * dt)), places=6)
+        # Gravity enters through its magnitude only, whether given as a number, a sequence or a tensor.
+        for vector in ((0.0, -g, 0.0), torch.tensor([0.0, -g, 0.0]), torch.tensor([g, 0.0, 0.0]).double()):
+            torch.testing.assert_close(features.conditioning_channels(lam, mu, rho, eta, h, dt, vector), channels)
+        # Zero gravity and zero lambda are legal and stay finite (log1p, not log).
+        weightless = features.conditioning_channels(lam, mu, rho, eta, h, dt, 0.0)
+        torch.testing.assert_close(weightless[:, 2], torch.zeros(2))
+        torch.testing.assert_close(weightless[:, [0, 1, 3]], channels[:, [0, 1, 3]])
+        incompressible = features.conditioning_channels(torch.zeros(2), mu, rho, eta, h, dt, g)
+        self.assertTrue(torch.isfinite(incompressible).all())
+        torch.testing.assert_close(incompressible[:, 0], torch.zeros(2))
+        torch.testing.assert_close(incompressible[:, 1:], channels[:, 1:])
+
+    def test_channels_are_invariant_under_the_normalisation_law(self):
+        """SI parameters and their normalised copy (h = dt = mu = 1) give the same channels; h or dt alone do not."""
+        h, dt, g = 0.025, 1.0 / 300.0, 9.81
+        lam, mu = torch.tensor([1.5e3, 9e5]), torch.tensor([1e3, 1e5])
+        rho, eta = torch.tensor([1200.0, 80.0]), torch.tensor([7.0, 0.0])
+        ke, kd, friction = torch.tensor([30.0, 0.0]), torch.tensor([0.02, 0.0]), torch.tensor([0.4, 0.0])
+        physical = features.conditioning_channels(
+            lam, mu, rho, eta, h, dt, g, contact_ke=ke, contact_kd=kd, contact_mu=friction
         )
-        torch.testing.assert_close(scaled[0, 3:5], torch.tensor([math.log(2.0), math.log(60.0 / 300.0)]))
+        normalised = features.conditioning_channels(
+            lam / mu,
+            torch.ones(2),
+            rho * h**2 / (mu * dt**2),
+            eta / (mu * dt),
+            1.0,
+            1.0,
+            g * dt**2 / h,
+            contact_ke=ke / (mu * h),
+            contact_kd=kd / (mu * h * dt),
+            contact_mu=friction,
+        )
+        torch.testing.assert_close(physical, normalised, rtol=1e-6, atol=1e-6)
+        self.assertTrue((physical[0, :5] != 0).all(), "every group is exercised by the first object")
+        # The groups are not invariant under a change of h or dt alone, which is the point of forming them.
+        for size, step in ((2 * h, dt), (h, 2 * dt)):
+            other = features.conditioning_channels(lam, mu, rho, eta, size, step, g)
+            self.assertFalse(torch.allclose(other[:, 1:3], physical[:, 1:3]))
+            torch.testing.assert_close(other[:, 0], physical[:, 0])
 
     def test_contact_channels_and_ratios(self):
         """Append log1p(ke / (E h)), kd / (ke dt) and mu, with beta exactly zero where ke = 0."""
@@ -345,7 +374,7 @@ class TestConditioningChannels(unittest.TestCase):
         ke = torch.tensor([2e3, 0.0, 5e2])
         kd = torch.tensor([4.0, 7.0, 0.0])
         friction = torch.tensor([0.3, 0.9, 0.0])
-        cell_size, time_step = 0.025, 1.0 / 300.0
+        cell_size, time_step, gravity = 0.025, 1.0 / 300.0, 9.81
         ratios = features.contact_ratios(lam, mu, ke, kd, friction, cell_size, time_step)
         self.assertEqual(ratios.shape, (3, 3))
         youngs = mu * (3 * lam + 2 * mu) / (lam + mu)
@@ -354,39 +383,44 @@ class TestConditioningChannels(unittest.TestCase):
         torch.testing.assert_close(ratios[:, 2], friction)
         self.assertTrue(torch.isfinite(ratios).all())
         channels = features.conditioning_channels(
-            lam, mu, rho, eta, cell_size, time_step, contact_ke=ke, contact_kd=kd, contact_mu=friction
+            lam, mu, rho, eta, cell_size, time_step, gravity, contact_ke=ke, contact_kd=kd, contact_mu=friction
         )
-        self.assertEqual(channels.shape, (3, 9))
-        baseline = features.conditioning_channels(lam, mu, rho, eta, cell_size, time_step)
-        torch.testing.assert_close(channels[:, :6], baseline[:, :6])
-        torch.testing.assert_close(channels[:, 6], ratios[:, 0].log1p())
-        torch.testing.assert_close(channels[:, 7:], ratios[:, 1:])
-        torch.testing.assert_close(baseline[:, 6:], torch.zeros(3, 3))
+        self.assertEqual(channels.shape, (3, 7))
+        baseline = features.conditioning_channels(lam, mu, rho, eta, cell_size, time_step, gravity)
+        torch.testing.assert_close(channels[:, :4], baseline[:, :4])
+        torch.testing.assert_close(channels[:, 4], ratios[:, 0].log1p())
+        torch.testing.assert_close(channels[:, 5:], ratios[:, 1:])
+        torch.testing.assert_close(baseline[:, 4:], torch.zeros(3, 3))
         # E = 1e5 * (3e5 + 2e5) / 2e5 = 2.5e5 for the first object, so kappa = 2e3 / (2.5e5 * 0.025).
-        self.assertAlmostEqual(channels[0, 6].item(), math.log1p(2e3 / (2.5e5 * 0.025)), places=6)
-        partial = features.conditioning_channels(lam, mu, rho, eta, cell_size, time_step, contact_mu=friction)
-        torch.testing.assert_close(partial[:, 6:8], torch.zeros(3, 2))
-        torch.testing.assert_close(partial[:, 8], friction)
+        self.assertAlmostEqual(channels[0, 4].item(), math.log1p(2e3 / (2.5e5 * 0.025)), places=6)
+        partial = features.conditioning_channels(lam, mu, rho, eta, cell_size, time_step, gravity, contact_mu=friction)
+        torch.testing.assert_close(partial[:, 4:6], torch.zeros(3, 2))
+        torch.testing.assert_close(partial[:, 6], friction)
 
     def test_rejects_invalid_inputs(self):
-        """Refuse nonpositive or nonfinite scalars and mismatched material tensors."""
+        """Refuse nonpositive or nonfinite scalars, invalid gravity and mismatched material tensors."""
         lam, mu, rho, eta = (torch.tensor([1e5]) for _ in range(4))
         with self.assertRaises(ValueError):
-            features.conditioning_channels(lam, mu, rho, eta, 0.0, 0.01)
+            features.conditioning_channels(lam, mu, rho, eta, 0.0, 0.01, 9.81)
         with self.assertRaises(ValueError):
-            features.conditioning_channels(lam, mu, rho, eta, 0.025, math.nan)
+            features.conditioning_channels(lam, mu, rho, eta, 0.025, math.nan, 9.81)
         with self.assertRaises(ValueError):
-            features.conditioning_channels(lam, mu, rho, eta, 0.025, True)
+            features.conditioning_channels(lam, mu, rho, eta, 0.025, True, 9.81)
+        for gravity in (-9.81, math.nan, math.inf, True, (0.0, -9.81), torch.zeros(2, 3), (0.0, math.nan, 0.0), "g"):
+            with self.subTest(gravity=gravity), self.assertRaises(ValueError):
+                features.conditioning_channels(lam, mu, rho, eta, 0.025, 0.01, gravity)
         with self.assertRaises(ValueError):
-            features.conditioning_channels(torch.tensor([1e5, 1e5]), mu, rho, eta, 0.025, 0.01)
+            features.conditioning_channels(torch.tensor([1e5, 1e5]), mu, rho, eta, 0.025, 0.01, 9.81)
         with self.assertRaises(ValueError):
-            features.conditioning_channels(lam[None], mu[None], rho[None], eta[None], 0.025, 0.01)
+            features.conditioning_channels(lam[None], mu[None], rho[None], eta[None], 0.025, 0.01, 9.81)
         with self.assertRaises(TypeError):
-            features.conditioning_channels(lam.double(), mu, rho, eta, 0.025, 0.01)
+            features.conditioning_channels(lam.double(), mu, rho, eta, 0.025, 0.01, 9.81)
         with self.assertRaises(ValueError):
-            features.conditioning_channels(lam, mu, rho, eta, 0.025, 0.01, contact_ke=torch.tensor([1.0, 2.0]))
+            features.conditioning_channels(lam, mu, rho, eta, 0.025, 0.01, 9.81, contact_ke=torch.tensor([1.0, 2.0]))
         with self.assertRaises(TypeError):
-            features.conditioning_channels(lam, mu, rho, eta, 0.025, 0.01, contact_mu=torch.tensor([1.0]).double())
+            features.conditioning_channels(
+                lam, mu, rho, eta, 0.025, 0.01, 9.81, contact_mu=torch.tensor([1.0]).double()
+            )
         with self.assertRaises(ValueError):
             features.contact_ratios(lam, mu, eta, eta, eta, 0.025, 0.0)
         with self.assertRaises(ValueError):

@@ -96,14 +96,14 @@ class TestLearnedHexSolverStep(unittest.TestCase):
         torch.testing.assert_close(frames @ local_axes.detach(), deformation, rtol=0, atol=atol)
 
     def test_default_network_uses_revised_schema_and_legacy_networks_are_rejected(self):
-        """Construct the 61/9/24 default and reject 38/5, 86/6 and 61/6 networks or checkpoints explicitly."""
+        """Construct the 61/7/24 default and reject 38/5, 86/6, 61/6 and 61/9 networks or checkpoints explicitly."""
         step = LearnedHexSolverStep(self.rest, self.fixed, **MATERIAL, time_step=0.04)
         self.assertEqual(
             (step.network.state_feature_dim, step.network.conditioning_dim, step.network.edge_input_dim),
             (features.STATE_FEATURE_DIM, features.CONDITIONING_DIM, features.EDGE_FEATURE_DIM),
         )
         self.assertEqual(step.conditioning.shape, (12, features.CONDITIONING_DIM))
-        for state, conditioning in ((38, 5), (86, 6), (61, 6), (61, 5), (60, 9)):
+        for state, conditioning in ((38, 5), (86, 6), (61, 6), (61, 5), (61, 9), (60, 7)):
             legacy = IntrinsicSolverNetwork(
                 self.rest.cell_counts, state, conditioning_dim=conditioning, hidden_dim=16, edge_hidden_dim=8
             )
@@ -124,31 +124,44 @@ class TestLearnedHexSolverStep(unittest.TestCase):
             )
 
     def test_per_cell_lame_conditioning_and_fusion_stiffness(self):
-        """Keep zero lambda finite, expose all nine channels with zero viscosity and contact, and keep fusion weights."""
+        """Keep zero lambda finite, expose the seven dimensionless channels per cell, and keep fusion weights."""
         rest = generate_cuboid((2, 1, 1), cell_size=0.025)
         fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == 0)
-        step = LearnedHexSolverStep(
-            rest,
-            fixed,
-            lame_lambda=[0, 1e5],
-            lame_mu=[1e5, 3e5],
-            density=[1000, 2000],
-            time_step=1 / 60,
-        )
+        h, dt, g = rest.cell_size, 1 / 60, 9.81
+        material = {"lame_lambda": [0, 1e5], "lame_mu": [1e5, 3e5], "density": [1000, 2000]}
+        step = LearnedHexSolverStep(rest, fixed, **material, time_step=dt)
+        self.assertEqual(step.gravity, (0.0, -9.81, 0.0))
         x = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)[None]
         inputs = step.prepare_inputs(x, x, previous_positions=x)
-        expected = torch.tensor(
-            [[[0, np.log(2), 0, 0, 0, 0, 0, 0, 0], [np.log(2), np.log(4), np.log(2), 0, 0, 0, 0, 0, 0]]],
-            dtype=torch.float32,
-        )
+        lam, mu, rho = (torch.tensor(material[name], dtype=torch.float64) for name in material)
+        expected = torch.stack(
+            (
+                (lam / mu).log1p(),
+                (rho * h**2 / (mu * dt**2)).log(),
+                torch.full((2,), np.log1p(g * dt**2 / h)),
+                torch.zeros(2),
+                torch.zeros(2),
+                torch.zeros(2),
+                torch.zeros(2),
+            ),
+            dim=-1,
+        )[None].float()
         torch.testing.assert_close(inputs.conditioning, expected)
         torch.testing.assert_close(step.fusion_stiffness, torch.tensor([2e5, 6.75e5]))
-        damped = LearnedHexSolverStep(
-            rest, fixed, lame_lambda=[0, 1e5], lame_mu=[1e5, 3e5], density=[1000, 2000], time_step=1 / 60, damping=2e3
-        )
+        # The gradient-feature unit of a heterogeneous body uses the mean shear modulus by convention.
+        self.assertAlmostEqual(step.energy_unit, 2e5 * h**3, delta=1e-12 * 2e5 * h**3)
+        damped = LearnedHexSolverStep(rest, fixed, **material, time_step=dt, damping=2e3)
         torch.testing.assert_close(
-            damped.conditioning[:, 5], torch.tensor([np.log1p(2e3 * 60 / 1e5), np.log1p(2e3 * 60 / 3e5)]).float()
+            damped.conditioning[:, 3], torch.tensor([np.log1p(2e3 * 60 / 1e5), np.log1p(2e3 * 60 / 3e5)]).float()
         )
+        # Gravity is a constructor argument that only feeds the gravity channel.
+        weightless = LearnedHexSolverStep(rest, fixed, **material, time_step=dt, gravity=(0.0, 0.0, 0.0))
+        torch.testing.assert_close(weightless.conditioning[:, 2], torch.zeros(2))
+        torch.testing.assert_close(weightless.conditioning[:, [0, 1, 3]], step.conditioning[:, [0, 1, 3]])
+        # Malformed gravity raises ValueError uniformly, non-numeric inputs included (as features does).
+        for gravity in ((0.0, -9.81), (0.0, float("nan"), 0.0), "g", None, ((0.0, 1.0), 2.0)):
+            with self.subTest(gravity=gravity), self.assertRaisesRegex(ValueError, "gravity"):
+                LearnedHexSolverStep(rest, fixed, **material, time_step=dt, gravity=gravity)
         self.assertEqual(inputs.state_features.shape, (1, 2, features.STATE_FEATURE_DIM))
 
     def test_previous_positions_and_history_are_validated(self):
@@ -217,13 +230,15 @@ class TestLearnedHexSolverStep(unittest.TestCase):
         self.assertGreater(x.grad.norm().item(), 0)
 
     def test_gradient_feature_is_the_projected_objective_gradient(self):
-        """Match the world axis gradient with the fusion adjoint of the zero-pinned energy gradient."""
+        """Match the world axis gradient with the fusion adjoint of the zero-pinned energy gradient in ``S h^3``."""
         step, x, y, previous = self._fixture(dtype=torch.float64, damping=3.0)
+        # A homogeneous body has S = mu exactly.
+        self.assertEqual(step.energy_unit, MATERIAL["lame_mu"] * self.rest.cell_size**3)
         candidate = x.clone().requires_grad_()
         energy = step.energy(candidate, y, previous_positions=previous).total.sum()
         gradient = torch.autograd.grad(energy, candidate)[0]
         gradient[:, step.fixed_indices] = 0
-        expected = step.fusion.project_gradient(gradient)
+        expected = step.fusion.project_gradient(gradient) / step.energy_unit
         inputs = step.prepare_inputs(x, y, previous_positions=previous)
         torch.testing.assert_close(inputs.axis_gradient_world, expected, rtol=1e-12, atol=1e-14)
         torch.testing.assert_close(inputs.position_gradient, gradient, rtol=1e-12, atol=1e-14)
@@ -268,12 +283,29 @@ class TestLearnedHexSolverStep(unittest.TestCase):
         self.assertGreater((with_history.positions - without.positions).abs().max().item(), 0)
 
     def test_inputs_match_mixed_step_for_the_same_single_object(self):
-        """Produce the same frames, state, conditioning, gradient feature and update as MixedHexSolverStep."""
+        """Agree with MixedHexSolverStep on every network input, the log RMS included, and on the update.
+
+        The mixed step evaluates its objective in cell units (``h = dt = mu =
+        1``) while this step stays in SI; both express the gradient feature in
+        ``S h^3`` and the position gradient in newtons, so a network trained
+        through the mixed step sees identical inputs here, and the optimizer
+        history is shared verbatim. The gradient blocks pass through two
+        different factorisations (SI stiffness weights versus unit weights),
+        so they agree to about 1e-4 after the RMS normalisation rather than
+        to float32 rounding. The log-RMS column is compared with the tightest
+        tolerance because the former SI evaluation shifted it by
+        ``log(mu h^3)`` (about -0.96 for this fixture).
+        """
         network = revised_network(self.rest.cell_counts, nonzero_head=True)
+        log_rms_column = features.MATRIX_FEATURE_DIM + features.BOUNDARY_DIM
+        energy_unit = MATERIAL["lame_mu"] * self.rest.cell_size**3
+        self.assertGreater(abs(np.log(energy_unit)), 0.5, "an SI log RMS would be visibly shifted")
         step = LearnedHexSolverStep(self.rest, self.fixed, **MATERIAL, damping=5.0, time_step=0.04, network=network)
         mixed = MixedHexSolverStep(self.rest, self.fixed, network=copy.deepcopy(network), time_step=0.04)
         self.addCleanup(mixed.close)
         mixed.register_context("one", **MATERIAL, damping=5.0)
+        # The step's S is its float32 modulus buffer, so the unit agrees with mu h^3 to float32 rounding.
+        self.assertAlmostEqual(step.energy_unit, energy_unit, delta=1e-6 * energy_unit)
         previous = torch.tensor(self.rest.corner_rest_positions, dtype=torch.float32)[None]
         x = previous.clone()
         x[..., 0] += 0.08 * x[..., 2].square()
@@ -289,15 +321,25 @@ class TestLearnedHexSolverStep(unittest.TestCase):
             with self.subTest(history=carried is not None):
                 single = step.prepare_inputs(x, y, previous_positions=previous, history=carried)
                 shared = mixed.prepare_inputs(x, y, ("one",), previous_positions=previous, history=carried)
-                torch.testing.assert_close(single.frames, shared.frames, rtol=0, atol=0)
-                torch.testing.assert_close(single.local_axes, shared.local_axes, rtol=0, atol=0)
+                # The mixed step forms F from X / h, so frames, axes and edges agree to float32 rounding only.
+                torch.testing.assert_close(single.frames, shared.frames, rtol=0, atol=1e-6)
+                torch.testing.assert_close(single.local_axes, shared.local_axes, rtol=0, atol=1e-6)
                 torch.testing.assert_close(single.conditioning, shared.conditioning, rtol=0, atol=0)
-                torch.testing.assert_close(single.state_features, shared.state_features, rtol=1e-5, atol=1e-6)
-                torch.testing.assert_close(single.axis_gradient_world, shared.axis_gradient_world, rtol=1e-5, atol=1e-9)
-                torch.testing.assert_close(single.position_gradient, shared.position_gradient, rtol=1e-5, atol=1e-8)
+                torch.testing.assert_close(single.state_features, shared.state_features, rtol=1e-5, atol=1e-4)
+                torch.testing.assert_close(
+                    single.state_features[..., log_rms_column],
+                    shared.state_features[..., log_rms_column],
+                    rtol=0,
+                    atol=2e-5,
+                )
+                for name in ("axis_gradient_world", "position_gradient"):
+                    expected = getattr(single, name)
+                    torch.testing.assert_close(
+                        getattr(shared, name), expected, rtol=1e-5, atol=5e-5 * expected.abs().max().item()
+                    )
                 self.assertEqual(single.tie_mask.tolist(), shared.tie_mask.tolist())
                 for hop in single.edge_features:
-                    torch.testing.assert_close(single.edge_features[hop], shared.edge_features[hop], rtol=0, atol=0)
+                    torch.testing.assert_close(single.edge_features[hop], shared.edge_features[hop], rtol=0, atol=5e-6)
                 pins = x[:, self.fixed]
                 one = step(x, y, previous_positions=previous, fixed_positions=pins, history=carried)
                 many = mixed(x, y, ("one",), previous_positions=previous, fixed_positions=pins, history=carried)
@@ -306,7 +348,10 @@ class TestLearnedHexSolverStep(unittest.TestCase):
                 torch.testing.assert_close(one.loss.total, many.loss.total, rtol=1e-5, atol=1e-7)
                 torch.testing.assert_close(one.force_residual_norm, many.force_residual_norm, rtol=1e-5, atol=1e-8)
                 torch.testing.assert_close(
-                    one.achieved_axis_update_world, many.achieved_axis_update_world, rtol=1e-4, atol=1e-7
+                    one.axis_gradient_world, many.axis_gradient_world, rtol=1e-4, atol=5e-5 * energy_unit
+                )
+                torch.testing.assert_close(
+                    one.achieved_axis_update_world, many.achieved_axis_update_world, rtol=1e-4, atol=1e-6
                 )
 
     def test_inverted_candidate_gets_proper_frames_and_finite_energy(self):

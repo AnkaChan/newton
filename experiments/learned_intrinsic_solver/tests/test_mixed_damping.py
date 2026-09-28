@@ -75,7 +75,7 @@ class TestMixedDamping(unittest.TestCase):
         torch.testing.assert_close(loss.total, loss.elastic + loss.inertia, rtol=0, atol=0)
 
     def test_physical_axis_change_block_and_damping_conditioning(self):
-        """Encode R^T (F - F_previous) as the second block and log1p(eta / (mu dt)) as channel six."""
+        """Encode R^T (F - F_previous) as the second block and log1p(eta / (mu dt)) as the viscosity channel."""
         step = self._step()
         step.register_context("zero", damping=0.0, **self.material)
         step.register_context("damped", damping=0.8, **self.material)
@@ -88,14 +88,18 @@ class TestMixedDamping(unittest.TestCase):
         change = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1]).expand(1, self.cell_count, 9)
         torch.testing.assert_close(inputs.state_features[..., 9:18], change, rtol=2e-5, atol=5e-7)
         torch.testing.assert_close(inputs.state_features[..., 0:9], -change, rtol=2e-5, atol=5e-7)
-        torch.testing.assert_close(inputs.conditioning[..., 5], torch.zeros(1, self.cell_count), rtol=0, atol=0)
+        viscosity = features.CONDITIONING_CHANNELS.index("log1p_viscosity_ratio")
+        others = [index for index in range(features.CONDITIONING_DIM) if index != viscosity]
+        torch.testing.assert_close(inputs.conditioning[..., viscosity], torch.zeros(1, self.cell_count), rtol=0, atol=0)
         same_anchor = step.prepare_inputs(current, self.positions, ("zero",), previous_positions=current)
         torch.testing.assert_close(
             same_anchor.state_features[..., 9:18], torch.zeros(1, self.cell_count, 9), rtol=0, atol=0
         )
         damped = step.prepare_inputs(current, self.positions, ("damped",), previous_positions=self.positions)
-        torch.testing.assert_close(damped.conditioning[..., 5], torch.full((1, self.cell_count), math.log1p(0.2)))
-        torch.testing.assert_close(damped.conditioning[..., :5], inputs.conditioning[..., :5], rtol=0, atol=0)
+        torch.testing.assert_close(
+            damped.conditioning[..., viscosity], torch.full((1, self.cell_count), math.log1p(0.2))
+        )
+        torch.testing.assert_close(damped.conditioning[..., others], inputs.conditioning[..., others], rtol=0, atol=0)
         # Damping changes only the objective gradient blocks; geometry, boundary flags and history flag agree.
         keep = torch.ones(features.STATE_FEATURE_DIM, dtype=torch.bool)
         keep[18:27] = False
@@ -147,8 +151,14 @@ class TestMixedDamping(unittest.TestCase):
             self.assertGreater(energy.damping.item(), 0)
             expected = torch.autograd.grad(energy.total.sum(), increment)[0]
             magnitude = expected.abs().max().item()
+            # The mixed step reports the gradient feature in units of mu h^3; the reference is in joules.
+            energy_unit = self.material["lame_mu"] * self.rest.cell_size**3
             torch.testing.assert_close(
-                damped.axis_gradient_world[index].double(), expected[0], rtol=1e-4, atol=1e-5 * magnitude, msg=name
+                damped.axis_gradient_world[index].double() * energy_unit,
+                expected[0],
+                rtol=1e-4,
+                atol=1e-5 * magnitude,
+                msg=name,
             )
 
     def test_mixed_damped_forward_matches_independent_energy_and_keeps_gradients(self):
@@ -166,16 +176,18 @@ class TestMixedDamping(unittest.TestCase):
         torch.testing.assert_close(output.positions[:, self.fixed], pins, rtol=0, atol=0)
         self.assertTrue((output.loss.damping > 0).all())
         for index, name in enumerate(ids):
-            reference = self._physical(materials[name])(
-                output.positions[index : index + 1].detach(),
-                target[index : index + 1],
-                previous_positions=previous[index : index + 1],
+            # The step evaluates in cell units and scales back; compare with the float64 SI objective at the
+            # returned positions, where the float32 path deviates by a few 1e-6 relative (measured 3e-6).
+            reference = self._physical(materials[name], dtype=torch.float64)(
+                output.positions[index : index + 1].detach().double(),
+                target[index : index + 1].double(),
+                previous_positions=previous[index : index + 1].double(),
             )
             for term in ("total", "elastic", "inertia", "damping"):
                 torch.testing.assert_close(
-                    getattr(output.loss, term)[index : index + 1],
+                    getattr(output.loss, term)[index : index + 1].double(),
                     getattr(reference, term),
-                    rtol=2e-6,
+                    rtol=1e-5,
                     atol=1e-9,
                     msg=term,
                 )

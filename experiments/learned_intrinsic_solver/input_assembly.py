@@ -5,9 +5,14 @@
 
 The single-material :class:`.solver_step.LearnedHexSolverStep` and the
 mixed-material :class:`.mixed_physics.MixedHexSolverStep` both compose their
-network inputs through :func:`assemble_inputs`, so one object queried through
-either path receives identical frames, state features, edge descriptors and
-conditioning. The assembly performs, in order: the cell-center deformation
+network inputs through :func:`assemble_inputs`. The assembly is unit-agnostic:
+it works in whatever length units the caller's positions use (SI for the
+single-material step, the cell units ``h = dt = mu = 1`` for the mixed step)
+and in whatever unit ``project_gradient`` returns. Both steps return the
+projected gradient in the energy unit ``S h^3`` (``S`` the shear modulus, ``h``
+the cell size), so every input, the scalar ``log_gradient_rms`` included, is
+dimensionless and the two paths agree on frames, matrix blocks, the log RMS,
+edge descriptors and conditioning. The assembly performs, in order: the cell-center deformation
 ``F`` and its closest proper rotation frames with the clamped-face tie-break
 (:mod:`.frames`), the differentiable local axes ``A = R^T F``, the inertial
 axis offset and physical axis change blocks, the detached position gradient of
@@ -49,9 +54,10 @@ class LearnedHexInputs(NamedTuple):
     """Experimental packed geometry and features for one network evaluation.
 
     The trailing fields carry detached diagnostics of the revised nine-value
-    schema: the world axis gradient feature before normalization [J], the
-    position gradient of the physical objective [N] with prescribed rows
-    zeroed, and the frame tie-break mask. ``tie_mask`` is None when the caller
+    schema: the world axis gradient feature before normalization, in units of
+    ``S h^3`` (``S`` the shear modulus, ``h`` the cell size) for both steps,
+    the position gradient of the SI objective with prescribed rows zeroed [N],
+    and the frame tie-break mask. ``tie_mask`` is None when the caller
     replayed supplied frames instead of decomposing the deformation.
     ``contact_tokens`` [B, C, M, CONTACT_TOKEN_DIM] and ``contact_mask``
     [B, C, M] are the detached per-cell contact tokens of schema 4 built by
@@ -76,7 +82,8 @@ class LearnedHexStepOutput(NamedTuple):
 
     ``step_size`` is the per-cell dimensionless step, shape [B, C]. The trailing
     fields are detached diagnostics of the revised schema: the current query's
-    world axis gradient feature [J], the achieved world change of the center
+    world axis gradient feature (units of ``S h^3`` with ``S`` the shear
+    modulus, for both steps), the achieved world change of the center
     deformation produced by this fused update, the Euclidean norm of the
     free-corner position gradient at the pre-update candidate [N], and the
     frame tie-break mask. Positions and loss describe the fused update; no
@@ -110,8 +117,10 @@ class OptimizerHistory(NamedTuple):
     zero history blocks and ``history_valid = 0`` regardless of the tensors.
 
     Attributes:
-        axis_gradient_world: Previous query's world axis gradient feature [J],
-            shape [B, C, 3, 3].
+        axis_gradient_world: Previous query's world axis gradient feature in
+            the units the step returned it (``S h^3`` for both steps), shape
+            [B, C, 3, 3]. The step RMS-normalises it against the current
+            gradient, so only consistency within an object matters.
         axis_update_world: Previous achieved world change of the center
             deformation (fused minus pre-update candidate), shape [B, C, 3, 3].
         valid: One boolean per object, shape [B].
@@ -169,7 +178,7 @@ def objective_gradient(
     energy_total: Callable[[Tensor, Tensor, Tensor], Tensor],
     fixed_indices: Tensor,
 ) -> Tensor:
-    """Return the detached position gradient [N] of the physical objective with zeroed pins.
+    """Return the detached position gradient of the objective with zeroed pins.
 
     The gradient is evaluated under ``torch.enable_grad()`` at the detached
     candidate with the inertial prediction and physical-step start held fixed,

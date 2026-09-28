@@ -36,7 +36,7 @@ from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 from experiments.learned_intrinsic_solver.network_geometry import build_edge_features
 from experiments.learned_intrinsic_solver.newton_model import build_newton_hex_model
 from experiments.learned_intrinsic_solver.newton_solver import SolverLearnedIntrinsic
-from experiments.learned_intrinsic_solver.solver_step import LearnedHexStepOutput
+from experiments.learned_intrinsic_solver.solver_step import LearnedHexSolverStep, LearnedHexStepOutput
 
 MATERIALS = {
     "soft": {"lame_lambda": 700 * 0.2 / (1.2 * 0.6), "lame_mu": 700 / 2.4, "density": 90.0},
@@ -164,8 +164,16 @@ class TestMixedHexSolverStep(unittest.TestCase):
         return solver, problem
 
     def _single_object(self, spec, network, positions, target, previous, pins, history=None):
-        """Compose the schema-3 query for one object without the mixed step."""
+        """Compose the SI query for one object without the mixed step.
+
+        The mixed step evaluates the objective in cell units, so its gradient
+        feature (and the history it consumes) is the SI fusion-projected
+        gradient divided by ``mu h^3``; the position gradient and the force
+        residual stay in newtons. Uniform physical fusion weights and unit
+        weights give the same fit.
+        """
         rest = self.rest
+        energy_unit = spec["lame_mu"] * rest.cell_size**3
         physical = HexImplicitEulerLoss(
             rest, spec["lame_lambda"], spec["lame_mu"], spec["density"], self.dt, damping=spec.get("damping", 0.0)
         )
@@ -183,7 +191,7 @@ class TestMixedHexSolverStep(unittest.TestCase):
             energy = physical(candidate, target.detach(), previous_positions=previous.detach()).total.sum()
             gradient = torch.autograd.grad(energy, candidate)[0]
         gradient[:, self.fixed] = 0
-        world_gradient = fusion.project_gradient(gradient)
+        world_gradient = fusion.project_gradient(gradient) / energy_unit
         current, rms = features.rms_normalize(features.to_local(frames, world_gradient))
         if history is None:
             previous_gradient = torch.zeros_like(current)
@@ -220,7 +228,7 @@ class TestMixedHexSolverStep(unittest.TestCase):
             for hop in set(network.hops)
         }
         material = (physical.lame_lambda[:1], physical.lame_mu[:1], physical.density[:1], physical.damping[:1])
-        conditioning = features.conditioning_channels(*material, rest.cell_size, self.dt)
+        conditioning = features.conditioning_channels(*material, rest.cell_size, self.dt, self.gravity)
         prediction = network(axes, state, edges, conditioning[:, None].expand(-1, len(cells), -1))
         fused = fusion.fuse(positions, frames @ (prediction.local_target_axes - axes), pins)
         return {
@@ -239,8 +247,16 @@ class TestMixedHexSolverStep(unittest.TestCase):
         }
 
     def test_network_schema_and_removed_options_are_validated(self):
-        """Accept only the schema-4 61/9/24 widths and reject the removed backtracking controls."""
-        for state, conditioning, edge in ((38, 5, 24), (86, 6, 24), (61, 6, 24), (61, 5, 24), (61, 9, 20), (60, 9, 24)):
+        """Accept only the 61/7/24 widths (schema 5, dimensionless conditioning) and reject removed controls."""
+        for state, conditioning, edge in (
+            (38, 5, 24),
+            (86, 6, 24),
+            (61, 6, 24),
+            (61, 5, 24),
+            (61, 9, 24),
+            (61, 7, 20),
+            (60, 7, 24),
+        ):
             network = IntrinsicSolverNetwork(
                 self.rest.cell_counts,
                 state,
@@ -314,9 +330,13 @@ class TestMixedHexSolverStep(unittest.TestCase):
         self.assertTrue((torch.linalg.det(inputs.local_axes[1]) < 0).all())
         self.assertEqual(inputs.tie_mask.dtype, torch.bool)
         self.assertEqual(inputs.tie_mask.tolist(), [[False] * 4, [False] * 4, [True] * 4])
-        # The reference frame from the clamped face resolves the mirrored tie deterministically.
+        # The reference frame from the clamped face resolves the mirrored tie deterministically. The step decomposes
+        # the deformation of the positions in cell units; a tie is a degenerate decomposition, so the SI deformation
+        # (identical up to 1e-7) may resolve to a frame a few 1e-5 away, hence the production arithmetic is used.
+        unit = batch[2:] / self.rest.cell_size
         expected = closest_proper_rotations(
-            deformation[2:], reference_rotation(batch[2:], self.step.reference_corners)
+            features.center_deformation(unit, self.step.cell_corner_indices, self.step.unit_center_gradients),
+            reference_rotation(unit, self.step.reference_corners),
         ).frames
         torch.testing.assert_close(frames[2:], expected, rtol=0, atol=1e-6)
         output = self.step(batch, batch, ids, previous_positions=previous, fixed_positions=batch[:, self.fixed])
@@ -351,7 +371,11 @@ class TestMixedHexSolverStep(unittest.TestCase):
             self.assertTrue(torch.isfinite(parameter.grad).all(), name)
 
     def test_gradient_feature_matches_float64_fused_energy_derivative(self):
-        """Match the derivative of the fused energy with respect to a world axis increment at zero."""
+        """Match the derivative of the fused SI energy with respect to a world axis increment at zero.
+
+        The step reports the axis gradient in ``mu h^3`` and the position
+        gradient in newtons, the convention shared with LearnedHexSolverStep.
+        """
         ids = ("soft", "stiff")
         positions, target, previous = self._batch(ids)
         inputs = self.step.prepare_inputs(positions, target, ids, previous_positions=previous)
@@ -364,6 +388,7 @@ class TestMixedHexSolverStep(unittest.TestCase):
         generator = torch.Generator().manual_seed(7)
         for index, name in enumerate(ids):
             spec = self.specs[name]
+            energy_unit = spec["lame_mu"] * self.rest.cell_size**3
             physical = HexImplicitEulerLoss(
                 self.rest, spec["lame_lambda"], spec["lame_mu"], spec["density"], self.dt, dtype=torch.float64
             )
@@ -386,9 +411,13 @@ class TestMixedHexSolverStep(unittest.TestCase):
             scale = expected.abs().max().item()
             self.assertGreater(scale, 0)
             torch.testing.assert_close(
-                inputs.axis_gradient_world[index].double(), expected[0], rtol=1e-4, atol=1e-5 * scale, msg=name
+                inputs.axis_gradient_world[index].double() * energy_unit,
+                expected[0],
+                rtol=1e-4,
+                atol=1e-5 * scale,
+                msg=name,
             )
-            # The position gradient equals the physical objective gradient with zeroed pins.
+            # The position gradient equals the physical objective gradient [N] with zeroed pins.
             candidate = x.clone().requires_grad_(True)
             position_gradient = torch.autograd.grad(
                 physical(candidate, y, previous_positions=start).total.sum(), candidate
@@ -414,8 +443,9 @@ class TestMixedHexSolverStep(unittest.TestCase):
         deformation = self._center(positions)
         offset = frames.transpose(-1, -2) @ (self._center(target) - deformation)
         change = frames.transpose(-1, -2) @ (deformation - self._center(previous))
-        torch.testing.assert_close(state[..., 0:9], offset.flatten(-2), rtol=1e-6, atol=1e-7)
-        torch.testing.assert_close(state[..., 9:18], change.flatten(-2), rtol=1e-6, atol=1e-7)
+        # The step forms F from the positions in cell units; the SI reference agrees to float32 rounding.
+        torch.testing.assert_close(state[..., 0:9], offset.flatten(-2), rtol=1e-6, atol=1e-6)
+        torch.testing.assert_close(state[..., 9:18], change.flatten(-2), rtol=1e-6, atol=1e-6)
         local_gradient = frames.transpose(-1, -2) @ inputs.axis_gradient_world
         rms = local_gradient.square().mean((1, 2, 3), keepdim=True).sqrt().clamp_min(features.RMS_FLOOR)
         expected_gradient = (local_gradient / rms).clamp(-features.CLIP, features.CLIP)
@@ -510,10 +540,11 @@ class TestMixedHexSolverStep(unittest.TestCase):
         self.assertEqual(output.achieved_axis_update_world.shape, (2, self.cell_count, 3, 3))
         for name in ("axis_gradient_world", "achieved_axis_update_world", "force_residual_norm", "tie_mask"):
             self.assertFalse(getattr(output, name).requires_grad, name)
+        # The residual is the norm of the position gradient; both are reported in newtons.
         expected_residual = torch.linalg.vector_norm(inputs.position_gradient.flatten(1), dim=1)
-        torch.testing.assert_close(output.force_residual_norm, expected_residual, rtol=1e-6, atol=0)
+        torch.testing.assert_close(output.force_residual_norm, expected_residual, rtol=0, atol=0)
         achieved = self._center(output.positions.detach()) - self._center(positions.detach())
-        torch.testing.assert_close(output.achieved_axis_update_world, achieved, rtol=0, atol=0)
+        torch.testing.assert_close(output.achieved_axis_update_world, achieved, rtol=0, atol=2e-6)
         torch.testing.assert_close(output.axis_gradient_world, inputs.axis_gradient_world, rtol=0, atol=0)
         output.loss.total.mean().backward()
         for name, parameter in self.network.named_parameters():
@@ -566,7 +597,8 @@ class TestMixedHexSolverStep(unittest.TestCase):
             "axis_correction": (2e-5, 2e-7),
             "step_size": (2e-5, 2e-7),
             "frames": (0, 1e-6),
-            "axis_gradient_world": (1e-4, 1e-7),
+            # The gradient feature is O(1) in cell units; two factorisations agree to float32 rounding.
+            "axis_gradient_world": (1e-4, 1e-5),
             "force_residual_norm": (1e-5, 1e-7),
             "achieved_axis_update_world": (2e-4, 2e-6),
         }
@@ -585,6 +617,65 @@ class TestMixedHexSolverStep(unittest.TestCase):
             self.assertIsNotNone(parameter.grad, name)
             self.assertTrue(torch.isfinite(parameter.grad).all(), name)
             torch.testing.assert_close(parameter.grad, expected_parameters[name].grad, rtol=5e-4, atol=3e-7, msg=name)
+
+    def test_gravity_is_kept_in_float64_for_the_conditioning_and_validated(self):
+        """Form the gravity channel from the float64 vector so it equals the single-material step's bit for bit.
+
+        A float32 copy of (0, -9.81, 0) has magnitude 9.8100004, which moves
+        ``log1p(|g| dt^2 / h)`` by one float32 ulp at ``dt = 1/300``, ``h =
+        0.025``; the float32 vector is used only for the inertial prediction.
+        """
+        rest = generate_cuboid((2, 1, 1), cell_size=0.025)
+        fixed = np.flatnonzero(rest.corner_rest_positions[:, 2] == 0)
+        dt, gravity = 1.0 / 300.0, (0.0, -9.81, 0.0)
+        network = make_network(rest.cell_counts)
+        mixed = MixedHexSolverStep(rest, fixed, network=network, time_step=dt, gravity=gravity)
+        self.addCleanup(mixed.close)
+        self.assertEqual(mixed.gravity, gravity)
+        self.assertIsInstance(mixed.gravity[1], float)
+        spec = self.specs["soft"]
+        mixed.register_context("soft", **spec)
+        single = LearnedHexSolverStep(rest, fixed, **spec, time_step=dt, gravity=gravity, network=network)
+        x = torch.tensor(rest.corner_rest_positions, dtype=torch.float32)[None]
+        channel = features.CONDITIONING_CHANNELS.index("log1p_gravity_ratio")
+        shared = mixed.prepare_inputs(x, x, ("soft",), previous_positions=x).conditioning[..., channel]
+        expected = torch.full_like(shared, math.log1p(9.81 * dt**2 / rest.cell_size))
+        torch.testing.assert_close(shared, expected, rtol=0, atol=0)
+        torch.testing.assert_close(shared, single.conditioning[None, :, channel], rtol=0, atol=0)
+        rounded = torch.full_like(shared, math.log1p(float(np.float32(9.81)) * dt**2 / rest.cell_size))
+        self.assertFalse(torch.equal(shared, rounded), "the float32 magnitude would give a different channel")
+        # The inertial prediction still adds g dt^2 in float32.
+        payload = mixed.prepare("soft", x[0], torch.zeros_like(x[0]))
+        drop = torch.tensor(gravity, dtype=torch.float32) * dt**2
+        torch.testing.assert_close(payload["inertial_prediction"] - x[0], drop.expand_as(x[0]), rtol=0, atol=1e-9)
+        for bad in ("g", None, (0.0, -9.81), (0.0, math.nan, 0.0), ((0.0, 1.0), 2.0)):
+            with self.subTest(gravity=bad), self.assertRaisesRegex(ValueError, "gravity"):
+                MixedHexSolverStep(rest, fixed, network=network, time_step=dt, gravity=bad)
+
+    def test_far_origin_builds_the_unit_grid_exactly(self):
+        """Accept a rest grid whose origin / h is large: the unit lattice is generated, not divided.
+
+        Dividing the SI corners by h leaves a 1e-12 deviation from the canonical
+        unit lattice at an origin of 1000 m with h = 0.025, which the grid check
+        of HexImplicitEulerLoss rejects although the SI grid itself passes.
+        """
+        far = generate_cuboid((2, 2, 3), cell_size=0.025, origin=(1000.0, 1000.0, 1000.0))
+        fixed = np.flatnonzero(far.corner_rest_positions[:, 2] == far.corner_rest_positions[:, 2].min())
+        HexImplicitEulerLoss(far, 0.0, 1.0, 1.0, self.dt)  # the SI grid is canonical
+        step = MixedHexSolverStep(far, fixed, network=make_network(far.cell_counts), time_step=self.dt)
+        self.addCleanup(step.close)
+        unit = step._unit_rest
+        lattice = generate_cuboid(far.cell_counts, cell_size=1.0, origin=tuple(far.corner_rest_positions[0] / 0.025))
+        np.testing.assert_array_equal(unit.corner_rest_positions, lattice.corner_rest_positions)
+        np.testing.assert_array_equal(unit.cell_corner_indices, far.cell_corner_indices)
+        self.assertEqual(unit.cell_size, 1.0)
+        np.testing.assert_allclose(unit.cell_rest_centers, far.cell_rest_centers / 0.025, rtol=0, atol=1e-9)
+        step.register_context("soft", **self.specs["soft"])
+        x = torch.tensor(far.corner_rest_positions, dtype=torch.float32)[None]
+        terms = step.energy(x, x, ("soft",))
+        # X / h is about 4e4 in float32, so the rest energy is zero only to rounding (5.7e-18 J observed).
+        self.assertLessEqual(terms.total.item(), 1e-9 * step.energy_floor(("soft",)).item())
+        self.assertTrue(torch.isfinite(step(x, x, ("soft",), previous_positions=x).positions).all())
 
     def test_energy_floor_matches_material_formula(self):
         """Return c * eps32 * V * (lambda + 2 mu + eta / dt + rho h^2 / dt^2) per object."""
@@ -878,7 +969,7 @@ class TestMixedHexSolverStepContact(unittest.TestCase):
             torch.testing.assert_close(getattr(with_empty, name), getattr(terms, name), rtol=0, atol=0)
         inputs = self.step.prepare_inputs(positions, target, ids, previous_positions=previous, contact=contact)
         self.assertEqual(inputs.conditioning.shape, (2, self.cell_count, features.CONDITIONING_DIM))
-        torch.testing.assert_close(inputs.conditioning[..., 6:], torch.zeros(2, self.cell_count, 3), rtol=0, atol=0)
+        torch.testing.assert_close(inputs.conditioning[..., 4:], torch.zeros(2, self.cell_count, 3), rtol=0, atol=0)
         self.assertIsNone(inputs.contact_tokens)
         self.assertIsNone(inputs.contact_mask)
         output = self.step(
@@ -1035,12 +1126,12 @@ class TestMixedHexSolverStepContact(unittest.TestCase):
         torch.testing.assert_close(inputs.position_gradient[0], plain.position_gradient[0], rtol=0, atol=0)
         self.assertFalse(torch.allclose(inputs.position_gradient[1], plain.position_gradient[1]))
         torch.testing.assert_close(
-            inputs.conditioning[1, 0, 6:],
+            inputs.conditioning[1, 0, 4:],
             torch.tensor([math.log1p(500.0 / (700.0 * 0.1)), 1.0 / (500.0 * self.dt), 0.3]),
             rtol=1e-5,
             atol=1e-6,
         )
-        torch.testing.assert_close(inputs.conditioning[0, 0, 6:], torch.zeros(3), rtol=0, atol=0)
+        torch.testing.assert_close(inputs.conditioning[0, 0, 4:], torch.zeros(3), rtol=0, atol=0)
 
     def test_forward_with_contact_network_builds_tokens_and_reports_penetration(self):
         """Pass built tokens to a contact-token network and fill the contact energy and penetration outputs."""
@@ -1128,18 +1219,19 @@ class TestMixedHexSolverStepContact(unittest.TestCase):
         mask = torch.rand(1, self.cell_count, 3) < 0.5
         contexts = self.step._lookup(("free",), 1)
         conditioning = torch.zeros(1, self.cell_count, features.CONDITIONING_DIM)
+        # The assembly runs in the step's cell units with the shared unit fusion factor.
+        h = self.rest.cell_size
+        unit_positions, unit_target, unit_previous = positions / h, target / h, previous / h
 
         def energy_total(candidate, y, start):
-            return self.step._energy(candidate, y, contexts, start).total
+            return self.step._unit_energy(candidate, y, contexts, start).total
 
-        def project_gradient(gradient):
-            return contexts[0].fusion.project_gradient(gradient)
-
+        project_gradient = self.step._fusion.project_gradient
         inputs = assemble_inputs(
-            self.step,
-            positions,
-            target,
-            previous,
+            self.step._unit_geometry(),
+            unit_positions,
+            unit_target,
+            unit_previous,
             energy_total=energy_total,
             project_gradient=project_gradient,
             conditioning=conditioning,
@@ -1150,10 +1242,10 @@ class TestMixedHexSolverStepContact(unittest.TestCase):
         self.assertIs(inputs.contact_mask, mask)
         with self.assertRaisesRegex(ValueError, "contact_tokens"):
             assemble_inputs(
-                self.step,
-                positions,
-                target,
-                previous,
+                self.step._unit_geometry(),
+                unit_positions,
+                unit_target,
+                unit_previous,
                 energy_total=energy_total,
                 project_gradient=project_gradient,
                 conditioning=conditioning,

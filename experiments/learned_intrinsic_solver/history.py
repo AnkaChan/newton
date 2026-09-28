@@ -99,9 +99,11 @@ def batch_history(payloads: Iterable[Mapping], device, *, cell_count: int) -> Op
 def store_history(payloads: Iterable[MutableMapping], result) -> None:
     """Write this query's detached history into each payload after a learned update.
 
-    The stored gradient is the un-normalized world axis gradient that served as
-    the query's current-gradient input; the stored update is the achieved world
-    change of the center deformation produced by the fused update.
+    The stored gradient is the world axis gradient that served as the query's
+    current-gradient input before RMS normalization, in the producing step's
+    energy unit ``S h^3`` (schema 5; both solver steps use it, see
+    ``LearnedHexSolverStep.energy_unit``); the stored update is the achieved
+    world change of the center deformation produced by the fused update.
 
     Args:
         payloads: Payload mappings in the batch order of ``result``.

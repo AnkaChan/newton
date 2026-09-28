@@ -32,11 +32,11 @@ class TestDampingTraining(unittest.TestCase):
         del old["damping_range"], old["feature_schema_version"]
         with self.assertRaisesRegex(ValueError, "legacy"):
             MixedTrainConfig.from_checkpoint_config(old)
-        for version in (1, 2, 3):
+        for version in (1, 2, 3, 4):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, "legacy"):
                 replace(config, feature_schema_version=version)
         zero_damping = replace(config, damping_range=(0.0, 0.0))
-        self.assertEqual((zero_damping.state_feature_dim, zero_damping.conditioning_dim), (61, 9))
+        self.assertEqual((zero_damping.state_feature_dim, zero_damping.conditioning_dim), (61, 7))
 
     def test_batch_preserves_physical_anchor_separately_from_candidate(self):
         """Collate the physical-step start without replacing it with an inner optimizer iterate."""
