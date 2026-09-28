@@ -15,7 +15,7 @@ import copy
 import random
 import time
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import islice
@@ -33,7 +33,7 @@ class TrajectoryRecord:
     id: int
     """Unique trajectory identity within this pool, including retired trajectories."""
     seed: int
-    """Unique reset seed, assigned monotonically within this pool."""
+    """Reset seed: assigned monotonically by the reset stream, taken from the job in job-list mode."""
     iteration_budget: int
     """Number of learned inner iterations per physical timestep."""
     step_budget: int
@@ -102,8 +102,16 @@ class ActiveTrajectoryPool:
     independent of worker timing. No whole-pool barrier or padding is required.
     Only one batch may be checked out at a time.
 
+    ``set_jobs`` switches a pool constructed with ``initialize=False`` to the
+    job-list mode of the fixed-state epoch regime: an explicit finite list of
+    ``(seed, K, H)`` trajectories replaces the infinite reset stream and the
+    sampled budgets. Its rules are documented on :meth:`set_jobs`; a pool that
+    never calls it behaves exactly as described above.
+
     Args:
         capacity: Number of distinct active trajectories; must exceed batch_size.
+            In job-list mode this is the preferred live count, which the tail of
+            the list may exceed (see :meth:`set_jobs`).
         batch_size: Fixed number of trajectories in every returned batch.
         reset: Prepare an initial payload for a unique integer seed.
         advance: Prepare a new physical timestep from the solved current payload.
@@ -153,6 +161,11 @@ class ActiveTrajectoryPool:
         self._prepared: set[int] = set()
         self._batch: list[int] | None = None
         self._closed = False
+        # Job-list mode: None selects the reset stream; otherwise the unstarted jobs in order,
+        # the queries still to serve (live and unstarted) and the longest unstarted job.
+        self._job_list: deque[tuple[int, int, int]] | None = None
+        self._job_queries = 0
+        self._job_longest = 0
         self.stats = {
             "batches": 0,
             "inner_iterations": 0,
@@ -178,19 +191,99 @@ class ActiveTrajectoryPool:
         self.iteration_counts = iterations
         self.physical_step_counts = steps
 
+    def set_jobs(self, jobs: Sequence[tuple[int, int, int]]) -> None:
+        """Replace the reset stream by a finite job list; every job runs exactly once.
+
+        Each job ``(seed, K, H)`` resets ``seed`` and runs ``K`` inner
+        iterations on each of ``H`` physical steps, so it receives exactly
+        ``K * H`` queries, at most one per batch. Seeds may repeat (padding
+        jobs), so ``reset`` must give every call its own physics context. The
+        pool must hold no live trajectory, that is it was constructed with
+        ``initialize=False`` or has finished a previous job list.
+
+        Every batch is full until the last query. This requires the total
+        ``sum(K * H)`` to be a multiple of ``batch_size`` and no single job to
+        exceed ``total / batch_size`` queries (a trajectory receives at most one
+        query per batch). Under these conditions the pool serves exactly
+        ``total / batch_size`` full batches: jobs start in list order as slots
+        free up, up to ``capacity`` live trajectories; a job whose ``K * H``
+        equals the number of remaining batches starts immediately and a live
+        trajectory whose remaining queries equal that number is placed at the
+        head of the batch; both may raise the live count above ``capacity`` at
+        the tail of the list, as may starting the jobs needed to complete a
+        full batch. Otherwise dispatch follows the FIFO rotation of the reset
+        stream. The K/H counts of :meth:`set_available_counts` are unused in
+        this mode and :meth:`state_dict` is unavailable: an interrupted job list
+        is restarted by the caller.
+
+        Args:
+            jobs: ``(seed, iteration_budget, step_budget)`` triples with
+                integer seeds and positive integer budgets.
+
+        Raises:
+            ValueError: A job is malformed, a live trajectory exists, the total
+                is not a multiple of ``batch_size`` or one job is too long for
+                the list.
+        """
+        self._ensure_open()
+        if self._batch is not None:
+            raise RuntimeError("finish the checked-out batch before setting jobs")
+        if self._records:
+            raise ValueError("set_jobs requires a pool without live trajectories")
+        checked = []
+        for job in jobs:
+            if len(job) != 3 or isinstance(job[0], bool) or not isinstance(job[0], int):
+                raise ValueError("each job must be a (seed, iteration_budget, step_budget) triple")
+            seed, iterations, steps = job
+            checked.append((seed, _positive(iterations, "iteration_budget"), _positive(steps, "step_budget")))
+        total = sum(iterations * steps for _, iterations, steps in checked)
+        longest = max((iterations * steps for _, iterations, steps in checked), default=0)
+        if total % self.batch_size:
+            raise ValueError("job queries must total a multiple of batch_size")
+        if longest > total // self.batch_size:
+            raise ValueError("a job may not exceed total_queries / batch_size queries")
+        self._job_list = deque(checked)
+        self._job_queries = total
+        self._job_longest = longest
+        while self._job_list and len(self._records) < self.capacity:
+            self._start_job(self._job_list.popleft())
+
+    @property
+    def remaining_queries(self) -> int | None:
+        """Return the queries still to serve in job-list mode, else None."""
+        return None if self._job_list is None else self._job_queries
+
+    @property
+    def exhausted(self) -> bool:
+        """Return whether a job list was set and every one of its queries has been served."""
+        return self._job_list is not None and self._job_queries == 0
+
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("trajectory pool is closed")
 
+    def _start_job(self, job: tuple[int, int, int]) -> None:
+        seed, iterations, steps = job
+        self._enqueue_reset(
+            TrajectoryRecord(id=self._next_id, seed=seed, iteration_budget=iterations, step_budget=steps)
+        )
+
     def _schedule_reset(self) -> None:
+        if self._job_list is not None:
+            if self._job_list:
+                self._start_job(self._job_list.popleft())
+            return
         record = TrajectoryRecord(
             id=self._next_id,
             seed=self._next_seed,
             iteration_budget=self._rng.choice(self.iteration_counts),
             step_budget=self._rng.choice(self.physical_step_counts),
         )
-        self._next_id += 1
         self._next_seed += 1
+        self._enqueue_reset(record)
+
+    def _enqueue_reset(self, record: TrajectoryRecord) -> None:
+        self._next_id += 1
         self._records[record.id] = record
         self._dispatch.append(record.id)
         self._pending.append(record.id)
@@ -213,20 +306,55 @@ class ActiveTrajectoryPool:
         del self._jobs[identity]
         self.stats["preparation_seconds"] += elapsed
 
+    @staticmethod
+    def _remaining(record: TrajectoryRecord) -> int:
+        return (record.step_budget - record.physical_step) * record.iteration_budget - record.inner_iteration
+
+    def _select_job_batch(self) -> list[int]:
+        """Choose the job-list batch: critical trajectories first, then the FIFO order.
+
+        With ``n`` batches left, a job or live trajectory needing ``n`` more
+        queries must be served in every one of them. Serving those first keeps
+        every remaining trajectory within the remaining batch count, so the
+        list ends with a full batch (see :meth:`set_jobs`).
+        """
+        if self._job_queries < self.batch_size:
+            raise RuntimeError("trajectory pool job list is exhausted")
+        batches_left = self._job_queries // self.batch_size
+        if self._job_longest >= batches_left:
+            kept: deque[tuple[int, int, int]] = deque()
+            for job in self._job_list:
+                if job[1] * job[2] >= batches_left:
+                    self._start_job(job)
+                else:
+                    kept.append(job)
+            self._job_list = kept
+            self._job_longest = max((job[1] * job[2] for job in kept), default=0)
+        while len(self._dispatch) < self.batch_size and self._job_list:
+            self._start_job(self._job_list.popleft())
+        if len(self._dispatch) < self.batch_size:
+            raise RuntimeError("trajectory pool cannot supply a full batch")
+        critical = [i for i in self._dispatch if self._remaining(self._records[i]) >= batches_left]
+        ordinary = [i for i in self._dispatch if self._remaining(self._records[i]) < batches_left]
+        return (critical + ordinary)[: self.batch_size]
+
     def take_batch(self) -> list[TrajectoryRecord]:
         """Return exactly B distinct ready records in deterministic FIFO order."""
         self._ensure_open()
         if self._batch is not None:
             raise RuntimeError("finish the checked-out batch before taking another batch")
-        if len(self._dispatch) < self.batch_size:
+        if self._job_list is not None:
+            identities = self._select_job_batch()
+        elif len(self._dispatch) < self.batch_size:
             raise RuntimeError("trajectory pool cannot supply a full batch")
-        identities = list(islice(self._dispatch, self.batch_size))
+        else:
+            identities = list(islice(self._dispatch, self.batch_size))
         # Resolve the selected batch before changing queue membership. A failed
         # preparation leaves every trajectory accounted for during cleanup.
         for identity in identities:
             self._resolve(identity)
         for identity in identities:
-            self._dispatch.popleft()
+            self._dispatch.remove(identity)
             if identity in self._ready:
                 self._ready.remove(identity)
             else:
@@ -253,6 +381,8 @@ class ActiveTrajectoryPool:
             record.payload = _payload(record.payload)
             record.inner_iteration += 1
             self.stats["inner_iterations"] += 1
+            if self._job_list is not None:
+                self._job_queries -= 1
             if record.inner_iteration < record.iteration_budget:
                 self._ready.append(record.id)
                 self._dispatch.append(record.id)
@@ -289,6 +419,8 @@ class ActiveTrajectoryPool:
         self._ensure_open()
         if self._batch is not None:
             raise RuntimeError("finish the checked-out batch before checkpointing")
+        if self._job_list is not None:
+            raise RuntimeError("job-list mode has no checkpoint; the caller restarts the job list")
         self.quiesce()
         return {
             "format_version": 2,

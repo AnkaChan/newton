@@ -52,6 +52,11 @@ _EPOCH_COLUMNS = (
     "contact_realized_fraction",
     "contact_max_penetration_r",
     "validation_final_max_penetration_r",
+    # Fixed-state regime columns, appended last so positional readers of pool-regime tables are unaffected.
+    "regime_stage",
+    "regime_k_max",
+    "regime_h_max",
+    "regime_updates",
 )
 
 
@@ -71,7 +76,7 @@ def _atomic_text(path, text):
         temporary.unlink(missing_ok=True)
 
 
-def write_progress(output, report, *, phase, epoch, available_K=None, available_H=None):
+def write_progress(output, report, *, phase, epoch, available_K=None, available_H=None, regime=None):
     """Atomically publish a small training heartbeat without copying state.
 
     Experimental. Call on rank zero during initialization, training, validation
@@ -84,6 +89,9 @@ def write_progress(output, report, *, phase, epoch, available_K=None, available_
         epoch: Current epoch number, including an in-progress epoch.
         available_K: Current allowed inner-iteration counts for new resets.
         available_H: Current allowed physical-step counts for new resets.
+        regime: Fixed-state regime block of the current epoch (stage, K_max,
+            H_max, updates) or None for the pool regime, which writes no
+            ``regime`` entry.
     """
     latest = (report.get("epochs") or [{}])[-1]
     update = (report.get("updates") or [{}])[-1]
@@ -99,6 +107,8 @@ def write_progress(output, report, *, phase, epoch, available_K=None, available_
         "available_K": list(available_K if available_K is not None else latest.get("available_K", [1])),
         "available_H": list(available_H if available_H is not None else latest.get("available_H", [8])),
     }
+    if regime is not None:
+        progress["regime"] = dict(regime)
     _atomic_text(Path(output) / "progress.json", json.dumps(progress, indent=2) + "\n")
 
 
@@ -108,6 +118,64 @@ def _finite(value):
 
 def _number(value):
     return f"{value:.6g}" if _finite(value) else "Unavailable"
+
+
+def _text(value):
+    """Return ``value`` escaped for HTML, with a dash for None."""
+    return html.escape(str(value if value is not None else "—"))
+
+
+def _fixed_state_budget_text(config, regime):
+    """Describe a fixed-state epoch for the status line: state set, budget cap, growth stage and its counts.
+
+    ``regime`` is the current heartbeat's or latest epoch row's ``regime``
+    block; the stage counts are omitted while the jobs are not yet assigned.
+    """
+    text = (
+        f"Fixed-state regime: {_text(config.get('state_count'))} training states per epoch, "
+        f"K x H ≤ {_text(config.get('budget_cap'))}"
+    )
+    if regime.get("stage") is not None:
+        text += (
+            f"; growth stage {_text(regime.get('stage'))} "
+            f"(K ≤ {_text(regime.get('k_max'))}, H ≤ {_text(regime.get('h_max'))})"
+        )
+    if regime.get("updates") is not None:
+        fillers = regime.get("filler_queries")
+        filler_total = sum(fillers) if isinstance(fillers, list) else fillers
+        text += (
+            f": {_text(regime.get('queries'))} sampled queries + {_text(filler_total)} filler "
+            f"in {_text(regime.get('updates'))} updates per rank"
+        )
+    return text
+
+
+def _fixed_state_schedule_text(config):
+    """Describe the fixed-state growth timetable that replaces the curriculum gate line."""
+    stages = config.get("growth_stages") or ()
+    timetable = " → ".join(f"({_text(k_max)}, {_text(h_max)})" for k_max, h_max in stages) or "—"
+    return (
+        f"Growth timetable (K_max, H_max) from stage 0: {timetable}, advancing every "
+        f"{_text(config.get('growth_stage_epochs'))} epochs; the final stage persists. "
+        "The validation-gated curriculum is not used."
+    )
+
+
+def _origin_text(origin):
+    """Describe a weights-only initialization (``report["initialized_from"]``) or return an empty string."""
+    if not isinstance(origin, dict):
+        return ""
+    best = origin.get("best_selection") or {}
+    best_text = (
+        f", best {_number(best.get('metric'))} N at epoch {_text(best.get('epoch'))}"
+        if _finite(best.get("metric"))
+        else ""
+    )
+    checkpoint = "/".join(Path(str(origin.get("checkpoint", "—"))).parts[-3:])
+    return (
+        f"<br>Initialized weights-only (network and AdamW state) from {_text(checkpoint)} "
+        f"after {_text(origin.get('completed_epochs'))} completed epochs{best_text}."
+    )
 
 
 def _lookup(row, *path):
@@ -376,6 +444,10 @@ def write_mixed_report(output, report, *, updated_at=None):
             "physical_survivors": _lookup(row, "validation", "physical_survivors"),
             "sample_count": _lookup(row, "validation", "sample_count"),
             "validation_final_max_penetration_r": _final_penetration(row),
+            "regime_stage": _lookup(row, "regime", "stage"),
+            "regime_k_max": _lookup(row, "regime", "k_max"),
+            "regime_h_max": _lookup(row, "regime", "h_max"),
+            "regime_updates": _lookup(row, "regime", "updates"),
         }
         for row in rows
     ]
@@ -486,6 +558,15 @@ def write_mixed_report(output, report, *, updated_at=None):
         if _finite(scene_fraction)
         else "Contact statistics are not recorded for this epoch."
     )
+    # The heartbeat carries the in-progress epoch's regime block; a completed row is the fallback.
+    regime = progress.get("regime") or latest.get("regime") or {}
+    if config.get("regime") == "fixed_states" or regime.get("name") == "fixed_states":
+        budget_text = _fixed_state_budget_text(config, regime)
+        schedule_text = _fixed_state_schedule_text(config)
+    else:
+        budget_text = f"{escape(config.get('queries_per_epoch', '—'))} training queries per epoch"
+        schedule_text = f"Curriculum descent gate: {gate_text} · Hard cap: {escape(stage_limit_text)}"
+    origin_text = _origin_text(report.get("initialized_from"))
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="30"><title>LIDO-v2 · live training</title>
@@ -499,9 +580,9 @@ a{{color:#087c91}}img,svg{{display:block;width:100%;height:auto;background:white
 <a href="/artifacts/learned-intrinsic-solver/index.html">← All solver experiments</a>
 <h1>LIDO-v2 — training the deformation optimizer</h1>
 <p class="status"><strong>{escape(phase.replace("_", " ").capitalize())}</strong> · {completed} / {maximum} completed epochs · {progress.get("completed_updates", report.get("completed_updates", 0))} Adam updates<br>
-{escape(config.get("queries_per_epoch", "—"))} training queries per epoch and {escape(config.get("validation_count", validation.get("sample_count", "—")))} fixed validation states.{interval_text} {escape(batch_text)}<br>
+{budget_text} and {escape(config.get("validation_count", validation.get("sample_count", "—")))} fixed validation states.{interval_text} {escape(batch_text)}<br>
 Available solver iterations: K = {escape(counts_k)} · Physical timesteps: H = {escape(counts_h)}<br>
-Curriculum descent gate: {gate_text} · Hard cap: {escape(stage_limit_text)}</p>
+{schedule_text}{origin_text}</p>
 <p>Selection metric (mean free-corner force residual after {validation_iterations} iterations): {metric_text}, {eligibility_text}. Physical survivors: {survival_text}. {best_text}<br>
 Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(validation.get("mean_after_joule"))} J after one update. Descent: {descent_text}; first-update failures: {escape(validation.get("first_update_failed_count", "Not evaluated"))}; all validation failures: {escape(validation.get("failed_count", "Not evaluated"))}.</p>
 {failure_html}<img src="loss_curve.svg" alt="Training objective and validation first-update objective, validation descent rate, physical energy, selection metric, physical survivors, and learning rate by epoch">

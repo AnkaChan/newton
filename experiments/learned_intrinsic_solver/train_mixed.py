@@ -21,12 +21,21 @@ and friction. The scene is registered with the physical context, stored in the
 payload as ``contact_partners`` and its frozen per-step pair list is collated
 into every batch so the contact energy, the contact conditioning channels and
 the network's contact tokens follow the physics (schema 4).
+
+Two training regimes share this loop. The ``pool`` regime draws an open-ended
+stream of trajectories with curriculum-capped budgets and counts an epoch as
+``queries_per_epoch`` global queries. The ``fixed_states`` regime reuses the
+same ``state_count`` training initial states every epoch, samples per state
+and epoch a budget ``K x H <= budget_cap`` under a fixed growth timetable
+(:func:`sample_epoch_jobs`), balances the states over ranks and pads every
+rank to a common number of full-size updates (:func:`assign_jobs`).
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -45,7 +54,16 @@ from .mixed_report import write_progress
 from .mixed_validation import validate as _validate
 from .mixed_validation import validation_chunk as _validation_chunk  # noqa: F401 -- Keep the existing test seam.
 
-__all__ = ["PERTURBED_CANDIDATE_PROBABILITY", "MixedTrainConfig", "local_objective", "run_training"]
+__all__ = [
+    "PERTURBED_CANDIDATE_PROBABILITY",
+    "JobAssignment",
+    "MixedTrainConfig",
+    "assign_jobs",
+    "fixed_state_stage",
+    "local_objective",
+    "run_training",
+    "sample_epoch_jobs",
+]
 
 PERTURBED_CANDIDATE_PROBABILITY = 0.5
 """Probability that a new candidate adds smooth multiscale noise to the inertial prediction."""
@@ -66,6 +84,32 @@ _VALIDATION_BUDGET_FIELDS = (
 
 _SELECTION_BUDGET_FIELDS = ("validation_count", "validation_iterations")
 """Validation settings whose change makes earlier checkpoint-selection metrics incomparable."""
+
+_ARCHITECTURE_FIELDS = (
+    "cell_counts",
+    "cell_size",
+    "time_step",
+    "gravity",
+    "hidden_dim",
+    "edge_hidden_dim",
+    "num_heads",
+    "hops",
+    "query_chunk_size",
+    "max_step_size",
+    "feature_schema_version",
+    "edge_network",
+    "contact",
+)
+"""Fields a weights-only initialization must share with its checkpoint; every other field may differ."""
+
+_REGIME_DEFAULTS = {
+    "regime": "pool",
+    "state_count": 2048,
+    "budget_cap": 1024,
+    "growth_stage_epochs": 2,
+    "growth_stages": ((1, 8), (2, 16), (4, 32), (8, 64), (16, 128), (32, 128)),
+}
+"""Fixed-state regime settings absent from checkpoints written before the regime existed."""
 
 
 @dataclass(frozen=True)
@@ -101,6 +145,23 @@ class MixedTrainConfig:
     """Final-stage epochs required before plateau stopping may be considered."""
     iteration_counts: tuple[int, ...] = (1, 2, 4, 8, 16, 32)
     physical_step_counts: tuple[int, ...] = (8, 16, 32, 64, 128)
+    regime: str = "pool"
+    """``pool``: open-ended trajectory pool under the validation-gated curriculum; ``fixed_states``: fixed-state epochs.
+
+    The fixed-state regime runs the same ``state_count`` training initial states
+    (training seeds ``0 .. state_count - 1``) once per epoch with per-epoch
+    sampled budgets ``K x H <= budget_cap`` under the ``growth_stages``
+    timetable. ``queries_per_epoch``, ``iteration_counts``,
+    ``physical_step_counts`` and the curriculum settings are unused there.
+    """
+    state_count: int = 2048
+    """Fixed training initial states of every epoch in the fixed-state regime."""
+    budget_cap: int = 1024
+    """Largest ``K x H`` (queries per state and epoch) of the fixed-state regime."""
+    growth_stage_epochs: int = 2
+    """Epochs per growth stage of the fixed-state regime; the final stage persists."""
+    growth_stages: tuple[tuple[int, int], ...] = ((1, 8), (2, 16), (4, 32), (8, 64), (16, 128), (32, 128))
+    """Growth timetable ``(K_max, H_max)`` per stage: K_max a power of two <= 32, H_max <= 128, non-decreasing."""
     validation_count: int = 512
     validation_iterations: int = 100
     validation_interval: int = 1
@@ -201,6 +262,7 @@ class MixedTrainConfig:
             "contact_mu_range",
         ):
             object.__setattr__(self, name, tuple(getattr(self, name)))
+        object.__setattr__(self, "growth_stages", tuple(tuple(stage) for stage in self.growth_stages))
         for name in (
             "hidden_dim",
             "edge_hidden_dim",
@@ -223,10 +285,27 @@ class MixedTrainConfig:
             "preparation_workers",
             "stage_patience",
             "contact_tokens_per_cell",
+            "state_count",
+            "budget_cap",
+            "growth_stage_epochs",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.regime not in ("pool", "fixed_states"):
+            raise ValueError("regime must be pool or fixed_states")
+        if not self.growth_stages:
+            raise ValueError("growth_stages must not be empty")
+        previous = (1, 1)
+        for stage in self.growth_stages:
+            if len(stage) != 2 or any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in stage):
+                raise ValueError("growth_stages must contain (K_max, H_max) pairs of positive integers")
+            k_max, h_max = stage
+            if k_max & (k_max - 1) or k_max > 32 or h_max > 128:
+                raise ValueError("growth_stages are limited to K_max a power of two <= 32 and H_max <= 128")
+            if k_max < previous[0] or h_max < previous[1]:
+                raise ValueError("growth_stages must be non-decreasing in K_max and H_max")
+            previous = stage
         for name in ("plateau_min_final_stage_epochs", "contact_max_points", "contact_max_pairs"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -357,6 +436,9 @@ class MixedTrainConfig:
         # Checkpoints written before the validation budget knobs validated every epoch at the largest K.
         values.setdefault("validation_interval", 1)
         values.setdefault("validation_full_iterations", None)
+        # Checkpoints written before the fixed-state regime trained with the open-ended pool.
+        for name, default in _REGIME_DEFAULTS.items():
+            values.setdefault(name, default)
         legacy = [name for name in _LEGACY_CONFIG_FIELDS if name in values]
         if values.get("feature_schema_version") != features.FEATURE_SCHEMA_VERSION or legacy:
             raise ValueError(
@@ -399,7 +481,7 @@ def local_objective(after, before, floor, *, increase_weight=1.0):
 class _TrajectoryFactory:
     """Prepare detached CPU trajectories without accessing network parameters."""
 
-    def __init__(self, step, rest, config, *, rank, validation=False):
+    def __init__(self, step, rest, config, *, rank, validation=False, unique_contexts=False):
         self.step, self.rest, self.config = step, rest, config
         self.prefix = f"{'validation' if validation else 'train'}-{rank}"
         self.master_seed = config.seed + (1000000007 if validation else 0)
@@ -407,6 +489,9 @@ class _TrajectoryFactory:
         # Preparation workers use CPU topology without synchronizing CUDA.
         self.fixed_indices = step.fixed_indices.detach().cpu().clone()
         self.cell_count = len(step.cell_corner_indices)
+        # Job lists may run one seed twice at once (filler jobs), so each reset needs its own
+        # context key; ``next`` on a count is atomic under the GIL for the worker threads.
+        self._context_ids = itertools.count() if unique_contexts else None
 
     def reset(self, seed):
         import torch
@@ -426,6 +511,8 @@ class _TrajectoryFactory:
         ).reset(2 * seed + self.seed_parity)
         contact = self._contact_partners(seed, initial.material.youngs_modulus)
         key = f"{self.prefix}-{seed}"
+        if self._context_ids is not None:
+            key = f"{key}-{next(self._context_ids)}"
         specification = asdict(initial.material)
         self.step.register_context(key, **specification, contact=contact)
         try:
@@ -695,8 +782,177 @@ def _scheduled_learning_rate(config, epoch, plateau_rate):
     return float(config.lr_final + (config.learning_rate - config.lr_final) * (1 + math.cos(math.pi * fraction)) / 2)
 
 
-def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None = None):
+@dataclass(frozen=True)
+class JobAssignment:
+    """Per-rank job lists of one fixed-state epoch with the common update count."""
+
+    rank_jobs: tuple[tuple[tuple[int, int, int], ...], ...]
+    """Jobs ``(seed, K, H)`` of every rank: the sampled jobs in execution order, then the filler jobs."""
+    updates: int
+    """Full-size updates every rank performs in the epoch."""
+    queries: int
+    """Queries of the sampled jobs over all ranks, without fillers."""
+    filler_queries: tuple[int, ...]
+    """Padding queries per rank, each a ``(seed, 1, 1)`` job on one of the rank's own seeds."""
+
+
+def fixed_state_stage(config, epoch):
+    """Return ``(stage, K_max, H_max)`` of ``epoch`` under the fixed-state growth timetable.
+
+    Stages advance every ``growth_stage_epochs`` epochs from epoch 1; the last
+    stage persists.
+    """
+    stage = min(len(config.growth_stages) - 1, (epoch - 1) // config.growth_stage_epochs)
+    k_max, h_max = config.growth_stages[stage]
+    return stage, k_max, h_max
+
+
+def _powers_of_two(limit):
+    """Return the powers of two no greater than ``limit`` in increasing order."""
+    return tuple(1 << i for i in range(limit.bit_length()) if 1 << i <= limit)
+
+
+def _fixed_state_counts(config, stage):
+    """Return the available ``(K, H)`` counts of ``stage`` for the validation checks.
+
+    K are the powers of two up to ``min(K_max, budget_cap)`` and H is the single
+    stage horizon ``H_max``, so the full-horizon check runs the largest K
+    (capped by ``validation_full_iterations``) over ``H_max`` steps.
+    """
+    k_max, h_max = config.growth_stages[stage]
+    return _powers_of_two(min(k_max, config.budget_cap)), (h_max,)
+
+
+def sample_epoch_jobs(config, epoch, master_seed):
+    """Draw the fixed-state jobs ``(seed, K, H)`` of one epoch, one per training state.
+
+    With ``(K_max, H_max)`` the growth stage of ``epoch``, ``H`` is uniform
+    over ``1 .. H_max`` and ``K`` uniform over the powers of two ``<= K_max``
+    whose ``K x H <= budget_cap``; ``K = 1`` is always offered. The stream is
+    ``SeedSequence([master_seed, epoch, 7331])``, so the draw is identical on
+    every rank and after a resume.
+
+    Args:
+        config: Training configuration with the fixed-state fields.
+        epoch: One-based epoch number.
+        master_seed: Campaign seed, normally ``config.seed``.
+
+    Returns:
+        ``[(seed, K, H)]`` for ``seed`` in ``range(config.state_count)``.
+    """
+    _, k_max, h_max = fixed_state_stage(config, epoch)
+    rng = np.random.default_rng(np.random.SeedSequence([master_seed, epoch, 7331]))
+    powers = _powers_of_two(k_max)
+    jobs = []
+    for seed in range(config.state_count):
+        steps = int(rng.integers(1, h_max + 1))
+        options = [k for k in powers if k * steps <= config.budget_cap] or [1]
+        jobs.append((seed, int(rng.choice(options)), steps))
+    return jobs
+
+
+def assign_jobs(jobs, world_size, batch_size, *, shuffle_seed=None):
+    """Balance jobs over ranks by ``K x H`` and pad every rank to the same update count.
+
+    Longest-processing-time greedy: jobs sorted by decreasing ``K x H`` (ties
+    by seed) go to the least loaded rank (ties by rank index). The update
+    count ``U`` is the smallest number of full batches that holds the heaviest
+    rank and gives the longest job one query per update (a trajectory receives
+    at most one query per batch). Each rank's sampled jobs are then listed in
+    execution order: the LPT order (decreasing ``K x H``) when ``shuffle_seed``
+    is None, otherwise the permutation drawn from
+    ``SeedSequence([*shuffle_seed, rank, 7332])``. The trainer shuffles so the
+    pool, which starts jobs in list order, sees a stationary mixture of budgets
+    over the epoch instead of drifting from the longest budgets to the shortest;
+    the pool completes every batch whatever the order. Each rank finally
+    appends filler jobs ``(seed, 1, 1)``, cycling through its own seeds in
+    increasing order, until it holds exactly ``U * batch_size`` queries, so
+    every rank performs ``U`` full-size updates. The result depends only on
+    the arguments and is therefore identical on every rank.
+
+    Args:
+        jobs: ``(seed, K, H)`` triples of one epoch.
+        world_size: Number of ranks.
+        batch_size: Queries per update on every rank.
+        shuffle_seed: Integers seeding the per-rank execution order, normally
+            ``(master_seed, epoch)``; None keeps the LPT order.
+
+    Raises:
+        ValueError: A count is not a positive integer or a rank receives no job.
+    """
+    for name, value in (("world_size", world_size), ("batch_size", batch_size)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    ordered = sorted(jobs, key=lambda job: (-(job[1] * job[2]), job[0]))
+    loads = [0] * world_size
+    rank_jobs = [[] for _ in range(world_size)]
+    for job in ordered:
+        rank = min(range(world_size), key=loads.__getitem__)
+        rank_jobs[rank].append(job)
+        loads[rank] += job[1] * job[2]
+    if any(not queue for queue in rank_jobs):
+        raise ValueError("every rank needs at least one job; increase state_count")
+    longest = ordered[0][1] * ordered[0][2]
+    updates = max(-(-max(loads) // batch_size), longest)
+    fillers = []
+    for rank, queue in enumerate(rank_jobs):
+        if shuffle_seed is not None:
+            rng = np.random.default_rng(np.random.SeedSequence([*shuffle_seed, rank, 7332]))
+            queue[:] = [queue[index] for index in rng.permutation(len(queue))]
+        seeds = sorted({job[0] for job in queue})
+        count = updates * batch_size - loads[rank]
+        queue.extend((seeds[index % len(seeds)], 1, 1) for index in range(count))
+        fillers.append(count)
+    return JobAssignment(tuple(tuple(queue) for queue in rank_jobs), updates, sum(loads), tuple(fillers))
+
+
+def _parameter_shape_mismatches(saved_state, current_state):
+    """Return the parameter names one state dict lacks or whose shapes differ between the two.
+
+    A weights-only start compares the checkpoint's ``network_state`` with the
+    freshly built network before loading, so a feature change that kept the
+    architecture fields (for example a conditioning width without a schema
+    bump) is rejected as an architecture mismatch instead of a raw size error.
+    """
+    return [
+        name
+        for name in sorted(set(saved_state) | set(current_state))
+        if name not in saved_state
+        or name not in current_state
+        or tuple(saved_state[name].shape) != tuple(current_state[name].shape)
+    ]
+
+
+def _allow_early_stop_fixed(config, epoch):
+    """Return whether plateau stopping may be considered after ``epoch`` in the fixed-state regime.
+
+    The analogue of :func:`_allow_early_stop`: stopping is permitted only when
+    enabled and at least ``plateau_min_final_stage_epochs`` epochs, ``epoch``
+    included, ran in the final growth stage.
+    """
+    final_stage_start = (len(config.growth_stages) - 1) * config.growth_stage_epochs
+    return bool(config.early_stopping and epoch - final_stage_start >= config.plateau_min_final_stage_epochs)
+
+
+def run_training(
+    output: Path, config: MixedTrainConfig, *, resume: Path | None = None, resume_weights_only: bool = False
+):
     """Run an explicitly requested V2 campaign or a bounded verification run.
+
+    ``config.regime`` selects the open-ended trajectory pool (``pool``) or the
+    fixed-state epoch regime (``fixed_states``). In the latter every epoch
+    draws :func:`sample_epoch_jobs`, distributes them with :func:`assign_jobs`
+    and performs exactly ``U`` full-size updates on every rank; the growth
+    stage supplies the available K/H of the full-horizon check, the curriculum
+    is unused (epoch rows carry ``curriculum=None`` and a ``regime`` block) and
+    checkpoints hold no pool state because every epoch restarts its job list.
+
+    With ``resume_weights_only`` the checkpoint only initializes the network
+    and the AdamW state of a fresh run: the epoch counter, report, curriculum,
+    controller and pool are new, only the architecture fields
+    (``_ARCHITECTURE_FIELDS``) must match and the origin is recorded under
+    ``report["initialized_from"]`` together with every differing field. The
+    learning rate follows the new schedule from epoch 1.
 
     Checkpoints restore the same rank count, curriculum, pool queues, optimizer
     history and Adam sequence. The configured descent-rate gate, stage limit
@@ -736,10 +992,41 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
     from .trajectory_pool import ActiveTrajectoryPool  # noqa: PLC0415 -- Optional training boundary.
 
     rank, world_size = int(os.environ.get("RANK", "0")), int(os.environ.get("WORLD_SIZE", "1"))
-    if config.queries_per_epoch % (config.batch_size * world_size):
+    fixed_states = config.regime == "fixed_states"
+    if not fixed_states and config.queries_per_epoch % (config.batch_size * world_size):
         raise ValueError("queries_per_epoch must be divisible by batch_size * world_size")
+    if fixed_states and config.state_count < world_size:
+        raise ValueError("state_count must be at least the rank count")
+    if resume_weights_only and resume is None:
+        raise ValueError("resume_weights_only requires a checkpoint")
     output = Path(output).resolve()
     saved = torch.load(resume, map_location="cpu", weights_only=False) if resume else None
+    initialized_from = initial_weights = None
+    if saved and resume_weights_only:
+        if saved.get("format") != "mixed_pool_v2":
+            raise ValueError("incompatible checkpoint format")
+        saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
+        current_config = asdict(config)
+        mismatched = [name for name in _ARCHITECTURE_FIELDS if saved_config[name] != current_config[name]]
+        if mismatched:
+            raise ValueError(
+                f"weights-only initialization requires the checkpoint architecture; differing: {mismatched}"
+            )
+        if (output / "report.json").exists() or (output / "checkpoints").exists():
+            raise FileExistsError("weights-only initialization starts a fresh run; use a fresh output directory")
+        initialized_from = {
+            "checkpoint": str(Path(resume).resolve()),
+            "sha256": None,  # Filled once the parameter shapes match the freshly built network.
+            "completed_epochs": saved["report"]["completed_epochs"],
+            "completed_updates": saved["report"]["completed_updates"],
+            "best_selection": saved["report"].get("best_selection"),
+            "config_differences": {
+                name: {"checkpoint": saved_config.get(name), "current": value}
+                for name, value in current_config.items()
+                if saved_config.get(name) != value
+            },
+        }
+        initial_weights, saved = saved, None
     if saved:
         if saved.get("format") != "mixed_pool_v2" or saved["world_size"] != world_size:
             raise ValueError("incompatible checkpoint format or rank count")
@@ -796,6 +1083,18 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         checkpoint_chunks=config.checkpoint_chunks,
         contact_tokens=config.contact,
     ).to(device)
+    if initial_weights is not None:
+        # The architecture fields do not cover every parameter shape (a feature change without a
+        # schema bump keeps them equal), so compare the tensors themselves before touching the output.
+        mismatched = _parameter_shape_mismatches(initial_weights["network_state"], network.state_dict())
+        if mismatched:
+            if owned_group:
+                dist.destroy_process_group()
+            raise ValueError(
+                "weights-only initialization requires the checkpoint architecture; "
+                f"parameters missing or differing in shape: {mismatched}"
+            )
+        initialized_from["sha256"] = hashlib.sha256(Path(resume).read_bytes()).hexdigest()
     step = MixedHexSolverStep(
         rest,
         fixed,
@@ -808,7 +1107,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         contact_friction_epsilon=config.contact_friction_epsilon,
     ).to(device)
     cell_count = len(step.cell_corner_indices)
-    factory = _TrajectoryFactory(step, rest, config, rank=rank)
+    factory = _TrajectoryFactory(step, rest, config, rank=rank, unique_contexts=fixed_states)
     validation_factory = _TrajectoryFactory(step, rest, config, rank=rank, validation=True)
     optimizer = torch.optim.AdamW(network.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     controller = PlateauController(
@@ -823,6 +1122,39 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
         min_descent_rate=config.stage_descent_rate,
     )
     pool = None
+
+    def available_counts(epoch):
+        """Return the (K, H) counts new resets or the growth stage of ``epoch`` offer."""
+        if fixed_states:
+            return _fixed_state_counts(config, fixed_state_stage(config, epoch)[0])
+        return curriculum.available_counts
+
+    def stage_regime(epoch):
+        """Return the fixed-state regime block of ``epoch`` before its jobs are drawn, else None.
+
+        Progress heartbeats carry this block in every phase; the epoch loop adds
+        the query and update counts once the jobs are assigned.
+        """
+        if not fixed_states:
+            return None
+        stage, k_max, h_max = fixed_state_stage(config, epoch)
+        return {"name": "fixed_states", "stage": stage, "k_max": k_max, "h_max": h_max}
+
+    def fixed_state_pool():
+        """Return an empty pool for job lists; ``set_jobs`` starts every epoch."""
+        return ActiveTrajectoryPool(
+            capacity=config.pool_multiplier * config.batch_size,
+            batch_size=config.batch_size,
+            reset=factory.reset,
+            advance=factory.advance,
+            retire=factory.retire,
+            iteration_counts=(1,),
+            physical_step_counts=(1,),
+            seed=config.seed + rank * 100000000,
+            workers=config.preparation_workers,
+            initialize=False,
+        )
+
     try:
         if saved:
             network.load_state_dict(saved["network_state"])
@@ -836,20 +1168,27 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             previous_stage, previous_stage_epochs = curriculum.stage, curriculum.stage_epochs
             # Only a changed cap promotes here. An unchanged cap reached on a skipped epoch waits for
             # the next validated epoch and its full-horizon check, as the uninterrupted run would.
-            overdue_advanced = previous_stage_limit != config.stage_max_epochs and curriculum.advance_if_overdue()
-            state = saved["rank_states"][rank]
-            partners = _saved_contact_partners(state["pool"])
-            for key, spec in state["context_specs"].items():
-                if key not in partners:
-                    raise ValueError(f"checkpoint context {key!r} has no stored contact partners")
-                step.register_context(key, **spec, contact=partners[key])
-            pool = ActiveTrajectoryPool.from_state_dict(
-                state["pool"],
-                reset=factory.reset,
-                advance=factory.advance,
-                retire=factory.retire,
-                workers=config.preparation_workers,
+            # The fixed-state regime never consults the curriculum.
+            overdue_advanced = (
+                not fixed_states and previous_stage_limit != config.stage_max_epochs and curriculum.advance_if_overdue()
             )
+            state = saved["rank_states"][rank]
+            if fixed_states:
+                # Every epoch restarts its job list, so the checkpoint holds no pool or contexts.
+                pool = fixed_state_pool()
+            else:
+                partners = _saved_contact_partners(state["pool"])
+                for key, spec in state["context_specs"].items():
+                    if key not in partners:
+                        raise ValueError(f"checkpoint context {key!r} has no stored contact partners")
+                    step.register_context(key, **spec, contact=partners[key])
+                pool = ActiveTrajectoryPool.from_state_dict(
+                    state["pool"],
+                    reset=factory.reset,
+                    advance=factory.advance,
+                    retire=factory.retire,
+                    workers=config.preparation_workers,
+                )
             random.setstate(state["python_rng"])
             np.random.set_state(state["numpy_rng"])  # noqa: NPY002 -- Preserve process RNG in checkpoints.
             torch.set_rng_state(state["torch_rng"])
@@ -906,18 +1245,25 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             report["config"] = asdict(config)
             report["status"] = "running"
         else:
-            counts = curriculum.available_counts
-            pool = ActiveTrajectoryPool(
-                capacity=config.pool_multiplier * config.batch_size,
-                batch_size=config.batch_size,
-                reset=factory.reset,
-                advance=factory.advance,
-                retire=factory.retire,
-                iteration_counts=counts[0],
-                physical_step_counts=counts[1],
-                seed=config.seed + rank * 100000000,
-                workers=config.preparation_workers,
-            )
+            if fixed_states:
+                pool = fixed_state_pool()
+            else:
+                counts = curriculum.available_counts
+                pool = ActiveTrajectoryPool(
+                    capacity=config.pool_multiplier * config.batch_size,
+                    batch_size=config.batch_size,
+                    reset=factory.reset,
+                    advance=factory.advance,
+                    retire=factory.retire,
+                    iteration_counts=counts[0],
+                    physical_step_counts=counts[1],
+                    seed=config.seed + rank * 100000000,
+                    workers=config.preparation_workers,
+                )
+            if initial_weights is not None:
+                # AdamW moments carry over; the schedule overwrites the group rates at epoch 1.
+                network.load_state_dict(initial_weights["network_state"])
+                optimizer.load_state_dict(initial_weights["optimizer_state"])
             report = {
                 "format": "mixed_pool_v2",
                 "config": asdict(config),
@@ -930,27 +1276,32 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 "best_selection": None,
                 "status": "running",
             }
+            if initialized_from is not None:
+                report["initialized_from"] = initialized_from
         best_metric = (report.get("best_selection") or {}).get("metric")
         module = (
             DistributedDataParallel(step, device_ids=[0] if device.type == "cuda" else None, broadcast_buffers=False)
             if world_size > 1
             else step
         )
+        regime = stage_regime(report["completed_epochs"] + 1)
         if rank == 0:
             (output / "checkpoints").mkdir(parents=True, exist_ok=True)
+            initial_counts = available_counts(report["completed_epochs"] + 1)
             write_progress(
                 output,
                 report,
                 phase="initializing",
                 epoch=report["completed_epochs"] + 1,
-                available_K=curriculum.available_counts[0],
-                available_H=curriculum.available_counts[1],
+                available_K=initial_counts[0],
+                available_H=initial_counts[1],
+                regime=regime,
             )
 
         def checkpoint(name):
             checkpoint_error = None
             try:
-                pool_state = pool.state_dict()
+                pool_state = None if fixed_states else pool.state_dict()
             except Exception as caught:
                 checkpoint_error = repr(caught)
             failures = _all_ranks_ok(checkpoint_error, device, world_size)
@@ -1002,11 +1353,36 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 group["weight_decay"] = config.weight_decay
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
-            counts = curriculum.available_counts
-            pool.set_available_counts(*counts)
+            if fixed_states:
+                counts = available_counts(epoch)
+                assignment = assign_jobs(
+                    sample_epoch_jobs(config, epoch, config.seed),
+                    world_size,
+                    config.batch_size,
+                    shuffle_seed=(config.seed, epoch),
+                )
+                pool.set_jobs(assignment.rank_jobs[rank])
+                updates = assignment.updates
+                regime = {
+                    **stage_regime(epoch),
+                    "queries": assignment.queries,
+                    "filler_queries": list(assignment.filler_queries),
+                    "updates": updates,
+                }
+            else:
+                counts = curriculum.available_counts
+                pool.set_available_counts(*counts)
+                updates = config.queries_per_epoch // (config.batch_size * world_size)
+                regime = None
             if rank == 0:
                 write_progress(
-                    output, report, phase="training", epoch=epoch, available_K=counts[0], available_H=counts[1]
+                    output,
+                    report,
+                    phase="training",
+                    epoch=epoch,
+                    available_K=counts[0],
+                    available_H=counts[1],
+                    regime=regime,
                 )
             totals = Counter()
             budgets, ages, steps, modes, materials, perturbations = Counter(), Counter(), Counter(), Counter(), [], []
@@ -1017,7 +1393,7 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             contact_scenes = {}
             contact_hits = {}
             update_count = 0
-            for _ in range(config.queries_per_epoch // (config.batch_size * world_size)):
+            for _ in range(updates):
                 began = time.perf_counter()
                 error, records = None, None
                 try:
@@ -1158,17 +1534,38 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 pool.finish_batch(records)
                 if rank == 0 and report["completed_updates"] % 8 == 0:
                     write_progress(
-                        output, report, phase="training", epoch=epoch, available_K=counts[0], available_H=counts[1]
+                        output,
+                        report,
+                        phase="training",
+                        epoch=epoch,
+                        available_K=counts[0],
+                        available_H=counts[1],
+                        regime=regime,
                     )
                 del result, loss, losses, records, batch, previous, floor, after, residual, step_size, payloads
+            if fixed_states:
+                # Coordinated like every other failure of the loop, so a pool invariant violation
+                # fails all ranks together instead of stranding the others in the next collective.
+                exhaustion_error = None if pool.exhausted else f"{pool.remaining_queries} queries unserved"
+                failures = _all_ranks_ok(exhaustion_error, device, world_size)
+                if failures:
+                    raise RuntimeError(f"fixed-state epoch left queries unserved: {failures}")
             validated = epoch % config.validation_interval == 0 or epoch == config.max_epochs
             if validated:
                 if rank == 0:
                     write_progress(
-                        output, report, phase="validation", epoch=epoch, available_K=counts[0], available_H=counts[1]
+                        output,
+                        report,
+                        phase="validation",
+                        epoch=epoch,
+                        available_K=counts[0],
+                        available_H=counts[1],
+                        regime=regime,
                     )
                 validation = _validate(step, validation_factory, config, device, rank, world_size)
-                need_full = epoch % config.validation_full_interval == 0 or curriculum.needs_full_horizon(validation)
+                need_full = epoch % config.validation_full_interval == 0 or (
+                    not fixed_states and curriculum.needs_full_horizon(validation)
+                )
                 full = (
                     validate_full_horizon(
                         step,
@@ -1183,15 +1580,19 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                     if need_full
                     else None
                 )
-                curriculum_decision = curriculum.observe(validation, full_horizon=full)
-                allow_early_stop = _allow_early_stop(config, curriculum)
+                if fixed_states:
+                    curriculum_decision = None
+                    allow_early_stop = _allow_early_stop_fixed(config, epoch)
+                else:
+                    curriculum_decision = curriculum.observe(validation, full_horizon=full)
+                    allow_early_stop = _allow_early_stop(config, curriculum)
                 decision = controller.observe(epoch, validation, allow_early_stop=allow_early_stop)
             else:
                 # No validation work: the curriculum counts stage residence only, the controller
                 # never sees this epoch and no full-horizon check runs; one the curriculum needs
                 # before advancing runs on the next validated epoch.
                 validation = full = None
-                curriculum_decision = curriculum.skip()
+                curriculum_decision = None if fixed_states else curriculum.skip()
                 allow_early_stop = False
                 decision = {"learning_rate": controller.learning_rate, "stop": False, "status": "running"}
             # Recorded as the rate the next epoch will use under the current schedule.
@@ -1276,6 +1677,8 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 "rank_0_peak_cuda_bytes": torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0,
                 "rank_diagnostics": rank_diagnostics,
             }
+            if regime is not None:
+                row["regime"] = regime
             report["epochs"].append(row)
             report.update(completed_epochs=epoch, status=decision["status"])
             checkpoint("latest.pt")
@@ -1285,16 +1688,21 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 checkpoint(f"epoch_{epoch:04d}.pt")
             if rank == 0:
                 _write_report(output, report)
+                stage_text = (
+                    f"stage {regime['stage']} (K<={regime['k_max']}, H<={regime['h_max']}, U={regime['updates']}), "
+                    if regime is not None
+                    else ""
+                )
                 if config.verbose and validation is None:
                     print(
-                        f"epoch {epoch}: loss={row['loss']:.6g}, K={counts[0]}, H={counts[1]}, "
+                        f"epoch {epoch}: loss={row['loss']:.6g}, {stage_text}K={counts[0]}, H={counts[1]}, "
                         f"validation skipped (every {config.validation_interval} epochs)",
                         flush=True,
                     )
                 elif config.verbose:
                     selection = validation.get("selection") or {}
                     print(
-                        f"epoch {epoch}: loss={row['loss']:.6g}, K={counts[0]}, H={counts[1]}, "
+                        f"epoch {epoch}: loss={row['loss']:.6g}, {stage_text}K={counts[0]}, H={counts[1]}, "
                         f"selection={selection.get('metric')} (eligible={selection.get('eligible')}), "
                         f"validation failures={validation['failed_count']}",
                         flush=True,
@@ -1303,13 +1711,15 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
                 break
         checkpoint("final.pt")
         if rank == 0:
+            final_counts = available_counts(max(report["completed_epochs"], 1))
             write_progress(
                 output,
                 report,
                 phase="complete",
                 epoch=report["completed_epochs"],
-                available_K=curriculum.available_counts[0],
-                available_H=curriculum.available_counts[1],
+                available_K=final_counts[0],
+                available_H=final_counts[1],
+                regime=regime,
             )
         return report
     except BaseException as error:
@@ -1336,7 +1746,9 @@ def run_training(output: Path, config: MixedTrainConfig, *, resume: Path | None 
             if "report" in locals():
                 report["status"] = "failed"
                 _write_report(output, report)
-                write_progress(output, report, phase="failed", epoch=locals().get("epoch", 0))
+                write_progress(
+                    output, report, phase="failed", epoch=locals().get("epoch", 0), regime=locals().get("regime")
+                )
         raise
     finally:
         error_in_flight = sys.exc_info()[0] is not None
@@ -1360,13 +1772,21 @@ def _main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--resume", type=Path)
     parser.add_argument(
+        "--resume-weights-only",
+        action="store_true",
+        help="initialize the network and AdamW state from --resume into a fresh run; "
+        "--config supplies the whole configuration and only the architecture must match",
+    )
+    parser.add_argument(
         "--config", type=Path, help="JSON overrides for MixedTrainConfig; resume starts from saved config"
     )
     parser.add_argument("--max-epochs", type=int)
     parser.add_argument("--device", choices=("cpu", "cuda"))
     args = parser.parse_args()
+    if args.resume_weights_only and not args.resume:
+        parser.error("--resume-weights-only requires --resume")
     values = {}
-    if args.resume:
+    if args.resume and not args.resume_weights_only:
         import torch
 
         values = asdict(
@@ -1380,7 +1800,9 @@ def _main():
         values["max_epochs"] = args.max_epochs
     if args.device is not None:
         values["device"] = args.device
-    run_training(args.output, MixedTrainConfig(**values), resume=args.resume)
+    run_training(
+        args.output, MixedTrainConfig(**values), resume=args.resume, resume_weights_only=args.resume_weights_only
+    )
 
 
 if __name__ == "__main__":

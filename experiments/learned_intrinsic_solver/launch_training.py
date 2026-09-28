@@ -25,7 +25,7 @@ __all__ = ["launch_training"]
 
 def _check_forwarded_arguments(arguments):
     for argument in arguments:
-        if argument.split("=", 1)[0] in ("--output", "--resume"):
+        if argument.split("=", 1)[0] in ("--output", "--resume", "--resume-weights-only"):
             raise ValueError("output and resume must be supplied only to the launcher")
 
 
@@ -44,6 +44,7 @@ def launch_training(
     workers: int = 4,
     timeout: float = 86400,
     resume: Path | None = None,
+    resume_weights_only: bool = False,
     training_arguments: tuple[str, ...] = (),
     gpu_claim: Path | None = None,
     pipeline: str = "epochs",
@@ -52,6 +53,10 @@ def launch_training(
 
     Fresh runs require a new output path. Resume requires an existing checkpoint
     inside that run's ``checkpoints`` directory and writes a new log directory.
+    With ``resume_weights_only`` the checkpoint may come from any run (the mixed
+    trainer's weights-only initialization): the output path must be fresh, the
+    ranks receive ``--resume <checkpoint> --resume-weights-only`` and
+    ``launcher.json`` records ``resume_weights_only``.
     """
     if isinstance(workers, bool) or workers not in (1, 2, 4):
         raise ValueError("workers must be one, two, or four")
@@ -61,10 +66,19 @@ def launch_training(
         raise ValueError("timeout must be finite and positive")
     _check_forwarded_arguments(training_arguments)
     output = Path(output).resolve()
-    if resume is None:
+    if resume_weights_only and resume is None:
+        raise ValueError("resume_weights_only requires a checkpoint")
+    if resume_weights_only and pipeline != "mixed":
+        raise ValueError("resume_weights_only is supported by the mixed pipeline only")
+    fresh = resume is None or resume_weights_only
+    if fresh:
         if output.exists():
             raise FileExistsError(f"Use a fresh output directory; refusing to overwrite {output}")
-    else:
+    if resume_weights_only:
+        resume = Path(resume).resolve()
+        if not resume.is_file():
+            raise FileNotFoundError(f"weights-only checkpoint is missing: {resume}")
+    elif resume is not None:
         resume = Path(resume).resolve()
         if not output.is_dir():
             raise FileNotFoundError(f"resume output directory is missing: {output}")
@@ -80,9 +94,9 @@ def launch_training(
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    if resume is None:
+    if fresh:
         output.mkdir(parents=True)
-    logs = _next_log_directory(output, resume=resume is not None)
+    logs = _next_log_directory(output, resume=not fresh)
     commands, environments = [], []
     for rank in range(workers):
         environment = os.environ.copy()
@@ -116,7 +130,11 @@ def launch_training(
         ]
         if resume is not None:
             command.extend(("--resume", str(resume)))
+        if resume_weights_only:
+            command.append("--resume-weights-only")
         commands.append(command)
+    if resume_weights_only:
+        print(f"Initializing network and optimizer weights only from {resume}; fresh run in {output}", flush=True)
     print(f"Launching {workers} ranks; logs: {logs}", flush=True)
     result = dict(_run_workers(commands, logs, timeout=timeout, environments=environments))
     result.update(
@@ -127,6 +145,7 @@ def launch_training(
             "pipeline": pipeline,
         },
         resume=str(resume) if resume is not None else None,
+        resume_weights_only=bool(resume_weights_only),
         logs_directory=str(logs),
         world_size=workers,
         master_port=port,
@@ -143,6 +162,11 @@ def _main():
     parser.add_argument("--workers", type=int, choices=(1, 2, 4), default=4)
     parser.add_argument("--timeout", type=float, default=86400)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument(
+        "--resume-weights-only",
+        action="store_true",
+        help="initialize a fresh mixed run's network and optimizer from --resume (any run's checkpoint)",
+    )
     parser.add_argument("--pipeline", choices=("epochs", "mixed"), default="epochs")
     args, remaining = parser.parse_known_args()
     if remaining[:1] == ["--"]:
@@ -152,6 +176,7 @@ def _main():
         workers=args.workers,
         timeout=args.timeout,
         resume=args.resume,
+        resume_weights_only=args.resume_weights_only,
         pipeline=args.pipeline,
         training_arguments=tuple(remaining),
     )

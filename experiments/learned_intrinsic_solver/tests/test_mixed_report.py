@@ -239,15 +239,21 @@ class TestMixedReport(unittest.TestCase):
                 ("0.125", "True", "512", "512"),
             )
             self.assertEqual(epoch["step_size_max"], "0.03")
+            # The fixed-state regime columns follow every pool-regime column and stay blank for pool runs.
             self.assertEqual(
-                epoch_columns[-4:],
+                epoch_columns[-8:],
                 [
                     "contact_scene_fraction",
                     "contact_realized_fraction",
                     "contact_max_penetration_r",
                     "validation_final_max_penetration_r",
+                    "regime_stage",
+                    "regime_k_max",
+                    "regime_h_max",
+                    "regime_updates",
                 ],
             )
+            self.assertEqual((epoch["regime_stage"], epoch["regime_updates"]), ("", ""))
             # The validation column is the maximum deepest penetration at the final validation iteration.
             self.assertEqual(
                 (
@@ -393,6 +399,83 @@ class TestMixedReport(unittest.TestCase):
             self.assertIn("<th>At iteration 32</th>", page)
             self.assertIn("at the largest currently available budgets;", page)
             self.assertNotIn("Selection restarted", page)
+
+    def test_fixed_state_runs_show_the_stage_counts_timetable_and_the_weights_only_origin(self):
+        """Replace the pool's query and curriculum lines by the fixed-state stage, counts and timetable; name the origin."""
+        report = self._report()
+        report["config"].update(
+            regime="fixed_states",
+            state_count=2048,
+            budget_cap=1024,
+            growth_stage_epochs=2,
+            growth_stages=[[1, 8], [2, 16], [4, 32]],
+            queries_per_epoch=8192,
+            stage_descent_rate=0.8,
+            stage_max_epochs=20,
+        )
+        stage = {"name": "fixed_states", "stage": 0, "k_max": 1, "h_max": 8}
+        report["epochs"][0]["regime"] = {**stage, "queries": 9300, "filler_queries": [3, 0, 2, 1], "updates": 146}
+        report["epochs"][0]["curriculum"] = None
+        report["initialized_from"] = {
+            "checkpoint": "/runs/training_v3_contact_20260927_r2/checkpoints/best_validation.pt",
+            "sha256": "abc",
+            "completed_epochs": 62,
+            "completed_updates": 7936,
+            "best_selection": {"epoch": 60, "metric": 13.1},
+        }
+        report["progress"] = {
+            "phase": "training",
+            "epoch": 2,
+            "regime": {**stage, "queries": 9400, "filler_queries": [1, 1, 1, 1], "updates": 147},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_mixed_report(output, report)
+            html = (output / "index.html").read_text()
+            self.assertIn(
+                "Fixed-state regime: 2048 training states per epoch, K x H ≤ 1024; growth stage 0 (K ≤ 1, H ≤ 8): "
+                "9400 sampled queries + 4 filler in 147 updates per rank and 512 fixed validation states.",
+                html,
+            )
+            self.assertIn(
+                "Growth timetable (K_max, H_max) from stage 0: (1, 8) → (2, 16) → (4, 32), advancing every 2 epochs; "
+                "the final stage persists. The validation-gated curriculum is not used.",
+                html,
+            )
+            self.assertIn(
+                "Initialized weights-only (network and AdamW state) from "
+                "training_v3_contact_20260927_r2/checkpoints/best_validation.pt after 62 completed epochs, "
+                "best 13.1 N at epoch 60.",
+                html,
+            )
+            self.assertNotIn("training queries per epoch", html)
+            self.assertNotIn("Curriculum descent gate", html)
+            with (output / "epochs.csv").open() as handle:
+                row = next(csv.DictReader(handle))
+            self.assertEqual(
+                (row["regime_stage"], row["regime_k_max"], row["regime_h_max"], row["regime_updates"]),
+                ("0", "1", "8", "146"),
+            )
+            # Before the first job list is assigned the heartbeat names the stage only.
+            report["progress"] = {"phase": "initializing", "epoch": 1, "regime": stage}
+            write_mixed_report(output, report)
+            html = (output / "index.html").read_text()
+            self.assertIn("growth stage 0 (K ≤ 1, H ≤ 8) and 512 fixed validation states.", html)
+            # Without a heartbeat the latest completed row supplies the stage.
+            del report["progress"]
+            write_mixed_report(output, report)
+            self.assertIn(
+                "9300 sampled queries + 6 filler in 146 updates per rank", (output / "index.html").read_text()
+            )
+            # The pool regime's status line is unchanged.
+            pool = self._report()
+            pool["config"].update(queries_per_epoch=8192, stage_descent_rate=0.8, stage_max_epochs=20)
+            write_mixed_report(output, pool)
+            html = (output / "index.html").read_text()
+            self.assertIn("8192 training queries per epoch and 512 fixed validation states.", html)
+            self.assertIn("Curriculum descent gate: 80% · Hard cap: 20 epochs per stage</p>", html)
+            self.assertNotIn("Fixed-state regime", html)
+            self.assertNotIn("Initialized weights-only", html)
 
     def test_progress_keeps_physical_curriculum_and_latest_update(self):
         """Publish lightweight progress with actual current K/H and update counters."""
