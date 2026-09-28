@@ -1,0 +1,203 @@
+{
+  "parent_source_matches_except_lazy_usd_import": true,
+  "metric_ast_matches_original": true,
+  "cases": [
+    {
+      "stiffness": 1000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "world_bounds_min": [
+        -0.32183048129081726,
+        -0.13779272139072418,
+        -0.12335947901010513
+      ],
+      "world_bounds_max": [
+        0.331097275018692,
+        0.1489347517490387,
+        0.3240000009536743
+      ]
+    },
+    {
+      "stiffness": 10000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "world_bounds_min": [
+        -0.22343581914901733,
+        -0.10507945716381073,
+        -0.035472530871629715
+      ],
+      "world_bounds_max": [
+        0.2209809571504593,
+        0.10961892455816269,
+        0.3240000009536743
+      ]
+    },
+    {
+      "stiffness": 100000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "world_bounds_min": [
+        -0.2038845270872116,
+        -0.0884329304099083,
+        -0.04129813238978386
+      ],
+      "world_bounds_max": [
+        0.20120051503181458,
+        0.08758024126291275,
+        0.3240000009536743
+      ]
+    },
+    {
+      "stiffness": 1000000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "world_bounds_min": [
+        -0.21152947843074799,
+        -0.0832052156329155,
+        -0.04765355959534645
+      ],
+      "world_bounds_max": [
+        0.201014444231987,
+        0.08089461177587509,
+        0.3240000009536743
+      ]
+    },
+    {
+      "stiffness": 10000000,
+      "models_match": true,
+      "initial_states_match": true,
+      "all_saved_states_finite": true,
+      "max_pin_error_m": 7.450580596923828e-09,
+      "world_bounds_min": [
+        -0.21775510907173157,
+        -0.08486777544021606,
+        -0.05004425719380379
+      ],
+      "world_bounds_max": [
+        0.20669247210025787,
+        0.08259966969490051,
+        0.3240000009536743
+      ]
+    }
+  ],
+  "comparison_to_archived_may_scores": [
+    {
+      "stiffness": 1000,
+      "scores": {
+        "stretch_score": {
+          "may_mean": 0.10690860908989203,
+          "current_off_mean": 0.10689153662880986,
+          "relative_change": -0.00015969210737565298
+        },
+        "shear_score": {
+          "may_mean": 0.06462254913582297,
+          "current_off_mean": 0.06456230178098506,
+          "relative_change": -0.0009322961666411445
+        },
+        "bend_score": {
+          "may_mean": 0.01096383038382076,
+          "current_off_mean": 0.010804215754540398,
+          "relative_change": -0.014558290642283644
+        }
+      }
+    },
+    {
+      "stiffness": 10000,
+      "scores": {
+        "stretch_score": {
+          "may_mean": 0.014550319025469867,
+          "current_off_mean": 0.014523476519105405,
+          "relative_change": -0.0018448053487676308
+        },
+        "shear_score": {
+          "may_mean": 0.011108637979557825,
+          "current_off_mean": 0.011053282954457904,
+          "relative_change": -0.0049830613979665594
+        },
+        "bend_score": {
+          "may_mean": 0.008122227172585024,
+          "current_off_mean": 0.008076339200115907,
+          "relative_change": -0.005649678529554447
+        }
+      }
+    },
+    {
+      "stiffness": 100000,
+      "scores": {
+        "stretch_score": {
+          "may_mean": 0.00561427713846352,
+          "current_off_mean": 0.005619360766919885,
+          "relative_change": 0.0009054822786600525
+        },
+        "shear_score": {
+          "may_mean": 0.0057210249226705935,
+          "current_off_mean": 0.005721759537365588,
+          "relative_change": 0.00012840613437692383
+        },
+        "bend_score": {
+          "may_mean": 0.014859561177364014,
+          "current_off_mean": 0.014882743365717857,
+          "relative_change": 0.0015600856631727833
+        }
+      }
+    },
+    {
+      "stiffness": 1000000,
+      "scores": {
+        "stretch_score": {
+          "may_mean": 0.005457317464655855,
+          "current_off_mean": 0.005451601955589455,
+          "relative_change": -0.001047311083406166
+        },
+        "shear_score": {
+          "may_mean": 0.0060085008202117075,
+          "current_off_mean": 0.006004359570661132,
+          "relative_change": -0.0006892317525605263
+        },
+        "bend_score": {
+          "may_mean": 0.04489941178659097,
+          "current_off_mean": 0.044837667057633264,
+          "relative_change": -0.001375179016847361
+        }
+      }
+    },
+    {
+      "stiffness": 10000000,
+      "scores": {
+        "stretch_score": {
+          "may_mean": 0.0055943663997480965,
+          "current_off_mean": 0.005573872972669685,
+          "relative_change": -0.0036632257549906733
+        },
+        "shear_score": {
+          "may_mean": 0.005877505278486328,
+          "current_off_mean": 0.005852524863830871,
+          "relative_change": -0.004250173070349028
+        },
+        "bend_score": {
+          "may_mean": 0.1787039744836166,
+          "current_off_mean": 0.1770335513938235,
+          "relative_change": -0.009347431105659276
+        }
+      }
+    }
+  ],
+  "annotation_update_smoke": {
+    "particle_q": {
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    },
+    "body_q": {
+      "bitwise_equal": true,
+      "max_abs_diff": 0.0
+    }
+  }
+}

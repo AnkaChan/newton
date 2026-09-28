@@ -1,0 +1,56 @@
+[
+  {
+    "file": "alm_bag_stiffness_comparison.mp4",
+    "frames": 1800,
+    "duration_s": 30.0,
+    "width": 1920,
+    "height": 720,
+    "fps": 60.0,
+    "bytes": 74033294
+  },
+  {
+    "file": "ke10000000_comparison.mp4",
+    "frames": 360,
+    "duration_s": 6.0,
+    "width": 1920,
+    "height": 720,
+    "fps": 60.0,
+    "bytes": 33944432
+  },
+  {
+    "file": "ke1000000_comparison.mp4",
+    "frames": 360,
+    "duration_s": 6.0,
+    "width": 1920,
+    "height": 720,
+    "fps": 60.0,
+    "bytes": 33210824
+  },
+  {
+    "file": "ke100000_comparison.mp4",
+    "frames": 360,
+    "duration_s": 6.0,
+    "width": 1920,
+    "height": 720,
+    "fps": 60.0,
+    "bytes": 33006545
+  },
+  {
+    "file": "ke10000_comparison.mp4",
+    "frames": 360,
+    "duration_s": 6.0,
+    "width": 1920,
+    "height": 720,
+    "fps": 60.0,
+    "bytes": 33387812
+  },
+  {
+    "file": "ke1000_comparison.mp4",
+    "frames": 360,
+    "duration_s": 6.0,
+    "width": 1920,
+    "height": 720,
+    "fps": 60.0,
+    "bytes": 37699011
+  }
+]
