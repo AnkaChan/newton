@@ -1,0 +1,78 @@
+{
+  "modes": {
+    "floor9": {
+      "10": {
+        "median_ratio": 0.9707318701841738,
+        "min_ratio": 0.9408127472554844,
+        "max_ratio": 0.9991164839444829,
+        "lower_than_off": 10
+      },
+      "100": {
+        "median_ratio": 0.9869367387150159,
+        "min_ratio": 0.9711125733410908,
+        "max_ratio": 1.0253562939647631,
+        "lower_than_off": 9
+      }
+    },
+    "floor1": {
+      "10": {
+        "median_ratio": 0.8403738602202195,
+        "min_ratio": 0.6192318178812548,
+        "max_ratio": 0.9761172698020765,
+        "lower_than_off": 10
+      },
+      "100": {
+        "median_ratio": 0.9203801927047387,
+        "min_ratio": 0.7776780131127414,
+        "max_ratio": 0.9691109361619232,
+        "lower_than_off": 10
+      }
+    },
+    "floor0p1": {
+      "10": {
+        "median_ratio": 1.0085403762517826,
+        "min_ratio": 0.9387994422551647,
+        "max_ratio": 1.6981271624813306,
+        "lower_than_off": 3
+      },
+      "100": {
+        "median_ratio": 0.9215588466702878,
+        "min_ratio": 0.8023396230756518,
+        "max_ratio": 9.234056208545542,
+        "lower_than_off": 9
+      }
+    },
+    "floor0p01": {
+      "10": {
+        "median_ratio": 3.0888596351820485,
+        "min_ratio": 1.6197398049585068,
+        "max_ratio": 12.889484452535243,
+        "lower_than_off": 0
+      },
+      "100": {
+        "median_ratio": 266.3091263290077,
+        "min_ratio": 4.161516091383979,
+        "max_ratio": 615.3574116647845,
+        "lower_than_off": 0
+      }
+    },
+    "inertia": {
+      "10": {
+        "median_ratio": 4.1081607883345175,
+        "min_ratio": 2.0335066994512476,
+        "max_ratio": 18.935146747355255,
+        "lower_than_off": 0
+      },
+      "100": {
+        "median_ratio": 953.6288489550104,
+        "min_ratio": 20.375043353865586,
+        "max_ratio": 1483.1780110867428,
+        "lower_than_off": 0
+      }
+    }
+  },
+  "validation": {
+    "energy_gradient_relative_error": 5.492716356987578e-09,
+    "native_force_relative_error": 1.5625797797022144e-07
+  }
+}
