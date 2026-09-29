@@ -157,7 +157,8 @@ header = """<header><div class="eyebrow">Complete derivation · local / offline<
 <p>Follow the same two coefficients through auxiliary elimination, the position solve, the multiplier update, and recovery of the original material law.</p>
 <div class="symbols"><span><b>K_eff</b> = effective position stiffness</span><span><b>s</b> = multiplier weight</span>
 <span><b>k</b> = physical stiffness</span><span><b>&rho;</b> = numerical penalty</span><span><b>λ</b> = stored multiplier</span></div></header>"""
-footer = """<footer><p><a href="index.html">Triangle ALM equation sheet</a> ·
+footer = """<footer><p><a href="elements.html">Triangle, tet, and bending derivation</a> ·
+<a href="index.html">Triangle ALM equation sheet</a> ·
 <a href="../alm-elasticity-code-walkthrough/review.html">Code walkthrough</a> ·
 <a href="LICENSE_STIX">STIX font license</a></p>
 <p>Offline MathML with an embedded math font.</p><button onclick="window.print()">Print / save as PDF</button>
