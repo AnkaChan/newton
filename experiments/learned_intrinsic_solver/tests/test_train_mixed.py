@@ -26,7 +26,11 @@ if importlib.util.find_spec("torch") is None:
 import torch  # noqa: TID253 -- Optional experimental training tests.
 
 from experiments.learned_intrinsic_solver import features, mixed_validation, train_mixed
-from experiments.learned_intrinsic_solver.contact_scene import ContactPartners, sample_contact_partners
+from experiments.learned_intrinsic_solver.contact_scene import (
+    ContactPartners,
+    contact_stiffness_floor,
+    sample_contact_partners,
+)
 from experiments.learned_intrinsic_solver.curriculum import MixedCurriculum
 from experiments.learned_intrinsic_solver.data import generate_cuboid
 from experiments.learned_intrinsic_solver.history import HISTORY_KEYS, empty_history, store_history
@@ -189,6 +193,7 @@ class TestMixedTraining(unittest.TestCase):
         self.assertEqual(config.contact_kappa_range, (0.1, 10.0))
         self.assertEqual(config.contact_beta_range, (0.0, 1.0))
         self.assertEqual(config.contact_mu_range, (0.0, 1.0))
+        self.assertEqual(config.contact_static_penetration_max, 0.5)
         self.assertEqual(config.contact_max_pairs, 4)
         self.assertEqual(config.contact_tokens_per_cell, 24)
         self.assertEqual(config.contact_friction_epsilon, 1e-2)
@@ -225,6 +230,11 @@ class TestMixedTraining(unittest.TestCase):
             ("contact_kappa_range", (0.0, 1.0)),
             ("contact_beta_range", (-0.1, 1.0)),
             ("contact_mu_range", (0.5, 0.1)),
+            ("contact_static_penetration_max", 0.0),
+            ("contact_static_penetration_max", -0.5),
+            ("contact_static_penetration_max", math.nan),
+            ("contact_static_penetration_max", math.inf),
+            ("contact_static_penetration_max", True),
             ("contact_max_pairs", -1),
             ("contact_tokens_per_cell", 0),
             ("contact_friction_epsilon", 0.0),
@@ -260,6 +270,10 @@ class TestMixedTraining(unittest.TestCase):
         sparse = MixedTrainConfig(contact_max_points=0, contact_max_pairs=0, contact_beta_range=(0.0, 0.0))
         self.assertEqual((sparse.contact_max_points, sparse.contact_max_pairs), (0, 0))
         self.assertEqual(MixedTrainConfig(contact_kappa_range=[0.5, 2]).contact_kappa_range, (0.5, 2))
+        # None disables the load-based stiffness floor; configurations written before it trained without one.
+        self.assertIsNone(MixedTrainConfig(contact_static_penetration_max=None).contact_static_penetration_max)
+        without_floor = {k: v for k, v in asdict(config).items() if k != "contact_static_penetration_max"}
+        self.assertIsNone(MixedTrainConfig.from_checkpoint_config(without_floor).contact_static_penetration_max)
         # Checkpoints written before the memory knob default to dense backpropagation.
         without_knob = {k: v for k, v in asdict(config).items() if k != "checkpoint_chunks"}
         self.assertIs(MixedTrainConfig.from_checkpoint_config(without_knob).checkpoint_chunks, False)
@@ -615,7 +629,12 @@ class TestMixedTraining(unittest.TestCase):
             )
 
     def test_contact_scenes_follow_the_seeded_generator_and_the_sampled_material(self):
-        """Register each trajectory's scene from [master_seed, seed, 2203] with ke scaled by its own Young's modulus."""
+        """Register each trajectory's scene from [master_seed, seed, 2203] with ke scaled by its own Young's modulus.
+
+        The load-based floor reads the sampled density, the trajectory's
+        gravity and the step's sample radius; the metadata records the floored
+        ``ke``, its effective factor and whether the floor bound.
+        """
         config = self.config(1)
         step, rest = self._step(config)
         training = _TrajectoryFactory(step, rest, config, rank=0)
@@ -629,6 +648,7 @@ class TestMixedTraining(unittest.TestCase):
                     * (3 * material["lame_lambda"] + 2 * material["lame_mu"])
                     / (material["lame_lambda"] + material["lame_mu"])
                 )
+                gravity_magnitude = payload["metadata"]["gravity_magnitude"]
                 expected = sample_contact_partners(
                     rest,
                     master_seed=factory.master_seed,
@@ -643,17 +663,53 @@ class TestMixedTraining(unittest.TestCase):
                     kappa_range=config.contact_kappa_range,
                     beta_range=config.contact_beta_range,
                     mu_range=config.contact_mu_range,
+                    density=material["density"],
+                    gravity_magnitude=gravity_magnitude,
+                    static_penetration_max=config.contact_static_penetration_max,
+                    sample_radius=step.contact_radius,
                 )
                 self.assertEqual(payload["contact_partners"], expected.to_dict())
+                self.assertEqual(
+                    expected.ke_floor,
+                    contact_stiffness_floor(
+                        rest,
+                        density=material["density"],
+                        gravity_magnitude=gravity_magnitude,
+                        static_penetration_max=0.5,
+                        sample_radius=0.5 * config.cell_size,
+                    ),
+                )
                 scene = payload["metadata"]["contact"]
-                self.assertEqual(set(scene), {"plane_present", "point_count", "ke", "kd", "mu", "kappa", "beta"})
+                self.assertEqual(
+                    set(scene),
+                    {
+                        "plane_present",
+                        "point_count",
+                        "ke",
+                        "kd",
+                        "mu",
+                        "kappa_effective",
+                        "beta",
+                        "ke_floor",
+                        "floor_bound",
+                    },
+                )
                 self.assertEqual(
                     (scene["plane_present"], scene["point_count"]), (expected.plane_present, expected.point_count)
                 )
                 self.assertEqual((scene["ke"], scene["kd"], scene["mu"]), (expected.ke, expected.kd, expected.mu))
-                self.assertAlmostEqual(scene["kappa"], expected.ke / (youngs * config.cell_size), places=9)
+                self.assertEqual((scene["ke_floor"], scene["floor_bound"]), (expected.ke_floor, expected.floor_bound))
+                self.assertIsInstance(scene["floor_bound"], bool)
+                self.assertAlmostEqual(scene["kappa_effective"], expected.ke / (youngs * config.cell_size), places=9)
                 self.assertAlmostEqual(scene["beta"], expected.kd / (expected.ke * config.time_step), places=9)
-                self.assertTrue(config.contact_kappa_range[0] <= scene["kappa"] <= config.contact_kappa_range[1])
+                self.assertGreaterEqual(scene["ke"], scene["ke_floor"])
+                if scene["floor_bound"]:
+                    self.assertEqual(scene["ke"], scene["ke_floor"])
+                    self.assertGreater(scene["kappa_effective"], config.contact_kappa_range[0])
+                else:
+                    self.assertTrue(
+                        config.contact_kappa_range[0] <= scene["kappa_effective"] <= config.contact_kappa_range[1]
+                    )
                 # The step's conditioning carries the same ratios for the registered context.
                 batch = _batch([payload], torch.device("cpu"))
                 inputs = step.prepare_inputs(
@@ -665,7 +721,9 @@ class TestMixedTraining(unittest.TestCase):
                 )
                 torch.testing.assert_close(
                     inputs.conditioning[0, 0, features.CONDITIONING_CHANNELS.index("log1p_contact_kappa") :],
-                    torch.tensor([math.log1p(scene["kappa"]), scene["beta"], scene["mu"]], dtype=torch.float32),
+                    torch.tensor(
+                        [math.log1p(scene["kappa_effective"]), scene["beta"], scene["mu"]], dtype=torch.float32
+                    ),
                     rtol=1e-5,
                     atol=1e-6,
                 )
@@ -673,6 +731,38 @@ class TestMixedTraining(unittest.TestCase):
         self.assertNotEqual(training.reset(5)["contact_partners"], validation.reset(5)["contact_partners"])
         step.close()
         self.assertEqual(step.context_specs, {})
+
+    def test_stiffness_floor_binds_heavy_scenes_and_is_off_when_disabled(self):
+        """Raise ke to the load-based floor for heavy bodies; None keeps the sampled kappa E h and records no floor."""
+        # A dense body at strong gravity on the (1, 1, 2) test grid: 2 cells of 0.1 m, two samples per side face.
+        heavy = self.config(
+            1, density_range=(1e4, 1e4), gravity_magnitude_range=(40.0, 40.0), contact_kappa_range=(0.1, 0.1)
+        )
+        step, rest = self._step(heavy)
+        payload = _TrajectoryFactory(step, rest, heavy, rank=0).reset(3)
+        scene = payload["metadata"]["contact"]
+        floor = contact_stiffness_floor(
+            rest, density=1e4, gravity_magnitude=40.0, static_penetration_max=0.5, sample_radius=0.05
+        )
+        self.assertAlmostEqual(floor, 1e4 * 2 * 0.1**3 * 40.0 / (2 * 0.5 * 0.05), places=9)
+        self.assertEqual((scene["ke_floor"], scene["floor_bound"], scene["ke"]), (floor, True, floor))
+        # kd = beta ke dt is built from the floored ke.
+        self.assertAlmostEqual(scene["kd"], scene["beta"] * floor * heavy.time_step, places=9)
+        step.close()
+        disabled = replace(heavy, contact_static_penetration_max=None)
+        step, rest = self._step(disabled)
+        payload = _TrajectoryFactory(step, rest, disabled, rank=0).reset(3)
+        scene = payload["metadata"]["contact"]
+        youngs = (
+            payload["context_spec"]["lame_mu"]
+            * (3 * payload["context_spec"]["lame_lambda"] + 2 * payload["context_spec"]["lame_mu"])
+            / (payload["context_spec"]["lame_lambda"] + payload["context_spec"]["lame_mu"])
+        )
+        self.assertEqual((scene["ke_floor"], scene["floor_bound"]), (0.0, False))
+        self.assertAlmostEqual(scene["ke"], 0.1 * youngs * disabled.cell_size, places=9)
+        self.assertAlmostEqual(scene["kappa_effective"], 0.1, places=9)
+        self.assertLess(scene["ke"], floor)
+        step.close()
 
     def test_batch_collates_contact_pairs_padded_to_the_largest_count(self):
         """Zero-pad the per-payload pair tensors to the batch maximum Q with a validity mask; Q = 0 is allowed."""
@@ -799,7 +889,17 @@ class TestMixedTraining(unittest.TestCase):
         self.assertEqual(payload["contact_partners"], ContactPartners.contact_free().to_dict())
         self.assertEqual(
             payload["metadata"]["contact"],
-            {"plane_present": False, "point_count": 0, "ke": 0.0, "kd": 0.0, "mu": 0.0, "kappa": 0.0, "beta": 0.0},
+            {
+                "plane_present": False,
+                "point_count": 0,
+                "ke": 0.0,
+                "kd": 0.0,
+                "mu": 0.0,
+                "kappa_effective": 0.0,
+                "beta": 0.0,
+                "ke_floor": 0.0,
+                "floor_bound": False,
+            },
         )
         self.assertEqual(payload["contact_sample_index"].shape, (0,))
         batch = _batch([payload], torch.device("cpu"))
@@ -905,17 +1005,123 @@ class TestMixedTraining(unittest.TestCase):
             torch.save(saved, legacy)
             with self.assertRaisesRegex(ValueError, "legacy"):
                 run_training(output, self.config(2), resume=legacy)
-            for field in ("contact", "edge_network", "contact_plane_probability", "contact_tokens_per_cell"):
+            for field in ("contact", "edge_network", "contact_max_pairs", "contact_tokens_per_cell"):
                 with self.subTest(field=field), self.assertRaisesRegex(ValueError, "resume configuration"):
                     changed = (
                         {field: not getattr(self.config(2), field)} if field in ("contact", "edge_network") else {}
                     )
-                    if field == "contact_plane_probability":
-                        changed = {field: 0.5}
+                    if field == "contact_max_pairs":
+                        changed = {field: 2}
                     elif field == "contact_tokens_per_cell":
                         changed = {field: 12}
                     run_training(output, replace(self.config(2), **changed), resume=checkpoint)
             self.assertEqual(before, checkpoint.read_bytes())
+
+    def test_resume_accepts_changed_contact_scene_sampling_and_records_it(self):
+        """Scene sampling ranges and the stiffness floor may change on resume; each change is recorded once.
+
+        They only affect newly sampled scenes, so the checkpointed updates,
+        weights and active trajectories are kept and the new values are saved
+        in the resumed run's configuration. The validation scenes follow the
+        new settings, so the best record and the controller's patience restart.
+        """
+        real_validate = train_mixed._validate
+
+        def eligible(*args, **kwargs):
+            summary = real_validate(*args, **kwargs)
+            summary["selection"] = dict(summary["selection"], metric=0.5, eligible=True)
+            return summary
+
+        changes = {
+            "contact_kappa_range": (10.0, 1000.0),
+            "contact_beta_range": (0.5, 0.5),
+            "contact_mu_range": (0.0, 0.5),
+            "contact_plane_probability": 1.0,
+            "contact_plane_height_range": (-0.02, -0.01),
+            "contact_max_points": 3,
+            "contact_point_radius_range": (1.0, 1.5),
+            "contact_static_penetration_max": None,
+        }
+        self.assertEqual(set(changes), set(train_mixed._SCENE_SAMPLING_FIELDS))
+        with tempfile.TemporaryDirectory() as directory, patch.object(train_mixed, "_validate", eligible):
+            output = Path(directory)
+            original = self.config(1)
+            base = run_training(output, original)
+            checkpoint = output / "checkpoints/latest.pt"
+            saved = torch.load(checkpoint, weights_only=False)
+            self.assertEqual(base["best_selection"]["epoch"], 1)
+            self.assertEqual(saved["controller_state"]["best_loss"], 0.5)
+            resumed = run_training(output, self.config(2, **changes), resume=checkpoint)
+            self.assertEqual(resumed["completed_epochs"], 2)
+            self.assertEqual(resumed["updates"][: len(saved["report"]["updates"])], saved["report"]["updates"])
+            # Metrics on the resampled validation scenes are not comparable with the old record.
+            self.assertEqual(
+                resumed["best_selection_history"],
+                [{"reset_at_epoch": 1, "reason": "contact scene sampling changed", "record": base["best_selection"]}],
+            )
+            self.assertEqual(resumed["best_selection"]["epoch"], 2)
+            controller = torch.load(checkpoint, weights_only=False)["controller_state"]
+            self.assertEqual((controller["best_loss"], controller["bad_epochs"], controller["last_epoch"]), (0.5, 0, 2))
+            recorded = {change["field"]: change for change in resumed["configuration_changes"]}
+            self.assertEqual(set(recorded), set(changes))
+            for field, current in changes.items():
+                with self.subTest(field=field):
+                    self.assertEqual(
+                        (
+                            recorded[field]["previous"],
+                            recorded[field]["current"],
+                            recorded[field]["effective_from_epoch"],
+                            recorded[field]["completed_updates"],
+                            recorded[field]["source"],
+                        ),
+                        (
+                            getattr(original, field),
+                            current,
+                            2,
+                            saved["report"]["completed_updates"],
+                            "checkpoint_resume",
+                        ),
+                    )
+            restored = torch.load(output / "checkpoints/final.pt", weights_only=False)
+            for field, current in changes.items():
+                self.assertEqual(restored["config"][field], current, field)
+            for name in ("network_state", "optimizer_state"):
+                self.assertEqual(set(saved[name]), set(restored[name]))
+            # A scene sampled under the resumed configuration follows the new ranges without a floor.
+            resumed_config = MixedTrainConfig.from_checkpoint_config(restored["config"])
+            step, rest = self._step(resumed_config)
+            payload = _TrajectoryFactory(step, rest, resumed_config, rank=0).reset(11)
+            scene = payload["metadata"]["contact"]
+            self.assertTrue(scene["plane_present"])
+            self.assertLessEqual(scene["point_count"], 3)
+            self.assertEqual((scene["ke_floor"], scene["floor_bound"]), (0.0, False))
+            self.assertTrue(10.0 <= scene["kappa_effective"] <= 1000.0)
+            self.assertAlmostEqual(scene["beta"], 0.5, places=9)
+            step.close()
+
+    def test_resume_without_contact_keeps_the_selection_record_when_scene_sampling_changes(self):
+        """A contact-free run never samples scenes, so changed sampling settings are recorded but reset nothing."""
+        real_validate = train_mixed._validate
+
+        def eligible(*args, **kwargs):
+            summary = real_validate(*args, **kwargs)
+            summary["selection"] = dict(summary["selection"], metric=0.5, eligible=True)
+            return summary
+
+        changes = {"contact_kappa_range": (10.0, 1000.0), "contact_static_penetration_max": None}
+        with tempfile.TemporaryDirectory() as directory, patch.object(train_mixed, "_validate", eligible):
+            output = Path(directory)
+            base = run_training(output, self.config(1, contact=False))
+            checkpoint = output / "checkpoints/latest.pt"
+            self.assertEqual(base["best_selection"]["epoch"], 1)
+            resumed = run_training(output, self.config(2, contact=False, **changes), resume=checkpoint)
+            self.assertEqual(resumed["completed_epochs"], 2)
+            # The equal metric of epoch 2 does not replace the kept record and counts against patience.
+            self.assertEqual(resumed["best_selection"], base["best_selection"])
+            self.assertNotIn("best_selection_history", resumed)
+            controller = torch.load(checkpoint, weights_only=False)["controller_state"]
+            self.assertEqual((controller["best_loss"], controller["bad_epochs"], controller["last_epoch"]), (0.5, 1, 2))
+            self.assertEqual({change["field"] for change in resumed["configuration_changes"]}, set(changes))
 
     def test_resume_requires_the_stored_contact_scene_of_every_context(self):
         """A checkpoint whose pool payload lost its contact partners is rejected instead of silently going contact-free."""

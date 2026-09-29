@@ -163,6 +163,15 @@ The energy floor formula is unchanged in v1; if near-rest contact scenes show
 loss saturation, add `ke r^2 * S` to the material-aware scale as a documented
 follow-up.
 
+Amendment 2026-09-29 (implemented with the stiffness rule of section 7):
+`MixedHexSolverStep.energy_floor` adds the contact term,
+`floor = c * eps32 * (V (lambda + 2 mu + eta / dt + rho h^2 / dt^2) + ke r^2 S)`
+with `ke` the context's contact stiffness (zero for contact-free contexts, so
+their floor is unchanged), `r` the sample radius and `S` the exposed sample
+count. The SI formula equals `mu h^3` times dimensionless groups
+(`ke / (mu h) * (r / h)^2 * S` for the new term), so the asinh loss scale of
+the normalised objective accounts for stiff contacts.
+
 Oracle test: a Warp kernel wraps Newton's `_compute_body_particle_contact_force`
 for one record; the Torch gradient of `contact_energy` with respect to `x`
 must match the returned force to float32 tolerance for penetrating, separating,
@@ -234,6 +243,52 @@ is off the constructor is unchanged, so the existing tests keep running.
   `kd = beta * ke * dt` with `beta` uniform in `[0, 1]`; `mu` uniform in
   `[0, 1]`.
 
+Amendment 2026-09-29 (Anka: contact stiffness must be far stiffer relative to
+the material; "if lambda/mu is 10^4 the contact stiffness should be around that
+as well"). With the v4 range `kappa in [0.5, 10]`, `E = 1e4` Pa and
+`h = 0.025` m gave `ke` of 125-2500 N/m per sample, and the softest heavy beams
+(`E = 1e3`, `rho = 1e4`, weight 6130 N) sank about a metre through the floor at
+rest, the fall-through tail of the K8/H128 checks. Two rules replace it:
+
+1. `kappa` log-uniform in `[10, 1000]` (`generated/training_v4_config.json`),
+   i.e. `ke` between `0.25 E` and `25 E` numerically, centred on `ke = E` at
+   `kappa = 1 / h = 40`. The sampler and `MixedTrainConfig` defaults keep the
+   earlier range for the reproducibility of older scenes.
+2. A load-based floor, `contact_scene.contact_stiffness_floor`:
+   `ke >= m g / (n_face * d_max)` with `m = rho * V_rest` (`V = C h^3`), `g` the
+   scene's gravity magnitude, `n_face` the largest count of exposed face
+   samples sharing one material face index (400 for the 10x10x40 beam) and
+   `d_max = contact_static_penetration_max * r`, `r = 0.5 h`. The new config
+   field `contact_static_penetration_max = 0.5` (positive; `None` disables the
+   floor; configurations from before the field resume with `None`). The draws
+   are unchanged; when `kappa E h` falls below the floor, `ke` is raised to it
+   and `kd = beta ke dt` uses the floored value. For `E = 1e3`, `rho = 1e4`,
+   `g = 9.81` on the canonical grid the floor is `6131 / (400 * 0.00625) =
+   2452` N/m and binds for `kappa < 98` (about half the scenes of the new
+   range); for `E = 1e5`, `rho = 1e3` it is 245 N/m and never binds.
+   `ContactPartners` records `ke_floor` and `floor_bound` (payload,
+   checkpoints); the scene metadata records `ke`, `kappa_effective = ke / (E h)`,
+   `ke_floor` and `floor_bound` (the former `kappa` key; `simulate_mixed`
+   reads either). `_TrajectoryFactory.reset` draws the gravity before the
+   scene and passes the sampled density, the gravity magnitude and the step's
+   sample radius to the sampler.
+
+The scene-sampling fields (`contact_kappa_range`, `contact_beta_range`,
+`contact_mu_range`, `contact_plane_probability`, `contact_plane_height_range`,
+`contact_max_points`, `contact_point_radius_range`,
+`contact_static_penetration_max`; `train_mixed._SCENE_SAMPLING_FIELDS`) may
+change on resume and are recorded in `report["configuration_changes"]`: they
+only affect newly sampled scenes, and the fixed-state regime re-samples every
+state's scene from its seed at each epoch, so the change applies from the next
+epoch. The validation factory samples its scenes from the same settings, so
+with contact enabled such a change makes the earlier selection metrics
+incomparable: `best_selection` restarts (reason `contact scene sampling
+changed` in `best_selection_history`) and the plateau controller forgets its
+best metric and patience, exactly as after a changed validation budget (review
+fix 2026-09-29; a contact-free run resets nothing). The step's own contact
+settings (`contact_max_pairs`, `contact_tokens_per_cell`,
+`contact_friction_epsilon`) stay fixed.
+
 Second amendment 2026-09-27 (trainer default, `MixedTrainConfig`): the plane
 height range is `[-0.15, -0.005]` m. In 512 validation seeds of the first
 campaign the floor never penetrated (the plane sat at least 0.02 m below the
@@ -304,7 +359,7 @@ first contact campaign shows what values are attainable.
    self-contact law, kind 2 with the self flag set.
 3. Several deformable bodies per scene.
 4. Ablation: contact attention block versus pooled hand-crafted features.
-5. Contact-aware energy floor term.
+5. Contact-aware energy floor term (done 2026-09-29, section 5 amendment).
 
 ## 11. Open points for review
 

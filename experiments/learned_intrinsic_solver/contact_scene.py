@@ -25,6 +25,13 @@ Sampling uses NumPy; detection reads and writes CPU ``torch`` tensors so the
 result can be handed to the energy and network input code without further
 conversion. Every numeric range in :func:`sample_contact_partners` is
 provisional, as recorded in section 7 of the design note.
+
+Amendment 2026-09-29 (design note, section 7): the sampled stiffness
+``ke = kappa * E * h`` may be raised to a load-based floor
+:func:`contact_stiffness_floor`, ``m g / (n_face * d_max)``, so a body at rest
+on its largest flat face penetrates at most ``d_max`` (a fraction of the sample
+radius) under its own weight. The floor is off unless the caller passes the
+body's density, the gravity magnitude and ``static_penetration_max``.
 """
 
 from __future__ import annotations
@@ -53,6 +60,7 @@ __all__ = [
     "POINT_REJECTION_SAMPLE_RADIUS_CELLS",
     "ContactPairs",
     "ContactPartners",
+    "contact_stiffness_floor",
     "detect_contacts",
     "sample_contact_partners",
 ]
@@ -207,6 +215,12 @@ class ContactPartners:
     mu: float
     """Friction coefficient."""
 
+    ke_floor: float = 0.0
+    """Load-based stiffness floor [N/m] of :func:`contact_stiffness_floor`; 0 when the floor was disabled."""
+
+    floor_bound: bool = False
+    """Whether ``ke`` was raised to ``ke_floor`` (the sampled ``kappa * E * h`` fell below it)."""
+
     def __post_init__(self) -> None:
         """Coerce fields to CPU float32 tensors and validate shapes and ranges."""
         if not isinstance(self.plane_present, (bool, np.bool_)):
@@ -227,6 +241,12 @@ class ContactPartners:
         self.ke = _finite_scalar(self.ke, name="ke", minimum=0.0)
         self.kd = _finite_scalar(self.kd, name="kd", minimum=0.0)
         self.mu = _finite_scalar(self.mu, name="mu", minimum=0.0)
+        self.ke_floor = _finite_scalar(self.ke_floor, name="ke_floor", minimum=0.0)
+        if not isinstance(self.floor_bound, (bool, np.bool_)):
+            raise ValueError("floor_bound must be a bool")
+        self.floor_bound = bool(self.floor_bound)
+        if self.floor_bound and self.ke != self.ke_floor:
+            raise ValueError("ke must equal ke_floor when floor_bound is set")
 
     @property
     def point_count(self) -> int:
@@ -260,14 +280,19 @@ class ContactPartners:
             "ke": float(self.ke),
             "kd": float(self.kd),
             "mu": float(self.mu),
+            "ke_floor": float(self.ke_floor),
+            "floor_bound": bool(self.floor_bound),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ContactPartners:
         """Rebuild partners from :meth:`to_dict` output.
 
+        Payloads written before the load-based floor lack ``ke_floor`` and
+        ``floor_bound``; they rebuild with the floor disabled.
+
         Raises:
-            ValueError: If a field is missing or fails validation.
+            ValueError: If a required field is missing or fails validation.
         """
         if not isinstance(data, dict):
             raise ValueError("data must be a mapping produced by ContactPartners.to_dict")
@@ -285,7 +310,62 @@ class ContactPartners:
         missing = [name for name in names if name not in data]
         if missing:
             raise ValueError(f"data is missing contact partner fields: {missing}")
-        return cls(**{name: data[name] for name in names})
+        optional = {name: data[name] for name in ("ke_floor", "floor_bound") if name in data}
+        return cls(**{name: data[name] for name in names}, **optional)
+
+
+def _largest_face_sample_count(face_index: Tensor) -> int:
+    """Return the largest number of exposed face samples sharing one material face index."""
+    if face_index.numel() == 0:
+        return 0
+    return int(torch.bincount(face_index, minlength=6).max())
+
+
+def contact_stiffness_floor(
+    rest: VoxelGridData,
+    *,
+    density: float,
+    gravity_magnitude: float,
+    static_penetration_max: float,
+    sample_radius: float,
+) -> float:
+    """Return the load-based contact stiffness floor ``m g / (n_face * d_max)`` [N/m].
+
+    A body resting on its largest flat face spreads its weight ``m g`` over the
+    ``n_face`` exposed face samples of that face; with a penalty stiffness
+    ``ke`` per sample the static penetration is ``m g / (n_face * ke)``.
+    Requiring it to stay below ``d_max = static_penetration_max * r`` gives
+    the floor. Here ``m = rho * V`` with ``V = C h^3`` the rest volume of the
+    ``C`` cells, and ``n_face`` is the largest count of exposed face samples
+    sharing one material face index (400 for the 10x10x40 beam). For the
+    canonical beam with ``E = 1e3`` Pa, ``rho = 1e4`` kg/m^3 and ``g = 9.81``
+    the floor is ``6131 / (400 * 0.00625) = 2452`` N/m. Zero gravity gives a
+    zero floor.
+
+    Args:
+        rest: Rest geometry whose cell count and exposed faces set ``V`` and ``n_face``.
+        density: Rest density rho [kg/m^3], positive.
+        gravity_magnitude: Scene gravity magnitude ``g`` [m/s^2], nonnegative.
+        static_penetration_max: Allowed static penetration in units of ``sample_radius``, positive.
+        sample_radius: Surface sample radius ``r`` [m], positive.
+
+    Raises:
+        ValueError: If the rest geometry is not :class:`VoxelGridData`, has no
+            exposed face, or a scalar is outside its range.
+    """
+    if not isinstance(rest, VoxelGridData):
+        raise ValueError("rest must be VoxelGridData")
+    density = _finite_scalar(density, name="density", minimum=0.0, strict=True)
+    gravity_magnitude = _finite_scalar(gravity_magnitude, name="gravity_magnitude", minimum=0.0)
+    static_penetration_max = _finite_scalar(
+        static_penetration_max, name="static_penetration_max", minimum=0.0, strict=True
+    )
+    sample_radius = _finite_scalar(sample_radius, name="sample_radius", minimum=0.0, strict=True)
+    face_count = _largest_face_sample_count(exposed_face_samples(rest).face_index)
+    if face_count == 0:
+        raise ValueError("rest has no exposed face to rest on")
+    mass = density * len(rest.cell_corner_indices) * float(rest.cell_size) ** 3
+    return mass * gravity_magnitude / (face_count * static_penetration_max * sample_radius)
 
 
 def sample_contact_partners(
@@ -303,6 +383,10 @@ def sample_contact_partners(
     kappa_range: tuple[float, float] = (0.1, 10.0),
     beta_range: tuple[float, float] = (0.0, 1.0),
     mu_range: tuple[float, float] = (0.0, 1.0),
+    density: float | None = None,
+    gravity_magnitude: float | None = None,
+    static_penetration_max: float | None = None,
+    sample_radius: float | None = None,
 ) -> ContactPartners:
     """Draw one reproducible contact scene for a trajectory.
 
@@ -311,7 +395,12 @@ def sample_contact_partners(
     plane height and the point count, so the coefficients never depend on the
     plane or point draws: ``ke = kappa * E * h`` with ``kappa`` log-uniform in
     ``kappa_range``, ``kd = beta * ke * dt`` with ``beta`` uniform in
-    ``beta_range`` and ``mu`` uniform in ``mu_range``. The plane, present with
+    ``beta_range`` and ``mu`` uniform in ``mu_range``. With
+    ``static_penetration_max`` given, ``ke`` is raised to the load-based floor
+    :func:`contact_stiffness_floor` when the sampled value falls below it
+    (``floor_bound``), and ``kd`` uses the floored ``ke``; the draws are the
+    same either way, so a seed reproduces its scene with the floor on or off.
+    The plane, present with
     ``plane_probability``, passes through the rest bounding-box center at a
     height uniform in ``plane_height_range`` relative to the body's rest
     y-minimum; its height is drawn even when the plane is absent. The point
@@ -348,14 +437,20 @@ def sample_contact_partners(
         kappa_range: Positive log-uniform bounds of the stiffness factor.
         beta_range: Nonnegative uniform bounds of the damping factor.
         mu_range: Nonnegative uniform bounds of the friction coefficient.
+        density: Rest density rho [kg/m^3] of the body; required by the floor.
+        gravity_magnitude: Gravity magnitude ``g`` [m/s^2] of the scene; required by the floor.
+        static_penetration_max: Allowed static penetration in units of
+            ``sample_radius``; None disables the floor (the default).
+        sample_radius: Surface sample radius ``r`` [m]; None means ``0.5 * cell_size``.
 
     Returns:
         The sampled partners with CPU float32 tensors.
 
     Raises:
         ValueError: If the rest geometry, seeds, scalars or ranges are invalid,
-            if ``max_points > 0`` and the clearance leaves no room for points
-            inside the box (``cell_size`` at least
+            if the floor is enabled without ``density`` or
+            ``gravity_magnitude``, if ``max_points > 0`` and the clearance
+            leaves no room for points inside the box (``cell_size`` at least
             :data:`POINT_BOX_DEPTH_MARGIN`), or if a point cannot be placed
             within :data:`POINT_PLACEMENT_ATTEMPTS` position draws.
     """
@@ -378,6 +473,26 @@ def sample_contact_partners(
     kappa_range = _ordered_range(kappa_range, name="kappa_range", minimum=0.0, strict=True)
     beta_range = _ordered_range(beta_range, name="beta_range", minimum=0.0)
     mu_range = _ordered_range(mu_range, name="mu_range", minimum=0.0)
+    if density is not None:
+        density = _finite_scalar(density, name="density", minimum=0.0, strict=True)
+    if gravity_magnitude is not None:
+        gravity_magnitude = _finite_scalar(gravity_magnitude, name="gravity_magnitude", minimum=0.0)
+    sample_radius = (
+        0.5 * cell_size
+        if sample_radius is None
+        else _finite_scalar(sample_radius, name="sample_radius", minimum=0.0, strict=True)
+    )
+    ke_floor = 0.0
+    if static_penetration_max is not None:
+        if density is None or gravity_magnitude is None:
+            raise ValueError("static_penetration_max requires density and gravity_magnitude")
+        ke_floor = contact_stiffness_floor(
+            rest,
+            density=density,
+            gravity_magnitude=gravity_magnitude,
+            static_penetration_max=static_penetration_max,
+            sample_radius=sample_radius,
+        )
 
     root = np.random.SeedSequence([master_seed, seed, 2203])
     rng = np.random.default_rng(root)
@@ -386,6 +501,9 @@ def sample_contact_partners(
     beta = float(rng.uniform(*beta_range))
     mu = float(rng.uniform(*mu_range))
     ke = kappa * youngs_modulus * cell_size
+    floor_bound = ke_floor > ke
+    if floor_bound:
+        ke = ke_floor
     kd = beta * ke * time_step
 
     lower = corners.min(axis=0)
@@ -437,6 +555,8 @@ def sample_contact_partners(
         ke=ke,
         kd=kd,
         mu=mu,
+        ke_floor=ke_floor,
+        floor_bound=floor_bound,
     )
 
 

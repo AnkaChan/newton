@@ -371,7 +371,11 @@ def run_rollouts(
                     "ke": contact.ke,
                     "kd": contact.kd,
                     "mu": contact.mu,
-                    "kappa": trajectory.contact_metadata.get("kappa"),
+                    # Payloads written before the load-based stiffness floor recorded the factor as "kappa".
+                    "kappa": trajectory.contact_metadata.get(
+                        "kappa_effective", trajectory.contact_metadata.get("kappa")
+                    ),
+                    "floor_bound": trajectory.contact_metadata.get("floor_bound"),
                     "beta": trajectory.contact_metadata.get("beta"),
                     "max_penetration_r": trajectory.max_penetration_r if trajectory.calls else None,
                     "max_pair_count": trajectory.max_pair_count,

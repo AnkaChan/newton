@@ -679,15 +679,20 @@ class TestMixedHexSolverStep(unittest.TestCase):
         self.assertTrue(torch.isfinite(step(x, x, ("soft",), previous_positions=x).positions).all())
 
     def test_energy_floor_matches_material_formula(self):
-        """Return c * eps32 * V * (lambda + 2 mu + eta / dt + rho h^2 / dt^2) per object."""
+        """Return c * eps32 * (V * (lambda + 2 mu + eta / dt + rho h^2 / dt^2) + ke r^2 S) per object."""
         self.step.register_context("damped", damping=0.8, **self.specs["soft"])
-        ids = ("soft", "stiff", "damped", "soft")
+        self.step.register_context("resting", **self.specs["soft"], contact=floor_partners(-0.5, ke=500.0))
+        ids = ("soft", "stiff", "damped", "soft", "resting")
         floor = self.step.energy_floor(ids)
-        self.assertEqual(floor.shape, (4,))
+        self.assertEqual(floor.shape, (5,))
         self.assertEqual(floor.dtype, torch.float32)
         self.assertEqual(floor.device, self.step.rest_positions.device)
         self.assertFalse(floor.requires_grad)
         volume = self.cell_count * self.rest.cell_size**3
+        # The (2, 1, 2) grid exposes 16 faces: two each on -x/+x/-z/+z and all four cells on -y/+y.
+        sample_count = int(self.step.face_samples.corners.shape[0])
+        self.assertEqual(sample_count, 16)
+        self.assertEqual(self.step.contact_radius, 0.5 * self.rest.cell_size)
         expected = []
         for name in ids:
             spec = self.step.context_specs[name]
@@ -697,9 +702,18 @@ class TestMixedHexSolverStep(unittest.TestCase):
                 + spec["damping"] / self.dt
                 + spec["density"] * self.rest.cell_size**2 / self.dt**2
             )
-            expected.append(2.0**-23 * volume * modulus)
+            # Contact-free contexts keep the material-only floor; the contact term adds ke r^2 S.
+            stiffness = 500.0 if name == "resting" else 0.0
+            expected.append(2.0**-23 * (volume * modulus + stiffness * self.step.contact_radius**2 * sample_count))
         torch.testing.assert_close(floor.double(), torch.tensor(expected, dtype=torch.float64), rtol=2e-6, atol=0)
         self.assertGreater(floor[2].item(), floor[0].item())
+        self.assertGreater(floor[4].item(), floor[0].item())
+        torch.testing.assert_close(
+            (floor[4] - floor[0]).double(),
+            torch.tensor(2.0**-23 * 500.0 * self.step.contact_radius**2 * sample_count, dtype=torch.float64),
+            rtol=1e-4,
+            atol=0,
+        )
         scaled = MixedHexSolverStep(
             self.rest, self.fixed, network=self.network, time_step=self.dt, energy_floor_scale=2.5
         )

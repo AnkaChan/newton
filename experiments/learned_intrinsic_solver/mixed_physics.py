@@ -896,22 +896,29 @@ class MixedHexSolverStep(nn.Module):
     def energy_floor(self, context_ids: tuple[str, ...]) -> Tensor:
         """Return the detached material-aware energy floor [J], shape [B] float32.
 
-        ``floor = c * eps32 * V * (lambda + 2 mu + eta / dt + rho h^2 / dt^2)``
-        with ``V`` the total rest volume, ``eps32 = 2**-23`` and ``c`` the
-        constructor's ``energy_floor_scale`` (default 1). The SI formula is
-        kept: it equals ``S h^3`` times a sum of the dimensionless groups, so
-        the ratio of an energy to its floor is the same in both spaces.
-        Evidence: ``generated/verification/energy_floor_calibration/SUMMARY.md``
-        (provisional ``c = 1``).
+        ``floor = c * eps32 * (V * (lambda + 2 mu + eta / dt + rho h^2 / dt^2) + ke r^2 S)``
+        with ``V`` the total rest volume, ``ke`` the context's contact
+        stiffness (zero for contact-free contexts), ``r`` the surface sample
+        radius, ``S`` the exposed sample count, ``eps32 = 2**-23`` and ``c``
+        the constructor's ``energy_floor_scale`` (default 1). The SI formula
+        is kept: it equals ``mu h^3`` times a sum of the dimensionless groups
+        (``ke / (mu h) * (r / h)^2 * S`` for the contact term), so the ratio of
+        an energy to its floor is the same in both spaces. Evidence:
+        ``generated/verification/energy_floor_calibration/SUMMARY.md``
+        (provisional ``c = 1``); the contact term is the follow-up of
+        ``notes/contact-design-20260927.md`` section 5 (amendment 2026-09-29)
+        so the asinh loss scale accounts for stiff contacts.
         """
         if not isinstance(context_ids, tuple) or not context_ids:
             raise ValueError("context_ids must be a nonempty tuple of identifiers")
         contexts = self._lookup(context_ids, len(context_ids))
         material = torch.stack([context.material for context in contexts]).to(torch.float64)
         lam, mu, rho, damping = material.unbind(-1)
+        stiffness = torch.tensor([context.contact.ke for context in contexts], dtype=torch.float64)
         step, size = self.time_step, self.cell_size
         modulus = lam + 2 * mu + damping / step + rho * size**2 / step**2
-        floor = self.energy_floor_scale * _FLOAT32_EPSILON * self.rest_volume * modulus
+        contact = stiffness * self.contact_radius**2 * self.face_samples.corners.shape[0]
+        floor = self.energy_floor_scale * _FLOAT32_EPSILON * (self.rest_volume * modulus + contact)
         return floor.to(dtype=torch.float32, device=self.rest_positions.device)
 
     # -- learned update --------------------------------------------------------------------------------------

@@ -118,6 +118,28 @@ _VALIDATION_BUDGET_FIELDS = (
 )
 """Validation settings that may change on resume; none of them affects a training update."""
 
+_SCENE_SAMPLING_FIELDS = (
+    "contact_kappa_range",
+    "contact_beta_range",
+    "contact_mu_range",
+    "contact_plane_probability",
+    "contact_plane_height_range",
+    "contact_max_points",
+    "contact_point_radius_range",
+    "contact_static_penetration_max",
+)
+"""Contact scene sampling settings that may change on resume.
+
+They only affect newly sampled scenes: the pool regime keeps its active
+trajectories' scenes, and the fixed-state regime re-samples every state's
+scene from its seed at each epoch, so the change applies from the next epoch.
+The validation factory samples from the same settings, so with contact
+enabled a change also makes earlier selection metrics incomparable and
+``best_selection`` restarts like after a changed validation budget.
+The step's own contact settings (``contact_max_pairs``,
+``contact_tokens_per_cell``, ``contact_friction_epsilon``) stay fixed.
+"""
+
 _SELECTION_BUDGET_FIELDS = ("validation_count", "validation_iterations")
 """Cheap-validation settings whose change makes earlier checkpoint-selection metrics incomparable."""
 
@@ -298,11 +320,26 @@ class MixedTrainConfig:
     contact_point_radius_range: tuple[float, float] = (0.5, 2.0)
     """Uniform lateral radius bounds of the static points in units of ``cell_size``."""
     contact_kappa_range: tuple[float, float] = (0.1, 10.0)
-    """Log-uniform bounds of the stiffness factor ``kappa = ke / (E h)``."""
+    """Log-uniform bounds of the stiffness factor ``kappa = ke / (E h)``.
+
+    The v4 campaign uses ``[10, 1000]`` (``generated/training_v4_config.json``,
+    decision 2026-09-29): ``ke`` between ``0.25 E`` and ``25 E`` numerically,
+    centred on ``ke = E`` at ``kappa = 1 / h = 40``, so contacts are far
+    stiffer than the material. The dataclass default keeps the earlier range
+    for the reproducibility of older scenes.
+    """
     contact_beta_range: tuple[float, float] = (0.0, 1.0)
     """Uniform bounds of the damping factor ``beta = kd / (ke dt)``."""
     contact_mu_range: tuple[float, float] = (0.0, 1.0)
     """Uniform bounds of the friction coefficient."""
+    contact_static_penetration_max: float | None = 0.5
+    """Allowed static penetration of a resting body in units of the sample radius ``r``.
+
+    Sets the load-based stiffness floor ``ke >= m g / (n_face * d_max)`` with
+    ``d_max = contact_static_penetration_max * r`` of
+    :func:`.contact_scene.contact_stiffness_floor`; the sampled
+    ``kappa E h`` is raised to it when lower. None disables the floor.
+    """
     contact_max_pairs: int = 4
     """Largest number of static-point pairs kept per surface sample."""
     contact_tokens_per_cell: int = 24
@@ -431,6 +468,11 @@ class MixedTrainConfig:
         probability = self.contact_plane_probability
         if isinstance(probability, bool) or not math.isfinite(probability) or not 0 <= probability <= 1:
             raise ValueError("contact_plane_probability must lie in [0, 1]")
+        penetration = self.contact_static_penetration_max
+        if penetration is not None and (
+            isinstance(penetration, bool) or not math.isfinite(penetration) or penetration <= 0
+        ):
+            raise ValueError("contact_static_penetration_max must be None or finite and positive")
         if self.lr_schedule not in ("cosine", "constant", "plateau"):
             raise ValueError("lr_schedule must be cosine, constant or plateau")
         if (
@@ -551,6 +593,8 @@ class MixedTrainConfig:
             magnitude = math.sqrt(sum(float(v) ** 2 for v in values.get("gravity", cls.gravity)))
             values["gravity_magnitude_range"] = (magnitude, magnitude)
         values.setdefault("selection_source", "cheap")
+        # Configurations written before the load-based stiffness floor sampled ke = kappa E h unfloored.
+        values.setdefault("contact_static_penetration_max", None)
         legacy = [name for name in _LEGACY_CONFIG_FIELDS if name in values]
         if values.get("feature_schema_version") != features.FEATURE_SCHEMA_VERSION or legacy:
             raise ValueError(
@@ -628,8 +672,8 @@ class _TrajectoryFactory:
             velocity_dt_range=c.velocity_dt_range,
             perturbation_scale_range=c.perturbation_scale_range,
         ).reset(2 * seed + self.seed_parity)
-        contact = self._contact_partners(seed, initial.material.youngs_modulus)
         gravity = self._gravity(seed)
+        contact = self._contact_partners(seed, initial.material, gravity)
         key = f"{self.prefix}-{seed}"
         if self._context_ids is not None:
             key = f"{key}-{next(self._context_ids)}"
@@ -672,12 +716,14 @@ class _TrajectoryFactory:
             magnitude = float(np.exp(rng.uniform(np.log(low), np.log(high))))
         return (0.0, -magnitude, 0.0)
 
-    def _contact_partners(self, seed, youngs_modulus):
+    def _contact_partners(self, seed, material, gravity):
         """Draw the trajectory's static contact scene; contact-free partners when contact is disabled.
 
         The scene stream is ``[master_seed, seed, 2203]`` (see
         :func:`.contact_scene.sample_contact_partners`), so training and
-        validation factories draw different scenes for the same seed.
+        validation factories draw different scenes for the same seed. The
+        load-based stiffness floor reads the sampled density, the trajectory's
+        gravity magnitude and the step's sample radius.
         """
         from .contact_scene import (  # noqa: PLC0415 -- Optional training boundary.
             ContactPartners,
@@ -691,7 +737,7 @@ class _TrajectoryFactory:
             self.rest,
             master_seed=self.master_seed,
             seed=seed,
-            youngs_modulus=youngs_modulus,
+            youngs_modulus=material.youngs_modulus,
             cell_size=c.cell_size,
             time_step=c.time_step,
             plane_probability=c.contact_plane_probability,
@@ -701,6 +747,10 @@ class _TrajectoryFactory:
             kappa_range=c.contact_kappa_range,
             beta_range=c.contact_beta_range,
             mu_range=c.contact_mu_range,
+            density=material.density,
+            gravity_magnitude=math.sqrt(sum(float(v) ** 2 for v in gravity)),
+            static_penetration_max=c.contact_static_penetration_max,
+            sample_radius=self.step.contact_radius,
         )
 
     def advance(self, payload):
@@ -758,7 +808,12 @@ class _TrajectoryFactory:
 
 
 def _contact_metadata(partners, youngs_modulus, config):
-    """Summarize one scene for the payload metadata: presence, count and its dimensionless coefficients."""
+    """Summarize one scene for the payload metadata: presence, count, coefficients and the stiffness floor.
+
+    ``ke`` is the floored stiffness and ``kappa_effective = ke / (E h)`` its
+    material-relative factor (the sampled ``kappa`` when the floor did not
+    bind); ``ke_floor`` and ``floor_bound`` record the load-based floor.
+    """
     ke, kd = float(partners.ke), float(partners.kd)
     return {
         "plane_present": bool(partners.plane_present),
@@ -766,8 +821,10 @@ def _contact_metadata(partners, youngs_modulus, config):
         "ke": ke,
         "kd": kd,
         "mu": float(partners.mu),
-        "kappa": ke / (youngs_modulus * config.cell_size),
+        "kappa_effective": ke / (youngs_modulus * config.cell_size),
         "beta": kd / (ke * config.time_step) if ke > 0 else 0.0,
+        "ke_floor": float(partners.ke_floor),
+        "floor_bound": bool(partners.floor_bound),
     }
 
 
@@ -1304,10 +1361,12 @@ def run_training(
     history and Adam sequence. The configured descent-rate gate, stage limit
     and validation budget may change on resume; the gate applies only to future
     validation and an overdue hard limit promotes one stage immediately. These
-    changes record their epoch boundary. A changed ``selection_source`` or a
+    changes record their epoch boundary. A changed ``selection_source``, a
     changed budget of the selecting summary (``validation_count`` and
     ``validation_iterations`` for the cheap validation, ``validation_full_count``
-    and ``validation_full_iterations`` for the full-horizon check) makes earlier
+    and ``validation_full_iterations`` for the full-horizon check) or, with
+    contact enabled, a changed contact scene sampling setting
+    (``_SCENE_SAMPLING_FIELDS``; the validation scenes follow it) makes earlier
     selection metrics incomparable, so ``best_selection`` restarts from None,
     the previous record moves to ``best_selection_history`` and the plateau
     controller forgets its best metric and patience. Within a run, a
@@ -1406,6 +1465,7 @@ def run_training(
             "updates_history_limit",
             "selection_source",
             *_VALIDATION_BUDGET_FIELDS,
+            *_SCENE_SAMPLING_FIELDS,
         }
         saved_config = asdict(MixedTrainConfig.from_checkpoint_config(saved["config"]))
         if any(saved_config.get(k) != v for k, v in asdict(config).items() if k not in allowed):
@@ -1567,7 +1627,10 @@ def run_training(
                 ("stage_descent_rate", previous_descent_rate, config.stage_descent_rate),
                 ("stage_max_epochs", previous_stage_limit, config.stage_max_epochs),
                 ("selection_source", saved_config["selection_source"], config.selection_source),
-                *((field, saved_config[field], getattr(config, field)) for field in _VALIDATION_BUDGET_FIELDS),
+                *(
+                    (field, saved_config[field], getattr(config, field))
+                    for field in (*_VALIDATION_BUDGET_FIELDS, *_SCENE_SAMPLING_FIELDS)
+                ),
             ):
                 if previous != current:
                     report.setdefault("configuration_changes", []).append(
@@ -1593,24 +1656,36 @@ def run_training(
                     }
                 )
             source_changed = saved_config["selection_source"] != config.selection_source
-            if source_changed or any(
+            budget_changed = any(
                 saved_config[field] != getattr(config, field) for field in _selection_budget_fields(config)
-            ):
-                # Metrics measured by another summary or under a different validation budget are not
-                # comparable: the best record and the controller's patience restart and
-                # best_validation.pt is rewritten at the first eligible epoch.
+            )
+            # The validation factory samples its scenes from the same settings; without contact they are unused.
+            scenes_changed = config.contact and any(
+                saved_config[field] != getattr(config, field) for field in _SCENE_SAMPLING_FIELDS
+            )
+            if source_changed or budget_changed or scenes_changed:
+                # Metrics measured by another summary, under a different validation budget or on
+                # differently sampled validation scenes are not comparable: the best record and the
+                # controller's patience restart and best_validation.pt is rewritten at the first
+                # eligible epoch.
+                if source_changed:
+                    reason = "selection source changed"
+                elif budget_changed:
+                    reason = "validation budget changed"
+                else:
+                    reason = "contact scene sampling changed"
                 controller.reset_metric_history()
                 report.setdefault("best_selection_history", []).append(
                     {
                         "reset_at_epoch": report["completed_epochs"],
-                        "reason": "selection source changed" if source_changed else "validation budget changed",
+                        "reason": reason,
                         "record": report.get("best_selection"),
                     }
                 )
                 report["best_selection"] = None
                 if rank == 0 and config.verbose:
                     print(
-                        f"resume: validation budget changed after epoch {report['completed_epochs']}; "
+                        f"resume: {reason} after epoch {report['completed_epochs']}; "
                         f"best_selection reset (previous record: {report['best_selection_history'][-1]['record']})",
                         flush=True,
                     )

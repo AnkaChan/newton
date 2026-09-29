@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -19,6 +20,7 @@ import torch  # noqa: TID253
 
 from experiments.learned_intrinsic_solver import features, history, train_mixed
 from experiments.learned_intrinsic_solver.data import generate_cuboid
+from experiments.learned_intrinsic_solver.material_sampling import MaterialSample
 from experiments.learned_intrinsic_solver.mixed_physics import MixedHexSolverStep
 from experiments.learned_intrinsic_solver.network import IntrinsicSolverNetwork
 from experiments.learned_intrinsic_solver.render_learned import _CONTACT_KEYS, _load_trajectory
@@ -70,6 +72,11 @@ def _network(config: MixedTrainConfig) -> IntrinsicSolverNetwork:
         edge_network=config.edge_network,
         contact_tokens=config.contact,
     )
+
+
+def _youngs_modulus(material: dict) -> float:
+    """Return E [Pa] of a rollout report's ``material`` block (the context's Lamé parameters and density)."""
+    return MaterialSample(material["lame_lambda"], material["lame_mu"], material["density"]).youngs_modulus
 
 
 class TestRolloutReport(unittest.TestCase):
@@ -232,6 +239,14 @@ class TestMixedRolloutContact(unittest.TestCase):
                 self.assertIsInstance(block["plane_present"], bool)
                 self.assertGreaterEqual(block["point_count"], 0)
                 self.assertGreaterEqual(block["ke"], 0.0)
+                # The scene's material-relative factor of the floored stiffness and whether the floor bound.
+                self.assertIsInstance(block["floor_bound"], bool)
+                self.assertAlmostEqual(
+                    block["kappa"], block["ke"] / (_youngs_modulus(report["material"]) * config.cell_size), places=6
+                )
+                low_kappa, high_kappa = config.contact_kappa_range
+                self.assertGreaterEqual(block["kappa"], low_kappa)
+                self.assertTrue(block["kappa"] <= high_kappa or block["floor_bound"], block)
                 self.assertGreaterEqual(block["max_penetration_r"], 0.0)
                 self.assertGreaterEqual(block["max_pair_count"], 0)
                 trajectory = root / "rollout" / f"seed_{report['seed']}" / "trajectory.npz"
@@ -250,6 +265,44 @@ class TestMixedRolloutContact(unittest.TestCase):
                 self.assertEqual(written["contact"], block)
                 self.assertEqual((written["gravity"], written["target_modes"]), (report["gravity"], 7))
             self.assertEqual(len(set(gravities)), 2)
+
+    def test_rollout_reports_the_legacy_kappa_of_a_scene_recorded_before_the_stiffness_floor(self):
+        """A payload whose scene metadata predates the floor records ``kappa``; the report reads it and no floor flag."""
+        config = MixedTrainConfig(**_TINY)
+        real_reset = train_mixed._TrajectoryFactory.reset
+
+        def legacy_reset(self, seed):
+            payload = real_reset(self, seed)
+            scene = payload["metadata"]["contact"]
+            scene["kappa"] = scene.pop("kappa_effective")
+            del scene["ke_floor"], scene["floor_bound"]
+            return payload
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(train_mixed._TrajectoryFactory, "reset", legacy_reset),
+        ):
+            root = Path(directory)
+            checkpoint = root / "checkpoint.pt"
+            torch.save(
+                {
+                    "format": "mixed_pool_v2",
+                    "config": asdict(config),
+                    "network_state": _network(config).state_dict(),
+                    "report": {"completed_epochs": 0, "best_selection": None},
+                },
+                checkpoint,
+            )
+            dt = config.time_step
+            (report,) = run_rollouts(
+                checkpoint, root / "rollout", seeds=(0,), iterations=1, duration=2 * dt, fps=300, device="cpu"
+            )
+        self.assertEqual(report["status"], "complete", report["failure"])
+        block = report["contact"]
+        self.assertIsNone(block["floor_bound"])
+        self.assertAlmostEqual(
+            block["kappa"], block["ke"] / (_youngs_modulus(report["material"]) * config.cell_size), places=6
+        )
 
 
 if __name__ == "__main__":

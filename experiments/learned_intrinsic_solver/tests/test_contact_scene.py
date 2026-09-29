@@ -30,6 +30,7 @@ from experiments.learned_intrinsic_solver.contact_scene import (
     POINT_NORMAL_MAX_ANGLE,
     ContactPairs,
     ContactPartners,
+    contact_stiffness_floor,
     detect_contacts,
     sample_contact_partners,
 )
@@ -107,11 +108,39 @@ class TestContactPartners(unittest.TestCase):
             self.assertTrue(torch.equal(getattr(restored, name), getattr(partners, name)), name)
             self.assertEqual(getattr(restored, name).dtype, torch.float32)
         self.assertEqual((restored.ke, restored.kd, restored.mu), (partners.ke, partners.kd, partners.mu))
+        self.assertEqual((restored.ke_floor, restored.floor_bound), (partners.ke_floor, partners.floor_bound))
+        # E = 1 Pa keeps kappa E h far below the 245 N/m floor of this 12-cell body at rho = 5e3.
+        floored = _sample(3, youngs_modulus=1.0, density=5e3, gravity_magnitude=9.81, static_penetration_max=0.5)
+        self.assertTrue(floored.floor_bound)
+        rebuilt = ContactPartners.from_dict(json.loads(json.dumps(floored.to_dict())))
+        self.assertEqual((rebuilt.ke, rebuilt.ke_floor, rebuilt.floor_bound), (floored.ke, floored.ke_floor, True))
+        # Payloads written before the floor lack its fields and rebuild with the floor disabled.
+        legacy = {name: value for name, value in data.items() if name not in ("ke_floor", "floor_bound")}
+        self.assertEqual(set(legacy), set(data) - {"ke_floor", "floor_bound"})
+        without_floor = ContactPartners.from_dict(legacy)
+        self.assertEqual(
+            (without_floor.ke, without_floor.ke_floor, without_floor.floor_bound), (partners.ke, 0.0, False)
+        )
         empty = ContactPartners.from_dict(ContactPartners.contact_free().to_dict())
         self.assertEqual(empty.point_count, 0)
         self.assertEqual(empty.point_positions.shape, (0, 3))
         with self.assertRaises(ValueError):
             ContactPartners.from_dict({"plane_present": True})
+
+    def test_rejects_invalid_floor_record(self):
+        """Raise ValueError for a negative floor, a non-bool flag or a bound flag whose ke differs from the floor."""
+        base = ContactPartners.contact_free().to_dict()
+        for overrides in (
+            {"ke_floor": -1.0},
+            {"ke_floor": math.nan},
+            {"floor_bound": "yes"},
+            {"floor_bound": 1},
+            {"ke": 2.0, "ke_floor": 3.0, "floor_bound": True},
+        ):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                ContactPartners(**{**base, **overrides})
+        bound = ContactPartners(**{**base, "ke": 3.0, "ke_floor": 3.0, "floor_bound": np.bool_(True)})
+        self.assertIs(bound.floor_bound, True)
 
     def test_rejects_invalid_fields(self):
         """Raise ValueError on inconsistent shapes, non-finite values and bad scalars."""
@@ -221,9 +250,22 @@ class TestSampleContactPartners(unittest.TestCase):
             {"mu_range": (0.5,)},
             # A cell at least as large as the depth margin leaves no room for points around the body.
             {"cell_size": POINT_BOX_DEPTH_MARGIN},
+            # The load-based floor needs the body's density and the gravity magnitude, all in range.
+            {"static_penetration_max": 0.5},
+            {"static_penetration_max": 0.5, "density": 1e3},
+            {"static_penetration_max": 0.5, "gravity_magnitude": 9.81},
+            {"static_penetration_max": 0.0, "density": 1e3, "gravity_magnitude": 9.81},
+            {"static_penetration_max": True, "density": 1e3, "gravity_magnitude": 9.81},
+            {"density": 0.0},
+            {"gravity_magnitude": -9.81},
+            {"sample_radius": 0.0},
         ):
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 _sample(**overrides)
+        # Density and gravity alone leave the floor disabled.
+        unfloored = _sample(density=1e3, gravity_magnitude=9.81)
+        self.assertEqual((unfloored.ke_floor, unfloored.floor_bound), (0.0, False))
+        self.assertEqual(unfloored.to_dict(), _sample().to_dict())
         # Without points the clearance does not matter.
         self.assertEqual(_sample(cell_size=POINT_BOX_DEPTH_MARGIN, max_points=0).point_count, 0)
         with self.assertRaises(ValueError):
@@ -315,6 +357,120 @@ class TestSampleContactPartners(unittest.TestCase):
             f"mean points {float(np.mean(counts)):.1f}"
         )
         self.assertTrue(20.0 <= float(np.mean(counts)) <= 44.0)
+
+
+class TestContactStiffnessFloor(unittest.TestCase):
+    def test_formula_on_hand_built_grids(self):
+        """Return rho V g / (n_face d_max) with n_face the largest exposed-face count of one material face."""
+        # (1, 2, 3) cells: six faces each on -x and +x, three on -y/+y, two on -z/+z.
+        rest = generate_cuboid((1, 2, 3), cell_size=CELL_SIZE)
+        volume = 6 * CELL_SIZE**3
+        floor = contact_stiffness_floor(
+            rest, density=2e3, gravity_magnitude=10.0, static_penetration_max=0.25, sample_radius=RADIUS
+        )
+        self.assertAlmostEqual(floor, 2e3 * volume * 10.0 / (6 * 0.25 * RADIUS), places=9)
+        # Zero gravity means no load and no floor; the radius and the cap scale it inversely.
+        self.assertEqual(
+            contact_stiffness_floor(
+                rest, density=2e3, gravity_magnitude=0.0, static_penetration_max=0.25, sample_radius=RADIUS
+            ),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            contact_stiffness_floor(
+                rest, density=2e3, gravity_magnitude=10.0, static_penetration_max=0.5, sample_radius=2 * RADIUS
+            ),
+            floor / 4,
+            places=9,
+        )
+        for kwargs in (
+            {"density": 0.0},
+            {"density": -1.0},
+            {"gravity_magnitude": -1.0},
+            {"gravity_magnitude": math.inf},
+            {"static_penetration_max": 0.0},
+            {"sample_radius": 0.0},
+            {"sample_radius": True},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                contact_stiffness_floor(
+                    rest,
+                    **{
+                        "density": 2e3,
+                        "gravity_magnitude": 10.0,
+                        "static_penetration_max": 0.25,
+                        "sample_radius": RADIUS,
+                        **kwargs,
+                    },
+                )
+        with self.assertRaises(ValueError):
+            contact_stiffness_floor(
+                None, density=2e3, gravity_magnitude=10.0, static_penetration_max=0.25, sample_radius=RADIUS
+            )
+
+    def test_canonical_beam_floor_binds_heavy_soft_bodies_and_not_light_stiff_ones(self):
+        """Raise ke to 2452 N/m for E = 1e3, rho = 1e4, g = 9.81 when kappa E h is lower; never for E = 1e5, rho = 1e3.
+
+        The 10x10x40 beam has 4000 cells of 0.025 m (0.0625 m^3): at rho = 1e4
+        it weighs 6131 N, spread over the 400 samples of its bottom face, and
+        may sink at most d_max = 0.5 r = 6.25 mm, so ke >= 6131 / 2.5 = 2452
+        N/m. With kappa in [10, 1000] and E = 1e3 the sampled ke = 25 kappa
+        lies below it for kappa < 98, about half the scenes. At E = 1e5 and
+        rho = 1e3 the floor is 245 N/m against ke >= 25000 N/m.
+        """
+        rest = generate_cuboid((10, 10, 40), cell_size=CELL_SIZE)
+        floor = contact_stiffness_floor(
+            rest, density=1e4, gravity_magnitude=9.81, static_penetration_max=0.5, sample_radius=RADIUS
+        )
+        self.assertAlmostEqual(floor, 625 * 9.81 / (400 * 0.5 * RADIUS), places=9)
+        self.assertAlmostEqual(floor, 2452.5, places=9)
+        common = {
+            "master_seed": 2026,
+            "cell_size": CELL_SIZE,
+            "time_step": TIME_STEP,
+            "kappa_range": (10.0, 1000.0),
+        }
+        bound = 0
+        for seed in range(40):
+            plain = sample_contact_partners(rest, seed=seed, youngs_modulus=1e3, **common)
+            heavy = sample_contact_partners(
+                rest,
+                seed=seed,
+                youngs_modulus=1e3,
+                density=1e4,
+                gravity_magnitude=9.81,
+                static_penetration_max=0.5,
+                **common,
+            )
+            # The floor changes neither the draws nor the scene, only ke and the kd built from it.
+            self.assertEqual(heavy.mu, plain.mu, seed)
+            self.assertEqual(heavy.plane_present, plain.plane_present, seed)
+            self.assertTrue(torch.equal(heavy.plane_point, plain.plane_point), seed)
+            self.assertTrue(torch.equal(heavy.point_positions, plain.point_positions), seed)
+            self.assertEqual(heavy.ke_floor, floor, seed)
+            beta = plain.kd / (plain.ke * TIME_STEP)
+            self.assertAlmostEqual(heavy.kd, beta * heavy.ke * TIME_STEP, places=9)
+            if plain.ke < floor:
+                bound += 1
+                self.assertTrue(heavy.floor_bound, seed)
+                self.assertEqual(heavy.ke, floor, seed)
+            else:
+                self.assertFalse(heavy.floor_bound, seed)
+                self.assertEqual(heavy.ke, plain.ke, seed)
+            light = sample_contact_partners(
+                rest,
+                seed=seed,
+                youngs_modulus=1e5,
+                density=1e3,
+                gravity_magnitude=9.81,
+                static_penetration_max=0.5,
+                **common,
+            )
+            self.assertAlmostEqual(light.ke_floor, 245.25, places=9)
+            self.assertFalse(light.floor_bound, seed)
+            self.assertGreaterEqual(light.ke, 10.0 * 1e5 * CELL_SIZE)
+        print(f"\ncontact stiffness floor (40 seeds, 10x10x40, E = 1e3, rho = 1e4): bound in {bound} scenes")
+        self.assertTrue(8 <= bound <= 32, bound)
 
 
 class TestContactPairs(unittest.TestCase):
