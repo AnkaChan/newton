@@ -35,7 +35,7 @@ sections = [
     ),
     card(
         3,
-        "Eliminate z to obtain the stress K_eff C + s lambda",
+        "Eliminate z to obtain the spring force",
         "<p>With the positions and multiplier fixed, minimize over <i>z</i>:</p>"
         + eq(r"kz-\lambda-\rho(C-z)=0")
         + eq(r"z^*=\frac{\lambda+\rho C}{k+\rho}")
@@ -43,10 +43,13 @@ sections = [
         + eq(r"z^*=\frac{K_{\mathrm{eff}}}{k}C+\frac{s}{k}\lambda=(1-s)C+s\frac{\lambda}{k}", True)
         + "<p>The auxiliary extension is a weighted average of the geometric extension "
         "<i>C</i> and the extension <i>λ/k</i> implied by the stored stress.</p>"
-        + "<p>Multiplying by the material stiffness gives the stress used in the position solve:</p>"
-        + eq(r"t=kz^*=K_{\mathrm{eff}}C+s\lambda", True)
-        + "<p>This is where the two coefficients enter the force calculation. The implementation "
-        "evaluates this expression directly; it does not store an auxiliary <i>z</i> array.</p>",
+        + "<p>The derivative of the spring's material energy with respect to its extension is "
+        "<i>kz*</i>. Substituting the expression above gives the force coefficient:</p>"
+        + eq(r"kz^*=K_{\mathrm{eff}}C+s\lambda", True)
+        + "<p>This coefficient combines the current extension <i>C</i> with the stored multiplier "
+        "<i>λ</i>. In step 4 we apply the chain rule to obtain the force on the endpoint. "
+        "The implementation evaluates <b>K_eff C + s λ</b> directly; it does not store an "
+        "auxiliary <i>z</i> array.</p>",
     ),
     card(
         4,
@@ -98,7 +101,7 @@ sections = [
         + eq(r"(1-s)\lambda=K_{\mathrm{eff}}C")
         + eq(r"\lambda=\frac{K_{\mathrm{eff}}}{1-s}C=kC,\qquad z=C")
         + "<p>The stress used by the position solve therefore becomes:</p>"
-        + eq(r"t=K_{\mathrm{eff}}C+s(kC)=k(1-s)C+skC=kC", True)
+        + eq(r"K_{\mathrm{eff}}C+s(kC)=k(1-s)C+skC=kC", True)
         + "<p>The iteration uses <b>K_eff</b>, but the converged spring obeys the original physical "
         "stiffness <b>k</b>. In the zero-compliance limit, the multiplier update becomes hard-constraint ALM.</p>",
     ),
@@ -128,7 +131,8 @@ sections = [
         + eq(r"K_{\mathrm{eff}}=500\;\mathrm{N/m},\qquad s=0.5")
         + "<p>Start with <i>λ⁰ = 0</i>. Each multiplier update is:</p>"
         + eq(r"\lambda^{n+1}=K_{\mathrm{eff}}C+s\lambda^n=1\;\mathrm{N}+0.5\lambda^n", True)
-        + "<p>The eliminated auxiliary can be recovered from <i>z* = t/k = λⁿ⁺¹/k</i>:</p>"
+        + "<p>To recover the eliminated auxiliary, divide the force coefficient by the physical stiffness:</p>"
+        + eq(r"z^*=\frac{K_{\mathrm{eff}}C+s\lambda^n}{k}=\frac{\lambda^{n+1}}{k}")
         + '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;text-align:left">'
         "<thead><tr><th>Update</th><th>Old λ (N)</th><th>K_eff C (N)</th><th>s λ (N)</th><th>New λ (N)</th><th>z* (mm)</th></tr></thead>"
         "<tbody><tr><td>1</td><td>0</td><td>1</td><td>0</td><td>1</td><td>1</td></tr>"
