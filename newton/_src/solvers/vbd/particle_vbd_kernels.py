@@ -240,6 +240,7 @@ def evaluate_volumetric_neo_hookean_force_and_hessian_alm(
 
     # ============ Stress ============
     mu_effective = mu_nh
+    norm_curvature = float(0.0)
     pressure_effective = lmbd_nh
     if elasticity_alm.enabled != 0:
         pressure_scale, pressure_effective, _ = particle_alm_coefficients(
@@ -253,8 +254,14 @@ def evaluate_volumetric_neo_hookean_force_and_hessian_alm(
         )
         P_mu = mu_nh * F
         if elasticity_alm.deviatoric != 0:
-            mu_scale, mu_effective, _ = particle_alm_coefficients(mu_nh, elasticity_alm.tet_rho_mu[tet_id])
-            P_mu = mu_effective * F + mu_scale * elasticity_alm.tet_lambda_mu[tet_id]
+            mu_scale, k_mu, _ = particle_alm_coefficients(mu_nh, elasticity_alm.tet_rho_mu[tet_id])
+            norm_squared = wp.dot(f, f)
+            norm = wp.sqrt(norm_squared)
+            mu_effective = 0.0
+            if norm > 1.0e-10:
+                mu_effective = k_mu + mu_scale * elasticity_alm.tet_lambda_mu[tet_id] / norm
+                norm_curvature = (k_mu - mu_effective) / norm_squared
+            P_mu = mu_effective * F
         P_mu_vec = vec9(
             P_mu[0, 0],
             P_mu[1, 0],
@@ -275,8 +282,9 @@ def evaluate_volumetric_neo_hookean_force_and_hessian_alm(
     # The full elastic Hessian also has an s * d^2 J / dF^2 term, but its
     # contribution to VBD's per-vertex 3x3 block is identically zero:
     # the Levi-Civita tensor in d^2 J / dF^2 contracts against (m^a x m^a),
-    # which vanishes. Drop it; the remaining two terms are SPD by inspection.
+    # which vanishes. The scalar norm row's geometric curvature does remain.
     H = mu_effective * wp.identity(n=9, dtype=float) + pressure_effective * wp.outer(cof_vec, cof_vec)
+    H += norm_curvature * wp.outer(f, f)
     H = rest_volume * H
 
     # ============ Assemble Pointwise Force ============

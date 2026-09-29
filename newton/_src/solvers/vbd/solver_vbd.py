@@ -334,7 +334,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
         particle_elasticity_alm: bool = False,
-        particle_elasticity_alm_deviatoric: bool = False,
+        particle_elasticity_alm_deviatoric: bool = True,
         particle_elasticity_alm_rho_scale: float = 1.0,
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
@@ -431,13 +431,15 @@ class SolverVBD(SolverBase, CouplingInterface):
                     ``particle_elasticity_alm_rho_scale`` parameters may change
                     without the normal deprecation period.
 
-            particle_elasticity_alm_deviatoric: Include tetrahedral deviatoric stress in
-                ALM. Defaults to ``False``: only tet pressure uses ALM; spring and bending ALM
-                remain enabled. The full mode stores stress in world coordinates and
-                can produce transient forces during rotation at finite iteration counts.
-                Pressure-only mode avoids this matrix-history effect.
+            particle_elasticity_alm_deviatoric: Include tetrahedral norm stretch in
+                ALM. Defaults to ``True``: tet stretch uses one scalar row
+                ``C = ||F||_F`` alongside the scalar pressure row, matching triangle
+                norm stretch. Despite the parameter name, this is not strictly
+                isochoric. Set to ``False`` for pressure-only tet ALM. Triangle,
+                spring, and bending ALM remain enabled in either mode. Only used
+                when ``particle_elasticity_alm=True``.
             particle_elasticity_alm_rho_scale: Positive finite multiplier for the
-                inertia-derived ALM penalty metric. Triangle, spring, and bending metrics
+                inertia-derived ALM penalty metric. Tet norm stretch, triangle, spring, and bending metrics
                 additionally have a floor of nine times their row material stiffness.
                 Does not change converged
                 material stiffness. Only used when ``particle_elasticity_alm=True``.
