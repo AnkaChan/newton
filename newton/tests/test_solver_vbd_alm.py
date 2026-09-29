@@ -279,7 +279,7 @@ def _unsupported_restart(test, device):
 
 
 def _default_preserves_rotation(test, device):
-    """Keep a rotated rest tet force-free when using the default pressure-only mode."""
+    """Keep a rotated rest tet force-free with retained default norm-stretch history."""
     model = _tet_model(device)
     solver = _alm_solver(test, model, iterations=1)
     state, output = model.state(), model.state()
@@ -294,6 +294,46 @@ def _default_preserves_rotation(test, device):
     state.particle_qd.zero_()
     solver.step(state, output, None, None, 0.01)
     np.testing.assert_allclose(output.particle_q.numpy(), rotated, atol=2e-6, rtol=0.0)
+
+
+def _default_activates_norm_stretch(test, device):
+    """Enable scalar tet stretch by default while preserving explicit pressure-only behavior."""
+    model = _tet_model(device, pinned=True)
+    results = []
+    for options in ({}, {"particle_elasticity_alm_deviatoric": True}, {"particle_elasticity_alm_deviatoric": False}):
+        solver = _alm_solver(test, model, iterations=1, **options)
+        state, output = model.state(), model.state()
+        force = np.zeros((4, 3), dtype=np.float32)
+        force[3, 2] = -100.0
+        for _ in range(3):
+            state.particle_f.assign(force)
+            solver.step(state, output, None, None, 0.1)
+            state, output = output, state
+        results.append(state.particle_q.numpy())
+    np.testing.assert_array_equal(results[0], results[1])
+    test.assertGreater(float(np.max(np.abs(results[0] - results[2]))), 1.0e-5)
+
+
+def _elasticity_alm_remains_opt_in(test, device):
+    """Preserve legacy tet solves when elasticity ALM is omitted or explicitly disabled."""
+    model = _tet_model(device, pinned=True)
+    results = []
+    for options in (
+        {},
+        {"particle_elasticity_alm": False, "particle_elasticity_alm_deviatoric": False},
+        {"particle_elasticity_alm": False, "particle_elasticity_alm_deviatoric": True},
+    ):
+        solver = newton.solvers.SolverVBD(model, iterations=2, **options)
+        state, output = model.state(), model.state()
+        positions = model.particle_q.numpy()
+        positions[3] = (0.1, 0.2, 0.8)
+        state.particle_q.assign(positions)
+        for _ in range(3):
+            solver.step(state, output, None, None, 0.02)
+            state, output = output, state
+        results.append(state.particle_q.numpy())
+    np.testing.assert_array_equal(results[0], results[1])
+    np.testing.assert_array_equal(results[0], results[2])
 
 
 def _legacy_dat_with_alm(test, device):
@@ -340,6 +380,12 @@ add_function_test(TestSolverVBDElasticityALM, "test_reset_selected_world", _rese
 add_function_test(TestSolverVBDElasticityALM, "test_unsupported_restart", _unsupported_restart, devices=devices)
 add_function_test(
     TestSolverVBDElasticityALM, "test_default_preserves_rotation", _default_preserves_rotation, devices=devices
+)
+add_function_test(
+    TestSolverVBDElasticityALM, "test_default_activates_norm_stretch", _default_activates_norm_stretch, devices=devices
+)
+add_function_test(
+    TestSolverVBDElasticityALM, "test_elasticity_alm_remains_opt_in", _elasticity_alm_remains_opt_in, devices=devices
 )
 add_function_test(TestSolverVBDElasticityALM, "test_legacy_dat_with_alm", _legacy_dat_with_alm, devices=devices)
 cuda_devices = [device for device in devices if device.is_cuda]

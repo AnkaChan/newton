@@ -1,0 +1,1 @@
+Replace experimental tetrahedral ALM matrix stretch history with a scalar Frobenius-norm stretch row, preserving rotation covariance and exact norm curvature. With `particle_elasticity_alm=True`, `particle_elasticity_alm_deviatoric` now defaults to `True` for scalar stretch plus pressure; `False` retains pressure-only behavior. Particle elasticity ALM remains opt-in.

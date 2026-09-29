@@ -37,6 +37,37 @@ def _tet_model(*, mu=12.0, lame=18.0, mass=1.0, skew=False):
     return builder.finalize(device="cpu")
 
 
+@wp.kernel
+def _evaluate_tet(
+    pos: wp.array[wp.vec3],
+    indices: wp.array2d[int],
+    poses: wp.array[wp.mat33],
+    materials: wp.array2d[float],
+    history: alm.ParticleElasticityAlmState,
+    force: wp.array[wp.vec3],
+    hessian: wp.array[wp.mat33],
+):
+    i = wp.tid()
+    f, h = primal.evaluate_volumetric_neo_hookean_force_and_hessian_alm(
+        0, i, pos, pos, indices, poses[0], materials[0, 0], materials[0, 1], 0.0, 0.1, history
+    )
+    force[i] = f
+    hessian[i] = h
+
+
+def _tet_force_hessian(model, positions, history):
+    pos = wp.array(positions, dtype=wp.vec3, device=model.device)
+    force = wp.empty(4, dtype=wp.vec3, device=model.device)
+    hessian = wp.empty(4, dtype=wp.mat33, device=model.device)
+    wp.launch(
+        _evaluate_tet,
+        dim=4,
+        inputs=[pos, model.tet_indices, model.tet_poses, model.tet_materials, history, force, hessian],
+        device=model.device,
+    )
+    return force.numpy(), hessian.numpy()
+
+
 def _hinge_model(*, rest=0.0, stiffness=10.0, mass=1.0):
     builder = newton.ModelBuilder()
     for p in [(0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]:
@@ -47,6 +78,114 @@ def _hinge_model(*, rest=0.0, stiffness=10.0, mass=1.0):
 
 
 class TestParticleAlmKernels(unittest.TestCase):
+    def test_tet_retained_history_rotation_covariance(self):
+        """Rotate nonrest tet forces and curvature without rotating retained scalar history."""
+        model = _tet_model(skew=True)
+        history = alm.create_particle_elasticity_alm_state(model, True, True, 1.0)
+        rest = model.particle_q.numpy()
+        initial = rest @ np.array([[1.1, 0.2, 0.1], [0.0, 0.9, 0.2], [0.0, 0.0, 1.3]]).T
+        alm.prepare_particle_elasticity_alm(model, wp.array(initial, dtype=wp.vec3, device="cpu"), 0.1, history)
+        positions = rest @ np.array([[0.8, 0.3, -0.1], [0.1, 1.2, 0.2], [0.2, 0.0, 1.1]]).T
+        alm.update_particle_elasticity_alm(model, wp.array(positions, dtype=wp.vec3, device="cpu"), history)
+        force, hessian = _tet_force_hessian(model, positions, history)
+        axis = np.array([1.0, 2.0, -1.0]) / np.sqrt(6.0)
+        angle = 0.73
+        cross = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
+        rotation = np.cos(angle) * np.eye(3) + (1.0 - np.cos(angle)) * np.outer(axis, axis) + np.sin(angle) * cross
+        rotated_force, rotated_hessian = _tet_force_hessian(model, positions @ rotation.T, history)
+        np.testing.assert_allclose(rotated_force, force @ rotation.T, rtol=3.0e-6, atol=5.0e-6)
+        np.testing.assert_allclose(rotated_hessian, rotation @ hessian @ rotation.T, rtol=3.0e-6, atol=5.0e-6)
+
+    def test_tet_reduced_energy_derivatives(self):
+        """Differentiate minimized stretch and pressure energies with frozen stress histories."""
+        model = _tet_model(skew=True)
+        rest = model.particle_q.numpy().astype(np.float64)
+        inverse = np.linalg.inv((rest[1:] - rest[0]).T)
+        volume = np.linalg.det((rest[1:] - rest[0]).T) / 6.0
+        positions = rest @ np.array([[0.8, 0.3, -0.1], [0.1, 1.2, 0.2], [0.2, 0.0, 1.1]]).T
+        for stretch in (False, True):
+            with self.subTest(stretch=stretch):
+                history = alm.create_particle_elasticity_alm_state(model, True, stretch, 1.0)
+                alm.prepare_particle_elasticity_alm(model, model.particle_q, 0.1, history)
+                # A nonstationary multiplier is essential: its geometric curvature
+                # disappears from a matrix row or an incorrectly linearized norm.
+                if stretch:
+                    history.tet_lambda_mu.fill_(31.0)
+                history.tet_lambda_pressure.fill_(-4.7)
+                rho_mu = float(history.tet_rho_mu.numpy()[0]) if stretch else 0.0
+                rho_p = float(history.tet_rho_pressure.numpy()[0])
+
+                def reduced_row(constraint, stiffness, multiplier, rho):
+                    auxiliary = (rho * constraint + multiplier) / (stiffness + rho)
+                    gap = constraint - auxiliary
+                    return 0.5 * stiffness * auxiliary**2 + multiplier * gap + 0.5 * rho * gap**2
+
+                def energy(points, rho_mu=rho_mu, rho_p=rho_p, stretch=stretch):
+                    deformation = (points[1:] - points[0]).T @ inverse
+                    norm = np.linalg.norm(deformation)
+                    stretch_energy = reduced_row(norm, 12.0, 31.0, rho_mu) if stretch else 6.0 * norm**2
+                    pressure_energy = reduced_row(np.linalg.det(deformation) - 1.4, 30.0, -4.7, rho_p)
+                    return volume * (stretch_energy + pressure_energy)
+
+                force, hessian = _tet_force_hessian(model, positions, history)
+                eps = 1.0e-4
+                for vertex in range(4):
+                    numerical_force = np.empty(3)
+                    numerical_hessian = np.empty((3, 3))
+                    for i in range(3):
+                        ei = np.zeros_like(positions)
+                        ei[vertex, i] = eps
+                        numerical_force[i] = -(energy(positions + ei) - energy(positions - ei)) / (2.0 * eps)
+                        for j in range(3):
+                            ej = np.zeros_like(positions)
+                            ej[vertex, j] = eps
+                            numerical_hessian[i, j] = (
+                                energy(positions + ei + ej)
+                                - energy(positions + ei - ej)
+                                - energy(positions - ei + ej)
+                                + energy(positions - ei - ej)
+                            ) / (4.0 * eps**2)
+                    np.testing.assert_allclose(force[vertex], numerical_force, rtol=8.0e-6, atol=4.0e-6)
+                    np.testing.assert_allclose(hessian[vertex], numerical_hessian, rtol=8.0e-6, atol=4.0e-6)
+
+    def test_tet_fixed_point_matches_original_force(self):
+        """Recover the original tet force from seeded scalar rows at a nonrest pose."""
+        model = _tet_model(skew=True)
+        positions = model.particle_q.numpy() @ np.array([[0.8, 0.3, -0.1], [0.1, 1.2, 0.2], [0.2, 0.0, 1.1]]).T
+        original = alm.create_particle_elasticity_alm_state(model, False, True, 1.0)
+        expected, _ = _tet_force_hessian(model, positions, original)
+        for stretch in (False, True):
+            with self.subTest(stretch=stretch):
+                history = alm.create_particle_elasticity_alm_state(model, True, stretch, 1.0)
+                pos = wp.array(positions, dtype=wp.vec3, device="cpu")
+                alm.prepare_particle_elasticity_alm(model, pos, 0.1, history)
+                for _ in range(3):
+                    force, _ = _tet_force_hessian(model, positions, history)
+                    np.testing.assert_allclose(force, expected, rtol=3.0e-6, atol=3.0e-6)
+                    alm.update_particle_elasticity_alm(model, pos, history)
+
+    def test_tet_collapsed_stretch_reseeds(self):
+        """Retire collapsed norm rows and seed recovered stretch after preparation or ascent."""
+        model = _tet_model()
+        collapsed = wp.zeros(4, dtype=wp.vec3, device="cpu")
+        for collapse_during_update in (False, True):
+            with self.subTest(collapse_during_update=collapse_during_update):
+                history = alm.create_particle_elasticity_alm_state(model, True, True, 1.0)
+                alm.prepare_particle_elasticity_alm(model, model.particle_q, 0.1, history)
+                if collapse_during_update:
+                    alm.update_particle_elasticity_alm(model, collapsed, history)
+                else:
+                    alm.prepare_particle_elasticity_alm(model, collapsed, 0.1, history)
+                np.testing.assert_array_equal(history.tet_lambda_mu.numpy(), 0.0)
+                self.assertEqual(int(history.tet_pending.numpy()[0]) & 1, 1)
+                force, hessian = _tet_force_hessian(model, collapsed.numpy(), history)
+                self.assertTrue(np.isfinite(force).all())
+                self.assertTrue(np.isfinite(hessian).all())
+                recovered = wp.array(model.particle_q.numpy() * 1.2, dtype=wp.vec3, device="cpu")
+                alm.prepare_particle_elasticity_alm(model, recovered, 0.1, history)
+                np.testing.assert_allclose(history.tet_lambda_mu.numpy(), 14.4 * np.sqrt(3.0), rtol=1.0e-6)
+                self.assertEqual(int(history.tet_pending.numpy()[0]) & 1, 0)
+
     def test_small_hinge_stress_tracks_ten_sweeps(self):
         """A light, centimeter-scale hinge must not lose its authored moment."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -109,12 +248,16 @@ class TestParticleAlmKernels(unittest.TestCase):
         model = _tet_model()
         state = alm.create_particle_elasticity_alm_state(model, True, True, 1.0)
         alm.prepare_particle_elasticity_alm(model, model.particle_q, 0.1, state)
-        np.testing.assert_allclose(state.tet_lambda_mu.numpy(), [12.0 * np.eye(3)])
+        np.testing.assert_allclose(state.tet_lambda_mu.numpy(), [12.0 * np.sqrt(3.0)])
         np.testing.assert_allclose(state.tet_lambda_pressure.numpy(), [-12.0], atol=2.0e-6)
-        np.testing.assert_allclose(state.tet_rho_mu.numpy(), [100.0], rtol=1.0e-6)
+        np.testing.assert_allclose(state.tet_rho_mu.numpy(), [300.0], rtol=1.0e-6)
         np.testing.assert_allclose(state.tet_rho_pressure.numpy(), [100.0], rtol=1.0e-6)
         alm.prepare_particle_elasticity_alm(model, model.particle_q, 0.05, state)
+        np.testing.assert_allclose(state.tet_rho_mu.numpy(), [1200.0], rtol=1.0e-6)
         np.testing.assert_allclose(state.tet_rho_pressure.numpy(), [400.0], rtol=1.0e-6)
+        alm.prepare_particle_elasticity_alm(model, model.particle_q, 1.0, state)
+        np.testing.assert_allclose(state.tet_rho_mu.numpy(), [108.0], rtol=1.0e-6)
+        np.testing.assert_allclose(state.tet_rho_pressure.numpy(), [1.0], rtol=1.0e-6)
 
     def test_skew_tet_metrics_use_inverse_rows(self):
         """Use rows of the inverse rest matrix in tet mobility metrics."""
@@ -123,8 +266,14 @@ class TestParticleAlmKernels(unittest.TestCase):
         state = alm.create_particle_elasticity_alm_state(model, True, True, 2.0)
         alm.prepare_particle_elasticity_alm(model, model.particle_q, 0.1, state)
         # V0=1; only vertex 1 moves, with inverse row (.5,-.5,0).
-        np.testing.assert_allclose(state.tet_rho_mu.numpy(), [400.0], rtol=1.0e-6)
-        np.testing.assert_allclose(state.tet_rho_pressure.numpy(), state.tet_rho_mu.numpy(), rtol=1.0e-6)
+        np.testing.assert_allclose(state.tet_rho_mu.numpy(), [1200.0], rtol=1.0e-6)
+        np.testing.assert_allclose(state.tet_rho_pressure.numpy(), [400.0], rtol=1.0e-6)
+        # Under F=diag(2,1,1), ||F*w/r||^2=(1+.25)/6; pressure mobility=1.25.
+        pos = model.particle_q.numpy()
+        pos[:, 0] *= 2.0
+        alm.prepare_particle_elasticity_alm(model, wp.array(pos, dtype=wp.vec3, device="cpu"), 0.1, state)
+        np.testing.assert_allclose(state.tet_rho_mu.numpy(), [960.0], rtol=1.0e-6)
+        np.testing.assert_allclose(state.tet_rho_pressure.numpy(), [160.0], rtol=1.0e-6)
 
     def test_fixed_pose_tet_recurrence(self):
         """Update tet stress once from retained history at a changed pose."""
@@ -135,11 +284,11 @@ class TestParticleAlmKernels(unittest.TestCase):
         pos_np[1, 0] = 1.2
         pos = wp.array(pos_np, dtype=wp.vec3, device="cpu")
         alm.prepare_particle_elasticity_alm(model, pos, 0.1, state)
-        np.testing.assert_allclose(state.tet_lambda_mu.numpy(), [12.0 * np.eye(3)])
+        np.testing.assert_allclose(state.tet_lambda_mu.numpy(), [12.0 * np.sqrt(3.0)])
         rho_mu = state.tet_rho_mu.numpy()[0]
         rho_p = state.tet_rho_pressure.numpy()[0]
         alm.update_particle_elasticity_alm(model, pos, state)
-        expected_mu = 12.0 / (12.0 + rho_mu) * (12.0 * np.eye(3) + rho_mu * np.diag([1.2, 1.0, 1.0]))
+        expected_mu = 12.0 / (12.0 + rho_mu) * (12.0 * np.sqrt(3.0) + rho_mu * np.sqrt(3.44))
         expected_p = 30.0 / (30.0 + rho_p) * (-12.0 + rho_p * -0.2)
         np.testing.assert_allclose(state.tet_lambda_mu.numpy(), [expected_mu], rtol=1.0e-6)
         np.testing.assert_allclose(state.tet_lambda_pressure.numpy(), [expected_p], rtol=1.0e-6)
@@ -148,7 +297,7 @@ class TestParticleAlmKernels(unittest.TestCase):
         """Retire all-zero and immobile tet rows without invalid divisions."""
         for model in (_tet_model(mu=0.0, lame=0.0), _tet_model(mass=0.0)):
             state = alm.create_particle_elasticity_alm_state(model, True, True, 1.0)
-            state.tet_lambda_mu.fill_(wp.mat33(5.0))
+            state.tet_lambda_mu.fill_(5.0)
             state.tet_lambda_pressure.fill_(5.0)
             alm.prepare_particle_elasticity_alm(model, model.particle_q, 0.1, state)
             alm.update_particle_elasticity_alm(model, model.particle_q, state)

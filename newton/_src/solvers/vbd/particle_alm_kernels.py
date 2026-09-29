@@ -24,7 +24,7 @@ class ParticleElasticityAlmState:
     enabled: int
     deviatoric: int
     rho_scale: float
-    tet_lambda_mu: wp.array[wp.mat33]
+    tet_lambda_mu: wp.array[float]
     tet_lambda_pressure: wp.array[float]
     tet_rho_mu: wp.array[float]
     tet_rho_pressure: wp.array[float]
@@ -91,7 +91,7 @@ def _bounded_rho(value: wp.float64) -> float:
 
 
 @wp.func
-def _bounded_cloth_rho(inertia: wp.float64, material_k: float) -> float:
+def _bounded_scalar_rho(inertia: wp.float64, material_k: float) -> float:
     # As for springs, before float32 saturation retain at least 90% of row
     # curvature and reduce a fixed-pose stress error by at least 90% per update.
     return _bounded_rho(wp.max(inertia, wp.float64(9.0) * wp.float64(material_k)))
@@ -149,7 +149,7 @@ def _prepare_triangles(
     denominator = wp.float64(areas[face]) * wp.float64(dt) * wp.float64(dt)
     state.tri_rho_stretch[face] = 0.0
     if mu > 0.0 and norm > 1.0e-10 and areas[face] > 0.0 and mobility_norm > 0.0:
-        state.tri_rho_stretch[face] = _bounded_cloth_rho(
+        state.tri_rho_stretch[face] = _bounded_scalar_rho(
             wp.float64(state.rho_scale) / (denominator * wp.float64(mobility_norm)), mu
         )
         if (pending & 1) != 0:
@@ -160,7 +160,7 @@ def _prepare_triangles(
         pending = pending | 1
     state.tri_rho_area[face] = 0.0
     if area_k > 0.0 and area > 1.0e-10 and areas[face] > 0.0 and mobility_area > 0.0:
-        state.tri_rho_area[face] = _bounded_cloth_rho(
+        state.tri_rho_area[face] = _bounded_scalar_rho(
             wp.float64(state.rho_scale) / (denominator * wp.float64(mobility_area)), area_k
         )
         if (pending & 2) != 0:
@@ -266,14 +266,16 @@ def _prepare_tets(
     Dm_inv = poses[tet]
     rest_det = wp.determinant(Dm_inv)
     F = _tet_deformation(tet, pos, indices, Dm_inv)
+    norm = wp.sqrt(wp.ddot(F, F))
     cof = particle_alm_cofactor(F)
     mobility_mu = float(0.0)
     mobility_pressure = float(0.0)
     for vertex in range(4):
         w = particle_alm_tet_weight(Dm_inv, vertex)
+        gn = F * w / wp.max(norm, 1.0e-10)
         g = cof * w
         mobility = _particle_mobility(indices[tet, vertex], inv_mass, flags)
-        mobility_mu += mobility * wp.dot(w, w)
+        mobility_mu += mobility * wp.dot(gn, gn)
         mobility_pressure += mobility * wp.dot(g, g)
     # Pending tet bits independently track mu and pressure through degeneracies.
     pending = state.tet_pending[tet]
@@ -281,13 +283,13 @@ def _prepare_tets(
     dt_squared = wp.float64(dt) * wp.float64(dt)
     if state.deviatoric != 0:
         state.tet_rho_mu[tet] = 0.0
-        if mu > 0.0 and rest_det > 0.0 and mobility_mu > 0.0:
-            state.tet_rho_mu[tet] = _bounded_rho(numerator / (dt_squared * wp.float64(mobility_mu)))
+        if mu > 0.0 and norm > 1.0e-10 and rest_det > 0.0 and mobility_mu > 0.0:
+            state.tet_rho_mu[tet] = _bounded_scalar_rho(numerator / (dt_squared * wp.float64(mobility_mu)), mu)
             if (pending & 1) != 0:
-                state.tet_lambda_mu[tet] = mu * F
+                state.tet_lambda_mu[tet] = mu * norm
             pending = pending & ~1
         else:
-            state.tet_lambda_mu[tet] = wp.mat33(0.0)
+            state.tet_lambda_mu[tet] = 0.0
             pending = pending | 1
     state.tet_rho_pressure[tet] = 0.0
     if pressure_k > 0.0 and rest_det > 0.0 and mobility_pressure > 0.0:
@@ -317,7 +319,12 @@ def _update_tets(
     pressure_k = materials[tet, 1] + mu
     F = _tet_deformation(tet, pos, indices, poses[tet])
     if state.deviatoric != 0:
-        state.tet_lambda_mu[tet] = particle_alm_ascent(state.tet_lambda_mu[tet], F, mu, state.tet_rho_mu[tet])
+        norm = wp.sqrt(wp.ddot(F, F))
+        if norm > 1.0e-10:
+            state.tet_lambda_mu[tet] = particle_alm_ascent(state.tet_lambda_mu[tet], norm, mu, state.tet_rho_mu[tet])
+        else:
+            state.tet_lambda_mu[tet] = 0.0
+            state.tet_pending[tet] = state.tet_pending[tet] | 1
     if pressure_k > 0.0:
         residual = (wp.determinant(F) - 1.0) - mu / wp.max(pressure_k, 1.0e-6)
         state.tet_lambda_pressure[tet] = particle_alm_ascent(
@@ -406,7 +413,7 @@ def _prepare_bends(
     )
     material_k = properties[edge, 0] * rest_length[edge]
     if material_k > 0.0 and valid != 0 and mobility > 0.0:
-        state.bend_rho[edge] = _bounded_cloth_rho(
+        state.bend_rho[edge] = _bounded_scalar_rho(
             wp.float64(state.rho_scale) / (wp.float64(dt) * wp.float64(dt) * wp.float64(mobility)), material_k
         )
         if state.bend_pending[edge] != 0:
@@ -482,7 +489,7 @@ def _reset_history(
             state.tet_pending[element] = 2
             if state.deviatoric != 0:
                 state.tet_pending[element] = 3
-                state.tet_lambda_mu[element] = wp.mat33(0.0)
+                state.tet_lambda_mu[element] = 0.0
                 state.tet_rho_mu[element] = 0.0
             state.tet_lambda_pressure[element] = 0.0
             state.tet_rho_pressure[element] = 0.0
@@ -568,7 +575,7 @@ def create_particle_elasticity_alm_state(model, enabled: bool, deviatoric: bool,
     tri_count = model.tri_count if enabled else 0
     spring_count = model.spring_count if enabled else 0
     bend_count = model.edge_count if enabled else 0
-    state.tet_lambda_mu = wp.zeros(tet_count if deviatoric else 0, dtype=wp.mat33, device=model.device)
+    state.tet_lambda_mu = wp.zeros(tet_count if deviatoric else 0, dtype=float, device=model.device)
     state.tet_lambda_pressure = wp.zeros(tet_count, dtype=float, device=model.device)
     state.tet_rho_mu = wp.zeros(tet_count if deviatoric else 0, dtype=float, device=model.device)
     state.tet_rho_pressure = wp.zeros(tet_count, dtype=float, device=model.device)
