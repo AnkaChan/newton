@@ -55,21 +55,38 @@ sections = [
     ),
     card(
         5,
-        "Substitute z back into the position problem",
-        "<p>Substitution gives the reduced augmented energy:</p>"
+        "Where k_eff and s come from",
+        "<p><b>These are the coefficients obtained by eliminating <i>z</i>.</b> "
+        "Start with the material stress <i>t = kz*</i> and substitute the expression from step 4:</p>"
+        + eq(r"t=kz^*=k\frac{\lambda+\rho C}{k+\rho}")
+        + eq(r"t=\frac{k\rho}{k+\rho}C+\frac{k}{k+\rho}\lambda")
+        + "<p>Name the two coefficients:</p>"
+        + eq(r"k_{\mathrm{eff}}=\frac{k\rho}{k+\rho},\qquad s=\frac{k}{k+\rho}", True)
+        + eq(r"t=k_{\mathrm{eff}}C+s\lambda", True)
+        + "<p><b>k_eff</b> multiplies the current geometric extension. <b>s</b> weights the "
+        "stored multiplier stress. They are derived coefficients, not additional tuning parameters.</p>"
+        + "<p>Substituting <i>z*</i> into the augmented energy gives:</p>"
         + eq(
             r"\widehat{\mathcal{L}}_{\rho}(x,\lambda)=\Phi(x)+\frac{k\rho}{2(k+\rho)}C(x)^2+\frac{k\lambda}{k+\rho}C(x)-\frac{\lambda^2}{2(k+\rho)}"
         )
-        + "<p>The final term is constant with respect to position. Define:</p>"
-        + eq(r"\bar{k}=\frac{k\rho}{k+\rho},\qquad s=\frac{k}{k+\rho}")
-        + "<p>With the multiplier fixed, the position solve is:</p>"
-        + eq(r"x^{n+1}\approx\operatorname{argmin}_x\left[\Phi(x)+\frac{\bar{k}}{2}C(x)^2+s\lambda^n C(x)\right]", True)
-        + "<p>The spring stress used during that solve is:</p>"
-        + eq(r"t=\bar{k}C+s\lambda^n=kz^*")
+        + "<p>The final term is constant with respect to position. Using the new names, "
+        "the reduced spring contribution is:</p>"
+        + eq(r"E_{\mathrm{reduced}}=\frac{k_{\mathrm{eff}}}{2}C^2+s\lambda C+\mathrm{constant}", True)
+        + "<p>With the multiplier fixed, the position solve becomes:</p>"
+        + eq(
+            r"x^{n+1}\approx\operatorname{argmin}_x\left[\Phi(x)+\frac{k_{\mathrm{eff}}}{2}C(x)^2+s\lambda^n C(x)\right]"
+        )
         + eq(r"f_{\mathrm{spring}}=-t\frac{dC}{dx}")
         + "<p>For this one-dimensional spring, <i>dC/dx = 1</i>. The spring's contribution "
-        "to positional curvature is <i>k̄</i>. The actual VBD implementation makes an "
-        "approximate position update through a vertex sweep.</p>",
+        "to positional curvature is <b>k_eff</b> (also written <i>k̄</i> in the triangle sheet). "
+        "The actual VBD implementation makes an approximate position update through a vertex sweep.</p>"
+        + eq(r"k_{\mathrm{eff}}=k(1-s)")
+        + '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;text-align:left">'
+        "<thead><tr><th>Penalty &rho;</th><th>k_eff</th><th>s</th></tr></thead>"
+        "<tbody><tr><td>9k</td><td>0.9k</td><td>0.1</td></tr>"
+        "<tr><td>k</td><td>0.5k</td><td>0.5</td></tr></tbody></table></div>"
+        + "<p>These values apply when the named floor determines the penalty. "
+        "An inertia-based penalty above the floor gives different coefficients.</p>",
     ),
     card(
         6,
@@ -79,6 +96,15 @@ sections = [
         + "<p>Insert the expression for <i>z*</i> and simplify:</p>"
         + eq(r"\lambda^{n+1}=\lambda^n+\rho\left[C-\frac{\lambda^n+\rho C}{k+\rho}\right]")
         + eq(r"\lambda^{n+1}=\frac{k}{k+\rho}\left(\lambda^n+\rho C(x^{n+1})\right)", True)
+        + "<p>Using the same coefficients from step 5, this is:</p>"
+        + eq(r"\lambda^{n+1}=k_{\mathrm{eff}}C(x^{n+1})+s\lambda^n", True)
+        + "<p>At a fixed extension, subtract the target material stress <i>kC</i> from both sides:</p>"
+        + eq(r"\lambda^{n+1}-kC=s(\lambda^n-kC)")
+        + '<p class="note"><b>s is also the fixed-pose stress-error retention factor.</b> '
+        "With &rho; = 9k, each update retains 10% of the previous stress error. "
+        "With &rho; = k, it retains 50%. Lower &rho; softens the position solve but "
+        "makes the multiplier catch up more slowly. This fixed-pose statement is not "
+        "a convergence rate for the full coupled position solve.</p>"
         + "<p>Now express it using physical compliance <i>a = 1/k</i>:</p>"
         + eq(r"\lambda^{n+1}=\frac{\lambda^n+\rho C(x^{n+1})}{1+\rho a}", True)
         + "<p>Equivalently:</p>"
