@@ -3,6 +3,7 @@
 
 """Build an offline equation sheet: uv run --no-project --with latex2mathml python build.py."""
 
+import base64
 from pathlib import Path
 
 from latex2mathml.converter import convert
@@ -126,6 +127,12 @@ a{color:var(--accent)}footer{font-size:14px;color:var(--muted);padding:15px 0}bu
 """
 )
 
+font = base64.b64encode(Path(__file__).with_name("STIXGeneral.woff2").read_bytes()).decode()
+page = page.replace(
+    "<style>",
+    "<style>@font-face{font-family:EmbeddedSTIX;src:url(data:font/woff2;base64," + font + ') format("woff2");}',
+).replace('font-family:"STIX Two Math",', 'font-family:EmbeddedSTIX,"STIX Two Math",')
+page = page.replace("Native MathML:", '<a href="LICENSE_STIX">STIX font license</a> · Native MathML:')
 output = Path(__file__).with_name("index.html")
 output.write_text(page)
 print(output)
