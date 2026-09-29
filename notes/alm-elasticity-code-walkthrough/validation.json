@@ -1,0 +1,17 @@
+{
+  "source_snapshot": "b5a7ab81",
+  "code_blocks": 19,
+  "source_excerpts": 15,
+  "source_links": 67,
+  "embedded_files": 8,
+  "findings": 5,
+  "pipeline_sections": 12,
+  "source_content_matches_worktree": true,
+  "source_line_navigation_and_highlight": true,
+  "offline_comment_save_reload_delete": true,
+  "comments_sidecar_unchanged": true,
+  "offline_browser": true,
+  "desktop_mobile_no_horizontal_overflow": true,
+  "javascript_errors": [],
+  "network_requests": []
+}
