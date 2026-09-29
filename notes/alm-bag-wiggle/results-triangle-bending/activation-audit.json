@@ -1,0 +1,120 @@
+{
+  "saved_runs": [
+    {
+      "stiffness": 1000,
+      "paired_settings_match": true,
+      "triangle_stretch_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      },
+      "triangle_area_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      }
+    },
+    {
+      "stiffness": 10000,
+      "paired_settings_match": true,
+      "triangle_stretch_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      },
+      "triangle_area_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      }
+    },
+    {
+      "stiffness": 100000,
+      "paired_settings_match": true,
+      "triangle_stretch_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      },
+      "triangle_area_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      }
+    },
+    {
+      "stiffness": 1000000,
+      "paired_settings_match": true,
+      "triangle_stretch_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      },
+      "triangle_area_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      }
+    },
+    {
+      "stiffness": 10000000,
+      "paired_settings_match": true,
+      "triangle_stretch_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      },
+      "triangle_area_rho_over_k": {
+        "min": 9.0,
+        "max": 9.0
+      }
+    }
+  ],
+  "probe": {
+    "stiffness": 10000000.0,
+    "frames": 60,
+    "substeps": 10,
+    "iterations": 10,
+    "modes": {
+      "off": {
+        "state_enabled": 0,
+        "tile_solve": true,
+        "frames": 60
+      },
+      "on": {
+        "state_enabled": 1,
+        "tile_solve": true,
+        "frames": 60,
+        "triangle_history_changes_after_first_frame": 3240,
+        "triangle_stretch": {
+          "active_rows": 3240,
+          "rho_over_k_min": 9.0,
+          "rho_over_k_max": 9.0,
+          "fraction_at_floor": 1.0,
+          "effective_row_stiffness_fraction_min": 0.9
+        },
+        "triangle_area": {
+          "active_rows": 3240,
+          "rho_over_k_min": 9.0,
+          "rho_over_k_max": 9.0,
+          "fraction_at_floor": 1.0,
+          "effective_row_stiffness_fraction_min": 0.9
+        },
+        "bending": {
+          "active_rows": 4824,
+          "rho_over_k_min": 8.999999508535026,
+          "rho_over_k_max": 9.000000368598684,
+          "fraction_at_floor": 1.0,
+          "effective_row_stiffness_fraction_min": 0.89999999508535
+        }
+      },
+      "on_with_state_bypassed": {
+        "state_enabled": 0,
+        "tile_solve": true,
+        "frames": 60
+      }
+    }
+  },
+  "differences_from_off": {
+    "on": {
+      "particle_coordinate_rms_difference_m": 0.0018159403545170375,
+      "particle_coordinate_max_difference_m": 0.022233417257666588
+    },
+    "on_with_state_bypassed": {
+      "particle_coordinate_rms_difference_m": 0.0001315705383315796,
+      "particle_coordinate_max_difference_m": 0.004038970917463303
+    }
+  },
+  "scope": "Activation control on the first settling second; not a convergence or performance benchmark."
+}
