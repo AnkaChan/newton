@@ -1,0 +1,11 @@
+{
+  "offline_file_protocol": true,
+  "selector_combinations_checked": 100,
+  "all_csv_rows_finite": true,
+  "all_60_cases_have_101_rows": true,
+  "initial_hashes_and_residuals_match_per_pair": true,
+  "desktop_mobile_no_horizontal_overflow": true,
+  "all_visible_links_exist": true,
+  "javascript_errors": [],
+  "network_requests": []
+}
