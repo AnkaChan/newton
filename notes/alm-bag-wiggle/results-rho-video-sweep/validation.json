@@ -1,0 +1,499 @@
+{
+  "passed": true,
+  "cases": 18,
+  "requested_snapshots": 6498,
+  "source_sha256": {
+    "run_rho_video_case.py": "139f4d61ebaa257d28c89e67876047a4a033c44716a5739574698c6f70e119a6",
+    "cloth_residual.py": "70ed9ea1b9910970ef10b99cb4d21907ff0d7cb7cb46363b0d63b2fdb6dce387",
+    "run_case.py": "50210db658eab6f142ac83dee86e2173efd460d808461461f5d25c0b1980bb6f",
+    "run_floor_sweep.py": "e1699769e9f1f1c13d6af1e917c25f76328b7aa110e19dbc264ae7d21d6e0b15"
+  },
+  "results": [
+    {
+      "case": "ke1000_off",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 11.137245506666668,
+      "mean_wiggle_bend_rad": 0.011400974139999999,
+      "mean_wiggle_original_residual_N": 0.7047270503333333,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 1.0,
+          "median": 1.0,
+          "max": 1.0
+        },
+        "tri_area": {
+          "min": 1.0,
+          "median": 1.0,
+          "max": 1.0
+        },
+        "bend": {
+          "min": 1.0,
+          "median": 1.0,
+          "max": 1.0
+        }
+      }
+    },
+    {
+      "case": "ke1000_floor9",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 10.309989506666668,
+      "mean_wiggle_bend_rad": 0.01066886212,
+      "mean_wiggle_original_residual_N": 0.685050879,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.9,
+          "median": 0.9,
+          "max": 0.9
+        },
+        "tri_area": {
+          "min": 0.9,
+          "median": 0.9,
+          "max": 0.9
+        },
+        "bend": {
+          "min": 0.9,
+          "median": 0.9,
+          "max": 0.9
+        }
+      }
+    },
+    {
+      "case": "ke1000_floor1",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 6.20890844,
+      "mean_wiggle_bend_rad": 0.006480931216666667,
+      "mean_wiggle_original_residual_N": 0.41808849133333337,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.5,
+          "median": 0.5,
+          "max": 0.5
+        },
+        "tri_area": {
+          "min": 0.5,
+          "median": 0.5,
+          "max": 0.5
+        },
+        "bend": {
+          "min": 0.5,
+          "median": 0.5,
+          "max": 0.5
+        }
+      }
+    },
+    {
+      "case": "ke1000_floor0p1",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 2.19726629,
+      "mean_wiggle_bend_rad": 0.003864133196666666,
+      "mean_wiggle_original_residual_N": 0.9968110002666667,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.09090909,
+          "median": 0.09090909,
+          "max": 0.09090909
+        },
+        "tri_area": {
+          "min": 0.09090909,
+          "median": 0.09090909,
+          "max": 0.09090909
+        },
+        "bend": {
+          "min": 0.09090909,
+          "median": 0.09090909,
+          "max": 0.0909091
+        }
+      }
+    },
+    {
+      "case": "ke1000_floor0p01",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 86.64312863333333,
+      "mean_wiggle_bend_rad": 0.3970556693333333,
+      "mean_wiggle_original_residual_N": 1763.1097366666665,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.00990099,
+          "median": 0.00990099,
+          "max": 0.08288473
+        },
+        "tri_area": {
+          "min": 0.00990099,
+          "median": 0.00990099,
+          "max": 0.03185779
+        },
+        "bend": {
+          "min": 0.009900989,
+          "median": 0.00990099,
+          "max": 0.00990099
+        }
+      }
+    },
+    {
+      "case": "ke1000_inertia",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 812.4964026666667,
+      "mean_wiggle_bend_rad": 1.20116812,
+      "mean_wiggle_original_residual_N": 5539.084396666667,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.001393574,
+          "median": 0.003795234,
+          "max": 0.03623358
+        },
+        "tri_area": {
+          "min": 2.169959e-07,
+          "median": 9.821797e-05,
+          "max": 0.01922342
+        },
+        "bend": {
+          "min": 1.660314e-06,
+          "median": 2.777795e-05,
+          "max": 0.05182301
+        }
+      }
+    },
+    {
+      "case": "ke100000_off",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5745020136666666,
+      "mean_wiggle_bend_rad": 0.015132515933333333,
+      "mean_wiggle_original_residual_N": 2.756372203333333,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 1.0,
+          "median": 1.0,
+          "max": 1.0
+        },
+        "tri_area": {
+          "min": 1.0,
+          "median": 1.0,
+          "max": 1.0
+        },
+        "bend": {
+          "min": 1.0,
+          "median": 1.0,
+          "max": 1.0
+        }
+      }
+    },
+    {
+      "case": "ke100000_floor9",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5578096466666667,
+      "mean_wiggle_bend_rad": 0.014783995500000001,
+      "mean_wiggle_original_residual_N": 2.6570281833333333,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.9,
+          "median": 0.9,
+          "max": 0.9
+        },
+        "tri_area": {
+          "min": 0.9,
+          "median": 0.9,
+          "max": 0.9
+        },
+        "bend": {
+          "min": 0.9,
+          "median": 0.9,
+          "max": 0.9
+        }
+      }
+    },
+    {
+      "case": "ke100000_floor1",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.488450378,
+      "mean_wiggle_bend_rad": 0.0132924322,
+      "mean_wiggle_original_residual_N": 2.3134769100000003,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.5,
+          "median": 0.5,
+          "max": 0.5
+        },
+        "tri_area": {
+          "min": 0.5,
+          "median": 0.5,
+          "max": 0.5
+        },
+        "bend": {
+          "min": 0.5,
+          "median": 0.5,
+          "max": 0.5
+        }
+      }
+    },
+    {
+      "case": "ke100000_floor0p1",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 2.3856507,
+      "mean_wiggle_bend_rad": 0.04473794983333333,
+      "mean_wiggle_original_residual_N": 164.581152,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.09090909,
+          "median": 0.09090909,
+          "max": 0.09090909
+        },
+        "tri_area": {
+          "min": 0.09090909,
+          "median": 0.09090909,
+          "max": 0.09090909
+        },
+        "bend": {
+          "min": 0.09090909,
+          "median": 0.09090909,
+          "max": 0.0909091
+        }
+      }
+    },
+    {
+      "case": "ke100000_floor0p01",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 39.12066003333334,
+      "mean_wiggle_bend_rad": 0.951997719,
+      "mean_wiggle_original_residual_N": 4060.9777866666664,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.00990099,
+          "median": 0.00990099,
+          "max": 0.00990099
+        },
+        "tri_area": {
+          "min": 0.00990099,
+          "median": 0.00990099,
+          "max": 0.00990099
+        },
+        "bend": {
+          "min": 0.009900989,
+          "median": 0.00990099,
+          "max": 0.00990099
+        }
+      }
+    },
+    {
+      "case": "ke100000_inertia",
+      "status": "failed",
+      "failure_frame": 67,
+      "failure_reason": "FloatingPointError: Nonfinite position or velocity",
+      "valid_snapshots": 67,
+      "mean_wiggle_stretch_percent": 3780.297833333334,
+      "mean_wiggle_bend_rad": 2.163880166666667,
+      "mean_wiggle_original_residual_N": 1602257833.3333333,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 1.429487e-05,
+          "median": 3.353314e-05,
+          "max": 0.0004876097
+        },
+        "tri_area": {
+          "min": 2.90956e-10,
+          "median": 1.670092e-07,
+          "max": 0.0001950115
+        },
+        "bend": {
+          "min": 6.553165e-09,
+          "median": 0.001667949,
+          "max": 0.9060354
+        }
+      }
+    },
+    {
+      "case": "ke10000000_off",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5729722343333333,
+      "mean_wiggle_bend_rad": 0.1851513203333333,
+      "mean_wiggle_original_residual_N": 234.85438433333334,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 1.0,
+          "median": 1.0,
+          "max": 1.0
+        },
+        "tri_area": {
+          "min": 1.0,
+          "median": 1.0,
+          "max": 1.0
+        },
+        "bend": {
+          "min": 1.0,
+          "median": 1.0,
+          "max": 1.0
+        }
+      }
+    },
+    {
+      "case": "ke10000000_floor9",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5622918626666666,
+      "mean_wiggle_bend_rad": 0.17821361166666666,
+      "mean_wiggle_original_residual_N": 226.19756700000002,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.9,
+          "median": 0.9,
+          "max": 0.9
+        },
+        "tri_area": {
+          "min": 0.9,
+          "median": 0.9,
+          "max": 0.9
+        },
+        "bend": {
+          "min": 0.9,
+          "median": 0.9,
+          "max": 0.9
+        }
+      }
+    },
+    {
+      "case": "ke10000000_floor1",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5259605049999999,
+      "mean_wiggle_bend_rad": 0.17573962566666665,
+      "mean_wiggle_original_residual_N": 190.21857233333333,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.5,
+          "median": 0.5,
+          "max": 0.5
+        },
+        "tri_area": {
+          "min": 0.5,
+          "median": 0.5,
+          "max": 0.5
+        },
+        "bend": {
+          "min": 0.5,
+          "median": 0.5,
+          "max": 0.5
+        }
+      }
+    },
+    {
+      "case": "ke10000000_floor0p1",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 2.6431497933333334,
+      "mean_wiggle_bend_rad": 0.3219372696666667,
+      "mean_wiggle_original_residual_N": 12845.905563333332,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.09090909,
+          "median": 0.09090909,
+          "max": 0.09090909
+        },
+        "tri_area": {
+          "min": 0.09090909,
+          "median": 0.09090909,
+          "max": 0.09090909
+        },
+        "bend": {
+          "min": 0.09090909,
+          "median": 0.09090909,
+          "max": 0.0909091
+        }
+      }
+    },
+    {
+      "case": "ke10000000_floor0p01",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 32.16924293333334,
+      "mean_wiggle_bend_rad": 1.15160542,
+      "mean_wiggle_original_residual_N": 302578.51399999997,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 0.00990099,
+          "median": 0.00990099,
+          "max": 0.00990099
+        },
+        "tri_area": {
+          "min": 0.00990099,
+          "median": 0.00990099,
+          "max": 0.00990099
+        },
+        "bend": {
+          "min": 0.009900989,
+          "median": 0.00990099,
+          "max": 0.00990099
+        }
+      }
+    },
+    {
+      "case": "ke10000000_inertia",
+      "status": "failed",
+      "failure_frame": 185,
+      "failure_reason": "FloatingPointError: Cloth coordinate exceeded the recorded 10 m runaway cutoff",
+      "valid_snapshots": 185,
+      "mean_wiggle_stretch_percent": 7972.82631451613,
+      "mean_wiggle_bend_rad": 2.173630346774193,
+      "mean_wiggle_original_residual_N": 940573590322.5807,
+      "final_valid_Keff_over_k": {
+        "tri_stretch": {
+          "min": 1.385683e-07,
+          "median": 2.956888e-07,
+          "max": 2.340593e-06
+        },
+        "tri_area": {
+          "min": 3.739394e-13,
+          "median": 3.637019e-10,
+          "max": 1.950477e-06
+        },
+        "bend": {
+          "min": 5.012867e-06,
+          "median": 0.01277934,
+          "max": 0.981673
+        }
+      }
+    }
+  ]
+}

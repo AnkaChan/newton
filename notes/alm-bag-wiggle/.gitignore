@@ -6,3 +6,6 @@ results-triangle-bending/*.png
 results-triangle-bending/*.npz
 results-floor-sweep/*.npz
 results-floor-sweep/*.png
+results-rho-video-sweep/*.mp4
+results-rho-video-sweep/*.png
+results-rho-video-sweep/*.npz

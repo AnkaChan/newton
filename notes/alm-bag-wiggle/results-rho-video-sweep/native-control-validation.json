@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "case": "ke100000_floor9",
+  "native_rho_statistics_match_every_frame": true,
+  "first_frame_max_abs_particle_position_delta_m": 0.0,
+  "first_frame_position_tolerance_m": 1e-05,
+  "trajectory_max_abs_particle_position_delta_m": 0.0027127028442919254,
+  "trajectory_rms_particle_position_delta_m": 0.00010351580567657948,
+  "trajectory_max_abs_body_translation_delta_m": 0.0062376949936151505,
+  "native_mean_wiggle_original_residual_N": 2.65662457,
+  "experimental_mean_wiggle_original_residual_N": 2.6570281833333333,
+  "mean_wiggle_residual_relative_difference": 0.00015192712507864286,
+  "note": "Independent CUDA contact trajectories can diverge slightly through floating-point accumulation; full-trajectory differences are reported rather than required to be bitwise zero."
+}
