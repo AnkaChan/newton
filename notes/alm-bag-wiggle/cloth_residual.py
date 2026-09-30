@@ -8,6 +8,7 @@ import warp as wp
 from newton._src.solvers.vbd.particle_alm_kernels import (
     ParticleElasticityAlmState,
     _bounded_rho,
+    _bounded_rho_ratio,
     _particle_mobility,
     _triangle_deformation,
     particle_alm_hinge_geometry,
@@ -42,15 +43,14 @@ def triangle_metrics(
         mobility = _particle_mobility(ids[t, v], inv_mass, flags)
         mn += mobility * wp.dot(gn, gn)
         ma += mobility * wp.dot(ga, ga)
-    denominator = wp.float64(areas[t]) * wp.float64(dt) * wp.float64(dt)
     # Native preparation has already seeded/retired rows. Only change rho.
     if state.tri_rho_stretch[t] > 0.0:
-        inertia = wp.float64(state.rho_scale) / (denominator * wp.float64(mn))
-        state.tri_rho_stretch[t] = _bounded_rho(wp.max(inertia, wp.float64(floor) * wp.float64(materials[t, 0])))
+        inertia = _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mn, areas[t])
+        state.tri_rho_stretch[t] = _bounded_rho(wp.max(inertia, floor * materials[t, 0]))
     if state.tri_rho_area[t] > 0.0:
-        inertia = wp.float64(state.rho_scale) / (denominator * wp.float64(ma))
+        inertia = _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, ma, areas[t])
         k = materials[t, 0] + materials[t, 1]
-        state.tri_rho_area[t] = _bounded_rho(wp.max(inertia, wp.float64(floor) * wp.float64(k)))
+        state.tri_rho_area[t] = _bounded_rho(wp.max(inertia, floor * k))
 
 
 @wp.kernel
@@ -76,9 +76,9 @@ def bend_metrics(
         + _particle_mobility(i2, inv_mass, flags) * wp.dot(g2, g2)
         + _particle_mobility(i3, inv_mass, flags) * wp.dot(g3, g3)
     )
-    inertia = wp.float64(state.rho_scale) / (wp.float64(dt) * wp.float64(dt) * wp.float64(mobility))
+    inertia = _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility, 1.0)
     k = properties[e, 0] * rest_length[e]
-    state.bend_rho[e] = _bounded_rho(wp.max(inertia, wp.float64(floor) * wp.float64(k)))
+    state.bend_rho[e] = _bounded_rho(wp.max(inertia, floor * k))
 
 
 @wp.func

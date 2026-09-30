@@ -1,0 +1,10 @@
+{
+  "device": "cpu",
+  "energy_gradient_relative_error": 5.492716462479852e-09,
+  "native_force_relative_error": 3.4145976324989984e-07,
+  "scope": "Independent original cloth elastic+damping force validation on a deformed two-triangle one-hinge fixture; contact evaluation reuses native kernels and is not covered by the energy finite-difference check.",
+  "source_sha256": {
+    "cloth_residual.py": "70ed9ea1b9910970ef10b99cb4d21907ff0d7cb7cb46363b0d63b2fdb6dce387",
+    "validate_cloth_residual.py": "1b0805db5d71f581cf8dc17e5ec0bde59f26fd848c069b10b4cfcd8858fc6517"
+  }
+}
