@@ -1,0 +1,1 @@
+Remove the material-stiffness floor from experimental particle elasticity ALM penalties. All soft-element rows now use an inertia-derived penalty scaled by `particle_elasticity_alm_rho_scale`; tune this existing parameter to adjust convergence. Its default remains `1.0`, and particle elasticity ALM remains opt-in.
