@@ -98,7 +98,7 @@ sections = [
             r"\widehat E_{\triangle}=A_0\left[\frac{K_{\mathrm{eff},r}}2 r^2+s_r\lambda_r r+\frac{K_{\mathrm{eff},a}}2 C_a^2+s_a\lambda_a C_a\right]+\mathrm{constant}",
             True,
         )
-        + "<p>Define P as the derivative of this energy per rest area with respect to F. "
+        + "<p>P is the surface first Piola&ndash;Kirchhoff stress: the derivative of this reduced ALM energy per rest area with respect to F. "
         "Use the two geometry derivatives:</p>"
         + eq(r"\frac{\partial r}{\partial F}=\frac F r,\qquad G=\frac{\partial J}{\partial F}=JF(F^TF)^{-1}")
         + "<p>The latter identity assumes a nondegenerate triangle; the code evaluates the equivalent "
@@ -125,92 +125,91 @@ sections = [
     section(
         5,
         "tet-energy",
-        "Tetrahedral elasticity: the implemented matrix and pressure coordinates",
-        "<p>For a tet, F is 3 by 3 and J is the <b>signed</b> volume ratio:</p>"
-        + eq(r"F=[x_1-x_0,\;x_2-x_0,\;x_3-x_0]D_m^{-1},\qquad J=\det F")
-        + "<p>Use the same definitions K = λ<sub>mat</sub> + μ and &alpha; = 1 + μ/K. "
-        "The stable quadratic-volume material used by the code is:</p>"
-        + eq(r"E_{\mathrm{tet}}=V_0\left[\frac{\mu}{2}(\|F\|_F^2-3)-\mu(J-1)+\frac K2(J-1)^2\right]")
-        + "<p>Complete the same square to obtain:</p>"
-        + eq(
-            r"E_{\mathrm{tet}}=V_0\left[\frac\mu2\|F\|_F^2+\frac K2 C_p^2\right]+\mathrm{constant},\qquad C_p=J-\alpha"
-        )
-        + "<p><b>The optional full matrix mode</b> treats F itself as a matrix coordinate. "
-        "Its auxiliary Z_F and multiplier Λ_F each have nine components. The pressure coordinate "
-        "has one scalar auxiliary zₚ and multiplier λₚ:</p>"
-        + eq(r"C_F=F,\quad k_F=\mu;\qquad C_p=J-\alpha,\quad k_p=K", True)
-        + "<p>The weight is w = V₀. The full augmented energy is the sum of:</p>"
-        + eq(r"\mathcal L_F=V_0\left[\frac\mu2\|Z_F\|_F^2+\Lambda_F:(F-Z_F)+\frac{\rho_F}{2}\|F-Z_F\|_F^2\right]")
-        + eq(r"\mathcal L_p=V_0\left[\frac K2 z_p^2+\lambda_p(C_p-z_p)+\frac{\rho_p}{2}(C_p-z_p)^2\right]")
-        + "<p>The colon is the sum of entrywise products. These are nine matrix multipliers plus one pressure "
-        "multiplier, not additional vertex position degrees of freedom. K is a row stiffness, not the three-dimensional bulk modulus.</p>",
+        "Tetrahedral elasticity: scalar stretch and pressure coordinates",
+        "<p><b>Implemented as the default when particle ALM is enabled.</b> Like the triangle, a tet "
+        "uses one scalar norm-stretch multiplier and one scalar pressure multiplier. Its deformation "
+        "gradient is 3 by 3, and its volume ratio is signed:</p>"
+        + eq(r"F=[x_1-x_0,\;x_2-x_0,\;x_3-x_0]D_m^{-1},\qquad r=\|F\|_F,\qquad J=\det F")
+        + "<p>Use K = λ<sub>mat</sub> + μ and &alpha; = 1 + μ/K. The original stable quadratic-volume energy is:</p>"
+        + eq(r"E_{\mathrm{tet}}=V_0\left[\frac{\mu}{2}(r^2-3)-\mu(J-1)+\frac K2(J-1)^2\right]")
+        + "<p>Complete the same square as for the triangle:</p>"
+        + eq(r"E_{\mathrm{tet}}=V_0\left[\frac\mu2r^2+\frac K2C_p^2\right]+\mathrm{constant},\qquad C_p=J-\alpha")
+        + eq(r"C_r=r,\quad k_r=\mu;\qquad C_p=\det(F)-\alpha,\quad k_p=K", True)
+        + "<p>The scalar histories are λᵣ and λₚ. The weight in the common derivation is w = V₀. "
+        "As with triangles, the norm coordinate has no rest-norm subtraction. At rest r = √3, "
+        "λᵣ = μ√3 and λₚ = &minus;μ; their contributions cancel in the total stress.</p>"
+        + "<p>Introduce one scalar auxiliary per coordinate:</p>"
+        + eq(r"\mathcal L_r=V_0\left[\frac\mu2z_r^2+\lambda_r(r-z_r)+\frac{\rho_r}{2}(r-z_r)^2\right]")
+        + eq(r"\mathcal L_p=V_0\left[\frac K2z_p^2+\lambda_p(C_p-z_p)+\frac{\rho_p}{2}(C_p-z_p)^2\right]")
+        + "<p>K is the pressure-row stiffness, not the three-dimensional bulk modulus. The scalar norm "
+        "implementation is distinct from the separately explored SVD/stretch-tensor method.</p>",
     ),
     section(
         6,
         "tet-alm",
-        "Tetrahedral elasticity: position solve and multiplier updates",
-        "<p>Define one pair of coefficients for the matrix block and another for pressure:</p>"
-        + eq(r"K_{\mathrm{eff},F}=\frac{\mu\rho_F}{\mu+\rho_F},\quad s_F=\frac\mu{\mu+\rho_F}")
+        "Tetrahedral elasticity: scalar ALM forces, Hessian, and updates",
+        "<p>Use the same scalar coefficient definitions as for triangle stretch and area:</p>"
+        + eq(r"K_{\mathrm{eff},r}=\frac{\mu\rho_r}{\mu+\rho_r},\quad s_r=\frac\mu{\mu+\rho_r}")
         + eq(r"K_{\mathrm{eff},p}=\frac{K\rho_p}{K+\rho_p},\quad s_p=\frac K{K+\rho_p}")
-        + "<p>Eliminating the auxiliaries gives:</p>"
+        + "<p>Eliminate the two scalar auxiliaries:</p>"
         + eq(
-            r"Z_F^*=\frac{K_{\mathrm{eff},F}}\mu F+\frac{s_F}\mu\Lambda_F,\qquad z_p^*=\frac{K_{\mathrm{eff},p}}K C_p+\frac{s_p}K\lambda_p"
+            r"z_r^*=\frac{K_{\mathrm{eff},r}}\mu r+\frac{s_r}\mu\lambda_r,\qquad z_p^*=\frac{K_{\mathrm{eff},p}}K C_p+\frac{s_p}K\lambda_p"
         )
         + eq(
-            r"\widehat E_{\mathrm{tet}}=V_0\left[\frac{K_{\mathrm{eff},F}}2\|F\|_F^2+s_F\Lambda_F:F+\frac{K_{\mathrm{eff},p}}2 C_p^2+s_p\lambda_p C_p\right]+\mathrm{constant}"
+            r"\widehat E_{\mathrm{tet}}=V_0\left[\frac{K_{\mathrm{eff},r}}2r^2+s_r\lambda_r r+\frac{K_{\mathrm{eff},p}}2C_p^2+s_p\lambda_p C_p\right]+\mathrm{constant}"
         )
-        + "<p>The determinant derivative is cof(F), the cofactor matrix. Differentiating the reduced energy per rest volume gives:</p>"
-        + eq(
-            r"P=K_{\mathrm{eff},F}F+s_F\Lambda_F+\left(K_{\mathrm{eff},p}C_p+s_p\lambda_p\right)\operatorname{cof}(F)",
-            True,
-        )
-        + "<p>As for triangles, let b₁, b₂, b₃ be transposed rows of Dₘ⁻¹ and b₀ their negative sum. Then:</p>"
-        + eq(r"\mathbf f_v=-V_0P\mathbf b_v")
-        + "<p>Update the matrix and scalar histories at the accepted positions:</p>"
-        + eq(r"\Lambda_F^{n+1}=K_{\mathrm{eff},F}F^{n+1}+s_F\Lambda_F^n", True)
-        + eq(r"\lambda_p^{n+1}=K_{\mathrm{eff},p}C_p(F^{n+1})+s_p\lambda_p^n", True)
-        + "<p>At a fixed point Λ_F = μF and λₚ = K Cₚ, giving the original stress μF + K Cₚ cof(F).</p>"
-        + '<p class="note"><b>Current default: pressure-only ALM.</b> The μ stretch term stays ordinary. '
-        "Use the pressure update above, but use this stress in the position solve:</p>"
-        + eq(r"P=\mu F+\left(K_{\mathrm{eff},p}C_p+s_p\lambda_p\right)\operatorname{cof}(F)", True)
-        + "<details><summary>The tet vertex Hessian and the matrix-history rotation limitation</summary>"
-        "<p>For the full matrix mode, the exact diagonal vertex block is:</p>"
-        + eq(
-            r"H_v=V_0\left[K_{\mathrm{eff},F}\|\mathbf b_v\|^2I+K_{\mathrm{eff},p}\mathbf g_{pv}\mathbf g_{pv}^T\right],\qquad \mathbf g_{pv}=\operatorname{cof}(F)\mathbf b_v"
-        )
-        + "<p>For pressure-only mode, replace K_eff,F by μ. The determinant is affine in one vertex "
-        "position when the others are fixed, so its second derivative contributes zero to this diagonal block. "
-        "Cross-vertex Hessian terms are not all zero.</p>"
-        + "<p>The implemented matrix history can retain an old world-space orientation. For a rigid "
-        "rotation R of a rest tet with unrotated history Λ_F = μI and λₚ = &minus;μ, the full-mode stress is:</p>"
-        + eq(r"P(R)=s_F\mu(I-R)")
-        + "<p>This is the known finite-iteration rotation artifact. The original material energy remains "
-        "rotation-invariant; the stale matrix-history solve is the source of the artifact.</p></details>",
-    ),
-    section(
-        7,
-        "tet-norm",
-        "Scalar-norm tet alternative: the same two-row idea as triangles",
-        '<p class="note"><b>Derived alternative; not integrated in the current tet solver.</b> '
-        "The current triangle implementation uses this type of scalar invariant split. "
-        "It is distinct from the separately explored SVD/stretch-tensor proposal.</p>"
-        + "<p>Since the tet stretch energy depends only on the squared Frobenius norm, we can instead choose:</p>"
-        + eq(r"C_r=r=\|F\|_F,\quad k_r=\mu;\qquad C_p=\det(F)-\alpha,\quad k_p=K")
-        + "<p>The scalar auxiliaries are eliminated exactly as for a triangle. The position-dependent energy becomes:</p>"
-        + eq(
-            r"\widehat E=V_0\left[\frac{K_{\mathrm{eff},r}}2r^2+s_r\lambda_r r+\frac{K_{\mathrm{eff},p}}2C_p^2+s_p\lambda_p C_p\right]+\mathrm{constant}"
-        )
-        + "<p>Using ∂r/∂F = F/r and ∂J/∂F = cof(F), the stress is:</p>"
+        + "<p>P is the first Piola&ndash;Kirchhoff stress of the reduced ALM energy: its derivative per rest "
+        "volume with respect to F. The geometry derivatives are:</p>"
+        + eq(r"\frac{\partial r}{\partial F}=\frac F r,\qquad \frac{\partial J}{\partial F}=\operatorname{cof}(F)")
         + eq(
             r"P=\left(K_{\mathrm{eff},r}r+s_r\lambda_r\right)\frac F r+\left(K_{\mathrm{eff},p}C_p+s_p\lambda_p\right)\operatorname{cof}(F)",
             True,
         )
-        + "<p>The two scalar updates are:</p>"
-        + eq(r"\lambda_r^{n+1}=K_{\mathrm{eff},r}r(F^{n+1})+s_r\lambda_r^n")
-        + eq(r"\lambda_p^{n+1}=K_{\mathrm{eff},p}C_p(F^{n+1})+s_p\lambda_p^n")
-        + "<p>This represents the same original energy and has rotation-invariant scalar histories. "
-        "Its finite-iteration curvature differs from the matrix split: the norm introduces the geometric "
-        "curvature shown in the triangle section. Exact energy equivalence does not imply identical or faster convergence.</p>",
+        + "<p>As for triangles, let b₁, b₂, b₃ be transposed rows of Dₘ⁻¹ and b₀ their negative sum. Then:</p>"
+        + eq(r"\mathbf f_v=-V_0P\mathbf b_v")
+        + "<p>The two scalar updates at the accepted positions are:</p>"
+        + eq(r"\lambda_r^{n+1}=K_{\mathrm{eff},r}r(F^{n+1})+s_r\lambda_r^n", True)
+        + eq(r"\lambda_p^{n+1}=K_{\mathrm{eff},p}C_p(F^{n+1})+s_p\lambda_p^n", True)
+        + "<p>At a fixed point λᵣ = μr and λₚ = K Cₚ, recovering P = μF + K Cₚ cof(F). "
+        "Both histories are unchanged by a rigid rotation; the force directions follow the current F.</p>"
+        + '<p class="note"><b>The norm geometric Hessian is included.</b> K_eff,r is not the entire '
+        "positional stiffness. The multiplier contributes to curvature through the second derivative of r.</p>"
+        + "<details><summary>The exact tet vertex block used by the scalar split</summary>"
+        + eq(r"g_{rv}=\frac{F\mathbf b_v}{r},\qquad g_{pv}=\operatorname{cof}(F)\mathbf b_v")
+        + eq(r"\nabla_{x_v}^2r=\frac{\|\mathbf b_v\|^2}{r}I-\frac{(F\mathbf b_v)(F\mathbf b_v)^T}{r^3}")
+        + eq(
+            r"H_v=V_0\left[K_{\mathrm{eff},r}g_{rv}g_{rv}^T+\left(K_{\mathrm{eff},r}r+s_r\lambda_r\right)\nabla_{x_v}^2r+K_{\mathrm{eff},p}g_{pv}g_{pv}^T\right]"
+        )
+        + "<p>The determinant is affine in one vertex position when all other vertices are fixed, "
+        "so its geometric second derivative contributes zero to this diagonal block. This cancellation "
+        "does not apply to the norm row, and determinant cross-vertex terms are not all zero.</p></details>",
+    ),
+    section(
+        7,
+        "tet-norm",
+        "Tet options and the historical nine-component formulation",
+        "<p>Particle ALM is opt-in. With it enabled, the default tet mode now uses scalar norm stretch "
+        "and pressure. The existing experimental flag can explicitly select pressure-only behavior:</p>"
+        + "<pre><code>SolverVBD(model, particle_elasticity_alm=True)\n\n# Explicit comparison: ordinary stretch plus ALM pressure\nSolverVBD(model, particle_elasticity_alm=True,\n          particle_elasticity_alm_deviatoric=False)</code></pre>"
+        + "<p>In pressure-only mode, only λₚ is updated. The stretch part stays ordinary:</p>"
+        + eq(r"P=\mu F+\left(K_{\mathrm{eff},p}C_p+s_p\lambda_p\right)\operatorname{cof}(F)")
+        + '<p class="note">The experimental <code>particle_elasticity_alm_deviatoric</code> flag now '
+        "defaults to True and means scalar norm stretch. The earlier True mode stored a 3 by 3 matrix; "
+        "that implementation has been replaced. The term is not strictly volume-preserving despite the flag's historical name.</p>"
+        + "<details><summary>Historical matrix formulation: comparison only</summary>"
+        "<p>The previous implementation treated F itself as nine scalar coordinates and retained "
+        "a 3 by 3 multiplier Λ_F. With k_F = μ and the corresponding K_eff,F and s_F, its formulas were:</p>"
+        + eq(r"Z_F^*=\frac{K_{\mathrm{eff},F}}\mu F+\frac{s_F}\mu\Lambda_F")
+        + eq(r"P=K_{\mathrm{eff},F}F+s_F\Lambda_F+\left(K_{\mathrm{eff},p}C_p+s_p\lambda_p\right)\operatorname{cof}(F)")
+        + eq(r"\Lambda_F^{n+1}=K_{\mathrm{eff},F}F^{n+1}+s_F\Lambda_F^n")
+        + "<p>At a constitutive fixed point the matrix and scalar formulations recover the same "
+        "original material. Their iteration Hessians differ. The matrix stretch coordinate is linear "
+        "in F, whereas the scalar norm has the geometric Hessian shown above.</p>"
+        + "<p>For a rigid rotation R of a rest tet with old matrix history Λ_F = μI and λₚ = &minus;μ, "
+        "the historical matrix solve produced:</p>"
+        + eq(r"P(R)=s_F\mu(I-R)")
+        + "<p>This was the finite-iteration rotation artifact. The scalar history removes that "
+        "stored world-space direction. Historical benchmark results still describe the old implementation.</p></details>",
     ),
     section(
         8,
@@ -271,17 +270,17 @@ sections = [
         "and the existing contact terms. For the particle solve, the inertial target is x̂:</p>"
         + eq(r"\Phi(x)=\sum_{v\;\mathrm{free}}\frac{m_v}{2\Delta t^2}\|x_v-\hat x_v\|^2")
         + "<ol><li>At the incoming pose, compute the penalties. On activation or reset, initialize "
-        "each scalar history to kᵢ Cᵢ; initialize matrix history to μF if that mode is enabled.</li>"
+        "each scalar history to kᵢ Cᵢ. The scalar tet stretch history is initialized to μ‖F‖.</li>"
         "<li>Compute K_eff,i and sᵢ from the material stiffness and numerical penalty. Keep penalties "
         "and multipliers fixed during the complete vertex-color sweep.</li>"
         "<li>For each vertex, assemble inertia, incident element forces and Hessian blocks, damping, "
         "and contacts. Take its local VBD update and apply the existing per-color DAT truncation.</li>"
         "<li>Once all colors are finished, evaluate the accepted coordinates and apply "
-        "<b>λᵢ ← K_eff,i Cᵢ + sᵢ λᵢ</b> to every active scalar row, or the corresponding matrix expression.</li>"
+        "<b>λᵢ ← K_eff,i Cᵢ + sᵢ λᵢ</b> to every active scalar row, using the accepted geometry.</li>"
         "<li>Repeat the sweep and multiplier update for the configured number of iterations. "
         "Retain multiplier history across substeps.</li></ol>"
-        + "<p>The current triangle and bending policy is &rho;ᵢ = max(&rho;<sub>inertia,i</sub>, 9kᵢ). "
-        "Tet penalties are inertia-based and do not use that cloth floor. Damping remains separate "
+        + "<p>The current triangle, tet norm-stretch, and bending policy is &rho;ᵢ = max(&rho;<sub>inertia,i</sub>, 9kᵢ). "
+        "Tet pressure penalties remain inertia-based without that floor. Damping remains separate "
         "from this elasticity ALM split. Contact ALM is not implemented by these formulas.</p>"
         + '<p class="note">The derivation assumes active, positive-stiffness rows and valid geometry. '
         "The implementation also handles disabled rows, degeneracy, float32 bounds, and reset state. "
@@ -292,13 +291,13 @@ sections = [
 prefix = page.split("<header>", 1)[0].replace(
     "Triangle elasticity ALM — readable equations", "Triangle, tet, and bending compliant ALM with K_eff and s"
 )
-extra_css = "<style>summary{cursor:pointer;font-weight:650;color:#096b71}details{margin-top:20px;padding:16px;background:#f6f8fa;border-radius:10px}nav{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}nav a{padding:5px 12px;background:white;border:1px solid #c4d4dc;border-radius:7px;text-decoration:none}section{scroll-margin-top:20px}li{margin:10px 0}code{overflow-wrap:anywhere}</style>"
+extra_css = "<style>summary{cursor:pointer;font-weight:650;color:#096b71}details{margin-top:20px;padding:16px;background:#f6f8fa;border-radius:10px}nav{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}nav a{padding:5px 12px;background:white;border:1px solid #c4d4dc;border-radius:7px;text-decoration:none}section{scroll-margin-top:20px}li{margin:10px 0}code{overflow-wrap:anywhere}pre{overflow-x:auto;padding:12px;background:#f6f8fa;border-radius:8px}</style>"
 header = """<header><div class="eyebrow">Derivation matched to the implementation · local / offline</div>
 <h1>Triangle, tet, and bending compliant ALM</h1>
 <p>The spring derivation carried through each element energy, using K_eff and s throughout. Every force coefficient is written explicitly; there is no extra force shorthand.</p>
-<div class="symbols"><span><b>kᵢ</b> = material row stiffness</span><span><b>K_eff,i</b> = effective stiffness</span><span><b>sᵢ</b> = multiplier weight</span><span><b>λᵢ</b> = scalar multiplier</span><span><b>Λ_F</b> = matrix multiplier</span></div>
-<nav aria-label="Derivation sections"><a href="#shared">Shared derivation</a><a href="#triangle-energy">Triangles</a><a href="#tet-energy">Tets</a><a href="#tet-norm">Scalar tet alternative</a><a href="#bending-energy">Bending</a><a href="#solve">Solver loop</a></nav>
-<p style="font-size:15px">Triangles: two scalar rows implemented. Tets: pressure-only default, optional 9 + 1 matrix mode; scalar-norm alternative derived separately. Bending: one scalar row implemented.</p></header>"""
+<div class="symbols"><span><b>kᵢ</b> = material row stiffness</span><span><b>K_eff,i</b> = effective stiffness</span><span><b>sᵢ</b> = multiplier weight</span><span><b>λᵢ</b> = scalar multiplier</span></div>
+<nav aria-label="Derivation sections"><a href="#shared">Shared derivation</a><a href="#triangle-energy">Triangles</a><a href="#tet-energy">Tets</a><a href="#tet-norm">Tet options / old matrix split</a><a href="#bending-energy">Bending</a><a href="#solve">Solver loop</a></nav>
+<p style="font-size:15px">Triangles: two scalar rows implemented. Tets: scalar norm stretch plus pressure by default when ALM is enabled; pressure-only comparison remains available. Bending: one scalar row implemented.</p></header>"""
 footer = """<footer><p><a href="spring.html">Spring derivation</a> · <a href="../alm-elasticity-code-walkthrough/review.html">Full code walkthrough</a> · <a href="../alm-bag-wiggle/results-floor-sweep/index.html">Residual experiment</a> · <a href="LICENSE_STIX">STIX font license</a></p>
 <p>Source: <a href="../../newton/_src/solvers/vbd/particle_alm_kernels.py">ALM state, preparation, and updates</a>; <a href="../../newton/_src/solvers/vbd/particle_vbd_kernels.py">element forces and Hessians</a>; <a href="../../newton/_src/solvers/vbd/solver_vbd.py">VBD integration</a>.</p>
 <p>Equations use the current quadratic area/volume material, not the logarithmic Neo-Hookean energy. Embedded math font; no network required.</p><button onclick="window.print()">Print / save as PDF</button></footer></main></body></html>"""
