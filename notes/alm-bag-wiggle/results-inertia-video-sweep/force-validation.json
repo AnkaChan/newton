@@ -1,0 +1,14 @@
+{
+  "device": "cpu",
+  "energy_gradient_relative_error": 5.492716462479852e-09,
+  "native_force_relative_error": 3.4145976324989984e-07,
+  "scope": "Independent original elastic+damping force validation on a deformed two-triangle one-hinge fixture; contact forces reuse native kernels.",
+  "source_sha256": {
+    "cloth_residual.py": "70ed9ea1b9910970ef10b99cb4d21907ff0d7cb7cb46363b0d63b2fdb6dce387",
+    "validate_cloth_residual.py": "1b0805db5d71f581cf8dc17e5ec0bde59f26fd848c069b10b4cfcd8858fc6517"
+  },
+  "production_source_sha256": {
+    "newton/_src/solvers/vbd/particle_alm_kernels.py": "806d304d061bb33394af7df3ee286ff80e3d846931c9ff4d82ca223668c8346c",
+    "newton/_src/solvers/vbd/particle_vbd_kernels.py": "ed6fd5e28ef331722c019238b07dceccc09eee0c555a64992095c7750150d4c9"
+  }
+}

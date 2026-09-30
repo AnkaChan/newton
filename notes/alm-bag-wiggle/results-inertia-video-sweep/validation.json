@@ -1,0 +1,171 @@
+{
+  "passed": true,
+  "cases": 15,
+  "requested_snapshots": 5415,
+  "initial_rho_material_independence": true,
+  "initial_rho_scale_linearity": true,
+  "source_sha256": {
+    "run_rho_video_case.py": "7133627482310621e399ec00c2d2ce6f80a65621322a315a4f704808aa8484ba",
+    "cloth_residual.py": "70ed9ea1b9910970ef10b99cb4d21907ff0d7cb7cb46363b0d63b2fdb6dce387",
+    "run_case.py": "d86f1978359b8a853f8bc67a08539697fef928e231976411850d75fe900bee06",
+    "run_floor_sweep.py": "e1699769e9f1f1c13d6af1e917c25f76328b7aa110e19dbc264ae7d21d6e0b15",
+    "run_inertia_video_case.py": "8cd8c2f65de2385248551dc74b0546453a28d67d4d142c42f01b5694ddcfea71"
+  },
+  "production_source_sha256": {
+    "newton/_src/solvers/vbd/particle_alm_kernels.py": "806d304d061bb33394af7df3ee286ff80e3d846931c9ff4d82ca223668c8346c",
+    "newton/_src/solvers/vbd/particle_vbd_kernels.py": "ed6fd5e28ef331722c019238b07dceccc09eee0c555a64992095c7750150d4c9",
+    "newton/_src/solvers/vbd/solver_vbd.py": "364faef6a3fc5066db55237424254b1a2988618623a29b0a8fb98a3b73b2a51c"
+  },
+  "results": [
+    {
+      "case": "ke1000_off",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 11.095253723333334,
+      "mean_wiggle_bend_rad": 0.01130841756,
+      "mean_wiggle_original_residual_N": 0.7128662693333334
+    },
+    {
+      "case": "ke1000_inertia1",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 565.896128,
+      "mean_wiggle_bend_rad": 1.13771415,
+      "mean_wiggle_original_residual_N": 4740.54571
+    },
+    {
+      "case": "ke1000_inertia10",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 786.3575915,
+      "mean_wiggle_bend_rad": 0.5477261409999999,
+      "mean_wiggle_original_residual_N": 2604.30791
+    },
+    {
+      "case": "ke1000_inertia100",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 37.354328333333335,
+      "mean_wiggle_bend_rad": 0.41379922466666663,
+      "mean_wiggle_original_residual_N": 983.5526273333331
+    },
+    {
+      "case": "ke1000_inertia1000",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 11.469256316666666,
+      "mean_wiggle_bend_rad": 0.07484773513333334,
+      "mean_wiggle_original_residual_N": 278.4369744666667
+    },
+    {
+      "case": "ke100000_off",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5749289110000001,
+      "mean_wiggle_bend_rad": 0.0151447019,
+      "mean_wiggle_original_residual_N": 2.7565928033333336
+    },
+    {
+      "case": "ke100000_inertia1",
+      "status": "failed",
+      "failure_frame": 38,
+      "failure_reason": "FloatingPointError: Nonfinite position or velocity",
+      "valid_snapshots": 38,
+      "mean_wiggle_stretch_percent": null,
+      "mean_wiggle_bend_rad": null,
+      "mean_wiggle_original_residual_N": null
+    },
+    {
+      "case": "ke100000_inertia10",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 461.07387733333337,
+      "mean_wiggle_bend_rad": 1.4478600966666668,
+      "mean_wiggle_original_residual_N": 27257383.826666668
+    },
+    {
+      "case": "ke100000_inertia100",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 114.2279282,
+      "mean_wiggle_bend_rad": 1.12556571,
+      "mean_wiggle_original_residual_N": 184387.71944000002
+    },
+    {
+      "case": "ke100000_inertia1000",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 27.38032473333334,
+      "mean_wiggle_bend_rad": 0.6690260043333334,
+      "mean_wiggle_original_residual_N": 2984.6085866666667
+    },
+    {
+      "case": "ke10000000_off",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.570094899,
+      "mean_wiggle_bend_rad": 0.17993671466666664,
+      "mean_wiggle_original_residual_N": 234.761686
+    },
+    {
+      "case": "ke10000000_inertia1",
+      "status": "failed",
+      "failure_frame": 234,
+      "failure_reason": "FloatingPointError: Cloth coordinate exceeded the recorded 10 m runaway cutoff",
+      "valid_snapshots": 234,
+      "mean_wiggle_stretch_percent": 8810.610572254334,
+      "mean_wiggle_bend_rad": 2.184497595375723,
+      "mean_wiggle_original_residual_N": 1408875110404.6243
+    },
+    {
+      "case": "ke10000000_inertia10",
+      "status": "failed",
+      "failure_frame": 206,
+      "failure_reason": "FloatingPointError: Cloth coordinate exceeded the recorded 10 m runaway cutoff",
+      "valid_snapshots": 206,
+      "mean_wiggle_stretch_percent": 7808.213827586208,
+      "mean_wiggle_bend_rad": 2.1812233862068964,
+      "mean_wiggle_original_residual_N": 1302849671034.4827
+    },
+    {
+      "case": "ke10000000_inertia100",
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 5881.942163333334,
+      "mean_wiggle_bend_rad": 2.164008763333334,
+      "mean_wiggle_original_residual_N": 1631029649333.3333
+    },
+    {
+      "case": "ke10000000_inertia1000",
+      "status": "failed",
+      "failure_frame": 81,
+      "failure_reason": "FloatingPointError: Nonfinite position or velocity",
+      "valid_snapshots": 81,
+      "mean_wiggle_stretch_percent": 339.589735,
+      "mean_wiggle_bend_rad": 1.7002316,
+      "mean_wiggle_original_residual_N": 452084695.0
+    }
+  ]
+}
