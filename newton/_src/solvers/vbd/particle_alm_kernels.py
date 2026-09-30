@@ -85,16 +85,41 @@ def _particle_mobility(particle: int, inv_mass: wp.array[float], flags: wp.array
 
 
 @wp.func
-def _bounded_rho(value: wp.float64) -> float:
+def _bounded_rho(value: float) -> float:
     """Round positive metrics into the finite float32 range without retiring rows."""
-    return float(wp.clamp(value, wp.float64(1.401298464324817e-45), wp.float64(3.4028234663852886e38)))
+    return wp.clamp(value, 1.401298464324817e-45, 3.4028234663852886e38)
 
 
 @wp.func
-def _bounded_scalar_rho(inertia: wp.float64, material_k: float) -> float:
+def _bounded_rho_ratio(n0: float, n1: float, d0: float, d1: float, d2: float, d3: float) -> float:
+    """Bound a positive product ratio without losing balanced extreme factors."""
+    minimum_normal = 1.1754943508222875e-38
+    maximum = 3.4028234663852886e38
+    numerator = n0 * n1
+    denominator = d0 * d1
+    normal = numerator >= minimum_normal and numerator <= maximum
+    normal = normal and denominator >= minimum_normal and denominator <= maximum
+    denominator *= d2
+    normal = normal and denominator >= minimum_normal and denominator <= maximum
+    denominator *= d3
+    normal = normal and denominator >= minimum_normal and denominator <= maximum
+    if normal:
+        return _bounded_rho(numerator / denominator)
+    # Ordinary metrics stay on the direct float32 path. Only products that
+    # leave its normal range need logarithms to preserve cancelling factors.
+    exponent = wp.log2(n0) + wp.log2(n1) - wp.log2(d0) - wp.log2(d1) - wp.log2(d2) - wp.log2(d3)
+    if exponent >= 128.0:
+        return maximum
+    if exponent <= -149.0:
+        return 1.401298464324817e-45
+    return _bounded_rho(wp.pow(2.0, exponent))
+
+
+@wp.func
+def _bounded_scalar_rho(inertia: float, material_k: float) -> float:
     # As for springs, before float32 saturation retain at least 90% of row
     # curvature and reduce a fixed-pose stress error by at least 90% per update.
-    return _bounded_rho(wp.max(inertia, wp.float64(9.0) * wp.float64(material_k)))
+    return _bounded_rho(wp.max(inertia, 9.0 * material_k))
 
 
 @wp.func
@@ -146,11 +171,10 @@ def _prepare_triangles(
         mobility_norm += mobility * wp.dot(gn, gn)
         mobility_area += mobility * wp.dot(ga, ga)
     pending = state.tri_pending[face]
-    denominator = wp.float64(areas[face]) * wp.float64(dt) * wp.float64(dt)
     state.tri_rho_stretch[face] = 0.0
     if mu > 0.0 and norm > 1.0e-10 and areas[face] > 0.0 and mobility_norm > 0.0:
         state.tri_rho_stretch[face] = _bounded_scalar_rho(
-            wp.float64(state.rho_scale) / (denominator * wp.float64(mobility_norm)), mu
+            _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility_norm, areas[face]), mu
         )
         if (pending & 1) != 0:
             state.tri_lambda_stretch[face] = mu * norm
@@ -161,7 +185,7 @@ def _prepare_triangles(
     state.tri_rho_area[face] = 0.0
     if area_k > 0.0 and area > 1.0e-10 and areas[face] > 0.0 and mobility_area > 0.0:
         state.tri_rho_area[face] = _bounded_scalar_rho(
-            wp.float64(state.rho_scale) / (denominator * wp.float64(mobility_area)), area_k
+            _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility_area, areas[face]), area_k
         )
         if (pending & 2) != 0:
             state.tri_lambda_area[face] = area_k * (area - 1.0) - area_k * (mu / wp.max(area_k, 1.0e-6))
@@ -279,12 +303,12 @@ def _prepare_tets(
         mobility_pressure += mobility * wp.dot(g, g)
     # Pending tet bits independently track mu and pressure through degeneracies.
     pending = state.tet_pending[tet]
-    numerator = wp.float64(state.rho_scale) * wp.float64(6.0) * wp.float64(rest_det)
-    dt_squared = wp.float64(dt) * wp.float64(dt)
     if state.deviatoric != 0:
         state.tet_rho_mu[tet] = 0.0
         if mu > 0.0 and norm > 1.0e-10 and rest_det > 0.0 and mobility_mu > 0.0:
-            state.tet_rho_mu[tet] = _bounded_scalar_rho(numerator / (dt_squared * wp.float64(mobility_mu)), mu)
+            state.tet_rho_mu[tet] = _bounded_scalar_rho(
+                _bounded_rho_ratio(state.rho_scale, rest_det, dt, dt, mobility_mu, 1.0 / 6.0), mu
+            )
             if (pending & 1) != 0:
                 state.tet_lambda_mu[tet] = mu * norm
             pending = pending & ~1
@@ -293,7 +317,9 @@ def _prepare_tets(
             pending = pending | 1
     state.tet_rho_pressure[tet] = 0.0
     if pressure_k > 0.0 and rest_det > 0.0 and mobility_pressure > 0.0:
-        state.tet_rho_pressure[tet] = _bounded_rho(numerator / (dt_squared * wp.float64(mobility_pressure)))
+        state.tet_rho_pressure[tet] = _bounded_rho_ratio(
+            state.rho_scale, rest_det, dt, dt, mobility_pressure, 1.0 / 6.0
+        )
         if (pending & 2) != 0:
             # Keep the standing -mu stress when 1+mu/K rounds to 1.
             state.tet_lambda_pressure[tet] = pressure_k * (wp.determinant(F) - 1.0) - pressure_k * (
@@ -353,8 +379,8 @@ def _prepare_springs(
     material_k = stiffness[spring]
     state.spring_rho[spring] = 0.0
     if material_k > 0.0 and length > 1.0e-8 and mobility > 0.0:
-        inertia = wp.float64(state.rho_scale) / (wp.float64(dt) * wp.float64(dt) * wp.float64(mobility))
-        state.spring_rho[spring] = _bounded_rho(wp.max(inertia, wp.float64(9.0) * wp.float64(material_k)))
+        inertia = _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility, 1.0)
+        state.spring_rho[spring] = _bounded_scalar_rho(inertia, material_k)
         if state.spring_pending[spring] != 0:
             state.spring_lambda[spring] = material_k * (length - rest_length[spring])
         state.spring_pending[spring] = 0
@@ -414,7 +440,7 @@ def _prepare_bends(
     material_k = properties[edge, 0] * rest_length[edge]
     if material_k > 0.0 and valid != 0 and mobility > 0.0:
         state.bend_rho[edge] = _bounded_scalar_rho(
-            wp.float64(state.rho_scale) / (wp.float64(dt) * wp.float64(dt) * wp.float64(mobility)), material_k
+            _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility, 1.0), material_k
         )
         if state.bend_pending[edge] != 0:
             state.bend_lambda[edge] = material_k * (theta - rest_angle[edge])
