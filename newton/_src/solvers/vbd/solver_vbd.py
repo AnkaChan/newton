@@ -439,10 +439,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 spring, and bending ALM remain enabled in either mode. Only used
                 when ``particle_elasticity_alm=True``.
             particle_elasticity_alm_rho_scale: Positive finite multiplier for the
-                inertia-derived ALM penalty metric. Tet norm stretch, triangle, spring, and bending metrics
-                additionally have a floor of nine times their row material stiffness.
-                Does not change converged
-                material stiffness. Only used when ``particle_elasticity_alm=True``.
+                inertia-derived ALM penalty metric for every particle elasticity row.
+                Defaults to ``1.0``. The metric is independent of material stiffness;
+                this scale changes convergence but not converged material stiffness.
+                Only used when ``particle_elasticity_alm=True``.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will

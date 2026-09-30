@@ -79,7 +79,7 @@ def _hinge_model(*, rest=0.0, stiffness=10.0, mass=1.0, device="cpu"):
 
 
 def _metric_product_ranges(test, device):
-    """Preserve representable metrics through overflowing or underflowing intermediate products."""
+    """Scale inertia independently of material stiffness and bound extreme product ratios."""
     minimum = float(np.nextafter(np.float32(0.0), np.float32(1.0)))
     maximum = float(np.finfo(np.float32).max)
     for stiffness in (1.0e-20, 1.0e38):
@@ -94,7 +94,9 @@ def _metric_product_ranges(test, device):
         )
         for model, row_factors in models:
             for scale, dt, inv_mass in (
+                (0.01, 0.1, 1.0),
                 (1.0, 0.1, 1.0),
+                (10.0, 0.1, 1.0),
                 (1.0e30, 1.0e20, 1.0e-20),
                 (1.0e-30, 1.0e-20, 1.0e20),
                 (1.0e30, 1.0e-20, 1.0e20),
@@ -107,8 +109,7 @@ def _metric_product_ranges(test, device):
                 inertia = float(np.float32(scale)) / (float(np.float32(dt)) ** 2 * float(np.float32(inv_mass)))
                 for name, factor in row_factors.items():
                     with test.subTest(row=name, stiffness=stiffness, scale=scale, dt=dt, inv_mass=inv_mass):
-                        floor = 0.0 if name == "tet_rho_pressure" else 9.0 * float(np.float32(stiffness))
-                        expected = np.clip(max(factor * inertia, floor), minimum, maximum)
+                        expected = np.clip(factor * inertia, minimum, maximum)
                         actual = float(getattr(state, name).numpy()[0])
                         test.assertTrue(np.isfinite(actual))
                         test.assertGreater(actual, 0.0)
@@ -237,24 +238,29 @@ class TestParticleAlmKernels(unittest.TestCase):
                 np.testing.assert_allclose(history.tet_lambda_mu.numpy(), 14.4 * np.sqrt(3.0), rtol=1.0e-6)
                 self.assertEqual(int(history.tet_pending.numpy()[0]) & 1, 0)
 
-    def test_small_hinge_stress_tracks_ten_sweeps(self):
-        """A light, centimeter-scale hinge must not lose its authored moment."""
+    def test_small_hinge_stress_tracks_inertia_penalty(self):
+        """Follow the inertia-controlled stress recurrence for a light, centimeter-scale hinge."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         size = 0.01
         for point in [(0.0, size, 0.0), (0.0, -size, 0.0), (0.0, 0.0, 0.0), (size, 0.0, 0.0)]:
             builder.add_particle(wp.vec3(point), wp.vec3(0.0), mass=1.0e-6)
         builder.add_edge(0, 1, 2, 3, rest=0.0, edge_ke=200.0, edge_kd=0.0)
         model = builder.finalize(device="cpu")
-        state = alm.create_particle_elasticity_alm_state(model, True, False, 1.0)
-        alm.prepare_particle_elasticity_alm(model, model.particle_q, 1.0 / 600.0, state)
         angle = 0.02
-        points = model.particle_q.numpy()
+        points = model.particle_q.numpy().copy()
         points[1] = (0.0, -size * np.cos(angle), size * np.sin(angle))
         pos = wp.array(points, dtype=wp.vec3, device="cpu")
-        for _ in range(10):
-            alm.update_particle_elasticity_alm(model, pos, state)
         expected_moment = -200.0 * size * angle
-        self.assertAlmostEqual(float(state.bend_lambda.numpy()[0]), expected_moment, delta=0.01 * abs(expected_moment))
+        # At the flat rest pose, sum(mobility * ||gradient||^2) = 6e10.
+        for scale, rho in ((1.0, 6.0e-6), (1.0e6, 6.0)):
+            with self.subTest(scale=scale):
+                state = alm.create_particle_elasticity_alm_state(model, True, False, scale)
+                alm.prepare_particle_elasticity_alm(model, model.particle_q, 1.0 / 600.0, state)
+                np.testing.assert_allclose(state.bend_rho.numpy(), [rho], rtol=1.0e-6)
+                for _ in range(10):
+                    alm.update_particle_elasticity_alm(model, pos, state)
+                expected = expected_moment * (1.0 - (2.0 / (2.0 + rho)) ** 10)
+                np.testing.assert_allclose(state.bend_lambda.numpy(), [expected], rtol=1.0e-4)
 
     def test_invalid_triangle_material_is_rejected(self):
         """Enabling ALM must validate membrane coefficients as it does tet coefficients."""
@@ -307,7 +313,7 @@ class TestParticleAlmKernels(unittest.TestCase):
         np.testing.assert_allclose(state.tet_rho_mu.numpy(), [1200.0], rtol=1.0e-6)
         np.testing.assert_allclose(state.tet_rho_pressure.numpy(), [400.0], rtol=1.0e-6)
         alm.prepare_particle_elasticity_alm(model, model.particle_q, 1.0, state)
-        np.testing.assert_allclose(state.tet_rho_mu.numpy(), [108.0], rtol=1.0e-6)
+        np.testing.assert_allclose(state.tet_rho_mu.numpy(), [3.0], rtol=1.0e-6)
         np.testing.assert_allclose(state.tet_rho_pressure.numpy(), [1.0], rtol=1.0e-6)
 
     def test_skew_tet_metrics_use_inverse_rows(self):
@@ -379,7 +385,7 @@ class TestParticleAlmKernels(unittest.TestCase):
         pos = wp.array(pos_np, dtype=wp.vec3, device="cpu")
         alm.prepare_particle_elasticity_alm(model, pos, 0.1, state)
         np.testing.assert_allclose(state.spring_lambda.numpy(), [3.0, 11.0, 0.0], atol=1.0e-6)
-        np.testing.assert_allclose(state.spring_rho.numpy(), [90.0, 90.0, 90.0])
+        np.testing.assert_allclose(state.spring_rho.numpy(), [50.0, 50.0, 50.0])
         self.assertEqual(state.spring_lambda.ptr, ptr)
 
     def test_hinge_angle_sign_and_mobility(self):
@@ -411,7 +417,7 @@ class TestParticleAlmKernels(unittest.TestCase):
                 np.testing.assert_array_equal(row.numpy(), 0.0)
 
     def test_spring_recurrence_and_metric_scale(self):
-        """Scale inertia before the spring floor and advance tension once per sweep."""
+        """Scale the spring inertia metric and advance tension once per sweep."""
         model = _hinge_model()
         state = alm.create_particle_elasticity_alm_state(model, True, True, 4.0)
         alm.prepare_particle_elasticity_alm(model, model.particle_q, 0.1, state)
@@ -444,7 +450,7 @@ class TestParticleAlmKernels(unittest.TestCase):
         model = _hinge_model(stiffness=1.0e38)
         state = alm.create_particle_elasticity_alm_state(model, True, True, 1.0)
         alm.prepare_particle_elasticity_alm(model, model.particle_q, 0.1, state)
-        self.assertEqual(state.spring_rho.numpy()[0], maximum)
+        np.testing.assert_allclose(state.spring_rho.numpy(), [50.0], rtol=1.0e-6)
         for model in (_hinge_model(), _tet_model()):
             state = alm.create_particle_elasticity_alm_state(model, True, True, 1.0)
             alm.prepare_particle_elasticity_alm(model, model.particle_q, 1.0e-25, state)
@@ -544,7 +550,7 @@ class TestParticleAlmKernels(unittest.TestCase):
             device="cpu",
         )
         np.testing.assert_allclose(force.numpy(), [(-5.0, 0.0, 0.0), (5.0, 0.0, 0.0)])
-        np.testing.assert_allclose(hessian.numpy(), [np.diag([9.0, -10.0, -10.0])])
+        np.testing.assert_allclose(hessian.numpy(), [np.diag([25.0 / 3.0, -10.0, -10.0])])
 
     def test_disabled_and_pressure_only_state(self):
         """Keep disabled history empty and pressure ALM active when authored lambda is zero."""

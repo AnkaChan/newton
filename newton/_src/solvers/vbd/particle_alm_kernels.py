@@ -116,13 +116,6 @@ def _bounded_rho_ratio(n0: float, n1: float, d0: float, d1: float, d2: float, d3
 
 
 @wp.func
-def _bounded_scalar_rho(inertia: float, material_k: float) -> float:
-    # As for springs, before float32 saturation retain at least 90% of row
-    # curvature and reduce a fixed-pose stress error by at least 90% per update.
-    return _bounded_rho(wp.max(inertia, 9.0 * material_k))
-
-
-@wp.func
 def particle_alm_triangle_geometry(f0: wp.vec3, f1: wp.vec3):
     """Return objective norm/area invariants and area gradients for F=[f0,f1]."""
     a = wp.dot(f0, f0)
@@ -173,9 +166,7 @@ def _prepare_triangles(
     pending = state.tri_pending[face]
     state.tri_rho_stretch[face] = 0.0
     if mu > 0.0 and norm > 1.0e-10 and areas[face] > 0.0 and mobility_norm > 0.0:
-        state.tri_rho_stretch[face] = _bounded_scalar_rho(
-            _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility_norm, areas[face]), mu
-        )
+        state.tri_rho_stretch[face] = _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility_norm, areas[face])
         if (pending & 1) != 0:
             state.tri_lambda_stretch[face] = mu * norm
         pending = pending & ~1
@@ -184,9 +175,7 @@ def _prepare_triangles(
         pending = pending | 1
     state.tri_rho_area[face] = 0.0
     if area_k > 0.0 and area > 1.0e-10 and areas[face] > 0.0 and mobility_area > 0.0:
-        state.tri_rho_area[face] = _bounded_scalar_rho(
-            _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility_area, areas[face]), area_k
-        )
+        state.tri_rho_area[face] = _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility_area, areas[face])
         if (pending & 2) != 0:
             state.tri_lambda_area[face] = area_k * (area - 1.0) - area_k * (mu / wp.max(area_k, 1.0e-6))
         pending = pending & ~2
@@ -306,9 +295,7 @@ def _prepare_tets(
     if state.deviatoric != 0:
         state.tet_rho_mu[tet] = 0.0
         if mu > 0.0 and norm > 1.0e-10 and rest_det > 0.0 and mobility_mu > 0.0:
-            state.tet_rho_mu[tet] = _bounded_scalar_rho(
-                _bounded_rho_ratio(state.rho_scale, rest_det, dt, dt, mobility_mu, 1.0 / 6.0), mu
-            )
+            state.tet_rho_mu[tet] = _bounded_rho_ratio(state.rho_scale, rest_det, dt, dt, mobility_mu, 1.0 / 6.0)
             if (pending & 1) != 0:
                 state.tet_lambda_mu[tet] = mu * norm
             pending = pending & ~1
@@ -379,8 +366,7 @@ def _prepare_springs(
     material_k = stiffness[spring]
     state.spring_rho[spring] = 0.0
     if material_k > 0.0 and length > 1.0e-8 and mobility > 0.0:
-        inertia = _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility, 1.0)
-        state.spring_rho[spring] = _bounded_scalar_rho(inertia, material_k)
+        state.spring_rho[spring] = _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility, 1.0)
         if state.spring_pending[spring] != 0:
             state.spring_lambda[spring] = material_k * (length - rest_length[spring])
         state.spring_pending[spring] = 0
@@ -439,9 +425,7 @@ def _prepare_bends(
     )
     material_k = properties[edge, 0] * rest_length[edge]
     if material_k > 0.0 and valid != 0 and mobility > 0.0:
-        state.bend_rho[edge] = _bounded_scalar_rho(
-            _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility, 1.0), material_k
-        )
+        state.bend_rho[edge] = _bounded_rho_ratio(state.rho_scale, 1.0, dt, dt, mobility, 1.0)
         if state.bend_pending[edge] != 0:
             state.bend_lambda[edge] = material_k * (theta - rest_angle[edge])
         state.bend_pending[edge] = 0

@@ -111,9 +111,10 @@ def _triangle_model(device, *, mu=1000.0, lame=2000.0, pinned=True):
 
 def _loaded_triangle(test, device):
     """The membrane ALM solve must reach the original implicit response at high stiffness."""
-    for mu in (1000.0, 1.0e6):
+    # Inertia-only penalties need more dual updates for the stiffer material.
+    for mu, iterations in ((1000.0, 40), (1.0e6, 640)):
         model = _triangle_model(device, mu=mu, lame=2 * mu)
-        solver = _alm_solver(test, model, iterations=40)
+        solver = _alm_solver(test, model, iterations=iterations)
         state, output = model.state(), model.state()
         force = np.zeros((3, 3), dtype=np.float32)
         force[2, 1] = -100.0
