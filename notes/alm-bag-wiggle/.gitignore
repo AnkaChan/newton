@@ -9,3 +9,6 @@ results-floor-sweep/*.png
 results-rho-video-sweep/*.mp4
 results-rho-video-sweep/*.png
 results-rho-video-sweep/*.npz
+results-inertia-video-sweep/*.mp4
+results-inertia-video-sweep/*.png
+results-inertia-video-sweep/*.npz

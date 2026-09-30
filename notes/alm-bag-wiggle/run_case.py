@@ -76,7 +76,7 @@ def pin_motion(time_s):
 
 
 class Bag:
-    def __init__(self, stiffness, alm):
+    def __init__(self, stiffness, alm, *, rho_scale=1.0):
         self.params = copy.deepcopy(bag_parent.PARAMS)
         self.params.update(
             cloth_tri_ke=stiffness,
@@ -119,7 +119,7 @@ class Bag:
             rigid_contact_hard=True,
             particle_elasticity_alm=alm,
             particle_elasticity_alm_deviatoric=False,
-            particle_elasticity_alm_rho_scale=1.0,
+            particle_elasticity_alm_rho_scale=rho_scale,
         )
         self.pipeline = newton.CollisionPipeline(
             self.model,
