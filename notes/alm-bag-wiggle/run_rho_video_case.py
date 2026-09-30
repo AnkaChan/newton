@@ -31,6 +31,43 @@ from newton._src.solvers.vbd.particle_alm_kernels import (
 SELF_CONTACT_STORAGE_MULTIPLIER = 16
 
 
+def apply_material_floor(model, positions, dt, state, floor):
+    """Apply the same float32 floor to live and independent initial metrics."""
+    wp.launch(
+        triangle_metrics,
+        model.tri_count,
+        inputs=[
+            positions,
+            model.tri_indices,
+            model.tri_poses,
+            model.tri_areas,
+            model.tri_materials,
+            model.particle_inv_mass,
+            model.particle_flags,
+            dt,
+            floor,
+            state,
+        ],
+        device=model.device,
+    )
+    wp.launch(
+        bend_metrics,
+        model.edge_count,
+        inputs=[
+            positions,
+            model.edge_indices,
+            model.edge_rest_length,
+            model.edge_bending_properties,
+            model.particle_inv_mass,
+            model.particle_flags,
+            dt,
+            floor,
+            state,
+        ],
+        device=model.device,
+    )
+
+
 @wp.kernel
 def record_contact_demand(counters: wp.array[int], peaks: wp.array[int]):
     peaks[0] = wp.max(peaks[0], counters[0])
@@ -40,12 +77,17 @@ def record_contact_demand(counters: wp.array[int], peaks: wp.array[int]):
 
 
 class TrajectoryBag(Bag):
-    def __init__(self, stiffness, mode, native_floor9=False, *, native_rho_scale=None):
+    def __init__(self, stiffness, mode, native_floor9=False, *, native_rho_scale=None, material_floor=None):
         self.rho_scale = 1.0 if native_rho_scale is None else native_rho_scale
         super().__init__(stiffness, mode != "off", rho_scale=self.rho_scale)
         self.mode = mode
-        self.floor = None if native_floor9 or native_rho_scale is not None else MODES[mode]
-        self.floor_multiplier = None if native_rho_scale is not None else MODES[mode]
+        if material_floor is not None:
+            assert mode != "off" and native_rho_scale is None and not native_floor9
+            assert np.isfinite(material_floor) and material_floor >= 0.0
+            self.floor = self.floor_multiplier = float(material_floor)
+        else:
+            self.floor = None if native_floor9 or native_rho_scale is not None else MODES[mode]
+            self.floor_multiplier = None if native_rho_scale is not None else MODES[mode]
         self.native_floor9 = native_floor9
         self.measure_final_substep = False
         detector = self.solver.trimesh_collision_detector
@@ -87,39 +129,12 @@ class TrajectoryBag(Bag):
         def initialize_with_floor(state_in, state_out, dt):
             initialize(state_in, state_out, dt)
             if self.floor is not None:
-                m, s = self.model, self.solver
-                wp.launch(
-                    triangle_metrics,
-                    m.tri_count,
-                    inputs=[
-                        s.particle_q_prev,
-                        m.tri_indices,
-                        m.tri_poses,
-                        m.tri_areas,
-                        m.tri_materials,
-                        m.particle_inv_mass,
-                        m.particle_flags,
-                        dt,
-                        self.floor,
-                        s._particle_elasticity_alm_state,
-                    ],
-                    device=m.device,
-                )
-                wp.launch(
-                    bend_metrics,
-                    m.edge_count,
-                    inputs=[
-                        s.particle_q_prev,
-                        m.edge_indices,
-                        m.edge_rest_length,
-                        m.edge_bending_properties,
-                        m.particle_inv_mass,
-                        m.particle_flags,
-                        dt,
-                        self.floor,
-                        s._particle_elasticity_alm_state,
-                    ],
-                    device=m.device,
+                apply_material_floor(
+                    self.model,
+                    self.solver.particle_q_prev,
+                    dt,
+                    self.solver._particle_elasticity_alm_state,
+                    self.floor,
                 )
 
         def iterate_with_measurement(state_in, state_out, contacts, dt, iter_num):
@@ -248,11 +263,17 @@ def flatten(row):
     return flat
 
 
-def run(args, *, native_rho_scale=None):
+def run(args, *, native_rho_scale=None, material_floor=None, dense_floor_sweep=False):
     wp.init()
     wp.config.log_level = wp.LOG_WARNING
     started = time.monotonic()
-    sim = TrajectoryBag(args.stiffness, args.mode, args.native_floor9, native_rho_scale=native_rho_scale)
+    sim = TrajectoryBag(
+        args.stiffness,
+        args.mode,
+        args.native_floor9,
+        native_rho_scale=native_rho_scale,
+        material_floor=material_floor,
+    )
     model = sim.model
     rest = sim.rest.numpy().astype(np.float64)
     topology = _build_topology(model.tri_indices.numpy())
@@ -273,27 +294,36 @@ def run(args, *, native_rho_scale=None):
     )
     initial_hash = fingerprint(sim.state_0)
     initial_metrics, initial_arrays = None, {}
-    if native_rho_scale is not None:
-        initial_state = create_particle_elasticity_alm_state(model, args.mode != "off", False, native_rho_scale)
+    if native_rho_scale is not None or dense_floor_sweep:
+        initial_state = create_particle_elasticity_alm_state(model, args.mode != "off", False, sim.rho_scale)
         retained = sim.solver._particle_elasticity_alm_state
         histories_before = {
-            name: getattr(retained, name).numpy()
+            name: getattr(retained, name).numpy().copy()
             for name in ("tri_lambda_stretch", "tri_lambda_area", "bend_lambda", "tri_pending", "bend_pending")
         }
         prepare_particle_elasticity_alm(model, sim.state_0.particle_q, sim.dt, initial_state)
+        if dense_floor_sweep and args.mode != "off":
+            initial_arrays = {
+                "initial_tri_stretch_inertia_rho": initial_state.tri_rho_stretch.numpy().copy(),
+                "initial_tri_area_inertia_rho": initial_state.tri_rho_area.numpy().copy(),
+                "initial_bend_inertia_rho": initial_state.bend_rho.numpy().copy(),
+            }
+            apply_material_floor(model, sim.state_0.particle_q, sim.dt, initial_state, sim.floor)
         initial_metrics = rho_stats(sim, True, state=initial_state)
         for name, before in histories_before.items():
             np.testing.assert_array_equal(before, getattr(retained, name).numpy())
         if args.mode != "off":
             materials = model.tri_materials.numpy()
-            initial_arrays = {
-                "initial_tri_stretch_rho": initial_state.tri_rho_stretch.numpy(),
-                "initial_tri_stretch_k": materials[:, 0],
-                "initial_tri_area_rho": initial_state.tri_rho_area.numpy(),
-                "initial_tri_area_k": materials[:, 0] + materials[:, 1],
-                "initial_bend_rho": initial_state.bend_rho.numpy(),
-                "initial_bend_k": model.edge_bending_properties.numpy()[:, 0] * model.edge_rest_length.numpy(),
-            }
+            initial_arrays.update(
+                {
+                    "initial_tri_stretch_rho": initial_state.tri_rho_stretch.numpy(),
+                    "initial_tri_stretch_k": materials[:, 0],
+                    "initial_tri_area_rho": initial_state.tri_rho_area.numpy(),
+                    "initial_tri_area_k": materials[:, 0] + materials[:, 1],
+                    "initial_bend_rho": initial_state.bend_rho.numpy(),
+                    "initial_bend_k": model.edge_bending_properties.numpy()[:, 0] * model.edge_rest_length.numpy(),
+                }
+            )
     sim.capture()
     assert fingerprint(sim.state_0) == initial_hash, "Capture changed physical state"
     capture_seconds = time.monotonic() - started
@@ -398,7 +428,7 @@ def run(args, *, native_rho_scale=None):
         "mode": args.mode,
         "alm": args.mode != "off",
         "floor_multiplier": sim.floor_multiplier,
-        "native_metric_preparation": native_rho_scale is not None,
+        "native_metric_preparation": sim.floor is None,
         "experiment_rho_override": sim.floor is not None,
         "rho_arithmetic": "float32, using the same bounded product-ratio helper as native preparation",
         "params": sim.params,
@@ -447,23 +477,32 @@ def run(args, *, native_rho_scale=None):
         "rho_statistics": "Active rows at incoming pose of final substep; reported effective_over_k is scalar reduced-row curvature rho/(k+rho), not the entire geometric Hessian. Floor fraction is the fraction within 2e-6 relative tolerance of floor*k.",
         "metrics_precision": "JSON display values use 7 significant figures; CSV preserves full precision",
     }
-    if native_rho_scale is None:
+    if native_rho_scale is None and not dense_floor_sweep:
         metadata["native_floor9_without_override"] = args.native_floor9
     else:
-        metadata["rho_policy"] = (
-            "rho = rho_scale * rho_inertia using native float32 preparation, without a material floor"
-        )
         metadata["initial_metrics"] = initial_metrics
         metadata["initial_metric_pose_sha256"] = initial_hash
-        metadata["initial_metric_preparation"] = (
-            "Native preparation on an independent temporary ALM state at the shared initial pose; solver histories and pending flags verified unchanged"
-        )
-        metadata["rho_statistics"] = (
-            "Active rows at incoming pose of final substep; effective_over_k is scalar reduced-row curvature rho/(k+rho), not the entire geometric Hessian. floor_fraction is null because no material floor is used."
-        )
-        metadata["source_sha256"]["run_inertia_video_case.py"] = hashlib.sha256(
-            (ROOT / "run_inertia_video_case.py").read_bytes()
-        ).hexdigest()
+        if dense_floor_sweep:
+            metadata["rho_policy"] = (
+                "rho = max(rho_inertia, floor_multiplier * k) on active rows, using float32 bounded arithmetic; rho_scale = 1. ALM-off uses the original elasticity path."
+            )
+            metadata["floor_units"] = "Dimensionless material-stiffness multiplier f; not a percentage or absolute rho"
+            metadata["initial_metric_preparation"] = (
+                "Native preparation on an independent temporary ALM state at the shared initial pose, followed by the same experiment-local floor as each live substep. NPZ stores native inertia and actual floor-applied metrics separately. Solver histories and pending flags verified unchanged."
+            )
+            entrypoint = "run_dense_floor_video_case.py"
+        else:
+            metadata["rho_policy"] = (
+                "rho = rho_scale * rho_inertia using native float32 preparation, without a material floor"
+            )
+            metadata["initial_metric_preparation"] = (
+                "Native preparation on an independent temporary ALM state at the shared initial pose; solver histories and pending flags verified unchanged"
+            )
+            metadata["rho_statistics"] = (
+                "Active rows at incoming pose of final substep; effective_over_k is scalar reduced-row curvature rho/(k+rho), not the entire geometric Hessian. floor_fraction is null because no material floor is used."
+            )
+            entrypoint = "run_inertia_video_case.py"
+        metadata["source_sha256"][entrypoint] = hashlib.sha256((ROOT / entrypoint).read_bytes()).hexdigest()
         repository = ROOT.parent.parent
         metadata["production_source_sha256"] = {
             name: hashlib.sha256((repository / name).read_bytes()).hexdigest()
