@@ -1,0 +1,37 @@
+{
+  "file": "rho_floor_sweep_grid.mp4",
+  "frames": 360,
+  "duration_s": 6.0,
+  "fps": 60,
+  "width": 3840,
+  "height": 1680,
+  "codec": "H.264",
+  "crf": 18,
+  "bytes": 86480747,
+  "rows_tri_ke": [
+    1000,
+    100000,
+    10000000
+  ],
+  "columns": [
+    "ALM off",
+    "rho floor 9k",
+    "rho floor 1k",
+    "rho floor 0.1k",
+    "rho floor 0.01k",
+    "inertia only (floor 0)"
+  ],
+  "source_frame_mapping": "Output frame n uses frame n from each source movie, without interpolation.",
+  "chrome_playback": {
+    "src": "rho_floor_sweep_grid.mp4",
+    "duration": 6,
+    "currentTime": 0.919582,
+    "readyState": 4,
+    "width": 3840,
+    "height": 1680,
+    "decodedFrames": 60,
+    "error": null,
+    "local_links_checked": 43,
+    "page_errors": []
+  }
+}
