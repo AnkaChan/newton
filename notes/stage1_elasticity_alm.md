@@ -1,9 +1,21 @@
 # Stage 1: elasticity ALM experiment
 
-**Current extension:** [triangle membrane and bending ALM](alm-triangle-bending.md)
-adds objective triangle stretch/area rows and a material-based bending metric
-floor. The stage-1 measurements and implementation description below record
-the earlier tetrahedron/spring/hinge implementation.
+**Current implementation:** enabling particle elasticity ALM now gives each tet
+one scalar norm-stretch multiplier and one scalar pressure multiplier, matching
+the invariant split used for triangles. The experimental
+`particle_elasticity_alm_deviatoric` flag defaults to `True` and selects scalar
+norm stretch; explicit `False` retains pressure-only ALM. Scalar norm stretch
+replaces the old matrix history. Its inertia-based penalty has a `9*mu` floor;
+the existing tet pressure metric is unchanged. ALM itself remains opt-in.
+
+See the [current element derivation](alm-triangle-formulation/elements.html) and
+[triangle membrane and bending notes](alm-triangle-bending.md).
+
+**Historical record below:** the stage-1 description, API examples, and measured
+results describe the earlier matrix/pressure-only implementation, preserved in
+revision `35e8820f` before the scalar-tet change. In particular, rerunning the
+old `deviatoric=True` examples on current code selects scalar stretch, not the
+historical matrix mode. The old measurements are not scalar-tet benchmarks.
 
 The stage 1 implementation adds opt-in compliant ALM for tet pressure, optional
 tet matrix stress, spring stretch, and dihedral bending. The initial ALM default
