@@ -12,3 +12,6 @@ results-rho-video-sweep/*.npz
 results-inertia-video-sweep/*.mp4
 results-inertia-video-sweep/*.png
 results-inertia-video-sweep/*.npz
+results-dense-floor-video-sweep/*.mp4
+results-dense-floor-video-sweep/*.png
+results-dense-floor-video-sweep/*.npz

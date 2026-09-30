@@ -1,0 +1,500 @@
+{
+  "passed": true,
+  "cases": 42,
+  "requested_snapshots": 15162,
+  "valid_snapshots": 15162,
+  "held_snapshots": 0,
+  "self_contact_capacity": {
+    "vt": 212096,
+    "ee": 1253376
+  },
+  "self_contact_demand": {
+    "vt": {
+      "min": 0,
+      "max": 731
+    },
+    "ee": {
+      "min": 0,
+      "max": 22198
+    }
+  },
+  "floor_policy": "rho = max(native inertia rho, floor_multiplier * material row stiffness)",
+  "initial_floor_policy_verified": true,
+  "initial_native_inertia_material_independence": true,
+  "source_sha256": {
+    "run_rho_video_case.py": "7eed76272d6b14c9eb5a4207011fda422c71a7b848eb4d8d1efc33e80ea71308",
+    "cloth_residual.py": "70ed9ea1b9910970ef10b99cb4d21907ff0d7cb7cb46363b0d63b2fdb6dce387",
+    "run_case.py": "d86f1978359b8a853f8bc67a08539697fef928e231976411850d75fe900bee06",
+    "run_floor_sweep.py": "e1699769e9f1f1c13d6af1e917c25f76328b7aa110e19dbc264ae7d21d6e0b15",
+    "run_dense_floor_video_case.py": "d21886866c6af0460d40446424def46f1d7cfe7846e08728554580dbd123ebe6"
+  },
+  "production_source_sha256": {
+    "newton/_src/solvers/vbd/particle_alm_kernels.py": "806d304d061bb33394af7df3ee286ff80e3d846931c9ff4d82ca223668c8346c",
+    "newton/_src/solvers/vbd/particle_vbd_kernels.py": "ed6fd5e28ef331722c019238b07dceccc09eee0c555a64992095c7750150d4c9",
+    "newton/_src/solvers/vbd/solver_vbd.py": "364faef6a3fc5066db55237424254b1a2988618623a29b0a8fb98a3b73b2a51c"
+  },
+  "results": [
+    {
+      "case": "ke1000_off",
+      "floor_multiplier": null,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 11.058517106666667,
+      "mean_wiggle_bend_rad": 0.01131560746,
+      "mean_wiggle_original_residual_N": 0.7131966313333333
+    },
+    {
+      "case": "ke1000_floor90",
+      "floor_multiplier": 90,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 11.01817102666667,
+      "mean_wiggle_bend_rad": 0.011240670446666667,
+      "mean_wiggle_original_residual_N": 0.7011370986666666
+    },
+    {
+      "case": "ke1000_floor60",
+      "floor_multiplier": 60,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 11.106092753333332,
+      "mean_wiggle_bend_rad": 0.011461444033333334,
+      "mean_wiggle_original_residual_N": 0.7091534573333333
+    },
+    {
+      "case": "ke1000_floor30",
+      "floor_multiplier": 30,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 10.857326753333334,
+      "mean_wiggle_bend_rad": 0.011242343926666667,
+      "mean_wiggle_original_residual_N": 0.6993923683333333
+    },
+    {
+      "case": "ke1000_floor20",
+      "floor_multiplier": 20,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 10.879849843333334,
+      "mean_wiggle_bend_rad": 0.011430647196666668,
+      "mean_wiggle_original_residual_N": 0.7044676716666667
+    },
+    {
+      "case": "ke1000_floor10",
+      "floor_multiplier": 10,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 10.116747133333334,
+      "mean_wiggle_bend_rad": 0.010575903996666667,
+      "mean_wiggle_original_residual_N": 0.6628529579999999
+    },
+    {
+      "case": "ke1000_floor9",
+      "floor_multiplier": 9,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 9.962283956666667,
+      "mean_wiggle_bend_rad": 0.010256972696666667,
+      "mean_wiggle_original_residual_N": 0.6443736560000001
+    },
+    {
+      "case": "ke1000_floor6",
+      "floor_multiplier": 6,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 9.846052543333334,
+      "mean_wiggle_bend_rad": 0.010347786023333333,
+      "mean_wiggle_original_residual_N": 0.657909209
+    },
+    {
+      "case": "ke1000_floor3",
+      "floor_multiplier": 3,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 8.913033776666666,
+      "mean_wiggle_bend_rad": 0.009189361823333332,
+      "mean_wiggle_original_residual_N": 0.59432434
+    },
+    {
+      "case": "ke1000_floor2",
+      "floor_multiplier": 2,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 8.12881501,
+      "mean_wiggle_bend_rad": 0.007976550006666668,
+      "mean_wiggle_original_residual_N": 0.5133268973333333
+    },
+    {
+      "case": "ke1000_floor1",
+      "floor_multiplier": 1,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 6.19049459,
+      "mean_wiggle_bend_rad": 0.006485097536666666,
+      "mean_wiggle_original_residual_N": 0.4197930587666666
+    },
+    {
+      "case": "ke1000_floor0p6",
+      "floor_multiplier": 0.6,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 4.999040556666667,
+      "mean_wiggle_bend_rad": 0.005404942243333334,
+      "mean_wiggle_original_residual_N": 0.37113831599999997
+    },
+    {
+      "case": "ke1000_floor0p3",
+      "floor_multiplier": 0.3,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 3.4445639833333326,
+      "mean_wiggle_bend_rad": 0.0042178508333333324,
+      "mean_wiggle_original_residual_N": 0.3451850037666666
+    },
+    {
+      "case": "ke1000_floor0p1",
+      "floor_multiplier": 0.1,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 2.0185462906666665,
+      "mean_wiggle_bend_rad": 0.0036753852500000005,
+      "mean_wiggle_original_residual_N": 0.7262515130000001
+    },
+    {
+      "case": "ke100000_off",
+      "floor_multiplier": null,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5744005986666666,
+      "mean_wiggle_bend_rad": 0.015125210100000001,
+      "mean_wiggle_original_residual_N": 2.75686663
+    },
+    {
+      "case": "ke100000_floor90",
+      "floor_multiplier": 90,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.573370299,
+      "mean_wiggle_bend_rad": 0.015099420933333333,
+      "mean_wiggle_original_residual_N": 2.745652026666667
+    },
+    {
+      "case": "ke100000_floor60",
+      "floor_multiplier": 60,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5718303073333333,
+      "mean_wiggle_bend_rad": 0.01508087106666667,
+      "mean_wiggle_original_residual_N": 2.7401272066666666
+    },
+    {
+      "case": "ke100000_floor30",
+      "floor_multiplier": 30,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.568649983,
+      "mean_wiggle_bend_rad": 0.015004924866666668,
+      "mean_wiggle_original_residual_N": 2.7234017266666664
+    },
+    {
+      "case": "ke100000_floor20",
+      "floor_multiplier": 20,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5663585496666667,
+      "mean_wiggle_bend_rad": 0.0149575416,
+      "mean_wiggle_original_residual_N": 2.7084644399999998
+    },
+    {
+      "case": "ke100000_floor10",
+      "floor_multiplier": 10,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.558848657,
+      "mean_wiggle_bend_rad": 0.014805000866666666,
+      "mean_wiggle_original_residual_N": 2.6657462499999998
+    },
+    {
+      "case": "ke100000_floor9",
+      "floor_multiplier": 9,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5574422866666666,
+      "mean_wiggle_bend_rad": 0.0147653675,
+      "mean_wiggle_original_residual_N": 2.656212276666667
+    },
+    {
+      "case": "ke100000_floor6",
+      "floor_multiplier": 6,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.549813805,
+      "mean_wiggle_bend_rad": 0.014597853533333333,
+      "mean_wiggle_original_residual_N": 2.6137423633333334
+    },
+    {
+      "case": "ke100000_floor3",
+      "floor_multiplier": 3,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5307461956666667,
+      "mean_wiggle_bend_rad": 0.014189085566666666,
+      "mean_wiggle_original_residual_N": 2.5104614433333334
+    },
+    {
+      "case": "ke100000_floor2",
+      "floor_multiplier": 2,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5163389146666666,
+      "mean_wiggle_bend_rad": 0.0138834214,
+      "mean_wiggle_original_residual_N": 2.4357427933333335
+    },
+    {
+      "case": "ke100000_floor1",
+      "floor_multiplier": 1,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.48852954100000007,
+      "mean_wiggle_bend_rad": 0.013292388266666667,
+      "mean_wiggle_original_residual_N": 2.3135814933333334
+    },
+    {
+      "case": "ke100000_floor0p6",
+      "floor_multiplier": 0.6,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.4684917273333334,
+      "mean_wiggle_bend_rad": 0.012889186066666666,
+      "mean_wiggle_original_residual_N": 2.2678407860000003
+    },
+    {
+      "case": "ke100000_floor0p3",
+      "floor_multiplier": 0.3,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.4461791296666667,
+      "mean_wiggle_bend_rad": 0.012652730836666667,
+      "mean_wiggle_original_residual_N": 2.409088176
+    },
+    {
+      "case": "ke100000_floor0p1",
+      "floor_multiplier": 0.1,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 2.3976630100000005,
+      "mean_wiggle_bend_rad": 0.044849783633333334,
+      "mean_wiggle_original_residual_N": 164.99193999999997
+    },
+    {
+      "case": "ke10000000_off",
+      "floor_multiplier": null,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5704628936666667,
+      "mean_wiggle_bend_rad": 0.1828784966666667,
+      "mean_wiggle_original_residual_N": 235.37695033333333
+    },
+    {
+      "case": "ke10000000_floor90",
+      "floor_multiplier": 90,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5689391346666667,
+      "mean_wiggle_bend_rad": 0.17939403233333331,
+      "mean_wiggle_original_residual_N": 233.97032633333336
+    },
+    {
+      "case": "ke10000000_floor60",
+      "floor_multiplier": 60,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5689693596666666,
+      "mean_wiggle_bend_rad": 0.18418014833333332,
+      "mean_wiggle_original_residual_N": 233.7469146666666
+    },
+    {
+      "case": "ke10000000_floor30",
+      "floor_multiplier": 30,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5671652023333333,
+      "mean_wiggle_bend_rad": 0.179062877,
+      "mean_wiggle_original_residual_N": 231.81203533333334
+    },
+    {
+      "case": "ke10000000_floor20",
+      "floor_multiplier": 20,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.56783564,
+      "mean_wiggle_bend_rad": 0.1795320373333333,
+      "mean_wiggle_original_residual_N": 231.01789166666669
+    },
+    {
+      "case": "ke10000000_floor10",
+      "floor_multiplier": 10,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5638754943333333,
+      "mean_wiggle_bend_rad": 0.18446201133333334,
+      "mean_wiggle_original_residual_N": 227.49755033333335
+    },
+    {
+      "case": "ke10000000_floor9",
+      "floor_multiplier": 9,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.560703034,
+      "mean_wiggle_bend_rad": 0.1787577213333333,
+      "mean_wiggle_original_residual_N": 226.13775099999998
+    },
+    {
+      "case": "ke10000000_floor6",
+      "floor_multiplier": 6,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.556911079,
+      "mean_wiggle_bend_rad": 0.18039410333333333,
+      "mean_wiggle_original_residual_N": 222.71262999999996
+    },
+    {
+      "case": "ke10000000_floor3",
+      "floor_multiplier": 3,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5462855166666666,
+      "mean_wiggle_bend_rad": 0.17568800766666667,
+      "mean_wiggle_original_residual_N": 212.71480633333334
+    },
+    {
+      "case": "ke10000000_floor2",
+      "floor_multiplier": 2,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5393342263333333,
+      "mean_wiggle_bend_rad": 0.17569849966666667,
+      "mean_wiggle_original_residual_N": 204.75823426666665
+    },
+    {
+      "case": "ke10000000_floor1",
+      "floor_multiplier": 1,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5276492340000001,
+      "mean_wiggle_bend_rad": 0.17325802033333335,
+      "mean_wiggle_original_residual_N": 190.18882213333333
+    },
+    {
+      "case": "ke10000000_floor0p6",
+      "floor_multiplier": 0.6,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.517648572,
+      "mean_wiggle_bend_rad": 0.17491328766666664,
+      "mean_wiggle_original_residual_N": 182.76763543333334
+    },
+    {
+      "case": "ke10000000_floor0p3",
+      "floor_multiplier": 0.3,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 0.5066544896666666,
+      "mean_wiggle_bend_rad": 0.17473817233333336,
+      "mean_wiggle_original_residual_N": 183.6744437
+    },
+    {
+      "case": "ke10000000_floor0p1",
+      "floor_multiplier": 0.1,
+      "status": "complete",
+      "failure_frame": null,
+      "failure_reason": null,
+      "valid_snapshots": 361,
+      "mean_wiggle_stretch_percent": 2.35311098,
+      "mean_wiggle_bend_rad": 0.29461188166666663,
+      "mean_wiggle_original_residual_N": 11446.211580000001
+    }
+  ]
+}
