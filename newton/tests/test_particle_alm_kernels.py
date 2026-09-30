@@ -11,6 +11,7 @@ import warp as wp
 import newton
 from newton._src.solvers.vbd import particle_alm_kernels as alm
 from newton._src.solvers.vbd import particle_vbd_kernels as primal
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 @wp.kernel
@@ -26,7 +27,7 @@ def _coefficients_and_ascent(
     matrices[i] = alm.particle_alm_ascent(wp.mat33(2.0), wp.mat33(3.0), stiffness[i], rho[i])
 
 
-def _tet_model(*, mu=12.0, lame=18.0, mass=1.0, skew=False):
+def _tet_model(*, mu=12.0, lame=18.0, mass=1.0, skew=False, device="cpu"):
     builder = newton.ModelBuilder()
     points = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
     if skew:
@@ -34,7 +35,7 @@ def _tet_model(*, mu=12.0, lame=18.0, mass=1.0, skew=False):
     for p in points:
         builder.add_particle(p, (0.0, 0.0, 0.0), mass)
     builder.add_tetrahedron(0, 1, 2, 3, k_mu=mu, k_lambda=lame)
-    return builder.finalize(device="cpu")
+    return builder.finalize(device=device)
 
 
 @wp.kernel
@@ -68,13 +69,63 @@ def _tet_force_hessian(model, positions, history):
     return force.numpy(), hessian.numpy()
 
 
-def _hinge_model(*, rest=0.0, stiffness=10.0, mass=1.0):
+def _hinge_model(*, rest=0.0, stiffness=10.0, mass=1.0, device="cpu"):
     builder = newton.ModelBuilder()
     for p in [(0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]:
         builder.add_particle(wp.vec3(p), wp.vec3(0.0), mass)
     builder.add_edge(0, 1, 2, 3, rest=rest, edge_ke=stiffness, edge_kd=0.0)
     builder.add_spring(2, 3, stiffness, 0.0, 0.0)
-    return builder.finalize(device="cpu")
+    return builder.finalize(device=device)
+
+
+def _metric_product_ranges(test, device):
+    """Preserve representable metrics through overflowing or underflowing intermediate products."""
+    minimum = float(np.nextafter(np.float32(0.0), np.float32(1.0)))
+    maximum = float(np.finfo(np.float32).max)
+    for stiffness in (1.0e-20, 1.0e38):
+        builder = newton.ModelBuilder()
+        for point in [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]:
+            builder.add_particle(wp.vec3(point), wp.vec3(0.0), mass=1.0)
+        builder.add_triangle(0, 1, 2, tri_ke=stiffness, tri_ka=0.0)
+        models = (
+            (_tet_model(mu=stiffness, lame=0.0, device=device), {"tet_rho_mu": 3.0, "tet_rho_pressure": 1.0}),
+            (_hinge_model(stiffness=stiffness, device=device), {"spring_rho": 0.5, "bend_rho": 0.25}),
+            (builder.finalize(device=device), {"tri_rho_stretch": 1.0, "tri_rho_area": 0.5}),
+        )
+        for model, row_factors in models:
+            for scale, dt, inv_mass in (
+                (1.0, 0.1, 1.0),
+                (1.0e30, 1.0e20, 1.0e-20),
+                (1.0e-30, 1.0e-20, 1.0e20),
+                (1.0e30, 1.0e-20, 1.0e20),
+                (1.0e-30, 1.0e20, 1.0e-20),
+            ):
+                model.particle_inv_mass.fill_(inv_mass)
+                state = alm.create_particle_elasticity_alm_state(model, True, True, scale)
+                alm.prepare_particle_elasticity_alm(model, model.particle_q, dt, state)
+                # Analytic rest-pose mobilities; reference arithmetic stays double.
+                inertia = float(np.float32(scale)) / (float(np.float32(dt)) ** 2 * float(np.float32(inv_mass)))
+                for name, factor in row_factors.items():
+                    with test.subTest(row=name, stiffness=stiffness, scale=scale, dt=dt, inv_mass=inv_mass):
+                        floor = 0.0 if name == "tet_rho_pressure" else 9.0 * float(np.float32(stiffness))
+                        expected = np.clip(max(factor * inertia, floor), minimum, maximum)
+                        actual = float(getattr(state, name).numpy()[0])
+                        test.assertTrue(np.isfinite(actual))
+                        test.assertGreater(actual, 0.0)
+                        np.testing.assert_allclose(actual, expected, rtol=4.0e-5, atol=minimum)
+
+
+def _tet_metric_balanced_numerator(test, device):
+    """Recover finite tet metrics when scale times the inverse rest determinant overflows."""
+    model = _tet_model(mu=1.0, lame=1.0, device=device)
+    model.tet_poses.assign(np.array([np.diag([1.0e8, 1.0e8, 1.0])], dtype=np.float32))
+    positions = model.particle_q.numpy()
+    positions[:, :2] *= 1.0e-8
+    pos = wp.array(positions, dtype=wp.vec3, device=device)
+    state = alm.create_particle_elasticity_alm_state(model, True, True, 1.0e30)
+    alm.prepare_particle_elasticity_alm(model, pos, 1.0e10, state)
+    np.testing.assert_allclose(state.tet_rho_mu.numpy(), [4.5e10], rtol=4.0e-5)
+    np.testing.assert_allclose(state.tet_rho_pressure.numpy(), [1.5e10], rtol=4.0e-5)
 
 
 class TestParticleAlmKernels(unittest.TestCase):
@@ -508,6 +559,21 @@ class TestParticleAlmKernels(unittest.TestCase):
         self.assertEqual(state.tet_lambda_mu.size, 0)
         np.testing.assert_allclose(state.tet_lambda_pressure.numpy(), [-12.0])
         self.assertGreater(state.tet_rho_pressure.numpy()[0], 0.0)
+
+
+class TestParticleAlmMetricRanges(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestParticleAlmMetricRanges, "test_metric_product_ranges", _metric_product_ranges, devices=get_test_devices()
+)
+add_function_test(
+    TestParticleAlmMetricRanges,
+    "test_tet_metric_balanced_numerator",
+    _tet_metric_balanced_numerator,
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":
