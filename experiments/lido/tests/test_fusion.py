@@ -1,0 +1,234 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Fusion against a float64 least squares of the full B^T W B system; separability; mixed-grid batch."""
+
+import unittest
+
+import torch
+
+from experiments.lido import hex as hx
+from experiments.lido.batch import Batch
+from experiments.lido.fusion import Fusion, KronFactor, SparseFactor, assemble_scalar, sparse_solver_available
+from experiments.lido.grid import Grid
+
+
+def full_B(grid):
+    """B [72 C, 3 P] float64 with vec F index 3 r + a and corner coordinate index 3 p + r."""
+    C, P = grid.C, grid.P
+    B = torch.zeros(C, 8, 3, 3, P, 3, dtype=torch.float64)
+    for c in range(C):
+        for k in range(8):
+            p = grid.cells[c, k].item()
+            for r in range(3):
+                B[c, :, r, :, p, r] += hx.GQ[:, k, :]
+    return B.reshape(C * 72, P * 3)
+
+
+class TestFusion(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+        self.grid = Grid.build((2, 2, 3))
+        self.hc64 = hx.HexConstants.get("cpu", torch.float64)
+
+    def test_separability(self):
+        g = self.grid
+        B = full_B(g)
+        W = torch.diag(hx.WEIGHTS.repeat_interleave(9).repeat(g.C))
+        K = B.t() @ W @ B
+        Ks = assemble_scalar(g)
+        K_kron = torch.kron(Ks, torch.eye(3, dtype=torch.float64))
+        self.assertLess((K - K_kron).abs().max().item() / K.abs().max().item(), 1e-12)
+
+    def test_fuse_matches_dense_least_squares(self):
+        g = self.grid
+        batch = Batch.build([g], "cpu", torch.float64)
+        fusion = Fusion()
+        dm = torch.randn(g.C, 7, 3, dtype=torch.float64)
+        dF = hx.modes_to_gauss(dm, self.hc64)
+        dp = torch.zeros(g.P, 3, dtype=torch.float64)
+        dp[g.pinned] = 0.1 * torch.randn(g.pinned.numel(), 3, dtype=torch.float64)
+        d = fusion.fuse(batch, dF, dp)
+        B = full_B(g)
+        W = torch.diag(hx.WEIGHTS.repeat_interleave(9).repeat(g.C))
+        free3 = torch.stack([3 * g.free + r for r in range(3)], 1).reshape(-1)
+        pin3 = torch.stack([3 * g.pinned + r for r in range(3)], 1).reshape(-1)
+        target = dF.reshape(-1)
+        rhs = B[:, free3].t() @ W @ (target - B[:, pin3] @ dp[g.pinned].reshape(-1))
+        Kff = B[:, free3].t() @ W @ B[:, free3]
+        ref = torch.zeros(g.P * 3, dtype=torch.float64)
+        ref[free3] = torch.linalg.solve(Kff, rhs)
+        ref[pin3] = dp[g.pinned].reshape(-1)
+        self.assertLess((d.reshape(-1) - ref).abs().max().item(), 1e-9)
+
+    def test_single_cell_fit_is_exact(self):
+        g = Grid.build((1, 1, 1), pins="none")
+        # a free single cell: K is singular (translation); pin one corner set instead
+        g = Grid.build((1, 1, 2))
+        batch = Batch.build([g], "cpu", torch.float64)
+        fusion = Fusion()
+        dm = torch.randn(g.C, 7, 3, dtype=torch.float64)
+        dF = hx.modes_to_gauss(dm, self.hc64)
+        d = fusion.fuse(batch, dF)
+        # achieved increments differ from the targets only through shared-corner agreement; check the residual is orthogonal
+        achieved = hx.gauss_deformation(d[g.cells], self.hc64)
+        res = achieved - dF
+        B = full_B(g)
+        W = torch.diag(hx.WEIGHTS.repeat_interleave(9).repeat(g.C))
+        free3 = torch.stack([3 * g.free + r for r in range(3)], 1).reshape(-1)
+        self.assertLess((B[:, free3].t() @ W @ res.reshape(-1)).abs().max().item(), 1e-10)
+
+    def test_project_gradient_matches_dense(self):
+        g = self.grid
+        batch = Batch.build([g], "cpu", torch.float64)
+        fusion = Fusion()
+        gX = torch.randn(g.P, 3, dtype=torch.float64)
+        gX[g.pinned] = 0
+        out = fusion.project_gradient(batch, gX)
+        B = full_B(g)
+        W = torch.diag(hx.WEIGHTS.repeat_interleave(9).repeat(g.C))
+        free3 = torch.stack([3 * g.free + r for r in range(3)], 1).reshape(-1)
+        Kff = B[:, free3].t() @ W @ B[:, free3]
+        z = torch.zeros(g.P * 3, dtype=torch.float64)
+        z[free3] = torch.linalg.solve(Kff, gX.reshape(-1)[free3])
+        proj = (W @ B @ z).reshape(g.C, 8, 3, 3)
+        ref = hx.gauss_to_modes(proj, self.hc64)
+        self.assertLess((out - ref).abs().max().item(), 1e-9)
+
+    def test_mixed_grid_batch_equals_per_object(self):
+        g1, g2 = Grid.build((2, 2, 3)), Grid.build((1, 2, 2))
+        grids = [g1, g2, g1]
+        batch = Batch.build(grids, "cpu", torch.float64)
+        fusion = Fusion()
+        dm = torch.randn(batch.C, 7, 3, dtype=torch.float64)
+        dF = hx.modes_to_gauss(dm, self.hc64)
+        d = fusion.fuse(batch, dF)
+        for o, g in enumerate(grids):
+            single = Batch.build([g], "cpu", torch.float64)
+            cs, ce = batch.cell_off[o].item(), batch.cell_off[o + 1].item()
+            ps, pe = batch.corner_off[o].item(), batch.corner_off[o + 1].item()
+            d1 = Fusion().fuse(single, dF[cs:ce])
+            self.assertLess((d[ps:pe] - d1).abs().max().item(), 1e-10)
+        self.assertEqual(len(batch.groups), 2)
+
+    def test_autograd_through_solve(self):
+        g = self.grid
+        batch = Batch.build([g], "cpu", torch.float64)
+        fusion = Fusion()
+        dm = torch.randn(g.C, 7, 3, dtype=torch.float64, requires_grad=True)
+        d = fusion.fuse(batch, hx.modes_to_gauss(dm, self.hc64))
+        v = torch.randn_like(d)
+        (grad,) = torch.autograd.grad((d * v).sum(), dm)
+        # adjoint: d = S(dm) linear, so grad = S^T v; check with a directional finite difference
+        e = torch.randn_like(dm)
+        lhs = (grad * e).sum()
+        rhs = (fusion.fuse(batch, hx.modes_to_gauss(e.detach(), self.hc64)) * v).sum()
+        self.assertAlmostEqual(lhs.item(), rhs.item(), places=9)
+
+    def test_kron_equals_dense_small(self):
+        for cc in ((2, 2, 3), (1, 2, 2), (3, 2, 4)):
+            g = Grid.build(cc)
+            batch = Batch.build([g], "cpu", torch.float64)
+            dm = torch.randn(g.C, 7, 3, dtype=torch.float64)
+            dF = hx.modes_to_gauss(dm, self.hc64)
+            dp = torch.zeros(g.P, 3, dtype=torch.float64)
+            dp[g.pinned] = 0.1 * torch.randn(g.pinned.numel(), 3, dtype=torch.float64)
+            gX = torch.randn(g.P, 3, dtype=torch.float64)
+            d_k = Fusion("kron").fuse(batch, dF, dp)
+            d_d = Fusion("dense").fuse(batch, dF, dp)
+            self.assertLess((d_k - d_d).abs().max().item(), 1e-11)
+            p_k = Fusion("kron").project_gradient(batch, gX)
+            p_d = Fusion("dense").project_gradient(batch, gX)
+            self.assertLess((p_k - p_d).abs().max().item(), 1e-11)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "cuda")
+    def test_float32_cuda_accuracy_canonical(self):
+        import time
+
+        g = Grid.build((10, 10, 40), device="cuda")
+        batch = Batch.build([g], "cuda")
+        dm = 0.01 * torch.randn(g.C, 7, 3, device="cuda")
+        dF = hx.modes_to_gauss(dm, batch.hc)
+        Ks = assemble_scalar(g)
+        rhs = Fusion().rhs(g, dF.double(), hx.HexConstants.get("cuda", torch.float64))[0][g.free]
+        ref = torch.linalg.solve(Ks[g.free][:, g.free], rhs)
+        for solver in ("kron", "dense"):
+            fusion = Fusion(solver)
+            d = fusion.fuse(batch, dF)
+            rel = (d[g.free].double() - ref).norm() / ref.norm()
+            self.assertLess(rel.item(), 1e-5, solver)
+            fac = fusion.factor(g)
+            r = torch.randn(1, g.Pf, 3, device="cuda")
+            for _ in range(3):
+                fac.solve(r)
+            torch.cuda.synchronize()
+            t = time.perf_counter()
+            for _ in range(20):
+                fac.solve(r)
+            torch.cuda.synchronize()
+            print(
+                f"fusion solve {solver}: {(time.perf_counter() - t) / 20 * 1e3:.3f} ms (canonical grid, 3 columns), rel err {rel.item():.1e}"
+            )
+
+    @unittest.skipUnless(torch.cuda.is_available() and sparse_solver_available(), "cuda + nvmath")
+    def test_sparse_equals_dense_and_backward(self):
+        import time
+
+        g = Grid.build((3, 2, 4), device="cuda")
+        batch = Batch.build([g], "cuda", torch.float64)
+        dm = torch.randn(g.C, 7, 3, dtype=torch.float64, device="cuda", requires_grad=True)
+        dF = hx.modes_to_gauss(dm, batch.hc)
+        dp = torch.zeros(g.P, 3, dtype=torch.float64, device="cuda")
+        dp[g.pinned] = 0.1 * torch.randn(g.pinned.numel(), 3, dtype=torch.float64, device="cuda")
+        d_s = Fusion("sparse").fuse(batch, dF, dp)
+        d_d = Fusion("dense").fuse(batch, dF, dp)
+        self.assertLess((d_s - d_d).abs().max().item(), 1e-10)
+        v = torch.randn_like(d_s)
+        (grad_s,) = torch.autograd.grad((d_s * v).sum(), dm, retain_graph=True)
+        (grad_d,) = torch.autograd.grad((d_d * v).sum(), dm)
+        self.assertLess((grad_s - grad_d).abs().max().item(), 1e-10)
+        gX = torch.randn(g.P, 3, dtype=torch.float64, device="cuda")
+        self.assertLess(
+            (Fusion("sparse").project_gradient(batch, gX) - Fusion("dense").project_gradient(batch, gX))
+            .abs()
+            .max()
+            .item(),
+            1e-10,
+        )
+        # float32 canonical timing
+        g = Grid.build((10, 10, 40), device="cuda")
+        fac = SparseFactor(g)
+        r = torch.randn(1, g.Pf, 3, device="cuda")
+        for _ in range(3):
+            fac.solve(r)
+        torch.cuda.synchronize()
+        t = time.perf_counter()
+        for _ in range(10):
+            fac.solve(r)
+        torch.cuda.synchronize()
+        print(f"fusion solve sparse (cuDSS) canonical grid, 3 columns: {(time.perf_counter() - t) / 10 * 1e3:.3f} ms")
+
+    @unittest.skipUnless(torch.cuda.is_available(), "cuda")
+    def test_kron_large_grid(self):
+        import time
+
+        g = Grid.build((20, 20, 80), device="cuda")
+        fac = KronFactor(g)
+        r = torch.randn(1, g.Pf, 3, device="cuda")
+        u = fac.solve(r)
+        # residual check through the full operator: K_s u (free rows) == r
+        full = torch.zeros(1, g.P, 3, device="cuda").index_copy(1, g.free, u)
+        res = fac.apply_full(full)[:, g.free] - r
+        self.assertLess((res.norm() / r.norm()).item(), 1e-4)
+        torch.cuda.synchronize()
+        t = time.perf_counter()
+        for _ in range(10):
+            fac.solve(r)
+        torch.cuda.synchronize()
+        print(
+            f"fusion solve kron 20x20x80 ({g.C} cells, {g.Pf} free corners): {(time.perf_counter() - t) / 10 * 1e3:.3f} ms"
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
