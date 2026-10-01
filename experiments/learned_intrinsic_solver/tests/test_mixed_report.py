@@ -22,6 +22,8 @@ _PUBLIC_FILES = {
     "loss_curve.svg",
     "validation_curve.svg",
     "residual_curve.svg",
+    "relative_residual_curve.svg",
+    "per_trajectory_residual_curve.svg",
     "penetration_curve.svg",
 }
 

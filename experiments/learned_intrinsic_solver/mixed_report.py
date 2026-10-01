@@ -191,21 +191,40 @@ def _lookup(row, *path):
     return value
 
 
-def _plot(title, series, *, xlabel):
-    """Return one SVG line chart; None or nonfinite values leave gaps in the line."""
+def _plot(title, series, *, xlabel, log_y=False):
+    """Return one SVG line chart; None or nonfinite values leave gaps in the line.
+
+    With ``log_y`` the vertical axis is logarithmic (base 10); non-positive values leave gaps."""
+    if log_y:
+        series = [
+            (name, color, [(x, math.log10(y) if _finite(y) and y > 0 else None) for x, y in points])
+            for name, color, points in series
+        ]
     finite = [(x, y) for _, _, points in series for x, y in points if _finite(y)]
     if not finite:
         return (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340">'
-            f'<title>{html.escape(title)}</title><text x="30" y="60" fill="#526174">'
+            f"<title>{html.escape(title)}</title>"
+            f'<text x="535" y="26" text-anchor="middle" font-family="system-ui,sans-serif" font-size="16" '
+            f'font-weight="600" fill="#1f2937">{html.escape(title)}</text>'
+            '<text x="30" y="60" fill="#526174" font-family="system-ui,sans-serif" font-size="13">'
             "Waiting for completed measurements.</text></svg>"
         )
     xs, ys = zip(*finite, strict=True)
     xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
     if xmin == xmax:
         xmin, xmax = min(0, xmin), max(1, xmax)
-    padding = max((ymax - ymin) * 0.08, abs(ymax) * 0.025, 1e-8)
-    ymin, ymax = ymin - padding, ymax + padding
+    if log_y:
+        # whole decades, gridlines and labels on powers of ten (10^n form)
+        ymin, ymax = math.floor(ymin), math.ceil(ymax)
+        if ymax <= ymin:
+            ymax = ymin + 1
+        step = max(1, math.ceil((ymax - ymin) / 8))
+        ticks = list(range(int(ymin), int(ymax) + 1, step))
+    else:
+        padding = max((ymax - ymin) * 0.08, abs(ymax) * 0.025, 1e-8)
+        ymin, ymax = ymin - padding, ymax + padding
+        ticks = [ymin + (ymax - ymin) * index / 4 for index in range(5)]
 
     def point(x, y):
         return 95 + 875 * (x - xmin) / (xmax - xmin), 270 - 220 * (y - ymin) / (ymax - ymin)
@@ -213,14 +232,19 @@ def _plot(title, series, *, xlabel):
     elements = [
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 340" role="img">',
         f'<title>{html.escape(title)}</title><rect width="1000" height="340" fill="white"/>',
+        f'<text x="535" y="26" text-anchor="middle" font-family="system-ui,sans-serif" font-size="16" '
+        f'font-weight="600" fill="#1f2937">{html.escape(title)}</text>',
         '<g font-family="system-ui,sans-serif" font-size="13" fill="#526174">',
     ]
-    for index in range(5):
-        value = ymin + (ymax - ymin) * index / 4
+    for value in ticks:
         _, y = point(xmin, value)
+        if log_y:
+            exponent = f"{int(round(value))}".replace("-", "\u2212")
+            label = f'10<tspan dy="-6" font-size="10">{exponent}</tspan>'
+        else:
+            label = f"{value:.4g}"
         elements.append(
-            f'<path d="M95 {y:.2f}H970" stroke="#e2e8f0"/>'
-            f'<text x="85" y="{y + 4:.2f}" text-anchor="end">{value:.4g}</text>'
+            f'<path d="M95 {y:.2f}H970" stroke="#e2e8f0"/><text x="85" y="{y + 4:.2f}" text-anchor="end">{label}</text>'
         )
     for value in sorted({xmin, (xmin + xmax) / 2, xmax}):
         x, _ = point(value, ymin)
@@ -432,6 +456,64 @@ def _latest_summary(rows, key):
     return None, None
 
 
+def _relative_residual_plot(residual_curve):
+    """Force residual relative to the pre-optimisation value, per iteration, on a log axis.
+
+    For each statistic (mean, median, maximum over the validation trajectories) the curve shows
+    statistic(iteration k) / statistic(iteration 0)."""
+    base = residual_curve[0] if residual_curve else {}
+    series = []
+    for key, color, name in (
+        ("mean", "#2563eb", "Mean"),
+        ("median", "#16804a", "Median"),
+        ("max", "#c63645", "Maximum"),
+    ):
+        reference = base.get(key)
+        points = []
+        for row in residual_curve:
+            value = row.get(key)
+            ok = _finite(value) and _finite(reference) and reference > 0 and value > 0
+            points.append((row.get("iteration", len(points)), value / reference if ok else None))
+        series.append((name, color, points))
+    return _plot(
+        "Validation force residual relative to iteration 0 (log scale)",
+        series,
+        xlabel="optimizer iteration",
+        log_y=True,
+    )
+
+
+def _per_trajectory_relative_residual_plot(samples, iterations):
+    """Each trajectory's residual divided by its own initial residual, aggregated per iteration (log axis).
+
+    Aggregates: median, geometric mean (the mean on the log axis) and maximum over the trajectories.
+    Works with either residual key used by the two trainer generations."""
+    curves = []
+    for sample in samples or []:
+        values = sample.get("residual_n") or sample.get("free_force_residual_norm_n") or []
+        if len(values) < 2 or not _finite(values[0]) or values[0] <= 0:
+            continue
+        curves.append([v / values[0] if _finite(v) and v > 0 else None for v in values])
+    length = max((len(c) for c in curves), default=0)
+    med, geo, mx = [], [], []
+    for k in range(length):
+        column = [c[k] for c in curves if k < len(c) and c[k] is not None]
+        if column:
+            med.append((k, sorted(column)[len(column) // 2]))
+            geo.append((k, math.exp(sum(math.log(v) for v in column) / len(column))))
+            mx.append((k, max(column)))
+        else:
+            med.append((k, None))
+            geo.append((k, None))
+            mx.append((k, None))
+    return _plot(
+        "Validation force residual per trajectory relative to its own start: median, geometric mean, maximum (log scale)",
+        [("Median", "#16804a", med), ("Geometric mean", "#2563eb", geo), ("Maximum", "#c63645", mx)],
+        xlabel="optimizer iteration",
+        log_y=True,
+    )
+
+
 def write_mixed_report(output, report, *, updated_at=None):
     """Write portable epoch metrics, four SVG plots and a page refreshing every 30s.
 
@@ -493,10 +575,14 @@ def write_mixed_report(output, report, *, updated_at=None):
     loss_plot = _epoch_plot(rows, selection_source=selection_source)
     validation_plot = _curve_plot("Validation relative physical energy", relative)
     residual_plot = _curve_plot("Validation free-corner force residual (N)", residual_curve)
+    relative_residual_plot = _relative_residual_plot(residual_curve)
+    per_trajectory_plot = _per_trajectory_relative_residual_plot(validation.get("samples"), None)
     penetration_plot = _penetration_plot(penetration_curve)
     _atomic_text(output / "loss_curve.svg", loss_plot)
     _atomic_text(output / "validation_curve.svg", validation_plot)
     _atomic_text(output / "residual_curve.svg", residual_plot)
+    _atomic_text(output / "relative_residual_curve.svg", relative_residual_plot)
+    _atomic_text(output / "per_trajectory_residual_curve.svg", per_trajectory_plot)
     _atomic_text(output / "penetration_curve.svg", penetration_plot)
     epoch_rows = [
         {
@@ -672,6 +758,10 @@ Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(v
 <p class="muted">Epoch {escape(validation_epoch if validation_epoch is not None else "—")}, {escape(validation.get("sample_count", 0))} fixed validation seeds. Each energy value is a per-trajectory physical energy ratio Eᵢ / E₀; the residual is the Euclidean norm of the free-corner position gradient [N]. Mean, median and maximum aggregate the per-trajectory values. Network weights stay fixed during validation.</p>
 <div class="legend"><span style="color:#2563eb">● Mean</span><span style="color:#16804a">● Median</span><span style="color:#c63645">● Maximum</span></div>{validation_plot}
 {residual_plot}
+{relative_residual_plot}
+<p class="muted">Relative residual: the mean (median, maximum) free-corner force norm over the validation trajectories at iteration k divided by the same statistic before the first optimizer iteration, on a logarithmic axis; 1 means no reduction. The mean is dominated by the largest trajectory whenever the residuals are heavy-tailed, so it then coincides with the maximum.</p>
+{per_trajectory_plot}
+<p class="muted">Per-trajectory relative residual: every trajectory is first divided by its own initial residual, then the median, the geometric mean (the mean on the logarithmic axis) and the maximum over trajectories are taken per iteration.</p>
 {penetration_plot}
 <table><tr><th>At iteration {escape(endpoint.get("iteration", validation_iterations))}</th><th>Mean</th><th>Median</th><th>Maximum</th></tr><tr><td>Relative energy</td><td>{_number(endpoint.get("mean"))}</td><td>{_number(endpoint.get("median"))}</td><td>{_number(endpoint.get("max"))}</td></tr>{residual_table}</table>
 <p class="muted">Failed validation trajectories: {escape(validation.get("failed_count", "Not evaluated"))}; physical survivors: {survival_text}; near-zero initial energies: {escape(endpoint.get("near_zero_count", 0))}. Optimizer failures leave gaps from the failed iteration onward; near-zero initial energies are excluded from relative ratios but keep their residuals. Physical-rollout failures are counted separately in the report.<br>
@@ -679,7 +769,7 @@ The penetration curve is the deepest penetration of any surface sample into its 
 <h2>Latest full-horizon validation</h2>
 <p class="muted">Held-out seeds run K learned iterations on each of H physical steps {full_budget_text}; every {escape(config.get("validation_full_interval", "—"))} epochs and before curriculum advancement.</p>
 {full_html}</section>
-<p><a href="report.json">Metrics JSON</a> · <a href="progress.json">Live progress</a> · <a href="epochs.csv">Epoch CSV</a> · <a href="updates.csv">Update CSV</a> · <a href="loss_curve.svg">Training SVG</a> · <a href="validation_curve.svg">Validation SVG</a> · <a href="residual_curve.svg">Residual SVG</a> · <a href="penetration_curve.svg">Penetration SVG</a></p>
+<p><a href="report.json">Metrics JSON</a> · <a href="progress.json">Live progress</a> · <a href="epochs.csv">Epoch CSV</a> · <a href="updates.csv">Update CSV</a> · <a href="loss_curve.svg">Training SVG</a> · <a href="validation_curve.svg">Validation SVG</a> · <a href="residual_curve.svg">Residual SVG</a> · <a href="relative_residual_curve.svg">Relative residual SVG</a> · <a href="per_trajectory_residual_curve.svg">Per-trajectory residual SVG</a> · <a href="penetration_curve.svg">Penetration SVG</a></p>
 <details><summary>Configuration</summary><p>{damping_text}</p><pre>{escape(json.dumps(config, indent=2))}</pre></details>
 <p class="muted">This page refreshes every 30 seconds. Curves update after each completed epoch.<br>
 Epoch in progress: {escape(progress.get("epoch", "Not started"))}. Training heartbeat: {escape(progress.get("updated_at", "Waiting"))}.<br>
