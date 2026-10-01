@@ -109,6 +109,64 @@ def _tet_determinants(positions: np.ndarray, tets: np.ndarray) -> np.ndarray:
     return np.linalg.det(np.stack([vertices[:, axis] - vertices[:, 0] for axis in (1, 2, 3)], axis=-1))
 
 
+def add_beam(builder, fixed: np.ndarray, *, pos, rot) -> tuple[np.ndarray, np.ndarray, float]:
+    """Add the 10 x 10 x 40 tetrahedral beam with volume-lumped masses to an empty builder.
+
+    The grid helper's uniform vertex masses are replaced by tetrahedral
+    rest-volume lumping (rho V / 4 per vertex) and the ``fixed`` particles get
+    zero mass, which Newton's solvers treat as kinematic.
+
+    Args:
+        builder: Empty ``newton.ModelBuilder``; its gravity is left unchanged.
+        fixed: Boolean mask or integer indices of Newton particles (x-fast
+            ``add_soft_grid`` order) to clamp.
+        pos: World position of the grid origin.
+        rot: World orientation of the grid as a quaternion.
+
+    Returns:
+        Tetrahedron corner indices [T, 4], their rest determinants (six times
+        the rest volume) [T], and the total lumped mass [kg] before clamping.
+
+    Raises:
+        ValueError: If the builder already holds particles.
+        RuntimeError: If any rest tetrahedron is not positively oriented.
+    """
+    import warp as wp  # noqa: PLC0415 - keep projection tests independent of GPU initialization
+
+    if builder.particle_count != 0:
+        raise ValueError("add_beam expects an empty builder")
+    builder.add_soft_grid(
+        pos=pos,
+        rot=rot,
+        vel=wp.vec3(0.0),
+        dim_x=CELL_COUNTS[0],
+        dim_y=CELL_COUNTS[1],
+        dim_z=CELL_COUNTS[2],
+        cell_x=CELL_SIZE,
+        cell_y=CELL_SIZE,
+        cell_z=CELL_SIZE,
+        density=DENSITY,
+        k_mu=YOUNG_MODULUS / (2 * (1 + POISSON_RATIO)),
+        k_lambda=YOUNG_MODULUS * POISSON_RATIO / ((1 + POISSON_RATIO) * (1 - 2 * POISSON_RATIO)),
+        k_damp=DAMPING,
+        add_surface_mesh_edges=False,
+        color=wp.vec3(0.13, 0.56, 0.78),
+    )
+    canonical = np.asarray(builder.particle_q, dtype=np.float64)
+    tets = np.asarray(builder.tet_indices, dtype=np.int64)
+    rest_determinants = _tet_determinants(canonical, tets)
+    if not np.all(rest_determinants > 0):
+        raise RuntimeError("Canonical tetrahedra have invalid orientations")
+    # Replace the grid helper's uniform vertex masses by physical volume lumping.
+    mass = np.zeros(len(canonical))
+    for corner in range(4):
+        np.add.at(mass, tets[:, corner], DENSITY * rest_determinants / 24.0)
+    total_rest_mass = float(mass.sum())
+    mass[fixed] = 0.0
+    builder.particle_mass = mass.tolist()
+    return tets, rest_determinants, total_rest_mass
+
+
 def _atomic_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
@@ -219,38 +277,13 @@ def _build_simulation(seed: int):
         raise RuntimeError("Repeated seed did not reproduce initialization")
 
     builder = newton.ModelBuilder()
-    builder.add_soft_grid(
-        pos=wp.vec3(*TRANSLATION),
-        rot=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2),
-        vel=wp.vec3(0.0),
-        dim_x=CELL_COUNTS[0],
-        dim_y=CELL_COUNTS[1],
-        dim_z=CELL_COUNTS[2],
-        cell_x=CELL_SIZE,
-        cell_y=CELL_SIZE,
-        cell_z=CELL_SIZE,
-        density=DENSITY,
-        k_mu=YOUNG_MODULUS / (2 * (1 + POISSON_RATIO)),
-        k_lambda=YOUNG_MODULUS * POISSON_RATIO / ((1 + POISSON_RATIO) * (1 - 2 * POISSON_RATIO)),
-        k_damp=DAMPING,
-        add_surface_mesh_edges=False,
-        color=wp.vec3(0.13, 0.56, 0.78),
-    )
     mapping = _ordering_map(CELL_COUNTS)
     fixed = np.zeros(len(mapping), dtype=bool)
     fixed[mapping] = projector.fixed
+    tets, rest_determinants, total_rest_mass = add_beam(
+        builder, fixed, pos=wp.vec3(*TRANSLATION), rot=wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2)
+    )
     canonical = np.asarray(builder.particle_q, dtype=np.float64)
-    tets = np.asarray(builder.tet_indices, dtype=np.int64)
-    rest_determinants = _tet_determinants(canonical, tets)
-    if not np.all(rest_determinants > 0):
-        raise RuntimeError("Canonical tetrahedra have invalid orientations")
-    # Replace the grid helper's uniform vertex masses by physical volume lumping.
-    mass = np.zeros(len(mapping))
-    for corner in range(4):
-        np.add.at(mass, tets[:, corner], DENSITY * rest_determinants / 24.0)
-    total_rest_mass = float(mass.sum())
-    mass[fixed] = 0.0
-    builder.particle_mass = mass.tolist()
     builder.color()
     model = builder.finalize()
     solver = newton.solvers.SolverVBD(

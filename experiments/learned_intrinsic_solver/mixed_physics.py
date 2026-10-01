@@ -167,6 +167,25 @@ def _nonnegative_integer(name: str, value, *, minimum: int = 0) -> int:
     return int(value)
 
 
+def _prescribed_reference_corners(rest_positions: np.ndarray, fixed: np.ndarray, reference_corners) -> np.ndarray:
+    """Return explicit reference corner IDs as int64 [3], or raise ValueError.
+
+    The IDs must be three distinct prescribed corners whose rest positions
+    are not collinear, so :func:`frames.reference_rotation` is defined at rest.
+    """
+    if isinstance(reference_corners, Tensor):
+        reference_corners = reference_corners.detach().cpu().numpy()
+    corners = np.asarray(reference_corners)
+    if corners.shape != (3,) or corners.dtype.kind not in "iu" or len(np.unique(corners)) != 3:
+        raise ValueError("reference_corners must be three distinct integer corner IDs")
+    if not np.isin(corners, fixed).all():
+        raise ValueError("reference_corners must be prescribed corners")
+    pinned = np.asarray(rest_positions, dtype=np.float64)[corners]
+    if np.linalg.norm(np.cross(pinned[1] - pinned[0], pinned[2] - pinned[0])) <= 0.0:
+        raise ValueError("reference_corners must not be collinear at rest")
+    return corners.astype(np.int64)
+
+
 class MixedHexSolverStep(nn.Module):
     """Apply one learned update to objects with distinct homogeneous materials.
 
@@ -242,6 +261,12 @@ class MixedHexSolverStep(nn.Module):
         contact_friction_epsilon: IPC friction smoothing band as a fraction of the time step.
         target_modes: Target vectors per cell, 3 (affine axes, the default)
             or 7 (axes plus warping vectors); the network must agree.
+        reference_corners: Three distinct prescribed corner IDs whose current
+            positions build the frame tie-break reference
+            (:func:`frames.reference_rotation`), or None to select them from
+            the prescribed set with :func:`frames.select_reference_corners`.
+            Pass the clamp corners explicitly when a second, driven face is
+            prescribed so the reference stays on the clamp.
     """
 
     def __init__(
@@ -258,6 +283,7 @@ class MixedHexSolverStep(nn.Module):
         contact_tokens_per_cell: int = 24,
         contact_friction_epsilon: float = 1e-2,
         target_modes: int = 3,
+        reference_corners=None,
     ):
         super().__init__()
         if isinstance(target_modes, bool) or target_modes not in (3, 7):
@@ -336,7 +362,10 @@ class MixedHexSolverStep(nn.Module):
             (torch.tensor(rest.cell_exposed_faces, dtype=torch.float32), flags[self.cell_corner_indices]), -1
         )
         self.register_buffer("boundary_features", boundary)
-        corners = select_reference_corners(rest.corner_rest_positions, fixed)
+        if reference_corners is None:
+            corners = select_reference_corners(rest.corner_rest_positions, fixed)
+        else:
+            corners = _prescribed_reference_corners(rest.corner_rest_positions, fixed, reference_corners)
         reference = torch.zeros(0, dtype=torch.long) if corners is None else torch.as_tensor(corners, dtype=torch.long)
         self.register_buffer("reference_corners", reference)
         # CPU copy for detection in prepare(); the buffers follow the module device for the energy and tokens.
@@ -1031,7 +1060,23 @@ class MixedHexSolverStep(nn.Module):
             raise ValueError(f"{name} must be a finite [P,3] tensor")
         return value.detach().clone()
 
-    def prepare(self, context_id: str, positions: Tensor, velocities: Tensor, *, forces: Tensor | None = None) -> dict:
+    def _fixed_snapshot(self, value: Tensor) -> Tensor:
+        """Return a detached clone of prescribed positions [m], CPU float32 [K, 3] in ``fixed_indices`` order."""
+        if not isinstance(value, Tensor) or value.device.type != "cpu" or value.dtype != torch.float32:
+            raise ValueError("fixed_positions must be a CPU float32 tensor")
+        if value.shape != (len(self._fixed_cpu), 3) or not torch.isfinite(value).all():
+            raise ValueError("fixed_positions must be a finite [K,3] tensor in fixed_indices order")
+        return value.detach().clone()
+
+    def prepare(
+        self,
+        context_id: str,
+        positions: Tensor,
+        velocities: Tensor,
+        *,
+        forces: Tensor | None = None,
+        fixed_positions: Tensor | None = None,
+    ) -> dict:
         """Snapshot a physical step with one native rigid integration and no energy.
 
         Inputs and tensor payloads are unbatched detached CPU tensors in SI:
@@ -1043,9 +1088,18 @@ class MixedHexSolverStep(nn.Module):
         zero increment of ``target_modes`` modes) runs in cell units through
         the shared factor. Positive pin masses participate in momentum and
         inertia. Prescribed corners keep their input positions in the
-        initialized candidate. ``physical_positions`` remains the physical-step
-        anchor for every inner update. The rigid initializer never writes
-        optimizer history.
+        initialized candidate unless ``fixed_positions`` moves them.
+        ``physical_positions`` remains the physical-step anchor for every inner
+        update. The rigid initializer never writes optimizer history.
+
+        A driven boundary passes the prescribed positions of the step end as
+        ``fixed_positions`` (CPU float32 [K, 3] in ``fixed_indices`` order).
+        They become the payload's ``fixed_positions``, the candidate is fused
+        onto them and the prescribed rows of the inertial prediction are set
+        to them, so the prescribed corners carry no inertia of their own and
+        the cells next to them see the scheduled motion in every network
+        input. None (the default) holds the prescribed corners at their input
+        positions and leaves the inertial prediction untouched.
 
         Contact detection (:func:`.contact_scene.detect_contacts`) runs once
         here on the step-start sample positions with the sample velocities
@@ -1072,9 +1126,11 @@ class MixedHexSolverStep(nn.Module):
                 max_pairs_per_sample=self.contact_max_pairs,
                 sample_normals=sample_normals(x[None], corners, self.face_samples.rest_normals)[0],
             )
+        prescribed = fixed_positions is not None
+        fixed_positions = self._fixed_snapshot(fixed_positions) if prescribed else x[self._fixed_cpu].clone()
+        fixed_positions = fixed_positions[None]
         with torch.no_grad(), context.lock:
             rigid = context.predictor.predict(x, velocity, force, self.time_step)
-            fixed_positions = x[self._fixed_cpu].clone()[None]
             base = x[None] @ rigid.rigid_delta_rotation.transpose(-1, -2) + rigid.rigid_delta_translation[:, None]
             zero_increment = x.new_zeros((1, len(self._rest.cell_corner_indices), 3, self.target_modes))
             unit_base, unit_fixed = self._to_unit(base, fixed_positions)
@@ -1087,6 +1143,8 @@ class MixedHexSolverStep(nn.Module):
                 self.time_step,
                 explicit_acceleration=context.gravity_cpu + force / context.mass[:, None],
             )[0]
+            if prescribed:
+                inertial = inertial.index_copy(0, self._fixed_cpu, fixed_positions[0])
         return {
             "context_id": context_id,
             "physical_positions": x,
@@ -1102,14 +1160,21 @@ class MixedHexSolverStep(nn.Module):
             "contact_partner_radius": pairs.partner_radius,
         }
 
-    def advance(self, payload: dict) -> dict:
+    def advance(self, payload: dict, *, fixed_positions: Tensor | None = None) -> dict:
         """Commit candidate displacement to velocity and prepare the next step once.
 
         Going through :meth:`prepare` refreshes the frozen contact pairs on the
-        committed shape exactly once per physical step.
+        committed shape exactly once per physical step. ``fixed_positions``
+        prescribes the corners of the next step as in :meth:`prepare`; the
+        prescribed corners then keep their finite-difference velocity (the
+        motion the previous step imposed on them) instead of the zero velocity
+        of held corners.
         """
         candidate = self._cpu_snapshot(payload["candidate"], "candidate")
         previous = self._cpu_snapshot(payload["physical_positions"], "physical_positions")
         velocity = (candidate - previous) / self.time_step
-        velocity[self._fixed_cpu] = 0
-        return self.prepare(payload["context_id"], candidate, velocity, forces=payload.get("forces"))
+        if fixed_positions is None:
+            velocity[self._fixed_cpu] = 0
+        return self.prepare(
+            payload["context_id"], candidate, velocity, forces=payload.get("forces"), fixed_positions=fixed_positions
+        )
