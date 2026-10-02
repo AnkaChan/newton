@@ -1821,3 +1821,15 @@ Observed in the attempt-3 records and left open: the all-pinned phase has almost
 detection for 150 bodies, 0.0 static-face pairs), because faces keep at least one cell plus the field clearance
 from every body and pinned bodies neither drift nor fall. Anka's "pinned + artificial collision" phase would need
 faces placed within the deformation reach of pinned bodies (candidate next step, not implemented).
+
+### Pinned contact faces (2026-10-02, implemented, not yet in a run)
+
+The open observation above is closed in code: `pinned_contact_face_fraction` (0.5; `scenes_v5._place_pinned_faces`,
+seventh seed stream) gives a pinned body, with that probability, one static quad parallel to one of its five
+unpinned faces at a gap of U(0.2, 0.8) x its field clearance (three sigma of the deformation field), with sides
+U(0.8, 1.5) x the face's sides and an in-plane offset of up to a quarter of them, redrawn up to eight times when it
+reaches below the ground or into another body's grown box, then dropped (statistics `pinned_contact_faces`,
+`..._dropped`, `..._candidates`, `..._owners` in the placement record). The detection at step 0 of an all-pinned
+scene finds static pairs (`TestPinnedContactFaces`). Attempt 4 was already past its all-pinned phase when this
+landed and runs without the faces (its config says 0.0), so that the material band's effect is seen alone; the
+faces are for the next restart or the next campaign.
