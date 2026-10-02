@@ -727,7 +727,7 @@ def scene_summary(scene: SceneV5) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------------- realise
-def realise(scene: SceneV5, grids, aug, device, dtype=torch.float32):
+def realise(scene: SceneV5, grids, aug, device, dtype=torch.float32, physical_floor: bool = True):
     """(grids, X [N,3], V [N,3], Material, ContactScene) of the scene in normalised units on `device`.
 
     `grids` is a GridCache and `aug` an Augmenter on the same device (the deformation fields are drawn there, one
@@ -770,6 +770,7 @@ def realise(scene: SceneV5, grids, aug, device, dtype=torch.float32):
                 mu_f=float(c["mu_f"]),
                 friction_epsilon=float(c.get("friction_epsilon", 0.01)),
                 floor_scale=float(c.get("floor_scale", 1.0)),
+                physical_floor=physical_floor,
                 device=device,
                 mu_ref=mu_ref,
                 dtype=dtype,

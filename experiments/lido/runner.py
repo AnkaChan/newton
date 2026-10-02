@@ -42,6 +42,7 @@ def material_for(spec: SceneSpec, grid, cfg, device) -> Material:
         mu_f=float(c.get("mu_f", 0.0)),
         friction_epsilon=cfg.contact_friction_epsilon,
         floor_scale=cfg.energy_floor_scale,
+        physical_floor=cfg.physical_floor,
         device=device,
     )
 
@@ -142,7 +143,9 @@ class JobRunner:
         self.step.commit(b, out)
         self.update += 1
         self.k += b.active.long()
-        finite = torch.isfinite(b.E)
+        finite = torch.isfinite(b.E) & (
+            b.E <= self.cfg.blowup_energy_factor * b.material.floor
+        )  # diverged states count as failures
         bad = (~finite) & b.active
         adv = (self.k >= self.K) & b.active & ~bad
         if bool(adv.any()):
@@ -167,11 +170,13 @@ class JobRunner:
 
 
 # ------------------------------------------------------------------------------------------------ v5 scenes
-def scene_batch(scene: scenes_v5.SceneV5, grids: GridCache, aug, device, plane: bool = True) -> Batch:
+def scene_batch(
+    scene: scenes_v5.SceneV5, grids: GridCache, aug, device, plane: bool = True, physical_floor: bool = True
+) -> Batch:
     """A fresh Batch of the realised scene (normalised units, one world frame, origin zero, body contact on), its
     state at step start (X_prev = x = X) and no step-constant tier yet (`Step.prepare` builds it). `plane=False`
     removes the ground plane (the validation's contact-free check)."""
-    gs, X, V, material, contact_scene = scenes_v5.realise(scene, grids, aug, device)
+    gs, X, V, material, contact_scene = scenes_v5.realise(scene, grids, aug, device, physical_floor=physical_floor)
     b = Batch.build(gs, device)
     b.body_contact = True
     b.material, b.scene = material, contact_scene
@@ -266,7 +271,7 @@ class SceneRunner:
             return
         job = self.job
         scene = scenes_v5.sample_scene(self.master_seed, job.seed, self.cfg)
-        b = scene_batch(scene, self.grids, self.aug, self.device)
+        b = scene_batch(scene, self.grids, self.aug, self.device, physical_floor=self.cfg.physical_floor)
         # one candidate-noise generator per scene (Step.prepare draws every grid group in one call)
         self.gens = seeded_generator(self.device, self.master_seed, job.seed, self.epoch, 13)
         self.step.prepare(b, b.active, self.gens)
@@ -310,7 +315,7 @@ class SceneRunner:
             return
         self.queries += b.O
         self.k += 1
-        if not bool(torch.isfinite(b.E).all()):
+        if not bool((torch.isfinite(b.E) & (b.E <= self.cfg.blowup_energy_factor * b.material.floor)).all()):
             j = self.job
             self.failures.append(FailureRecord(j.seed, j.K, j.H, self.k, self.h, "non_finite", self.epoch, self.update))
             self.resets += 1

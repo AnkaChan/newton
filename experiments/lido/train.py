@@ -46,6 +46,17 @@ def cosine_lr(epoch: int, cfg: TrainConfig) -> float:
     return cfg.lr_final + 0.5 * (cfg.learning_rate - cfg.lr_final) * (1 + math.cos(math.pi * t))
 
 
+def step_cap(cfg: TrainConfig, advanced_epochs: int) -> float:
+    """Per-cell step cap for the next epoch: max_step_size x (start + (1 - start) x min(1, advanced / ramp))."""
+    if cfg.step_cap_ramp_epochs <= 0:
+        return cfg.max_step_size
+    frac = min(1.0, advanced_epochs / cfg.step_cap_ramp_epochs)
+    return cfg.max_step_size * (cfg.step_cap_start + (1.0 - cfg.step_cap_start) * frac)
+
+
+STEP_CAP_STATE = {"advanced": 0, "last_metric": None}  # ramp progress, saved in checkpoints
+
+
 def git_sha() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -66,6 +77,7 @@ def save_checkpoint(path: Path, net, opt, epoch: int, updates: int, best: dict |
             "config": cfg.to_dict(),
             "feature_schema_version": cfg.feature_schema_version,
             "git_sha": git_sha(),
+            "step_cap_state": dict(STEP_CAP_STATE),
         },
         tmp,
     )
@@ -104,6 +116,7 @@ def train(
         net.load_state_dict(ck["network_state"])
         opt.load_state_dict(ck["optimizer_state"])
         start_epoch, updates_done, best = ck["epoch"] + 1, ck["updates_done"], ck.get("best_selection")
+        STEP_CAP_STATE.update(ck.get("step_cap_state", {"advanced": cfg.step_cap_ramp_epochs, "last_metric": None}))
         initialized_from = {"checkpoint": str(resume), "completed_epochs": ck["epoch"], "best_selection": best}
     model = net
     if world > 1:
@@ -131,6 +144,8 @@ def train(
         lr = cosine_lr(epoch, cfg)
         for g in opt.param_groups:
             g["lr"] = lr
+        cap = step_cap(cfg, STEP_CAP_STATE["advanced"])
+        unwrap(net).step_cap.fill_(cap)
         runner.start_epoch(epoch)
         stage, k_max, h_max = growth_stage(epoch, cfg)
         losses, gnorms, steps_mean, steps_min, steps_max, residuals, pens, realized = [], [], [], [], [], [], [], []
@@ -139,7 +154,9 @@ def train(
             t0 = time.perf_counter()
             batch = runner.batch
             out = step.query(batch)
-            loss_vec = local_objective(out.E_after, out.E_before, batch.material.floor, cfg.energy_increase_weight)
+            loss_vec = local_objective(
+                out.E_after, out.E_before, batch.material.floor, cfg.energy_increase_weight, cfg.bounded_increase
+            )
             mask = batch.active & torch.isfinite(loss_vec)
             loss = loss_vec.masked_fill(~mask, 0.0).sum() / mask.sum().clamp_min(1)  # NaN rows must not poison the mean
             loss.backward()
@@ -206,6 +223,14 @@ def train(
                 "final_energy_joule": full["final_energy_joule"],
                 "final_max_penetration_r": full["final_max_penetration_r"],
             }
+            metric = selection.get("metric")
+            improved = metric is not None and (
+                STEP_CAP_STATE["last_metric"] is None or metric <= STEP_CAP_STATE["last_metric"]
+            )
+            if not cfg.step_cap_gate_on_validation or improved:
+                STEP_CAP_STATE["advanced"] += 1  # the cap ramps only while the selection metric does not get worse
+            if metric is not None:
+                STEP_CAP_STATE["last_metric"] = metric
             if rep.selection_better(candidate, best):
                 best = candidate
                 report.set_best_selection(best, epoch)
@@ -238,6 +263,7 @@ def train(
                     "queries": query_count,
                     "filler_queries": runner.idle_updates if v5 else 0,
                     "updates": n_updates,
+                    "step_cap": cap,
                 },
                 available_K=[k for k in cfg.K_values if k <= k_max],
                 available_H=list(range(1, h_max + 1)),

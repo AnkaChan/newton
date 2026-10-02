@@ -1730,3 +1730,21 @@ Anka's decision above (artificially sampled static colliding quads as fixed cont
   the reach at rest is one cell; the first static pairs come from the drift and the landing, like the body pairs.
   (iii) `CapturedQuery` does not watch `batch.scene` (plane fields included): the static table is baked into the graph,
   fine for the runner's one Batch per scene.
+
+### v5 campaign, first attempt and the loss decisions (2026-10-02)
+
+Attempt 1 (roundoff energy floor, linear increase penalty, no step curriculum; 03:17-08:00 UTC, 23 epochs) learnt on
+validation at first (full-horizon metric 354 -> 35 N by epoch 4) but its training signal was owned by a few bodies per
+update: resting bodies with E_before near zero pushed a fraction of a cell into stiff partners (kappa up to 1000,
+k_e up to 2.5e7 N/m per pair) gave losses of 1e4-1e5 and gradient norms of 1e10, and by epoch 6 the run had diverged
+(loss 5e8, full-horizon 4e5 N, penetration 26 r). The mechanism: only the translation is implicit; the shape comes
+from the network's proposal without an energy check, an untrained proposal on a resting body is a bad one, the
+unconverged step's error is carried as velocity, and the linear increase term divided by a roundoff floor turns it
+into the whole gradient.
+
+Decisions (Anka): (1) loss scale floor = max(roundoff floor, body weight x one cell) (`physical_floor`), (2) the
+increase penalty becomes asinh(relu(increase/scale)) (`bounded_increase`), (3) a per-cell step cap curriculum: the cap
+starts at 10 % of `max_step_size` and ramps to the full value over 8 advancing epochs, advancing only while the
+selection metric does not get worse (`step_cap_start`, `step_cap_ramp_epochs`, `step_cap_gate_on_validation`; stored
+in checkpoints; the method's own 0.05 cap is unchanged and the curriculum leaves nothing behind), plus a blow-up guard
+(`blowup_energy_factor` 1e6 x floor counts as a failed state). Attempt 2 started 08:02 UTC from scratch.

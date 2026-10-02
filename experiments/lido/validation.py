@@ -34,9 +34,19 @@ from .units import energy_scale, force_scale
 Tensor = torch.Tensor
 
 
-def local_objective(E_after: Tensor, E_before: Tensor, floor: Tensor, increase_weight: float = 1.0) -> Tensor:
+def local_objective(
+    E_after: Tensor, E_before: Tensor, floor: Tensor, increase_weight: float = 1.0, bounded: bool = True
+) -> Tensor:
+    """asinh(E_after / scale) + w * penalty(increase / scale), scale = max(|E_before|, floor) detached.
+
+    `bounded` (Anka, 2026-10-02): the increase penalty is asinh(relu(increase / scale)) instead of the linear relu, so a
+    single body whose energy jumps by orders of magnitude cannot dominate the batch gradient; both forms share the
+    zero point and the sign."""
     scale = torch.maximum(E_before.abs(), floor).detach()
-    return torch.asinh(E_after / scale) + increase_weight * torch.relu((E_after - E_before.detach()) / scale)
+    increase = torch.relu((E_after - E_before.detach()) / scale)
+    if bounded:
+        increase = torch.asinh(increase)
+    return torch.asinh(E_after / scale) + increase_weight * increase
 
 
 def _held_out_batch(step, cfg, aug, grid, seeds: list, device, master_seed: int):
@@ -163,7 +173,7 @@ SCENE_CURVES = (
 
 
 def _held_out_scene_batch(step, cfg, grids, aug, scene, device, master_seed: int, plane: bool = True):
-    batch = scene_batch(scene, grids, aug, device, plane=plane)
+    batch = scene_batch(scene, grids, aug, device, plane=plane, physical_floor=cfg.physical_floor)
     gens = seeded_generator(device, master_seed, scene.seed, 1, 101)  # one candidate-noise stream per scene
     step.prepare(batch, batch.active, gens)  # candidates: the training rule (50 % inertial, 50 % perturbed)
     return batch

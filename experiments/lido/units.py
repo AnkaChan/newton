@@ -37,6 +37,7 @@ def material_from_si(
     mu_f: float = 0.0,
     friction_epsilon: float = 0.01,
     floor_scale: float = 1.0,
+    physical_floor: bool = True,
     device="cpu",
     mu_ref: float | None = None,
     dtype=torch.float32,
@@ -60,6 +61,11 @@ def material_from_si(
     floor_si = (
         floor_scale * EPS32 * (volume * (lam + 2.0 * mu + eta / dt + rho * h**2 / dt**2) + ke * r**2 * sample_count)
     )
+    if physical_floor:
+        # the loss scale of a body at rest: the work of lifting it by one cell (Anka, 2026-10-02), so a bad proposal on
+        # a resting body is measured against something the body can do, not against float32 roundoff
+        g_norm = sum(v * v for v in g) ** 0.5
+        floor_si = max(floor_si, rho * volume * g_norm * h)
     scale = mu_n * h**3
     si = {
         "E": E,
@@ -77,6 +83,7 @@ def material_from_si(
         "kappa": kappa,
         "beta": beta,
         "floor": floor_si,
+        "physical_floor": physical_floor,
         "energy_scale": scale,
         "mu_norm": mu_n,
         "mu_scale": mu / mu_n,

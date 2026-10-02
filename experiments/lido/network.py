@@ -258,6 +258,11 @@ class Net(nn.Module):
         if edge_module not in EDGE_MODULES:
             raise ValueError(f"edge_module must be one of {EDGE_MODULES}, got {edge_module!r}")
         self.max_step = max_step
+        # per-cell step cap applied to the step head; the trainer ramps it from a fraction of max_step to max_step
+        # (Anka's curriculum of 2026-10-02); a non-persistent buffer so compiled graphs do not bake it in
+        self.register_buffer(
+            "step_cap", torch.tensor(float(max_step), dtype=torch.float64), persistent=False
+        )  # exact in double, cast with the module
         self.edge_module = edge_module
         self.contact_encoder = ContactEncoder(contact_width, 2, tokens_per_cell)
         self.node_encoder = mlp2(NODE_WIDTH + CONTACT_WIDTH, width, width)
@@ -299,7 +304,7 @@ class Net(nn.Module):
         y = self.output_norm(x)
         raw = self.correction_head(y)
         corr = raw / torch.sqrt(1.0 + (raw * raw).sum(-1, keepdim=True))  # bounded 21-vector, old layout [3,7]
-        step = self.max_step * torch.sigmoid(self.step_head(y)).squeeze(-1)
+        step = self.step_cap * torch.sigmoid(self.step_head(y)).squeeze(-1)
         return NetOutput(corr=unpack(corr), step=step)
 
     def compile_layers(

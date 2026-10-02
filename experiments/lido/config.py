@@ -26,6 +26,9 @@ class TrainConfig:
     contact_hidden_dim: int = 64
     target_modes: int = 7
     max_step_size: float = 0.05
+    step_cap_start: float = 0.1  # the step cap starts at this fraction of max_step_size (Anka, 2026-10-02)
+    step_cap_ramp_epochs: int = 8  # ... and reaches max_step_size after this many advancing epochs
+    step_cap_gate_on_validation: bool = True  # the ramp advances only when the selection metric did not get worse
     feature_schema_version: int = 6
     edge_network: bool = True
     edge_module: str = "pair"  # "a02": edge encoder + A02 update (the trained checkpoints); "pair": one MLP on the pair
@@ -47,6 +50,9 @@ class TrainConfig:
     gradient_clip_norm: float = 1.0
     energy_increase_weight: float = 1.0
     energy_floor_scale: float = 1.0
+    physical_floor: bool = True  # loss scale floor = body weight x one cell (Anka, 2026-10-02)
+    bounded_increase: bool = True  # asinh on the energy-increase penalty (Anka, 2026-10-02)
+    blowup_energy_factor: float = 1e6  # a body with E > factor x floor counts as a failed (diverged) state
     early_stopping: bool = False
     # materials and augmentation
     youngs_modulus_range: tuple = (1e3, 1e6)
