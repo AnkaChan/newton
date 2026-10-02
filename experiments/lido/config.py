@@ -103,6 +103,10 @@ class TrainConfig:
     scene_wave_speed_min: float = 15.0
     scene_wave_speed_band: float = 3.0
     scene_density_band: float = 10.0
+    # pinned contact faces (Anka, 2026-10-02: "pinned + artificial collision" as in the v4 campaign): a pinned body
+    # gets, with this probability, one static quad parallel to one of its unpinned faces within the reach of its
+    # deformation field (gap U(0.2, 0.8) x the field clearance), so the all-pinned phase does collide; 0 = none
+    pinned_contact_face_fraction: float = 0.5
     scene_count: int = 64  # fixed scenes per epoch
     validation_scene_count: int = 8
     validation_full_scene_count: int = 2

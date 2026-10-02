@@ -139,6 +139,10 @@ FIRST_BODY_CELLS = (1.0, 2.0)
 RESTING_GAP_CELLS = 0.5  # a resting body's bottom face sits this far above its support: the sample radius r = h / 2
 CLEARANCE_SIGMAS = 3.0  # a pinned support's deformation field (RMS) times this clears the resting body above it
 MAX_FACE_DRAWS = 200  # position draws per static face before it is dropped
+MAX_PINNED_FACE_DRAWS = 8  # side and gap draws per pinned contact face before it is dropped
+PINNED_FACE_GAP = (0.2, 0.8)  # gap of a pinned contact face from the body's face, in units of the field clearance
+PINNED_FACE_SCALE = (0.8, 1.5)  # sides of a pinned contact face over the sides of the body's face
+PINNED_FACE_OFFSET = 0.25  # in-plane offset of a pinned contact face, in units of the body's face sides
 FACE_GROWTH_CELLS = 1.0  # a static face keeps this many cells (at least) from every body's initial bounding box
 FACE_NORMALS = (
     (-1, 0, 0),
@@ -434,6 +438,71 @@ def quad_box_overlap(corners: np.ndarray, lo, hi) -> bool:
     return bool(quad_boxes_overlap(corners, np.asarray(lo)[None], np.asarray(hi)[None])[0])
 
 
+def _place_pinned_faces(rng: np.random.Generator, cfg, h: float, drawn, centres, quats, pins, clearance, lo, hi):
+    """Static faces within the deformation reach of pinned bodies (Anka, 2026-10-02: "pinned + artificial collision"
+    as in the v4 campaign, whose plane stood where the swinging beam would hit it; a pinned body neither drifts nor
+    falls, so the regular faces, kept a cell plus the clearance away, never touch it). Every pinned body draws one
+    uniform number (so the fraction moves no other body's face) and, below `cfg.pinned_contact_face_fraction`, one
+    quad parallel to one of its five unpinned faces at a gap of U(PINNED_FACE_GAP) x its field clearance (three
+    sigma of the deformation field) from that face, covering it with sides U(PINNED_FACE_SCALE) x the face's sides
+    and an in-plane offset of U(-PINNED_FACE_OFFSET, PINNED_FACE_OFFSET) x the sides; a quad below the ground or
+    intersecting another body's grown box is redrawn (side, gap, size, offset) up to MAX_PINNED_FACE_DRAWS times,
+    then dropped. Returns the corner arrays [4,3] (m, the order of `static_face_corners`), the owner index of each
+    and the statistics."""
+    p = float(getattr(cfg, "pinned_contact_face_fraction", 0.0) or 0.0)
+    faces, owners, dropped, candidates = [], [], 0, 0
+    index = np.arange(len(drawn))
+    for i, (body, pin) in enumerate(zip(drawn, pins, strict=True)):
+        u = float(rng.random())
+        if pin == "none" or u >= p:
+            continue
+        candidates += 1
+        R = rotation_matrix(quats[i])
+        half = 0.5 * h * np.asarray(body["cell_counts"], dtype=float)
+        c = np.asarray(centres[i], dtype=float)
+        others = index != i
+        placed = False
+        for _attempt in range(MAX_PINNED_FACE_DRAWS):
+            k = int(rng.integers(0, len(FACE_NORMALS)))
+            if FACE_PINS[k] == pin:
+                continue
+            axis = k // 2
+            n = R @ np.asarray(FACE_NORMALS[k], dtype=float)
+            ia, ib = [j for j in range(3) if j != axis]
+            gap = float(rng.uniform(*PINNED_FACE_GAP)) * float(clearance[i])
+            scale = rng.uniform(*PINNED_FACE_SCALE, size=2)
+            offset = rng.uniform(-PINNED_FACE_OFFSET, PINNED_FACE_OFFSET, size=2)
+            u_vec, v_vec = R[:, ia], R[:, ib]
+            centre = (
+                c + (half[axis] + gap) * n + 2.0 * offset[0] * half[ia] * u_vec + 2.0 * offset[1] * half[ib] * v_vec
+            )
+            a, b = scale[0] * half[ia], scale[1] * half[ib]
+            corners = np.stack(
+                [
+                    centre - a * u_vec - b * v_vec,
+                    centre + a * u_vec - b * v_vec,
+                    centre + a * u_vec + b * v_vec,
+                    centre - a * u_vec + b * v_vec,
+                ]
+            )
+            if corners[:, 1].min() < 0.0:
+                continue
+            if others.any() and bool(quad_boxes_overlap(corners, lo[others], hi[others]).any()):
+                continue
+            faces.append(corners)
+            owners.append(i)
+            placed = True
+            break
+        dropped += int(not placed)
+    stats = {
+        "pinned_contact_faces": len(faces),
+        "pinned_contact_faces_dropped": int(dropped),
+        "pinned_contact_candidates": int(candidates),
+        "pinned_contact_face_owners": owners,
+    }
+    return faces, stats
+
+
 def _place_faces(rng: np.random.Generator, cfg, h: float, footprint: float, lo: np.ndarray, hi: np.ndarray):
     """The scene's static faces (module docstring): a list of corner arrays [4,3] (m) and the statistics. `lo`,
     `hi` [n,3] are the bodies' bounding boxes already grown by the clearance a face must keep."""
@@ -640,7 +709,9 @@ def sample_scene(
     on the same seed streams, so the same seed with a higher pinned fraction pins a superset of the bodies."""
     mix = scene_mix(cfg) if mix is None else mix
     ss = np.random.SeedSequence([master_seed, scene_seed, 1 if validation else 0, STREAM_TAG])
-    rng_scene, rng_bodies, rng_place, rng_pins, rng_rest, rng_faces = (np.random.default_rng(s) for s in ss.spawn(6))
+    rng_scene, rng_bodies, rng_place, rng_pins, rng_rest, rng_faces, rng_pinned_faces = (
+        np.random.default_rng(s) for s in ss.spawn(7)
+    )  # the first six children of a SeedSequence do not depend on how many are spawned
     h, dt = float(cfg.cell_size), float(cfg.time_step)
     gravity = tuple(float(v) for v in cfg.gravity)
     g_mag = math.sqrt(sum(v * v for v in gravity))
@@ -723,10 +794,14 @@ def sample_scene(
     # static faces after every body (own stream): rejected against the bodies' boxes grown by at least one cell
     grown = np.maximum(FACE_GROWTH_CELLS * h, clearance)[:, None]
     centres_np = np.asarray(centres, dtype=float)
-    static_faces, face_stats = _place_faces(
-        rng_faces, cfg, h, placement["footprint"], centres_np - extents - grown, centres_np + extents + grown
+    lo_grown, hi_grown = centres_np - extents - grown, centres_np + extents + grown
+    static_faces, face_stats = _place_faces(rng_faces, cfg, h, placement["footprint"], lo_grown, hi_grown)
+    # pinned contact faces (seventh stream): within the deformation reach of pinned bodies, after the regular faces
+    pinned_faces, pinned_stats = _place_pinned_faces(
+        rng_pinned_faces, cfg, h, drawn, centres_np, quats, pins, clearance, lo_grown, hi_grown
     )
-    placement = {**placement, **face_stats}
+    static_faces = list(static_faces) + list(pinned_faces)
+    placement = {**placement, **face_stats, **pinned_stats}
     if band is not None:
         placement["material_band"] = {k: [float(v) for v in band[k]] for k in ("rho", "c2")}
     still = {"velocity": (0.0, 0.0, 0.0)}
@@ -792,6 +867,7 @@ def scene_summary(scene: SceneV5) -> dict:
         "resting_bodies": sum(1 for b in scene.bodies if b.resting),
         "resting_on_bodies": scene.placement.get("resting_on_bodies", 0),
         "static_faces": len(scene.static_faces),
+        "pinned_contact_faces": scene.placement.get("pinned_contact_faces", 0),
         "cells": scene.cells,
         "drift": [float(v) for v in drift],
         "drift_speed": float(np.linalg.norm(drift)),

@@ -279,7 +279,11 @@ class TestSampleScene(unittest.TestCase):
         for seed in range(3):
             scene, free = S.sample_scene(MASTER, seed, still_cfg), S.sample_scene(MASTER, seed, free_cfg)
             self.assertTrue(all(not b.pinned for b in free.bodies))
-            self.assertEqual((scene.contact, scene.placement, scene.drift), (free.contact, free.placement, free.drift))
+            no_faces = lambda p: {k: v for k, v in p.items() if "pinned_contact" not in k}  # noqa: E731
+            self.assertEqual(
+                (scene.contact, no_faces(scene.placement), scene.drift),
+                (free.contact, no_faces(free.placement), free.drift),
+            )
             for a, b in zip(scene.bodies, free.bodies, strict=True):
                 self.assertEqual(
                     dataclasses.replace(a, pins="none", velocity=b.velocity if a.pinned else a.velocity), b
@@ -340,14 +344,22 @@ class TestSampleScene(unittest.TestCase):
         # the static faces of the sixth stream off as well, their statistics stripped from the placement record)
         ref = json.loads(REFERENCE.read_text())
         still = dataclasses.replace(
-            CFG, resting_body_fraction=0.0, static_face_count_range=(0, 0), scene_wave_speed_min=0.0
-        )  # the material band off as well: the band draws nothing from the streams when off
+            CFG,
+            resting_body_fraction=0.0,
+            static_face_count_range=(0, 0),
+            scene_wave_speed_min=0.0,
+            pinned_contact_face_fraction=0.0,
+        )  # the material band and the pinned contact faces off as well: they draw nothing from the first six streams
         for key, d in ref["scenes"].items():
             master, seed, *validation = key.split("_")
             sc = S.sample_scene(int(master), int(seed), still, validation=bool(validation))
             self.assertFalse(any(b.resting for b in sc.bodies))
             self.assertEqual(sc.static_faces, [])
-            stripped = {k: v for k, v in sc.placement.items() if k != "resting_on_bodies" and "static_face" not in k}
+            stripped = {
+                k: v
+                for k, v in sc.placement.items()
+                if k != "resting_on_bodies" and "static_face" not in k and "pinned_contact" not in k
+            }
             sc = dataclasses.replace(sc, placement=stripped)
             self.assertEqual(sc, S.SceneV5.from_dict(d), key)
         # the face-down pose: R takes the face's outward normal to -y, the yaw turns about the vertical
@@ -547,7 +559,7 @@ class TestRealise(unittest.TestCase):
         self.assertGreater(found_ground, 0)
 
     def test_batch_energy_smoke(self):
-        cfg = TrainConfig(scene_cells=2000)
+        cfg = TrainConfig(scene_cells=2000, pinned_contact_face_fraction=0.0)
         scene = S.sample_scene(MASTER, 0, cfg)
         gs, X, V, material, cs = S.realise(scene, self.grids, self.aug, "cpu", torch.float64)
         b = Batch.build(gs, "cpu", torch.float64)
@@ -634,7 +646,8 @@ class TestSceneCurriculum(unittest.TestCase):
         pinned_half = {i for i, b in enumerate(half.bodies) if b.pinned}
         self.assertTrue(pinned_default <= pinned_half)
         self.assertGreater(len(pinned_half), len(pinned_default))
-        self.assertEqual(len(every.static_faces), len(default.static_faces))
+        regular = lambda sc: len(sc.static_faces) - sc.placement["pinned_contact_faces"]  # noqa: E731
+        self.assertEqual(regular(every), regular(default))
 
     def test_epoch_scene_seed(self):
         seeds = {S.epoch_scene_seed(e, i) for e in range(1, 4) for i in range(3)}
@@ -697,3 +710,87 @@ class TestMaterialBand(unittest.TestCase):
         drawn = ("kappa_drawn", "beta", "mu_f")  # kappa_floor depends on the materials
         a, b = S.sample_scene(MASTER, 3, off).contact, S.sample_scene(MASTER, 3, CFG).contact
         self.assertEqual({k: a[k] for k in drawn}, {k: b[k] for k in drawn})
+
+
+class TestPinnedContactFaces(unittest.TestCase):
+    """Static faces within the deformation reach of pinned bodies (Anka, 2026-10-02: pinned + artificial collision)."""
+
+    def test_geometry_and_rejection(self):
+        cfg = dataclasses.replace(CFG, pinned_contact_face_fraction=1.0)
+        every = S.SceneMix(1.0, 0.0)
+        seen = 0
+        for seed in range(6):
+            scene = S.sample_scene(MASTER, seed, cfg, mix=every)
+            p = scene.placement
+            n_regular = len(scene.static_faces) - p["pinned_contact_faces"]
+            self.assertEqual(p["pinned_contact_candidates"], len(scene.bodies))
+            self.assertEqual(p["pinned_contact_faces"] + p["pinned_contact_faces_dropped"], len(scene.bodies))
+            self.assertEqual(len(p["pinned_contact_face_owners"]), p["pinned_contact_faces"])
+            self.assertEqual(S.scene_summary(scene)["pinned_contact_faces"], p["pinned_contact_faces"])
+            h = scene.h
+            lo, hi = body_aabbs(scene)
+            grown = np.array(
+                [
+                    max(S.FACE_GROWTH_CELLS * h, S.field_clearance(b.perturbation_scale, b.strength, h))
+                    for b in scene.bodies
+                ]
+            )[:, None]
+            lo, hi = lo - grown, hi + grown
+            for f, owner in zip(scene.static_faces[n_regular:], p["pinned_contact_face_owners"], strict=True):
+                seen += 1
+                corners = np.asarray(f)
+                body = scene.bodies[owner]
+                R = S.rotation_matrix(body.quaternion)
+                half = 0.5 * h * np.asarray(body.cell_counts, dtype=float)
+                centre = np.asarray(body.position)
+                normal = np.cross(corners[2] - corners[0], corners[3] - corners[1])
+                normal /= np.linalg.norm(normal)
+                local = R.T @ normal
+                axis = int(np.argmax(np.abs(local)))
+                self.assertAlmostEqual(abs(local[axis]), 1.0, places=9)  # parallel to a body face
+                sign = 1.0 if (R.T @ (corners.mean(0) - centre))[axis] > 0 else -1.0
+                k = 2 * axis + (1 if sign > 0 else 0)
+                self.assertNotEqual(S.FACE_PINS[k], body.pins)  # never the pinned face
+                gap = sign * (R.T @ (corners.mean(0) - centre))[axis] - half[axis]
+                reach = S.field_clearance(body.perturbation_scale, body.strength, h)
+                self.assertGreaterEqual(gap, S.PINNED_FACE_GAP[0] * reach - 1e-9)
+                self.assertLessEqual(gap, S.PINNED_FACE_GAP[1] * reach + 1e-9)
+                self.assertGreaterEqual(corners[:, 1].min(), 0.0)
+                others = np.arange(len(scene.bodies)) != owner
+                self.assertFalse(S.quad_boxes_overlap(corners, lo[others], hi[others]).any())
+                sides = np.linalg.norm(corners[1] - corners[0]), np.linalg.norm(corners[3] - corners[0])
+                ia, ib = [j for j in range(3) if j != axis]
+                for s_q, s_b in zip(sides, (2 * half[ia], 2 * half[ib]), strict=True):
+                    self.assertGreaterEqual(s_q / s_b, S.PINNED_FACE_SCALE[0] - 1e-9)
+                    self.assertLessEqual(s_q / s_b, S.PINNED_FACE_SCALE[1] + 1e-9)
+        self.assertGreater(seen, 20)
+
+    def test_fraction_zero_changes_nothing_else(self):
+        on = S.sample_scene(MASTER, 1, dataclasses.replace(CFG, pinned_contact_face_fraction=1.0))
+        off = S.sample_scene(MASTER, 1, dataclasses.replace(CFG, pinned_contact_face_fraction=0.0))
+        self.assertEqual(on.bodies, off.bodies)
+        self.assertEqual(on.contact, off.contact)
+        n_regular = len(off.static_faces)
+        self.assertEqual(off.placement["pinned_contact_faces"], 0)
+        self.assertEqual(on.static_faces[:n_regular], off.static_faces)
+        self.assertGreater(on.placement["pinned_contact_faces"], 0)
+        self.assertTrue(all(off.bodies[i].pinned for i in on.placement["pinned_contact_face_owners"]))
+        self.assertAlmostEqual(
+            S.sample_scene(MASTER, 1, dataclasses.replace(CFG, pinned_contact_face_fraction=0.5)).placement[
+                "pinned_contact_candidates"
+            ]
+            / max(1, sum(b.pinned for b in off.bodies)),
+            0.5,
+            delta=0.5,
+        )
+
+    def test_pinned_bodies_touch_their_faces_at_step_zero(self):
+        from experiments.lido.runner import pair_counts, scene_batch
+
+        cfg = dataclasses.replace(CFG, pinned_contact_face_fraction=1.0, static_face_count_range=(0, 0))
+        scene = S.sample_scene(MASTER, 2, cfg, mix=S.SceneMix(1.0, 0.0))
+        self.assertGreater(scene.placement["pinned_contact_faces"], 0)
+        batch = scene_batch(scene, GridCache("cpu"), Augmenter("cpu"), "cpu")
+        pairs = contact.detect(batch, batch.X, batch.V)
+        self.assertGreater(int((pairs.kind == contact.KIND_STATIC).sum()), 0)  # within the deformation field's reach
+        self.assertEqual(pair_counts(batch)["static"], 0)  # (the batch's own table is filled by Step.prepare)

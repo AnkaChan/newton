@@ -44,7 +44,9 @@ from experiments.lido.units import material_from_si
 HAS_CUDA = torch.cuda.is_available()
 CUDA = torch.device("cuda:0")
 MASTER = 73
-CFG = TrainConfig(scene_cells=6000)
+CFG = TrainConfig(
+    scene_cells=6000, pinned_contact_face_fraction=0.0
+)  # the regular faces alone (TestPinnedContactFaces covers the rest)
 R = contact.R_SAMPLE
 UP = (0.0, 1.0, 0.0)
 
@@ -207,7 +209,11 @@ class TestSampling(unittest.TestCase):
             master, seed, *validation = key.split("_")
             sc = S.sample_scene(int(master), int(seed), still, validation=bool(validation))
             self.assertEqual(sc.static_faces, [])
-            stripped = {k: v for k, v in sc.placement.items() if k != "resting_on_bodies" and "static_face" not in k}
+            stripped = {
+                k: v
+                for k, v in sc.placement.items()
+                if k != "resting_on_bodies" and "static_face" not in k and "pinned_contact" not in k
+            }
             self.assertEqual(dataclasses.replace(sc, placement=stripped), S.SceneV5.from_dict(d), key)
         # the face stream disturbs no other draw: bodies, contact, drift and the body placement are the same
         for seed in range(3):
@@ -236,7 +242,9 @@ class TestSampling(unittest.TestCase):
         self.assertEqual(summary["static_faces"], len(sc.static_faces))
         self.assertEqual(summary["static_face_acceptance"], sc.placement["static_face_acceptance"])
         json.dumps(summary)
-        small = S.sample_scene(MASTER, 0, TrainConfig(scene_cells=2000, static_face_count_range=(3, 5)))
+        small = S.sample_scene(
+            MASTER, 0, TrainConfig(scene_cells=2000, static_face_count_range=(3, 5), pinned_contact_face_fraction=0.0)
+        )
         gs, X, V, material, cs = S.realise(small, GridCache("cpu"), Augmenter("cpu"), "cpu", torch.float64)
         self.assertEqual(tuple(cs.faces.shape), (len(small.static_faces), 4, 3))
         self.assertEqual(cs.faces.dtype, torch.float64)
