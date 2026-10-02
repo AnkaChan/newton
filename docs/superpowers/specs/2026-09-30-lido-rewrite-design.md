@@ -1852,7 +1852,8 @@ queries of the step: 37, 405, 5600, 1e5, 1e6, 1e7, 1e8, 1e9 cells. The Newton st
 contact; over such a step the contact is anything but linear.
 
 Decision: a trust region on the centroid step, `Step.translation_step_max` (`TrainConfig.translation_step_max`,
-1 cell per query, 0 = unbounded): the step of every free body is scaled down to the bound, its direction kept. A
+1 cell per query, 0 = unbounded): a clamp on the centroid step of every free body, identity below the bound and
+rescaled to the bound (direction kept) above it, per body and per query. A
 1 m fall lands at 0.6 cells per step and the inertial candidate already carries the free motion, so the correction
 a physical step needs is far below one cell and is unchanged by the bound (`TestTranslationTrustRegion`: a contact
 force of 1e4 times the weight moves the body by exactly the bound, the physical step by the same amount with and

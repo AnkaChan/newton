@@ -174,7 +174,7 @@ class Step:
             r_tr = M_tot[:, None] * (c_x - c_rig)  # eq. 7.14 at c(x_k)
             A = M_tot[:, None, None] * torch.eye(3, dtype=x.dtype, device=x.device)[None] + H
             c_t = c_x - _solve3(A, r_tr)
-        if self.translation_step_max > 0.0:  # trust region (see __init__): scale the step of every body to the bound
+        if self.translation_step_max > 0.0:  # trust region (see __init__): a clamp, identity below the bound, rescaled to it above
             dc_t = c_t - c_x
             norm = dc_t.norm(dim=-1, keepdim=True)
             c_t = c_x + dc_t * torch.clamp(self.translation_step_max / norm.clamp_min(1e-30), max=1.0)
