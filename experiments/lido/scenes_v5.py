@@ -2,15 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """v5 scenes (design spec section 11; Anka's note `notes/v5-free-motion-with-contact.md`): one scene per batch,
-free cuboids of random size, material, pose and velocity above a ground plane, all in ONE world frame.
+cuboids of random size, material, pose and velocity above a ground plane, all in ONE world frame; most bodies are
+free, a fraction is clamped at one face and held at its initial pose (anchors and hanging beams).
 
 `sample_scene` draws a scene in SI from numpy seed streams: a pure function of (master_seed, scene_seed, validation)
 like `jobs.sample_scene_spec`, with the validation flag selecting a separate stream so held-out scene indices never
-collide with training scenes. `realise` converts it to the solver's normalised units (h = dt = 1): box grids
-without pins, X = the rotated and translated rest lattice plus the multiscale deformation field, V = the rigid
-velocity in cells per step plus the deformation velocity field, one Material per body (gravity along -y, the scene's
-contact constants) and a ContactScene with the ground plane for every body and no static points. All objects
-share the world frame with origin zero, so plane_d = plane_height / h is the same number for every object.
+collide with training scenes. `realise` converts it to the solver's normalised units (h = dt = 1): box grids with
+the body's pins ("none" or the clamped face), X = the rotated and translated rest lattice plus the multiscale
+deformation field (pinned corners exactly at the rigid pose), V = the rigid velocity in cells per step plus the
+deformation velocity field (zero on pinned rows, rigid velocity zero for a pinned body), one Material per body
+(gravity along -y, the scene's contact constants) and a ContactScene with the ground plane for every body and no
+static points. All objects share the world frame with origin zero, so plane_d = plane_height / h is the same
+number for every object.
 
 Draws (per scene stream): drift direction (standard normal with the vertical component scaled by
 `DRIFT_VERTICAL_SCALE`, normalised), drift speed U(drift_speed_range), kappa log-uniform over contact_kappa_range,
@@ -21,6 +24,33 @@ magnitude U(0, drift speed) in a uniform random direction added to the drift, an
 The contact stiffness ratio is floored by the load rule of the contact note (section 7, amendment 2026-09-29) taken
 over every body: kappa >= m_b g / (n_face_b d_max E_b h), which the heaviest and softest bodies decide.
 
+Pinned bodies (Anka, 2026-10-02; pin stream): every body draws `pinned` with probability `cfg.pinned_body_fraction`
+and one of its six faces (`grid.FACE_PINS`, uniform) from a fourth seed stream, so the body, placement and scene
+draws are those of the all-free generator (fraction 0 reproduces it exactly). A pinned body is placed like any other
+(random pose above the ground) and simply stays there: its clamped face is held at the initial pose by the solver
+(`Step.prepare` / `advance` keep pinned rows at X with zero velocity), its rigid velocity is zero (`BodySpec.velocity`),
+and the fusion takes the Dirichlet solve of its pinned grid while the free bodies take the translation-free solve
+with the centroid update; free and pinned grids never share a fusion group.
+
+Resting bodies (Anka, 2026-10-02; fifth seed stream): a fraction `cfg.resting_body_fraction` of the FREE bodies
+starts at rest in contact. Every body draws (u, face, yaw) from the resting stream whatever the fraction (so the other
+streams are untouched and fraction 0 reproduces the earlier scenes exactly); a free body with u < fraction rests. A
+body at rest lies flat on one of its six faces (`face`, uniform) with a random yaw about the vertical (its orientation
+is random within what a body at rest allows: a cuboid balanced on a corner is not at rest), carries no rigid velocity
+and no deformation field (`perturbation_scale` 0: the field's ~0.4-cell RMS would put its bottom samples half a cell
+into the support, far beyond the static penetration of ~1e-3 cells, and the body would jump), and sits with its
+bottom face at the contact gap zero of the sample-sphere model: the face centres' spheres of radius r = h/2 touch the
+support (gap = r, penetration d = r - gap = 0; `RESTING_GAP_CELLS`), so detection finds the pairs at step 0 and the
+body settles by the static penetration only. The support is the ground, or, when a pinned body placed before it lies
+under the candidate footprint, that body's upper surface at the closest approach along -y (`support_height`: the exact
+maximum of the tilted box's upper envelope over the flat body's footprint; the bounding boxes only select the
+candidates). The pinned body counts as its box inflated on every side by a clearance of `CLEARANCE_SIGMAS` times the
+RMS of its deformation field (its free corners carry the field, which the SI placement cannot see: without the
+clearance the deformed support penetrated the resting body by up to 2 RMS, from below and from the side where a
+tilted box rises past the resting body's edge). The grown-bounding-box rule still separates the body from everything
+that is not its support; against the inflated boxes of its supports a separating-axis test verifies that the boxes do
+not intersect (`boxes_overlap`).
+
 Placement (placement stream): per body a uniform random quaternion (Shoemake) and a gap U{placement_gap_cells}
 cells, then bodies are placed one at a time in a square column of side `footprint` (m) centred on the origin.
 The body's lowest point is uniform between 2 cells and `placement_height` above the plane (the FIRST body: between
@@ -30,33 +60,47 @@ the body's gap on every side overlaps a placed body's bounding box, so two bodie
 apart. The footprint is derived from the bodies: the grown bounding-box volumes sum to `PLACEMENT_FILL` of the
 column over the vertical band the boxes can occupy; when a body is not placed within `MAX_PLACEMENT_DRAWS` draws the
 footprint grows by `FOOTPRINT_GROWTH` and the draws restart (counted in `scene.placement`). Measured on the default
-configuration (64000 cells, about 150 bodies, 16 scenes): footprint 4.6-5.1 m, acceptance 68-74 % of the position
-draws, no footprint growth.
+configuration (64000 cells, 135-166 bodies, 16 scenes, 40 ms per scene): footprint 6.4-7.1 m, 17-31 % of the position
+draws accepted (mean 22 %), one footprint growth in 2 of the 16 scenes; nearest bounding-box separation median 3.4
+cells (minimum the gap), bodies' lowest points 2-20 cells above the ground, the first body's 1-2 cells. The bodies
+(1.0 m^3 of material) land in a single layer on a 40-50 m^2 floor; the fill constant trades acceptance for density.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import math
 from dataclasses import dataclass, field
 
 import numpy as np
 import torch
 
+from .augment import DISPLACEMENT_SCALE
+from .grid import FACE_PINS
 from .jobs import _log_uniform
 from .scenes import PLANE_NORMAL, contact_stiffness_floor
-from .structs import _MATERIAL_TENSORS, ContactScene, Material
-from .units import material_from_si
+from .structs import ContactScene, Material
+from .units import material_from_si, reference_modulus
 
 Tensor = torch.Tensor
 
 STREAM_TAG = 5  # last SeedSequence key: v5 scene streams never coincide with the body-mode streams of jobs.py
 DRIFT_VERTICAL_SCALE = 0.25  # the drift direction's y component is scaled by this before normalisation
-PLACEMENT_FILL = 0.3  # grown bounding-box volume over the column volume that sets the footprint
+PLACEMENT_FILL = 0.6  # grown bounding-box volume over the column volume that sets the footprint
 MAX_PLACEMENT_DRAWS = 200  # position draws per body before the footprint grows
 FOOTPRINT_GROWTH = 1.1
 GROUND_CELLS = 2.0  # lowest point of a body at least this many cells above the plane (the first body: 1-2 cells)
 FIRST_BODY_CELLS = (1.0, 2.0)
+RESTING_GAP_CELLS = 0.5  # a resting body's bottom face sits this far above its support: the sample radius r = h / 2
+CLEARANCE_SIGMAS = 3.0  # a pinned support's deformation field (RMS) times this clears the resting body above it
+FACE_NORMALS = (
+    (-1, 0, 0),
+    (1, 0, 0),
+    (0, -1, 0),
+    (0, 1, 0),
+    (0, 0, -1),
+    (0, 0, 1),
+)  # local outward normals, grid order
+_GEOM_TOL = 1e-9  # m: tolerance of the support and overlap geometry
 
 
 @dataclass
@@ -72,10 +116,16 @@ class BodySpec:
     velocity_dt: float
     perturbation_scale: float
     seed: int  # deformation-field seed
+    pins: str = "none"  # "none" (free body) or the clamped lattice face, one of `grid.FACE_PINS` (held at the pose)
+    resting: bool = False  # free body starting at rest on the ground or on a pinned body (flat, no velocity, no field)
 
     @property
     def cells(self) -> int:
         return int(math.prod(self.cell_counts))
+
+    @property
+    def pinned(self) -> bool:
+        return self.pins != "none"
 
 
 @dataclass
@@ -99,18 +149,19 @@ class SceneV5:
 
     @staticmethod
     def from_dict(d: dict) -> SceneV5:
-        t = lambda v: tuple(v)  # noqa: E731
         bodies = [
             BodySpec(
-                cell_counts=t(int(v) for v in b["cell_counts"]),
+                cell_counts=tuple(int(v) for v in b["cell_counts"]),
                 material=dict(b["material"]),
-                position=t(float(v) for v in b["position"]),
-                quaternion=t(float(v) for v in b["quaternion"]),
-                velocity=t(float(v) for v in b["velocity"]),
+                position=tuple(float(v) for v in b["position"]),
+                quaternion=tuple(float(v) for v in b["quaternion"]),
+                velocity=tuple(float(v) for v in b["velocity"]),
                 strength=float(b["strength"]),
                 velocity_dt=float(b["velocity_dt"]),
                 perturbation_scale=float(b["perturbation_scale"]),
                 seed=int(b["seed"]),
+                pins=str(b.get("pins", "none")),
+                resting=bool(b.get("resting", False)),
             )
             for b in d["bodies"]
         ]
@@ -119,10 +170,10 @@ class SceneV5:
             validation=bool(d["validation"]),
             h=float(d["h"]),
             dt=float(d["dt"]),
-            gravity=t(float(v) for v in d["gravity"]),
+            gravity=tuple(float(v) for v in d["gravity"]),
             bodies=bodies,
             plane_height=float(d["plane_height"]),
-            drift=t(float(v) for v in d["drift"]),
+            drift=tuple(float(v) for v in d["drift"]),
             contact=dict(d["contact"]),
             placement=dict(d.get("placement", {})),
         )
@@ -133,7 +184,12 @@ def random_quaternion(rng: np.random.Generator) -> tuple:
     """Uniform random unit quaternion (x, y, z, w) (Shoemake's method, three uniforms)."""
     u1, u2, u3 = rng.random(3)
     a, b = math.sqrt(1.0 - u1), math.sqrt(u1)
-    return (a * math.sin(2 * math.pi * u2), a * math.cos(2 * math.pi * u2), b * math.sin(2 * math.pi * u3), b * math.cos(2 * math.pi * u3))
+    return (
+        a * math.sin(2 * math.pi * u2),
+        a * math.cos(2 * math.pi * u2),
+        b * math.sin(2 * math.pi * u3),
+        b * math.cos(2 * math.pi * u3),
+    )
 
 
 def rotation_matrix(q) -> np.ndarray:
@@ -154,6 +210,136 @@ def half_extents(cell_counts, q, h: float) -> np.ndarray:
     return 0.5 * h * np.abs(R) @ np.asarray(cell_counts, dtype=float)
 
 
+def quaternion_from_matrix(R: np.ndarray) -> tuple:
+    """Unit quaternion (x, y, z, w) of a rotation matrix (the largest component computed first, the rest from it)."""
+    t = float(np.trace(R))
+    if t > 0:
+        w = math.sqrt(1.0 + t) / 2
+        x, y, z = (R[2, 1] - R[1, 2]) / (4 * w), (R[0, 2] - R[2, 0]) / (4 * w), (R[1, 0] - R[0, 1]) / (4 * w)
+    else:
+        i = int(np.argmax(np.diag(R)))
+        j, k = (i + 1) % 3, (i + 2) % 3
+        s = math.sqrt(max(1.0 + R[i, i] - R[j, j] - R[k, k], 0.0)) * 2
+        v = [0.0, 0.0, 0.0]
+        v[i] = s / 4
+        v[j] = (R[j, i] + R[i, j]) / s
+        v[k] = (R[k, i] + R[i, k]) / s
+        w = (R[k, j] - R[j, k]) / s
+        x, y, z = v
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    return (x / n, y / n, z / n, w / n)
+
+
+def face_down_quaternion(face: int, yaw: float) -> tuple:
+    """The pose of a body lying flat on its lattice face `face` (0..5: -x, +x, -y, +y, -z, +z) with a yaw about the
+    vertical: R = R_y(yaw) R_0 with R_0 the rotation taking the face's outward normal to -y."""
+    n = np.asarray(FACE_NORMALS[face], dtype=float)
+    down = np.array([0.0, -1.0, 0.0])
+    c = float(n @ down)
+    if c > 1 - 1e-12:
+        R0 = np.eye(3)
+    elif c < -1 + 1e-12:
+        R0 = np.diag([1.0, -1.0, -1.0])  # the +y face: half a turn about x
+    else:
+        v = np.cross(n, down)
+        vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+        R0 = np.eye(3) + vx + vx @ vx / (1 + c)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    Ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    return quaternion_from_matrix(Ry @ R0)
+
+
+def box_corners(centre, R: np.ndarray, half_sides) -> np.ndarray:
+    """The 8 corners [8,3] (m) of a box with centre, rotation (world = R body) and half sides (m)."""
+    signs = np.array([(a, b, c) for a in (-1, 1) for b in (-1, 1) for c in (-1, 1)], dtype=float)
+    return np.asarray(centre, dtype=float)[None] + (signs * np.asarray(half_sides, dtype=float)) @ R.T
+
+
+_BOX_EDGES = tuple((i, j) for i in range(8) for j in range(i + 1, 8) if bin(i ^ j).count("1") == 1)  # 12 corner pairs
+
+
+def _upper_envelope(x: float, z: float, centre, R: np.ndarray, half_sides) -> float | None:
+    """Height of the box's upper surface over the vertical line through (x, z) (None when the line misses it):
+    the line in the box frame is a + t b, clipped against the three slabs |.| <= half side."""
+    a = R.T @ (np.array([x, 0.0, z]) - centre)
+    b = R.T @ np.array([0.0, 1.0, 0.0])
+    t_lo, t_hi = -math.inf, math.inf
+    for i in range(3):
+        if abs(b[i]) < 1e-15:
+            if abs(a[i]) > half_sides[i] + _GEOM_TOL:
+                return None
+            continue
+        t1, t2 = (-half_sides[i] - a[i]) / b[i], (half_sides[i] - a[i]) / b[i]
+        t_lo, t_hi = max(t_lo, min(t1, t2)), min(t_hi, max(t1, t2))
+    return t_hi if t_hi >= t_lo - _GEOM_TOL else None
+
+
+def _inside_convex(p: np.ndarray, poly: np.ndarray) -> bool:
+    """Point [2] inside (or on the boundary of) the convex polygon poly [m,2] given in order."""
+    side = 0.0
+    for i in range(poly.shape[0]):
+        a, b = poly[i], poly[(i + 1) % poly.shape[0]]
+        cross = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+        if abs(cross) <= _GEOM_TOL * (1.0 + np.abs(b - a).sum()):
+            continue
+        if side == 0.0:
+            side = cross
+        elif side * cross < 0:
+            return False
+    return True
+
+
+def _segment_crossing(p: np.ndarray, q: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray | None:
+    """Intersection point [2] of the segments p-q and a-b, None when they do not cross."""
+    d1, d2 = q - p, b - a
+    den = d1[0] * d2[1] - d1[1] * d2[0]
+    if abs(den) < 1e-15:
+        return None
+    r = a - p
+    t = (r[0] * d2[1] - r[1] * d2[0]) / den
+    u = (r[0] * d1[1] - r[1] * d1[0]) / den
+    if -_GEOM_TOL <= t <= 1 + _GEOM_TOL and -_GEOM_TOL <= u <= 1 + _GEOM_TOL:
+        return p + t * d1
+    return None
+
+
+def support_height(footprint: np.ndarray, centre, R: np.ndarray, half_sides) -> float | None:
+    """Closest approach along -y of a flat-bottomed body onto a box: the maximum (m) of the box's upper surface over
+    the body's footprint (a convex quad [4,2] in (x, z), in order), None when the footprint and the box's projection
+    do not meet. The upper envelope of a convex box is concave, so the maximum over the convex overlap region sits
+    at a vertex of the arrangement: a box corner inside the footprint, a footprint corner over the box, or a crossing
+    of a projected box edge with a footprint edge."""
+    corners = box_corners(centre, R, half_sides)
+    pts = [c[[0, 2]] for c in corners if _inside_convex(c[[0, 2]], footprint)]
+    pts += list(footprint)
+    for i, j in _BOX_EDGES:
+        for k in range(4):
+            x = _segment_crossing(corners[i][[0, 2]], corners[j][[0, 2]], footprint[k], footprint[(k + 1) % 4])
+            if x is not None:
+                pts.append(x)
+    heights = [_upper_envelope(float(p[0]), float(p[1]), np.asarray(centre, dtype=float), R, half_sides) for p in pts]
+    heights = [v for v in heights if v is not None]
+    return max(heights) if heights else None
+
+
+def boxes_overlap(c1, R1: np.ndarray, s1, c2, R2: np.ndarray, s2) -> bool:
+    """Two oriented boxes intersect (separating-axis test over the 15 candidate axes; touching counts as free)."""
+    axes = [R1[:, i] for i in range(3)] + [R2[:, i] for i in range(3)]
+    for i in range(3):
+        for j in range(3):
+            a = np.cross(R1[:, i], R2[:, j])
+            n = float(np.linalg.norm(a))
+            if n > 1e-12:
+                axes.append(a / n)
+    d = np.asarray(c2, dtype=float) - np.asarray(c1, dtype=float)
+    for a in axes:
+        r1 = float(np.abs(R1.T @ a) @ np.asarray(s1, dtype=float))
+        r2 = float(np.abs(R2.T @ a) @ np.asarray(s2, dtype=float))
+        if abs(float(d @ a)) >= r1 + r2 - _GEOM_TOL:
+            return False
+    return True
+
+
 def rigid_pose(body: BodySpec, rest: Tensor, h: float) -> Tensor:
     """The rotated and translated rest lattice [P,3] in cell units (float64): R(q) (rest - centre) + position / h."""
     R = torch.tensor(rotation_matrix(body.quaternion), dtype=torch.float64, device=rest.device)
@@ -166,8 +352,25 @@ def _unit(v: np.ndarray) -> np.ndarray:
     return v / max(float(np.linalg.norm(v)), 1e-300)
 
 
-def _place(rng: np.random.Generator, extents: np.ndarray, gaps: np.ndarray, h: float, cfg) -> tuple[list, dict]:
-    """Body centres [n][3] (m) by rejection sampling of grown bounding boxes (module docstring) and the statistics."""
+def _place(
+    rng: np.random.Generator,
+    extents: np.ndarray,
+    gaps: np.ndarray,
+    h: float,
+    cfg,
+    resting: list | None = None,
+    pinned: list | None = None,
+    rotations: list | None = None,
+    half_sides: np.ndarray | None = None,
+    clearance: np.ndarray | None = None,
+) -> tuple[list, dict]:
+    """Body centres [n][3] (m) by rejection sampling of grown bounding boxes (module docstring) and the statistics.
+
+    `resting` [n] bool selects the bodies placed at rest (module docstring): their height follows from the support,
+    the ground or the upper surface of the pinned bodies (`pinned` [n] bool) already placed under the footprint
+    (`rotations` [n] [3,3] and `half_sides` [n,3] m describe the boxes, `clearance` [n] m inflates a pinned body's
+    box on every side by the room its deformation field needs); the grown-box rule applies to every other placed
+    body and `boxes_overlap` verifies the supports. Without `resting` the rule is the earlier one exactly."""
     n = extents.shape[0]
     ground = GROUND_CELLS * h
     if cfg.placement_height <= ground:
@@ -178,8 +381,10 @@ def _place(rng: np.random.Generator, extents: np.ndarray, gaps: np.ndarray, h: f
         math.sqrt(float(np.prod(2.0 * grown, axis=1).sum()) / (PLACEMENT_FILL * band)),
         float((2.0 * grown[:, [0, 2]]).max()),
     )
+    resting = [False] * n if resting is None else list(resting)
     lo_placed, hi_placed = np.zeros((0, 3)), np.zeros((0, 3))
     centres = []
+    supports: list[list] = []  # per placed body: the indices of the pinned bodies it rests on
     draws = growths = 0
     for b in range(n):
         e, g = extents[b], float(gaps[b])
@@ -192,16 +397,45 @@ def _place(rng: np.random.Generator, extents: np.ndarray, gaps: np.ndarray, h: f
             half = 0.5 * footprint
             cx = (2.0 * u[0] - 1.0) * max(half - e[0] - g, 0.0)
             cz = (2.0 * u[2] - 1.0) * max(half - e[2] - g, 0.0)
-            cy = y_min + u[1] * (y_max - y_min) + e[1]
+            on = []
+            if resting[b]:
+                # flat on the support: the ground or the highest upper surface of a pinned body under the footprint
+                corners = box_corners((cx, 0.0, cz), rotations[b], half_sides[b])
+                bottom = corners[np.argsort(corners[:, 1])[:4]][:, [0, 2]]
+                order = np.argsort(np.arctan2(bottom[:, 1] - bottom[:, 1].mean(), bottom[:, 0] - bottom[:, 0].mean()))
+                foot = bottom[order]
+                support = 0.0
+                for j in range(b):
+                    if not pinned[j]:
+                        continue
+                    if lo_placed[j, 0] > cx + e[0] or hi_placed[j, 0] < cx - e[0]:
+                        continue
+                    if lo_placed[j, 2] > cz + e[2] or hi_placed[j, 2] < cz - e[2]:
+                        continue
+                    top = support_height(foot, centres[j], rotations[j], half_sides[j] + clearance[j])
+                    if top is not None:
+                        on.append((j, top))
+                        support = max(support, top)
+                cy = support + RESTING_GAP_CELLS * h + e[1]
+                on = [j for j, _ in on]
+            else:
+                cy = y_min + u[1] * (y_max - y_min) + e[1]
             c = np.array([cx, cy, cz])
             lo, hi = c - e - g, c + e + g
-            if not bool(((lo < hi_placed) & (lo_placed < hi)).all(axis=1).any()):
+            overlap = (lo < hi_placed) & (lo_placed < hi)
+            if on:
+                overlap[on] = False  # the supports are checked exactly below
+            if not bool(overlap.all(axis=1).any()) and not any(
+                boxes_overlap(c, rotations[b], half_sides[b], centres[j], rotations[j], half_sides[j] + clearance[j])
+                for j in on
+            ):
                 break
             if attempts >= MAX_PLACEMENT_DRAWS:
                 footprint *= FOOTPRINT_GROWTH
                 growths += 1
                 attempts = 0
         centres.append(tuple(float(v) for v in c))
+        supports.append(on)
         lo_placed = np.vstack([lo_placed, c - e])
         hi_placed = np.vstack([hi_placed, c + e])
     stats = {
@@ -209,8 +443,15 @@ def _place(rng: np.random.Generator, extents: np.ndarray, gaps: np.ndarray, h: f
         "draws": int(draws),
         "acceptance_rate": float(n / max(draws, 1)),
         "footprint_growths": int(growths),
+        "resting_on_bodies": int(sum(1 for on in supports if on)),
     }
     return centres, stats
+
+
+def field_clearance(perturbation_scale: float, strength: float, h: float) -> float:
+    """Room (m) a body's deformation field needs: `CLEARANCE_SIGMAS` times the field's RMS displacement
+    (`Augmenter.initial_states`: perturbation_scale strength DISPLACEMENT_SCALE cells)."""
+    return CLEARANCE_SIGMAS * DISPLACEMENT_SCALE * float(perturbation_scale) * float(strength) * h
 
 
 def _box_n_face(cell_counts) -> int:
@@ -223,7 +464,7 @@ def _box_n_face(cell_counts) -> int:
 def sample_scene(master_seed: int, scene_seed: int, cfg, validation: bool = False) -> SceneV5:
     """One v5 scene (SI): a pure function of (master_seed, scene_seed, validation) and the config (module docstring)."""
     ss = np.random.SeedSequence([master_seed, scene_seed, 1 if validation else 0, STREAM_TAG])
-    rng_scene, rng_bodies, rng_place = (np.random.default_rng(s) for s in ss.spawn(3))
+    rng_scene, rng_bodies, rng_place, rng_pins, rng_rest = (np.random.default_rng(s) for s in ss.spawn(5))
     h, dt = float(cfg.cell_size), float(cfg.time_step)
     gravity = tuple(float(v) for v in cfg.gravity)
     g_mag = math.sqrt(sum(v * v for v in gravity))
@@ -268,16 +509,53 @@ def sample_scene(master_seed: int, scene_seed: int, cfg, validation: bool = Fals
         )
         total += math.prod(sides)
 
-    # orientation and gap per body, then the positions
+    # orientation and gap per body (placement stream)
     gap_lo, gap_hi = (int(v) for v in cfg.placement_gap_cells)
     quats, gaps = [], []
     for _ in drawn:
         quats.append(random_quaternion(rng_place))
         gaps.append(int(rng_place.integers(gap_lo, gap_hi + 1)) * h)
+    # pins (own stream, one draw pair per body whatever the fraction): a pinned body is held at its pose, so its
+    # rigid velocity is zero; the deformation fields stay
+    pins = []
+    for _ in drawn:
+        u, face = float(rng_pins.random()), int(rng_pins.integers(0, len(FACE_PINS)))
+        pins.append(FACE_PINS[face] if u < float(cfg.pinned_body_fraction) else "none")
+    # resting bodies (own stream, one draw triple per body whatever the fraction): flat on a face with a random yaw
+    resting = []
+    for pin in pins:
+        u, face, yaw = float(rng_rest.random()), int(rng_rest.integers(0, 6)), float(rng_rest.uniform(0.0, 2 * math.pi))
+        rest = pin == "none" and u < float(cfg.resting_body_fraction)
+        resting.append(rest)
+        if rest:
+            quats[-len(pins) + len(resting) - 1] = face_down_quaternion(face, yaw)
+    any_resting = any(resting)
     extents = np.stack([half_extents(b["cell_counts"], q, h) for b, q in zip(drawn, quats, strict=True)])
-    centres, placement = _place(rng_place, extents, np.asarray(gaps), h, cfg)
+    rotations = [rotation_matrix(q) for q in quats] if any_resting else None
+    half_sides = 0.5 * h * np.array([b["cell_counts"] for b in drawn], dtype=float) if any_resting else None
+    clearance = np.array([field_clearance(b["perturbation_scale"], b["strength"], h) for b in drawn])
+    centres, placement = _place(
+        rng_place,
+        extents,
+        np.asarray(gaps),
+        h,
+        cfg,
+        resting=resting if any_resting else None,
+        pinned=[pin != "none" for pin in pins],
+        rotations=rotations,
+        half_sides=half_sides,
+        clearance=clearance,
+    )
+    still = {"velocity": (0.0, 0.0, 0.0)}
     bodies = [
-        BodySpec(position=c, quaternion=q, **b) for b, q, c in zip(drawn, quats, centres, strict=True)
+        BodySpec(
+            position=c,
+            quaternion=q,
+            pins=pin,
+            resting=rest,
+            **({**b, **still, "perturbation_scale": 0.0} if rest else {**b, **still} if pin != "none" else b),
+        )
+        for b, q, c, pin, rest in zip(drawn, quats, centres, pins, resting, strict=True)
     ]
 
     # contact stiffness ratio with the load floor over every body
@@ -325,6 +603,9 @@ def scene_summary(scene: SceneV5) -> dict:
         "seed": scene.seed,
         "validation": scene.validation,
         "bodies": len(scene.bodies),
+        "pinned_bodies": sum(1 for b in scene.bodies if b.pinned),
+        "resting_bodies": sum(1 for b in scene.bodies if b.resting),
+        "resting_on_bodies": scene.placement.get("resting_on_bodies", 0),
         "cells": scene.cells,
         "drift": [float(v) for v in drift],
         "drift_speed": float(np.linalg.norm(drift)),
@@ -346,21 +627,26 @@ def realise(scene: SceneV5, grids, aug, device, dtype=torch.float32):
 
     `grids` is a GridCache and `aug` an Augmenter on the same device (the deformation fields are drawn there, one
     generator per body seeded by `BodySpec.seed`). X = R(q) (rest - centre + deformation) + position / h in cells,
-    V = R(q) deformation velocity + velocity dt / h in cells per step. `dtype` other than float32 casts the state
-    and the material tensors (CPU float64 tests).
+    V = R(q) deformation velocity + velocity dt / h in cells per step. A pinned body (`BodySpec.pins`) takes the
+    grid with that face clamped: its pinned corners sit exactly at the rigid pose (the deformation field is zero
+    there) with zero velocity, and its rigid velocity is zero whatever the spec says. `dtype` other than float32
+    builds the state and the material tensors in that precision (CPU float64 tests). All bodies share one unit of energy, mu_ref h^3
+    with mu_ref the geometric mean of their shear moduli (`material_from_si(mu_ref=...)`, section 11: the reaction
+    of a body pair on the partner and the coupled centroid update are then consistent across stiffnesses).
     """
     device = torch.device(device)
     h, dt = scene.h, scene.dt
-    gs = [grids.get(b.cell_counts, "none") for b in scene.bodies]
+    gs = [grids.get(b.cell_counts, b.pins) for b in scene.bodies]
     gens = [torch.Generator(device=aug.device).manual_seed(b.seed) for b in scene.bodies]
     Xa, Va = aug.initial_states(gs, scene.bodies, gens)
     X_parts, V_parts, materials = [], [], []
     c = scene.contact
+    mu_ref = reference_modulus([b.material for b in scene.bodies])  # one unit of energy for the whole scene
     for g, b, X_b, V_b in zip(gs, scene.bodies, Xa, Va, strict=True):
         R = torch.tensor(rotation_matrix(b.quaternion), dtype=torch.float64, device=device)
         centre = torch.tensor(b.cell_counts, dtype=torch.float64, device=device) / 2
         p = torch.tensor(b.position, dtype=torch.float64, device=device) / h
-        v = torch.tensor(b.velocity, dtype=torch.float64, device=device) * dt / h
+        v = torch.tensor((0.0, 0.0, 0.0) if b.pinned else b.velocity, dtype=torch.float64, device=device) * dt / h
         X_parts.append((X_b.to(device, torch.float64) - centre) @ R.T + p)
         V_parts.append(V_b.to(device, torch.float64) @ R.T + v)
         materials.append(
@@ -380,14 +666,13 @@ def realise(scene: SceneV5, grids, aug, device, dtype=torch.float32):
                 friction_epsilon=float(c.get("friction_epsilon", 0.01)),
                 floor_scale=float(c.get("floor_scale", 1.0)),
                 device=device,
+                mu_ref=mu_ref,
+                dtype=dtype,
             )
         )
     X = torch.cat(X_parts).to(dtype)
     V = torch.cat(V_parts).to(dtype)
     material = Material.cat(materials)
-    if dtype != torch.float32:
-        for f in _MATERIAL_TENSORS:
-            setattr(material, f, getattr(material, f).to(dtype))
     O = len(gs)
     z = lambda *shape, dt=dtype: torch.zeros(*shape, dtype=dt, device=device)  # noqa: E731
     contact_scene = ContactScene(
@@ -400,8 +685,3 @@ def realise(scene: SceneV5, grids, aug, device, dtype=torch.float32):
         point_offsets=z(O + 1, dt=torch.int64),
     )
     return gs, X, V, material, contact_scene
-
-
-def to_json_dict(scene: SceneV5) -> dict:
-    """`dataclasses.asdict` (tuples become lists under json)."""
-    return dataclasses.asdict(scene)

@@ -28,7 +28,7 @@ class TrainConfig:
     max_step_size: float = 0.05
     feature_schema_version: int = 6
     edge_network: bool = True
-    edge_module: str = "a02"  # "a02": edge encoder + A02 update (the trained checkpoints); "pair": one MLP on the pair
+    edge_module: str = "pair"  # "a02": edge encoder + A02 update (the trained checkpoints); "pair": one MLP on the pair
     compile_network: bool = True  # torch.compile the cell-graph layer on CUDA (implementation only)
     # regime
     regime: str = "fixed_states"
@@ -75,8 +75,10 @@ class TrainConfig:
     scene_cells: int = 64000  # bodies are added until the scene reaches this many cells
     body_sides: tuple = (3, 12)  # cells per axis, drawn independently per axis
     drift_speed_range: tuple = (0.1, 0.5)  # m/s scene-wide drift speed
-    placement_height: float = 0.5  # m: a body's lowest point lies between 2 cells and this above the ground
+    placement_height: float = 1.0  # m: a body's lowest point lies between 2 cells and this above the ground
     placement_gap_cells: tuple = (1, 3)  # cells between the bounding boxes of placed bodies
+    pinned_body_fraction: float = 0.25  # probability that a body is clamped at one of its faces and held at its pose
+    resting_body_fraction: float = 0.3  # fraction of the FREE bodies placed at rest on the ground or on a pinned body
     scene_count: int = 64  # fixed scenes per epoch
     validation_scene_count: int = 8
     validation_full_scene_count: int = 2

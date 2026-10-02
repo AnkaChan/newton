@@ -2,7 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Incremental potential in normalised units (design spec 4.3): stable Neo-Hookean with Newton's parameter
-mapping at 8 Gauss points, VBD metric damping against the step-start shape, inertia against Y, contact."""
+mapping at 8 Gauss points, VBD metric damping against the step-start shape, inertia against Y, contact.
+
+Units (section 11, common normaliser per scene): object o's energy is in mu_norm[o] h^3. The elastic density is
+mu_scale psi(lam) with psi at mu = 1 and lam the body's own lambda / mu, the damping mu_scale eta, the corner masses
+mu_scale rho m_i; mu_scale = mu_o / mu_norm is 1 in body mode (each body its own unit) and mu_o / mu_ref in a v5
+scene (one unit for all bodies, so pair reactions and centroid updates between bodies of different stiffness are
+consistent). The contact constants ke, kd are stored in the common unit already."""
 
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ from . import contact as _contact
 from . import hex as hx
 from .contact import contact_energy
 from .energy_kernel import elastic_damping_warp, energy_and_grad_warp
+from .units import unit_rho
 
 Tensor = torch.Tensor
 
@@ -43,20 +50,22 @@ def modes_and_center(x: Tensor, batch) -> tuple[Tensor, Tensor]:
 
 
 def elastic_damping(batch, x: Tensor) -> tuple[Tensor, Tensor]:
-    """Per-cell elastic and damping energies [C] at the corners x."""
+    """Per-cell elastic and damping energies [C] at the corners x (in the object's unit: times mu_scale)."""
     F = hx.gauss_deformation(x.index_select(0, batch.cells.reshape(-1)).view(-1, 8, 3), batch.hc)  # [C,8,3,3]
-    lam = batch.material.lam[batch.cell_obj]
+    m = batch.material
+    lam = m.lam[batch.cell_obj]
+    scale = m.mu_scale.to(x.dtype)[batch.cell_obj]
     w = batch.hc.weights
-    E_el = (w * stable_neo_hookean(F, lam[:, None])).sum(-1)
+    E_el = scale * (w * stable_neo_hookean(F, lam[:, None])).sum(-1)
     C_now = hx.mat3_tn(F, F)
-    eta = batch.material.eta[batch.cell_obj]
-    E_damp = 0.5 * eta * (w * ((C_now - batch.C_prev) ** 2).sum((-1, -2))).sum(-1)
+    eta = m.eta[batch.cell_obj]
+    E_damp = scale * (0.5 * eta * (w * ((C_now - batch.C_prev) ** 2).sum((-1, -2))).sum(-1))
     return E_el, E_damp
 
 
 def inertia(batch, x: Tensor) -> Tensor:
     """Per-corner inertia [N]; pinned rows contribute nothing."""
-    rho = batch.material.rho[batch.corner_obj]
+    rho = unit_rho(batch.material)[batch.corner_obj]
     e = 0.5 * rho * batch.mass * ((x - batch.Y) ** 2).sum(-1)
     return e.masked_fill(batch.pinned, 0.0)
 
@@ -111,8 +120,9 @@ def residual(gX: Tensor, batch) -> Tensor:
 
 
 def corner_mass(batch) -> Tensor:
-    """Normalised corner masses m_i = rho_obj mass_i [N] (derivation section 1; `mass` is lumped in h^3 units)."""
-    return batch.material.rho[batch.corner_obj] * batch.mass
+    """Normalised corner masses m_i = rho_obj mass_i [N] (derivation section 1; `mass` is lumped in h^3 units; rho
+    in the object's unit of energy, `units.unit_rho`)."""
+    return unit_rho(batch.material)[batch.corner_obj] * batch.mass
 
 
 def total_mass(batch) -> Tensor:
@@ -122,10 +132,14 @@ def total_mass(batch) -> Tensor:
 
 def centroid(batch, x: Tensor) -> Tensor:
     """Mass-weighted centroid c(x) = sum_i m_i x_i / M_tot per object [O,3] (eq. 1.10); the same linear map applied
-    to velocities gives the centroid velocity."""
-    m = corner_mass(batch)
-    num = torch.zeros(batch.O, 3, dtype=x.dtype, device=x.device).index_add_(0, batch.corner_obj, m[:, None] * x)
-    return num / seg_sum(m, batch.corner_obj, batch.O)[:, None]
+    to velocities gives the centroid velocity. The sums run in float64: in float32 a body 60 cells from the world
+    origin lost ~1e-4 cells per reduction (2 % of a step's gravity increment), which the free-body centroid update
+    turned into a random walk of the velocity (the v5 momentum drift check); the result is in x's dtype."""
+    m = corner_mass(batch).to(torch.float64)
+    num = torch.zeros(batch.O, 3, dtype=torch.float64, device=x.device).index_add_(
+        0, batch.corner_obj, m[:, None] * x.to(torch.float64)
+    )
+    return (num / seg_sum(m, batch.corner_obj, batch.O)[:, None]).to(x.dtype)
 
 
 def inverted_cells(F_center: Tensor, batch) -> Tensor:

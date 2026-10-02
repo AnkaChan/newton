@@ -39,6 +39,8 @@ def _empty_pairs(C: int, device) -> Pairs:
         radius=z(0),
         anchor=z(0, 3),
         valid=z(0, dtype=torch.bool),
+        partner_body=z(0, dtype=torch.int64),
+        partner_face=z(0, dtype=torch.int64),
     )
 
 
@@ -108,6 +110,11 @@ class Batch:
     cdot_n: Tensor = None  # [O,3] centroid velocity c(V)
     pairs: Pairs = None
     pair_layout: tuple = None  # capacity layout cache of contact.detect(capacity=True), reset by relayout
+    # body-body contact (v5, design spec section 11): every body is a partner of every other body in one world frame
+    body_contact: bool = False  # contact.detect also queries the other bodies' surface meshes
+    meshes: object = None  # contact.BodyMeshes: one wp.Mesh per object over its exposed faces, rebuilt per step
+    fusion_cache: dict = None  # fusion.BatchedKron per dtype (the padded multi-group solve), reset by relayout
+    noise_cache: object = None  # augment.Augmenter's padded-lattice tables of the whole batch, reset by relayout
     # job-constant network cache
     film: tuple = None
     # sizes, cached at layout time (reading them must not synchronise: the query is CUDA-graph captured)
@@ -241,4 +248,7 @@ class Batch:
             setattr(self, name, new)
         self.pairs = _empty_pairs(self.C, self.device)
         self.pair_layout = None
+        self.meshes = None
+        self.fusion_cache = None
+        self.noise_cache = None
         self.film = None

@@ -65,9 +65,8 @@ def scene_batch(seed: int, variant: str):
 def regimes(b, x):
     """Per valid pair: penetrating, approaching, slip inside the band, slip outside the band (torch geometry)."""
     pairs = b.pairs
-    xs, n, gap, r_total = contact._geometry(b, x, pairs)
+    _, _, n, gap, r_total, delta = contact._geometry(b, x, pairs)
     d = r_total - gap
-    delta = xs - pairs.anchor
     vn = (n * delta).sum(-1)
     u = delta - vn[:, None] * n
     y = u.norm(dim=-1)

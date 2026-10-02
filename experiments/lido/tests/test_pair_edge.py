@@ -96,12 +96,14 @@ class TestPairEdge(unittest.TestCase):
 
     def test_a02_is_the_current_network(self):
         """The default edge module builds the same parameters, in the same order, with the same values."""
-        self.assertEqual(TrainConfig().edge_module, "a02")
-        self.assertEqual(TrainConfig.from_dict({"edge_network": True, "edge_hidden_dim": 96}).edge_module, "a02")
+        self.assertEqual(
+            TrainConfig().edge_module, "pair"
+        )  # default for new training since 2026-10-02; Net() keeps a02 for the trained checkpoints
+        self.assertEqual(TrainConfig.from_dict({"edge_network": True, "edge_hidden_dim": 96}).edge_module, "pair")
         torch.manual_seed(3)
         a = Net()
         torch.manual_seed(3)
-        b = Net.from_config(TrainConfig())
+        b = Net.from_config(TrainConfig.from_dict({"edge_module": "a02"}))
         sa, sb = a.state_dict(), b.state_dict()
         self.assertEqual(list(sa), list(sb))
         self.assertTrue(all(torch.equal(sa[k], sb[k]) for k in sa))

@@ -1176,3 +1176,461 @@ the compiled feature chains as well 1.22 -> 0.96 ms (eager 7.5 / 4.8 ms either w
 inductor logs "No valid triton configs" for some tile sizes of the thin K = 21 / 24 GEMMs of the pair module and uses
 the valid ones; harmless, absent in the default training compile mode. Tests: 222 pass (210 + 12). Not started: the
 6-epoch comparison against the campaign (the main session launches it).
+- Pinned bodies in v5 scenes (Anka, 2026-10-02): a fraction of the bodies (default 25 %, config `pinned_body_fraction`)
+  are clamped at one of their six faces, chosen per body, and held at their initial pose in the world (anchors and
+  hanging beams for the free bodies to hit). The fusion already switches per body: pinned grids take the Dirichlet
+  solve, free grids the translation-free solve with the implicit-contact centroid update, within one batch and one
+  query. Follow-up to the current v5 agents (scene generator change plus tests).
+
+### v5 scene generator (2026-10-02, implemented: `scenes_v5.py` and the scene config keys)
+
+`scenes_v5.sample_scene(master_seed, scene_seed, cfg, validation=False) -> SceneV5` and `realise(scene, grids, aug,
+device, dtype=float32) -> (grids, X, V, Material, ContactScene)` as in the v5 interface contract, plus `held_out_scene`
+(the validation stream) and `scene_summary` (the run record). Seed streams: `SeedSequence([master_seed, scene_seed,
+0 | 1, 5])` spawned into a scene, a body and a placement stream, so body-mode streams (jobs.py) and validation scenes
+never coincide; the placement rejections disturb no other draw. Bodies are drawn until the cell total reaches
+`scene_cells`, the last body may exceed it (defaults: 64015-64722 cells, 135-166 bodies over 16 seeds; with the sides
+independent per axis the mean body is 7.5^3 = 422 cells, so about 150 bodies, not the 40-100 estimated above).
+Materials per body with the body-mode ranges and draw order (E, nu, rho, eta, perturbation_scale, strength,
+velocity_dt; gravity is `cfg.gravity`, no magnitude draw); kappa per scene, log-uniform with the load floor maximised
+over the bodies, kappa >= m_b g / (n_face_b d_max E_b h) (defaults: kappa_floor 15-47, binding in 5 of 16 scenes);
+beta, mu_f per scene. Drift: direction = normalised N(0, I) with the y component scaled by 0.25, speed
+U(drift_speed_range); per-body rigid velocity = drift + U(0, speed) times a uniform random direction. Placement:
+uniform random quaternion (Shoemake), gap U{placement_gap_cells}, lowest point of the rotated box U(2 cells,
+placement_height) (the first body U(1, 2) cells), rejection sampling of the gap-grown axis-aligned bounding box
+against the placed boxes in a square column whose side follows from a 0.3 fill of the grown-box volume
+(`PLACEMENT_FILL`; defaults: footprint 6.4-7.1 m, 17-31 % of the position draws accepted, mean 22 %, 40 ms per scene;
+the footprint grows 10 % after 200 failed draws of one body, needed once in 2 of 16 scenes; nearest bounding-box
+separation median 3.4 cells, minimum the gap). Realise: X = R(q) (rest - centre + d) + p / h, V = R(q) v_def + v dt / h
+in one world frame (the deformation fields from `Augmenter.initial_states` with the body's strength / velocity_dt /
+perturbation_scale, one generator per body seeded by `BodySpec.seed`), `Material.cat` of `material_from_si` per body
+(the scene's kappa, beta, mu_f; friction_epsilon and floor_scale travel in the scene's contact dict), the plane for
+every object with plane_d = plane_height / h = 0 and no static points; a 157-body scene realises on an L40 in 1.9 s
+cold (grid builds) and 0.18 s with cached grids. Checked: the rigid pose carries elastic energy 2e-16 (rotation and
+translation exact), per-body mean velocities equal the rigid velocities, JSON round trip through
+`dataclasses.asdict` / `SceneV5.from_dict`, energy pass on the realised CPU float64 batch finite.
+For Anka: the bounding-box rule with the 0.5 m height cap makes the default scene sparse (1.0 m^3 of material lands
+on 40-50 m^2 of floor, bodies 3.4 cells apart at the median), so body-body contact comes from the drift noise and the
+landing; `PLACEMENT_FILL`, `placement_height` and `scene_cells` trade density for acceptance. For the integration:
+across 64 scenes the GridCache holds up to about 1000 distinct box shapes (1-2 MB each on the GPU). Tests:
+`tests/test_scenes_v5.py` (11: seed streams, cell budget and sides, placement and gaps, drift and velocities, materials
+and the kappa floor, JSON round trip, summary, realise shapes / grids / material / scene, rigid pose and no overlap,
+energy pass on the realised CPU float64 batch, config keys); full suite 233 pass (222 + 11). Nothing committed.
+- Scene density (Anka, 2026-10-02): dense stacking, placement fill 0.6 and column height 1.0 m (the generator's first
+  defaults, fill 0.3 and 0.5 m, spread 1 m^3 of material over 40-50 m^2 with a median box separation of 3.4 cells).
+  Placement is bounding-box rejection sampling (grown by a 1-3 cell gap, footprint +10 % after 200 failed draws),
+  about 150 bodies per 64k-cell scene, tens of milliseconds per scene, once per scene load.
+
+### Body-body contact (2026-10-02, implemented: `contact.py`, `contact_kernel.py`; `Pairs`, `Batch`, `capture.py`, `step.py`)
+
+Built as decided above, with the v5 interface contract (one world frame, `batch.body_contact`, `batch.meshes`,
+`Pairs.partner_body` / `partner_face`, kind 2 in the reserved one-hot slot, partner radius channel 1).
+
+- Detection (`contact.detect`, once per physical step at X). `BodyMeshes` holds one `wp.Mesh` per object over its
+  exposed faces (two triangles per quad, local corner ids; triangle t of object o is the face of global sample
+  `sample_off[o] + t // 2`), the vertices aliasing one float32 copy of the corners; rebuilt after `Batch.relayout`,
+  otherwise refreshed (copy + `refit`) every detection. `body_query_kernel` (one thread per sample and other object,
+  skipped outside the object's box grown by the reach) runs `wp.mesh_query_point_sign_parity` (3 rays) with
+  max_dist = margin + r = 2r + |v_s| and writes the signed surface distance, the closest point and the partner face.
+  Because the BVH returns either face when the closest point lies on an edge, the found face and its edge-adjacent
+  faces (`face_neighbours`, built once per layout from shared corner pairs) are re-evaluated in torch in the batch's
+  dtype; faces within `FACE_TIE_TOL` = 1e-5 (relative) of the smallest distance are ties and the one whose normal
+  opposes the sample normal best is taken (without this an overhanging sample flickered between the top and the side
+  face of its partner from step to step, a 5e-6 position change moving 8 % of the energy). Keep rule: face normal at
+  X opposing the sample normal (n_q . n_s < 0), gap - r < margin with gap the signed distance (inside the partner
+  always), and the closest point's lateral offset from the sample's normal line below r (the static disc's rule with
+  r_p = r; a sample overhanging an edge by more than its radius does not touch the face). Static points and body
+  faces compete for the nearest M_pair = 4 slots per sample (bodies ranked by signed surface distance, points by
+  centre distance); slots are ordered plane, point ids, partner object ids; capacity mode has 1 + min(M_pair,
+  Npts + O - 1) columns per sample. Both directions are kept.
+- Geometry at a query (torch `_geometry` / `_body_geometry`, Warp `contact_pair_kernel`): for a kind-2 row the
+  weights w of the closest point to x_s on the partner quad at its current corners c_i are computed and held, the
+  partner point is p = sum w_i c_i, the normal the quad's diagonal cross product (rest normal when degenerate, as
+  `sample_normals`), and the step displacement delta = (x_s - anchor) - sum w_i (c_i - C_i) with C_i the partner's
+  corners at X: the slip of the sample relative to the partner's material point under it, so two bodies moving
+  together see no damping or friction between them (the capture's static state gained `X` for this). Holding w is
+  exact for planar faces; the gradient reaches the partner corners as -w_i times the sample's gradient (E depends
+  on x_s - p only) plus the gradient through the normal, dE/dn = -ke relu(d)(x_s - p) - kd relu(-v_n) delta
+  [d > 0] - (mu f_n f0'(y)/y) v_n u pulled back through the normalisation and the cross product; the four partner
+  terms of the normal sum to zero, so the total force on the two bodies is zero exactly. The kernel writes a [Q,4]
+  partner gradient (autograd Function) or scatters it with atomics (fused pass). `active_stiffness` adds a body
+  pair's stiffness to the partner too; `penetration` stays per owner.
+- Coupled centroid update (`Step.centroid_target`, `contact.translation_hessian`, `contact.pair_stiffness`). With
+  body pairs the per-body implicit-contact Newton step (7.15) treats the partner as fixed and two stacked bodies each
+  resolve the same penetration: the stack cycled and fell through. With `batch.body_contact` the Newton step is now
+  taken jointly on all free bodies' centroids with the full translational contact Hessian (diagonal blocks M I +
+  the sum of the pair stiffnesses a body owns or partners, off-diagonal blocks minus the sum over the pairs between
+  two bodies; a 3O x 3O `torch.linalg.solve_ex`, CUDA-graph capturable). The pair stiffness is the exact Hessian of
+  the pair energy with respect to the relative rigid translation with the load held: ke n n^T [d > 0] + kd n n^T
+  [d > 0, v_n < 0] + the friction curvature mu f_n ((f0'' - f0'/y) u u^T / y^2 + (f0'/y)(I - n n^T)). The damping
+  and friction terms were missing from H before: a single damped body on the plane (beta 0.3 or 1.0, kappa 20)
+  two-cycled with translation residual 0.16 / 0.88 forever and never settled; it now converges in one query
+  (1e-13), with friction in two. The one-body path without body contact keeps the 3x3 `_solve3`; the pinned beam
+  reference (`tests/reference/pinned_beam_reference.pt`) is unchanged bitwise.
+- Measured (L40 shared with other agents, float32, capacity layout). 40 bodies with sides 9-14 (61.9k cells, 32k
+  samples, 6.7k valid pairs): detect 5.3 ms steady state (mesh refresh 1.1 ms, the rest query, tie-break and top-k),
+  first call 298 ms (mesh builds, kernel load); 147 bodies with sides 3-12 (64.0k cells, 50k samples): 10.7 ms
+  (refresh 3.7 ms: one `refit` per object in Python). Fused energy + gradient with body pairs 0.3-0.5 ms. The torch
+  geometry of the capacity rows (160k-250k rows, 4 % valid) costs 3-4 ms per evaluation and the query evaluates it
+  for the tokens and once for the stiffness (8.8 ms for the stiffness alone before the two were merged; the tokens
+  remain): the inference query with body contact is bound by it, a Warp kernel for the kind-2 token geometry would
+  remove it.
+- Tests (`tests/test_body_contact.py`, 16): two touching 3x3x3 free boxes without a plane (9 + 9 pairs, partner
+  faces under the samples, normals, both directions, no self pairs, sorted CSR; separated / velocity margin /
+  penetrating with the sign parity; detection off and single body; tokens in the body slot with radius ratio 1;
+  meshes rebuilt after relayout), closest point on a quad against a 200^2 barycentric grid on 64 warped quads and
+  the tie rule, finite differences in float64 with respect to each body's corners at 1e-7 (planar faces under a
+  random affine map of the world, friction load frozen, damping and friction active), Newton's third law on warped
+  faces with all three terms (1e-10 of the gradient scale, also `contact_force` and the partner stiffness), co-moving
+  bodies without slip, a 2x2x2 box on a 3x3x3 box on the plane for 100 steps with the zero-init network (static
+  penetrations M_B g / (13 ke) between the bodies and (M_A + M_B) g / (9 ke) into the plane to 1e-4, 13 pairs
+  because B's footprint overhangs A's samples at x = 2.5 and z = 0.5 by 0.1 cells), the Warp kernel against the torch
+  path in four regimes (energies 1e-5, gradients 1e-4, the fused pass, partner-corner gradients alone, object
+  weights), capacity against compaction (identical energy, gradient, tokens, penetration), and the captured query
+  with body pairs against eager over three queries and an advance (5e-5 as the free-body capture tests: positions
+  and energies within 1e-5, gradients 3e-5 at kappa 5, 3e-4 at kappa 20; the contact gradient of the two paths comes
+  from torch and Warp float32 arithmetic and the stiff coupling feeds the difference back through both bodies).
+  Full suite 249 (222 + 11 scene-generator + 16) pass. Nothing committed.
+- For Anka: (i) the material-point slip (delta relative to the partner's held material point) and the exact
+  translational Hessian (damping and friction stiffness, coupled over bodies) go beyond the letter of 7.15 and the
+  contact note's "partner velocity zero"; both were needed for a stack of two bodies to rest. (ii) The pair list is
+  frozen per step with the face recorded at X; a sample sliding across a partner edge keeps the old face until the
+  next detection (the closest point then sits on that quad's edge). (iii) Deep penetrations beyond 2r + |v_s| are
+  not detected (the query's max_dist); a larger reach costs nothing measurable if wanted.
+
+### Pair edge comparison result (2026-10-02, 9 epochs, 3 ranks, otherwise the v4 configuration)
+
+Against the A02 campaign: loss lower in all 9 epochs (mean 0.747 vs 0.755 over epochs 3-9), full-horizon selection
+metric lower in 6 of 9 (mean 91 vs 113 N), cheap-validation medians and penetration at the same level, all states
+surviving; network forward+backward 52 vs 75 ms at batch 16, memory 3.8 vs 6.9 GB, 797k vs 903k parameters.
+Decision: `edge_module` defaults to "pair" for new training (TrainConfig); `Net()` keeps "a02" so the trained
+checkpoint and the parity tests load unchanged.
+
+### Scene regime, runner, validation and report keys for `scene_mode = "v5"` (2026-10-02, implemented: `jobs.py`, `runner.py`, `validation.py`, `report.py`, `train.py`; body mode unchanged)
+
+- Regime (`jobs.sample_epoch_jobs`): with `scene_mode = "v5"` a fixed state is a scene; `job_count` = `scene_count`
+  jobs (seed = scene index) with the unchanged K, H draws of the growth table (the same seed stream, so the first
+  `scene_count` jobs coincide with the body regime's); `assign(jobs, world, 1)` (one scene per rank at a time) gives
+  U = the heaviest rank's sum of K H. Updates per rank per epoch for the v4 growth table with 64 scenes (expectation;
+  the LPT loads of seed 73 over 4 ranks are within 1 %): stage 0 (1, 8): 72; stage 1 (2, 16): 204; stage 2 (4, 32):
+  616; stage 3 (8, 64): 1950; stage 4 (16, 128): 6398; stage 5 (32, 128): 7516 (30066 on one rank). Not the ~15k
+  per rank of the campaign's last stage estimated above: with 4 ranks the last stage gives half of it, and the first
+  stages give under 300 updates per epoch, each a 64k-cell scene query, so the first epochs are short.
+- Runner (`runner.SceneRunner`, chosen by `runner.make_runner` from `cfg.scene_mode`): the rank holds ONE scene at a
+  time. `load` samples the job's scene (`scenes_v5.sample_scene`), realises it into a fresh `Batch` (`runner.scene_batch`:
+  `Batch.build(grids)`, `body_contact = True`, origin zero, material / scene / X / V, X_prev = x = X) and runs
+  `Step.prepare` on all bodies (one candidate-noise generator per body, seeded by (master, scene, epoch, body)); every
+  update serves one query of the scene like the body runner (`commit`: k += 1; k == K: `Step.advance` on all
+  bodies, h += 1; h == H: load the next scene). Any non-finite body energy fails the scene (FailureRecord with the
+  scene's seed, K, H, k, h; the next scene loads). A rank whose queue ran dry keeps its last batch with `active`
+  all False (the trainer's loss mask) and counts `idle_updates`, so lighter ranks idle through the common U; a
+  `scene_count` below the world size raises. The runner exposes `batch`, `U`, `active_count` (bodies of the current
+  scene), `failures`, `queries` (body queries served), `pairs` / `pair_history` (valid pairs by kind at every
+  detection) and `epoch_summary()` for the run record. `train.py` keeps the per-object objective averaged over the
+  scene's bodies (the loss mask), records the max penetration of every update's fused candidate (v5 only), skips
+  `compile_layers` in v5 (`torch.compile` with static shapes would recompile at every scene) and writes `query_count`
+  = body queries, `filler_queries` = idle updates and the `scene_regime` block.
+- Validation (`validation.validate_cheap_v5`, `validate_full_horizon_v5`): held-out scenes from `scenes_v5.held_out_scene`;
+  cheap = `validation_scene_count` scenes x `validation_iterations` queries, full horizon = `validation_full_scene_count`
+  scenes x K x H with the stage caps as before. A record is one scene with the per-body fields aggregated over its
+  bodies in SI (residual_n: mean of the bodies' free-corner residual norms, energy_joule: sum, penetration_r: max,
+  inverted_cells: sum, scale_joule: sum), plus `interbody_penetration_r` (max over the kind-2 pairs of relu(r - gap) / r,
+  `contact.kind_penetration`), `plane_penetration_r`, `contact_pairs` {total, plane, point, body} and the scene summary.
+  `momentum_drift` = |sum m_i v_i(t) - sum m_i v_i(0) - t M g| / |M g t| (SI) after the full horizon on a contact-free
+  copy of the first full-horizon scene (`contact_free_copy`: plane removed, bodies on a centred (x, z) grid spaced by
+  twice the bounding-box reach plus the rigid travel plus 4 cells, body-body detection left on and finding nothing).
+  `report.summarize_cheap_validation` adds the `interbody_penetration_r` / `plane_penetration_r` iteration curves and
+  mean `contact_pairs` when the samples carry them, `summarize_full_horizon` the `final_*` statistics and
+  `momentum_drift`; `build_epoch_record` takes `scene_regime`; body-mode records are unchanged (the keys appear only
+  with scene samples) and the existing dashboard renders a v5 run (`write_mixed_report` in the test).
+- Centroid precision (found by the momentum check, fixed in `physics.centroid` and `Fusion.fuse`): the mass-weighted
+  centroid sums ran in float32, and for a body 60 cells from the world origin (positions ~60, ~500 corners) each
+  reduction lost ~1e-4 cells, 2 % of a step's gravity increment g dt^2 / h = 4.4e-3 cells; the free-body update
+  c(x_{n+1}) = c_n + cdot_n + g turned that into a velocity error that random-walked over the horizon, and the
+  fusion's float32 weights w = m / sum m summed to 1 + eta with eta ~ 1e-7 fixed per grid, a BIASED error eta |c| ~
+  6e-6 cells per step (the drift did not shrink with H). Both sums now run in float64 and return the batch dtype
+  (pinned paths never read them; the one-body free-body tests sit near the origin and never saw it). Measured on a
+  4-body CPU scene (x up to 63 cells, zero-init network, K = 1): drift 5.4e-3 / 7.8e-3 / 8.6e-3 at H = 2 / 8 / 32
+  before, 5.0e-5 / 1.9e-4 / 1.1e-4 after (seed 1: 1.9e-4 / 1.6e-4 / 1.3e-4; float64 batch: 3e-8). The remaining
+  error is the float32 representation of the positions themselves (ulp(60 cells) = 3.8e-6): a float64 c_n / c_t
+  pipeline would remove it, but needs the step-constant centroid buffers in float64 (capture state); not done.
+- Picard warning (`Step._check_picard`): emitted only with `translation = "picard"`; with the default
+  implicit-contact translation a 150-body scene exceeded the constant on dozens of bodies at every landing and
+  flooded the log (the test of the warning uses the Picard translation).
+- Smoke (v4 config + scene_mode v5, max_epochs 1, L40 shared with other agents' runs: timings indicative).
+  scene_cells 8000, scene_count 6, validation 2 / 1, `--max-updates 60`: the 6 stage-0 jobs (K = 1, H = 8, 7, 3,
+  1, 1, 1) give U = 21 updates, 5.7 s for the epoch, 55 ms per update at 8.2k cells / 15-25 bodies (K = 1, so every
+  update advances), 0.17-0.34 s on the updates that load a scene; losses 0.88 -> 0.85 then up to 4.5 over 21
+  updates (meaningless at 21 updates; mean 1.13); mean residual 544 N; cheap validation (2 scenes x 32 queries)
+  and full horizon (1 scene x 1 x 8) survive; momentum drift 4.1e-4; the report renders. scene_cells 64000,
+  scene_count 2 (157-159 bodies), 10 updates: 0.74-0.91 s per update and 3.5-4.6 s on the two loads (grid builds
+  and the first prepare; the GPU was running the test suite at the same time), losses 0.86-0.88, residual 519 N,
+  validation 1 scene x 8 and 1 x 1 x 8 survive. Pair counts: ZERO in every stage-0 run: within 8 steps (27 ms)
+  no body falls the 2+ cells to the ground or to a neighbour; with the zero-init network over 128 steps on the
+  default scene 0 (159 bodies, 64.3k cells, 51.9k samples): 25 pairs (12 plane, 13 body) at step 16, 690 (212 / 478)
+  at step 32, then the shapes degenerate (no elastic response: the deformation velocity field integrates freely,
+  residual 1.3e5 N at step 32, 2e9 N at step 128, penetrations of tens of r, fall-through) and the counts (48k at
+  step 128) mean nothing; query + commit 0.40 s median and advance (prepare + detect) 0.19 s there, inflated by the
+  contention and the degenerate pair counts. So the first two growth stages (H <= 16, 53 ms) train v5 scenes
+  almost without contact; `placement_height` / the first body's 1-2 cells decide when contact starts.
+  One training update of the 157-body scene (profile, eager network, the suite's tail still on the GPU): query
+  170-280 ms, loss backward 140-160 ms, optimizer 2 ms, commit + advance 80-120 ms, so 0.4-0.5 s per update at
+  K = 1 (the 16-beam body batch takes 0.09-0.11 s); the first query of a freshly loaded scene 1.9-2.1 s (mesh
+  builds, fusion factors of ~150 new grid shapes) and a load with cold grids 1.5-1.9 s. `Step.prepare` costs 11 ms
+  without the per-body candidate-noise loop and 108 ms with it (159 bodies, Python loop with one host sync per
+  body): the loop should be batched by grid group like `Augmenter.initial_states`. Momentum drift of the 159-body
+  scene's contact-free copy (grid layout, float32, K = 1, H = 128): 3.6e-4 (1.1e-3 with the bodies in a 95 m row).
+- Tests: `tests/test_scene_runner.py` (5: v5 job sampling and U incl. the default regime's stage-0 U, an epoch of
+  3 scenes of ~1500 cells on the CPU serving exactly sum K H queries with a fresh Batch per scene and a detection
+  per load and advance, a lighter rank idling through U with world 2, failure loading the next scene, the runner
+  factory and the world-size check) and `tests/test_validation_v5.py` (5: cheap records and summary with the new
+  keys and finite values, body-mode summaries without them; full-horizon records, summary, epoch record with
+  `scene_regime`, JSON-clean and rendered by the dashboard; momentum drift of the contact-free check below 1e-3
+  on two scenes with the zero-init network (no pairs, no plane); `kind_penetration`). The first full-suite runs
+  showed one failure that is not from this work: `TestPinnedPathUnchanged.test_bitwise_reference` (the
+  `contact_f64` records) broke when the `TrainConfig.edge_module` default became "pair" (decision above): the
+  reference network of `tests.test_capture.small_net` followed the default; the test now pins "a02", the module
+  the reference was recorded with. Full suite: 258 pass, the 10 new tests included. Nothing committed.
+
+### Confirmation run (2026-10-02, GPU 3 of the L40 box shared with other agents: timings indicative; nothing in the package changed)
+
+- Full suite: 258 pass (`unittest discover`, 143 s), no failures, errors or skips.
+- Smoke as requested (v4 config + `scene_mode` v5, `scene_cells` 32000, `scene_count` 4, validation 2 / 1, `max_epochs` 1,
+  `log_every` 5, `--max-updates 60`): the stage-0 regime caps the epoch at U = 12 (K = 1, H drawn 7, 3, 1, 1 over the
+  4 scenes), so 12 updates were served (984 body queries) in 13.3 s (13.7 s wall with start-up); scenes of 76-86 bodies
+  (mean 81.5) and 32.1-32.6k cells; logged updates 0.77 s (first query of the first scene), 0.18 s (steady), 0.87 and
+  0.54 s (updates whose commit loads the next scene); losses 0.845 / 0.873 / 1.059 / 0.911 at updates 1 / 6 / 11 / 12,
+  epoch mean 0.888, gradient norms 1.4-49, residual 488 N; peak CUDA memory 1.90 GiB allocated (4.98 GiB reserved); pairs
+  zero at all 16 detections (plane and body, as in the stage-0 smokes above); cheap validation (2 scenes x 32 queries,
+  79 / 80 bodies) and full horizon (1 x 1 x 8) survive, penetrations 0, momentum drift 1.3e-4; no warnings in the log.
+  Keys present: `validation` {contact_pairs, interbody_penetration_r, plane_penetration_r, penetration, force_residual,
+  relative_energy, descent_rate, mean_normalized_loss, physical_survivors, failed_count, samples, selection, ...},
+  `full_horizon_validation` {final_contact_pairs, final_interbody_penetration_r, final_plane_penetration_r,
+  final_max_penetration_r, final_energy_joule, final_free_force_residual_norm_n, momentum_drift, physical_survivors,
+  selection, ...}, `scene_regime` {scenes, bodies_mean, cells_mean, body_queries, idle_updates, detections, pairs_mean,
+  body_pairs_mean, body_pairs_max, plane_pairs_mean, steps_with_body_pairs, scenes_served}.
+- Supplementary run to actually reach 60 updates (same config with `log_every` 1 and the first growth stage set to
+  K 4 / H 32; scratch config only): 60 updates on one scene (83 bodies, 32.2k cells, the job's H = 32, so 15 physical
+  steps), 0.17-0.21 s per update steady (median 0.179 s; the first 0.83 s), 38.8 s for the epoch; loss 0.881 -> 0.82-0.86
+  over the last ten updates (epoch mean 0.845), gradient norm 9 -> 0.6-0.9, residual 595 N; peak 1.83 GiB. Plane pairs
+  appear from the 10th physical step (7 pairs summed over the 16 detections), no body pairs; the full horizon (1 x 4 x 32)
+  shows plane pairs from step 20 (1) to step 32 (9), body pairs 0, all penetrations 0, residual 146 -> 24 N, momentum
+  drift 7.3e-5; cheap validation 2 / 2 survive.
+- Full-size scene (seed 73 scene 0: 159 bodies, 64.3k cells, 93.9k corners, 51.9k samples): realise + `Batch.build`
+  1.01 s with cold grids; first `prepare` 0.38 s (mesh builds, kernel loads), steady `prepare` 57 ms with the per-body
+  noise loop and 11 ms without; `contact.detect` alone 9.4 ms at 0 pairs and 12 ms at 558 pairs, energy + gradient
+  0.3 ms; eager inference query 1.09 s first, 153 ms steady (peak 2.0 GiB); query + backward in train mode 0.32 s
+  (peak 3.58 GiB). Pairs with the zero-init network: 0 through step 8, 6 plane at step 16, 207 (92 plane / 115 body)
+  at step 24, 558 (191 / 367) at step 32; lowest corner 1.01 -> -2.74 cells.
+
+### Adversarial review of the body-body contact physics and the v5 data path (2026-10-02, read-only; `tests/test_v5_review.py`)
+
+Checked `contact.py`, `contact_kernel.py`, `scenes_v5.py`, `runner.py`, `validation.py`, `step.py` against the plan and
+the contract. Confirmed (pinned as `expectedFailure` tests so the suite stays green; remove the decorator with the fix):
+- Units between bodies (`units.material_from_si`, `physics.energy`, `contact.pair_energies`, `Step.centroid_target`):
+  every body's energy is in its OWN normalised units (lam, rho, eta, ke, kd divided by the body's mu; mu = 1 in the
+  elastic density), and a body pair's energy belongs to the sample's body, so its gradient on the PARTNER's corners is
+  in the owner's force units (mu_owner h^2) added to rows in the partner's units. In SI the partner feels the reaction
+  scaled by mu_partner / mu_owner: two 3x3x3 boxes with E 1e5 / 1e6 (equal masses) give -1125 N on A and +11250 N on B
+  (normalised forces exactly equal and opposite, which is why the equal-material third-law test passes; the same on
+  the Warp capacity path), and the coupled centroid step without gravity moves the stiffer body 10x further (1000x for
+  E 1e3 / 1e6): SI momentum is not conserved in body-body contact. Each body effectively sees every pair with its own
+  kappa E_o h (up to the (1 + nu) ratio). v5 draws E log-uniformly over 1e3-1e6 per body, so nearly every pair is
+  affected; a common normaliser per scene (one reference mu with a per-body mu ratio in the elastic density) is the
+  fix (`test_contact_force_sums_to_zero_in_si`, `test_coupled_centroid_update_conserves_si_momentum`;
+  `test_equal_materials_control` passes and records the effective stiffness (n_A + n_B) ke of both directions).
+- Failed last scene (`SceneRunner.load`, `train.py`): a non-finite scene when the rank's queue is already empty stays
+  as the rank's batch with `active` all False, and the trainer's `(loss_vec * mask).sum()` is NaN (NaN * 0): no
+  optimizer step for the rest of the epoch, on every rank under DDP (`test_failed_last_scene_leaves_a_finite_loss`).
+Refuted: partner normal outward and opposing, gap / depth law identical to the plane law (d = r - gap, r_total = r);
+no detached term drops the partner force (w held and f_n detached symmetrically; the normal's gradient sums to zero
+over the four corners; the kernel's partner scatter matches the derivation and the builder's tests); self pairs
+excluded in the kernel, faces recorded as `sample_off[o] + tri // 2`, meshes refreshed by `body_meshes` at every
+detection, capacity columns 1 + min(4, Npts + O - 1); the centroid update takes the partner force through
+`contact_force` and the coupled Hessian (momentum conserved to 4e-15 with equal materials); the generator's AABB rule
+left no body pair, no sample inside another body and no plane pair at step 0 in 16 default scenes (nearest surfaces
+1.6-3.0 cells; the guarantee is for the rigid boxes, the deformation field never ate the gap); velocities m/s x dt / h;
+validation metrics in N, J, r and kg m/s as documented. Remark without a test: the detection margin r + |v_s| uses the
+sample's own speed, not the relative speed to the partner body, so in the approach step only the moving body's samples
+pair (gap 1.3 cells, 0.6 cells/step: 9 pairs owned by the mover, 0 by the body at rest); contact is still detected
+from one side, but the impact step has half the stiffness and the owner (hence, with the units finding, the modulus
+that decides the forces) depends on who moves.
+Full suite after the review: 262 tests, OK with 3 expected failures (the pinned findings). Nothing committed.
+
+### Pinned bodies in v5 scenes (2026-10-02, implemented: `scenes_v5.py`, `grid.py`, `fusion.py`, `config.py`, `validation.py`, `runner.py`)
+
+Anka's decision above (a fraction of the bodies clamped at one face and held at the initial pose), built as follows.
+- Config: `pinned_body_fraction` = 0.25. Generator: a fourth seed stream (`SeedSequence(...).spawn(4)`: scene, bodies,
+  placement, pins) draws per body a uniform `u` and a face index whatever the fraction, so the body, placement and
+  scene draws are those of the all-free generator (fraction 0 reproduces the earlier scenes exactly; tested).
+  `BodySpec.pins` is "none" or one of `grid.FACE_PINS` ("xmin_face", "xmax_face", "ymin_face", "ymax_face",
+  "zmin_face", "zmax_face"; records without the key read as free), `BodySpec.pinned`, JSON round trip,
+  `scene_summary["pinned_bodies"]`, `SceneRunner.epoch_summary()["pinned_bodies_mean"]`. Placement unchanged: a pinned
+  body keeps its random pose above the ground (an anchor or a hanging beam); its rigid velocity is zero in the spec and
+  in `realise` (the deformation velocity field remains, zero on the pinned rows). `realise` takes the grid with the
+  body's pins: the clamped face sits exactly at the rigid pose (`Augmenter.initial_states` puts pinned corners at rest
+  before the rotation), V = 0 there.
+- Grid: `Grid.build(cell_counts, pins)` accepts the six faces (`face_pin_mask`: coordinate 0 or n_axis); "zmin_face"
+  and "none" are unchanged bitwise (mask and the hard-coded reference corners), the other faces take the reference
+  corners from `reference_corners` (the voxel rule), and every field equals `Grid.from_voxels` on full occupancy with
+  the face's corner mask (test). The key is (nx, ny, nz, pins), so pinned and free bodies of one shape are different
+  grids and never share a fusion group.
+- Fusion: `KronFactor` solves any single pinned face (the Dirichlet node 0 or n dropped from that axis' 1D factor; the
+  free corners are a product set in lattice order) and `Fusion.factor`'s "auto" takes it for every box grid in
+  `grid.BOX_PINS`; the z-min arithmetic is the one before. Against the dense inverse on (2, 3, 4) and (3, 2, 2) for all
+  six faces: solve, K_fp, the fused displacement with prescribed pins and the projected gradient within 1e-11 (float64;
+  measured 1e-13 to 1e-15).
+- Step: nothing changed. `prepare` sets Y = X on pinned rows and the candidate noise is zero there, the fusion leaves
+  pinned rows at zero displacement, `advance` without prescribed positions keeps X and sets V = 0 on pinned rows, so a
+  pinned corner is bitwise X over the steps; `centroid_target` masks the non-free bodies in the coupled Newton step
+  (c_t = c_x, no coupling blocks) and `fuse` applies the centroid target to unpinned grids only.
+- Validation: `momentum_si` / `total_mass_si` sum over the FREE bodies (a pinned body hands its momentum to the pins;
+  the check returns NaN for a scene without a free body). The other records aggregate over all bodies as before
+  (the residual is the free-corner residual, so a pinned body's clamped rows do not enter). Grep of `free_objects`,
+  `any_free`, `pins == "none"` across the package: the only all-free assumptions were the momentum check and two test
+  assertions (`test_scene_runner`, `test_scenes_v5`), now per body.
+- Statistics (default configuration, 16 scenes of 64k cells): 2452 bodies, 616 pinned (25.1 %; 24-50 per scene of
+  135-166 bodies; 24.7 % of the cells), faces xmax 111 / ymax 108 / zmin 103 / xmin 102 / zmax 98 / ymin 94, 43 ms per
+  scene (40 before); the 6000-cell test scenes over 20 seeds: 303 bodies, 87 pinned (28.7 %), all six faces drawn.
+- Tests: `tests/test_scenes_v5.py` +2 (fraction within 0.1 of 0.25 over >= 200 bodies, all six faces, zero rigid
+  velocity of pinned bodies, fraction 0 reproduces the all-free scene body by body, fraction 1 pins every body, JSON
+  round trip with pins and the legacy record; realise: pinned corners at the pose to 1e-12 with the deformation field
+  on the free corners, V = 0 on pinned rows with the deformation velocity field elsewhere, a rigid velocity in the spec
+  ignored), the existing realise / summary / config tests extended; `tests/test_fusion.py` +1 (the six faces against
+  dense); `tests/test_pinned_bodies_v5.py` (6): the face grids against voxel masks field by field and the unchanged
+  z-min / none reference corners; a 3x2x3 block hanging from its pinned top face at y = 6 above the plane with a free
+  2x2x2 box one cell above it, 30 steps of 4 queries with the zero-init network (implicit-contact translation, beta
+  0.3, kappa 20, float64): pinned corners bitwise X with V = 0 and the candidate at X at every step, the free body in
+  exact free fall (c_n = c_0 - g n(n+1)/2 to 1e-9) until its first body pair at step 15, at rest on the pinned face at
+  the end (bottom corners r - 1.5e-4 r over the face, 13 body pairs, no plane pair, body penetration 1.5e-4 r, all
+  energies finite); the same pins held in float32; a mixed 1500-cell scene at fraction 0.5 on the CPU: free and
+  pinned grids in separate groups, pins held over 3 steps while the free bodies fall, the runner's epoch of 3 scenes
+  served without failures with both kinds of body, `validate_cheap_v5` / `validate_full_horizon_v5` records surviving
+  with `pinned_bodies` in the scene summary, momentum drift of the free bodies 1e-4 (below 1e-3), the mass and
+  momentum sums over the free bodies only and NaN for an all-pinned scene. Full suite (`unittest discover`, GPU 3
+  shared): 271 tests OK (262 + 9; the 3 expected failures are the review's pinned findings), 154 s. Nothing committed.
+- For Anka: (i) with the zero-init network a pinned body's free corners integrate freely like everything else (the
+  lower part of the hanging block in the test sags 2 cells in 30 steps), so a trained network is what makes a pinned
+  body an elastic anchor; the pins themselves hold regardless. (ii) A free body landing on a pinned face rests on
+  corners that cannot move, so the partner force on them is absorbed (the pinned body's residual ignores pinned rows).
+  (iii) The pin draw costs the generator nothing measurable; `pinned_body_fraction` = 0 gives the earlier scenes.
+- Early contact (Anka, 2026-10-02): about 30 % of the free bodies start resting, placed with zero gap directly on the
+  ground or on a pinned body, so contact exists from step 0 in every growth stage; the others fall and drift as
+  planned; growth table unchanged. (Gravity needs 20+ steps to bring bodies together even from 2 cells up, so stages
+  with H <= 16 would otherwise be contact-free.)
+- Review findings to fix before training (2026-10-02): common energy normaliser per scene (reference modulus, per-body
+  elastic ratio) so body-body reactions are equal and opposite in SI; NaN-safe loss mask and a finite idle batch after a
+  failed last scene; dynamic-shape compilation of the network for per-scene shapes; batched candidate noise; detection
+  margin from the relative speed of sample and partner.
+- Static faces (Anka, 2026-10-02): scenes also get artificially sampled static colliding faces: 0-8 planar quads per
+  scene, side 2-10 cells, random orientation (walls, ramps, slabs), placed in the scene column and rejected against the
+  bodies' initial bounding boxes, stored as four corners in the scene record; one `wp.Mesh` per scene built once,
+  queried like a body mesh (`partner_body = -2`, face index into the static table), the body-face contact law with
+  constant partner corners, token = static partner with the radius channel at its cap; penetration folded into the
+  static metric. To implement after the current fix agent (same files).
+
+### Review fixes, resting start, relative-speed margin and the v5 update speed (2026-10-02, implemented: `units.py`, `structs.py`, `physics.py`, `energy_kernel.py`, `scenes_v5.py`, `config.py`, `contact.py`, `contact_kernel.py`, `runner.py`, `step.py`, `augment.py`, `fusion.py`, `batch.py`, `network.py`, `train.py`, `validation.py`; body mode bitwise unchanged)
+
+- Common energy normaliser per scene (review finding 1). `material_from_si(..., mu_ref=None, dtype=float32)`: with
+  `mu_ref` the unit of energy is mu_ref h^3 for every body of the scene (`Material.mu_norm`; `energy_scale` /
+  `force_scale` read it), `ke`, `kd` and the energy floor are divided by mu_ref, and the new field `mu_scale` =
+  mu / mu_ref carries the elastic (mu_scale psi(lam), lam = the body's own lambda / mu), damping (mu_scale eta) and
+  inertia (mu_scale rho) terms into that unit; `lam`, `rho`, `eta` keep the body's OWN dimensionless groups, so
+  `units.conditioning` is untouched and bitwise what it was (test: a v5 body against the same material in body mode).
+  Consumers: `physics.elastic_damping` / `inertia` / `corner_mass` (`units.unit_rho` = rho mu_scale, so `total_mass`,
+  `centroid`, the fusion's centroid weights (a ratio, unchanged) and the coupled centroid Hessian are in the common
+  unit), both Warp kernels (`mu_scale` [O] passed in; the per-cell kernel outputs are bitwise the old ones at
+  mu_scale = 1, checked on the GPU), the contact code unchanged (ke, kd already per object). `scenes_v5.realise` passes
+  mu_ref = the geometric mean of the bodies' shear moduli (`units.reference_modulus`) and builds the material tensors
+  in the requested dtype (exact float64 on the CPU paths instead of float32 roundings cast up). Body mode passes
+  nothing: mu_scale = 1, mu_norm = mu, every field as before (`Material.__post_init__` defaults; `cat` / `__getitem__`
+  by keyword). Measured on the review's two 3x3x3 boxes (`tests/test_v5_review.py`): SI third-law residual
+  |F_A + F_B| / max |F| = 0.90 before (E 1e5 / 1e6: the partner felt mu_B / mu_A = 10 times the reaction), 1e-16
+  after (also 1e3 / 1e6, a factor 1000 before); the coupled centroid update's SI impulse sum 1e-12 relative after
+  (both bodies move, momentum conserved; the former `expectedFailure` tests pass and the own-units configuration is
+  kept as `test_own_units_record_the_finding`); a 3-body scene's total SI energy equals the sum of the three
+  body-mode SI energies with the same plane pairs to 1e-9 relative (exact float64 materials). Full-size scene: a
+  1492-pair step 0 (resting bodies) gives the same losses to three digits as before.
+- Resting start (Anka's early-contact decision). `resting_body_fraction` = 0.3 of the FREE bodies; a fifth seed
+  stream draws (u, face, yaw) per body whatever the fraction, so fraction 0 reproduces the earlier scenes exactly
+  (`tests/reference/scenes_v5_6000_cells.json`, three scenes recorded before the change, compared field by field).
+  Decisions taken in building it, for Anka: (i) a resting body lies FLAT on one of its six faces (uniform) with a
+  random yaw about the vertical, not in a random orientation with a corner on the plane: a cuboid on a corner is not
+  at rest and its face samples are cells away from the plane, so detection would see nothing; (ii) "zero gap" is the
+  contact gap of the sample-sphere model, d = r - gap = 0: the bottom face sits r = h/2 above the support, so all its
+  samples pair at step 0 with zero penetration and the body settles by the static penetration (~1e-3 cells) only;
+  corners on the plane would mean d = r on every bottom sample, 100x the body's weight (kappa 30, E 1e5), and the
+  body would jump; (iii) a resting body carries no deformation field (`perturbation_scale` 0) and no velocity: the
+  field's RMS (up to 0.45 cells) is hundreds of static penetrations; (iv) on a pinned body: the exact closest approach
+  along -y of the flat bottom to the tilted box (`support_height`, the maximum of the box's upper envelope over the
+  footprint at the vertices of the arrangement: box corners inside the footprint, footprint corners over the box,
+  edge crossings), the pinned body counted as its box inflated on every side by `CLEARANCE_SIGMAS` = 3 RMS of its own
+  deformation field (without it the deformed support penetrated the resting body by up to 0.4 cells from below and
+  from the side where a tilted box rises past the resting body's edge), the bounding boxes only selecting the
+  candidates, a separating-axis test (`boxes_overlap`) verifying the supports and the grown-box rule everything
+  else. `BodySpec.resting`, JSON round trip (old records read as False), `scene_summary["resting_bodies"]` and
+  `["resting_on_bodies"]`, `epoch_summary()["resting_bodies_mean"]`. Statistics: 20 scenes of 6000 cells: 70 of 216
+  free bodies resting (32 %), 36 of them on pinned bodies; 8 default scenes (145-163 bodies): 264 of 910 free bodies
+  (29 %), 75 on pinned bodies, placement acceptance 6-10 % with 2.3 footprint growths per scene (the resting bodies
+  fill the ground layer; the fill constant assumes the whole column) and 74 ms per scene (43 before); step 0 of the
+  default scene 5 has 1492 pairs (0 before). Tests (`tests/test_scenes_v5.py`): fraction, faces, zero velocity and
+  field, flat pose, ground gap r to 1e-9 cells, pinned supports at r above the inflated box to 1e-6 (no overlap) and
+  within 0.05 cells of the closest approach by an independent bisection over dense footprint samples, the exact
+  support against the bisection on 30 random tilted boxes, fraction 0 against the recorded scenes, detection at X of
+  four 3000-cell scenes finding the plane pairs of every ground-resting body with |d| < 1e-6 and no penetrating pair
+  of any resting body; the placement / realise tests exempt the (resting, pinned support) pairs from the grown-box
+  rule and the resting bodies from the height rules.
+- Detection margin from the relative speed (review remark). Body pairs use margin = r + |v_s - v_f| with v_f the mean
+  corner velocity of the partner face found by the query (the query's reach is the largest possible margin + r,
+  2r + |v_s| + max |v|); static partners keep r + |v_s|. Two co-moving bodies at surface distance 0.7 no longer pair,
+  a body at rest sees the body coming at it from both sides (9 + 9 pairs), moving away or sliding sideways counts the
+  same (the margin is a speed) (`tests/test_body_contact.py`).
+- Failed last scene (review finding 2). `SceneRunner._idle`: with the queue empty the batch gets `active` False AND a
+  finite state (candidate back at X, energies, gradients, history and Picard constant zero), so the trainer's loss is
+  finite in the product form too and its gradients are exactly zero (`test_failed_last_scene_leaves_a_finite_loss`,
+  decorator dropped, checks both forms and every parameter's gradient over two idle updates). Under DDP: a 2-rank
+  gloo test on the CPU (`tests/test_scene_runner.py::TestIdleRankUnderDDP`, torch.multiprocessing spawn, one scene per
+  rank, rank 1's scene failing at the first update): both ranks keep finite gradient norms and losses for the rest of
+  the epoch, rank 1's losses zero. Note for Anka: the failing update itself is not new territory: a NaN produced inside
+  the energy sends NaN gradients to the parameters through the masked loss (masked_fill zeroes the loss row, but
+  0 x d asinh(NaN) = NaN) and, under DDP, to every rank through the all-reduce; train.py skips that optimizer step on
+  the non-finite gradient norm, so one update is lost per failure on all ranks.
+- Performance of the v5 update (default scene 5 of seed 73: 159 bodies, 64.4k cells, 94k corners, 52k samples, 151
+  distinct grid shapes; L40 alone, float32, eager network unless stated). Before: prepare 57.6 ms, eager query 152 ms
+  (0 pairs; 169 ms at the 1492 pairs of the resting start), update (query + backward + optimizer) 306 ms (346 ms with
+  the pairs). The breakdown showed the per-group Python loops of the fusion as the cost, not the network: fuse 77-92
+  ms, project_gradient 60 ms, network forward 16.5 ms, the backward 130 ms mostly the fuse's. Done: (a) `Fusion(
+  batched=True)` / `fusion.BatchedKron`: every object's free lattice embedded in the batch's largest one (13^3 at most)
+  with zero-padded eigenvector blocks and infinite eigenvalue sums on the padding, so all ~150 Kron solves are one
+  padded chain of six batched matmuls; the right-hand side, the centroid completion and `project_gradient`'s mean
+  removal by batch-wide segment sums; built once per batch layout and dtype (`Batch.fusion_cache`); the loop path
+  stays for one-group batches (body mode: unchanged bitwise) and for prescribed pins; train.py sets it in v5 mode.
+  Fuse 77 -> 0.9 ms, project_gradient 60 -> 0.8 ms, backward 130 -> 35 ms: eager query 169 -> 31 ms, update 346 -> 68
+  ms (loop and batched agree to 1e-11 in float64 and 2e-5 in float32 on a mixed batch of free and pinned boxes,
+  gradients to dF included; `tests/test_fusion.py::TestBatchedKron`). (b) Candidate noise: `Step.prepare` takes ONE
+  generator for the batch (`SceneRunner`, the v5 validation; seeded by master, scene, epoch) and draws the use flags,
+  the RMS values and the multiscale fields of ALL objects in a handful of launches (`Augmenter.candidate_noise_all`:
+  per wavelength one normal tensor over the padded lattices of every object, one gather for all corners through
+  tables cached on the batch, RMS normalisation and the free bodies' mass-weighted mean removal by segment sums); the
+  per-object loop with its host synchronisations stays for the body regime's generator lists. The v5 candidate stream
+  is a different stream (documented in `prepare`); prepare 57.6 (per-body loop; a first per-group variant cost 96 ms
+  with ~1 body per group) -> 22.6 ms, of which detection 12.8 ms. (c) `contact_kernel.pair_geometry_kernel`: the
+  tokens', translation stiffness's and penetration's geometry over the capacity rows in one launch (padded rows
+  zero; `contact.USE_WARP_GEOMETRY`), the inference path with 260,700 capacity rows of which 1492 valid: tokens 3.00
+  -> 1.03 ms, `_geometry` 2.19 -> 0.20, `translation_hessian` 3.88 -> 1.92, penetration 2.37 -> 0.40, the capacity
+  inference query 37.0 -> 34.5 ms (training uses the compacted rows and is unaffected). (d) Mesh refresh: Warp 1.17 has
+  no batched refit (`Mesh.refit` is one `wp_mesh_refit_device` call per mesh); 4.2 ms for 159 meshes, kept.
+  (e) `Net.compile_layers(dynamic=True)` and train.py compiling in v5 mode too: with static shapes the compiled layer
+  recompiles at every scene (dynamo unique graphs 5 / 10 / 15 over three scenes, 8 s each); dynamic keeps 5 graphs
+  over the three scenes (first compile 11.5 s, 0.8 s per further scene for factors and meshes) and the update is
+  65 ms against 68 ms eager: the network is 18 ms forward and ~30 ms backward of the update now, the compile saves
+  little. After everything: prepare 22.6 ms, eager inference query 31 ms, update 65-68 ms (0.1-0.15 s targeted; the
+  remaining breakdown of the no-grad query: network 17.6, centroid_target 9.0 (contact force, coupled Hessian and
+  the 477 x 477 solve), features 6.8, energy + gradient 5.1, fuse 0.9, project_gradient 0.8 ms; with grad +35 ms
+  backward), peak memory 3.7-3.8 GiB.
+- Tests: 281 pass, no expected failures left (271 + 10 new: common unit 3 (own-units record, scene energy sum,
+  conditioning channels), resting 2, DDP idle rank 1, batched Kron 2, batched noise 1, geometry kernel 1; extended:
+  the two former expected failures and the idle-batch test now pass, detection with the relative speed, the placement
+  / realise tests with resting bodies), 206 s on GPU 3; `uvx ruff format` / `check` clean; pre-commit clean on the
+  package files (the typos hook flags two words in Anka's `notes/v5-free-motion-with-contact.md`, untouched).
+  Nothing committed.

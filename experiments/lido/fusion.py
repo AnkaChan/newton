@@ -5,11 +5,12 @@
 
 K = B^T W B = I_3 (x) K_s with one scalar matrix K_s per grid shape. On a box grid of unit trilinear cells K_s is
 exactly the Kronecker sum  Kx (x) My (x) Mz + Mx (x) Ky (x) Mz + Mx (x) My (x) Kz  of the assembled 1D stiffness and
-mass matrices (2-point Gauss is exact for these integrands), and pinning the z-min face removes one Dirichlet plane
-of the z factor. The free block is therefore solved exactly by fast diagonalisation: generalised eigenvectors of
-(K_a, M_a) per axis, three small matmuls in, a pointwise division, three matmuls out. No factor is stored, the cost
-is O(P (nx + ny + nz)) and it scales to any grid; the dense float32 inverse (94 MB and 0.05 ms per solve for the
-canonical grid, 5 GB at 20x20x80) remains available as `Fusion(solver="dense")` and as the test reference.
+mass matrices (2-point Gauss is exact for these integrands), and pinning one lattice face removes one Dirichlet
+node (0 or n) of that axis' factor. The free block is therefore solved exactly by fast diagonalisation: generalised
+eigenvectors of (K_a, M_a) per axis, three small matmuls in, a pointwise division, three matmuls out. No factor is
+stored, the cost is O(P (nx + ny + nz)) and it scales to any grid; the dense float32 inverse (94 MB and 0.05 ms per
+solve for the canonical grid, 5 GB at 20x20x80) remains available as `Fusion(solver="dense")` and as the test
+reference.
 For meshes that are not box grids (any cell table, any pin set) the same interface offers a geometric multigrid
 preconditioned conjugate gradient on the voxel lattice (`multigrid.MultigridFactor`, the default on CUDA) and cuDSS
 through nvmath-python (`SparseFactor`: fp32 solve 0.21 ms for 3 right-hand sides on the canonical grid, 0.65 ms at
@@ -33,7 +34,7 @@ import dataclasses
 
 import torch
 
-from .grid import Grid
+from .grid import BOX_PINS, Grid, face_pin
 from .hex import MODE_COUNT, HexConstants
 
 Tensor = torch.Tensor
@@ -92,30 +93,38 @@ def dirichlet_view(grid: Grid) -> Grid:
 
 
 class KronFactor:
-    """Fast-diagonalisation solver of the free block of K_s for a box grid with the z-min face pinned, or the
-    pseudo-inverse of the whole K_s for an unpinned box (pins="none": the constant mode's inverse is 0, exact on
-    right-hand sides with zero translation component).
+    """Fast-diagonalisation solver of the free block of K_s for a box grid with one lattice face pinned (any of
+    `grid.FACE_PINS`: the Dirichlet node 0 or n of that axis' 1D factor is dropped), or the pseudo-inverse of the
+    whole K_s for an unpinned box (pins="none": the constant mode's inverse is 0, exact on right-hand sides with
+    zero translation component).
 
-    `free` is the corner set the solve covers (grid.free in both cases)."""
+    `free` is the corner set the solve covers (grid.free in both cases): with one face pinned the free corners are a
+    product set in lattice order, so `grid.free` reshapes to (nx + 1 | nx, ny + 1 | ny, nz + 1 | nz)."""
 
     def __init__(self, grid: Grid, dtype=torch.float32):
-        if grid.kind != "box" or grid.pins not in ("zmin_face", "none"):
-            raise ValueError("KronFactor needs a box grid with the z-min face pinned or no pins")
-        nx, ny, nz = grid.cell_counts
+        if grid.kind != "box" or grid.pins not in BOX_PINS:
+            raise ValueError("KronFactor needs a box grid with one lattice face pinned or no pins")
+        counts = grid.cell_counts
         dev = grid.device
-        Mx, Kx = one_d_matrices(nx, dev)
-        My, Ky = one_d_matrices(ny, dev)
-        Mz, Kz = one_d_matrices(nz, dev)
-        lx, Vx = generalised_eigh(Kx, Mx)
-        ly, Vy = generalised_eigh(Ky, My)
         self.free_body = grid.pins == "none"
-        if self.free_body:
-            lz, Vz = generalised_eigh(Kz, Mz)
-            self.shape = (nx + 1, ny + 1, nz + 1)
-        else:
-            lz, Vz = generalised_eigh(Kz[1:, 1:], Mz[1:, 1:])  # free z nodes 1..nz
-            self.shape = (nx + 1, ny + 1, nz)
-        self.V = (Vx.to(dtype), Vy.to(dtype), Vz.to(dtype))
+        pin_axis, pin_side = (None, None) if self.free_body else face_pin(grid.pins)
+        Ms, Ks, lams, Vs, shape = [], [], [], [], []
+        for axis, n in enumerate(counts):
+            M, K = one_d_matrices(n, dev)
+            Ms.append(M)
+            Ks.append(K)
+            if axis == pin_axis:
+                sl = slice(1, None) if pin_side == "min" else slice(0, n)  # free nodes 1..n or 0..n-1
+                lam, V = generalised_eigh(K[sl, sl], M[sl, sl])
+                shape.append(n)
+            else:
+                lam, V = generalised_eigh(K, M)
+                shape.append(n + 1)
+            lams.append(lam)
+            Vs.append(V)
+        self.shape = tuple(shape)
+        self.V = tuple(V.to(dtype) for V in Vs)
+        lx, ly, lz = lams
         denom = lx[:, None, None] + ly[None, :, None] + lz[None, None, :]
         if self.free_body:
             # eigh sorts ascending, so (0, 0, 0) is the constant mode of the three unpinned 1D stiffness matrices
@@ -124,9 +133,9 @@ class KronFactor:
                 raise RuntimeError("KronFactor: the unpinned 1D stiffness has no zero eigenvalue")
             denom[0, 0, 0] = float("inf")
         self.denom = denom.to(dtype)
-        self.full_shape = (nx + 1, ny + 1, nz + 1)
-        self.M = (Mx.to(dtype), My.to(dtype), Mz.to(dtype))
-        self.K = (Kx.to(dtype), Ky.to(dtype), Kz.to(dtype))
+        self.full_shape = tuple(n + 1 for n in counts)
+        self.M = tuple(M.to(dtype) for M in Ms)
+        self.K = tuple(K.to(dtype) for K in Ks)
         self.grid = grid
         self.free = grid.free
 
@@ -302,13 +311,83 @@ class DenseFactor:
         return torch.einsum("fp,npa->nfa", self.K_fp_mat, dp)
 
 
-class Fusion:
-    """solver: "auto" (structured solve for box grids with the z-min face pinned, multigrid PCG for anything else on
-    CUDA, dense inverse otherwise), or one of "kron", "mg", "sparse" (cuDSS), "dense" to force a path."""
+class BatchedKron:
+    """The Kron solves of every object of a batch of box grids in one padded tensor chain (v5 scenes: ~150 distinct
+    grid shapes, so the per-group loop of `Fusion.fuse` / `project_gradient` cost 140 ms of Python-launched small
+    kernels per query at 64k cells against 16 ms for the network).
 
-    def __init__(self, solver: str = "auto", refine: bool = False, options: dict | None = None):
+    Every object's free lattice (nx + 1 | nx, ...) is embedded in the batch's largest one (Xm, Ym, Zm) with zero
+    padding: the per-axis eigenvector matrices sit in the top-left block of [O, Am, Am] zero matrices, the
+    eigenvalue sums are inf on the padding (their inverse 0), so the padded chain V (V^T r / denom) is the object's
+    KronFactor.solve on its block and zero elsewhere. `gather` maps the padded lattice to the batch's free corner
+    rows (-1 for padding), `scatter` every corner row to its padded slot (pinned corners to a zero slot). Built once
+    per batch layout and dtype (`Batch.fusion_cache`); the arithmetic is the KronFactor's up to summation order."""
+
+    def __init__(self, batch, fusion: Fusion, dtype):
+        dev = batch.device
+        O = batch.O
+        factors = [fusion.factor(g, dtype) for g in batch.grids]
+        if not all(isinstance(f, KronFactor) for f in factors):
+            raise ValueError("BatchedKron needs box grids with one lattice face pinned or no pins")
+        shapes = torch.tensor([f.shape for f in factors], device=dev)  # [O,3] free lattice per object
+        Xm, Ym, Zm = (int(v) for v in shapes.max(0).values)
+        self.shape = (Xm, Ym, Zm)
+        L = Xm * Ym * Zm
+        self.V = [torch.zeros(O, A, A, dtype=dtype, device=dev) for A in self.shape]
+        self.Vt = [torch.zeros(O, A, A, dtype=dtype, device=dev) for A in self.shape]
+        denom = torch.full((O, Xm, Ym, Zm), float("inf"), dtype=dtype, device=dev)
+        gather = torch.full((O, Xm, Ym, Zm), -1, dtype=torch.int64, device=dev)
+        for o, f in enumerate(factors):
+            nx, ny, nz = f.shape
+            for a, A in enumerate(f.V):
+                self.V[a][o, : A.shape[0], : A.shape[1]] = A
+                self.Vt[a][o, : A.shape[1], : A.shape[0]] = A.T
+            denom[o, :nx, :ny, :nz] = f.denom
+            gather[o, :nx, :ny, :nz] = (f.free + batch.corner_off[o]).view(nx, ny, nz)  # lattice order of free
+        self.denom = denom[..., None]  # [O,Xm,Ym,Zm,1]
+        self.N = batch.N
+        flat = gather.reshape(-1)
+        self.gather = flat.masked_fill(flat < 0, self.N)  # row N of the padded source is a zero row
+        scatter = torch.full((self.N + 1,), O * L, dtype=torch.int64, device=dev)  # slot O L holds zeros
+        valid = flat >= 0
+        scatter[flat[valid]] = torch.arange(O * L, device=dev)[valid]
+        self.scatter = scatter[: self.N]
+        self.free_corner = torch.zeros(self.N, dtype=torch.bool, device=dev)
+        self.free_corner[flat[valid]] = True
+
+    def _axis(self, M: Tensor, T: Tensor, axis: int) -> Tensor:
+        """Contract the per-object matrices M [O, A, A] with T [O, Xm, Ym, Zm, 3] along a spatial axis."""
+        O, X, Y, Z, c = T.shape
+        if axis == 0:
+            return torch.matmul(M, T.reshape(O, X, Y * Z * c)).reshape(O, X, Y, Z, c)
+        if axis == 1:
+            return torch.matmul(M[:, None], T.reshape(O, X, Y, Z * c)).reshape(O, X, Y, Z, c)
+        return torch.matmul(M[:, None, None], T.reshape(O, X, Y, Z, c)).reshape(O, X, Y, Z, c)
+
+    def solve(self, r: Tensor) -> Tensor:
+        """K^-1 r on every object's free corners: r [N,3] -> [N,3] (rows of pinned corners are ignored and come out
+        zero; an unpinned object gets the pseudo-inverse solution as `KronFactor.solve`)."""
+        src = torch.cat([r, r.new_zeros(1, 3)])
+        T = src.index_select(0, self.gather).view(len(self.denom), *self.shape, 3)
+        for axis in range(3):
+            T = self._axis(self.Vt[axis], T, axis)
+        T = T / self.denom
+        for axis in range(3):
+            T = self._axis(self.V[axis], T, axis)
+        out = torch.cat([T.reshape(-1, 3), T.new_zeros(1, 3)])
+        return out.index_select(0, self.scatter)
+
+
+class Fusion:
+    """solver: "auto" (structured solve for box grids with one lattice face pinned or no pins, cuDSS or multigrid
+    PCG for anything else on CUDA, dense inverse otherwise), or one of "kron", "mg", "sparse" (cuDSS), "dense" to
+    force a path. `batched`: a batch of several box-grid groups is solved in one padded chain (`BatchedKron`) instead
+    of a Python loop over the groups (v5 scenes; body mode has one group and is unchanged either way)."""
+
+    def __init__(self, solver: str = "auto", refine: bool = False, options: dict | None = None, batched: bool = False):
         self.solver = solver
         self.refine = refine
+        self.batched = batched
         self.options = dict(options or {})  # MultigridFactor keyword options (iterations, capture, rtol, degree, ...)
         self.sparse_max_free = int(
             self.options.pop("sparse_max_free", 300_000)
@@ -317,12 +396,25 @@ class Fusion:
             tuple, object
         ] = {}  # (grid key, dtype) -> KronFactor | MultigridFactor | SparseFactor | DenseFactor
 
+    def batched_kron(self, batch, dtype) -> BatchedKron | None:
+        """The batch's `BatchedKron` when the batched path applies (several groups, all solvable by KronFactor)."""
+        if not self.batched or len(batch.groups) < 2:
+            return None
+        if batch.fusion_cache is None:
+            batch.fusion_cache = {}
+        if dtype not in batch.fusion_cache:
+            try:
+                batch.fusion_cache[dtype] = BatchedKron(batch, self, dtype)
+            except ValueError:
+                batch.fusion_cache[dtype] = False
+        return batch.fusion_cache[dtype] or None
+
     def factor(self, grid: Grid, dtype=torch.float32):
         """The solver of the grid's shape system; every factor exposes `free`, the corner set its solve covers
         (grid.free, or all corners but the reference corner for an unpinned body on a non-Kron solver)."""
         key = (grid.key, dtype)
         if key not in self.factors:
-            structured = grid.kind == "box" and grid.pins in ("zmin_face", "none")
+            structured = grid.kind == "box" and grid.pins in BOX_PINS
             if self.solver == "kron" or (self.solver == "auto" and structured):
                 self.factors[key] = KronFactor(grid, dtype)
             else:
@@ -361,6 +453,9 @@ class Fusion:
         objects are untouched. Without a target the unpinned shape solution is returned as it is.
         """
         hc = batch.hc
+        kron = self.batched_kron(batch, dF.dtype) if d_pinned is None else None
+        if kron is not None:
+            return self._fuse_batched(batch, dF, kron, centroid_target)
         d = torch.zeros(batch.N, 3, dtype=dF.dtype, device=dF.device)
         for grp in batch.groups:
             grid = grp.grid
@@ -376,12 +471,38 @@ class Fusion:
             if dp is not None:
                 dg = dg.index_copy_(1, grid.pinned, dp)
             if centroid_target is not None and grid.pinned.numel() == 0:
-                m = batch.material.rho[grp.objects].to(dF.dtype)[:, None] * grid.mass.to(dF.dtype)[None]  # [n,P]
+                # the centroid weights and the sum over x_k in float64 (see physics.centroid): float32 weights sum
+                # to 1 + eta with eta ~ 1e-7 fixed per grid, a bias of eta |c| ~ 6e-6 cells per step at 60 cells
+                m = batch.material.rho[grp.objects].double()[:, None] * grid.mass.double()[None]  # [n,P]
                 w = (m / m.sum(1, keepdim=True))[..., None]
-                c_x = (w * batch.x.detach()[grp.corner_idx].view(n, grid.P, 3)).sum(1)
-                c_d = (w * dg).sum(1)
+                x_k = batch.x.detach()[grp.corner_idx].view(n, grid.P, 3)
+                c_x = (w * x_k.double()).sum(1).to(dF.dtype)
+                c_d = (w.to(dF.dtype) * dg).sum(1)
                 dg = dg + (centroid_target[grp.objects] - c_x - c_d)[:, None, :]
             d = d.index_copy_(0, grp.corner_idx, dg.reshape(-1, 3))
+        return d
+
+    def _fuse_batched(self, batch, dF: Tensor, kron: BatchedKron, centroid_target: Tensor | None) -> Tensor:
+        """`fuse` through `BatchedKron`: the right-hand side B^T W dF over all cells at once, one padded solve, and
+        the centroid completion of the free objects by segment sums (the same float64 weights as the loop)."""
+        hc = batch.hc
+        contrib = torch.einsum("q,cqra,qka->ckr", hc.weights, dF, hc.Gq)  # [C,8,3]
+        rhs = torch.zeros(batch.N, 3, dtype=dF.dtype, device=dF.device).index_add_(
+            0, batch.cells.reshape(-1), contrib.reshape(-1, 3)
+        )
+        d = kron.solve(rhs)
+        if centroid_target is not None and batch.any_free:
+            from .units import unit_rho
+
+            o = batch.corner_obj
+            m = (unit_rho(batch.material).double()[o] * batch.mass.double()).masked_fill(~batch.free_objects[o], 0.0)
+            M = torch.zeros(batch.O, dtype=torch.float64, device=m.device).index_add_(0, o, m)
+            w = (m / M.clamp_min(1e-300)[o])[:, None]  # [N,1], zero on the pinned objects' rows
+            x_k = batch.x.detach().double()
+            c_x = torch.zeros(batch.O, 3, dtype=torch.float64, device=m.device).index_add_(0, o, w * x_k)
+            c_d = torch.zeros(batch.O, 3, dtype=dF.dtype, device=m.device).index_add_(0, o, w.to(dF.dtype) * d)
+            shift = (centroid_target - c_x.to(dF.dtype) - c_d).masked_fill(~batch.free_objects[:, None], 0.0)
+            d = d + shift[o]
         return d
 
     def project_gradient(self, batch, gX: Tensor) -> Tensor:
@@ -394,6 +515,16 @@ class Fusion:
         removing it makes the result independent of the particular solution the factor picks.
         """
         hc = batch.hc
+        kron = self.batched_kron(batch, gX.dtype)
+        if kron is not None:
+            o = batch.corner_obj
+            free_rows = batch.free_objects[o]
+            counts = torch.bincount(o, minlength=batch.O).to(gX.dtype)
+            mean = torch.zeros(batch.O, 3, dtype=gX.dtype, device=gX.device).index_add_(0, o, gX) / counts[:, None]
+            g = torch.where(free_rows[:, None], gX - mean[o], gX)
+            z = kron.solve(g)  # zero on pinned corners
+            dFz = torch.einsum("ckr,qka->cqra", z[batch.cells], hc.Gq) * hc.weights[:, None, None]
+            return torch.einsum("qij,cqi->cj", hc.Gamma, dFz.reshape(batch.C, 8, 9)).reshape(batch.C, MODE_COUNT, 3)
         out = torch.zeros(batch.C, MODE_COUNT, 3, dtype=gX.dtype, device=gX.device)
         for grp in batch.groups:
             grid = grp.grid

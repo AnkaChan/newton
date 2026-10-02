@@ -26,12 +26,33 @@ def growth_stage(epoch: int, cfg) -> tuple[int, int, int]:
     return stage, int(K_max), int(H_max)
 
 
+def job_count(cfg) -> int:
+    """Jobs per epoch: `state_count` states in the body regime, `scene_count` scenes in the v5 scene regime."""
+    return int(cfg.scene_count if cfg.scene_mode == "v5" else cfg.state_count)
+
+
 def sample_epoch_jobs(master_seed: int, epoch: int, cfg) -> list[Job]:
-    """One Job per state: H ~ U{1..H_max}, K uniform over the powers of two <= K_max with K H <= budget_cap."""
+    """One Job per state: H ~ U{1..H_max}, K uniform over the powers of two <= K_max with K H <= budget_cap.
+
+    v5 scene regime (`cfg.scene_mode == "v5"`, design spec section 11): a fixed state is a scene, `job_count` =
+    `scene_count` jobs with seed = scene index and the same K, H draws; `assign(jobs, world, 1)` (one scene per
+    rank at a time) gives U = the rank's sum of K H. Updates per rank per epoch for the v4 growth table with 64
+    scenes (expectation; the LPT loads of seed 73 over 4 ranks are within 1 %):
+
+        stage  K_max  H_max   E[sum K H]   per rank of 4   per rank of 1
+          0      1      8         288            72             288
+          1      2     16         816           204             816
+          2      4     32        2464           616            2464
+          3      8     64        7800          1950            7800
+          4     16    128       25594          6398           25594
+          5     32    128       30066          7516           30066
+
+    (E[K H] per job = mean over H of the mean of the admissible k H; the budget cap 2048 binds from stage 4.)
+    """
     _, K_max, H_max = growth_stage(epoch, cfg)
     rng = np.random.default_rng(np.random.SeedSequence([master_seed, epoch, 7331]))
     jobs = []
-    for state in range(cfg.state_count):
+    for state in range(job_count(cfg)):
         H = int(rng.integers(1, H_max + 1))
         ks = [int(k) for k in cfg.iteration_counts if k & (k - 1) == 0 and k <= K_max and k * H <= cfg.budget_cap]
         jobs.append(Job(seed=state, K=int(rng.choice(ks)), H=H))

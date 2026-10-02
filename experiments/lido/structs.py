@@ -34,23 +34,40 @@ class FaceSamples:
 
 @dataclass
 class Material:
-    """Per-object material in normalised units (h = mu = dt = 1); fields stacked over objects [O]."""
+    """Per-object material in normalised units; fields stacked over objects [O].
 
-    lam: Tensor  # lambda / mu
-    rho: Tensor  # rho h^2 / (mu dt^2)
-    eta: Tensor  # eta / (mu dt)
+    The unit of energy of object o is `mu_norm[o] h^3` (force `mu_norm[o] h^2`): the body's own shear modulus in
+    body mode (h = mu = dt = 1 per object), one common reference modulus per scene in v5 scenes (`material_from_si`
+    with `mu_ref`), so that the energies of bodies in contact add up and the reaction a body pair exerts on the
+    partner is in the partner's units too (review finding of 2026-10-02). `lam`, `rho`, `eta` hold the body's OWN
+    dimensionless groups (the conditioning channels, unchanged by the choice of reference); the energy terms carry
+    the factor `mu_scale` = mu / mu_norm (1 in body mode): elastic density mu_scale psi(lam), damping
+    mu_scale eta, inertia mu_scale rho. `ke`, `kd` and `floor` are in the common unit directly.
+    """
+
+    lam: Tensor  # lambda / mu (the body's own ratio)
+    rho: Tensor  # rho h^2 / (mu dt^2) (own; times mu_scale in the energy)
+    eta: Tensor  # eta / (mu dt) (own; times mu_scale in the energy)
     g: Tensor  # [O,3] g dt^2 / h
-    ke: Tensor  # contact stiffness ke / (mu h)
-    kd: Tensor  # contact damping kd / (mu h dt)
+    ke: Tensor  # contact stiffness ke / (mu_norm h)
+    kd: Tensor  # contact damping kd / (mu_norm h dt)
     mu_f: Tensor  # friction coefficient
     kappa: Tensor  # ke / (E h)
     beta: Tensor  # kd / (ke dt)
     friction_eps: Tensor  # friction_epsilon dt / h (velocity band in cell units per step)
-    floor: Tensor  # energy floor in mu h^3
+    floor: Tensor  # energy floor in mu_norm h^3
     h: Tensor  # cell size [m]
     dt: Tensor  # time step [s]
     mu: Tensor  # shear modulus [Pa]
     si: list  # per-object dicts of the SI parameters (records)
+    mu_scale: Tensor = None  # mu / mu_norm: the body's energy terms in the common unit (1 in body mode)
+    mu_norm: Tensor = None  # the unit modulus [Pa]: energy_scale = mu_norm h^3, force_scale = mu_norm h^2
+
+    def __post_init__(self):
+        if self.mu_scale is None:
+            self.mu_scale = torch.ones_like(self.mu)
+        if self.mu_norm is None:
+            self.mu_norm = self.mu.clone()
 
     @property
     def count(self) -> int:
@@ -60,14 +77,14 @@ class Material:
         idx_list = idx if isinstance(idx, list) else torch.as_tensor(idx).reshape(-1).tolist()
         t = torch.as_tensor(idx_list, device=self.lam.device, dtype=torch.long)
         return Material(
-            *(getattr(self, f)[t] for f in _MATERIAL_TENSORS),
+            **{f: getattr(self, f)[t] for f in _MATERIAL_TENSORS},
             si=[self.si[i] for i in idx_list],
         )
 
     @staticmethod
     def cat(parts: list[Material]) -> Material:
         return Material(
-            *(torch.cat([getattr(p, f) for p in parts]) for f in _MATERIAL_TENSORS),
+            **{f: torch.cat([getattr(p, f) for p in parts]) for f in _MATERIAL_TENSORS},
             si=[d for p in parts for d in p.si],
         )
 
@@ -93,6 +110,8 @@ _MATERIAL_TENSORS = (
     "h",
     "dt",
     "mu",
+    "mu_scale",
+    "mu_norm",
 )
 
 
@@ -119,10 +138,12 @@ class Pairs:
     obj: Tensor  # [Q] object id
     partner_point: Tensor  # [Q,3]
     partner_normal: Tensor  # [Q,3]
-    kind: Tensor  # [Q] 0 plane, 1 static point
-    radius: Tensor  # [Q] partner radius
+    kind: Tensor  # [Q] 0 plane, 1 static point, 2 other body
+    radius: Tensor  # [Q] partner radius (r for planes and body faces)
     anchor: Tensor  # [Q,3] sample position at step start (friction anchor)
     valid: Tensor  # [Q] bool
+    partner_body: Tensor = None  # [Q] object id of the partner body (kind 2), -1 for planes and static points
+    partner_face: Tensor = None  # [Q] global sample id of the partner body's exposed face (kind 2), -1 otherwise
     # capacity layout (design spec 1b "CUDA graphs"): Q = S (1 + k) slots in a fixed sample-major order, padded
     # rows carry valid = False; token_offsets is then the static capacity CSR and the token attention pairs are
     # precomputed once per layout

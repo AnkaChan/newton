@@ -189,7 +189,7 @@ class TestEnergy(unittest.TestCase):
         self.assertGreater(E.item(), 0.0)
         (g,) = torch.autograd.grad(E.sum(), x)
         with torch.no_grad():
-            _, _, gap, r_total = contact._geometry(b, x, b.pairs)
+            _, _, _, gap, r_total, _ = contact._geometry(b, x, b.pairs)
             load = b.material.ke[b.pairs.obj] * torch.relu(r_total - gap)
             frozen = lambda xx: sum(contact.pair_energies(b, xx, b.pairs, load)).sum()  # noqa: E731
             for _ in range(3):

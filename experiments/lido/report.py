@@ -177,42 +177,65 @@ def build_epoch_record(
     validation: dict | None = None,
     full_horizon_validation: dict | None = None,
     rank_diagnostics: list | None = None,
+    scene_regime: dict | None = None,
 ) -> dict:
     """One row of ``report["epochs"]`` with the dashboard's key names (regime named ``fixed_states``).
 
     ``failures`` may hold FailureRecord dataclasses or dicts; ``updates``, ``resets``, ``failures``,
     ``material_histograms`` and ``rank_diagnostics`` are carried through, the dashboard does not read them.
+    ``scene_regime`` (the v5 scene statistics of ``SceneRunner.epoch_summary``) is added as an extra key when given;
+    the dashboard tolerates extra keys.
     """
     regime = plain(regime) or {}
-    return plain(
-        {
-            "epoch": epoch,
-            "loss": loss,
-            "query_count": query_count,
-            "updates": updates,
-            "seconds": seconds,
-            "learning_rate": lr,
-            "gradient_norm_mean": grad_norm_mean,
-            "gradient_norm_max": grad_norm_max,
-            "step_size_mean": step_mean,
-            "step_size_min": step_min,
-            "step_size_max": step_max,
-            "tie_cell_count": tie_cell_count,
-            "mean_force_residual_n": mean_force_residual_n,
-            "resets": resets,
-            "failures": failures,
-            "regime": {"name": "fixed_states", **{k: regime.get(k) for k in _REGIME_KEYS}},
-            "available_K": list(available_K),
-            "available_H": list(available_H),
-            "contact_scene_fraction": contact_scene_fraction,
-            "contact_realized_fraction": contact_realized_fraction,
-            "contact_max_penetration_r": contact_max_penetration_r,
-            "material_histograms": material_histograms,
-            "validation": validation,
-            "full_horizon_validation": full_horizon_validation,
-            "rank_diagnostics": rank_diagnostics,
-        }
-    )
+    record = {
+        "epoch": epoch,
+        "loss": loss,
+        "query_count": query_count,
+        "updates": updates,
+        "seconds": seconds,
+        "learning_rate": lr,
+        "gradient_norm_mean": grad_norm_mean,
+        "gradient_norm_max": grad_norm_max,
+        "step_size_mean": step_mean,
+        "step_size_min": step_min,
+        "step_size_max": step_max,
+        "tie_cell_count": tie_cell_count,
+        "mean_force_residual_n": mean_force_residual_n,
+        "resets": resets,
+        "failures": failures,
+        "regime": {"name": "fixed_states", **{k: regime.get(k) for k in _REGIME_KEYS}},
+        "available_K": list(available_K),
+        "available_H": list(available_H),
+        "contact_scene_fraction": contact_scene_fraction,
+        "contact_realized_fraction": contact_realized_fraction,
+        "contact_max_penetration_r": contact_max_penetration_r,
+        "material_histograms": material_histograms,
+        "validation": validation,
+        "full_horizon_validation": full_horizon_validation,
+        "rank_diagnostics": rank_diagnostics,
+    }
+    if scene_regime is not None:
+        record["scene_regime"] = scene_regime
+    return plain(record)
+
+
+# v5 scene records (validation.py): per-iteration curves summarised like the penetration, and final values.
+SCENE_CURVE_KEYS = ("interbody_penetration_r", "plane_penetration_r")
+
+
+def _scene_curves(samples: list, iterations: int) -> dict:
+    """{key: [K+1 x {iteration, mean, max}]} for the v5 scene curves present in the samples (empty otherwise)."""
+    out = {}
+    for key in SCENE_CURVE_KEYS:
+        if any(isinstance(s.get(key), list) for s in samples):
+            out[key] = [
+                {"iteration": i, **_stats([_at(s.get(key), i) for s in samples], ("mean", "max"))}
+                for i in range(int(iterations) + 1)
+            ]
+    pairs = [s.get("contact_pairs") for s in samples if isinstance(s.get("contact_pairs"), dict)]
+    if pairs:
+        out["contact_pairs"] = {k: _mean([p.get(k) for p in pairs]) for k in ("total", "plane", "body")}
+    return out
 
 
 def summarize_cheap_validation(samples: list, iterations: int, floor_scale_joule: float | None = None) -> dict:
@@ -268,6 +291,7 @@ def summarize_cheap_validation(samples: list, iterations: int, floor_scale_joule
         "relative_energy": relative,
         "force_residual": residual,
         "penetration": penetration,
+        **_scene_curves(samples, iterations),
         "samples": samples,
     }
 
@@ -276,13 +300,15 @@ def summarize_full_horizon(samples: list, iterations: int, physical_steps: int, 
     """Summary of the held-out full-horizon check in the dashboard's ``full_horizon_validation`` shape.
 
     Each sample: ``{seed, physical_records: [H x {residual_n, energy_joule, penetration_r, inverted_cells}],
-    survived}``. Final statistics are taken over the survivors' last physical record.
+    survived}``. Final statistics are taken over the survivors' last physical record. v5 scene samples
+    (validation.py) add ``interbody_penetration_r``, ``plane_penetration_r`` and ``contact_pairs`` to the records
+    and ``momentum_drift`` to the sample; their final statistics are added when present.
     """
     samples = [plain(s) for s in samples]
     survivors = [s for s in samples if s.get("survived")]
     finals = [(s.get("physical_records") or [{}])[-1] for s in survivors]
     residual = _stats([r.get("residual_n") for r in finals])
-    return {
+    out = {
         "iterations": int(iterations),
         "physical_steps": int(physical_steps),
         "physical_survivors": len(survivors),
@@ -292,8 +318,17 @@ def summarize_full_horizon(samples: list, iterations: int, physical_steps: int, 
         "final_energy_joule": _stats([r.get("energy_joule") for r in finals], ("mean",)),
         "final_max_penetration_r": _stats([r.get("penetration_r") for r in finals], ("mean", "max")),
         "selection": {"metric": residual["mean"], "eligible": bool(samples) and len(survivors) == len(samples)},
-        "samples": samples,
     }
+    for key in SCENE_CURVE_KEYS:
+        if any(key in r for r in finals):
+            out[f"final_{key}"] = _stats([r.get(key) for r in finals], ("mean", "max"))
+    pairs = [r.get("contact_pairs") for r in finals if isinstance(r.get("contact_pairs"), dict)]
+    if pairs:
+        out["final_contact_pairs"] = {k: _mean([p.get(k) for p in pairs]) for k in ("total", "plane", "body")}
+    if any("momentum_drift" in s for s in samples):
+        out["momentum_drift"] = _mean([s.get("momentum_drift") for s in samples])
+    out["samples"] = samples
+    return out
 
 
 def selection_better(candidate: dict, best: dict | None) -> bool:

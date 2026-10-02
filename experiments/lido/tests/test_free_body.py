@@ -391,7 +391,8 @@ class TestPinnedPathUnchanged(unittest.TestCase):
             step.advance(b, torch.ones(2, dtype=torch.bool), gens)
             self.assert_record(rec[2], step.query(b), f"nocontact_{tag}[2]")
         gen = torch.Generator().manual_seed(7)
-        net = capture_tests.small_net(gen, "cpu").double()
+        # the reference was recorded with the a02 edge module (TrainConfig's default since changed to "pair")
+        net = capture_tests.small_net(gen, "cpu", TrainConfig(**capture_tests.SMALL, edge_module="a02")).double()
         grids = [Grid.build((2, 2, 3)), Grid.build((1, 2, 2))]
         scenes = [capture_tests.random_scene(gen, gr, 6, torch.float64, "cpu") for gr in grids]
         b = capture_tests.make_batch(grids, scenes, torch.Generator().manual_seed(107), torch.float64, "cpu")

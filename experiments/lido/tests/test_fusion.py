@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fusion against a float64 least squares of the full B^T W B system; separability; mixed-grid batch."""
+"""Fusion against a float64 least squares of the full B^T W B system; separability; mixed-grid batch; the Kronecker
+factor on every pinned face against the dense inverse."""
 
 import unittest
 
@@ -9,8 +10,15 @@ import torch
 
 from experiments.lido import hex as hx
 from experiments.lido.batch import Batch
-from experiments.lido.fusion import Fusion, KronFactor, SparseFactor, assemble_scalar, sparse_solver_available
-from experiments.lido.grid import Grid
+from experiments.lido.fusion import (
+    DenseFactor,
+    Fusion,
+    KronFactor,
+    SparseFactor,
+    assemble_scalar,
+    sparse_solver_available,
+)
+from experiments.lido.grid import FACE_PINS, Grid
 
 
 def full_B(grid):
@@ -141,6 +149,39 @@ class TestFusion(unittest.TestCase):
             p_d = Fusion("dense").project_gradient(batch, gX)
             self.assertLess((p_k - p_d).abs().max().item(), 1e-11)
 
+    def test_kron_every_pinned_face_equals_dense(self):
+        """One lattice face clamped (any of the six): the Kronecker solve, K_fp, the fused displacement with
+        prescribed pins and the projected gradient equal the dense inverse's within 1e-11 (float64); "auto" picks
+        the Kronecker factor for these grids."""
+        for cc in ((2, 3, 4), (3, 2, 2)):
+            for pins in FACE_PINS:
+                g = Grid.build(cc, pins)
+                axis, side = "xyz".index(pins[0]), pins[1:4]
+                self.assertEqual(g.pinned.numel(), (cc[(axis + 1) % 3] + 1) * (cc[(axis + 2) % 3] + 1))
+                self.assertTrue((g.rest[g.pinned, axis] == (0 if side == "min" else cc[axis])).all())
+                kron, dense = KronFactor(g, torch.float64), DenseFactor(g, torch.float64)
+                self.assertEqual(kron.shape[axis], cc[axis])
+                r = torch.randn(2, g.Pf, 3, dtype=torch.float64)
+                self.assertLess((kron.solve(r) - dense.solve(r)).abs().max().item(), 1e-11, pins)
+                dp = torch.randn(2, g.pinned.numel(), 3, dtype=torch.float64)
+                self.assertLess((kron.K_fp(dp) - dense.K_fp(dp)).abs().max().item(), 1e-11, pins)
+                batch = Batch.build([g], "cpu", torch.float64)
+                dF = hx.modes_to_gauss(torch.randn(g.C, 7, 3, dtype=torch.float64), self.hc64)
+                d_pinned = torch.zeros(g.P, 3, dtype=torch.float64)
+                d_pinned[g.pinned] = 0.1 * torch.randn(g.pinned.numel(), 3, dtype=torch.float64)
+                auto = Fusion()
+                self.assertIsInstance(auto.factor(g, torch.float64), KronFactor)
+                d_k = auto.fuse(batch, dF, d_pinned)
+                d_d = Fusion("dense").fuse(batch, dF, d_pinned)
+                self.assertLess((d_k - d_d).abs().max().item(), 1e-11, pins)
+                self.assertTrue(torch.equal(d_k[g.pinned], d_pinned[g.pinned]))
+                gX = torch.randn(g.P, 3, dtype=torch.float64)
+                p_k = auto.project_gradient(batch, gX)
+                p_d = Fusion("dense").project_gradient(batch, gX)
+                self.assertLess((p_k - p_d).abs().max().item(), 1e-11, pins)
+        with self.assertRaises(ValueError):
+            KronFactor(Grid.from_voxels(torch.ones(2, 2, 2, dtype=torch.bool)))
+
     @unittest.skipUnless(torch.cuda.is_available(), "cuda")
     def test_float32_cuda_accuracy_canonical(self):
         import time
@@ -228,6 +269,75 @@ class TestFusion(unittest.TestCase):
         print(
             f"fusion solve kron 20x20x80 ({g.C} cells, {g.Pf} free corners): {(time.perf_counter() - t) / 10 * 1e3:.3f} ms"
         )
+
+
+class TestBatchedKron(unittest.TestCase):
+    """`Fusion(batched=True)`: the padded multi-group solve (`BatchedKron`) reproduces the per-group loop on a batch
+    of free and pinned boxes of different shapes (fuse with a centroid target, fuse without, project_gradient),
+    carries the gradient to dF, and is cached per layout."""
+
+    def batch(self, device, dtype):
+        from experiments.lido.tests.test_capture import set_material
+
+        pins = ["none", "zmin_face", "none", "ymax_face", "xmin_face", "none"]
+        sides = [(2, 3, 2), (2, 2, 3), (4, 2, 2), (3, 3, 2), (2, 2, 2), (3, 2, 4)]
+        grids = [Grid.build(s, pins=p, device=device) for s, p in zip(sides, pins, strict=True)]
+        b = Batch.build(grids, device, dtype)
+        set_material(b, grids, dtype, device)
+        gen = torch.Generator().manual_seed(4)
+        b.X = b.rest.to(dtype) + 0.05 * torch.randn(b.N, 3, generator=gen, dtype=dtype).to(device)
+        b.X[b.pinned] = b.rest.to(dtype)[b.pinned]
+        b.x = b.X.clone()
+        dF = 0.1 * torch.randn(b.C, 8, 3, 3, generator=gen, dtype=dtype).to(device)
+        gX = torch.randn(b.N, 3, generator=gen, dtype=dtype).to(device)
+        c_t = torch.randn(b.O, 3, generator=gen, dtype=dtype).to(device) + b.X.mean(0)
+        return b, dF, gX, c_t
+
+    def check(self, device, dtype, tol):
+        from experiments.lido import physics
+
+        b, dF, gX, c_t = self.batch(device, dtype)
+        self.assertEqual(len(b.groups), 6)
+        loop, batched = Fusion(), Fusion(batched=True)
+        self.assertIsNone(loop.batched_kron(b, dtype))
+        kron = batched.batched_kron(b, dtype)
+        self.assertIsNotNone(kron)
+        self.assertIs(batched.batched_kron(b, dtype), kron)  # cached on the batch
+        self.assertEqual(
+            kron.shape, (5, 4, 5)
+        )  # the largest free lattice per axis (nx + 1, or nx with the face pinned)
+        for target in (None, c_t):
+            d1 = loop.fuse(b, dF, centroid_target=target)
+            d2 = batched.fuse(b, dF, centroid_target=target)
+            self.assertLess(
+                (d1 - d2).abs().max().item(), tol * max(1.0, d1.abs().max().item()), f"target {target is not None}"
+            )
+            self.assertTrue((d2[b.pinned] == 0).all())
+            if target is not None:
+                c = physics.centroid(b, b.x + d2)
+                self.assertLess((c - target)[b.free_objects].abs().max().item(), 10 * tol)
+        p1, p2 = loop.project_gradient(b, gX), batched.project_gradient(b, gX)
+        self.assertLess((p1 - p2).abs().max().item(), tol * max(1.0, p1.abs().max().item()))
+        # gradient to the targets through the batched path, as through the loop
+        dFg = dF.clone().requires_grad_(True)
+        w = torch.randn_like(d1)
+        (g2,) = torch.autograd.grad((batched.fuse(b, dFg, centroid_target=c_t) * w).sum(), dFg)
+        (g1,) = torch.autograd.grad((loop.fuse(b, dFg, centroid_target=c_t) * w).sum(), dFg)
+        self.assertLess((g1 - g2).abs().max().item(), tol * max(1.0, g1.abs().max().item()))
+        # the cache follows the layout
+        b.relayout([Grid.build((2, 2, 2), pins="none", device=device), *b.grids[1:]])
+        self.assertIsNone(b.fusion_cache)
+        self.assertIsNot(batched.batched_kron(b, dtype), kron)
+        # one group (body mode): the loop path whatever the flag
+        one = Batch.build([Grid.build((2, 2, 3), device=device)] * 3, device, dtype)
+        self.assertIsNone(batched.batched_kron(one, dtype))
+
+    def test_cpu_float64(self):
+        self.check("cpu", torch.float64, 1e-11)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "cuda")
+    def test_cuda_float32(self):
+        self.check("cuda:0", torch.float32, 2e-5)
 
 
 if __name__ == "__main__":

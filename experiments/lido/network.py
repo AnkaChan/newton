@@ -302,20 +302,24 @@ class Net(nn.Module):
         step = self.max_step * torch.sigmoid(self.step_head(y)).squeeze(-1)
         return NetOutput(corr=unpack(corr), step=step)
 
-    def compile_layers(self, edge_encoder: bool = False, fullgraph: bool = False, **kwargs) -> Net:
+    def compile_layers(
+        self, edge_encoder: bool = False, fullgraph: bool = False, dynamic: bool = False, **kwargs
+    ) -> Net:
         """torch.compile the cell-graph layers (fuses the per-edge elementwise chains; shapes are static per grid),
         and with `edge_encoder` the edge MLP too (its SiLU on [E, 96] fuses into the GEMM; the rollout path).
         The "pair" edge module is always compiled with the layers: it is that network's per-edge chain (the a02
         counterpart, the A02 update, lives inside the compiled layer).
         `fullgraph` demands one graph per layer: possible without autograd, where the Warp attention is a custom op.
+        `dynamic` compiles with symbolic shapes (the cell and edge counts), so one compiled graph serves every v5
+        scene instead of recompiling at every scene load (static shapes: one graph per grid, the body regime).
 
         The compiled callables live outside the module tree so state_dict keys and checkpoints are unchanged."""
         self._compiled_layers = [
-            torch.compile(layer, dynamic=False, fullgraph=fullgraph, **kwargs) for layer in self.layers
+            torch.compile(layer, dynamic=dynamic, fullgraph=fullgraph, **kwargs) for layer in self.layers
         ]
         if edge_encoder or self.edge_module == "pair":
             module = self.edge_encoder if self.edge_module == "a02" else self.pair_edge
-            self._compiled_edge_encoder = [torch.compile(module, dynamic=False, **kwargs)]
+            self._compiled_edge_encoder = [torch.compile(module, dynamic=dynamic, **kwargs)]
         return self
 
     @staticmethod

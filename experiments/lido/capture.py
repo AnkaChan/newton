@@ -5,8 +5,9 @@
 graphs", section 3 ROLLOUT).
 
 Everything the query reads lives in static buffers: the batch's candidate, energy, gradient and history, the
-step-constant tensors (Y, m_Y, m_prev, C_prev, R_ref), the material and the contact pairs in the capacity layout
-(`contact.detect(capacity=True)`: S (1 + k) rows with a valid mask, so the shapes are fixed per scene). The
+step-constant tensors (X, Y, m_Y, m_prev, C_prev, R_ref), the material and the contact pairs in the capacity layout
+(`contact.detect(capacity=True)`: S (1 + k) rows with a valid mask, so the shapes are fixed per scene; with
+`batch.body_contact` the k = M_PAIR slots are shared by static points and the other bodies' faces). The
 tensors the batch holds at capture time become those buffers; `sync()` copies whatever `prepare` / `advance`
 rebound since into them and points the batch back at them, so the eager step code needs no change. Replay
 leaves the batch exactly as an eager query + commit would (within float32 noise of the atomics).
@@ -22,6 +23,7 @@ Tensor = torch.Tensor
 
 STATE = (
     "x",
+    "X",  # step-start positions: the partner's material point of a body pair is anchored to them (contact._geometry)
     "E",
     "gX",
     "hist_grad",
@@ -63,6 +65,8 @@ PAIR_FIELDS = (
     "radius",
     "anchor",
     "valid",
+    "partner_body",
+    "partner_face",
     "attn_pairs",
     "attn_offsets",
 )

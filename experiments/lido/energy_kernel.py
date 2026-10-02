@@ -9,8 +9,9 @@ launches).
 Per cell the kernel gathers the 8 corners and at each of the 8 Gauss points forms F[r,a] = sum_k x_k[r] Gq[q,k,a],
 psi = 0.5 (I_C - 3) + 0.5 lam_nh (J - 1)^2 - (J - 1) with mu = 1, lam_nh = lam + 1 (ADR 0002),
 P = F + (lam_nh (J - 1) - 1) cof(F); damping D = F^T F - C_prev, psi_d = 0.5 eta |D|_F^2, dpsi_d/dF = 2 eta F D.
-E_c = sum_q w_q (psi + psi_d) and g_k = sum_q w_q (P + 2 eta F D) Gq[q,k] with w_q = 1/8. The material is read
-per object (lam, eta [O] through cell_obj).
+E_c = mu_scale sum_q w_q (psi + psi_d) and g_k = mu_scale sum_q w_q (P + 2 eta F D) Gq[q,k] with w_q = 1/8 and
+mu_scale = mu / mu_norm the object's factor into the common unit of energy (1 in body mode; physics.py). The
+material is read per object (lam, eta, mu_scale [O] through cell_obj).
 
 Two output modes. Per cell (the autograd Function): E_c to [C] and the corner gradients to [C,8,3] (no atomics);
 backward scatters them to [N,3] with torch index_add_, which measured faster than a separate atomic Warp scatter
@@ -52,6 +53,7 @@ def elastic_damping_kernel(
     cell_obj: wp.array[wp.int64],  # [C]
     lam: wp.array[float],  # [O]
     eta: wp.array[float],  # [O]
+    mu_scale: wp.array[float],  # [O]
     C_prev: wp.array2d[wp.mat33],
     Gq: wp.array2d[wp.vec3],
     fused: int,  # 0: energy[c], grad_cells[c, k]; 1: energy_obj[cell_obj[c]] += E, grad_x[cells[c, k]] += g_k
@@ -70,6 +72,7 @@ def elastic_damping_kernel(
     o = int(cell_obj[c])
     lam_nh = lam[o] + 1.0
     eta_c = eta[o]
+    wq = WEIGHT * mu_scale[o]  # Gauss weight times the object's unit factor
     E = float(0.0)
     G = mat83()
     for q in range(8):
@@ -80,10 +83,10 @@ def elastic_damping_kernel(
         psi = 0.5 * (wp.ddot(F, F) - 3.0) + 0.5 * lam_nh * Jm1 * Jm1 - Jm1
         D = wp.transpose(F) * F - C_prev[c, q]
         psi_d = 0.5 * eta_c * wp.ddot(D, D)
-        E += WEIGHT * (psi + psi_d)
+        E += wq * (psi + psi_d)
         P = F + (lam_nh * Jm1 - 1.0) * cofactor(F) + (2.0 * eta_c) * (F * D)  # first Piola stress plus damping
         for k in range(8):
-            g = WEIGHT * (P * Gq[q, k])
+            g = wq * (P * Gq[q, k])
             G[k, 0] = G[k, 0] + g[0]
             G[k, 1] = G[k, 1] + g[1]
             G[k, 2] = G[k, 2] + g[2]
@@ -102,21 +105,22 @@ def corner_kernel(
     x: wp.array[wp.vec3],
     Y: wp.array[wp.vec3],
     corner_obj: wp.array[wp.int64],  # [N]
-    rho: wp.array[float],  # [O]
+    rho: wp.array[float],  # [O] the body's own group
+    mu_scale: wp.array[float],  # [O] its factor into the object's unit of energy
     mass: wp.array[float],  # [N]
     pinned: wp.array[wp.bool],  # [N]
     energy_obj: wp.array[float],  # [O], accumulated
     grad_x: wp.array[wp.vec3],  # [N]: in, the elastic + contact scatter; out, plus inertia, pinned rows zero
 ):
-    """Inertia 0.5 rho m |x - Y|^2 per corner into the object's energy, its gradient rho m (x - Y) onto the corner's
-    gradient, pinned corners contribute nothing and end with a zero gradient."""
+    """Inertia 0.5 rho m |x - Y|^2 per corner into the object's energy (rho = mu_scale times the body's group), its
+    gradient rho m (x - Y) onto the corner's gradient, pinned corners contribute nothing and end with a zero gradient."""
     n = wp.tid()
     if pinned[n]:
         grad_x[n] = wp.vec3(0.0)
         return
     o = int(corner_obj[n])
     dx = x[n] - Y[n]
-    k = rho[o] * mass[n]
+    k = (mu_scale[o] * rho[o]) * mass[n]
     wp.atomic_add(energy_obj, o, 0.5 * k * wp.dot(dx, dx))
     grad_x[n] = grad_x[n] + k * dx
 
@@ -143,6 +147,7 @@ def _launch_cells(batch, x, energy, grad_cells, energy_obj, grad_x) -> None:
         _array(batch.cell_obj, wp.int64),
         _array(m.lam, wp.float32),
         _array(m.eta, wp.float32),
+        _array(m.mu_scale, wp.float32),
         _array(batch.C_prev, wp.mat33),
         _array(batch.hc.Gq, wp.vec3),
         int(energy is None),
@@ -158,11 +163,13 @@ def _launch_corners(batch, x, energy_obj, grad_x) -> None:
     N = x.shape[0]
     if N == 0:
         return
+    m = batch.material
     inputs = [
         _array(x, wp.vec3),
         _array(batch.Y, wp.vec3),
         _array(batch.corner_obj, wp.int64),
-        _array(batch.material.rho, wp.float32),
+        _array(m.rho, wp.float32),
+        _array(m.mu_scale, wp.float32),
         _array(batch.mass, wp.float32),
         _array(batch.pinned, wp.bool),
         _array(energy_obj, wp.float32),

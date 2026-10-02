@@ -19,6 +19,7 @@ from pathlib import Path
 
 import torch
 
+from . import contact
 from . import report as rep
 from .augment import Augmenter
 from .config import TrainConfig
@@ -26,10 +27,16 @@ from .fusion import Fusion
 from .grid import GridCache
 from .jobs import growth_stage
 from .network import Net
-from .runner import JobRunner
+from .runner import make_runner
 from .step import Step
 from .units import force_scale
-from .validation import local_objective, validate_cheap, validate_full_horizon
+from .validation import (
+    local_objective,
+    validate_cheap,
+    validate_cheap_v5,
+    validate_full_horizon,
+    validate_full_horizon_v5,
+)
 
 
 def cosine_lr(epoch: int, cfg: TrainConfig) -> float:
@@ -84,9 +91,11 @@ def train(
     run_dir = Path(run_dir)
     torch.set_num_threads(max(1, cfg.cpu_threads))
     torch.manual_seed(cfg.seed + rank)
+    v5 = cfg.scene_mode == "v5"
     net = Net.from_config(cfg).to(device)
     if cfg.compile_network and device.type == "cuda":
-        net.compile_layers()
+        # body mode: static shapes per grid; v5: symbolic shapes, one graph for every scene (section 11)
+        net.compile_layers(dynamic=v5)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
     start_epoch, updates_done, best = 1, 0, None
     initialized_from = None
@@ -101,10 +110,10 @@ def train(
         torch.distributed.init_process_group("nccl", rank=rank, world_size=world)
         model = torch.nn.parallel.DistributedDataParallel(net, device_ids=[device.index], broadcast_buffers=False)
     grids = GridCache(device)
-    grid = grids.get(cfg.cell_counts, cfg.pins)
+    grid = grids.get(cfg.cell_counts, cfg.pins) if not v5 else None
     aug = Augmenter(device)
-    step = Step(model, Fusion(), aug, noise_range=cfg.candidate_noise_range)
-    runner = JobRunner(cfg, step, aug, grids, rank, world, device, cfg.seed)
+    step = Step(model, Fusion(batched=v5), aug, noise_range=cfg.candidate_noise_range)  # v5: one padded Kron solve
+    runner = make_runner(cfg, step, aug, grids, rank, world, device, cfg.seed)
     report = rep.RunReport(run_dir, cfg, world, git_sha(), initialized_from) if rank == 0 else None
     if report and resume and (run_dir / "report.json").exists():
         old = json.loads((run_dir / "report.json").read_text())  # a resume in the same run dir keeps its history
@@ -132,7 +141,7 @@ def train(
             out = step.query(batch)
             loss_vec = local_objective(out.E_after, out.E_before, batch.material.floor, cfg.energy_increase_weight)
             mask = batch.active & torch.isfinite(loss_vec)
-            loss = (loss_vec * mask).sum() / mask.sum().clamp_min(1)
+            loss = loss_vec.masked_fill(~mask, 0.0).sum() / mask.sum().clamp_min(1)  # NaN rows must not poison the mean
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(net.parameters(), cfg.gradient_clip_norm)
             if torch.isfinite(gn):
@@ -145,6 +154,8 @@ def train(
                     else float("nan")
                 )
                 realized.append(int(batch.pairs.count > 0))
+                if v5 and bool(mask.any()):
+                    pens.append(float(contact.penetration(batch, out.cand_after.detach()).max()))
             runner.commit(out)
             updates_done += 1
             lv, gv = float(loss.detach()), float(gn)
@@ -170,11 +181,18 @@ def train(
             torch.distributed.barrier()
         if rank == 0:
             unwrap(step.net).eval()
-            cheap = rep.summarize_cheap_validation(
-                validate_cheap(step, cfg, aug, grid, device, cfg.seed), cfg.validation_iterations
-            )
             K_full, H_full = min(k_max, cfg.validation_full_iterations), h_max  # stage caps, as in the v4 campaign
-            full_samples, full_seconds = validate_full_horizon(step, cfg, aug, grid, device, cfg.seed, K_full, H_full)
+            if v5:
+                cheap_samples = validate_cheap_v5(step, cfg, grids, aug, device, cfg.seed)
+                full_samples, full_seconds = validate_full_horizon_v5(
+                    step, cfg, grids, aug, device, cfg.seed, K_full, H_full
+                )
+            else:
+                cheap_samples = validate_cheap(step, cfg, aug, grid, device, cfg.seed)
+                full_samples, full_seconds = validate_full_horizon(
+                    step, cfg, aug, grid, device, cfg.seed, K_full, H_full
+                )
+            cheap = rep.summarize_cheap_validation(cheap_samples, cfg.validation_iterations)
             full = rep.summarize_full_horizon(full_samples, K_full, H_full, full_seconds)
             unwrap(step.net).train()
             selection = full["selection"] if cfg.selection_source == "full_horizon" else cheap["selection"]
@@ -195,10 +213,11 @@ def train(
                     run_dir / "checkpoints" / "best_validation.pt", net, opt, epoch, updates_done, best, cfg
                 )
             finite_losses = [v for v in losses if math.isfinite(v)]
+            query_count = runner.queries if v5 else n_updates * cfg.batch_size
             record = rep.build_epoch_record(
                 epoch=epoch,
                 loss=sum(finite_losses) / max(1, len(finite_losses)),
-                query_count=n_updates * cfg.batch_size,
+                query_count=query_count,
                 updates=n_updates,
                 seconds=time.perf_counter() - t_epoch,
                 lr=lr,
@@ -216,8 +235,8 @@ def train(
                     "stage": stage,
                     "k_max": k_max,
                     "h_max": h_max,
-                    "queries": n_updates * cfg.batch_size,
-                    "filler_queries": 0,
+                    "queries": query_count,
+                    "filler_queries": runner.idle_updates if v5 else 0,
                     "updates": n_updates,
                 },
                 available_K=[k for k in cfg.K_values if k <= k_max],
@@ -229,6 +248,7 @@ def train(
                 validation=cheap,
                 full_horizon_validation=full,
                 rank_diagnostics=None,
+                scene_regime=runner.epoch_summary() if v5 else None,
             )
             report.log_epoch(record)
             save_checkpoint(run_dir / "checkpoints" / "latest.pt", net, opt, epoch, updates_done, best, cfg)

@@ -10,6 +10,7 @@ import torch
 from experiments.lido import physics
 from experiments.lido.augment import Augmenter
 from experiments.lido.batch import Batch
+from experiments.lido.config import TrainConfig
 from experiments.lido.fusion import Fusion
 from experiments.lido.grid import Grid
 from experiments.lido.network import Net
@@ -128,6 +129,84 @@ class TestStep(unittest.TestCase):
         self.assertTrue((b.x[rows & b.pinned] == b.X[rows & b.pinned]).all())
         E, _gX = physics.energy_and_grad(b, b.x)
         self.assertLess((E - b.E).abs().max().item(), 1e-5 * E.abs().max().item())
+
+
+class TestBatchedCandidateNoise(unittest.TestCase):
+    """`Step.prepare` with ONE generator for the batch (v5 scenes): the candidate noise of every grid group in one
+    call; about half the selected objects perturbed with the configured RMS, free bodies keep the inertial
+    centroid, pinned rows stay at X, equal seeds give equal candidates, a different seed different ones."""
+
+    def make(self, seed):
+        torch.manual_seed(0)
+        grids = [
+            Grid.build(s, pins=p)
+            for s, p in (((2, 2, 3), "zmin_face"), ((3, 2, 2), "none"), ((2, 2, 3), "zmin_face"), ((2, 3, 2), "none"))
+        ]
+        grids = grids * 4  # 16 objects in 4 groups
+        b = Batch.build(grids, "cpu", torch.float64)
+        parts = []
+        for g in grids:
+            parts.append(
+                material_from_si(
+                    E=1e5,
+                    nu=0.3,
+                    rho=1000.0,
+                    eta=100.0,
+                    gravity=(0, -9.81, 0),
+                    h=0.025,
+                    dt=1 / 300,
+                    cell_count=g.C,
+                    sample_count=g.S,
+                    dtype=torch.float64,
+                )
+            )
+        b.material = Material.cat(parts)
+        b.X = b.rest.to(torch.float64).clone()
+        b.V = torch.zeros_like(b.X)
+        b.X_prev, b.x = b.X.clone(), b.X.clone()
+        step = Step(
+            Net.from_config(TrainConfig(hidden_dim=24, edge_hidden_dim=12, num_heads=2, contact_hidden_dim=8)).double(),
+            Fusion(),
+            Augmenter("cpu"),
+            noise_prob=0.5,
+            noise_range=(0.02, 0.04),
+        )
+        gen = torch.Generator().manual_seed(seed)
+        return b, step, gen
+
+    def test_batched_noise(self):
+        b, step, gen = self.make(1)
+        sel = torch.ones(b.O, dtype=torch.bool)
+        sel[3] = False  # an unselected object keeps its candidate
+        b.x[b.corner_obj == 3] = -7.0
+        step.prepare(b, sel, gen)
+        noise = b.x - b.Y
+        per_obj = physics.seg_sum((noise**2).sum(-1), b.corner_obj, b.O)
+        perturbed = (per_obj > 0) & sel
+        self.assertTrue(3 <= int(perturbed.sum()) <= 12)  # about half of the 15 selected objects
+        self.assertTrue((b.x[b.corner_obj == 3] == -7.0).all())
+        self.assertTrue((b.x[b.pinned] == b.X[b.pinned]).all())
+        counts = torch.bincount(b.corner_obj, minlength=b.O).double()
+        rms = (per_obj / counts).sqrt()[perturbed]
+        self.assertTrue(((rms > 0.015) & (rms < 0.045)).all(), rms)  # U(0.02, 0.04) RMS over the corners
+        # a free body's candidate keeps the inertial centroid c(Y)
+        for o in range(b.O):
+            if bool(b.free_objects[o]) and bool(perturbed[o]):
+                m = physics.corner_mass(b)[b.corner_obj == o][:, None]
+                self.assertLess(((m * noise[b.corner_obj == o]).sum(0) / m.sum()).abs().max().item(), 1e-12)
+        # deterministic in the seed
+        rows = sel[b.corner_obj]
+        b2, step2, gen2 = self.make(1)
+        step2.prepare(b2, sel, gen2)
+        self.assertTrue(torch.equal(b2.x[rows], b.x[rows]))
+        b3, step3, gen3 = self.make(2)
+        step3.prepare(b3, sel, gen3)
+        self.assertFalse(torch.equal(b3.x[rows], b.x[rows]))
+        # perturb overrides the draw
+        b4, step4, gen4 = self.make(1)
+        step4.prepare(b4, sel, gen4, perturb=torch.zeros(b.O, dtype=torch.bool))
+        self.assertTrue(torch.equal(b4.x[rows], b4.Y[rows]))  # inertial candidates (the unselected object keeps X)
+        self.assertTrue(torch.isfinite(b.E).all() and torch.isfinite(b.gX).all())
 
 
 if __name__ == "__main__":

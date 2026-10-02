@@ -131,17 +131,35 @@ class Step:
     def centroid_target(self, batch, x: Tensor) -> tuple[Tensor, Tensor]:
         """(c_t [O,3], Picard constant [O]) at the candidate x for the unpinned objects (pinned objects get their
         own centroid, which `fuse` ignores). Picard: c_rig(x_k) of eq. 7.11. Implicit contact: the Newton step on
-        the centroid, c(x_k) + dc with (M_tot I + sum_active ke n n^T) dc = -r_tr(c(x_k)), eq. 7.15. Detached; the
+        the centroid, c(x_k) + dc with (M_tot I + sum_active ke n n^T) dc = -r_tr(c(x_k)), eq. 7.15; with body pairs
+        (`batch.body_contact`) the Newton step is taken jointly on all free bodies' centroids with the coupled
+        translational contact Hessian (a 3O x 3O dense solve; `contact.translation_hessian`). Detached; the
         Picard constant sum_active ke / M_tot (7.13) is also written into `batch.picard_constant`."""
         x = x.detach()
         free = batch.free_objects
         F_con = contact.contact_force(batch, x)
-        ke_sum, H = contact.active_stiffness(batch, x)
+        coupled_bodies = batch.body_contact and batch.O > 1
+        if coupled_bodies:
+            ke_sum, J = contact.translation_hessian(batch, x)
+        else:
+            ke_sum, H = contact.active_stiffness(batch, x)
         M_tot = physics.total_mass(batch)
         c_x = physics.centroid(batch, x)
         c_rig = batch.c_n + batch.cdot_n + batch.material.g + F_con / M_tot[:, None]
         if self.translation == "picard":
             c_t = c_rig
+        elif coupled_bodies:
+            # body pairs couple the bodies' translations: one Newton step on all centroids with the full
+            # translational contact Hessian (contact.translation_hessian), bodies that are not free held fixed
+            r_tr = M_tot[:, None] * (c_x - c_rig)
+            r_tr = r_tr.masked_fill(~free[:, None], 0.0)
+            O = batch.O
+            coupled = (free[:, None] & free[None, :])[:, :, None, None]
+            J = torch.where(coupled, J, torch.zeros_like(J))
+            eye3 = torch.eye(3, dtype=x.dtype, device=x.device)
+            J = J + (torch.eye(O, dtype=x.dtype, device=x.device) * M_tot[:, None])[:, :, None, None] * eye3
+            dc, _ = torch.linalg.solve_ex(J.permute(0, 2, 1, 3).reshape(3 * O, 3 * O), r_tr.reshape(3 * O, 1))
+            c_t = c_x - dc.view(O, 3)
         else:
             r_tr = M_tot[:, None] * (c_x - c_rig)  # eq. 7.14 at c(x_k)
             A = M_tot[:, None, None] * torch.eye(3, dtype=x.dtype, device=x.device)[None] + H
@@ -163,9 +181,13 @@ class Step:
 
     # ---------------------------------------------------------------- prepare
     @torch.no_grad()
-    def prepare(self, batch, sel: Tensor, gens: list | None = None, perturb: Tensor | None = None) -> None:
+    def prepare(self, batch, sel: Tensor, gens=None, perturb: Tensor | None = None) -> None:
         """Start of a physical step for the objects in `sel` [O] bool: Y, step-constant modes and damping anchor,
-        candidate (inertial or perturbed), detection, the one fresh energy pass. `gens`: per-object generators."""
+        candidate (inertial or perturbed), detection, the one fresh energy pass. `gens`: the candidate-noise
+        stream, a list of per-object generators (body mode: one object at a time, a host synchronisation per
+        object) or ONE generator for the whole batch (v5 scenes: `_perturb_batched`, every grid group in one call,
+        no host synchronisation; the draw order is the batch's group order, then per group the use flags, the
+        RMS values and the octaves of all its objects)."""
         rows = sel[batch.corner_obj]
         Y = batch.X + batch.V + batch.material.g[batch.corner_obj]
         batch.Y = torch.where(batch.pinned[:, None], batch.X, Y)
@@ -178,7 +200,9 @@ class Step:
         batch.c_n = physics.centroid(batch, batch.X)  # step constants of the free-body centroid target (7.11)
         batch.cdot_n = physics.centroid(batch, batch.V)
         cand = batch.Y.clone()
-        if self.aug is not None and gens is not None:
+        if self.aug is not None and isinstance(gens, torch.Generator):
+            self._perturb_batched(batch, sel, cand, gens, perturb)
+        elif self.aug is not None and gens is not None:
             for o in sel.nonzero().flatten().tolist():
                 gen = gens[o]
                 use_noise = (
@@ -206,14 +230,38 @@ class Step:
         if batch.any_free:
             self._check_picard(batch)
 
+    def _perturb_batched(self, batch, sel: Tensor, cand: Tensor, gen: torch.Generator, perturb: Tensor | None) -> None:
+        """Candidate noise for the selected objects of the whole batch in a handful of launches (`prepare`): per
+        object a use flag (probability `noise_prob`, or `perturb`) and an RMS U(noise_range), then the multiscale
+        fields of all objects from the one generator (`Augmenter.candidate_noise_all`); a free body's noise loses
+        its mass-weighted mean so the candidate keeps the inertial centroid (7.6). In place on `cand`."""
+        lo, hi = self.noise_range
+        dev, O = gen.device, batch.O
+        use = torch.rand(O, generator=gen, device=dev) < self.noise_prob
+        rng = torch.rand(O, generator=gen, device=dev)
+        if perturb is not None:
+            use = perturb.to(dev)
+        rms = lo + rng * (hi - lo)
+        noise = self.aug.candidate_noise_all(batch, gen, rms).to(device=cand.device, dtype=cand.dtype)
+        obj = batch.corner_obj
+        m = batch.mass.to(noise.dtype)  # rho is one value per object: the lumped masses weight the mean
+        mean = torch.zeros(O, 3, dtype=noise.dtype, device=cand.device).index_add_(0, obj, m[:, None] * noise)
+        mean = mean / torch.zeros(O, dtype=noise.dtype, device=cand.device).index_add_(0, obj, m)[:, None]
+        noise = torch.where(batch.free_objects[obj, None], noise - mean[obj], noise)
+        active = (use.to(cand.device) & sel)[obj, None].to(noise.dtype)
+        cand.add_(noise * active)
+
     def _check_picard(self, batch) -> None:
         """The Picard constant sum_active ke / M_tot (7.13) at the step's candidate, into `batch.picard_constant`;
-        one warning per object slot the first time it exceeds 1 (the rigid target of 7.11 then does not contract
-        on its own; `translation="implicit_contact"` removes the condition, Proposition 7.2). One host sync per
-        prepare, only for batches with free bodies."""
+        with `translation="picard"` one warning per object slot the first time it exceeds 1 (the rigid target of
+        7.11 then does not contract on its own; `translation="implicit_contact"` removes the condition, Proposition
+        7.2, so no warning: a v5 scene of 150 bodies exceeds 1 on many of them at every landing). One host sync per
+        prepare, only for batches with free bodies and the Picard translation."""
         ke_sum, _ = contact.active_stiffness(batch, batch.x)
         picard = (ke_sum / physics.total_mass(batch)).masked_fill(~batch.free_objects, 0.0)
         batch.picard_constant.copy_(picard)
+        if self.translation != "picard":
+            return
         if self._picard_warned is None or self._picard_warned.shape != picard.shape:
             self._picard_warned = torch.zeros_like(batch.free_objects)
         bad = (picard > 1.0) & ~self._picard_warned
@@ -233,7 +281,7 @@ class Step:
         self,
         batch,
         sel: Tensor,
-        gens: list | None = None,
+        gens=None,
         prescribed: Tensor | None = None,
         prescribed_velocity: Tensor | None = None,
     ) -> None:

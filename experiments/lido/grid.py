@@ -21,6 +21,23 @@ from .structs import FaceSamples
 
 Tensor = torch.Tensor
 
+# pin patterns of a box grid: one lattice face clamped ("<axis><min|max>_face") or no pins
+FACE_PINS = ("xmin_face", "xmax_face", "ymin_face", "ymax_face", "zmin_face", "zmax_face")
+BOX_PINS = ("none", *FACE_PINS)
+
+
+def face_pin(pins: str) -> tuple[int, str]:
+    """(axis 0 | 1 | 2, "min" | "max") of a face pin name; ValueError for anything else."""
+    if pins not in FACE_PINS:
+        raise ValueError(f"unknown pin pattern {pins!r}: expected one of {BOX_PINS}")
+    return "xyz".index(pins[0]), pins[1:4]
+
+
+def face_pin_mask(corner_lattice: Tensor, cell_counts, pins: str) -> Tensor:
+    """[P] bool: the corners on the lattice face `pins` (coordinate 0 for a min face, n_axis for a max face)."""
+    axis, side = face_pin(pins)
+    return corner_lattice[:, axis] == (0 if side == "min" else int(cell_counts[axis]))
+
 
 def corner_index(ix: Tensor, iy: Tensor, iz: Tensor, counts) -> Tensor:
     _nx, ny, nz = counts
@@ -75,11 +92,14 @@ class Grid:
 
     @property
     def pins(self) -> str:
-        """Pin pattern: "zmin_face", "none" or (voxel grids with an explicit mask) "mask"."""
+        """Pin pattern: one of `BOX_PINS` ("none" or a clamped lattice face such as "zmin_face") or, for voxel grids
+        with an explicit mask, "mask"."""
         return self.key[2] if self.kind == "voxel" else self.key[3]
 
     @staticmethod
     def build(cell_counts, pins: str = "zmin_face", device="cpu") -> Grid:
+        """Full box of nx x ny x nz cells with `pins` one of `BOX_PINS`: "none" (a free body) or one of the six
+        lattice faces clamped ("xmin_face", ..., "zmax_face"; the corners with that coordinate at 0 or n_axis)."""
         nx, ny, nz = (int(v) for v in cell_counts)
         device = torch.device(device)
         ix, iy, iz = torch.meshgrid(torch.arange(nx + 1), torch.arange(ny + 1), torch.arange(nz + 1), indexing="ij")
@@ -91,12 +111,10 @@ class Grid:
         corner = cbase[:, None, :] + hx.CORNER_OFFSETS[None, :, :]  # [C,8,3]
         cells = corner_index(corner[..., 0], corner[..., 1], corner[..., 2], (nx, ny, nz))
 
-        if pins == "zmin_face":
-            pinned_mask = rest[:, 2] == 0
-        elif pins == "none":
+        if pins == "none":
             pinned_mask = torch.zeros(P, dtype=torch.bool)
         else:
-            raise ValueError(f"unknown pin pattern {pins!r}")
+            pinned_mask = face_pin_mask(rest, (nx, ny, nz), pins)
         pinned = pinned_mask.nonzero().flatten()
         free = (~pinned_mask).nonzero().flatten()
 
@@ -127,9 +145,13 @@ class Grid:
         samples = FaceSamples(cell=s_cell.to(device), face=s_face.to(device), corners=s_corners.to(device))
 
         # tie-break reference corners on the pinned face: p0 = (0,0,0), p1 = farthest pinned corner (nx,ny,0),
-        # p2 = the corner maximising |(p1 - p0) x (p2 - p0)| = (0,ny,0)
-        ci = lambda a, b, c: corner_index(torch.tensor(a), torch.tensor(b), torch.tensor(c), (nx, ny, nz))  # noqa: E731
-        ref = torch.tensor([ci(0, 0, 0), ci(nx, ny, 0), ci(0, ny, 0)])
+        # p2 = the corner maximising |(p1 - p0) x (p2 - p0)| = (0,ny,0) for the z-min face (and, by convention, for
+        # a free body); the other five faces take the same rule through `reference_corners`
+        if pins in ("zmin_face", "none"):
+            ci = lambda a, b, c: corner_index(torch.tensor(a), torch.tensor(b), torch.tensor(c), (nx, ny, nz))  # noqa: E731
+            ref = torch.tensor([ci(0, 0, 0), ci(nx, ny, 0), ci(0, ny, 0)])
+        else:
+            ref = reference_corners(rest, pinned, cells)
         return Grid(
             key=(nx, ny, nz, pins),
             cell_counts=(nx, ny, nz),
