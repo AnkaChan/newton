@@ -606,7 +606,7 @@ class TestTranslationTrustRegion(unittest.TestCase):
             Step(Net.from_config(SMALL_CFG).eval(), Fusion(), translation_step_max=-1.0)
         results = {}
         for bound in (1.0, 0.25, 0.0):
-            g, b = free_batch(100.0, -0.3)  # resting on the plane, 0.2 cells into the sample band
+            _g, b = free_batch(100.0, -0.3)  # resting on the plane, 0.2 cells into the sample band
             step = Step(Net.from_config(SMALL_CFG).to(torch.float64).eval(), Fusion(), translation_step_max=bound)
             sel = torch.ones(1, dtype=torch.bool)
             step.prepare(b, sel)
