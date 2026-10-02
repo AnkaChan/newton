@@ -1788,7 +1788,7 @@ configuration (same run directory, dashboard slug `lido-v5-20261002`).
 
 ### v5 campaign, third attempt and the material band (2026-10-02, decided autonomously)
 
-Attempt 3 (scene curriculum, 08:21-09:33 UTC, 9 epochs) was clean through the all-pinned phase (no failed scene,
+Attempt 3 (scene curriculum, 08:21-08:49 UTC, 9 epochs) was clean through the all-pinned phase (no failed scene,
 full-horizon 52.6 N with both goal scenes alive at epoch 4, cheap metric 29-60 N) and collapsed as the free bodies
 arrived: with 19-23 % free bodies at epochs 8-9, 1 then 5 failed scenes, training penetration 52 then 1713 r, both
 goal scenes lost at the K = 8, H = 64 horizon. The run is archived in
@@ -1814,7 +1814,7 @@ full-height impact is then at most about 0.3 for equal densities and bounded by 
 body of a scene on its lightest; the self-weight strain rho g L / E is below 2 %. Across scenes E and rho still
 cover their ranges (the softest admissible material is 22.5 kPa at 100 kg/m^3, the densest 4400 kg/m^3 at 1 MPa).
 The band is drawn after the contact constants and 0 switches it off, so the recorded reference scenes are
-reproduced with the band off (`TestMaterialBand`). Attempt 4 started 09:35 UTC from scratch with the curriculum and
+reproduced with the band off (`TestMaterialBand`). Attempt 4 started 08:50 UTC from scratch with the curriculum and
 the band.
 
 Observed in the attempt-3 records and left open: the all-pinned phase has almost no contact (27 plane pairs per
@@ -1833,3 +1833,30 @@ reaches below the ground or into another body's grown box, then dropped (statist
 scene finds static pairs (`TestPinnedContactFaces`). Attempt 4 was already past its all-pinned phase when this
 landed and runs without the faces (its config says 0.0), so that the material band's effect is seen alone; the
 faces are for the next restart or the next campaign.
+
+### v5 campaign, fourth attempt and the centroid trust region (2026-10-02, decided autonomously)
+
+Attempt 4 (curriculum and material band, 08:50-09:12 UTC, 8 epochs) confirmed the band: the goal scene that
+survived 64 steps had no inverted cell at all (839 in attempt 3). The other goal scene still died at epochs 7 and 8,
+and two training scenes failed at epoch 8 (penetration 21 r), with a different signature: nothing wrong for 23
+steps, then inter-body penetration of 4000 r and an energy of 4e9 J within one step. The run is archived in
+`generated/lido_v5_20261002/attempt4_band_no_faces/`.
+
+Replaying the scene with the coupled translation system of `Step.centroid_target` instrumented: the system
+M + J stayed positive definite at every query (smallest eigenvalue at least the lightest free body's mass), so
+the friction curvature is not the cause. A body of 6 x 3 x 5 cells (M_tot 15.9, rho 261) squeezed between heavier
+bodies owned 41 body pairs and partnered 56 more, with |F_con| / M_tot of 200 cells per step^2, and the Newton step
+7.15 on its centroid was 10 cells at the first query of a step; the fusion translates the body to the target
+exactly, the next query evaluates the contact 10 cells deeper, and the targets grew geometrically over the eight
+queries of the step: 37, 405, 5600, 1e5, 1e6, 1e7, 1e8, 1e9 cells. The Newton step is exact for the linearised
+contact; over such a step the contact is anything but linear.
+
+Decision: a trust region on the centroid step, `Step.translation_step_max` (`TrainConfig.translation_step_max`,
+1 cell per query, 0 = unbounded): the step of every free body is scaled down to the bound, its direction kept. A
+1 m fall lands at 0.6 cells per step and the inertial candidate already carries the free motion, so the correction
+a physical step needs is far below one cell and is unchanged by the bound (`TestTranslationTrustRegion`: a contact
+force of 1e4 times the weight moves the body by exactly the bound, the physical step by the same amount with and
+without it). Attempt 5 started 09:18 UTC from scratch with the curriculum, the band, the pinned contact faces
+(fraction 0.5) and the trust region. Its first epoch shows the pinned contact faces at work: the cheap metric is
+11 kN (the deformation field pushes pinned bodies into their faces at step 0, contacts the untrained network cannot
+yet resolve) while the goal scenes survive with 1064 N.
