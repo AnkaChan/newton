@@ -1881,3 +1881,15 @@ replacements per epoch is itself the diagnostic of how often the piles degrade. 
 1-1.5 radii, below the bound. The run was resumed from the epoch-10 checkpoint at 10:03 UTC with the guard (the
 scene sequence is seeded by epoch, so the resume changes nothing else); the validation has no guard and keeps
 measuring the goal scenes as they are.
+
+Capacity experiment (epoch-11 weights of attempt 5, the stiff goal scene, 128 steps, 8 queries per step as in the
+validation against 16 and 32, step cap 0.033 as in the run against the method's 0.05): the collapse starts at step
+44-49 in every case and more correction capacity makes it worse, 7425 inverted cells at the end with 8 queries,
+17780 with 16, 26886 with 32, 13925 with 8 queries at cap 0.05. The collapse is therefore the network's proposals in
+a dense pile with stiff contact, not a lack of iterations: under the stable Neo-Hookean energy, which has no
+inversion barrier, inverting a surface cell is cheaper than a penetration against a kappa ~ 100 contact penalty,
+so repeated energy descent inverts the pile's surface cells. The soft goal scene (kappa 13) stays healthy over 128
+steps at every epoch. kappa is drawn log-uniform in (10, 1000) (the v4 range), so about 65 % of the scenes have
+kappa above 50. Open for Anka: an inversion barrier in the elastic energy or a narrower kappa range for v5 are
+model decisions and were not changed; the penetration guard keeps such states out of the training set and its
+replacement count per epoch measures how often piles degrade.
