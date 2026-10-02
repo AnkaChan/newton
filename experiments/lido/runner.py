@@ -319,9 +319,16 @@ class SceneRunner:
             return
         self.queries += b.O
         self.k += 1
+        kind = None
         if not bool((torch.isfinite(b.E) & (b.E <= self.cfg.blowup_energy_factor * b.material.floor)).all()):
+            kind = "non_finite"
+        elif self.cfg.reset_penetration_r > 0.0 and b.pairs is not None and b.pairs.count > 0:
+            deepest = float(contact.penetration(b, b.x).max())  # over the step's frozen pairs, in sample radii
+            if not deepest <= self.cfg.reset_penetration_r:  # NaN counts as deep
+                kind = "penetration"
+        if kind is not None:
             j = self.job
-            self.failures.append(FailureRecord(j.seed, j.K, j.H, self.k, self.h, "non_finite", self.epoch, self.update))
+            self.failures.append(FailureRecord(j.seed, j.K, j.H, self.k, self.h, kind, self.epoch, self.update))
             self.resets += 1
             self.load()
             return

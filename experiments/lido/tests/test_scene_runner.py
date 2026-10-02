@@ -277,3 +277,52 @@ class TestSceneCurriculumRunner(unittest.TestCase):
         self.assertEqual(runner.mix, S.scene_mix(cfg, 3))
         self.assertEqual(runner.mix.pinned_fraction, cfg.pinned_body_fraction)
         self.assertEqual(runner.epoch_summary()["pinned_fraction"], cfg.pinned_body_fraction)
+
+
+class TestPenetrationGuard(unittest.TestCase):
+    """A scene whose deepest contact penetration exceeds `reset_penetration_r` fails and is replaced (2026-10-02)."""
+
+    def _deep_state(self, runner, step):
+        """The first body's lowest corner at a gap of 0.3 cells over the ground at step start (its face samples about a
+        cell higher), 3.5 cells lower in the candidate:
+        the step's pairs see a penetration of several sample radii."""
+        import dataclasses
+
+        from experiments.lido import contact
+
+        b = runner.batch
+        rows = b.corner_obj == 0
+        X = b.X.clone()
+        X[rows, 1] += 0.3 - X[rows, 1].min()
+        b.X.copy_(X)
+        b.pairs = contact.detect(b, b.X, b.V)
+        self.assertGreater(int((b.pairs.obj == 0).sum()), 0)
+        out = step.query(b)
+        cand = out.cand_after.detach().clone()
+        cand[rows, 1] -= 3.5
+        return dataclasses.replace(out, cand_after=cand), float(contact.penetration(b, cand).max())
+
+    def test_deep_penetration_fails_the_scene(self):
+        cfg = scene_cfg(scene_count=2, reset_penetration_r=3.0)
+        runner, step = make_runner_cpu(cfg)
+        runner.start_epoch(1)
+        first = runner.scene.seed
+        out, deepest = self._deep_state(runner, step)
+        self.assertGreater(deepest, 3.0)
+        runner.commit(out)
+        self.assertEqual(len(runner.failures), 1)
+        self.assertEqual(runner.failures[0].kind, "penetration")
+        self.assertEqual(runner.resets, 1)
+        self.assertNotEqual(runner.scene.seed, first)  # the next scene is loaded
+        self.assertEqual(runner.loaded_jobs, 2)
+
+    def test_guard_off_keeps_the_scene(self):
+        cfg = scene_cfg(scene_count=2, reset_penetration_r=0.0)
+        runner, step = make_runner_cpu(cfg)
+        runner.start_epoch(1)
+        first = runner.scene.seed
+        out, deepest = self._deep_state(runner, step)
+        self.assertGreater(deepest, 3.0)
+        runner.commit(out)
+        self.assertEqual(runner.failures, [])
+        self.assertEqual(runner.scene.seed, first)

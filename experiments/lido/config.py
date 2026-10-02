@@ -53,6 +53,11 @@ class TrainConfig:
     physical_floor: bool = True  # loss scale floor = body weight x one cell (Anka, 2026-10-02)
     bounded_increase: bool = True  # asinh on the energy-increase penalty (Anka, 2026-10-02)
     blowup_energy_factor: float = 1e6  # a body with E > factor x floor counts as a failed (diverged) state
+    # a v5 scene whose deepest contact penetration exceeds this many sample radii counts as failed and is replaced
+    # (SceneRunner; 2026-10-02, after the fifth attempt's piles degraded over 128 steps without ever diverging:
+    # inverted cells and penetrations of 4-8 r are not states to learn from); the pinned contact faces start at
+    # about 1-1.5 r; 0 = off
+    reset_penetration_r: float = 3.0
     early_stopping: bool = False
     # materials and augmentation
     youngs_modulus_range: tuple = (1e3, 1e6)
