@@ -120,6 +120,16 @@ class TrainConfig:
     # 2026-10-02; physics.effective_lambda): the stable Neo-Hookean energy is finite at J = 0 and piles under stiff
     # contact shrank and inverted their surface cells; 0 = off
     inversion_lambda_factor: float = 10.0
+    # v6 (Anka, 2026-10-02): arbitrary voxel shapes, pre-roll steps, a walled world
+    body_shapes: str = "box"  # "box": the v5 cuboids; "voxel": shapes.sample_voxel_shape from a fixed per-run library
+    shape_library_size: int = 2048  # voxel shapes drawn once per run from shape_library_seed; bodies pick from it
+    shape_library_seed: int = 2026
+    shape_cell_range: tuple = (27, 1728)  # cells per voxel shape
+    pre_roll_max_steps: int = 150  # at the growth table's last stage a scene first runs U{0..this} inference-only steps
+    pre_roll_queries: int = 8  # network queries per pre-roll step
+    world_well: bool = True  # four static walls around the placement footprint; the ground plane stays the floor
+    well_margin_cells: float = 2.0  # the walls stand this many cells outside the footprint
+    well_height_m: float = 1.5
     scene_count: int = 64  # fixed scenes per epoch
     validation_scene_count: int = 8
     validation_full_scene_count: int = 2
