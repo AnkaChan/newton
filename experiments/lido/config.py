@@ -61,7 +61,7 @@ class TrainConfig:
     early_stopping: bool = False
     # materials and augmentation
     youngs_modulus_range: tuple = (1e3, 1e6)
-    poissons_ratio_range: tuple = (0.2, 0.49)
+    poissons_ratio_range: tuple = (0.25, 0.49)  # lambda >= mu (Anka, 2026-10-02; 0.25 gives lambda = mu)
     density_range: tuple = (100.0, 1e4)
     damping_range: tuple = (10.0, 1000.0)
     strength_range: tuple = (0.02, 0.1)
@@ -116,6 +116,10 @@ class TrainConfig:
     # 0 = unbounded; nothing physical in the v5 scenes moves faster than 0.6 cells per step
     translation_step_max: float = 1.0
     translation_step_factor: float = 2.0  # the bound is at least this many times the body's inertial displacement
+    # inverted quadrature points (J <= 0) use lambda = factor x max(mu, lambda_0) in the elastic energy (Anka,
+    # 2026-10-02; physics.effective_lambda): the stable Neo-Hookean energy is finite at J = 0 and piles under stiff
+    # contact shrank and inverted their surface cells; 0 = off
+    inversion_lambda_factor: float = 10.0
     scene_count: int = 64  # fixed scenes per epoch
     validation_scene_count: int = 8
     validation_full_scene_count: int = 2

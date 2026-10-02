@@ -19,7 +19,7 @@ from pathlib import Path
 
 import torch
 
-from . import contact
+from . import contact, physics
 from . import report as rep
 from .augment import Augmenter
 from .config import TrainConfig
@@ -125,6 +125,7 @@ def train(
     grids = GridCache(device)
     grid = grids.get(cfg.cell_counts, cfg.pins) if not v5 else None
     aug = Augmenter(device)
+    physics.INVERSION_LAMBDA_FACTOR = float(getattr(cfg, "inversion_lambda_factor", 10.0))  # energy kernels
     step = Step(
         model,
         Fusion(batched=v5),  # v5: one padded Kron solve

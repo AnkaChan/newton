@@ -56,6 +56,7 @@ def elastic_damping_kernel(
     mu_scale: wp.array[float],  # [O]
     C_prev: wp.array2d[wp.mat33],
     Gq: wp.array2d[wp.vec3],
+    inv_factor: float,  # lambda at an inverted point = inv_factor x max(1, lam) (physics.effective_lambda; 0 = off)
     fused: int,  # 0: energy[c], grad_cells[c, k]; 1: energy_obj[cell_obj[c]] += E, grad_x[cells[c, k]] += g_k
     energy: wp.array[float],  # [C] (fused 0)
     grad_cells: wp.array2d[wp.vec3],  # [C,8] (fused 0)
@@ -70,7 +71,7 @@ def elastic_damping_kernel(
         X[k, 1] = xk[1]
         X[k, 2] = xk[2]
     o = int(cell_obj[c])
-    lam_nh = lam[o] + 1.0
+    lam_o = lam[o]
     eta_c = eta[o]
     wq = WEIGHT * mu_scale[o]  # Gauss weight times the object's unit factor
     E = float(0.0)
@@ -79,7 +80,12 @@ def elastic_damping_kernel(
         F = wp.mat33(0.0)
         for k in range(8):
             F += wp.outer(wp.vec3(X[k, 0], X[k, 1], X[k, 2]), Gq[q, k])
-        Jm1 = wp.determinant(F) - 1.0
+        J = wp.determinant(F)
+        lam_q = lam_o
+        if inv_factor > 0.0 and J <= 0.0:  # inverted point: the stiffened lambda (physics.effective_lambda)
+            lam_q = inv_factor * wp.max(1.0, lam_o)
+        lam_nh = lam_q + 1.0
+        Jm1 = J - 1.0
         psi = 0.5 * (wp.ddot(F, F) - 3.0) + 0.5 * lam_nh * Jm1 * Jm1 - Jm1
         D = wp.transpose(F) * F - C_prev[c, q]
         psi_d = 0.5 * eta_c * wp.ddot(D, D)
@@ -140,6 +146,8 @@ def _launch_cells(batch, x, energy, grad_cells, energy_obj, grad_x) -> None:
     if C == 0:
         return
     wp.init()
+    from . import physics  # the inversion factor lives next to the torch reference (physics imports this module)
+
     m = batch.material
     inputs = [
         _array(x, wp.vec3),
@@ -150,6 +158,7 @@ def _launch_cells(batch, x, energy, grad_cells, energy_obj, grad_x) -> None:
         _array(m.mu_scale, wp.float32),
         _array(batch.C_prev, wp.mat33),
         _array(batch.hc.Gq, wp.vec3),
+        float(physics.INVERSION_LAMBDA_FACTOR),
         int(energy is None),
         _array(energy, wp.float32),
         _array(grad_cells, wp.vec3),

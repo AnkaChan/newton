@@ -29,19 +29,36 @@ def seg_sum(values: Tensor, seg: Tensor, count: int) -> Tensor:
     return torch.zeros(count, dtype=values.dtype, device=values.device).index_add_(0, seg, values)
 
 
+INVERSION_LAMBDA_FACTOR = 10.0  # TrainConfig.inversion_lambda_factor; the trainer sets it from its config
+
+
+def effective_lambda(lam: Tensor, J: Tensor) -> Tensor:
+    """lambda / mu at a quadrature point: the body's own ratio, or INVERSION_LAMBDA_FACTOR x max(1, lam) where the
+    point is inverted (J <= 0). Anka, 2026-10-02: the stable Neo-Hookean energy is finite at J = 0, and with
+    lambda below mu a body under a stiff contact loses less energy by shrinking its surface cells than by pushing
+    back, so piles shrank and inverted; an inverted point gets lambda = max(10 mu, 10 lambda_0), which drives it back
+    out (the materials are also drawn with lambda >= mu, `poissons_ratio_range`). 0 disables the stiffening."""
+    if INVERSION_LAMBDA_FACTOR <= 0.0:
+        return lam
+    return torch.where(J <= 0.0, INVERSION_LAMBDA_FACTOR * torch.clamp(lam, min=1.0), lam)
+
+
 def stable_neo_hookean(F: Tensor, lam: Tensor) -> Tensor:
-    """Energy density with mu = 1 and lambda_NH = lam + 1 (Newton mapping); zero at F = I. F [...,3,3], lam broadcast."""
+    """Energy density with mu = 1 and lambda_NH = lam + 1 (Newton mapping); zero at F = I. F [...,3,3], lam broadcast;
+    lam is stiffened at inverted points (`effective_lambda`)."""
     I_C = (F * F).sum((-1, -2))
     J = torch.linalg.det(F)
-    lam_nh = lam + 1.0
+    lam_nh = effective_lambda(lam, J) + 1.0
     return 0.5 * (I_C - 3.0) + 0.5 * lam_nh * (J - 1.0) ** 2 - (J - 1.0)
 
 
 def neo_hookean_stress(F: Tensor, lam: Tensor) -> Tensor:
-    """Newton's stress mu F + (lambda_NH (J - 1) - mu) cof(F) with mu = 1 (test reference)."""
+    """Newton's stress mu F + (lambda_NH (J - 1) - mu) cof(F) with mu = 1 (test reference), lam stiffened at
+    inverted points as in the energy."""
     J = torch.linalg.det(F)
     cof = J[..., None, None] * torch.linalg.inv(F).transpose(-1, -2)
-    return F + ((lam + 1.0) * (J - 1.0) - 1.0)[..., None, None] * cof
+    lam_nh = effective_lambda(lam, J) + 1.0
+    return F + (lam_nh * (J - 1.0) - 1.0)[..., None, None] * cof
 
 
 def modes_and_center(x: Tensor, batch) -> tuple[Tensor, Tensor]:
