@@ -125,7 +125,13 @@ def train(
     grids = GridCache(device)
     grid = grids.get(cfg.cell_counts, cfg.pins) if not v5 else None
     aug = Augmenter(device)
-    step = Step(model, Fusion(batched=v5), aug, noise_range=cfg.candidate_noise_range)  # v5: one padded Kron solve
+    step = Step(
+        model,
+        Fusion(batched=v5),  # v5: one padded Kron solve
+        aug,
+        noise_range=cfg.candidate_noise_range,
+        translation_step_max=getattr(cfg, "translation_step_max", 1.0),
+    )
     runner = make_runner(cfg, step, aug, grids, rank, world, device, cfg.seed)
     report = rep.RunReport(run_dir, cfg, world, git_sha(), initialized_from) if rank == 0 else None
     if report and resume and (run_dir / "report.json").exists():

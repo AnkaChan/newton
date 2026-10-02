@@ -593,3 +593,43 @@ class TestRolloutAndSolverFreeBody(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTranslationTrustRegion(unittest.TestCase):
+    """The centroid target's trust region (2026-10-02): a blow-up of the contact force moves a body by at most
+    `translation_step_max` cells per query, 0 removes the bound, and a physical step is left untouched."""
+
+    def test_bound_binds_only_on_huge_forces(self):
+        import experiments.lido.step as step_module
+
+        with self.assertRaises(ValueError):
+            Step(Net.from_config(SMALL_CFG).eval(), Fusion(), translation_step_max=-1.0)
+        results = {}
+        for bound in (1.0, 0.25, 0.0):
+            g, b = free_batch(100.0, -0.3)  # resting on the plane, 0.2 cells into the sample band
+            step = Step(Net.from_config(SMALL_CFG).to(torch.float64).eval(), Fusion(), translation_step_max=bound)
+            sel = torch.ones(1, dtype=torch.bool)
+            step.prepare(b, sel)
+            self.assertGreater(b.pairs.count, 0)
+            c_x = physics.centroid(b, b.x)
+            c_t, _ = step.centroid_target(b, b.x)
+            results[bound] = (c_t - c_x).norm(dim=-1).item()
+            # a contact force blow-up: 1e4 x the body's weight along +x, as the squeezed body of the fourth v5 attempt
+            real = step_module.contact.contact_force
+            M = physics.total_mass(b)
+            fake = lambda batch, x: real(batch, x) + 1e4 * M[:, None] * torch.tensor([[1.0, 0.0, 0.0]], dtype=x.dtype)  # noqa: E731
+            step_module.contact.contact_force = fake
+            try:
+                c_huge, _ = step.centroid_target(b, b.x)
+            finally:
+                step_module.contact.contact_force = real
+            d = (c_huge - c_x).norm(dim=-1).item()
+            if bound > 0.0:
+                self.assertAlmostEqual(d, bound, places=9, msg=f"bound {bound}")
+                self.assertGreater((c_huge - c_x)[0, 0].item(), 0.0)  # the direction of the step is kept
+            else:
+                self.assertGreater(d, 1e3)
+        # the physical step is far below the bounds and identical with and without them
+        self.assertLess(results[1.0], 0.25)
+        self.assertAlmostEqual(results[1.0], results[0.0], places=12)
+        self.assertAlmostEqual(results[0.25], results[0.0], places=12)
