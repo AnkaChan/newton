@@ -26,6 +26,12 @@ set d_r = 0. `fuse(..., centroid_target=c_t)` then adds the translation t = c_t 
 (eq. 7.21), which is the solution of the centroid-only blend (7.17)/(7.19): c(x_k + d) = c_t exactly for every
 lambda, and lambda drops out of the shape solve. `project_gradient` removes the translation component of the
 gradient before the solve: the modes cannot carry it (B Z = 0, eq. 7.1).
+
+Batches of many grids (v5 and v6 scenes). `Fusion(batched=True)` solves every group of a batch in one call instead
+of a Python loop over the groups: `BatchedKron`, one padded Kron chain, when every grid is a box with one lattice
+face pinned or free; `BatchedSparse` (2026-10-02, for the v6 voxel bodies: ~150 distinct shapes per batch), one
+cuDSS factorisation of the block-diagonal matrix of every object's dirichlet-view free system, otherwise. The
+per-group loop remains the fallback (one group, CPU, nvmath missing, multigrid or dense forced).
 """
 
 from __future__ import annotations
@@ -206,6 +212,23 @@ def assemble_free_csr(grid: Grid, dtype=torch.float64) -> Tensor:
     return coo.to_sparse_csr()
 
 
+def block_diagonal_csr(blocks: list[Tensor]) -> Tensor:
+    """One square CSR tensor with the given square CSR blocks on its diagonal, in order: the rows and columns of
+    block k are offset by the sizes of the blocks before it. No coalescing (the blocks' row order is kept), so the
+    row offsets, column indices and values are plain concatenations."""
+    dev = blocks[0].device
+    crow = [torch.zeros(1, dtype=torch.int64, device=dev)]
+    cols, vals = [], []
+    row_off = nnz_off = 0
+    for b in blocks:
+        crow.append(b.crow_indices()[1:] + nnz_off)
+        cols.append(b.col_indices() + row_off)
+        vals.append(b.values())
+        row_off += int(b.shape[0])
+        nnz_off += int(b.values().numel())
+    return torch.sparse_csr_tensor(torch.cat(crow), torch.cat(cols), torch.cat(vals), size=(row_off, row_off))
+
+
 class _SparseSolve(torch.autograd.Function):
     """Differentiable solve with a symmetric positive definite sparse factor: the backward is the same solve."""
 
@@ -219,22 +242,22 @@ class _SparseSolve(torch.autograd.Function):
         return ctx.factor._solve_cols(grad), None
 
 
-class SparseFactor:
-    """cuDSS (through nvmath-python) direct factorisation of K_s[free, free]: general meshes and pins, GPU only."""
+class CsrSolver:
+    """cuDSS (through nvmath-python) direct factorisation of one symmetric positive definite CSR matrix, GPU only:
+    planned and factorised once per right-hand-side column count, solved any number of times (column-major right-hand
+    side, device activation on every call); `solve_cols` is the autograd Function `_SparseSolve`, whose backward is
+    the same solve (the matrix is symmetric). The machinery of `SparseFactor` (one grid's K_s[free, free]), split
+    out on 2026-10-02 so that `BatchedSparse` factorises the block-diagonal matrix of a whole batch with it."""
 
-    def __init__(self, grid: Grid, dtype=torch.float32):
+    def __init__(self, csr: Tensor, device: torch.device):
         import nvmath.sparse.advanced as sa  # optional dependency: `uv pip install nvmath-python[cu12]`
 
         self.sa = sa
-        self.dtype = dtype
-        idx = grid.device.index if grid.device.index is not None else torch.cuda.current_device()
+        idx = device.index if device.index is not None else torch.cuda.current_device()
         self.device = torch.device("cuda", idx)
-        self.grid = grid
-        self.free = grid.free
         self._activate()
-        self.csr = assemble_free_csr(grid, dtype)
+        self.csr = csr
         self.solvers: dict[int, object] = {}
-        self._A = cell_block().to(device=grid.device, dtype=dtype)
 
     def _solver(self, ncol: int, rhs_cm: Tensor):
         if ncol not in self.solvers:
@@ -263,9 +286,24 @@ class SparseFactor:
         x = solver.solve(stream=torch.cuda.current_stream(self.device))
         return x.contiguous()
 
+    def solve_cols(self, rhs: Tensor) -> Tensor:
+        """Differentiable K^-1 rhs for rhs [n, k]."""
+        return _SparseSolve.apply(rhs, self)
+
+
+class SparseFactor(CsrSolver):
+    """cuDSS (through nvmath-python) direct factorisation of K_s[free, free]: general meshes and pins, GPU only."""
+
+    def __init__(self, grid: Grid, dtype=torch.float32):
+        self.dtype = dtype
+        self.grid = grid
+        self.free = grid.free
+        super().__init__(assemble_free_csr(grid, dtype), grid.device)
+        self._A = cell_block().to(device=grid.device, dtype=dtype)
+
     def solve(self, r: Tensor) -> Tensor:
         n, Pf, _ = r.shape
-        sol = _SparseSolve.apply(r.permute(1, 0, 2).reshape(Pf, n * 3), self)
+        sol = self.solve_cols(r.permute(1, 0, 2).reshape(Pf, n * 3))
         return sol.reshape(Pf, n, 3).permute(1, 0, 2)
 
     def apply_full(self, v: Tensor) -> Tensor:
@@ -378,11 +416,58 @@ class BatchedKron:
         return out.index_select(0, self.scatter)
 
 
+class BatchedSparse:
+    """The shape solves of every object of a batch in ONE cuDSS factorisation of the block-diagonal matrix of their
+    dirichlet-view free systems K_s[free, free] (2026-10-02, for the v6 scenes: ~150 distinct voxel-shaped bodies
+    per batch, which `BatchedKron` cannot take and the per-group loop solved with ~150 small cuDSS solves per query).
+
+    Block o is object o's system, in batch corner order: `assemble_free_csr(dirichlet_view(grid))` once per grid,
+    tiled per object (the objects of a group share their grid's block) and placed on the diagonal with its row
+    offset (`block_diagonal_csr`). `rows` lists the batch corner rows the blocks cover (an object's free corners,
+    or all but the reference corner of an unpinned body), so a solve is one gather, one cuDSS solve of a [Nf, 3]
+    right-hand side through `CsrSolver.solve_cols` (autograd backward = the same solve) and one scatter; the rows
+    not covered (pinned corners, reference corners) come out zero, as in the loop.
+    A mixed batch (box groups and voxel groups) goes through this factor for every object. Pairing a Kron chain for
+    the boxes with a sparse factor for the rest would reproduce the loop bit for bit but needs two solvers over two
+    object subsets; the single factor is simpler and does the same per-object arithmetic as `Fusion("sparse")`. The
+    only difference from the loop's KronFactor on an unpinned box is the particular solution (d_r = 0 instead of the
+    pseudo-inverse), a translation that the centroid completion of `fuse` removes and `project_gradient` never sees
+    (B Z = 0); `Step.query` always passes a centroid target when the batch has free objects.
+    Built once per batch layout and dtype (`Batch.fusion_cache`, reset by relayout); `Fusion.batched_solver` bounds
+    the total free count by `sparse_max_free` as it bounds a single grid's."""
+
+    def __init__(self, batch, dtype):
+        dev = batch.device
+        if dev.type != "cuda":
+            raise ValueError("BatchedSparse needs a CUDA batch (cuDSS through nvmath-python)")
+        blocks: dict[tuple, Tensor] = {}
+        views: dict[tuple, Grid] = {}
+        rows, csrs = [], []
+        for o, g in enumerate(batch.grids):
+            if g.key not in blocks:
+                views[g.key] = dirichlet_view(g)
+                blocks[g.key] = assemble_free_csr(views[g.key], dtype)
+            rows.append(views[g.key].free + batch.corner_off[o])
+            csrs.append(blocks[g.key])
+        self.rows = torch.cat(rows)  # [Nf] batch corner rows of the blocks, in block order
+        self.Nf = int(self.rows.numel())
+        self.N = batch.N
+        self.dtype = dtype
+        self.solver = CsrSolver(block_diagonal_csr(csrs), dev)
+
+    def solve(self, r: Tensor) -> Tensor:
+        """K^-1 r on every object's dirichlet-view free corners: r [N,3] -> [N,3] (the rows of pinned corners and
+        of the reference corner of an unpinned object are ignored and come out zero)."""
+        sol = self.solver.solve_cols(r.index_select(0, self.rows))
+        return torch.zeros_like(r).index_copy_(0, self.rows, sol)
+
+
 class Fusion:
     """solver: "auto" (structured solve for box grids with one lattice face pinned or no pins, cuDSS or multigrid
     PCG for anything else on CUDA, dense inverse otherwise), or one of "kron", "mg", "sparse" (cuDSS), "dense" to
-    force a path. `batched`: a batch of several box-grid groups is solved in one padded chain (`BatchedKron`) instead
-    of a Python loop over the groups (v5 scenes; body mode has one group and is unchanged either way)."""
+    force a path. `batched`: a batch of several groups is solved in one call instead of a Python loop over the
+    groups: one padded Kron chain (`BatchedKron`) when every grid is Kron-solvable, one block-diagonal cuDSS factor
+    (`BatchedSparse`) otherwise (v5 and v6 scenes; body mode has one group and is unchanged either way)."""
 
     def __init__(self, solver: str = "auto", refine: bool = False, options: dict | None = None, batched: bool = False):
         self.solver = solver
@@ -396,26 +481,40 @@ class Fusion:
             tuple, object
         ] = {}  # (grid key, dtype) -> KronFactor | MultigridFactor | SparseFactor | DenseFactor
 
-    def batched_kron(self, batch, dtype) -> BatchedKron | None:
-        """The batch's `BatchedKron` when the batched path applies (several groups, all solvable by KronFactor)."""
+    def batched_solver(self, batch, dtype) -> BatchedKron | BatchedSparse | None:
+        """The batch's multi-group solver when the batched path applies (`batched=True`, several groups): a
+        `BatchedKron` when every grid is solved by a KronFactor, a `BatchedSparse` otherwise on CUDA with nvmath
+        installed (solver "auto" with the total free count within `sparse_max_free`, or "sparse"); None, the
+        per-group loop, in every other case (one group, CPU, nvmath missing, multigrid or dense forced). Cached on
+        the batch per dtype (`Batch.fusion_cache`, reset by relayout)."""
         if not self.batched or len(batch.groups) < 2:
             return None
         if batch.fusion_cache is None:
             batch.fusion_cache = {}
         if dtype not in batch.fusion_cache:
-            try:
-                batch.fusion_cache[dtype] = BatchedKron(batch, self, dtype)
-            except ValueError:
-                batch.fusion_cache[dtype] = False
+            batch.fusion_cache[dtype] = self._build_batched(batch, dtype) or False
         return batch.fusion_cache[dtype] or None
+
+    def _build_batched(self, batch, dtype) -> BatchedKron | BatchedSparse | None:
+        if all(self._kron_grid(g) for g in batch.grids):
+            return BatchedKron(batch, self, dtype)
+        if batch.device.type != "cuda" or not sparse_solver_available():
+            return None
+        free_total = sum(g.Pf if g.pinned.numel() > 0 else g.P - 1 for g in batch.grids)  # dirichlet views
+        if self.solver == "sparse" or (self.solver == "auto" and free_total <= self.sparse_max_free):
+            return BatchedSparse(batch, dtype)
+        return None
+
+    def _kron_grid(self, grid: Grid) -> bool:
+        """Whether `factor` solves this grid with a KronFactor."""
+        return self.solver == "kron" or (self.solver == "auto" and grid.kind == "box" and grid.pins in BOX_PINS)
 
     def factor(self, grid: Grid, dtype=torch.float32):
         """The solver of the grid's shape system; every factor exposes `free`, the corner set its solve covers
         (grid.free, or all corners but the reference corner for an unpinned body on a non-Kron solver)."""
         key = (grid.key, dtype)
         if key not in self.factors:
-            structured = grid.kind == "box" and grid.pins in BOX_PINS
-            if self.solver == "kron" or (self.solver == "auto" and structured):
+            if self._kron_grid(grid):
                 self.factors[key] = KronFactor(grid, dtype)
             else:
                 g = dirichlet_view(grid)
@@ -453,9 +552,9 @@ class Fusion:
         objects are untouched. Without a target the unpinned shape solution is returned as it is.
         """
         hc = batch.hc
-        kron = self.batched_kron(batch, dF.dtype) if d_pinned is None else None
-        if kron is not None:
-            return self._fuse_batched(batch, dF, kron, centroid_target)
+        solver = self.batched_solver(batch, dF.dtype) if d_pinned is None else None
+        if solver is not None:
+            return self._fuse_batched(batch, dF, solver, centroid_target)
         d = torch.zeros(batch.N, 3, dtype=dF.dtype, device=dF.device)
         for grp in batch.groups:
             grid = grp.grid
@@ -482,15 +581,18 @@ class Fusion:
             d = d.index_copy_(0, grp.corner_idx, dg.reshape(-1, 3))
         return d
 
-    def _fuse_batched(self, batch, dF: Tensor, kron: BatchedKron, centroid_target: Tensor | None) -> Tensor:
-        """`fuse` through `BatchedKron`: the right-hand side B^T W dF over all cells at once, one padded solve, and
-        the centroid completion of the free objects by segment sums (the same float64 weights as the loop)."""
+    def _fuse_batched(
+        self, batch, dF: Tensor, solver: BatchedKron | BatchedSparse, centroid_target: Tensor | None
+    ) -> Tensor:
+        """`fuse` through `BatchedKron` or `BatchedSparse`: the right-hand side B^T W dF over all cells at once, one
+        solve, and the centroid completion of the free objects by segment sums (the same float64 weights as the
+        loop)."""
         hc = batch.hc
         contrib = torch.einsum("q,cqra,qka->ckr", hc.weights, dF, hc.Gq)  # [C,8,3]
         rhs = torch.zeros(batch.N, 3, dtype=dF.dtype, device=dF.device).index_add_(
             0, batch.cells.reshape(-1), contrib.reshape(-1, 3)
         )
-        d = kron.solve(rhs)
+        d = solver.solve(rhs)
         if centroid_target is not None and batch.any_free:
             from .units import unit_rho
 
@@ -515,14 +617,14 @@ class Fusion:
         removing it makes the result independent of the particular solution the factor picks.
         """
         hc = batch.hc
-        kron = self.batched_kron(batch, gX.dtype)
-        if kron is not None:
+        solver = self.batched_solver(batch, gX.dtype)
+        if solver is not None:
             o = batch.corner_obj
             free_rows = batch.free_objects[o]
             counts = torch.bincount(o, minlength=batch.O).to(gX.dtype)
             mean = torch.zeros(batch.O, 3, dtype=gX.dtype, device=gX.device).index_add_(0, o, gX) / counts[:, None]
             g = torch.where(free_rows[:, None], gX - mean[o], gX)
-            z = kron.solve(g)  # zero on pinned corners
+            z = solver.solve(g)  # zero on pinned corners
             dFz = torch.einsum("ckr,qka->cqra", z[batch.cells], hc.Gq) * hc.weights[:, None, None]
             return torch.einsum("qij,cqi->cj", hc.Gamma, dFz.reshape(batch.C, 8, 9)).reshape(batch.C, MODE_COUNT, 3)
         out = torch.zeros(batch.C, MODE_COUNT, 3, dtype=gX.dtype, device=gX.device)

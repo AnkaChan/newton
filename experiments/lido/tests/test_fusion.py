@@ -299,10 +299,10 @@ class TestBatchedKron(unittest.TestCase):
         b, dF, gX, c_t = self.batch(device, dtype)
         self.assertEqual(len(b.groups), 6)
         loop, batched = Fusion(), Fusion(batched=True)
-        self.assertIsNone(loop.batched_kron(b, dtype))
-        kron = batched.batched_kron(b, dtype)
+        self.assertIsNone(loop.batched_solver(b, dtype))
+        kron = batched.batched_solver(b, dtype)
         self.assertIsNotNone(kron)
-        self.assertIs(batched.batched_kron(b, dtype), kron)  # cached on the batch
+        self.assertIs(batched.batched_solver(b, dtype), kron)  # cached on the batch
         self.assertEqual(
             kron.shape, (5, 4, 5)
         )  # the largest free lattice per axis (nx + 1, or nx with the face pinned)
@@ -327,10 +327,10 @@ class TestBatchedKron(unittest.TestCase):
         # the cache follows the layout
         b.relayout([Grid.build((2, 2, 2), pins="none", device=device), *b.grids[1:]])
         self.assertIsNone(b.fusion_cache)
-        self.assertIsNot(batched.batched_kron(b, dtype), kron)
+        self.assertIsNot(batched.batched_solver(b, dtype), kron)
         # one group (body mode): the loop path whatever the flag
         one = Batch.build([Grid.build((2, 2, 3), device=device)] * 3, device, dtype)
-        self.assertIsNone(batched.batched_kron(one, dtype))
+        self.assertIsNone(batched.batched_solver(one, dtype))
 
     def test_cpu_float64(self):
         self.check("cpu", torch.float64, 1e-11)

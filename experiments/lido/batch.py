@@ -114,7 +114,9 @@ class Batch:
     body_contact: bool = False  # contact.detect also queries the other bodies' surface meshes
     meshes: object = None  # contact.BodyMeshes: one wp.Mesh per object over its exposed faces, rebuilt per step
     static_mesh: object = None  # contact.StaticMesh: one wp.Mesh over the scene's static faces, built once per scene
-    fusion_cache: dict = None  # fusion.BatchedKron per dtype (the padded multi-group solve), reset by relayout
+    fusion_cache: dict = (
+        None  # fusion.BatchedKron | BatchedSparse | False per dtype (the multi-group solve), reset by relayout
+    )
     noise_cache: object = None  # augment.Augmenter's padded-lattice tables of the whole batch, reset by relayout
     # job-constant network cache
     film: tuple = None
