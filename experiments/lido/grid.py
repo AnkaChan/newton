@@ -39,6 +39,19 @@ def face_pin_mask(corner_lattice: Tensor, cell_counts, pins: str) -> Tensor:
     return corner_lattice[:, axis] == (0 if side == "min" else int(cell_counts[axis]))
 
 
+def lattice_face_mask(cell_counts, pins: str) -> Tensor:
+    """[nx+1, ny+1, nz+1] bool: every lattice corner of the face `pins` (coordinate 0 for a min face, n_axis for a
+    max face), the pin mask `Grid.from_voxels` takes for a voxel body clamped at that face (it keeps the present
+    corners of the mask; v6 scenes, 2026-10-02)."""
+    axis, side = face_pin(pins)
+    counts = tuple(int(v) for v in cell_counts)
+    mask = torch.zeros(counts[0] + 1, counts[1] + 1, counts[2] + 1, dtype=torch.bool)
+    index: list = [slice(None)] * 3
+    index[axis] = 0 if side == "min" else counts[axis]
+    mask[tuple(index)] = True
+    return mask
+
+
 def corner_index(ix: Tensor, iy: Tensor, iz: Tensor, counts) -> Tensor:
     _nx, ny, nz = counts
     return (ix * (ny + 1) + iy) * (nz + 1) + iz
@@ -303,6 +316,9 @@ def reference_corners(corner_lattice: Tensor, pinned: Tensor, cells: Tensor) -> 
 
 
 class GridCache:
+    """Grids by shape and pins on one device: `get` the box grids (key (nx, ny, nz, pins)), `get_voxel` the grids of
+    the voxel bodies of the v6 scenes (key (shape_id, pins))."""
+
     def __init__(self, device):
         self.device = torch.device(device)
         self.grids: dict[tuple, Grid] = {}
@@ -312,6 +328,22 @@ class GridCache:
         if key not in self.grids:
             self.grids[key] = Grid.build(cell_counts, pins, self.device)
         return self.grids[key]
+
+    def get_voxel(self, shape_id: int, occupancy, pins: str = "none") -> Grid:
+        """The grid of a voxel body (v6 scenes, 2026-10-02): `Grid.from_voxels` of the bool occupancy [nx, ny, nz]
+        (numpy or tensor) with `pins` "none" or one of `FACE_PINS`, handed to the constructor as the corner mask of
+        that lattice face (`lattice_face_mask`: the present corners with that coordinate at 0 or n are clamped).
+        Keyed by (shape_id, pins): the ids of a run's shape library (`shapes.ShapeLibrary`) are stable, so a cache
+        serves one library; a hit whose lattice or cell count disagrees with the occupancy raises."""
+        key = (int(shape_id), str(pins))
+        occ = torch.as_tensor(occupancy).to("cpu", torch.bool)
+        if key not in self.grids:
+            mask = None if pins == "none" else lattice_face_mask(occ.shape, pins)
+            self.grids[key] = Grid.from_voxels(occ, mask, self.device)
+        grid = self.grids[key]
+        if grid.cell_counts != tuple(int(v) for v in occ.shape) or grid.C != int(occ.sum()):
+            raise ValueError(f"GridCache: shape {shape_id} with pins {pins!r} was cached from a different occupancy")
+        return grid
 
 
 def reference_rotation(x: Tensor, ref_corners: Tensor) -> Tensor:

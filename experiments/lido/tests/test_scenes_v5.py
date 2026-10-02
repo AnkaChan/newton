@@ -24,7 +24,7 @@ from experiments.lido.config import TrainConfig
 from experiments.lido.grid import FACE_PINS, GridCache
 
 MASTER = 73
-CFG = TrainConfig(scene_cells=6000)  # about 14 bodies: every rule is exercised, the tests stay quick
+CFG = TrainConfig(scene_cells=6000, world_well=False)  # about 14 bodies, the v5 world (the v6 well: test_scenes_v6)
 REFERENCE = Path(__file__).parent / "reference" / "scenes_v5_6000_cells.json"  # recorded before the resting start
 
 

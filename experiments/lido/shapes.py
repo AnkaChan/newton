@@ -9,6 +9,11 @@ then refined once or twice, each refinement subdividing every voxel into 2 x 2 x
 random (surface voxels removed, empty voxels touching the surface added, with probabilities that shrink with the
 level), keeping the largest face-connected component. The result ranges from bars, L and T shapes and slabs to
 blobs with notches and bumps; `Grid.from_voxels` turns the occupancy into a solver grid.
+
+`ShapeLibrary` (v6 scenes, Anka 2026-10-02) is the fixed list of shapes a training run draws its bodies from: `size`
+shapes sampled once from one seed with cell counts in `cell_range`, the index of a shape being its stable id across
+scenes, epochs and ranks; `shape_library` builds a library at most once per process (a module-level cache keyed by
+(size, seed, cell_range); the default of 2048 shapes takes about 13 s on one CPU core).
 """
 
 from __future__ import annotations
@@ -51,7 +56,9 @@ def surface_mask(occ: np.ndarray) -> np.ndarray:
     padded = np.pad(occ, 1)
     full = np.ones_like(occ)
     for d in FACE_NEIGHBOURS:
-        shifted = padded[1 + d[0] : 1 + d[0] + occ.shape[0], 1 + d[1] : 1 + d[1] + occ.shape[1], 1 + d[2] : 1 + d[2] + occ.shape[2]]
+        shifted = padded[
+            1 + d[0] : 1 + d[0] + occ.shape[0], 1 + d[1] : 1 + d[1] + occ.shape[1], 1 + d[2] : 1 + d[2] + occ.shape[2]
+        ]
         full &= shifted
     return occ & ~full
 
@@ -62,7 +69,9 @@ def shell_mask(occ: np.ndarray) -> np.ndarray:
     padded = np.pad(occ, 1)
     touch = np.zeros_like(occ)
     for d in FACE_NEIGHBOURS:
-        shifted = padded[1 + d[0] : 1 + d[0] + occ.shape[0], 1 + d[1] : 1 + d[1] + occ.shape[1], 1 + d[2] : 1 + d[2] + occ.shape[2]]
+        shifted = padded[
+            1 + d[0] : 1 + d[0] + occ.shape[0], 1 + d[1] : 1 + d[1] + occ.shape[1], 1 + d[2] : 1 + d[2] + occ.shape[2]
+        ]
         touch |= shifted
     return touch & ~occ
 
@@ -86,7 +95,9 @@ def neighbour_count(occ: np.ndarray) -> np.ndarray:
     padded = np.pad(occ, 1).astype(np.int8)
     count = np.zeros(occ.shape, dtype=np.int8)
     for d in FACE_NEIGHBOURS:
-        count += padded[1 + d[0] : 1 + d[0] + occ.shape[0], 1 + d[1] : 1 + d[1] + occ.shape[1], 1 + d[2] : 1 + d[2] + occ.shape[2]]
+        count += padded[
+            1 + d[0] : 1 + d[0] + occ.shape[0], 1 + d[1] : 1 + d[1] + occ.shape[1], 1 + d[2] : 1 + d[2] + occ.shape[2]
+        ]
     return count
 
 
@@ -110,7 +121,9 @@ def refine(rng: np.random.Generator, occ: np.ndarray, p_remove: float, p_add: fl
     fine = np.repeat(np.repeat(np.repeat(occ, 2, 0), 2, 1), 2, 2)
     fine = np.pad(fine, block)  # room for added voxels on the outside
     draws = rng.random(tuple(-(-n // block) for n in fine.shape))
-    draws = np.repeat(np.repeat(np.repeat(draws, block, 0), block, 1), block, 2)[: fine.shape[0], : fine.shape[1], : fine.shape[2]]
+    draws = np.repeat(np.repeat(np.repeat(draws, block, 0), block, 1), block, 2)[
+        : fine.shape[0], : fine.shape[1], : fine.shape[2]
+    ]
     remove = surface_mask(fine) & (draws < p_remove)
     add = shell_mask(fine) & (draws > 1.0 - p_add)
     fine = (fine & ~remove) | add
@@ -120,8 +133,10 @@ def refine(rng: np.random.Generator, occ: np.ndarray, p_remove: float, p_add: fl
 
 
 def trim(occ: np.ndarray) -> np.ndarray:
-    """The occupancy cropped to its bounding box."""
+    """The occupancy cropped to its bounding box (an empty occupancy comes back with shape (0, 0, 0))."""
     idx = np.argwhere(occ)
+    if idx.shape[0] == 0:
+        return occ[:0, :0, :0]
     lo, hi = idx.min(0), idx.max(0) + 1
     return occ[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
 
@@ -153,6 +168,8 @@ def sample_voxel_shape(
         for level in range(n_levels):
             p_remove, p_add = flips[min(level, len(flips) - 1)]
             occ = refine(rng, occ, p_remove, p_add, block=2 if level == 0 else 1)
+            if not occ.any():  # the smoothing can prune a thin shape away entirely (seed 2026 of the default
+                break  # library hit it, 2026-10-02): a failed try, drawn again
         cells = int(occ.sum())
         if cell_range[0] <= cells <= cell_range[1]:
             return occ
@@ -173,7 +190,62 @@ def exposed_faces(occ: np.ndarray) -> list:
         5: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
     }
     for f, d in enumerate(FACE_NEIGHBOURS):
-        neighbour = padded[1 + d[0] : 1 + d[0] + occ.shape[0], 1 + d[1] : 1 + d[1] + occ.shape[1], 1 + d[2] : 1 + d[2] + occ.shape[2]]
+        neighbour = padded[
+            1 + d[0] : 1 + d[0] + occ.shape[0], 1 + d[1] : 1 + d[1] + occ.shape[1], 1 + d[2] : 1 + d[2] + occ.shape[2]
+        ]
         for v in np.argwhere(occ & ~neighbour):
             quads.append(v[None, :] + np.asarray(corners[f]))
     return quads
+
+
+def face_counts(occ: np.ndarray) -> np.ndarray:
+    """[6] int: exposed voxel faces per direction (the order of `FACE_NEIGHBOURS`: -x, +x, -y, +y, -z, +z), the
+    occupied voxels whose neighbour in that direction is empty or outside. On a full box the direction's face area;
+    the largest entry is the load floor's n_face of a voxel body (`scenes_v5`)."""
+    occ = np.asarray(occ, dtype=bool)
+    padded = np.pad(occ, 1)
+    counts = np.zeros(len(FACE_NEIGHBOURS), dtype=np.int64)
+    for f, d in enumerate(FACE_NEIGHBOURS):
+        neighbour = padded[
+            1 + d[0] : 1 + d[0] + occ.shape[0], 1 + d[1] : 1 + d[1] + occ.shape[1], 1 + d[2] : 1 + d[2] + occ.shape[2]
+        ]
+        counts[f] = int((occ & ~neighbour).sum())
+    return counts
+
+
+class ShapeLibrary:
+    """The fixed shapes of a run (module docstring): `shapes[i]` is a bool occupancy [nx, ny, nz] with id i, drawn in
+    order from `np.random.default_rng(seed)` by `sample_voxel_shape(cell_range=cell_range)`, so equal (size, seed,
+    cell_range) give equal libraries on every process; `cells[i]` is the occupied count."""
+
+    def __init__(self, size: int, seed: int, cell_range=(27, 1728)):
+        self.size = int(size)
+        self.seed = int(seed)
+        self.cell_range = (int(cell_range[0]), int(cell_range[1]))
+        if self.size <= 0:
+            raise ValueError(f"shape library size must be positive, got {size}")
+        rng = np.random.default_rng(self.seed)
+        self.shapes = [sample_voxel_shape(rng, cell_range=self.cell_range) for _ in range(self.size)]
+        self.cells = np.array([int(occ.sum()) for occ in self.shapes], dtype=np.int64)
+
+    @property
+    def key(self) -> tuple:
+        """(size, seed, cell_range): what names the library (`SceneV5.shape_library` records the same three)."""
+        return (self.size, self.seed, self.cell_range)
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, shape_id: int) -> np.ndarray:
+        return self.shapes[int(shape_id)]
+
+
+_LIBRARIES: dict[tuple, ShapeLibrary] = {}
+
+
+def shape_library(size: int, seed: int, cell_range=(27, 1728)) -> ShapeLibrary:
+    """The process's library for (size, seed, cell_range), built on the first call and cached."""
+    key = (int(size), int(seed), (int(cell_range[0]), int(cell_range[1])))
+    if key not in _LIBRARIES:
+        _LIBRARIES[key] = ShapeLibrary(*key)
+    return _LIBRARIES[key]

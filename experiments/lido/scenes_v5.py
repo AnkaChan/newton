@@ -77,6 +77,25 @@ configuration (64000 cells, 135-166 bodies, 16 scenes, 40 ms per scene): footpri
 draws accepted (mean 22 %), one footprint growth in 2 of the 16 scenes; nearest bounding-box separation median 3.4
 cells (minimum the gap), bodies' lowest points 2-20 cells above the ground, the first body's 1-2 cells. The bodies
 (1.0 m^3 of material) land in a single layer on a 40-50 m^2 floor; the fill constant trades acceptance for density.
+
+Voxel shapes (v6, Anka 2026-10-02; `cfg.body_shapes == "voxel"`): every body is one shape of the run's library
+(`shapes.ShapeLibrary`: `shape_library_size` shapes drawn once from `shape_library_seed` with cell counts in
+`shape_cell_range`, built lazily once per process and named by those three numbers in `SceneV5.shape_library`). The
+body draws a library index (uniform, from the body stream, in place of the three side draws, so the material and
+velocity draws follow in the same order); `BodySpec.shape` records it, `BodySpec.cell_counts` is the shape's bounding
+lattice and `BodySpec.voxels` its occupied count (`BodySpec.cells`, the cell budget and the batch's cell count).
+Everything geometric keeps working on the bounding lattice: the half extents, the placement, the resting pose (flat
+on a lattice face; a trimmed shape touches every face of its box with at least one voxel) and the pinned contact
+faces; `realise` builds the grid with `GridCache.get_voxel` (`Grid.from_voxels` with the pin as the corner mask of the
+clamped lattice face), the rigid pose turns about the lattice centre as before and the load floor counts the exposed
+voxel faces of the shape's largest side (`shapes.face_counts`). With "box" the generator is the one above, bit for bit.
+
+The well (v6, Anka 2026-10-02; `cfg.world_well`): four vertical static quads around the placement footprint grown by
+`well_margin_cells` cells on every side, from the ground to `well_height_m`, so the bodies stay in the pile instead
+of drifting off the plane. They follow the regular static faces in `SceneV5.static_faces` (the pinned contact faces
+stay last), their normals point inwards, `placement["well_faces"]` records their number and the ground plane remains
+the floor. Every body's box lies inside the footprint by the placement rule, so the walls stand at least the margin
+plus the body's gap from every box; a wall that met a body's box would be dropped and the count would show it.
 """
 
 from __future__ import annotations
@@ -87,6 +106,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
+from . import shapes
 from .augment import DISPLACEMENT_SCALE
 from .grid import FACE_PINS
 from .jobs import _log_uniform
@@ -157,9 +177,10 @@ _GEOM_TOL = 1e-9  # m: tolerance of the support and overlap geometry
 
 @dataclass
 class BodySpec:
-    """One cuboid of a v5 scene (SI)."""
+    """One body of a v5 scene (SI): a cuboid of `cell_counts` cells or, with `shape` set, a voxel shape of the scene's
+    library whose bounding lattice is `cell_counts` (v6)."""
 
-    cell_counts: tuple  # (nx, ny, nz) cells
+    cell_counts: tuple  # (nx, ny, nz) cells (a voxel body: the occupancy's lattice dims)
     material: dict  # E, nu, rho, eta
     position: tuple  # [3] m: world position of the rest lattice's centre
     quaternion: tuple  # [4] (x, y, z, w) unit quaternion; world = R(q) body
@@ -170,10 +191,13 @@ class BodySpec:
     seed: int  # deformation-field seed
     pins: str = "none"  # "none" (free body) or the clamped lattice face, one of `grid.FACE_PINS` (held at the pose)
     resting: bool = False  # free body starting at rest on the ground or on a pinned body (flat, no velocity, no field)
+    shape: int | None = None  # id in the scene's shape library (`SceneV5.shape_library`); None = the box of cell_counts
+    voxels: int | None = None  # occupied voxels of the shape; None for a box
 
     @property
     def cells(self) -> int:
-        return int(math.prod(self.cell_counts))
+        """Cells of the body's grid: the occupied voxels of a shape, the full box otherwise."""
+        return int(self.voxels) if self.voxels is not None else int(math.prod(self.cell_counts))
 
     @property
     def pinned(self) -> bool:
@@ -195,6 +219,7 @@ class SceneV5:
     contact: dict  # kappa (floored), kappa_drawn, kappa_floor, floor_bound, beta, mu_f, friction_epsilon, floor_scale
     placement: dict = field(default_factory=dict)  # footprint, draws, acceptance_rate, footprint_growths, static_face_*
     static_faces: list = field(default_factory=list)  # [F][4][3] m: corners of the static quads, in order around each
+    shape_library: dict = field(default_factory=dict)  # size, seed, cell_range of the voxel bodies' library; {} = boxes
 
     @property
     def cells(self) -> int:
@@ -215,9 +240,18 @@ class SceneV5:
                 seed=int(b["seed"]),
                 pins=str(b.get("pins", "none")),
                 resting=bool(b.get("resting", False)),
+                shape=None if b.get("shape") is None else int(b["shape"]),
+                voxels=None if b.get("voxels") is None else int(b["voxels"]),
             )
             for b in d["bodies"]
         ]
+        library = dict(d.get("shape_library") or {})
+        if library:
+            library = {
+                "size": int(library["size"]),
+                "seed": int(library["seed"]),
+                "cell_range": tuple(int(v) for v in library["cell_range"]),
+            }
         return SceneV5(
             seed=int(d["seed"]),
             validation=bool(d["validation"]),
@@ -230,6 +264,7 @@ class SceneV5:
             contact=dict(d["contact"]),
             placement=dict(d.get("placement", {})),
             static_faces=[[tuple(float(v) for v in c) for c in f] for f in d.get("static_faces", [])],
+            shape_library=library,
         )
 
 
@@ -436,6 +471,26 @@ def quad_boxes_overlap(corners: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> n
 def quad_box_overlap(corners: np.ndarray, lo, hi) -> bool:
     """`quad_boxes_overlap` for one box."""
     return bool(quad_boxes_overlap(corners, np.asarray(lo)[None], np.asarray(hi)[None])[0])
+
+
+def well_faces(footprint: float, margin: float, y_lo: float, y_hi: float) -> list:
+    """The four walls of the well (module docstring): vertical quads [4,3] (m) at x = +-(footprint / 2 + margin) and
+    z = +-(footprint / 2 + margin), each spanning the other horizontal axis over the same half width and y from
+    `y_lo` (the ground) to `y_hi`, in order around the quad with the diagonal cross product (c2 - c0) x (c3 - c1)
+    pointing into the well (the in-plane horizontal axis is t = y x n: 4 a (y_hi - y_lo) (t x y) = n up to a
+    positive factor). Order: +x, -x, +z, -z."""
+    half = 0.5 * float(footprint) + float(margin)
+    up = np.array([0.0, 1.0, 0.0])
+    faces = []
+    for axis, sign in ((0, 1.0), (0, -1.0), (2, 1.0), (2, -1.0)):
+        n = np.zeros(3)
+        n[axis] = -sign  # inward
+        t = np.cross(up, n)
+        base = np.zeros(3)
+        base[axis] = sign * half
+        lo, hi = base + float(y_lo) * up, base + float(y_hi) * up
+        faces.append(np.stack([lo - half * t, lo + half * t, hi + half * t, hi - half * t]))
+    return faces
 
 
 def _place_pinned_faces(rng: np.random.Generator, cfg, h: float, drawn, centres, quats, pins, clearance, lo, hi):
@@ -729,12 +784,26 @@ def sample_scene(
         rng_scene, cfg
     )  # drawn after the contact constants: the scene stream of a band-less config is unchanged
 
-    # bodies until the cell budget is reached (the last body may exceed it)
+    # bodies until the cell budget is reached (the last body may exceed it): the sides of a box or, with voxel
+    # shapes, the library index in the same position of the body stream
+    body_shapes = str(getattr(cfg, "body_shapes", "box"))
+    if body_shapes not in ("box", "voxel"):
+        raise ValueError(f"body_shapes must be 'box' or 'voxel', got {body_shapes!r}")
+    library = (
+        shapes.shape_library(cfg.shape_library_size, cfg.shape_library_seed, cfg.shape_cell_range)
+        if body_shapes == "voxel"
+        else None
+    )
     lo, hi = (int(v) for v in cfg.body_sides)
     drawn: list[dict] = []
     total = 0
     while total < int(cfg.scene_cells):
-        sides = tuple(int(v) for v in rng_bodies.integers(lo, hi + 1, size=3))
+        if library is None:
+            sides = tuple(int(v) for v in rng_bodies.integers(lo, hi + 1, size=3))
+            shape_id, cells = None, int(math.prod(sides))
+        else:
+            shape_id = int(rng_bodies.integers(0, len(library)))
+            sides, cells = tuple(int(v) for v in library[shape_id].shape), int(library.cells[shape_id])
         material = draw_material(rng_bodies, cfg, band)
         perturbation_scale = float(rng_bodies.uniform(*cfg.perturbation_scale_range))
         strength = float(rng_bodies.uniform(*cfg.strength_range))
@@ -750,9 +819,11 @@ def sample_scene(
                 "velocity_dt": velocity_dt,
                 "perturbation_scale": perturbation_scale,
                 "seed": seed,
+                "shape": shape_id,
+                "voxels": None if library is None else cells,
             }
         )
-        total += math.prod(sides)
+        total += cells
 
     # orientation and gap per body (placement stream)
     gap_lo, gap_hi = (int(v) for v in cfg.placement_gap_cells)
@@ -800,8 +871,20 @@ def sample_scene(
     pinned_faces, pinned_stats = _place_pinned_faces(
         rng_pinned_faces, cfg, h, drawn, centres_np, quats, pins, clearance, lo_grown, hi_grown
     )
-    static_faces = list(static_faces) + list(pinned_faces)
+    # the well (v6): four walls around the footprint, between the regular faces and the pinned contact faces
+    plane_height = 0.0
+    well = []
+    if bool(getattr(cfg, "world_well", False)):
+        lo_box, hi_box = centres_np - extents, centres_np + extents
+        margin = float(cfg.well_margin_cells) * h
+        for corners in well_faces(placement["footprint"], margin, plane_height, float(cfg.well_height_m)):
+            if lo_box.shape[0] > 0 and bool(quad_boxes_overlap(corners, lo_box, hi_box).any()):
+                continue  # every box lies inside the footprint by the placement rule; a wall through one is dropped
+            well.append(corners)
+    static_faces = list(static_faces) + well + list(pinned_faces)
     placement = {**placement, **face_stats, **pinned_stats}
+    if bool(getattr(cfg, "world_well", False)):
+        placement["well_faces"] = len(well)
     if band is not None:
         placement["material_band"] = {k: [float(v) for v in band[k]] for k in ("rho", "c2")}
     still = {"velocity": (0.0, 0.0, 0.0)}
@@ -820,9 +903,8 @@ def sample_scene(
     kappa_floor = 0.0
     for b in bodies:
         m = b.material
-        ke_floor = contact_stiffness_floor(
-            m["rho"], g_mag, h, b.cells, _box_n_face(b.cell_counts), cfg.contact_static_penetration_max
-        )
+        n_face = int(shapes.face_counts(library[b.shape]).max()) if b.shape is not None else _box_n_face(b.cell_counts)
+        ke_floor = contact_stiffness_floor(m["rho"], g_mag, h, b.cells, n_face, cfg.contact_static_penetration_max)
         kappa_floor = max(kappa_floor, ke_floor / (m["E"] * h))
     contact = {
         "kappa": float(max(kappa_drawn, kappa_floor)),
@@ -842,11 +924,12 @@ def sample_scene(
         dt=dt,
         gravity=gravity,
         bodies=bodies,
-        plane_height=0.0,
+        plane_height=plane_height,
         drift=tuple(float(v) for v in drift),
         contact=contact,
         placement=placement,
         static_faces=[[tuple(float(v) for v in c) for c in f] for f in static_faces],
+        shape_library={} if library is None else dict(zip(("size", "seed", "cell_range"), library.key, strict=True)),
     )
 
 
@@ -868,6 +951,8 @@ def scene_summary(scene: SceneV5) -> dict:
         "resting_on_bodies": scene.placement.get("resting_on_bodies", 0),
         "static_faces": len(scene.static_faces),
         "pinned_contact_faces": scene.placement.get("pinned_contact_faces", 0),
+        "well_faces": scene.placement.get("well_faces", 0),
+        "voxel_bodies": sum(1 for b in scene.bodies if b.shape is not None),
         "cells": scene.cells,
         "drift": [float(v) for v in drift],
         "drift_speed": float(np.linalg.norm(drift)),
@@ -893,14 +978,24 @@ def realise(scene: SceneV5, grids, aug, device, dtype=torch.float32, physical_fl
     generator per body seeded by `BodySpec.seed`). X = R(q) (rest - centre + deformation) + position / h in cells,
     V = R(q) deformation velocity + velocity dt / h in cells per step. A pinned body (`BodySpec.pins`) takes the
     grid with that face clamped: its pinned corners sit exactly at the rigid pose (the deformation field is zero
-    there) with zero velocity, and its rigid velocity is zero whatever the spec says. `dtype` other than float32
+    there) with zero velocity, and its rigid velocity is zero whatever the spec says. A voxel body (`BodySpec.shape`)
+    takes `GridCache.get_voxel` on its occupancy from the scene's library (`SceneV5.shape_library`), its rest
+    lattice being the bounding box's, so the pose and the centre are those of a box of `cell_counts`. `dtype` other than float32
     builds the state and the material tensors in that precision (CPU float64 tests). All bodies share one unit of energy, mu_ref h^3
     with mu_ref the geometric mean of their shear moduli (`material_from_si(mu_ref=...)`, section 11: the reaction
     of a body pair on the partner and the coupled centroid update are then consistent across stiffnesses).
     """
     device = torch.device(device)
     h, dt = scene.h, scene.dt
-    gs = [grids.get(b.cell_counts, b.pins) for b in scene.bodies]
+    library = None
+    if any(b.shape is not None for b in scene.bodies):
+        if not scene.shape_library:
+            raise ValueError("the scene has voxel bodies but no shape library record")
+        library = shapes.shape_library(**scene.shape_library)
+    gs = [
+        grids.get(b.cell_counts, b.pins) if b.shape is None else grids.get_voxel(b.shape, library[b.shape], b.pins)
+        for b in scene.bodies
+    ]
     gens = [torch.Generator(device=aug.device).manual_seed(b.seed) for b in scene.bodies]
     Xa, Va = aug.initial_states(gs, scene.bodies, gens)
     X_parts, V_parts, materials = [], [], []

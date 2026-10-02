@@ -45,8 +45,8 @@ HAS_CUDA = torch.cuda.is_available()
 CUDA = torch.device("cuda:0")
 MASTER = 73
 CFG = TrainConfig(
-    scene_cells=6000, pinned_contact_face_fraction=0.0
-)  # the regular faces alone (TestPinnedContactFaces covers the rest)
+    scene_cells=6000, pinned_contact_face_fraction=0.0, world_well=False
+)  # the regular faces alone (TestPinnedContactFaces covers the rest, test_scenes_v6 the v6 well)
 R = contact.R_SAMPLE
 UP = (0.0, 1.0, 0.0)
 
