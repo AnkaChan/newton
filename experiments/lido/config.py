@@ -95,6 +95,14 @@ class TrainConfig:
     # final mix (the goal), those of the cheap validation follow the epoch's mix
     scene_curriculum: bool = True
     scene_curriculum_epochs: tuple = (4, 20)
+    # material band per scene (2026-10-02, after the third v5 attempt's goal scenes died by crushing): every body's
+    # elastic wave speed sqrt(E / rho) is at least scene_wave_speed_min (m/s; a body falling from the 1 m column
+    # lands at 4.4 m/s and the compressive strain of an impact is about speed / wave speed), the wave speeds of one
+    # scene span at most the factor scene_wave_speed_band and its densities at most scene_density_band (no body is
+    # crushed by a far heavier and stiffer neighbour); E and rho still cover their ranges across scenes. 0 = off
+    scene_wave_speed_min: float = 15.0
+    scene_wave_speed_band: float = 3.0
+    scene_density_band: float = 10.0
     scene_count: int = 64  # fixed scenes per epoch
     validation_scene_count: int = 8
     validation_full_scene_count: int = 2

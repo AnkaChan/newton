@@ -589,6 +589,49 @@ def _box_n_face(cell_counts) -> int:
 
 
 # ---------------------------------------------------------------------------------------------------- sampling
+def material_band(rng: np.random.Generator, cfg) -> dict | None:
+    """The scene's material band (config `scene_wave_speed_min`, `scene_wave_speed_band`, `scene_density_band`;
+    2026-10-02): the density interval [rho_lo, rho_hi] (log-uniform lower edge over the config's range, at most the
+    density band wide, its heaviest material fast enough at E_max) and the squared wave speed interval [c2_lo, c2_hi]
+    (log-uniform lower edge over what keeps E = c2 rho inside the config's range for every density of the interval,
+    at most the wave-speed band squared wide, at least c_min squared). None when c_min is 0 (independent draws)."""
+    c_min = float(getattr(cfg, "scene_wave_speed_min", 0.0) or 0.0)
+    if c_min <= 0.0:
+        return None
+    E_lo, E_hi = (float(v) for v in cfg.youngs_modulus_range)
+    rho_lo, rho_hi = (float(v) for v in cfg.density_range)
+    c2_min = c_min * c_min
+    if E_hi / rho_lo < c2_min:
+        raise ValueError(
+            f"scene_wave_speed_min {c_min} m/s needs E / rho >= {c2_min}, the ranges allow {E_hi / rho_lo}"
+        )
+    rho_band = max(1.0, float(cfg.scene_density_band))
+    if E_hi / E_lo < rho_band:
+        raise ValueError(f"scene_density_band {rho_band} exceeds the Young's modulus ratio {E_hi / E_lo}")
+    r_lo = _log_uniform(rng, rho_lo, max(rho_lo, min(rho_hi / rho_band, E_hi / c2_min)))
+    r_hi = min(rho_hi, r_lo * rho_band, E_hi / c2_min)
+    c2_floor, c2_ceiling = max(c2_min, E_lo / r_lo), E_hi / r_hi  # E = c2 rho stays in range for rho in [r_lo, r_hi]
+    band2 = max(1.0, float(cfg.scene_wave_speed_band)) ** 2
+    c2_lo = _log_uniform(rng, c2_floor, max(c2_floor, c2_ceiling / band2))
+    c2_hi = min(c2_ceiling, c2_lo * band2)
+    return {"rho": (r_lo, r_hi), "c2": (c2_lo, c2_hi)}
+
+
+def draw_material(rng: np.random.Generator, cfg, band: dict | None) -> dict:
+    """One body's material (SI): independent log-uniform E and rho without a band, otherwise rho and the squared
+    wave speed log-uniform in the scene's band and E = c2 rho (within the config's range by construction)."""
+    if band is None:
+        E = _log_uniform(rng, *cfg.youngs_modulus_range)
+        nu = float(rng.uniform(*cfg.poissons_ratio_range))
+        rho = _log_uniform(rng, *cfg.density_range)
+    else:
+        c2 = _log_uniform(rng, *band["c2"])
+        nu = float(rng.uniform(*cfg.poissons_ratio_range))
+        rho = _log_uniform(rng, *band["rho"])
+        E = c2 * rho
+    return {"E": E, "nu": nu, "rho": rho, "eta": _log_uniform(rng, *cfg.damping_range)}
+
+
 def sample_scene(
     master_seed: int, scene_seed: int, cfg, validation: bool = False, mix: SceneMix | None = None
 ) -> SceneV5:
@@ -611,6 +654,9 @@ def sample_scene(
     kappa_drawn = _log_uniform(rng_scene, *cfg.contact_kappa_range)
     beta = float(rng_scene.uniform(*cfg.contact_beta_range))
     mu_f = float(rng_scene.uniform(*cfg.contact_mu_range))
+    band = material_band(
+        rng_scene, cfg
+    )  # drawn after the contact constants: the scene stream of a band-less config is unchanged
 
     # bodies until the cell budget is reached (the last body may exceed it)
     lo, hi = (int(v) for v in cfg.body_sides)
@@ -618,12 +664,7 @@ def sample_scene(
     total = 0
     while total < int(cfg.scene_cells):
         sides = tuple(int(v) for v in rng_bodies.integers(lo, hi + 1, size=3))
-        material = {
-            "E": _log_uniform(rng_bodies, *cfg.youngs_modulus_range),
-            "nu": float(rng_bodies.uniform(*cfg.poissons_ratio_range)),
-            "rho": _log_uniform(rng_bodies, *cfg.density_range),
-            "eta": _log_uniform(rng_bodies, *cfg.damping_range),
-        }
+        material = draw_material(rng_bodies, cfg, band)
         perturbation_scale = float(rng_bodies.uniform(*cfg.perturbation_scale_range))
         strength = float(rng_bodies.uniform(*cfg.strength_range))
         velocity_dt = float(rng_bodies.uniform(*cfg.velocity_dt_range))
@@ -686,6 +727,8 @@ def sample_scene(
         rng_faces, cfg, h, placement["footprint"], centres_np - extents - grown, centres_np + extents + grown
     )
     placement = {**placement, **face_stats}
+    if band is not None:
+        placement["material_band"] = {k: [float(v) for v in band[k]] for k in ("rho", "c2")}
     still = {"velocity": (0.0, 0.0, 0.0)}
     bodies = [
         BodySpec(
@@ -760,6 +803,7 @@ def scene_summary(scene: SceneV5) -> dict:
         "plane_height": scene.plane_height,
         "footprint": scene.placement.get("footprint"),
         "placement_acceptance": scene.placement.get("acceptance_rate"),
+        "material_band": scene.placement.get("material_band"),
         "footprint_growths": scene.placement.get("footprint_growths"),
         "static_face_acceptance": scene.placement.get("static_face_acceptance"),
     }

@@ -200,7 +200,9 @@ class TestSampling(unittest.TestCase):
 
     def test_count_zero_reproduces_the_recorded_scenes_and_the_body_draws(self):
         ref = json.loads(REFERENCE.read_text())
-        still = dataclasses.replace(CFG, resting_body_fraction=0.0, static_face_count_range=(0, 0))
+        still = dataclasses.replace(
+            CFG, resting_body_fraction=0.0, static_face_count_range=(0, 0), scene_wave_speed_min=0.0
+        )
         for key, d in ref["scenes"].items():
             master, seed, *validation = key.split("_")
             sc = S.sample_scene(int(master), int(seed), still, validation=bool(validation))

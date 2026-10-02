@@ -251,6 +251,7 @@ class TestSampleScene(unittest.TestCase):
             contact_kappa_range=(10.0, 10.1),
             density_range=(1e4, 1e4),
             youngs_modulus_range=(1e3, 1e3),
+            scene_wave_speed_min=0.0,  # a 0.3 m/s material: outside any band
         )
         bound = S.sample_scene(MASTER, 0, heavy)
         self.assertTrue(bound.contact["floor_bound"])
@@ -338,7 +339,9 @@ class TestSampleScene(unittest.TestCase):
         # fraction 0 reproduces the scenes recorded before the resting start (the fifth stream disturbs no draw;
         # the static faces of the sixth stream off as well, their statistics stripped from the placement record)
         ref = json.loads(REFERENCE.read_text())
-        still = dataclasses.replace(CFG, resting_body_fraction=0.0, static_face_count_range=(0, 0))
+        still = dataclasses.replace(
+            CFG, resting_body_fraction=0.0, static_face_count_range=(0, 0), scene_wave_speed_min=0.0
+        )  # the material band off as well: the band draws nothing from the streams when off
         for key, d in ref["scenes"].items():
             master, seed, *validation = key.split("_")
             sc = S.sample_scene(int(master), int(seed), still, validation=bool(validation))
@@ -644,3 +647,53 @@ class TestSceneCurriculum(unittest.TestCase):
             S.epoch_scene_seed(1, S.EPOCH_SEED_STRIDE)
         with self.assertRaises(ValueError):
             S.epoch_scene_seed(1, -1)
+
+
+class TestMaterialBand(unittest.TestCase):
+    """The per-scene material band (2026-10-02): wave speeds above the impact speed, bounded spreads in a scene."""
+
+    def test_every_body_in_the_band(self):
+        c2_min = CFG.scene_wave_speed_min**2
+        all_E, all_rho = [], []
+        for seed in range(12):
+            scene = S.sample_scene(MASTER, seed, CFG)
+            band = scene.placement["material_band"]
+            E = np.array([b.material["E"] for b in scene.bodies])
+            rho = np.array([b.material["rho"] for b in scene.bodies])
+            c2 = E / rho
+            self.assertTrue((c2 >= c2_min * (1 - 1e-9)).all(), seed)
+            self.assertTrue(
+                (E >= CFG.youngs_modulus_range[0] * (1 - 1e-9)).all()
+                and (E <= CFG.youngs_modulus_range[1] * (1 + 1e-9)).all()
+            )
+            self.assertTrue(
+                (rho >= CFG.density_range[0] * (1 - 1e-9)).all() and (rho <= CFG.density_range[1] * (1 + 1e-9)).all()
+            )
+            self.assertLessEqual(c2.max() / c2.min(), CFG.scene_wave_speed_band**2 * (1 + 1e-9), seed)
+            self.assertLessEqual(rho.max() / rho.min(), CFG.scene_density_band * (1 + 1e-9), seed)
+            self.assertTrue((rho >= band["rho"][0] * (1 - 1e-9)).all() and (rho <= band["rho"][1] * (1 + 1e-9)).all())
+            self.assertTrue((c2 >= band["c2"][0] * (1 - 1e-9)).all() and (c2 <= band["c2"][1] * (1 + 1e-9)).all())
+            self.assertEqual(S.scene_summary(scene)["material_band"], band)
+            all_E += E.tolist()
+            all_rho += rho.tolist()
+        # across scenes the materials still cover a wide range (E 1e3-1e6 and rho 100-1e4 in the config)
+        self.assertGreater(max(all_E) / min(all_E), 20.0)
+        self.assertGreater(max(all_rho) / min(all_rho), 10.0)
+        self.assertLess(min(all_rho), 300.0)
+        self.assertGreater(max(all_rho), 2000.0)
+
+    def test_off_switch_and_invalid_configs(self):
+        off = dataclasses.replace(CFG, scene_wave_speed_min=0.0)
+        scene = S.sample_scene(MASTER, 0, off)
+        self.assertNotIn("material_band", scene.placement)
+        self.assertIsNone(S.scene_summary(scene)["material_band"])
+        c2 = np.array([b.material["E"] / b.material["rho"] for b in scene.bodies])
+        self.assertLess(c2.min(), CFG.scene_wave_speed_min**2)  # the independent draws do produce slow materials
+        with self.assertRaises(ValueError):
+            S.material_band(np.random.default_rng(0), dataclasses.replace(CFG, scene_wave_speed_min=1e4))
+        with self.assertRaises(ValueError):
+            S.material_band(np.random.default_rng(0), dataclasses.replace(CFG, scene_density_band=1e6))
+        # the band draws follow the contact constants: the bodies of a band-less scene are unchanged by the switch
+        drawn = ("kappa_drawn", "beta", "mu_f")  # kappa_floor depends on the materials
+        a, b = S.sample_scene(MASTER, 3, off).contact, S.sample_scene(MASTER, 3, CFG).contact
+        self.assertEqual({k: a[k] for k in drawn}, {k: b[k] for k in drawn})
