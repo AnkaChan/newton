@@ -434,6 +434,7 @@ class RunReport:
             "config": plain(cfg.to_dict()),
             "world_size": int(world_size),
             "epochs": [],
+            "ticks": [],
             "updates": [],
             "completed_epochs": 0,
             "completed_updates": 0,
@@ -487,6 +488,11 @@ class RunReport:
         self._epoch = int(record.get("epoch") or self._epoch)
         if isinstance(record.get("regime"), dict):
             self._regime = record["regime"]
+        self.write()
+
+    def log_tick(self, record: dict) -> None:
+        """Append an intra-epoch tick (running training loss and a small cheap validation; train.py) and write."""
+        self._report.setdefault("ticks", []).append(plain(record))
         self.write()
 
     def set_best_selection(self, record: dict, epoch: int, reset_reason: str | None = None) -> None:

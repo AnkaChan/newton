@@ -20,6 +20,8 @@ _PUBLIC_FILES = {
     "epochs.csv",
     "updates.csv",
     "loss_curve.svg",
+    "tick_loss_curve.svg",
+    "tick_metric_curve.svg",
     "validation_curve.svg",
     "residual_curve.svg",
     "relative_residual_curve.svg",

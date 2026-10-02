@@ -46,6 +46,9 @@ class TrainConfig:
     learning_rate: float = 1e-4
     lr_schedule: str = "cosine"
     lr_final: float = 2.5e-5
+    schedule_epochs: int = 0  # cosine horizon in epochs (0 = max_epochs); after it the rate stays at lr_final, so a run with a huge max_epochs is open-ended (Anka, 2026-10-02: no upper limit)
+    tick_updates: int = 0  # every this many updates all ranks pause and rank 0 records a tick: running training loss and a small cheap validation (0 = off; Anka, 2026-10-02: history plotted within 3-hour epochs)
+    tick_scene_count: int = 4  # held-out scenes of a tick's cheap validation
     weight_decay: float = 1e-6
     gradient_clip_norm: float = 1.0
     energy_increase_weight: float = 1.0

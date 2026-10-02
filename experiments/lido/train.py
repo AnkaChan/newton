@@ -10,6 +10,7 @@ selection and checkpoints at every epoch boundary, report files for the existing
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import os
@@ -40,9 +41,11 @@ from .validation import (
 
 
 def cosine_lr(epoch: int, cfg: TrainConfig) -> float:
-    if cfg.max_epochs <= 1:
+    """Cosine from learning_rate to lr_final over `schedule_epochs` (max_epochs when 0); lr_final afterwards."""
+    horizon = int(getattr(cfg, "schedule_epochs", 0) or 0) or cfg.max_epochs
+    if horizon <= 1:
         return cfg.learning_rate
-    t = (epoch - 1) / (cfg.max_epochs - 1)
+    t = min(1.0, (epoch - 1) / (horizon - 1))
     return cfg.lr_final + 0.5 * (cfg.learning_rate - cfg.lr_final) * (1 + math.cos(math.pi * t))
 
 
@@ -164,8 +167,41 @@ def train(
         losses, gnorms, steps_mean, steps_min, steps_max, residuals, pens, realized = [], [], [], [], [], [], [], []
         n_updates = runner.U if max_updates is None else min(runner.U, max_updates)
         t_checkpoint = time.perf_counter()
+        tick_start = 0  # index into `losses` of the first update after the last tick
         for update in range(n_updates):
             t0 = time.perf_counter()
+            tick_every = int(getattr(cfg, "tick_updates", 0) or 0)
+            if v5 and tick_every > 0 and update > 0 and update % tick_every == 0:
+                # a tick (Anka, 2026-10-02): all ranks pause (the update counter is common to the ranks), rank 0
+                # records the running training loss and a small cheap validation, so the history is plotted
+                # within the hours-long epochs of the v6 run
+                if world > 1:
+                    torch.distributed.barrier()
+                if rank == 0:
+                    unwrap(step.net).eval()
+                    tick_cfg = dataclasses.replace(cfg, validation_scene_count=int(cfg.tick_scene_count))
+                    tick_samples = validate_cheap_v5(step, tick_cfg, grids, aug, device, cfg.seed, epoch)
+                    tick_cheap = rep.summarize_cheap_validation(tick_samples, cfg.validation_iterations)
+                    unwrap(step.net).train()
+                    window = [v for v in losses[tick_start:] if math.isfinite(v)]
+                    report.log_tick(
+                        {
+                            "epoch": epoch,
+                            "update": update,
+                            "updates_done": updates_done,
+                            "time": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+                            "epoch_seconds": time.perf_counter() - t_epoch,
+                            "train_loss": sum(window) / max(1, len(window)),
+                            "cheap_metric": tick_cheap["selection"]["metric"],
+                            "cheap_survivors": tick_cheap["physical_survivors"],
+                            "cheap_sample_count": tick_cheap["sample_count"],
+                            "learning_rate": lr,
+                            "step_cap": cap,
+                        }
+                    )
+                    tick_start = len(losses)
+                if world > 1:
+                    torch.distributed.barrier()
             if (
                 rank == 0 and cfg.checkpoint_minutes > 0 and t0 - t_checkpoint > 60.0 * cfg.checkpoint_minutes
             ):  # periodic in-epoch checkpoint: weights and optimizer as of now, epoch - 1 so a resume replays the epoch

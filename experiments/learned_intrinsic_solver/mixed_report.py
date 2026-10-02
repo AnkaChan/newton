@@ -342,6 +342,33 @@ def _best_text(best, source):
     return text + "."
 
 
+def _tick_plots(report):
+    """Two SVGs of the intra-epoch ticks (train.py: running training loss and a small cheap validation every
+    ``tick_updates`` updates) against the rank's cumulative updates, with the epoch-end values as a second series."""
+    ticks = report.get("ticks") or []
+    rows = report.get("epochs") or []
+    cum, epoch_points_loss, epoch_points_metric = 0, [], []
+    for row in rows:
+        cum += int(row.get("updates") or 0)
+        epoch_points_loss.append((cum, row.get("loss")))
+        epoch_points_metric.append((cum, ((row.get("validation") or {}).get("selection") or {}).get("metric")))
+    tick_loss = [(t.get("updates_done"), t.get("train_loss")) for t in ticks]
+    tick_metric = [(t.get("updates_done"), t.get("cheap_metric")) for t in ticks]
+    loss_svg = _plot(
+        "Training loss within epochs: ticks (running mean since the previous tick) and epoch means",
+        [("tick", "#2563eb", tick_loss), ("epoch mean", "#c63645", epoch_points_loss)],
+        xlabel="updates per rank",
+        log_y=True,
+    )
+    metric_svg = _plot(
+        "Cheap validation metric (N) within epochs: ticks (4 held-out scenes) and epoch-end values (8 scenes)",
+        [("tick", "#16804a", tick_metric), ("epoch end", "#c63645", epoch_points_metric)],
+        xlabel="updates per rank",
+        log_y=True,
+    )
+    return loss_svg, metric_svg
+
+
 def _epoch_plot(rows, *, selection_source="cheap"):
     import matplotlib as mpl
     from matplotlib.figure import Figure
@@ -438,7 +465,7 @@ def _epoch_plot(rows, *, selection_source="cheap"):
             axis.set_xlabel("Completed epoch")
             axis.xaxis.set_major_locator(MaxNLocator(integer=True))
             axis.grid(alpha=0.2)
-        figure.suptitle("LIDO-v2 — training and validation history")
+        figure.suptitle("LIDO — training and validation history")
         buffer = io.StringIO()
         figure.savefig(buffer, format="svg")
     return buffer.getvalue()
@@ -584,6 +611,12 @@ def write_mixed_report(output, report, *, updated_at=None):
     )
     completed = report.get("completed_epochs", 0)
     maximum = config.get("max_epochs", 500)
+    dashboard_title = os.environ.get("LIDO_DASHBOARD_TITLE", "").strip() or "LIDO — training the deformation optimizer"
+    epochs_text = (
+        f"{completed} completed epochs (open-ended run)"
+        if int(maximum) >= 10000
+        else f"{completed} / {maximum} completed epochs"
+    )
     status = report.get("status", "preparing")
     phase = progress.get("phase", status)
     if status in ("failed", "interrupted", "epoch_limit", "early_stopped", "plateau_converged", "stalled"):
@@ -601,12 +634,15 @@ def write_mixed_report(output, report, *, updated_at=None):
     counts_k = progress.get("available_K", latest.get("available_K", [1]))
     counts_h = progress.get("available_H", latest.get("available_H", [8]))
     loss_plot = _epoch_plot(rows, selection_source=selection_source)
+    tick_loss_plot, tick_metric_plot = _tick_plots(report)
     validation_plot = _curve_plot("Validation relative physical energy", relative)
     residual_plot = _curve_plot("Validation free-corner force residual (N)", residual_curve)
     relative_residual_plot = _relative_residual_plot(residual_curve)
     per_trajectory_plot = _per_trajectory_relative_residual_plot(validation.get("samples"), None)
     penetration_plot = _penetration_plot(penetration_curve)
     _atomic_text(output / "loss_curve.svg", loss_plot)
+    _atomic_text(output / "tick_loss_curve.svg", tick_loss_plot)
+    _atomic_text(output / "tick_metric_curve.svg", tick_metric_plot)
     _atomic_text(output / "validation_curve.svg", validation_plot)
     _atomic_text(output / "residual_curve.svg", residual_plot)
     _atomic_text(output / "relative_residual_curve.svg", relative_residual_plot)
@@ -761,7 +797,7 @@ def write_mixed_report(output, report, *, updated_at=None):
     origin_text = _origin_text(report.get("initialized_from"))
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="30"><title>LIDO-v2 · live training</title>
+<meta http-equiv="refresh" content="30"><title>{escape(dashboard_title)} · live training</title>
 <style>
 *{{box-sizing:border-box}}body{{font:17px/1.6 system-ui,sans-serif;max-width:1100px;margin:32px auto;padding:0 20px;color:#20323b;background:#f8fafb}}
 a{{color:#087c91}}img,svg{{display:block;width:100%;height:auto;background:white;border-radius:12px}}pre{{white-space:pre-wrap;word-break:break-word;font-size:13px}}
@@ -770,8 +806,8 @@ a{{color:#087c91}}img,svg{{display:block;width:100%;height:auto;background:white
 @media(max-width:600px){{table{{table-layout:fixed;font-size:14px}}td,th{{padding:6px 4px;overflow-wrap:anywhere}}}}
 </style></head><body><main>
 <a href="/artifacts/learned-intrinsic-solver/index.html">← All solver experiments</a>
-<h1>LIDO-v2 — training the deformation optimizer</h1>
-<p class="status"><strong>{escape(phase.replace("_", " ").capitalize())}</strong> · {completed} / {maximum} completed epochs · {progress.get("completed_updates", report.get("completed_updates", 0))} Adam updates<br>
+<h1>{escape(dashboard_title)}</h1>
+<p class="status"><strong>{escape(phase.replace("_", " ").capitalize())}</strong> · {epochs_text} · {progress.get("completed_updates", report.get("completed_updates", 0))} Adam updates<br>
 {budget_text} and {escape(config.get("validation_count", validation.get("sample_count", "—")))} fixed validation states.{interval_text} {escape(batch_text)}<br>
 Available solver iterations: K = {escape(counts_k)} · Physical timesteps: H = {escape(counts_h)}<br>
 {schedule_text}{origin_text}</p>
@@ -779,6 +815,9 @@ Available solver iterations: K = {escape(counts_k)} · Physical timesteps: H = {
 Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(validation.get("mean_after_joule"))} J after one update. Descent: {descent_text}; first-update failures: {escape(validation.get("first_update_failed_count", "Not evaluated"))}; all validation failures: {escape(validation.get("failed_count", "Not evaluated"))}.</p>
 {board_html}
 {failure_html}<img src="loss_curve.svg" alt="Training objective and validation first-update objective, validation descent rate, physical energy, selection metric, physical survivors, and learning rate by epoch">
+<section><h2>Within-epoch history</h2>
+<p class="muted">Every {escape(config.get("tick_updates", 0))} updates all ranks pause and rank 0 records a tick: the running training loss since the previous tick and a cheap validation on {escape(config.get("tick_scene_count", 4))} held-out scenes ({escape(len(report.get("ticks") or []))} ticks so far). Epoch-end values are drawn in red.</p>
+<img src="tick_loss_curve.svg" alt="Training loss per tick and per epoch"><img src="tick_metric_curve.svg" alt="Cheap validation metric per tick and per epoch"></section>
 <p class="muted">Lower objective is better. The training objective includes an uphill penalty; validation shows the first update on fixed seeds with the same form. {selection_note} The learning rate is recorded after each epoch's scheduler decision.</p>
 <details><summary>How the loss curves are computed</summary>
 <p>Mean local training loss averages all queried trajectories and ranks in each completed epoch. Epochs mix solver ages, physical timesteps and curriculum stages.</p>
@@ -799,7 +838,7 @@ The penetration curve is the deepest penetration of any surface sample into its 
 <h2>Latest full-horizon validation</h2>
 <p class="muted">Held-out seeds run K learned iterations on each of H physical steps {full_budget_text}; every {escape(config.get("validation_full_interval", "—"))} epochs and before curriculum advancement.</p>
 {full_html}</section>
-<p><a href="report.json">Metrics JSON</a> · <a href="progress.json">Live progress</a> · <a href="epochs.csv">Epoch CSV</a> · <a href="updates.csv">Update CSV</a> · <a href="loss_curve.svg">Training SVG</a> · <a href="validation_curve.svg">Validation SVG</a> · <a href="residual_curve.svg">Residual SVG</a> · <a href="relative_residual_curve.svg">Relative residual SVG</a> · <a href="per_trajectory_residual_curve.svg">Per-trajectory residual SVG</a> · <a href="penetration_curve.svg">Penetration SVG</a></p>
+<p><a href="report.json">Metrics JSON</a> · <a href="progress.json">Live progress</a> · <a href="epochs.csv">Epoch CSV</a> · <a href="updates.csv">Update CSV</a> · <a href="loss_curve.svg">Training SVG</a> · <a href="tick_loss_curve.svg">Tick loss SVG</a> · <a href="tick_metric_curve.svg">Tick metric SVG</a> · <a href="validation_curve.svg">Validation SVG</a> · <a href="residual_curve.svg">Residual SVG</a> · <a href="relative_residual_curve.svg">Relative residual SVG</a> · <a href="per_trajectory_residual_curve.svg">Per-trajectory residual SVG</a> · <a href="penetration_curve.svg">Penetration SVG</a></p>
 <details><summary>Configuration</summary><p>{damping_text}</p><pre>{escape(json.dumps(config, indent=2))}</pre></details>
 <p class="muted">This page refreshes every 30 seconds. Curves update after each completed epoch.<br>
 Epoch in progress: {escape(progress.get("epoch", "Not started"))}. Training heartbeat: {escape(progress.get("updated_at", "Waiting"))}.<br>
