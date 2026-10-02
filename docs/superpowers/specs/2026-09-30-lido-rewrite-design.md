@@ -1748,3 +1748,40 @@ starts at 10 % of `max_step_size` and ramps to the full value over 8 advancing e
 selection metric does not get worse (`step_cap_start`, `step_cap_ramp_epochs`, `step_cap_gate_on_validation`; stored
 in checkpoints; the method's own 0.05 cap is unchanged and the curriculum leaves nothing behind), plus a blow-up guard
 (`blowup_energy_factor` 1e6 x floor counts as a failed state). Attempt 2 started 08:02 UTC from scratch.
+
+### v5 campaign, second attempt and the scene curriculum (2026-10-02, decided autonomously)
+
+Attempt 2 (physical floor, bounded increase, step-cap curriculum; 08:02-08:20 UTC, 8 epochs, full v5 mix from the
+first epoch) trained tamely (loss 0.64 -> 0.14, gradient norms below 2) and the step cap ramped from 0.005 to 0.03
+(the gate uses the full-horizon selection metric, which fell 7.5e5 -> 145 -> 115 -> 80 N over epochs 1-4), but the
+scenes themselves collapsed as the cap loosened: failed scenes per epoch 0, 1, 1, 1, 3, 3, 11, 6; the deepest
+training penetration 4 -> 11 -> 44 -> 53 -> 350 r; the held-out 32-query curves grew spikes (energy ratios of 44 and
+94 at single iterations); the full-horizon validation lost both scenes at epochs 7 and 8. The run is archived in
+`generated/lido_v5_20261002/attempt2_full_mix_from_start/`.
+
+Anka, before going to bed: make decisions autonomously; "maybe we can start with pinned + artificial collision as
+previous training (v4) and add more challenging training later?". Decision: a scene curriculum on a fixed epoch
+schedule (Anka prefers fixed schedules over plateau rules), `scene_curriculum` and `scene_curriculum_epochs = (4, 20)`
+in `TrainConfig`, `scenes_v5.SceneMix` / `scene_mix(cfg, epoch)`:
+
+- every body pinned through epoch 4: the moving bodies meet only fixed geometry (ground plane, static faces, the
+  held pinned neighbours), as in the v4 campaign, but with 150 bodies of random size, material and pose per scene;
+- from epoch 5 the pinned fraction falls linearly from 1.0 to 0.25 and the resting fraction rises from 0 to 0.3,
+  both reached at epoch 20 (the dense free stacks of attempt 2 arrive when the network has learnt the elastic and
+  the contact response); the drift speed, the materials, the static faces and the body-body contact are unchanged;
+- the mix overrides the two fractions on the same seed streams (`sample_scene(..., mix=)`), so a higher pinned
+  fraction pins a superset of the bodies and the body draws, poses and faces do not change;
+- the cheap validation (32 queries on 8 held-out scenes) follows the epoch's mix, the full-horizon validation keeps
+  the final mix: it is the goal, the selection metric and the step-cap gate (a diverging goal scene in the pinned
+  phase is expected and only delays the cap);
+- the step-cap curriculum stays as it is (its ramp will likely finish during the pinned phase; the network then
+  meets the free bodies with the method's own cap, as the v4 campaign did with its pinned beams).
+
+Found while implementing: the v5 runner drew `sample_scene(master_seed, job.seed, cfg)` with `job.seed` = scene
+index, so every epoch replayed the same 64 layouts (only K, H and the candidate noise changed). Training scene seeds
+are now `scenes_v5.epoch_scene_seed(epoch, index)` = epoch x 2^20 + index (test and reference scenes keep seeds below
+2^20). The epoch record's regime now carries `step_cap`, `pinned_fraction` and `resting_fraction` (the report had
+filtered the step-cap key out, hence the empty cap in the first attempt-2 records). Tests: `TestSceneCurriculum`
+(schedule, superset property, fresh seeds) and `TestSceneCurriculumRunner`; the runner-based suites pin
+`scene_curriculum=False` since they describe the final mix. Attempt 3 started 08:21 UTC from scratch with this
+configuration (same run directory, dashboard slug `lido-v5-20261002`).
