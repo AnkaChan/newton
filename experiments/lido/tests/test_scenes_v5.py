@@ -335,14 +335,17 @@ class TestSampleScene(unittest.TestCase):
                 # inflated box; the footprint samples miss the exact support point by at most their spacing
                 self.assertLessEqual(min(room) / h, S.RESTING_GAP_CELLS + 0.05)
                 self.assertGreater(lowest[a] / h, S.RESTING_GAP_CELLS)
-        # fraction 0 reproduces the scenes recorded before the resting start (the fifth stream disturbs no draw)
+        # fraction 0 reproduces the scenes recorded before the resting start (the fifth stream disturbs no draw;
+        # the static faces of the sixth stream off as well, their statistics stripped from the placement record)
         ref = json.loads(REFERENCE.read_text())
-        still = dataclasses.replace(CFG, resting_body_fraction=0.0)
+        still = dataclasses.replace(CFG, resting_body_fraction=0.0, static_face_count_range=(0, 0))
         for key, d in ref["scenes"].items():
             master, seed, *validation = key.split("_")
             sc = S.sample_scene(int(master), int(seed), still, validation=bool(validation))
             self.assertFalse(any(b.resting for b in sc.bodies))
-            sc = dataclasses.replace(sc, placement={k: v for k, v in sc.placement.items() if k != "resting_on_bodies"})
+            self.assertEqual(sc.static_faces, [])
+            stripped = {k: v for k, v in sc.placement.items() if k != "resting_on_bodies" and "static_face" not in k}
+            sc = dataclasses.replace(sc, placement=stripped)
             self.assertEqual(sc, S.SceneV5.from_dict(d), key)
         # the face-down pose: R takes the face's outward normal to -y, the yaw turns about the vertical
         for face in range(6):
@@ -579,6 +582,7 @@ class TestConfigKeys(unittest.TestCase):
         self.assertEqual(cfg.placement_gap_cells, (1, 3))
         self.assertEqual(cfg.pinned_body_fraction, 0.25)
         self.assertEqual(cfg.resting_body_fraction, 0.3)
+        self.assertEqual((cfg.static_face_count_range, cfg.static_face_size_cells), ((0, 8), (2, 10)))
         self.assertEqual((cfg.scene_count, cfg.validation_scene_count, cfg.validation_full_scene_count), (64, 8, 2))
         d = cfg.to_dict()
         d.update({"scene_mode": "v5", "body_sides": [4, 8], "scene_cells": 1000, "pinned_body_fraction": 0.5})

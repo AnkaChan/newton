@@ -15,7 +15,7 @@ from collections import deque
 import numpy as np
 import torch
 
-from . import scenes, scenes_v5
+from . import contact, scenes, scenes_v5
 from .batch import Batch
 from .grid import GridCache
 from .jobs import assign, sample_epoch_jobs, sample_scene_spec, sample_scene_specs
@@ -182,13 +182,27 @@ def scene_batch(scene: scenes_v5.SceneV5, grids: GridCache, aug, device, plane: 
     return b
 
 
+PAIR_KINDS = ("total", "plane", "point", "static", "body")
+
+
 def pair_counts(batch) -> dict:
-    """Valid pairs of the batch's current step by kind: {"total", "plane", "point", "body"} (one host sync)."""
+    """Valid pairs of the batch's current step by kind: {"total", "plane", "point", "static", "body"} (static = the
+    scene's static faces, `partner_body == contact.PARTNER_STATIC`, which share kind 1 with the discs; one host
+    sync)."""
     p = batch.pairs
     if p is None or p.count == 0:
-        return {"total": 0, "plane": 0, "point": 0, "body": 0}
-    counts = torch.bincount(p.kind[p.valid], minlength=3).tolist()
-    return {"total": int(sum(counts)), "plane": int(counts[0]), "point": int(counts[1]), "body": int(counts[2])}
+        return dict.fromkeys(PAIR_KINDS, 0)
+    kind = p.kind[p.valid]
+    counts = torch.bincount(kind, minlength=3).tolist()
+    static = int((p.partner_body[p.valid] == contact.PARTNER_STATIC).sum())
+    point = int(counts[1]) - static
+    return {
+        "total": int(sum(counts)),
+        "plane": int(counts[0]),
+        "point": point,
+        "static": static,
+        "body": int(counts[2]),
+    }
 
 
 class SceneRunner:
@@ -224,7 +238,7 @@ class SceneRunner:
         self.contact_scenes = 0
         self.queries = 0  # body queries served this epoch (bodies of the scene per update)
         self.idle_updates = 0  # updates after the rank's queue ran dry
-        self.pairs = {"total": 0, "plane": 0, "point": 0, "body": 0}  # valid pairs of the current step
+        self.pairs = dict.fromkeys(PAIR_KINDS, 0)  # valid pairs of the current step
         self.pair_history: list = []  # pair counts at every detection of the epoch
         self.scene_summaries: list = []  # scenes_v5.scene_summary of every loaded scene plus its job
 
@@ -327,6 +341,9 @@ class SceneRunner:
             "resting_bodies_mean": float(np.mean([s.get("resting_bodies", 0) for s in self.scene_summaries]))
             if self.scene_summaries
             else 0.0,
+            "static_faces_mean": float(np.mean([s.get("static_faces", 0) for s in self.scene_summaries]))
+            if self.scene_summaries
+            else 0.0,
             "cells_mean": float(np.mean([s["cells"] for s in self.scene_summaries])) if self.scene_summaries else 0.0,
             "body_queries": self.queries,
             "idle_updates": self.idle_updates,
@@ -335,6 +352,7 @@ class SceneRunner:
             "body_pairs_mean": sum(p["body"] for p in hist) / n,
             "body_pairs_max": max((p["body"] for p in hist), default=0),
             "plane_pairs_mean": sum(p["plane"] for p in hist) / n,
+            "static_pairs_mean": sum(p.get("static", 0) for p in hist) / n,
             "steps_with_body_pairs": sum(1 for p in hist if p["body"] > 0) / n,
             "scenes_served": self.scene_summaries,
         }

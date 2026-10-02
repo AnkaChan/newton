@@ -24,6 +24,10 @@ partner corners receive -w_i times the sample gradient (E depends on xs - p only
 dE/dn = -ke relu(d) (xs - p) - kd relu(-vn) delta [d > 0] - (mu_f f_n f0'(y) / y) vn u, pulled back through the
 normalisation and the cross product (dE/da = b x g_m, dE/db = g_m x a with m = a x b, g_m = (I - n n^T) dE/dn / |m|).
 
+Static faces (`partner_body == -2`, contact.py module docstring): the closest point on the CONSTANT quad
+`faces[partner_face]` at the current sample position replaces p, the normal is the detection's and delta the static
+slip; no partner gradient (the partner rows stay zero, nothing is scattered).
+
 The pair energy goes to the owning object (atomic add into [O]); the gradients either come out per pair ([Q,3] for
 the sample, [Q,4,3] for the partner corners; the torch.autograd.Function used by `contact_energy`) or are scattered
 straight onto the corners (sample corners with weight 1/4, partner corners as computed; atomic adds into [N,3], the
@@ -97,7 +101,9 @@ def contact_pair_kernel(
     obj: wp.array[wp.int64],  # [Q]
     partner_point: wp.array[wp.vec3],  # [Q]
     partner_normal: wp.array[wp.vec3],  # [Q]
-    partner_face: wp.array[wp.int64],  # [Q] global sample id of the partner face, -1 for static partners
+    partner_body: wp.array[wp.int64],  # [Q] partner object (>= 0: body pair; -2: static face; -1: plane or disc)
+    partner_face: wp.array[wp.int64],  # [Q] global sample id of the partner face (body), static face index, or -1
+    faces: wp.array2d[wp.vec3],  # [F,4] the scene's static faces
     anchor: wp.array[wp.vec3],  # [Q]
     valid: wp.array[wp.bool],  # [Q]
     ke: wp.array[float],  # [O]
@@ -128,9 +134,10 @@ def contact_pair_kernel(
     n = partner_normal[q]
     p = partner_point[q]
     delta = xs - anchor[q]
-    # body pair: geometry from the partner's current corners
+    # body pair: geometry from the partner's current corners; static face: closest point on the constant quad
     pf = int(partner_face[q])
-    body = pf >= 0
+    pb = int(partner_body[q])
+    body = pb >= 0
     d0 = int(0)
     d1 = int(0)
     d2 = int(0)
@@ -159,6 +166,13 @@ def contact_pair_kernel(
         else:
             n = face_normals[int(sample_face[pf])]
         delta = delta - (w[0] * (e0 - X[d0]) + w[1] * (e1 - X[d1]) + w[2] * (e2 - X[d2]) + w[3] * (e3 - X[d3]))
+    elif pb == -2:
+        f0 = faces[pf, 0]
+        f1 = faces[pf, 1]
+        f2 = faces[pf, 2]
+        f3 = faces[pf, 3]
+        ws = quad_closest_weights(xs, f0, f1, f2, f3)
+        p = ws[0] * f0 + ws[1] * f1 + ws[2] * f2 + ws[3] * f3
     gap = wp.dot(xs - p, n)
     d = r_sample - gap
     pen = wp.max(d, 0.0)
@@ -238,7 +252,9 @@ def pair_geometry_kernel(
     sample: wp.array[wp.int64],  # [Q]
     partner_point: wp.array[wp.vec3],  # [Q]
     partner_normal: wp.array[wp.vec3],  # [Q]
+    partner_body: wp.array[wp.int64],  # [Q]
     partner_face: wp.array[wp.int64],  # [Q]
+    faces: wp.array2d[wp.vec3],  # [F,4]
     anchor: wp.array[wp.vec3],  # [Q]
     valid: wp.array[wp.bool],  # [Q]
     xs_out: wp.array[wp.vec3],  # [Q]
@@ -248,7 +264,8 @@ def pair_geometry_kernel(
     delta_out: wp.array[wp.vec3],
 ):
     """The pair geometry of `contact._geometry` per row (sample position, partner point and normal, gap, step
-    displacement; body pairs from the partner's current corners as `contact_pair_kernel`), zeros on padded rows:
+    displacement; body pairs from the partner's current corners and static faces from the constant quad as
+    `contact_pair_kernel`), zeros on padded rows:
     the capacity layout evaluates the tokens, the translation stiffness and the penetration over 4-5 rows per
     sample of which a few per cent are valid, and the torch chain over all of them cost 3-4 ms per evaluation."""
     q = wp.tid()
@@ -270,7 +287,8 @@ def pair_geometry_kernel(
     p = partner_point[q]
     delta = xs - anchor[q]
     pf = int(partner_face[q])
-    if pf >= 0:
+    pb = int(partner_body[q])
+    if pb >= 0:
         d0 = int(sample_corners[pf, 0])
         d1 = int(sample_corners[pf, 1])
         d2 = int(sample_corners[pf, 2])
@@ -288,6 +306,13 @@ def pair_geometry_kernel(
         else:
             n = face_normals[int(sample_face[pf])]
         delta = delta - (w[0] * (e0 - X[d0]) + w[1] * (e1 - X[d1]) + w[2] * (e2 - X[d2]) + w[3] * (e3 - X[d3]))
+    elif pb == -2:
+        f0 = faces[pf, 0]
+        f1 = faces[pf, 1]
+        f2 = faces[pf, 2]
+        f3 = faces[pf, 3]
+        ws = quad_closest_weights(xs, f0, f1, f2, f3)
+        p = ws[0] * f0 + ws[1] * f1 + ws[2] * f2 + ws[3] * f3
     xs_out[q] = xs
     p_out[q] = p
     n_out[q] = n
@@ -337,6 +362,30 @@ def body_query_kernel(
     point[s, o] = cp
 
 
+@wp.kernel
+def static_query_kernel(
+    xs: wp.array[wp.vec3],  # [S] sample positions at X
+    reach: wp.array[float],  # [S] query bound (margin + r)
+    mesh_id: wp.uint64,  # the scene's static-face mesh
+    ok: wp.array[wp.bool],  # [S]
+    dist: wp.array[float],  # [S] unsigned distance to the closest static face
+    face: wp.array[wp.int64],  # [S] static face index
+    point: wp.array[wp.vec3],  # [S] closest point
+):
+    """One thread per sample: the closest point on the scene's static faces within `reach` (unsigned: the quads are
+    an open two-sided surface) and its face (triangle // 2); nothing beyond the reach."""
+    s = wp.tid()
+    p = xs[s]
+    res = wp.mesh_query_point_no_sign(mesh_id, p, reach[s])
+    if not res.result:
+        return
+    cp = wp.mesh_eval_position(mesh_id, res.face, res.u, res.v)
+    ok[s] = True
+    dist[s] = wp.length(cp - p)
+    face[s] = wp.int64(res.face // 2)
+    point[s] = cp
+
+
 def _array(t: Tensor | None, dtype):
     return None if t is None else wp.from_torch(t.contiguous(), dtype=dtype, requires_grad=False, return_ctype=True)
 
@@ -368,6 +417,24 @@ def launch_body_query(xs, sample_obj, reach, mesh_ids, lo, hi, sample_off, ok, d
     wp.launch(body_query_kernel, dim=(S, O), inputs=inputs, device=wp.device_from_torch(xs.device), stream=_stream(xs))
 
 
+def launch_static_query(xs, reach, mesh_id, ok, dist, face, point) -> None:
+    """Fill the [S] candidate arrays of `contact.static_candidates` (float32 / int64 tensors on one device)."""
+    S = ok.shape[0]
+    if S == 0:
+        return
+    wp.init()
+    inputs = [
+        _array(xs, wp.vec3),
+        _array(reach, wp.float32),
+        wp.uint64(mesh_id),
+        _array(ok, wp.bool),
+        _array(dist, wp.float32),
+        _array(face, wp.int64),
+        _array(point, wp.vec3),
+    ]
+    wp.launch(static_query_kernel, dim=S, inputs=inputs, device=wp.device_from_torch(xs.device), stream=_stream(xs))
+
+
 def launch_contact(
     batch,
     x: Tensor,
@@ -381,13 +448,15 @@ def launch_contact(
     """Accumulate the pair energies into `energy_obj` [O] and write the gradients per pair (`grad_pair` [Q,3] for
     the sample, `grad_partner` [Q,4,3] for the partner corners of body pairs) or scatter them onto the corners
     (`grad_x` [N,3], accumulated). x, the pair fields and the material are float32 / int64 CUDA tensors;
-    `r_sample` is the sample radius (`contact.R_SAMPLE`); the partner anchors read `batch.X`."""
+    `r_sample` is the sample radius (`contact.R_SAMPLE`); the partner anchors read `batch.X`, the static faces
+    `batch.scene.faces`."""
     Q = pairs.count
     if Q == 0:
         return
     wp.init()
     m = batch.material
     face_normals = batch.hc.face_normals.to(torch.float32)  # kept alive until the launch (a view on float32 batches)
+    faces = batch.scene.faces.to(torch.float32).reshape(-1, 4, 3)  # kept alive until the launch
     inputs = [
         _array(x, wp.vec3),
         _array(batch.X, wp.vec3),
@@ -398,7 +467,9 @@ def launch_contact(
         _array(pairs.obj, wp.int64),
         _array(pairs.partner_point, wp.vec3),
         _array(pairs.partner_normal, wp.vec3),
+        _array(pairs.partner_body, wp.int64),
         _array(pairs.partner_face, wp.int64),
+        _array(faces, wp.vec3),
         _array(pairs.anchor, wp.vec3),
         _array(pairs.valid, wp.bool),
         _array(m.ke, wp.float32),
@@ -427,6 +498,7 @@ def pair_geometry_warp(batch, x: Tensor, pairs) -> tuple:
         return xs, p, n, gap, delta
     wp.init()
     face_normals = batch.hc.face_normals.to(torch.float32)  # kept alive until the launch
+    faces = batch.scene.faces.to(torch.float32).reshape(-1, 4, 3)  # kept alive until the launch
     inputs = [
         _array(x, wp.vec3),
         _array(batch.X, wp.vec3),
@@ -436,7 +508,9 @@ def pair_geometry_warp(batch, x: Tensor, pairs) -> tuple:
         _array(pairs.sample, wp.int64),
         _array(pairs.partner_point, wp.vec3),
         _array(pairs.partner_normal, wp.vec3),
+        _array(pairs.partner_body, wp.int64),
         _array(pairs.partner_face, wp.int64),
+        _array(faces, wp.vec3),
         _array(pairs.anchor, wp.vec3),
         _array(pairs.valid, wp.bool),
         _array(xs, wp.vec3),
@@ -451,8 +525,8 @@ def pair_geometry_warp(batch, x: Tensor, pairs) -> tuple:
 
 class ContactEnergy(torch.autograd.Function):
     """E [O] = contact energy per object; backward scatters the saved per-pair gradients, scaled by the incoming
-    per-object gradient, onto the 4 sample corners (1/4 each) and the 4 partner corners of body pairs. Only x
-    carries a gradient."""
+    per-object gradient, onto the 4 sample corners (1/4 each) and the 4 partner corners of body pairs (the partner
+    gradients of static partners, static faces included, are zero). Only x carries a gradient."""
 
     @staticmethod
     def forward(ctx, x, batch, pairs, r_sample):
@@ -462,7 +536,8 @@ class ContactEnergy(torch.autograd.Function):
         grad_pair = torch.empty(pairs.count, 3, dtype=x.dtype, device=x.device)
         grad_partner = torch.empty(pairs.count, 4, 3, dtype=x.dtype, device=x.device)
         launch_contact(batch, x, pairs, r_sample, energy, grad_pair, None, grad_partner)
-        partner_corners = batch.sample_corners[pairs.partner_face.clamp_min(0)]
+        body_face = pairs.partner_face.masked_fill(pairs.partner_body < 0, 0)  # static rows carry zero partner grads
+        partner_corners = batch.sample_corners[body_face]
         ctx.save_for_backward(pairs.obj, batch.sample_corners[pairs.sample], grad_pair, partner_corners, grad_partner)
         ctx.N = x.shape[0]
         ctx.body = bool(batch.body_contact)

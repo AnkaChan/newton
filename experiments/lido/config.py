@@ -79,6 +79,8 @@ class TrainConfig:
     placement_gap_cells: tuple = (1, 3)  # cells between the bounding boxes of placed bodies
     pinned_body_fraction: float = 0.25  # probability that a body is clamped at one of its faces and held at its pose
     resting_body_fraction: float = 0.3  # fraction of the FREE bodies placed at rest on the ground or on a pinned body
+    static_face_count_range: tuple = (0, 8)  # static colliding quads per scene, U{lo..hi} (walls, ramps, slabs)
+    static_face_size_cells: tuple = (2, 10)  # side lengths of a static quad, U(lo, hi) cells per side
     scene_count: int = 64  # fixed scenes per epoch
     validation_scene_count: int = 8
     validation_full_scene_count: int = 2

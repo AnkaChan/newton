@@ -117,7 +117,14 @@ _MATERIAL_TENSORS = (
 
 @dataclass
 class ContactScene:
-    """Static contact partners of every object, in each object's normalised coordinates; concatenated over objects."""
+    """Static contact partners of every object, in each object's normalised coordinates; concatenated over objects.
+
+    `faces` are the static colliding quads of a v5 scene (design spec section 11, "Static faces"): planar quads
+    shared by every object of the scene (one world frame), four corners in cell units in order around the quad, so
+    the quad normal is the unit diagonal cross product (c2 - c0) x (c3 - c1) as for the bodies' faces. A static
+    face is two-sided: detection flips that normal towards the side the sample is on (the sign that opposes the
+    sample's face normal). Empty in body mode and for older records.
+    """
 
     plane_n: Tensor  # [O,3] unit normal (pointing out of the obstacle, towards the body)
     plane_d: Tensor  # [O]   plane offset: signed distance of x to the plane is n . x - d
@@ -126,6 +133,11 @@ class ContactScene:
     normals: Tensor  # [Npts,3]
     radii: Tensor  # [Npts]
     point_offsets: Tensor  # [O+1] CSR by object
+    faces: Tensor = None  # [F,4,3] static quads shared by all objects (v5 scenes); empty by default
+
+    def __post_init__(self):
+        if self.faces is None:
+            self.faces = torch.zeros(0, 4, 3, dtype=self.plane_n.dtype, device=self.plane_n.device)
 
 
 @dataclass
@@ -138,12 +150,13 @@ class Pairs:
     obj: Tensor  # [Q] object id
     partner_point: Tensor  # [Q,3]
     partner_normal: Tensor  # [Q,3]
-    kind: Tensor  # [Q] 0 plane, 1 static point, 2 other body
-    radius: Tensor  # [Q] partner radius (r for planes and body faces)
+    kind: Tensor  # [Q] 0 plane, 1 static partner (disc or static face), 2 other body
+    radius: Tensor  # [Q] partner radius (r for planes and body faces; r x the token cap for static faces)
     anchor: Tensor  # [Q,3] sample position at step start (friction anchor)
     valid: Tensor  # [Q] bool
-    partner_body: Tensor = None  # [Q] object id of the partner body (kind 2), -1 for planes and static points
-    partner_face: Tensor = None  # [Q] global sample id of the partner body's exposed face (kind 2), -1 otherwise
+    partner_body: Tensor = None  # [Q] object id of the partner body (kind 2), -2 for a static face, -1 otherwise
+    partner_face: Tensor = None  # [Q] kind 2: global sample id of the partner's face; static face: index into
+    # `ContactScene.faces`; -1 otherwise
     # capacity layout (design spec 1b "CUDA graphs"): Q = S (1 + k) slots in a fixed sample-major order, padded
     # rows carry valid = False; token_offsets is then the static capacity CSR and the token attention pairs are
     # precomputed once per layout

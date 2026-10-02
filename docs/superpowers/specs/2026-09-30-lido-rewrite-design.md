@@ -1634,3 +1634,99 @@ Anka's decision above (a fraction of the bodies clamped at one face and held at 
   / realise tests with resting bodies), 206 s on GPU 3; `uvx ruff format` / `check` clean; pre-commit clean on the
   package files (the typos hook flags two words in Anka's `notes/v5-free-motion-with-contact.md`, untouched).
   Nothing committed.
+
+### Static faces in v5 scenes (2026-10-02, implemented: `scenes_v5.py`, `config.py`, `structs.py`, `batch.py`, `scenes.py`, `contact.py`, `contact_kernel.py`, `runner.py`, `validation.py`, `report.py`; body mode unchanged)
+
+Anka's decision above (artificially sampled static colliding quads as fixed contact partners), built as follows.
+- Generator (`scenes_v5.py`, sixth seed stream `rng_faces`; `ss.spawn(6)`): `static_face_count` in U{`static_face_count_range`}
+  (default (0, 8)) quads per scene with side lengths U(`static_face_size_cells`) (default (2, 10)) cells, a uniform random
+  unit normal (normalised standard normal) and an in-plane rotation U(0, 2 pi), the centre uniform over the placement
+  column's footprint and between the ground and `placement_height`. Order (documented in the module): the faces are placed
+  AFTER every body, so the body draws and the body placement are exactly the earlier generator's (count 0 reproduces
+  `tests/reference/scenes_v5_6000_cells.json` field by field; the body lists of a scene with and without faces are equal)
+  and no body is ever placed after a face; a candidate position is rejected while any corner lies below the ground or
+  the quad intersects a body's initial bounding box grown by one cell, or by the body's deformation clearance
+  `field_clearance` when that is larger (a free body's field moves corners up to 3 RMS = 1.35 cells, more than the one
+  cell of the decision; `quad_boxes_overlap`, a separating-axis test over the box axes, the quad normal and their cross
+  products, vectorised over the bodies, checked against dense sampling of the quad); after `MAX_FACE_DRAWS` = 200 rejected
+  positions the face is dropped (`placement["static_faces_dropped"]`, never happened in 32 scenes). Record:
+  `SceneV5.static_faces` [F][4][3] m, corners in order around the quad so the quad normal is the unit diagonal cross
+  product (c2 - c0) x (c3 - c1) as for the bodies' faces (`static_face_corners`), JSON round trip, `from_dict` reads
+  older records as empty, `scene_summary["static_faces"]` and `["static_face_acceptance"]`, `placement["static_face_draws"
+  / "static_face_acceptance" / "static_faces_dropped"]`, `SceneRunner.epoch_summary()["static_faces_mean"]`. `realise`
+  hands the table to `ContactScene.faces` [F,4,3] in cell units (one world frame, shared by every body; empty in body
+  mode and in `batch.empty_scene`; `scenes.cat_scenes` concatenates it). Statistics: default configuration, 8 scenes of
+  64k cells: 4.6 faces per scene (2-8), position acceptance 53 % (24-73 %), no face dropped, sides 2.1-10.0 cells,
+  centre heights 3-39 cells; 24 scenes of 6000 cells: 5.0 per scene (0-8), acceptance 52 %; 61 ms per default scene
+  (74 before: the face check is vectorised numpy, cheaper than the time it replaces in noise). The contact-free copy of
+  the momentum check drops the faces (`validation.contact_free_copy`).
+- Detection (`contact.static_candidates`, `StaticMesh`, `contact_kernel.static_query_kernel`): one `wp.Mesh` over all static
+  faces (two triangles per quad over a float32 copy of the corners), built once per scene and never refitted, cached as
+  `batch.static_mesh` (rebuilt when `batch.scene.faces` is another table; reset by `relayout`), queried once per sample
+  with `wp.mesh_query_point_no_sign` within margin + r = 2r + |v_s| (the quads are an open surface, so the parity sign of
+  `mesh_query_point_sign_parity` would mean nothing: the decision's "unsigned distance" without the three rays); the face
+  is triangle // 2, the closest point and the distance are recomputed from the quad's corners in the batch's dtype.
+  Two-sided rule: the quad normal is flipped towards the side the sample is on (the sign of (x_s - p) . n_quad; a sample
+  exactly in the quad's plane takes the sign opposing its own normal), and the pair is kept when that normal opposes the
+  sample normal (n . n_s < 0) and distance - r < r + |v_s|; no lateral rule (the closest point on the finite quad bounds
+  the offset: a sample 0.3 beyond the edge pairs with the edge, 1.2 beyond is out of reach). The wording of the decision
+  ("the normal that opposes the sample's face normal") taken alone is NOT safe: for a grazing sample (its face
+  perpendicular to the quad, the side rows of a box standing on a slab) the sign is decided by rounding, and for a side
+  face tilted upwards it is decidedly the far side; such a row then sees gap = -height, d = r + height, and the box is
+  pushed through the face (first drop test: penetration 6.8 r, the box flung 8000 cells off the ramp). With the side from
+  the position the two-sided face behaves on each side exactly like the one-sided plane (a tilted quad reproduces the
+  tilted plane step for step to 1e-9 over 20 steps of the zero-init solver, test). Consequence: a sample that has crossed
+  the quad's plane by the time of a detection sees the face from the other side with its own normal pointing away and is
+  no candidate (a thin face has no interior; the plane keeps pushing such a sample back, a body mesh by its parity sign);
+  within a step the frozen pair holds its normal and pushes back as the plane does. Recorded fields: kind 1 (`KIND_STATIC`,
+  the static-partner slot shared with the discs), `partner_body = -2` (`PARTNER_STATIC`), `partner_face` = index into the
+  static table, anchor = the sample position at X, `radius` = r x `RADIUS_CHANNEL_CAP` (`STATIC_RADIUS` = 5 cells) so the
+  token's r_p / r channel sits exactly at its cap 10: to the network a static face is a disc of unbounded radius. The
+  closest static face competes with the discs and the bodies for the M_PAIR = 4 slots (ranked by its unsigned surface
+  distance; slot order plane, point ids, the static face, partner object ids); capacity mode has 1 + min(M_PAIR,
+  Npts + [F > 0] + O - 1) columns per sample. One mesh means one static candidate per sample (the nearest face), as one
+  body mesh means one candidate per body. Cost (default scene 5 of seed 73: 159 bodies, 52k samples, 6 faces, L40 alone,
+  capacity layout): the static query 0.29 ms (closest points and normals recomputed for the hit rows only), detection
+  11.7 -> 12.0 ms; the capacity column count is unchanged (5) since the bodies already fill the M_PAIR slots. With the
+  default 0-8 faces of 2-10 cells on a 6-7 m footprint the faces are small targets: step 0 has no static pair (above),
+  and 24 steps of extrapolated free flight of that scene still gave none (2347 plane, 81 body pairs), so static contacts
+  will be rare events per scene at the default sizes; `static_face_count_range` / `static_face_size_cells` set the rate.
+- Geometry at a query (torch `_body_geometry`, Warp `contact_pair_kernel` / `pair_geometry_kernel`, both kernels take
+  `partner_body` and `faces` [F,4] now): a static row follows the body-face path with CONSTANT corners from
+  `scene.faces[partner_face]`: the closest point on the quad at the current sample position (weights held), the normal is
+  the detection's (the quad is fixed, so it is the quad's normal with the side fixed at detection), delta = x - anchor as
+  for every static partner; nothing but the sample receives a gradient (the kernel's partner rows stay zero and are not
+  scattered; `ContactEnergy.backward` indexes partner corners for body rows only). Body rows are identified by
+  `partner_body >= 0` (not `partner_face >= 0` as before). `active_stiffness` / `translation_hessian` already excluded
+  partners below 0. Tokens: kind one-hot slot 1, radius ratio 10, partner point and normal from the quad.
+- Validation and report: `plane_penetration_r` = the maximum over kinds 0 and 1 (plane, discs and static faces; the key
+  keeps its name for the dashboard, documented in `validation.py`); `pair_counts` returns {total, plane, point, static,
+  body} (static = kind 1 with `partner_body == -2`), `report.PAIR_KEYS` summarises total / plane / static / body,
+  `SceneRunner.epoch_summary()` adds `static_pairs_mean` and `static_faces_mean`; `test_validation_v5` key sets updated.
+- Tests (`tests/test_static_faces.py`, 19): sampling statistics and determinism (counts in range, mean within 1.5 of 4,
+  rectangles of 2-10 cells, planar, random normals), faces in the column above the ground and clear of every grown body
+  box (SAT and dense sampling; the SAT against brute force on 200 random quads and boxes), count 0 against the recorded
+  scenes and the body draws unchanged, JSON round trip / legacy record / summary / realise in cells with no static pair at
+  rest at step 0; detection of a box above and below a slab for both corner orders (9 pairs at gap 0.4, normal towards
+  the box, foot points, radius 5, anchors), velocity margin, within-step penetration 0.8 / r through the frozen pair and
+  the crossed sample losing its pair, a tilted quad (normals, closest points against a 200^2 grid) and its edges, the slots
+  shared with the plane and a second body (18 / 18 / 18 pairs, capacity 3 columns, fields equal), tokens (slot 1, cap,
+  partner point and normal) and the penetration fold through `scene_metrics` with and without the plane; finite
+  differences in float64 with respect to the body's corners on three tilted faces with damping and friction (1e-7), the
+  force and the owner-only stiffness; the tilted plane equivalence; the drop (frictionless: 60 steps, penetration below 0.1 r
+  at the landing (0.09 r from 1.1 cells, 0.011 r from 1.0) and 7e-4 r at rest, corners never below 0.494 cells over the
+  quad, resting height 1.5 + r to 1e-3; with friction 0.8: 30 steps, bounded, never through); the Warp kernel against torch in four regimes (energies 1e-5, gradients 1e-4, the fused
+  pass, the geometry kernel and tokens, zero partner gradients and no gradient on a second body); capacity against
+  compaction (identical energy, gradient, tokens, penetration); the captured query against eager over three queries and an
+  advance (5e-5); the scene runner's epoch of 1500-cell scenes with 4-8 faces on the CPU (faces on every batch, the
+  `static` key in the pair history, cheap and full-horizon validation records surviving, momentum drift below 1e-3) and a
+  slab injected 0.1 cells under a ground-resting body pairing with every sample of its bottom face at gap 0.4 at step 0.
+  Full suite 300 (281 + 19) pass on GPU 3; `uvx ruff format` / `check` and `uvx pre-commit run --files` clean.
+- For Anka: (i) the untrained zero-init solver on a slope: the frictionless box slides as a whole and stays exactly one
+  sample radius over the ramp; with friction 0.8 the base sticks while the free corners keep integrating gravity (no
+  elastic response), so the body shears, tumbles and moves down-slope FASTER than without friction (0.26 against 0.06
+  cells per step by step 50), on the static face and on the tilted plane alike; a trained network is what makes the box an
+  elastic body. (ii) Step 0 of a default scene has no static pair: faces keep at least one cell from every body box and
+  the reach at rest is one cell; the first static pairs come from the drift and the landing, like the body pairs.
+  (iii) `CapturedQuery` does not watch `batch.scene` (plane fields included): the static table is baked into the graph,
+  fine for the runner's one Batch per scene.

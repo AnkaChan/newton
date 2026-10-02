@@ -221,6 +221,7 @@ def build_epoch_record(
 
 # v5 scene records (validation.py): per-iteration curves summarised like the penetration, and final values.
 SCENE_CURVE_KEYS = ("interbody_penetration_r", "plane_penetration_r")
+PAIR_KEYS = ("total", "plane", "static", "body")  # the summarised pair counts (static = the scene's static faces)
 
 
 def _scene_curves(samples: list, iterations: int) -> dict:
@@ -234,7 +235,7 @@ def _scene_curves(samples: list, iterations: int) -> dict:
             ]
     pairs = [s.get("contact_pairs") for s in samples if isinstance(s.get("contact_pairs"), dict)]
     if pairs:
-        out["contact_pairs"] = {k: _mean([p.get(k) for p in pairs]) for k in ("total", "plane", "body")}
+        out["contact_pairs"] = {k: _mean([p.get(k) for p in pairs]) for k in PAIR_KEYS}
     return out
 
 
@@ -324,7 +325,7 @@ def summarize_full_horizon(samples: list, iterations: int, physical_steps: int, 
             out[f"final_{key}"] = _stats([r.get(key) for r in finals], ("mean", "max"))
     pairs = [r.get("contact_pairs") for r in finals if isinstance(r.get("contact_pairs"), dict)]
     if pairs:
-        out["final_contact_pairs"] = {k: _mean([p.get(k) for p in pairs]) for k in ("total", "plane", "body")}
+        out["final_contact_pairs"] = {k: _mean([p.get(k) for p in pairs]) for k in PAIR_KEYS}
     if any("momentum_drift" in s for s in samples):
         out["momentum_drift"] = _mean([s.get("momentum_drift") for s in samples])
     out["samples"] = samples

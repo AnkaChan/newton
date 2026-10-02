@@ -11,8 +11,8 @@ collide with training scenes. `realise` converts it to the solver's normalised u
 the body's pins ("none" or the clamped face), X = the rotated and translated rest lattice plus the multiscale
 deformation field (pinned corners exactly at the rigid pose), V = the rigid velocity in cells per step plus the
 deformation velocity field (zero on pinned rows, rigid velocity zero for a pinned body), one Material per body
-(gravity along -y, the scene's contact constants) and a ContactScene with the ground plane for every body and no
-static points. All objects share the world frame with origin zero, so plane_d = plane_height / h is the same
+(gravity along -y, the scene's contact constants) and a ContactScene with the ground plane for every body, no
+static points and the scene's static faces (`ContactScene.faces`, cell units). All objects share the world frame with origin zero, so plane_d = plane_height / h is the same
 number for every object.
 
 Draws (per scene stream): drift direction (standard normal with the vertical component scaled by
@@ -50,6 +50,19 @@ clearance the deformed support penetrated the resting body by up to 2 RMS, from 
 tilted box rises past the resting body's edge). The grown-bounding-box rule still separates the body from everything
 that is not its support; against the inflated boxes of its supports a separating-axis test verifies that the boxes do
 not intersect (`boxes_overlap`).
+
+Static faces (Anka, 2026-10-02; sixth seed stream): `static_face_count` in U{cfg.static_face_count_range} planar
+quads per scene (walls, ramps, slabs) as fixed contact partners: side lengths U(cfg.static_face_size_cells) cells,
+a uniform random unit normal (normalised standard normal) and an in-plane rotation U(0, 2 pi), the centre uniform
+over the placement column's footprint and between the ground and `placement_height`. The faces are placed AFTER all
+bodies (the body draws and the body placement are those of the generator without faces, so a face count of 0
+reproduces the earlier scenes exactly, and no body is ever placed after a face): a candidate is rejected while any
+corner lies below the ground or the quad intersects any body's initial axis-aligned bounding box grown by one cell
+(or by the body's deformation clearance when that is larger; `quad_box_overlap`, a separating-axis test); after
+`MAX_FACE_DRAWS` rejected positions the face is dropped (`placement["static_faces_dropped"]`). The corners are
+stored in metres in order around the quad (`SceneV5.static_faces`; the quad normal is the unit diagonal cross
+product (c2 - c0) x (c3 - c1), the convention of the bodies' faces), and `realise` hands them to
+`ContactScene.faces` in cell units, shared by every body of the scene.
 
 Placement (placement stream): per body a uniform random quaternion (Shoemake) and a gap U{placement_gap_cells}
 cells, then bodies are placed one at a time in a square column of side `footprint` (m) centred on the origin.
@@ -92,6 +105,8 @@ GROUND_CELLS = 2.0  # lowest point of a body at least this many cells above the 
 FIRST_BODY_CELLS = (1.0, 2.0)
 RESTING_GAP_CELLS = 0.5  # a resting body's bottom face sits this far above its support: the sample radius r = h / 2
 CLEARANCE_SIGMAS = 3.0  # a pinned support's deformation field (RMS) times this clears the resting body above it
+MAX_FACE_DRAWS = 200  # position draws per static face before it is dropped
+FACE_GROWTH_CELLS = 1.0  # a static face keeps this many cells (at least) from every body's initial bounding box
 FACE_NORMALS = (
     (-1, 0, 0),
     (1, 0, 0),
@@ -141,7 +156,8 @@ class SceneV5:
     plane_height: float  # m: the ground is the y = plane_height plane (0: the world's y = 0)
     drift: tuple  # [3] m/s scene-wide drift velocity
     contact: dict  # kappa (floored), kappa_drawn, kappa_floor, floor_bound, beta, mu_f, friction_epsilon, floor_scale
-    placement: dict = field(default_factory=dict)  # footprint, draws, acceptance_rate, footprint_growths
+    placement: dict = field(default_factory=dict)  # footprint, draws, acceptance_rate, footprint_growths, static_face_*
+    static_faces: list = field(default_factory=list)  # [F][4][3] m: corners of the static quads, in order around each
 
     @property
     def cells(self) -> int:
@@ -176,6 +192,7 @@ class SceneV5:
             drift=tuple(float(v) for v in d["drift"]),
             contact=dict(d["contact"]),
             placement=dict(d.get("placement", {})),
+            static_faces=[[tuple(float(v) for v in c) for c in f] for f in d.get("static_faces", [])],
         )
 
 
@@ -340,6 +357,84 @@ def boxes_overlap(c1, R1: np.ndarray, s1, c2, R2: np.ndarray, s2) -> bool:
     return True
 
 
+def static_face_corners(centre, normal, angle: float, sides) -> np.ndarray:
+    """Corners [4,3] (m) of a planar quad with the given centre, unit normal n, in-plane rotation and side lengths
+    (a, b), in order around the quad: c0 = centre - a/2 u - b/2 v, c1 = + a/2 u - b/2 v, c2 = + a/2 u + b/2 v,
+    c3 = - a/2 u + b/2 v with u, v an orthonormal in-plane frame, v = n x u, so that the diagonal cross product
+    (c2 - c0) x (c3 - c1) = 2 a b n points along the given normal (the convention of `contact.quad_normals`)."""
+    n = _unit(np.asarray(normal, dtype=float))
+    helper = np.array([0.0, 1.0, 0.0]) if abs(n[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    u0 = _unit(np.cross(n, helper))
+    v0 = np.cross(n, u0)
+    u = math.cos(angle) * u0 + math.sin(angle) * v0
+    v = np.cross(n, u)
+    a, b = 0.5 * float(sides[0]), 0.5 * float(sides[1])
+    c = np.asarray(centre, dtype=float)
+    return np.stack([c - a * u - b * v, c + a * u - b * v, c + a * u + b * v, c - a * u + b * v])
+
+
+def quad_boxes_overlap(corners: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
+    """[n] bool: the planar quad `corners` [4,3] intersects each axis-aligned box [lo[j], hi[j]] ([n,3] each);
+    separating-axis test over the three box axes, the quad normal and the cross products of the box axes with the
+    two quad edge directions (touching counts as free)."""
+    lo, hi = np.asarray(lo, dtype=float).reshape(-1, 3), np.asarray(hi, dtype=float).reshape(-1, 3)
+    centre, half = 0.5 * (lo + hi), 0.5 * (hi - lo)  # [n,3]
+    corners = np.asarray(corners, dtype=float)
+    e1, e2 = corners[1] - corners[0], corners[3] - corners[0]
+    axes = [np.eye(3)[i] for i in range(3)] + [np.cross(e1, e2)]
+    for i in range(3):
+        for e in (e1, e2):
+            axes.append(np.cross(np.eye(3)[i], e))
+    axes = np.stack(axes)  # [A,3]
+    norm = np.linalg.norm(axes, axis=1)
+    axes = axes[norm > 1e-12] / norm[norm > 1e-12, None]
+    proj = corners @ axes.T  # [4,A]
+    centre_proj = centre @ axes.T  # [n,A]
+    r_box = np.abs(axes) @ half.T  # [A,n]
+    q_min, q_max = proj.min(0)[None, :] - centre_proj, proj.max(0)[None, :] - centre_proj  # [n,A]
+    separated = (q_max <= -r_box.T + _GEOM_TOL) | (q_min >= r_box.T - _GEOM_TOL)
+    return ~separated.any(axis=1)
+
+
+def quad_box_overlap(corners: np.ndarray, lo, hi) -> bool:
+    """`quad_boxes_overlap` for one box."""
+    return bool(quad_boxes_overlap(corners, np.asarray(lo)[None], np.asarray(hi)[None])[0])
+
+
+def _place_faces(rng: np.random.Generator, cfg, h: float, footprint: float, lo: np.ndarray, hi: np.ndarray):
+    """The scene's static faces (module docstring): a list of corner arrays [4,3] (m) and the statistics. `lo`,
+    `hi` [n,3] are the bodies' bounding boxes already grown by the clearance a face must keep."""
+    lo_n, hi_n = (int(v) for v in cfg.static_face_count_range)
+    size_lo, size_hi = (float(v) for v in cfg.static_face_size_cells)
+    count = int(rng.integers(lo_n, hi_n + 1))
+    faces, draws, dropped = [], 0, 0
+    half = 0.5 * footprint
+    for _ in range(count):
+        sides = rng.uniform(size_lo, size_hi, size=2) * h
+        normal = _unit(rng.normal(size=3))
+        angle = float(rng.uniform(0.0, 2.0 * math.pi))
+        placed = False
+        for _attempt in range(MAX_FACE_DRAWS):
+            draws += 1
+            u = rng.random(3)
+            centre = np.array([(2.0 * u[0] - 1.0) * half, u[1] * cfg.placement_height, (2.0 * u[2] - 1.0) * half])
+            corners = static_face_corners(centre, normal, angle, sides)
+            if corners[:, 1].min() < 0.0:  # a corner below the ground
+                continue
+            if lo.shape[0] > 0 and bool(quad_boxes_overlap(corners, lo, hi).any()):
+                continue
+            faces.append(corners)
+            placed = True
+            break
+        dropped += int(not placed)
+    stats = {
+        "static_face_draws": int(draws),
+        "static_face_acceptance": float(len(faces) / max(draws, 1)),
+        "static_faces_dropped": int(dropped),
+    }
+    return faces, stats
+
+
 def rigid_pose(body: BodySpec, rest: Tensor, h: float) -> Tensor:
     """The rotated and translated rest lattice [P,3] in cell units (float64): R(q) (rest - centre) + position / h."""
     R = torch.tensor(rotation_matrix(body.quaternion), dtype=torch.float64, device=rest.device)
@@ -464,7 +559,7 @@ def _box_n_face(cell_counts) -> int:
 def sample_scene(master_seed: int, scene_seed: int, cfg, validation: bool = False) -> SceneV5:
     """One v5 scene (SI): a pure function of (master_seed, scene_seed, validation) and the config (module docstring)."""
     ss = np.random.SeedSequence([master_seed, scene_seed, 1 if validation else 0, STREAM_TAG])
-    rng_scene, rng_bodies, rng_place, rng_pins, rng_rest = (np.random.default_rng(s) for s in ss.spawn(5))
+    rng_scene, rng_bodies, rng_place, rng_pins, rng_rest, rng_faces = (np.random.default_rng(s) for s in ss.spawn(6))
     h, dt = float(cfg.cell_size), float(cfg.time_step)
     gravity = tuple(float(v) for v in cfg.gravity)
     g_mag = math.sqrt(sum(v * v for v in gravity))
@@ -546,6 +641,13 @@ def sample_scene(master_seed: int, scene_seed: int, cfg, validation: bool = Fals
         half_sides=half_sides,
         clearance=clearance,
     )
+    # static faces after every body (own stream): rejected against the bodies' boxes grown by at least one cell
+    grown = np.maximum(FACE_GROWTH_CELLS * h, clearance)[:, None]
+    centres_np = np.asarray(centres, dtype=float)
+    static_faces, face_stats = _place_faces(
+        rng_faces, cfg, h, placement["footprint"], centres_np - extents - grown, centres_np + extents + grown
+    )
+    placement = {**placement, **face_stats}
     still = {"velocity": (0.0, 0.0, 0.0)}
     bodies = [
         BodySpec(
@@ -588,6 +690,7 @@ def sample_scene(master_seed: int, scene_seed: int, cfg, validation: bool = Fals
         drift=tuple(float(v) for v in drift),
         contact=contact,
         placement=placement,
+        static_faces=[[tuple(float(v) for v in c) for c in f] for f in static_faces],
     )
 
 
@@ -606,6 +709,7 @@ def scene_summary(scene: SceneV5) -> dict:
         "pinned_bodies": sum(1 for b in scene.bodies if b.pinned),
         "resting_bodies": sum(1 for b in scene.bodies if b.resting),
         "resting_on_bodies": scene.placement.get("resting_on_bodies", 0),
+        "static_faces": len(scene.static_faces),
         "cells": scene.cells,
         "drift": [float(v) for v in drift],
         "drift_speed": float(np.linalg.norm(drift)),
@@ -618,6 +722,7 @@ def scene_summary(scene: SceneV5) -> dict:
         "footprint": scene.placement.get("footprint"),
         "placement_acceptance": scene.placement.get("acceptance_rate"),
         "footprint_growths": scene.placement.get("footprint_growths"),
+        "static_face_acceptance": scene.placement.get("static_face_acceptance"),
     }
 
 
@@ -683,5 +788,6 @@ def realise(scene: SceneV5, grids, aug, device, dtype=torch.float32):
         normals=z(0, 3),
         radii=z(0),
         point_offsets=z(O + 1, dt=torch.int64),
+        faces=torch.tensor(scene.static_faces, dtype=torch.float64, device=device).reshape(-1, 4, 3).to(dtype) / h,
     )
     return gs, X, V, material, contact_scene

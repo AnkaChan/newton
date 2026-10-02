@@ -8,7 +8,8 @@ v5 scenes (`validate_cheap_v5`, `validate_full_horizon_v5`, design spec section 
 `scenes_v5.held_out_scene`; a record is one scene with the per-body fields aggregated over its bodies in SI
 (residual_n: mean of the bodies' free-corner residual norms, energy_joule: sum, penetration_r: max,
 inverted_cells: sum), plus `interbody_penetration_r` (max over the body pairs of relu(r - gap) / r),
-`plane_penetration_r` (the same over the plane pairs), `contact_pairs` counts, and in the full horizon the
+`plane_penetration_r` (the same over the STATIC partners: the plane, the discs and the scene's static faces; the key
+keeps its name for the dashboard), `contact_pairs` counts by kind (static faces included), and in the full horizon the
 `momentum_drift` of a contact-free copy of the first scene (`momentum_drift_check`: plane removed, bodies spread
 far apart; |sum m_i v_i(t) - sum m_i v_i(0) - t M g| / |M g t| over the FREE bodies after the horizon, SI; a pinned
 body hands its momentum to its pins and is left out of the sums).
@@ -183,7 +184,7 @@ def scene_metrics(batch) -> dict:
         "penetration_r": float(pen.max()),
         "inverted_cells": float(inv.sum()),
         "interbody_penetration_r": float(by_kind[contact.KIND_BODY]),
-        "plane_penetration_r": float(by_kind[0]),
+        "plane_penetration_r": float(max(by_kind[0], by_kind[contact.KIND_STATIC])),  # plane, discs, static faces
         "contact_pairs": pair_counts(batch),
         "finite": finite,
     }
@@ -263,7 +264,8 @@ def validate_full_horizon_v5(
 def contact_free_copy(scene: scenes_v5.SceneV5, H: int) -> scenes_v5.SceneV5:
     """The scene with its bodies on a square grid in (x, z) centred on the origin, so far apart that no two can touch
     within H steps (bounding-box reach plus the rigid travel plus a margin of 4 cells; the grid keeps the float32
-    positions small: 159 bodies in a row would reach 95 m); the plane is removed by the caller (`scene_batch`)."""
+    positions small: 159 bodies in a row would reach 95 m), without its static faces; the plane is removed by the
+    caller (`scene_batch`)."""
     h, dt = scene.h, scene.dt
     reach = max(float(scenes_v5.half_extents(b.cell_counts, b.quaternion, h).max()) for b in scene.bodies)
     speed = max(float(np.linalg.norm(b.velocity)) for b in scene.bodies)
@@ -275,7 +277,7 @@ def contact_free_copy(scene: scenes_v5.SceneV5, H: int) -> scenes_v5.SceneV5:
         )
         for i, b in enumerate(scene.bodies)
     ]
-    return dataclasses.replace(scene, bodies=bodies)
+    return dataclasses.replace(scene, bodies=bodies, static_faces=[])
 
 
 def _corner_mass_si(batch) -> torch.Tensor:

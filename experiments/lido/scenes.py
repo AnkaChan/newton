@@ -156,6 +156,7 @@ def cat_scenes(scenes: list[ContactScene]) -> ContactScene:
         normals=torch.cat([s.normals for s in scenes]),
         radii=torch.cat([s.radii for s in scenes]),
         point_offsets=offsets,
+        faces=torch.cat([s.faces for s in scenes]),
     )
 
 

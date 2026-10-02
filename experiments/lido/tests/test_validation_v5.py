@@ -51,7 +51,7 @@ class TestValidationV5(unittest.TestCase):
                 self.assertEqual(len(r[key]), K + 1, key)
                 self.assertTrue(all(_finite(v) for v in r[key]), key)
             self.assertTrue(all(v >= 0 for v in r["interbody_penetration_r"] + r["plane_penetration_r"]))
-            self.assertEqual(set(r["contact_pairs"]), {"total", "plane", "point", "body"})
+            self.assertEqual(set(r["contact_pairs"]), {"total", "plane", "point", "static", "body"})
             self.assertEqual(r["contact_pairs"]["point"], 0)
             self.assertGreater(r["scale_joule"], 0.0)
             self.assertGreater(r["energy_joule"][0], 0.0)
@@ -62,7 +62,7 @@ class TestValidationV5(unittest.TestCase):
         for key in NEW_KEYS[:2]:
             self.assertEqual([row["iteration"] for row in summary[key]], list(range(K + 1)))
             self.assertTrue(all(_finite(row["max"]) for row in summary[key]))
-        self.assertEqual(set(summary["contact_pairs"]), {"total", "plane", "body"})
+        self.assertEqual(set(summary["contact_pairs"]), {"total", "plane", "static", "body"})
         # body-mode samples (without the scene keys) keep the previous key set
         plain = R.summarize_cheap_validation(cheap_samples(), iterations=3)
         for key in (*NEW_KEYS, "momentum_drift"):
@@ -80,13 +80,13 @@ class TestValidationV5(unittest.TestCase):
         for row in r["physical_records"]:
             for key in ("residual_n", "energy_joule", "penetration_r", "inverted_cells", *NEW_KEYS[:2]):
                 self.assertTrue(_finite(row[key]), key)
-            self.assertEqual(set(row["contact_pairs"]), {"total", "plane", "point", "body"})
+            self.assertEqual(set(row["contact_pairs"]), {"total", "plane", "point", "static", "body"})
         self.assertTrue(_finite(r["momentum_drift"]))
         full = R.summarize_full_horizon(records, K, H, seconds)
         self.assertTrue(full["selection"]["eligible"] and _finite(full["selection"]["metric"]))
         for key in NEW_KEYS[:2]:
             self.assertTrue(_finite(full[f"final_{key}"]["max"]), key)
-        self.assertEqual(set(full["final_contact_pairs"]), {"total", "plane", "body"})
+        self.assertEqual(set(full["final_contact_pairs"]), {"total", "plane", "static", "body"})
         self.assertAlmostEqual(full["momentum_drift"], r["momentum_drift"])
         # the epoch record passes the scene keys through and stays JSON-clean
         record, _, _ = epoch_record()

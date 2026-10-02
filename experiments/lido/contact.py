@@ -31,6 +31,23 @@ from the partner's current corners c_i (so the energy's gradient reaches both bo
 Holding w is exact for planar faces (the closest point slides tangentially), makes the forces on the two bodies equal
 and opposite (the partner corners receive -w_i times the sample's gradient, plus the gradient through n, which sums
 to zero over the four corners), and lets two bodies that move together see no friction or damping between them.
+
+Static faces (`batch.scene.faces` [F,4,3], the v5 scenes' artificially sampled quads; design spec section 11 "Static
+faces"): one `wp.Mesh` over all of them, built once per scene and never refitted (`StaticMesh`, cached on the batch
+like the body meshes), queried per sample with the unsigned closest-point query (`wp.mesh_query_point_no_sign`:
+the quads are an open surface, so a parity sign would mean nothing) within margin + r = 2r + |v_s|. A static face is
+two-sided: its quad normal (the diagonal cross product of the stored corners) is flipped towards the side the sample
+is on (the sign of (x_s - p) . n_quad, so a sample facing the quad from either side sees a normal pointing at it),
+the pair is kept when that normal opposes the sample's face normal and the unsigned surface distance minus r is
+below the margin r + |v_s| (no lateral rule: the closest point on the finite quad bounds the offset). A
+kept pair is recorded with kind 1 (the static-partner slot shared with the discs), `partner_body = -2`
+(`PARTNER_STATIC`), `partner_face` = the index into the static table, the sample position at X as anchor and
+`radius` = r x RADIUS_CHANNEL_CAP (`STATIC_RADIUS`), so the token's r_p / r channel sits exactly at its cap of 10:
+to the network a static face is a disc of unbounded radius. At a query a static row follows the body-face path with
+CONSTANT corners: the closest point on the quad is recomputed at the current sample position (weights held), the
+normal is the detection's (the quad is fixed, so it IS the quad's normal with the side fixed at detection) and
+delta = x - anchor as for every static partner; nothing but the sample receives a gradient. Static faces compete
+with the plane, the discs and the bodies for the M_PAIR slots (ranked by their unsigned surface distance).
 """
 
 from __future__ import annotations
@@ -54,6 +71,9 @@ TOKEN_DIM = 19
 RADIUS_CHANNEL_CAP = 10.0  # cap of the r_p / r token channel
 BODY_SIGN_RAYS = 3  # rays of the sign-parity classification per mesh query (odd; Warp's default is 1)
 KIND_BODY = 2  # the reserved slot of the kind one-hot
+KIND_STATIC = 1  # the static-partner slot of the kind one-hot: discs and static faces
+PARTNER_STATIC = -2  # `Pairs.partner_body` of a static-face pair (-1: plane or disc, >= 0: the partner body)
+STATIC_RADIUS = R_SAMPLE * RADIUS_CHANNEL_CAP  # `Pairs.radius` of a static face: the token channel r_p / r at its cap
 FACE_TIE_TOL = 1e-5  # faces whose closest points are this close (relative) count as ties in the detection
 
 
@@ -192,6 +212,37 @@ def face_neighbours(batch) -> Tensor:
     return nb.masked_fill(nb == own, -1)
 
 
+class StaticMesh:
+    """One `wp.Mesh` over the scene's static faces (`ContactScene.faces` [F,4,3]): two triangles per quad (0, 1, 2),
+    (0, 2, 3) over one float32 copy of the corners, so triangle t is static face t // 2; built once per scene (the
+    corners never move, no refit). `faces` is the batch dtype table the detection recomputes closest points from,
+    `normals` [F,3] the quad normals (`quad_normals`, zero for a degenerate quad)."""
+
+    def __init__(self, faces: Tensor):
+        wp.init()
+        self.source = faces  # identity marks the scene the mesh belongs to
+        self.device = faces.device
+        self.F = int(faces.shape[0])
+        self.faces = faces.detach()
+        self.normals = quad_normals(self.faces, torch.zeros(self.F, 3, dtype=faces.dtype, device=faces.device))
+        self.points = self.faces.reshape(-1, 3).to(torch.float32).contiguous().clone()  # [4F,3]
+        quads = torch.arange(4 * self.F, device=faces.device).view(self.F, 4)
+        tris = torch.stack([quads[:, [0, 1, 2]], quads[:, [0, 2, 3]]], 1).reshape(-1).to(torch.int32).contiguous()
+        self.indices = tris
+        with _warp_scope(self.device):
+            self.mesh = wp.Mesh(wp.from_torch(self.points, dtype=wp.vec3), wp.from_torch(tris, dtype=wp.int32))
+        self.id = self.mesh.id
+
+
+def static_mesh(batch) -> StaticMesh:
+    """The batch's static-face mesh: built when absent or when `batch.scene.faces` is another table (a new scene)."""
+    faces = batch.scene.faces
+    m = batch.static_mesh
+    if m is None or m.source is not faces:
+        batch.static_mesh = m = StaticMesh(faces)
+    return m
+
+
 def body_meshes(batch, X: Tensor) -> BodyMeshes:
     """The batch's meshes at X: built when absent (after `Batch.relayout`), refreshed otherwise."""
     m = batch.meshes
@@ -218,14 +269,16 @@ def detect(batch, X: Tensor, V: Tensor, capacity: bool = False) -> Pairs:
     """Pairs on the step-start shape X with velocity margin from V (note section 4 with its amendments).
 
     Candidates per sample: the object's plane if present, plus the nearest M_PAIR of {the object's static points,
-    the other bodies' surfaces (when `batch.body_contact`)}. A partner is kept when its normal opposes the face
-    normal (n_q . n_s < 0) and the surface distance gap - r is below margin = r + |v_s| for the static partners and
-    r + |v_s - v_f| (the relative speed to the partner face) for a body; a static point also needs lateral
-    distance < r_p and gap >= -r (one-sided disc). For a body the gap is the signed distance to its surface
-    mesh at X (negative inside, `wp.mesh_query_point_sign_parity`, queried within the largest margin + r), the partner
-    normal the closest face's normal at X, the partner point the closest point, and the closest point's lateral offset
-    must be below r (`body_candidates`). Rows come out sorted by owning cell, sample, partner (plane, then point
-    ids, then bodies by object id).
+    the scene's static faces (the closest one, `static_candidates`), the other bodies' surfaces (when
+    `batch.body_contact`)}. A partner is kept when its normal opposes the face normal (n_q . n_s < 0) and the surface
+    distance gap - r is below margin = r + |v_s| for the static partners and r + |v_s - v_f| (the relative speed to
+    the partner face) for a body; a static point also needs lateral distance < r_p and gap >= -r (one-sided disc); a
+    static face is two-sided (its normal flipped to oppose) and the unsigned distance to the finite quad is the
+    surface distance. For a body the gap is the signed distance to its surface mesh at X (negative inside,
+    `wp.mesh_query_point_sign_parity`, queried within the largest margin + r), the partner normal the closest face's
+    normal at X, the partner point the closest point, and the closest point's lateral offset must be below r
+    (`body_candidates`). Rows come out sorted by owning cell, sample, partner (plane, then point ids, then the static
+    face, then bodies by object id).
 
     `capacity=True` (design spec 1b "CUDA graphs") keeps every candidate slot instead of compacting: S (1 + k)
     rows in the same sample-major, slot-minor order with `valid` marking the detected ones, so the shapes are
@@ -362,14 +415,61 @@ def body_candidates(batch, X: Tensor, xs: Tensor, ns: Tensor, vs: Tensor) -> tup
     return keep, dist, face, point
 
 
+def static_candidates(batch, xs: Tensor, ns: Tensor, speed: Tensor) -> tuple:
+    """The closest static face of every sample (module docstring): keep [S], unsigned surface distance [S], face
+    index [S] (-1 without a hit), closest point [S,3] and the two-sided normal [S,3]: the quad normal flipped
+    towards the side the sample is on (the sign of (x_s - p) . n_quad; a sample exactly in the quad's plane takes
+    the sign opposing its own normal), kept when it opposes the sample normal. The side must come from the sample's
+    position, not from the opposing rule alone: a grazing sample (its normal perpendicular to the quad) would
+    otherwise take the far side's normal by rounding, see gap < 0 and be pushed through the face. The mesh query
+    (float32, within margin + r = 2r + |v_s|) selects the face; the closest point and the distance are recomputed
+    from the quad's corners in the batch's dtype."""
+    mesh = static_mesh(batch)
+    dev, dtype = xs.device, xs.dtype
+    S = xs.shape[0]
+    ok = torch.zeros(S, dtype=torch.bool, device=dev)
+    face = torch.full((S,), -1, dtype=torch.int64, device=dev)
+    dist32 = torch.zeros(S, dtype=torch.float32, device=dev)
+    point32 = torch.zeros(S, 3, dtype=torch.float32, device=dev)
+    reach = 2.0 * R_SAMPLE + speed
+    with _warp_scope(dev):
+        contact_kernel.launch_static_query(
+            xs.detach().to(torch.float32).contiguous(),
+            reach.detach().to(torch.float32).contiguous(),
+            mesh.id,
+            ok,
+            dist32,
+            face,
+            point32,
+        )
+    point = point32.to(dtype)
+    dist = dist32.to(dtype)
+    normal = torch.zeros(S, 3, dtype=dtype, device=dev)
+    hit = ok.nonzero(as_tuple=True)[0]
+    if hit.numel() > 0:  # the hit rows only: closest point, distance and the two-sided normal in the batch dtype
+        xh, nh = xs.detach()[hit], ns[hit]
+        c = mesh.faces.to(dtype)[face[hit]]  # [K,4,3]
+        ph, _ = closest_point_on_quad(xh, c[:, 0], c[:, 1], c[:, 2], c[:, 3])
+        nq = mesh.normals.to(dtype)[face[hit]]
+        side = ((xh - ph) * nq).sum(-1)  # which side of the quad the sample is on
+        flip = (side < 0) | ((side == 0) & ((nq * nh).sum(-1) > 0))  # in the quad's plane: the sign opposing n_s
+        point[hit] = ph
+        dist[hit] = (ph - xh).norm(dim=-1)
+        normal[hit] = torch.where(flip[:, None], -nq, nq)
+    opposing = (normal * ns).sum(-1) < 0
+    keep = ok & opposing & (dist - R_SAMPLE < R_SAMPLE + speed)
+    return keep, dist, face, point, normal
+
+
 def _candidates(batch, X: Tensor, V: Tensor) -> dict:
-    """The candidate slot grid [S, 1 + k]: plane slot first, then the k = min(M_PAIR, Npts + O - 1) nearest of the
-    static points (brute force within the sample's object) and the other bodies' faces (mesh queries), ordered by
-    point id then partner object id. Dropped slots hold the last candidate's data with ok = False.
+    """The candidate slot grid [S, 1 + k]: plane slot first, then the k = min(M_PAIR, Npts + [F > 0] + O - 1)
+    nearest of the static points (brute force within the sample's object), the closest static face (one mesh query
+    per sample) and the other bodies' faces (mesh queries), ordered by point id, then the static face, then partner
+    object id. Dropped slots hold the last candidate's data with ok = False.
 
     Returns a dict: ok [S,cols] bool, sample [S,cols], point [S,cols,3], normal [S,cols,3], radius [S,cols], kind
-    [S,cols], body [S,cols] (partner object, -1), face [S,cols] (partner face sample id, -1) and the sample positions
-    xs [S,3].
+    [S,cols], body [S,cols] (partner object, -2 for a static face, -1 otherwise), face [S,cols] (partner face sample
+    id, static face index, -1) and the sample positions xs [S,3].
     """
     scene = batch.scene
     dev, dtype = X.device, X.dtype
@@ -408,6 +508,15 @@ def _candidates(batch, X: Tensor, V: Tensor) -> dict:
         ok_pt = torch.zeros(S, 0, dtype=torch.bool, device=dev)
         dist_pt = torch.zeros(S, 0, dtype=dtype, device=dev)
 
+    # static faces (kind 1, partner -2): the closest one per sample, ranked by its unsigned surface distance
+    nstatic = 1 if scene.faces.shape[0] > 0 else 0
+    if nstatic > 0:
+        ok_f, dist_f, face_f, point_f, normal_f = static_candidates(batch, xs, ns, vs.norm(dim=-1))
+        ok_f, dist_f = ok_f[:, None], dist_f[:, None]
+    else:
+        ok_f = torch.zeros(S, 0, dtype=torch.bool, device=dev)
+        dist_f = torch.zeros(S, 0, dtype=dtype, device=dev)
+
     # other bodies (kind 2): the signed surface distance ranks them against the points
     nbody = batch.O if (batch.body_contact and batch.O > 1) else 0
     if nbody > 0:
@@ -416,17 +525,18 @@ def _candidates(batch, X: Tensor, V: Tensor) -> dict:
         ok_b = torch.zeros(S, 0, dtype=torch.bool, device=dev)
         dist_b = torch.zeros(S, 0, dtype=dtype, device=dev)
 
-    total = npts + nbody  # candidate columns (a body's own column never fires)
-    k = min(M_PAIR, npts + max(nbody - 1, 0))
+    total = npts + nstatic + nbody  # candidate columns (a body's own column never fires)
+    k = min(M_PAIR, npts + nstatic + max(nbody - 1, 0))
     full = lambda value, dt=dtype: torch.full((S, k), value, dtype=dt, device=dev)  # noqa: E731
     if k > 0:
-        ok = torch.cat([ok_pt, ok_b], 1)
-        dist = torch.cat([dist_pt, dist_b], 1).masked_fill(~ok, float("inf"))
+        ok = torch.cat([ok_pt, ok_f, ok_b], 1)
+        dist = torch.cat([dist_pt, dist_f, dist_b], 1).masked_fill(~ok, float("inf"))
         dist_k, idx_k = dist.topk(k, dim=1, largest=False)  # [S,k]
         idx_k = idx_k.masked_fill(~torch.isfinite(dist_k), total).sort(dim=1).values  # by candidate id, dropped last
         ok_k = idx_k < total
         idx_k = idx_k.clamp_max(total - 1)
-        is_body = idx_k >= npts
+        is_static = (idx_k >= npts) & (idx_k < npts + nstatic)
+        is_body = idx_k >= npts + nstatic
         point_k, normal_k, radius_k = (
             full(0.0)[..., None].expand(S, k, 3),
             full(0.0)[..., None].expand(S, k, 3),
@@ -436,15 +546,21 @@ def _candidates(batch, X: Tensor, V: Tensor) -> dict:
         if npts > 0:
             ip = idx_k.clamp_max(npts - 1)
             point_k, normal_k, radius_k = pts[ip], pnrm[ip], prad[ip]
+        if nstatic > 0:
+            point_k = torch.where(is_static[..., None], point_f[:, None, :].expand(S, k, 3), point_k)
+            normal_k = torch.where(is_static[..., None], normal_f[:, None, :].expand(S, k, 3), normal_k)
+            radius_k = torch.where(is_static, full(STATIC_RADIUS), radius_k)
+            body_k = torch.where(is_static, full(PARTNER_STATIC, torch.int64), body_k)
+            face_k = torch.where(is_static, face_f[:, None].expand(S, k), face_k)
         if nbody > 0:
-            ib = (idx_k - npts).clamp_min(0)
+            ib = (idx_k - npts - nstatic).clamp_min(0)
             face_sel = face_b[rows, ib]
             point_k = torch.where(is_body[..., None], point_b[rows, ib], point_k)
             normal_k = torch.where(is_body[..., None], ns[face_sel.clamp_min(0)], normal_k)
             radius_k = torch.where(is_body, full(R_SAMPLE), radius_k)
             body_k = torch.where(is_body, ib, body_k)
             face_k = torch.where(is_body, face_sel, face_k)
-        kind_k = torch.where(is_body, full(KIND_BODY, torch.int64), full(1, torch.int64))
+        kind_k = torch.where(is_body, full(KIND_BODY, torch.int64), full(KIND_STATIC, torch.int64))
         ok_all = torch.cat([ok_p[:, None], ok_k], 1)
         point_t = torch.cat([foot[:, None], point_k], 1)
         normal_t = torch.cat([pn[:, None], normal_k], 1)
@@ -476,10 +592,14 @@ def _candidates(batch, X: Tensor, V: Tensor) -> dict:
 # ---------------------------------------------------------------------------------------------- pair geometry
 def _body_geometry(batch, x: Tensor, pairs: Pairs, xs: Tensor, p: Tensor, n: Tensor, delta: Tensor) -> tuple:
     """Kind-2 rows at x (module docstring): partner point from the held closest-point weights on the partner's
-    current corners, the quad's normal, and the slip relative to the partner's material point; other rows pass
-    through. Differentiable in x through the corners (weights detached)."""
-    body = (pairs.kind == KIND_BODY)[:, None]
-    face = pairs.partner_face.clamp_min(0)
+    current corners, the quad's normal, and the slip relative to the partner's material point. Static-face rows
+    (`partner_body == PARTNER_STATIC`): the closest point on the quad's CONSTANT corners at the current sample
+    position (weights held), the detection's normal and the plain static slip. Other rows pass through.
+    Differentiable in x through the partner corners of body rows (weights detached); static faces pass no
+    gradient to anything but the sample."""
+    is_body = pairs.partner_body >= 0
+    body = is_body[:, None]
+    face = pairs.partner_face.masked_fill(~is_body, 0)
     corners = batch.sample_corners[face]  # [Q,4]
     c = x[corners]  # [Q,4,3]
     rest = batch.hc.face_normals[batch.sample_face[face]].to(x.dtype)
@@ -488,7 +608,15 @@ def _body_geometry(batch, x: Tensor, pairs: Pairs, xs: Tensor, p: Tensor, n: Ten
         _, w = closest_point_on_quad(xs.detach(), *(c[:, i].detach() for i in range(4)))
     p_b = (w[..., None] * c).sum(1)
     moved = (w[..., None] * (c - batch.X[corners])).sum(1)  # the material point's displacement since step start
-    return torch.where(body, p_b, p), torch.where(body, n_b, n), torch.where(body, delta - moved, delta)
+    p, n, delta = torch.where(body, p_b, p), torch.where(body, n_b, n), torch.where(body, delta - moved, delta)
+    faces = batch.scene.faces
+    if faces.shape[0] > 0:
+        is_static = pairs.partner_body == PARTNER_STATIC
+        cs = faces.to(x.dtype)[pairs.partner_face.masked_fill(~is_static, 0)]  # [Q,4,3] constant corners
+        with torch.no_grad():
+            p_s, _ = closest_point_on_quad(xs.detach(), cs[:, 0], cs[:, 1], cs[:, 2], cs[:, 3])
+        p = torch.where(is_static[:, None], p_s, p)
+    return p, n, delta
 
 
 def _geometry(batch, x: Tensor, pairs: Pairs):
@@ -509,7 +637,7 @@ def _geometry(batch, x: Tensor, pairs: Pairs):
     xs = x[batch.sample_corners[pairs.sample]].mean(1)
     p, n = pairs.partner_point, pairs.partner_normal
     delta = xs - pairs.anchor
-    if batch.body_contact:
+    if batch.body_contact or batch.scene.faces.shape[0] > 0:
         p, n, delta = _body_geometry(batch, x, pairs, xs, p, n, delta)
     gap = ((xs - p) * n).sum(-1)
     r_total = torch.full_like(gap, R_SAMPLE)  # d = r - gap for every kind (note section 5)
@@ -657,8 +785,9 @@ def contact_tokens(batch, x: Tensor, R: Tensor) -> Tensor:
     """One 19-channel token per pair in the owning cell's frozen frame R[cell] (note section 6).
 
     Channels: sample position (3), partner point (3), partner normal (3), all relative to the cell centre in the
-    cell frame; gap / r; approach rate -(n . delta) / r; r_p / r (capped; 1 for planes and body faces); log1p(kappa);
-    beta; mu_f; kind one-hot (plane, point, other body); self flag.
+    cell frame; gap / r; approach rate -(n . delta) / r; r_p / r (capped; 1 for planes and body faces, the cap 10
+    for static faces); log1p(kappa); beta; mu_f; kind one-hot (plane, static partner = disc or static face, other
+    body); self flag.
     """
     pairs = batch.pairs
     Q = pairs.count
@@ -700,8 +829,9 @@ def penetration(batch, x: Tensor) -> Tensor:
 
 
 def kind_penetration(batch, x: Tensor) -> Tensor:
-    """Maximum penetration depth in units of r per pair kind [3] (plane, static point, other body) over the batch's
-    valid pairs at x; zeros without pairs (the v5 validation's plane and inter-body penetration)."""
+    """Maximum penetration depth in units of r per pair kind [3] (plane, static partner = disc or static face,
+    other body) over the batch's valid pairs at x; zeros without pairs (the v5 validation's plane and inter-body
+    penetration)."""
     pairs = batch.pairs
     out = torch.zeros(3, dtype=x.dtype, device=x.device)
     if pairs is None or pairs.count == 0:

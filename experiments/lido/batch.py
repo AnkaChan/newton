@@ -113,6 +113,7 @@ class Batch:
     # body-body contact (v5, design spec section 11): every body is a partner of every other body in one world frame
     body_contact: bool = False  # contact.detect also queries the other bodies' surface meshes
     meshes: object = None  # contact.BodyMeshes: one wp.Mesh per object over its exposed faces, rebuilt per step
+    static_mesh: object = None  # contact.StaticMesh: one wp.Mesh over the scene's static faces, built once per scene
     fusion_cache: dict = None  # fusion.BatchedKron per dtype (the padded multi-group solve), reset by relayout
     noise_cache: object = None  # augment.Augmenter's padded-lattice tables of the whole batch, reset by relayout
     # job-constant network cache
@@ -249,6 +250,7 @@ class Batch:
         self.pairs = _empty_pairs(self.C, self.device)
         self.pair_layout = None
         self.meshes = None
+        self.static_mesh = None
         self.fusion_cache = None
         self.noise_cache = None
         self.film = None
