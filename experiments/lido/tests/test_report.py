@@ -38,7 +38,7 @@ epochs.0.contact_scene_fraction epochs.0.contact_realized_fraction epochs.0.cont
 epochs.0.available_K epochs.0.available_H
 epochs.0.regime.name epochs.0.regime.stage epochs.0.regime.k_max epochs.0.regime.h_max epochs.0.regime.queries
 epochs.0.regime.filler_queries epochs.0.regime.updates epochs.0.regime.step_cap epochs.0.regime.pinned_fraction
-epochs.0.regime.resting_fraction
+epochs.0.regime.resting_fraction epochs.0.regime.pre_roll_steps_mean
 epochs.0.validation.mean_normalized_loss epochs.0.validation.descent_rate epochs.0.validation.mean_before_joule
 epochs.0.validation.mean_after_joule epochs.0.validation.selection.metric epochs.0.validation.selection.eligible
 epochs.0.validation.physical_survivors epochs.0.validation.sample_count epochs.0.validation.failed_count

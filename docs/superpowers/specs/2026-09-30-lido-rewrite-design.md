@@ -1903,3 +1903,54 @@ factor 2: the correction an impact needs is never more than the inertial displac
 any speed, and the blow-up steps (10 cells and more against inertial displacements of 0.1 cell) are still caught.
 It remains a clamp: identity below the bound, rescaled to the bound above it, per body and per query. Attempt 5
 ran with the fixed bound; the relative bound applies from the next run.
+
+## 12. v6: arbitrary shapes, pre-roll, a walled world, and the 30-hour scale-up (2026-10-02)
+
+Anka's requests for the next round, after the v5 campaign: (1) arbitrary voxel-shaped bodies by coarse-to-fine
+sampling (`shapes.py`: a coarse lattice of 1-4 voxels per axis grown face-connected to a 40-90 % fill, one or two
+x2 refinements with block-wise boundary flips, spikes pruned and pits filled, largest component; gallery reviewed
+and approved); (2) pre-roll steps: once the growth table reaches its last stage, every scene first runs a random
+number of inference-only steps so that stacks settle before the training window starts, and the solver learns to
+stabilise resting contact without training on the whole settling; (3) a walled world: four static walls around the
+placement footprint keep the bodies together and colliding, the ground plane stays the floor; everything learnt in
+v5 (pinned-first curriculum, material band, step-cap ramp, pinned contact faces, trust region, both guards) is kept.
+The elastic energy change of the same day (lambda >= mu, lambda stiffened to max(10 mu, 10 lambda_0) at inverted
+quadrature points) replaces the inversion failures of v5.
+
+Scale-up plan for a 30-hour run on the four L40s, measured first (standalone update = query + loss + backward +
+optimizer step; the live training is about 1.6x slower per update): 64k cells / width 192: 0.075 s, 3.7 GB;
+128k / 192: 0.136 s, 7.3 GB; 128k / 256: 0.164 s, 9.6 GB; 128k / 320: 0.219 s, 12.0 GB; 192k / 256: 0.242 s,
+14.4 GB. Decision (Anka): width 256, 8 heads, edge hidden 128 (1.35 M parameters, one radius-one block as before),
+128k cells per scene (about 310 voxel bodies, 512k cells per optimizer step over four ranks), learning rate 1.4e-4
+(square-root scaling) with the cosine schedule, 48 epochs of 64 scenes, the last growth stage (K <= 32, H <= 128)
+from epoch 11 with a pre-roll of U{0..150} steps at 4 queries, validation on four goal scenes, drift speeds
+0.1-1.0 m/s, kappa 10-1000, the curriculum over epochs 4-24, a library of 2048 shapes of 27-1728 cells.
+Budget: ramp epochs about 1.5 h, then about 43 min per epoch (33 min of updates, 6 min of pre-roll, 4 min of
+validation), about 28.5 h in total, about 7x the cell-updates of the v5 run.
+
+Correction (Anka, the same evening): the trainable parameters do not scale with the data; the network stays at
+width 192, 6 heads, edge hidden 96 (0.8 M parameters). Only the data scales: 128k cells per scene and 76 scenes per
+epoch instead of 64 (standalone update 0.136 s, about 0.22 s live; about 34 min of updates, 6 min of pre-roll and
+4 min of validation per late epoch, about 29 h for 48 epochs). The learning rate 1.4e-4 follows the doubled batch
+(square-root scaling); everything else of the optimizer is unchanged.
+
+Implementation (2026-10-02 evening, three agents in parallel, integrated and tested by the orchestrator):
+
+- Shapes: `shapes.ShapeLibrary(size, seed, cell_range)` draws the run's shapes once per process (12-20 s for
+  2048); `BodySpec.shape` (library index) and `BodySpec.voxels` (occupied count, what `cells` reports); the bounding
+  lattice stands in for `cell_counts` so placement, resting poses, pinned contact faces and the rigid pose work
+  unchanged; `GridCache.get_voxel(shape_id, occupancy, pins)` builds `Grid.from_voxels` with the named lattice face
+  as a corner mask; the kappa floor uses the exposed face counts. `body_shapes = "box"` reproduces the v5 scenes bit
+  for bit. The well: four vertical quads at the footprint grown by `well_margin_cells`, from the ground to
+  `well_height_m`, inward normals, in `static_faces` with `placement["well_faces"]`.
+- Fusion: `BatchedSparse`, one block-diagonal cuDSS factorisation of every object's dirichlet-view free system per
+  batch layout (assembly 120 ms, factorisation 0.8 s for 64k cells of 160 voxel bodies), then 0.8 ms per fuse or
+  gradient projection against 100 ms for the per-group loop; `Fusion.batched_solver` picks BatchedKron for all-box
+  batches and BatchedSparse otherwise; the cuDSS machinery of `SparseFactor` moved into a `CsrSolver` base class.
+- Pre-roll: at the growth table's last stage `SceneRunner.load` draws n ~ U{0..pre_roll_max_steps} from the scene's
+  stream and runs n inference-only steps of `pre_roll_queries` queries (network in eval mode, no gradient) with the
+  same guards (failure kinds prefixed `pre_roll_`), the training window of K x H starting after; `pre_roll` per
+  scene summary, `pre_roll_steps_mean` and `pre_roll_seconds` in the epoch summary and the regime record.
+- Measured on one L40 for a v6 scene (398 voxel bodies, 128k cells, all pinned, well, 194 static quads): batch
+  build 5 s (grid construction, cached per shape), prepare 1.3 s, first update 3.8 s (factorisation and compile),
+  then 0.120 s per training update and 0.059 s per inference query, 7.1 GB peak.

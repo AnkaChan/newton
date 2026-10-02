@@ -125,6 +125,7 @@ All 74 config keys present in the example are dumped verbatim; the remainder are
 | `epochs[].regime.queries` | int | queries | sampled queries this epoch | opt | R |
 | `epochs[].regime.filler_queries` | list[int] or int | queries | per-rank fillers; summed if a list | opt | R |
 | `epochs[].regime.updates` | int | updates/rank | Adam updates per rank | opt | R, C |
+| `epochs[].regime.pre_roll_steps_mean` | float or null | physical steps | mean inference-only pre-roll steps per scene of the epoch (v5 scenes at the growth table's last stage, Anka 2026-10-02; null in body mode) | pass | – |
 | `epochs[].validation` | dict or null | – | cheap validation summary; `null` = skipped epoch (gap in plots, blank CSV cells). The most recent non-null row feeds the "Latest validation" section. | opt | R, C |
 | `epochs[].validation.mean_normalized_loss` | float | – | first-update objective on fixed seeds | opt | R |
 | `epochs[].validation.descent_rate` | float | fraction 0–1 | share of validation queries whose energy fell after one update (plotted x100) | opt | R |
@@ -223,7 +224,7 @@ Written atomically by `mixed_report.write_progress` on rank 0 at phase changes a
 | `latest_batch_loss` | float or null | – | `updates[-1].loss` | pass | – |
 | `available_K` | list[int] | iterations | headline "K = [...]" | opt, fallback latest epoch row, then `[1]` | R, M |
 | `available_H` | list[int] | steps | headline "H = [...]" | opt, fallback latest epoch row, then `[8]` | R, M |
-| `regime` | dict | – | present only in the `fixed_states` regime: `name`, `stage`, `k_max`, `h_max`, `queries`, `filler_queries` (list[int]), `updates`; preferred over `epochs[-1].regime` for the budget line | opt | R |
+| `regime` | dict | – | present only in the `fixed_states` regime: `name`, `stage`, `k_max`, `h_max`, `queries`, `filler_queries` (list[int]), `updates`, plus the trainer's later pass-through keys `step_cap`, `pinned_fraction`, `resting_fraction`, `pre_roll_steps_mean`; preferred over `epochs[-1].regime` for the budget line | opt | R |
 
 Both example files (`generated/training_v4_20260928/progress.json` and the served 2026-09-27 copy) contain
 exactly these keys; the served copy predates the `regime` block.

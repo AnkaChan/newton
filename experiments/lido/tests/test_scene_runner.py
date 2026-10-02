@@ -7,6 +7,7 @@ epoch of small scenes on the CPU (exactly sum K H queries), idle updates on a li
 import os
 import socket
 import tempfile
+import time
 import unittest
 
 import torch
@@ -18,7 +19,7 @@ from experiments.lido.config import TrainConfig
 from experiments.lido.fusion import Fusion
 from experiments.lido.grid import GridCache
 from experiments.lido.network import Net
-from experiments.lido.runner import JobRunner, SceneRunner, make_runner
+from experiments.lido.runner import JobRunner, SceneRunner, make_runner, scene_batch
 from experiments.lido.step import Step
 
 MASTER = 5
@@ -28,6 +29,7 @@ def scene_cfg(**kw):
     d = {
         "scene_mode": "v5",
         "scene_curriculum": False,  # the tests describe the final mix; the curriculum has its own tests
+        "world_well": False,  # the v5 suites describe the world without the v6 well (test_scenes_v6 switches it on)
         "scene_cells": 1500,
         "scene_count": 3,
         "budget_cap": 16,
@@ -326,3 +328,201 @@ class TestPenetrationGuard(unittest.TestCase):
         runner.commit(out)
         self.assertEqual(runner.failures, [])
         self.assertEqual(runner.scene.seed, first)
+
+
+def _ddp_pre_roll_worker(rank: int, world: int, port: int, out_dir: str) -> None:
+    """One gloo rank of `TestPreRoll.test_ranks_pre_roll_independently_under_ddp`: epoch 2 (the last growth stage)
+    of two scenes over two ranks with the DDP model; each rank pre-rolls its own scene for its own number of steps
+    inside `load`, then serves the common U updates."""
+    import torch.distributed as dist
+
+    from experiments.lido.validation import local_objective
+
+    torch.set_num_threads(1)
+    dist.init_process_group("gloo", rank=rank, world_size=world, init_method=f"tcp://127.0.0.1:{port}")
+    try:
+        cfg = scene_cfg(scene_count=2, pre_roll_max_steps=3, pre_roll_queries=2)
+        grids, aug = GridCache("cpu"), Augmenter("cpu")
+        torch.manual_seed(0)
+        net = Net.from_config(cfg)
+        model = torch.nn.parallel.DistributedDataParallel(net, broadcast_buffers=False)
+        step = Step(model, Fusion(), aug)
+        opt = torch.optim.AdamW(net.parameters(), lr=1e-4)
+        runner = SceneRunner(cfg, step, aug, grids, rank, world, "cpu", MASTER)
+        runner.start_epoch(2)
+        served, finite = 0, []
+        for _ in range(runner.U):
+            b = runner.batch
+            served += int(runner.job is not None)
+            out = step.query(b)
+            loss_vec = local_objective(out.E_after, out.E_before, b.material.floor, cfg.energy_increase_weight)
+            mask = b.active & torch.isfinite(loss_vec)
+            loss = loss_vec.masked_fill(~mask, 0.0).sum() / mask.sum().clamp_min(1)
+            loss.backward()
+            gn = torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+            finite.append(bool(torch.isfinite(gn)))
+            if torch.isfinite(gn):
+                opt.step()
+            opt.zero_grad(set_to_none=True)
+            runner.commit(out)
+        torch.save(
+            {
+                "U": runner.U,
+                "served": served,
+                "finite": finite,
+                "training": model.training,
+                "pre_roll": [s["pre_roll"] for s in runner.scene_summaries],
+                "failures": [f.kind for f in runner.failures],
+            },
+            os.path.join(out_dir, f"rank{rank}.pt"),
+        )
+    finally:
+        dist.destroy_process_group()
+
+
+class TestPreRoll(unittest.TestCase):
+    """v6 pre-roll (Anka, 2026-10-02): at the growth table's last stage every scene first runs U{0..pre_roll_max_steps}
+    inference-only physical steps, then its training window of K x H. `scene_cfg` has two growth stages of one epoch
+    each, so epoch 1 is the first stage (no pre-roll) and epoch 2 the last; with MASTER the three scenes of epoch 2
+    draw pre-rolls of 3, 0 and 3 steps."""
+
+    MAX = 3
+
+    def _cfg(self, **kw):
+        return scene_cfg(**{"pre_roll_max_steps": self.MAX, "pre_roll_queries": 2, **kw})
+
+    @staticmethod
+    def _serve_epoch(runner, step) -> tuple[int, dict]:
+        """Serve the epoch's U updates. Returns (training queries served, {scene seed: the batch's X at the scene's
+        first training query differed from the freshly realised scene})."""
+        served, seen, moved = 0, 0, {}
+        for _ in range(runner.U):
+            if runner.job is not None and runner.loaded_jobs != seen:
+                seen = runner.loaded_jobs
+                fresh = scene_batch(
+                    runner.scene, runner.grids, runner.aug, "cpu", physical_floor=runner.cfg.physical_floor
+                )
+                moved[runner.scene.seed] = not torch.equal(runner.batch.X, fresh.X)
+            served += int(runner.job is not None)
+            runner.commit(step.query(runner.batch))
+        return served, moved
+
+    def test_first_stage_has_no_pre_roll(self):
+        cfg = self._cfg()
+        self.assertEqual(J.growth_stage(1, cfg)[0], 0)
+        runner, step = make_runner_cpu(cfg)
+        runner.start_epoch(1)
+        self.assertEqual(runner.pre_roll_max, 0)
+        served, moved = self._serve_epoch(runner, step)
+        self.assertEqual(served, runner.U)
+        self.assertEqual(set(moved.values()), {False})
+        self.assertEqual(
+            [s["pre_roll"] for s in runner.scene_summaries], [{"steps": 0, "drawn": 0, "seconds": 0.0}] * 3
+        )
+        summary = runner.epoch_summary()
+        self.assertEqual((summary["pre_roll_steps_mean"], summary["pre_roll_seconds"]), (0.0, 0.0))
+        self.assertEqual(runner.failures, [])
+
+    def test_last_stage_pre_rolls_reproducibly(self):
+        cfg = self._cfg()
+        self.assertEqual(J.growth_stage(2, cfg)[0], len(cfg.growth_stages) - 1)
+        jobs = J.sample_epoch_jobs(MASTER, 2, cfg)
+        runner, step = make_runner_cpu(cfg)
+        runner.start_epoch(2)
+        self.assertEqual(runner.pre_roll_max, self.MAX)
+        self.assertEqual(runner.U, sum(j.K * j.H for j in jobs))  # U is the sum of K H: the pre-roll adds no update
+        served, moved = self._serve_epoch(runner, step)
+        self.assertEqual(served, runner.U)
+        self.assertEqual((runner.loaded_jobs, runner.idle_updates, runner.failures), (cfg.scene_count, 0, []))
+        self.assertIsNone(runner.job)
+        self.assertTrue(step.net.training)  # eval mode only for the pre-roll queries
+        rolls = [s["pre_roll"] for s in runner.scene_summaries]
+        self.assertTrue(all(0 <= r["drawn"] <= self.MAX and r["steps"] == r["drawn"] for r in rolls), rolls)
+        self.assertTrue(any(r["drawn"] > 0 for r in rolls) and any(r["drawn"] == 0 for r in rolls), rolls)
+        for s in runner.scene_summaries:  # a non-zero pre-roll moves the state; a zero one leaves the placement
+            self.assertEqual(moved[s["seed"]], s["pre_roll"]["steps"] > 0, s["pre_roll"])
+            self.assertEqual(s["pre_roll"]["seconds"] > 0.0, s["pre_roll"]["steps"] > 0)
+        summary = runner.epoch_summary()
+        self.assertAlmostEqual(summary["pre_roll_steps_mean"], sum(r["steps"] for r in rolls) / len(rolls))
+        self.assertAlmostEqual(summary["pre_roll_seconds"], sum(r["seconds"] for r in rolls))
+        # the training window's detections only: one at every load and after every advance, as without the pre-roll
+        self.assertEqual(len(runner.pair_history), sum(1 + j.H for j in jobs))
+        # the lengths are a function of (master seed, scene, epoch): a second runner draws the same ones
+        again, step_again = make_runner_cpu(cfg)
+        again.start_epoch(2)
+        self._serve_epoch(again, step_again)
+        self.assertEqual([s["pre_roll"]["drawn"] for s in again.scene_summaries], [r["drawn"] for r in rolls])
+
+    def test_zero_max_steps_disables_the_pre_roll(self):
+        cfg = self._cfg(pre_roll_max_steps=0)
+        runner, step = make_runner_cpu(cfg)
+        runner.start_epoch(2)
+        self.assertEqual(runner.pre_roll_max, 0)
+        served, moved = self._serve_epoch(runner, step)
+        self.assertEqual(served, runner.U)
+        self.assertEqual(set(moved.values()), {False})
+        self.assertEqual([s["pre_roll"]["steps"] for s in runner.scene_summaries], [0] * cfg.scene_count)
+        self.assertEqual(runner.epoch_summary()["pre_roll_steps_mean"], 0.0)
+
+    def test_failure_during_the_pre_roll_loads_the_next_scene(self):
+        cfg = self._cfg()
+        jobs = J.sample_epoch_jobs(MASTER, 2, cfg)
+        runner, step = make_runner_cpu(cfg)
+        query = step.query
+
+        def failing_in_eval_mode(batch):  # the pre-roll queries are the ones with the network in eval mode
+            out = query(batch)
+            if not step.net.training:
+                out.E_after = out.E_after.clone()
+                out.E_after[0] = float("nan")
+            return out
+
+        step.query = failing_in_eval_mode
+        runner.start_epoch(2)
+        self.assertTrue(step.net.training)
+        self.assertEqual([f.kind for f in runner.failures], ["pre_roll_non_finite"])  # the first scene draws 3
+        f = runner.failures[0]
+        self.assertEqual((f.k, f.h, f.epoch, f.update), (1, 0, 2, 0))  # the first query of the first pre-roll step
+        self.assertEqual(runner.scene_summaries[0]["pre_roll"]["steps"], 0)
+        self.assertGreater(runner.scene_summaries[0]["pre_roll"]["drawn"], 0)
+        self.assertIsNotNone(runner.job)  # the second scene (no pre-roll) is loaded and trains
+        self.assertEqual(runner.scene_summaries[-1]["pre_roll"]["drawn"], 0)
+        self.assertEqual((runner.loaded_jobs, runner.resets), (2, 1))
+        served, _ = self._serve_epoch(runner, step)
+        kinds = [f.kind for f in runner.failures]
+        self.assertEqual(len(kinds), 2)
+        self.assertTrue(all(k == "pre_roll_non_finite" for k in kinds), kinds)
+        self.assertEqual(runner.loaded_jobs, cfg.scene_count)
+        trained = [s for s in runner.scene_summaries if s["pre_roll"]["drawn"] == 0]
+        self.assertEqual(served, sum(s["K"] * s["H"] for s in trained))
+        self.assertEqual(runner.idle_updates, sum(j.K * j.H for j in jobs) - served)
+        self.assertTrue(step.net.training)
+
+    def test_ranks_pre_roll_independently_under_ddp(self):
+        """Two gloo ranks, epoch 2: each rank pre-rolls its own scene inside `load` (no collective: the pre-roll runs
+        without gradients) and both serve the common U updates; a stalled rank would fail the join's timeout."""
+        cfg = scene_cfg(scene_count=2, pre_roll_max_steps=self.MAX, pre_roll_queries=2)
+        queues, U = J.assign(J.sample_epoch_jobs(MASTER, 2, cfg), 2, 1)
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        with tempfile.TemporaryDirectory() as out_dir:
+            ctx = torch.multiprocessing.spawn(_ddp_pre_roll_worker, args=(2, port, out_dir), nprocs=2, join=False)
+            deadline = time.monotonic() + 600.0
+            finished = ctx.join(timeout=600.0)  # returns at the first finished rank; loop until both are joined
+            while not finished and time.monotonic() < deadline:
+                finished = ctx.join(timeout=max(0.0, deadline - time.monotonic()))
+            if not finished:
+                for proc in ctx.processes:
+                    proc.terminate()
+            self.assertTrue(finished, "a rank did not finish the epoch")
+            results = [torch.load(os.path.join(out_dir, f"rank{r}.pt")) for r in range(2)]
+        for r, res in enumerate(results):
+            self.assertEqual(res["U"], U)
+            self.assertEqual(res["failures"], [])
+            self.assertEqual(res["served"], sum(j.K * j.H for j in queues[r]))
+            self.assertEqual(res["finite"], [True] * U)
+            self.assertTrue(res["training"])
+            self.assertEqual(len(res["pre_roll"]), len(queues[r]))
+            for roll in res["pre_roll"]:
+                self.assertTrue(0 <= roll["drawn"] <= self.MAX and roll["steps"] == roll["drawn"], roll)

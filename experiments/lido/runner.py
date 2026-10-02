@@ -10,6 +10,7 @@ shared world frame with body-body contact; its K H queries are served one per up
 
 from __future__ import annotations
 
+import time
 from collections import deque
 
 import numpy as np
@@ -18,7 +19,7 @@ import torch
 from . import contact, scenes, scenes_v5
 from .batch import Batch
 from .grid import GridCache
-from .jobs import assign, sample_epoch_jobs, sample_scene_spec, sample_scene_specs
+from .jobs import assign, growth_stage, sample_epoch_jobs, sample_scene_spec, sample_scene_specs
 from .structs import FailureRecord, Job, Material, SceneSpec
 from .units import material_from_si
 
@@ -219,9 +220,23 @@ class SceneRunner:
     bodies with one candidate-noise generator for the scene (seeded by master, scene, epoch; the batched draw of
     `Step.prepare`); every update serves one query of the scene (`commit`: k += 1; k == K: `Step.advance` on all bodies,
     h += 1; h == H: load the next scene). A non-finite energy of any body fails the scene: a FailureRecord with
-    the scene's (seed, K, H, k, h) and the next scene loads. When the rank's queue is empty the last batch stays
-    with `active` all False (the trainer's loss mask) and a finite state (`_idle`), so a rank with less load idles
-    through the common U with a finite loss and zero gradients.
+    the scene's (seed, K, H, k, h) and the next scene loads; so does a contact penetration deeper than
+    `cfg.reset_penetration_r` (`_guard`). When the rank's queue is empty the last batch stays with `active` all False
+    (the trainer's loss mask) and a finite state (`_idle`), so a rank with less load idles through the common U with
+    a finite loss and zero gradients.
+
+    Pre-roll (Anka, 2026-10-02; `cfg.pre_roll_max_steps`, `cfg.pre_roll_queries`). Once the growth table has
+    reached its last stage, every loaded scene first runs n ~ U{0..pre_roll_max_steps} physical steps of
+    `pre_roll_queries` queries each, inference only (`_pre_roll`: no gradient, no loss, no optimizer step, the
+    network in eval mode for these queries and back in train mode after), so the training window of K x H steps
+    starts from a state the solver reached itself rather than from the placement. The same guards apply: a scene
+    that blows up or penetrates deeply during its pre-roll fails with kind "pre_roll_" + the guard's kind and the
+    next scene loads. n is the first draw of the scene's generator stream (master seed, scene, epoch), so it is
+    reproducible; while the pre-roll is off nothing is drawn and the stream is the one of the earlier stages. The
+    pre-roll runs inside `load` on every rank independently and leaves U alone (the rank's training updates stay
+    its sum of K H), so DDP ranks keep the same number of updates; its forward passes run without gradients, which
+    under DDP means no collective. Per scene the summary carries "pre_roll" {steps run, drawn, seconds};
+    `epoch_summary` adds pre_roll_steps_mean and pre_roll_seconds.
     """
 
     def __init__(self, cfg, step, aug, grids: GridCache, rank: int, world: int, device, master_seed: int):
@@ -244,8 +259,10 @@ class SceneRunner:
         self.queries = 0  # body queries served this epoch (bodies of the scene per update)
         self.idle_updates = 0  # updates after the rank's queue ran dry
         self.pairs = dict.fromkeys(PAIR_KINDS, 0)  # valid pairs of the current step
-        self.pair_history: list = []  # pair counts at every detection of the epoch
-        self.scene_summaries: list = []  # scenes_v5.scene_summary of every loaded scene plus its job
+        self.pair_history: list = []  # pair counts at every detection of the epoch (the training window's)
+        self.scene_summaries: list = []  # scenes_v5.scene_summary of every loaded scene plus its job and pre-roll
+        self.pre_roll_max = 0  # the epoch's pre-roll bound: cfg.pre_roll_max_steps at the last growth stage, else 0
+        self.pre_roll_seconds = 0.0  # wall time of the epoch's pre-rolls
 
     # ------------------------------------------------------------------ epoch
     def start_epoch(self, epoch: int) -> None:
@@ -258,33 +275,98 @@ class SceneRunner:
         self.queue = deque(queues[self.rank])
         self.epoch, self.update = epoch, 0
         self.mix = scenes_v5.scene_mix(self.cfg, epoch)
+        stage, _, _ = growth_stage(epoch, self.cfg)  # the pre-roll runs at the growth table's last stage only
+        self.pre_roll_max = int(self.cfg.pre_roll_max_steps) if stage == len(self.cfg.growth_stages) - 1 else 0
         self.failures, self.resets, self.loaded_jobs, self.contact_scenes = [], 0, 0, 0
-        self.queries, self.idle_updates = 0, 0
+        self.queries, self.idle_updates, self.pre_roll_seconds = 0, 0, 0.0
         self.pair_history, self.scene_summaries = [], []
         self.load()
 
     # ------------------------------------------------------------------- load
     def load(self) -> None:
-        self.job = self.queue.popleft() if self.queue else None
-        if self.job is None:
-            if self.batch is not None:
-                self._idle(self.batch)
+        """The next scene of the rank's queue, pre-rolled when the pre-roll is on; a scene that fails during its
+        pre-roll is recorded (kind "pre_roll_" + the guard's kind) and the next one loads. An empty queue leaves the
+        last batch idle (`_idle`)."""
+        while True:
+            self.job = self.queue.popleft() if self.queue else None
+            if self.job is None:
+                if self.batch is not None:
+                    self._idle(self.batch)
+                return
+            job = self.job
+            # fresh scenes every epoch, composed by the epoch's curriculum mix (scenes_v5.scene_mix)
+            scene = scenes_v5.sample_scene(
+                self.master_seed, scenes_v5.epoch_scene_seed(self.epoch, job.seed), self.cfg, mix=self.mix
+            )
+            b = scene_batch(scene, self.grids, self.aug, self.device, physical_floor=self.cfg.physical_floor)
+            # one candidate-noise generator per scene (Step.prepare draws every grid group in one call); the
+            # pre-roll length is the stream's first draw
+            self.gens = seeded_generator(self.device, self.master_seed, job.seed, self.epoch, 13)
+            n = self._pre_roll_length()
+            self.step.prepare(b, b.active, self.gens)
+            self.batch, self.scene = b, scene
+            self.k = self.h = 0
+            self.loaded_jobs += 1
+            self.contact_scenes += int(bool(b.scene.plane_present.any()))
+            summary = {**scenes_v5.scene_summary(scene), "K": job.K, "H": job.H}
+            self.scene_summaries.append(summary)
+            kind, k, h, seconds = self._pre_roll(b, n)
+            summary["pre_roll"] = {"steps": h, "drawn": n, "seconds": seconds}
+            self.pre_roll_seconds += seconds
+            if kind is not None:
+                self.failures.append(
+                    FailureRecord(job.seed, job.K, job.H, k, h, "pre_roll_" + kind, self.epoch, self.update)
+                )
+                self.resets += 1
+                continue
+            self._record_pairs()
             return
-        job = self.job
-        # fresh scenes every epoch, composed by the epoch's curriculum mix (scenes_v5.scene_mix)
-        scene = scenes_v5.sample_scene(
-            self.master_seed, scenes_v5.epoch_scene_seed(self.epoch, job.seed), self.cfg, mix=self.mix
-        )
-        b = scene_batch(scene, self.grids, self.aug, self.device, physical_floor=self.cfg.physical_floor)
-        # one candidate-noise generator per scene (Step.prepare draws every grid group in one call)
-        self.gens = seeded_generator(self.device, self.master_seed, job.seed, self.epoch, 13)
-        self.step.prepare(b, b.active, self.gens)
-        self.batch, self.scene = b, scene
-        self.k = self.h = 0
-        self.loaded_jobs += 1
-        self.contact_scenes += int(bool(b.scene.plane_present.any()))
-        self.scene_summaries.append({**scenes_v5.scene_summary(scene), "K": job.K, "H": job.H})
-        self._record_pairs()
+
+    def _pre_roll_length(self) -> int:
+        """n ~ U{0..pre_roll_max} from the scene's generator stream (its first draw, before the candidate noise of
+        `Step.prepare`); 0 without a draw while the pre-roll is off. One host synchronisation per scene."""
+        if self.pre_roll_max <= 0:
+            return 0
+        return int(torch.randint(0, self.pre_roll_max + 1, (), generator=self.gens, device=self.device))
+
+    def _pre_roll(self, b: Batch, n: int) -> tuple[str | None, int, int, float]:
+        """n inference-only physical steps of `cfg.pre_roll_queries` queries each on the freshly prepared scene
+        (Anka, 2026-10-02): under `torch.no_grad`, the network in eval mode for these queries if it was training
+        (restored after), no loss, no optimizer step; every query passes `_guard`. Returns (failure kind or None,
+        queries into the failing step, steps completed, wall seconds); (None, 0, 0, 0.0) for n = 0."""
+        if n <= 0:
+            return None, 0, 0, 0.0
+        t0 = time.perf_counter()
+        net = self.step.net
+        was_training = net.training
+        if was_training:
+            net.eval()
+        try:
+            with torch.no_grad():
+                for h in range(n):
+                    for k in range(self.cfg.pre_roll_queries):
+                        self.step.commit(b, self.step.query(b))
+                        kind = self._guard(b)
+                        if kind is not None:
+                            return kind, k + 1, h, time.perf_counter() - t0
+                    self.step.advance(b, b.active, self.gens)
+        finally:
+            if was_training:
+                net.train()
+        return None, 0, n, time.perf_counter() - t0
+
+    def _guard(self, b: Batch) -> str | None:
+        """The failure kind of the batch's committed query, or None: "non_finite" when a body's energy is not
+        finite or exceeds `cfg.blowup_energy_factor` x its loss floor (a diverged state), "penetration" when the
+        deepest penetration over the step's frozen pairs exceeds `cfg.reset_penetration_r` sample radii (NaN counts
+        as deep; 0 = off). Up to two host synchronisations."""
+        if not bool((torch.isfinite(b.E) & (b.E <= self.cfg.blowup_energy_factor * b.material.floor)).all()):
+            return "non_finite"
+        if self.cfg.reset_penetration_r > 0.0 and b.pairs is not None and b.pairs.count > 0:
+            deepest = float(contact.penetration(b, b.x).max())
+            if not deepest <= self.cfg.reset_penetration_r:
+                return "penetration"
+        return None
 
     @staticmethod
     @torch.no_grad()
@@ -319,13 +401,7 @@ class SceneRunner:
             return
         self.queries += b.O
         self.k += 1
-        kind = None
-        if not bool((torch.isfinite(b.E) & (b.E <= self.cfg.blowup_energy_factor * b.material.floor)).all()):
-            kind = "non_finite"
-        elif self.cfg.reset_penetration_r > 0.0 and b.pairs is not None and b.pairs.count > 0:
-            deepest = float(contact.penetration(b, b.x).max())  # over the step's frozen pairs, in sample radii
-            if not deepest <= self.cfg.reset_penetration_r:  # NaN counts as deep
-                kind = "penetration"
+        kind = self._guard(b)
         if kind is not None:
             j = self.job
             self.failures.append(FailureRecord(j.seed, j.K, j.H, self.k, self.h, kind, self.epoch, self.update))
@@ -372,6 +448,10 @@ class SceneRunner:
             "plane_pairs_mean": sum(p["plane"] for p in hist) / n,
             "static_pairs_mean": sum(p.get("static", 0) for p in hist) / n,
             "steps_with_body_pairs": sum(1 for p in hist if p["body"] > 0) / n,
+            "pre_roll_steps_mean": float(np.mean([s["pre_roll"]["steps"] for s in self.scene_summaries]))
+            if self.scene_summaries
+            else 0.0,
+            "pre_roll_seconds": self.pre_roll_seconds,
             "scenes_served": self.scene_summaries,
         }
 
