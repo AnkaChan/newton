@@ -147,6 +147,7 @@ class TrainConfig:
     device: str = "cuda"
     log_every: int = 50
     checkpoint_interval: int = 5
+    checkpoint_minutes: float = 0.0  # rank 0 also rewrites checkpoints/latest.pt every this many minutes inside an epoch (a resume replays the epoch); 0 = off (Anka, 2026-10-02: epochs of 3 h)
     verbose: bool = True
     # accepted legacy keys of the v4 JSON (ignored)
     hops: tuple = (1,)

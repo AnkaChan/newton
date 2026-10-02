@@ -158,8 +158,14 @@ def train(
         stage, k_max, h_max = growth_stage(epoch, cfg)
         losses, gnorms, steps_mean, steps_min, steps_max, residuals, pens, realized = [], [], [], [], [], [], [], []
         n_updates = runner.U if max_updates is None else min(runner.U, max_updates)
+        t_checkpoint = time.perf_counter()
         for update in range(n_updates):
             t0 = time.perf_counter()
+            if (
+                rank == 0 and cfg.checkpoint_minutes > 0 and t0 - t_checkpoint > 60.0 * cfg.checkpoint_minutes
+            ):  # periodic in-epoch checkpoint: weights and optimizer as of now, epoch - 1 so a resume replays the epoch
+                save_checkpoint(run_dir / "checkpoints" / "latest.pt", net, opt, epoch - 1, updates_done, best, cfg)
+                t_checkpoint = t0
             batch = runner.batch
             out = step.query(batch)
             loss_vec = local_objective(
@@ -247,6 +253,7 @@ def train(
                 )
             finite_losses = [v for v in losses if math.isfinite(v)]
             query_count = runner.queries if v5 else n_updates * cfg.batch_size
+            scene_regime = runner.epoch_summary() if v5 else None
             record = rep.build_epoch_record(
                 epoch=epoch,
                 loss=sum(finite_losses) / max(1, len(finite_losses)),
@@ -273,7 +280,11 @@ def train(
                     "updates": n_updates,
                     "step_cap": cap,
                     **(
-                        {"pinned_fraction": runner.mix.pinned_fraction, "resting_fraction": runner.mix.resting_fraction}
+                        {
+                            "pinned_fraction": runner.mix.pinned_fraction,
+                            "resting_fraction": runner.mix.resting_fraction,
+                            "pre_roll_steps_mean": scene_regime["pre_roll_steps_mean"],
+                        }
                         if v5
                         else {}
                     ),
@@ -287,7 +298,7 @@ def train(
                 validation=cheap,
                 full_horizon_validation=full,
                 rank_diagnostics=None,
-                scene_regime=runner.epoch_summary() if v5 else None,
+                scene_regime=scene_regime,
             )
             report.log_epoch(record)
             save_checkpoint(run_dir / "checkpoints" / "latest.pt", net, opt, epoch, updates_done, best, cfg)
