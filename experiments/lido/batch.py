@@ -225,6 +225,23 @@ class Batch:
     def gather_cells(self, x: Tensor) -> Tensor:
         return x[self.cells]  # [C,8,3]
 
+    def release_fusion(self) -> None:
+        """Drop the cached multi-group solver and free its cuDSS factorisation (2026-10-02: device memory outside
+        torch's allocator; released when a scene is replaced or a validation batch is discarded)."""
+        cache = self.fusion_cache
+        self.fusion_cache = None
+        if cache:
+            for solver in cache.values():
+                if solver is not None and solver is not False and hasattr(solver, "free"):
+                    solver.free()
+
+    def release(self) -> None:
+        """Release what the batch holds outside torch's allocator before it is discarded: the fusion factor and
+        the Warp meshes; the caller drops its reference afterwards."""
+        self.release_fusion()
+        self.meshes = None
+        self.static_mesh = None
+
     def relayout(self, new_grids: list) -> None:
         """Change some objects' grids, keeping the state rows of unchanged objects."""
         old = self
@@ -253,6 +270,6 @@ class Batch:
         self.pair_layout = None
         self.meshes = None
         self.static_mesh = None
-        self.fusion_cache = None
+        self.release_fusion()
         self.noise_cache = None
         self.film = None

@@ -259,6 +259,16 @@ class CsrSolver:
         self.csr = csr
         self.solvers: dict[int, object] = {}
 
+    def free(self) -> None:
+        """Release the cuDSS factorisations (device memory outside torch's allocator; 2026-10-02: the v6 run ran out
+        of memory when the validation's scenes stacked their factors on the training scene's)."""
+        for solver in self.solvers.values():
+            try:
+                solver.free()
+            except Exception:
+                pass
+        self.solvers.clear()
+
     def _solver(self, ncol: int, rhs_cm: Tensor):
         if ncol not in self.solvers:
             opts = self.sa.DirectSolverOptions(sparse_system_type=self.sa.DirectSolverMatrixType.SPD)
@@ -435,6 +445,12 @@ class BatchedSparse:
     (B Z = 0); `Step.query` always passes a centroid target when the batch has free objects.
     Built once per batch layout and dtype (`Batch.fusion_cache`, reset by relayout); `Fusion.batched_solver` bounds
     the total free count by `sparse_max_free` as it bounds a single grid's."""
+
+    def free(self) -> None:
+        """Release the block-diagonal factorisation (see `CsrSolver.free`)."""
+        solver = getattr(self, "solver", None)
+        if solver is not None and hasattr(solver, "free"):
+            solver.free()
 
     def __init__(self, batch, dtype):
         dev = batch.device

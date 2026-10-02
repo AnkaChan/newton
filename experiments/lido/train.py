@@ -126,6 +126,11 @@ def train(
     grid = grids.get(cfg.cell_counts, cfg.pins) if not v5 else None
     aug = Augmenter(device)
     physics.INVERSION_LAMBDA_FACTOR = float(getattr(cfg, "inversion_lambda_factor", 10.0))  # energy kernels
+    if torch.device(device).type == "cuda":  # Warp's pool returns freed blocks to the driver at once (2026-10-02)
+        import warp as wp
+
+        wp.init()
+        wp.set_mempool_release_threshold(f"cuda:{torch.device(device).index or 0}", 0)
     step = Step(
         model,
         Fusion(batched=v5),  # v5: one padded Kron solve

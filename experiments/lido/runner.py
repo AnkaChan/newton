@@ -10,6 +10,7 @@ shared world frame with body-body contact; its K H queries are served one per up
 
 from __future__ import annotations
 
+import gc
 import time
 from collections import deque
 
@@ -294,6 +295,12 @@ class SceneRunner:
                     self._idle(self.batch)
                 return
             job = self.job
+            if self.batch is not None:  # return the previous scene's memory before building the next one
+                self.batch.release()
+                self.batch = None
+                gc.collect()
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
             # fresh scenes every epoch, composed by the epoch's curriculum mix (scenes_v5.scene_mix)
             scene = scenes_v5.sample_scene(
                 self.master_seed, scenes_v5.epoch_scene_seed(self.epoch, job.seed), self.cfg, mix=self.mix

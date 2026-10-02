@@ -18,6 +18,7 @@ body hands its momentum to its pins and is left out of the sums).
 from __future__ import annotations
 
 import dataclasses
+import gc
 import math
 import time
 
@@ -179,6 +180,15 @@ def _held_out_scene_batch(step, cfg, grids, aug, scene, device, master_seed: int
     return batch
 
 
+def _release(batch) -> None:
+    """Return a finished validation batch's memory (cuDSS factor, Warp meshes, cached allocator blocks) before the
+    next scene is built (2026-10-02: the v6 validation ran rank 0 out of device memory)."""
+    batch.release()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def scene_metrics(batch) -> dict:
     """The scene's metrics at the batch's candidate, aggregated over its bodies in SI (module docstring)."""
     es, fs = energy_scale(batch.material), force_scale(batch.material)
@@ -231,6 +241,7 @@ def validate_cheap_v5(step, cfg, grids, aug, device, master_seed: int, epoch: in
                 "contact": True,
             }
         )
+        _release(batch)
     return records
 
 
@@ -270,6 +281,7 @@ def validate_full_horizon_v5(
                 "momentum_drift": drift,
             }
         )
+        _release(batch)
     return records, time.perf_counter() - t0
 
 
@@ -333,12 +345,15 @@ def momentum_drift_check(step, cfg, grids, aug, device, master_seed: int, K: int
             out = step.query(batch)
             step.commit(batch, out)
         if not bool(torch.isfinite(batch.E).all()):
+            _release(batch)
             return float("nan")
         step.advance(batch, batch.active, None)
     M = total_mass_si(batch)
     if M == 0.0:
+        _release(batch)
         return float("nan")  # no free body: nothing falls freely
     expected = t * M * g
     drift = (momentum_si(batch, batch.V) - p0 - expected).norm() / expected.norm().clamp_min(1e-300)
     value = float(drift)
+    _release(batch)
     return value if math.isfinite(value) else float("nan")
