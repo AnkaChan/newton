@@ -77,11 +77,14 @@ class Step:
         pair_capacity: bool = False,
         translation: str = "implicit_contact",
         translation_step_max: float = 1.0,
+        translation_step_factor: float = 2.0,
     ):
         if translation not in TRANSLATIONS:
             raise ValueError(f"translation must be one of {TRANSLATIONS}, got {translation!r}")
         if translation_step_max < 0.0:
             raise ValueError(f"translation_step_max must be >= 0 (0 = unbounded), got {translation_step_max}")
+        if translation_step_factor < 0.0:
+            raise ValueError(f"translation_step_factor must be >= 0 (0 = fixed bound), got {translation_step_factor}")
         self.net = net
         self.fusion = fusion or Fusion()
         self.aug = augmenter
@@ -98,6 +101,10 @@ class Step:
         # exact for the linearised contact but the contact is far from linear over such a step. Nothing physical in
         # the scenes moves faster than 0.6 cells per step (a 1 m fall), so the bound binds only on such blow-ups
         self.translation_step_max = float(translation_step_max)
+        # ... and the bound grows with the body's own motion (Anka, 2026-10-02): max(translation_step_max,
+        # translation_step_factor x the body's inertial displacement in the step |cdot_n + g|), since the correction
+        # an impact needs is never more than that displacement; so the clamp is physical at any speed
+        self.translation_step_factor = float(translation_step_factor)
         self.node_features = node_features
         self.edge_features = edge_features
         # the "pair" edge module reads the per-edge sender block; the a02 module does not need it built
@@ -174,10 +181,16 @@ class Step:
             r_tr = M_tot[:, None] * (c_x - c_rig)  # eq. 7.14 at c(x_k)
             A = M_tot[:, None, None] * torch.eye(3, dtype=x.dtype, device=x.device)[None] + H
             c_t = c_x - _solve3(A, r_tr)
-        if self.translation_step_max > 0.0:  # trust region (see __init__): a clamp, identity below the bound, rescaled to it above
+        if (
+            self.translation_step_max > 0.0
+        ):  # trust region (see __init__): a clamp, identity below the bound, rescaled to it above
             dc_t = c_t - c_x
             norm = dc_t.norm(dim=-1, keepdim=True)
-            c_t = c_x + dc_t * torch.clamp(self.translation_step_max / norm.clamp_min(1e-30), max=1.0)
+            bound = torch.full_like(norm, self.translation_step_max)
+            if self.translation_step_factor > 0.0:  # the bound follows the body's inertial motion in the step
+                inertial = (batch.cdot_n + batch.material.g).norm(dim=-1, keepdim=True)
+                bound = torch.maximum(bound, self.translation_step_factor * inertial)
+            c_t = c_x + dc_t * torch.clamp(bound / norm.clamp_min(1e-30), max=1.0)
         c_t = torch.where(free[:, None], c_t, c_x)
         picard = (ke_sum / M_tot).masked_fill(~free, 0.0)
         batch.picard_constant.copy_(picard)

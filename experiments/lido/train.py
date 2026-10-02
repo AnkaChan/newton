@@ -131,6 +131,7 @@ def train(
         aug,
         noise_range=cfg.candidate_noise_range,
         translation_step_max=getattr(cfg, "translation_step_max", 1.0),
+        translation_step_factor=getattr(cfg, "translation_step_factor", 2.0),
     )
     runner = make_runner(cfg, step, aug, grids, rank, world, device, cfg.seed)
     report = rep.RunReport(run_dir, cfg, world, git_sha(), initialized_from) if rank == 0 else None

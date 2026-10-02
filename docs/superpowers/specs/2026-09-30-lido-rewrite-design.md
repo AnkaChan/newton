@@ -1894,3 +1894,12 @@ steps at every epoch. kappa is drawn log-uniform in (10, 1000) (the v4 range), s
 kappa above 50. Open for Anka: an inversion barrier in the elastic energy or a narrower kappa range for v5 are
 model decisions and were not changed; the penetration guard keeps such states out of the training set and its
 replacement count per epoch measures how often piles degrade.
+
+Anka's review of the trust region (2026-10-02 evening): a fixed bound of 1 cell per query limits how much contact
+can change a body's rigid motion per query, which is arbitrary at other resolutions or time steps even though it
+never binds in the v5 scenes (0.6 cells per step at most). Decision (Anka): the bound follows the body's own motion,
+max(`translation_step_max`, `translation_step_factor` x the body's inertial displacement |cdot_n + g| in the step),
+factor 2: the correction an impact needs is never more than the inertial displacement, so the clamp is physical at
+any speed, and the blow-up steps (10 cells and more against inertial displacements of 0.1 cell) are still caught.
+It remains a clamp: identity below the bound, rescaled to the bound above it, per body and per query. Attempt 5
+ran with the fixed bound; the relative bound applies from the next run.

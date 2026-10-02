@@ -636,3 +636,39 @@ class TestTranslationTrustRegion(unittest.TestCase):
         self.assertLess(results[1.0], 0.25)
         self.assertAlmostEqual(results[1.0], results[0.0], places=12)
         self.assertAlmostEqual(results[0.25], results[0.0], places=12)
+
+    def test_bound_follows_the_inertial_motion(self):
+        """A body arriving at 5 cells per step may be corrected by twice its inertial displacement in one query."""
+        import experiments.lido.step as step_module
+
+        with self.assertRaises(ValueError):
+            Step(Net.from_config(SMALL_CFG).eval(), Fusion(), translation_step_factor=-1.0)
+        results = {}
+        for factor in (2.0, 0.0):
+            _g, b = free_batch(100.0, -0.3)
+            step = Step(
+                Net.from_config(SMALL_CFG).to(torch.float64).eval(),
+                Fusion(),
+                translation_step_max=1.0,
+                translation_step_factor=factor,
+            )
+            sel = torch.ones(1, dtype=torch.bool)
+            step.prepare(b, sel)
+            b.cdot_n.copy_(torch.tensor([[0.0, -5.0, 0.0]], dtype=torch.float64))
+            inertial = float((b.cdot_n + b.material.g).norm())
+            self.assertGreater(2.0 * inertial, 1.0)
+            c_x = physics.centroid(b, b.x)
+            real = step_module.contact.contact_force
+            M = physics.total_mass(b)
+
+            def fake(batch, x, real=real, M=M):
+                return real(batch, x) + 1e4 * M[:, None] * torch.tensor([[1.0, 0.0, 0.0]], dtype=x.dtype)
+
+            step_module.contact.contact_force = fake
+            try:
+                c_huge, _ = step.centroid_target(b, b.x)
+            finally:
+                step_module.contact.contact_force = real
+            results[factor] = (c_huge - c_x).norm().item()
+        self.assertAlmostEqual(results[2.0], 2.0 * inertial, places=9)  # the bound followed the motion
+        self.assertAlmostEqual(results[0.0], 1.0, places=9)  # the fixed bound alone

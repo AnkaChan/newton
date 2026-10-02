@@ -115,6 +115,7 @@ class TrainConfig:
     # trust region of the free bodies' centroid target (Step.translation_step_max; 2026-10-02): cells per query,
     # 0 = unbounded; nothing physical in the v5 scenes moves faster than 0.6 cells per step
     translation_step_max: float = 1.0
+    translation_step_factor: float = 2.0  # the bound is at least this many times the body's inertial displacement
     scene_count: int = 64  # fixed scenes per epoch
     validation_scene_count: int = 8
     validation_full_scene_count: int = 2
