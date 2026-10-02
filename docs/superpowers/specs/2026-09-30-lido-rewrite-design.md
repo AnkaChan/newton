@@ -1860,3 +1860,24 @@ without it). Attempt 5 started 09:18 UTC from scratch with the curriculum, the b
 (fraction 0.5) and the trust region. Its first epoch shows the pinned contact faces at work: the cheap metric is
 11 kN (the deformation field pushes pinned bodies into their faces at step 0, contacts the untrained network cannot
 yet resolve) while the goal scenes survive with 1064 N.
+
+### v5 campaign, fifth attempt: the penetration guard (2026-10-02, decided autonomously)
+
+Attempt 5 (curriculum, material band, pinned contact faces, centroid trust region; started 09:18 UTC) is the first
+run with no failed training scene through epoch 10 and both goal scenes alive at every epoch, including the K = 8,
+H = 64 horizon of epochs 7-8 where attempts 3 and 4 broke. The pinned contact faces give about 3000 static pairs per
+detection in the all-pinned phase (none before); the cheap metric starts at 11 kN there (the deformation field
+pushes pinned bodies into their faces at step 0) and falls to about 1-2 kN. From epoch 9 (128-step horizon) the
+stiff goal scene (kappa 102, 42 resting bodies) degrades gradually instead of exploding: healthy for 64 steps, then
+the pile compacts (body pairs 1700 to 7900), inverted cells accumulate (49 at step 80, 4880 at step 127) and the
+metric reads 26 kN, then 717 kN at epoch 10, while the soft goal scene stays at 90 N with 5 inverted cells. The
+deepest training penetration grew from 1.1 to 8.2 sample radii over epochs 7-10 without any scene reaching the
+energy guard.
+
+Decision: `reset_penetration_r` (3 sample radii; `SceneRunner.commit`, failure kind "penetration"): a scene whose
+deepest penetration over the step's frozen pairs exceeds the bound is replaced by the next one, as a diverged scene
+is. States with inverted cells and penetrations of several radii are not worth learning from, and the count of such
+replacements per epoch is itself the diagnostic of how often the piles degrade. The pinned contact faces start at
+1-1.5 radii, below the bound. The run was resumed from the epoch-10 checkpoint at 10:03 UTC with the guard (the
+scene sequence is seeded by epoch, so the resume changes nothing else); the validation has no guard and keeps
+measuring the goal scenes as they are.
