@@ -617,7 +617,9 @@ class TestTranslationTrustRegion(unittest.TestCase):
             # a contact force blow-up: 1e4 x the body's weight along +x, as the squeezed body of the fourth v5 attempt
             real = step_module.contact.contact_force
             M = physics.total_mass(b)
-            fake = lambda batch, x: real(batch, x) + 1e4 * M[:, None] * torch.tensor([[1.0, 0.0, 0.0]], dtype=x.dtype)  # noqa: E731
+            fake = lambda batch, x, real=real: (
+                real(batch, x) + 1e4 * M[:, None] * torch.tensor([[1.0, 0.0, 0.0]], dtype=x.dtype)
+            )
             step_module.contact.contact_force = fake
             try:
                 c_huge, _ = step.centroid_target(b, b.x)
