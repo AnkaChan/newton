@@ -1785,3 +1785,39 @@ filtered the step-cap key out, hence the empty cap in the first attempt-2 record
 (schedule, superset property, fresh seeds) and `TestSceneCurriculumRunner`; the runner-based suites pin
 `scene_curriculum=False` since they describe the final mix. Attempt 3 started 08:21 UTC from scratch with this
 configuration (same run directory, dashboard slug `lido-v5-20261002`).
+
+### v5 campaign, third attempt and the material band (2026-10-02, decided autonomously)
+
+Attempt 3 (scene curriculum, 08:21-09:33 UTC, 9 epochs) was clean through the all-pinned phase (no failed scene,
+full-horizon 52.6 N with both goal scenes alive at epoch 4, cheap metric 29-60 N) and collapsed as the free bodies
+arrived: with 19-23 % free bodies at epochs 8-9, 1 then 5 failed scenes, training penetration 52 then 1713 r, both
+goal scenes lost at the K = 8, H = 64 horizon. The run is archived in
+`generated/lido_v5_20261002/attempt3_curriculum_v4_materials/`.
+
+Replaying the two goal scenes with the epoch-8 weights (64 steps, 8 queries each) showed the mechanism. Inverted
+cells accumulate from step 20 on, in free resting bodies AND in the pinned bodies that carry them (one pinned body
+reached 178 inverted cells, the scene 594 by step 63), the energy rises steadily, and eventually a resting body
+penetrates its partner by 3-4 r, the stiff contact (kappa 102) launches it (penetration 50-80 r in one step, a
+corner speed of 1e7 cells per step) and the state is NaN the step after. The cause is the material distribution,
+inherited from the v4 campaign where each body hung alone from a pinned face: E log-uniform in 1e3-1e6 Pa and rho
+log-uniform in 100-1e4 kg/m^3, drawn independently. A body of 1e4 kg/m^3 falling from the 1 m column lands at
+4.4 m/s; the compressive strain of an impact is about speed over elastic wave speed sqrt(E / rho), which is 0.3 m/s
+for the softest and densest draws, so soft bodies are crushed flat by dense neighbours (and under their own weight:
+rho g L / E reaches 30), which no per-step correction bounded by the step cap can follow.
+
+Decision: a per-scene material band (`scene_wave_speed_min` 15 m/s, `scene_wave_speed_band` 3,
+`scene_density_band` 10; `scenes_v5.material_band`, `draw_material`): the scene draws a density interval at most a
+factor 10 wide (log-uniform lower edge over the config's range, its heaviest material fast enough at E_max) and a
+squared-wave-speed interval at most a factor 9 wide (log-uniform lower edge over what keeps E = c^2 rho inside the
+config's range, at least 15^2); every body draws rho and c^2 in the band and gets E = c^2 rho. The strain of a
+full-height impact is then at most about 0.3 for equal densities and bounded by sqrt(10) x 0.3 for the densest
+body of a scene on its lightest; the self-weight strain rho g L / E is below 2 %. Across scenes E and rho still
+cover their ranges (the softest admissible material is 22.5 kPa at 100 kg/m^3, the densest 4400 kg/m^3 at 1 MPa).
+The band is drawn after the contact constants and 0 switches it off, so the recorded reference scenes are
+reproduced with the band off (`TestMaterialBand`). Attempt 4 started 09:35 UTC from scratch with the curriculum and
+the band.
+
+Observed in the attempt-3 records and left open: the all-pinned phase has almost no contact (27 plane pairs per
+detection for 150 bodies, 0.0 static-face pairs), because faces keep at least one cell plus the field clearance
+from every body and pinned bodies neither drift nor fall. Anka's "pinned + artificial collision" phase would need
+faces placed within the deformation reach of pinned bodies (candidate next step, not implemented).
