@@ -514,6 +514,34 @@ def _per_trajectory_relative_residual_plot(samples, iterations):
     )
 
 
+def _board_html() -> str:
+    """The 留言板 section (Anka, 2026-10-02): messages are comments on a GitHub gist (env LIDO_BOARD_GIST = gist id);
+    the page lists the latest comments through GitHub's public API and links to the gist for posting. Empty when
+    the variable is not set, so other dashboards are unchanged."""
+    gist = os.environ.get("LIDO_BOARD_GIST", "").strip()
+    if not gist:
+        return ""
+    url = f"https://gist.github.com/{html.escape(gist)}"
+    return rf"""<section id="board"><h2>留言板 · message board</h2>
+<p class="muted">Leave a message for Claude as a <a href="{url}#comments">comment on this gist</a>. Claude reads the board when it checks the training (about once an hour) and replies there, prefixed "Claude:". Latest comments (newest first):</p>
+<div id="board-comments" class="muted">Loading comments…</div>
+<script>
+fetch("https://api.github.com/gists/{html.escape(gist)}/comments?per_page=100").then(r => r.json()).then(cs => {{
+  const box = document.getElementById("board-comments");
+  if (!Array.isArray(cs) || cs.length === 0) {{ box.textContent = "No messages yet."; return; }}
+  box.className = "";
+  box.innerHTML = cs.slice().reverse().map(c => {{
+    const claude = /^\s*claude\s*:/i.test(c.body);
+    const who = claude ? "Claude" : (c.user && c.user.login) || "?";
+    const when = (c.created_at || "").replace("T", " ").replace("Z", " UTC");
+    const text = c.body.replace(/^\s*claude\s*:\s*/i, "");
+    const esc = t => t.replace(/[&<>]/g, ch => ({{"&": "&amp;", "<": "&lt;", ">": "&gt;"}}[ch]));
+    return `<div style="border-left:4px solid ${{claude ? "#2e86ab" : "#e4572e"}};background:${{claude ? "#f2f8fb" : "#fff6f3"}};padding:6px 12px;margin:8px 0;white-space:pre-wrap"><span class="muted">${{esc(who)}} · ${{esc(when)}}</span><br>${{esc(text)}}</div>`;
+  }}).join("");
+}}).catch(() => {{ document.getElementById("board-comments").textContent = "Comments could not be loaded (GitHub API); open the gist directly."; }});
+</script></section>"""
+
+
 def write_mixed_report(output, report, *, updated_at=None):
     """Write portable epoch metrics, four SVG plots and a page refreshing every 30s.
 
@@ -611,6 +639,7 @@ def write_mixed_report(output, report, *, updated_at=None):
         writer.writerows(data)
         _atomic_text(output / f"{name}.csv", buffer.getvalue())
     failure = report.get("failure")
+    board_html = _board_html()
     failure_html = (
         f'<section class="failure"><h2>Training failure</h2><pre>{escape(json.dumps(failure, indent=2))}</pre></section>'
         if failure
@@ -748,6 +777,7 @@ Available solver iterations: K = {escape(counts_k)} · Physical timesteps: H = {
 {schedule_text}{origin_text}</p>
 <p>{selection_text}<br>
 Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(validation.get("mean_after_joule"))} J after one update. Descent: {descent_text}; first-update failures: {escape(validation.get("first_update_failed_count", "Not evaluated"))}; all validation failures: {escape(validation.get("failed_count", "Not evaluated"))}.</p>
+{board_html}
 {failure_html}<img src="loss_curve.svg" alt="Training objective and validation first-update objective, validation descent rate, physical energy, selection metric, physical survivors, and learning rate by epoch">
 <p class="muted">Lower objective is better. The training objective includes an uphill penalty; validation shows the first update on fixed seeds with the same form. {selection_note} The learning rate is recorded after each epoch's scheduler decision.</p>
 <details><summary>How the loss curves are computed</summary>
