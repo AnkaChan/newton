@@ -201,14 +201,16 @@ def scene_metrics(batch) -> dict:
 
 
 @torch.no_grad()
-def validate_cheap_v5(step, cfg, grids, aug, device, master_seed: int) -> list:
+def validate_cheap_v5(step, cfg, grids, aug, device, master_seed: int, epoch: int | None = None) -> list:
     """Per-scene records (`cfg.validation_scene_count` held-out scenes, K = `cfg.validation_iterations` queries of
     one physical step) for report.summarize_cheap_validation; the curves hold the value before each query and after
-    the last, `contact_pairs` the step's detection."""
+    the last, `contact_pairs` the step's detection. The held-out scenes follow the curriculum mix of `epoch`
+    (`scenes_v5.scene_mix`; the config's final mix when None), unlike the full-horizon scenes that keep the goal mix."""
     records = []
     K = cfg.validation_iterations
+    mix = scenes_v5.scene_mix(cfg, epoch)
     for index in range(cfg.validation_scene_count):
-        scene = scenes_v5.held_out_scene(master_seed, index, cfg)
+        scene = scenes_v5.held_out_scene(master_seed, index, cfg, mix=mix)
         batch = _held_out_scene_batch(step, cfg, grids, aug, scene, device, master_seed)
         es = energy_scale(batch.material)
         scale = float((torch.maximum(batch.E.abs(), batch.material.floor) * es).sum())

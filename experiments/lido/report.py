@@ -71,7 +71,17 @@ PROGRESS_KEYS = (
     "regime",
 )
 
-_REGIME_KEYS = ("stage", "k_max", "h_max", "queries", "filler_queries", "updates")
+_REGIME_KEYS = (
+    "stage",
+    "k_max",
+    "h_max",
+    "queries",
+    "filler_queries",
+    "updates",
+    "step_cap",  # the step-cap curriculum's cap of the epoch (None before the curriculum existed)
+    "pinned_fraction",  # the v5 scene curriculum's mix of the epoch (None in body mode)
+    "resting_fraction",
+)
 
 
 # ----------------------------------------------------------------------------- plain values and files

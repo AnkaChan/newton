@@ -37,7 +37,8 @@ epochs.0.gradient_norm_mean epochs.0.gradient_norm_max epochs.0.learning_rate
 epochs.0.contact_scene_fraction epochs.0.contact_realized_fraction epochs.0.contact_max_penetration_r
 epochs.0.available_K epochs.0.available_H
 epochs.0.regime.name epochs.0.regime.stage epochs.0.regime.k_max epochs.0.regime.h_max epochs.0.regime.queries
-epochs.0.regime.filler_queries epochs.0.regime.updates
+epochs.0.regime.filler_queries epochs.0.regime.updates epochs.0.regime.step_cap epochs.0.regime.pinned_fraction
+epochs.0.regime.resting_fraction
 epochs.0.validation.mean_normalized_loss epochs.0.validation.descent_rate epochs.0.validation.mean_before_joule
 epochs.0.validation.mean_after_joule epochs.0.validation.selection.metric epochs.0.validation.selection.eligible
 epochs.0.validation.physical_survivors epochs.0.validation.sample_count epochs.0.validation.failed_count
@@ -129,7 +130,16 @@ def epoch_record(epoch=1, loss=0.5, failed_seed=None):
         mean_force_residual_n=4.5,
         resets=2,
         failures=[FailureRecord(seed=7, K=1, H=8, k=0, h=3, kind="nan", epoch=epoch, update=5)],
-        regime={"stage": 0, "k_max": 1, "h_max": 8, "queries": 2048, "filler_queries": [0, 1, 0, 0], "updates": 32},
+        regime={
+            "stage": 0,
+            "k_max": 1,
+            "h_max": 8,
+            "queries": 2048,
+            "filler_queries": [0, 1, 0, 0],
+            "updates": 32,
+            "step_cap": 0.01,
+            "pinned_fraction": 1.0,
+        },
         available_K=[1],
         available_H=[8],
         contact_scene_fraction=0.8,

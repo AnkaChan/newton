@@ -200,7 +200,7 @@ def train(
             unwrap(step.net).eval()
             K_full, H_full = min(k_max, cfg.validation_full_iterations), h_max  # stage caps, as in the v4 campaign
             if v5:
-                cheap_samples = validate_cheap_v5(step, cfg, grids, aug, device, cfg.seed)
+                cheap_samples = validate_cheap_v5(step, cfg, grids, aug, device, cfg.seed, epoch)
                 full_samples, full_seconds = validate_full_horizon_v5(
                     step, cfg, grids, aug, device, cfg.seed, K_full, H_full
                 )
@@ -264,6 +264,11 @@ def train(
                     "filler_queries": runner.idle_updates if v5 else 0,
                     "updates": n_updates,
                     "step_cap": cap,
+                    **(
+                        {"pinned_fraction": runner.mix.pinned_fraction, "resting_fraction": runner.mix.resting_fraction}
+                        if v5
+                        else {}
+                    ),
                 },
                 available_K=[k for k in cfg.K_values if k <= k_max],
                 available_H=list(range(1, h_max + 1)),

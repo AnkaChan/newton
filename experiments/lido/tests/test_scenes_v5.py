@@ -593,3 +593,54 @@ class TestConfigKeys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSceneCurriculum(unittest.TestCase):
+    """The scene curriculum (Anka, 2026-10-02): pinned bodies against fixed geometry first, free bodies later."""
+
+    def test_mix_schedule(self):
+        cfg = dataclasses.replace(CFG, scene_curriculum=True, scene_curriculum_epochs=(4, 20))
+        final = S.SceneMix(CFG.pinned_body_fraction, CFG.resting_body_fraction)
+        self.assertEqual(S.scene_mix(cfg), final)  # no epoch: the goal
+        self.assertEqual(S.scene_mix(cfg, None), final)
+        for epoch in (1, 4):
+            self.assertEqual(S.scene_mix(cfg, epoch), S.SceneMix(1.0, 0.0))
+        mid = S.scene_mix(cfg, 12)  # halfway
+        self.assertAlmostEqual(mid.pinned_fraction, 1.0 - 0.5 * (1.0 - CFG.pinned_body_fraction))
+        self.assertAlmostEqual(mid.resting_fraction, 0.5 * CFG.resting_body_fraction)
+        for epoch in (20, 21, 48):
+            self.assertEqual(S.scene_mix(cfg, epoch), final)
+        pins = [S.scene_mix(cfg, e).pinned_fraction for e in range(1, 25)]
+        self.assertEqual(pins, sorted(pins, reverse=True))
+        off = dataclasses.replace(CFG, scene_curriculum=False)
+        self.assertEqual(S.scene_mix(off, 1), final)
+
+    def test_mix_overrides_the_fractions_on_the_same_streams(self):
+        every = S.sample_scene(MASTER, 0, CFG, mix=S.SceneMix(1.0, 0.0))
+        self.assertTrue(all(b.pinned for b in every.bodies))
+        self.assertFalse(any(b.resting for b in every.bodies))
+        self.assertTrue(all(b.velocity == (0.0, 0.0, 0.0) for b in every.bodies))
+        default = S.sample_scene(MASTER, 0, CFG)
+        same = S.sample_scene(MASTER, 0, CFG, mix=S.scene_mix(CFG))
+        self.assertEqual(dataclasses.asdict(same), dataclasses.asdict(default))
+        # the body draws are shared: a higher pinned fraction pins a superset, the sizes and materials do not change
+        self.assertEqual([b.cell_counts for b in every.bodies], [b.cell_counts for b in default.bodies])
+        self.assertEqual([b.material for b in every.bodies], [b.material for b in default.bodies])
+        half = S.sample_scene(MASTER, 0, CFG, mix=S.SceneMix(0.6, 0.15))
+        pinned_default = {i for i, b in enumerate(default.bodies) if b.pinned}
+        pinned_half = {i for i, b in enumerate(half.bodies) if b.pinned}
+        self.assertTrue(pinned_default <= pinned_half)
+        self.assertGreater(len(pinned_half), len(pinned_default))
+        self.assertEqual(len(every.static_faces), len(default.static_faces))
+
+    def test_epoch_scene_seed(self):
+        seeds = {S.epoch_scene_seed(e, i) for e in range(1, 4) for i in range(3)}
+        self.assertEqual(len(seeds), 9)
+        self.assertTrue(all(s >= S.EPOCH_SEED_STRIDE for s in seeds))  # never a test/reference scene seed
+        a = S.sample_scene(MASTER, S.epoch_scene_seed(1, 0), CFG)
+        b = S.sample_scene(MASTER, S.epoch_scene_seed(2, 0), CFG)
+        self.assertNotEqual([x.cell_counts for x in a.bodies], [x.cell_counts for x in b.bodies])
+        with self.assertRaises(ValueError):
+            S.epoch_scene_seed(1, S.EPOCH_SEED_STRIDE)
+        with self.assertRaises(ValueError):
+            S.epoch_scene_seed(1, -1)

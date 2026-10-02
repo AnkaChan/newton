@@ -87,6 +87,14 @@ class TrainConfig:
     resting_body_fraction: float = 0.3  # fraction of the FREE bodies placed at rest on the ground or on a pinned body
     static_face_count_range: tuple = (0, 8)  # static colliding quads per scene, U{lo..hi} (walls, ramps, slabs)
     static_face_size_cells: tuple = (2, 10)  # side lengths of a static quad, U(lo, hi) cells per side
+    # scene curriculum (Anka, 2026-10-02: "start with pinned + artificial collision as in v4, add the challenging
+    # part later"): every body is pinned through epoch scene_curriculum_epochs[0] (the plane and the static faces
+    # are the only contacts of a moving body with fixed geometry, as in the v4 campaign), then the pinned fraction
+    # falls and the resting fraction rises linearly to the values above, reached at scene_curriculum_epochs[1];
+    # training scenes are drawn afresh every epoch, the held-out scenes of the full-horizon validation keep the
+    # final mix (the goal), those of the cheap validation follow the epoch's mix
+    scene_curriculum: bool = True
+    scene_curriculum_epochs: tuple = (4, 20)
     scene_count: int = 64  # fixed scenes per epoch
     validation_scene_count: int = 8
     validation_full_scene_count: int = 2

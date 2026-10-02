@@ -97,6 +97,39 @@ from .units import material_from_si, reference_modulus
 Tensor = torch.Tensor
 
 STREAM_TAG = 5  # last SeedSequence key: v5 scene streams never coincide with the body-mode streams of jobs.py
+EPOCH_SEED_STRIDE = 1 << 20  # training scene seed = epoch x stride + scene index: fresh scenes every epoch
+
+
+@dataclass(frozen=True)
+class SceneMix:
+    """The scene composition of an epoch (scene curriculum, Anka 2026-10-02): the probability that a body is
+    pinned and the fraction of the free bodies placed at rest."""
+
+    pinned_fraction: float
+    resting_fraction: float
+
+
+def scene_mix(cfg, epoch: int | None = None) -> SceneMix:
+    """The mix of `epoch` (1-based): the config's `pinned_body_fraction` and `resting_body_fraction` when the
+    curriculum is off or `epoch` is None (held-out scenes of the goal); otherwise every body pinned and nothing
+    resting through `scene_curriculum_epochs[0]`, a linear ramp to the config's values at `scene_curriculum_epochs[1]`
+    and the config's values from then on."""
+    target = SceneMix(float(cfg.pinned_body_fraction), float(cfg.resting_body_fraction))
+    if epoch is None or not getattr(cfg, "scene_curriculum", False):
+        return target
+    e0, e1 = (int(v) for v in cfg.scene_curriculum_epochs)
+    p = 1.0 if epoch >= e1 else 0.0 if epoch <= e0 else (epoch - e0) / (e1 - e0)
+    return SceneMix(1.0 - (1.0 - target.pinned_fraction) * p, target.resting_fraction * p)
+
+
+def epoch_scene_seed(epoch: int, index: int) -> int:
+    """The training scene seed of scene `index` in `epoch`: distinct scenes every epoch (seeds below
+    EPOCH_SEED_STRIDE are the fixed scenes of the tests and of the reference file)."""
+    if not 0 <= index < EPOCH_SEED_STRIDE:
+        raise ValueError(f"scene index {index} is outside [0, {EPOCH_SEED_STRIDE})")
+    return int(epoch) * EPOCH_SEED_STRIDE + int(index)
+
+
 DRIFT_VERTICAL_SCALE = 0.25  # the drift direction's y component is scaled by this before normalisation
 PLACEMENT_FILL = 0.6  # grown bounding-box volume over the column volume that sets the footprint
 MAX_PLACEMENT_DRAWS = 200  # position draws per body before the footprint grows
@@ -556,8 +589,13 @@ def _box_n_face(cell_counts) -> int:
 
 
 # ---------------------------------------------------------------------------------------------------- sampling
-def sample_scene(master_seed: int, scene_seed: int, cfg, validation: bool = False) -> SceneV5:
-    """One v5 scene (SI): a pure function of (master_seed, scene_seed, validation) and the config (module docstring)."""
+def sample_scene(
+    master_seed: int, scene_seed: int, cfg, validation: bool = False, mix: SceneMix | None = None
+) -> SceneV5:
+    """One v5 scene (SI): a pure function of (master_seed, scene_seed, validation), the config and the mix (module
+    docstring); `mix` (default: the config's fractions) overrides `pinned_body_fraction` and `resting_body_fraction`
+    on the same seed streams, so the same seed with a higher pinned fraction pins a superset of the bodies."""
+    mix = scene_mix(cfg) if mix is None else mix
     ss = np.random.SeedSequence([master_seed, scene_seed, 1 if validation else 0, STREAM_TAG])
     rng_scene, rng_bodies, rng_place, rng_pins, rng_rest, rng_faces = (np.random.default_rng(s) for s in ss.spawn(6))
     h, dt = float(cfg.cell_size), float(cfg.time_step)
@@ -615,12 +653,12 @@ def sample_scene(master_seed: int, scene_seed: int, cfg, validation: bool = Fals
     pins = []
     for _ in drawn:
         u, face = float(rng_pins.random()), int(rng_pins.integers(0, len(FACE_PINS)))
-        pins.append(FACE_PINS[face] if u < float(cfg.pinned_body_fraction) else "none")
+        pins.append(FACE_PINS[face] if u < float(mix.pinned_fraction) else "none")
     # resting bodies (own stream, one draw triple per body whatever the fraction): flat on a face with a random yaw
     resting = []
     for pin in pins:
         u, face, yaw = float(rng_rest.random()), int(rng_rest.integers(0, 6)), float(rng_rest.uniform(0.0, 2 * math.pi))
-        rest = pin == "none" and u < float(cfg.resting_body_fraction)
+        rest = pin == "none" and u < float(mix.resting_fraction)
         resting.append(rest)
         if rest:
             quats[-len(pins) + len(resting) - 1] = face_down_quaternion(face, yaw)
@@ -694,9 +732,10 @@ def sample_scene(master_seed: int, scene_seed: int, cfg, validation: bool = Fals
     )
 
 
-def held_out_scene(master_seed: int, index: int, cfg) -> SceneV5:
-    """Validation scene `index`: the separate stream of `sample_scene(..., validation=True)`."""
-    return sample_scene(master_seed, index, cfg, validation=True)
+def held_out_scene(master_seed: int, index: int, cfg, mix: SceneMix | None = None) -> SceneV5:
+    """Validation scene `index`: the separate stream of `sample_scene(..., validation=True)`, by default with the
+    config's final mix (the goal); the cheap validation passes the epoch's mix."""
+    return sample_scene(master_seed, index, cfg, validation=True, mix=mix)
 
 
 def scene_summary(scene: SceneV5) -> dict:

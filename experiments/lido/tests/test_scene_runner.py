@@ -12,6 +12,7 @@ import unittest
 import torch
 
 from experiments.lido import jobs as J
+from experiments.lido import scenes_v5 as S
 from experiments.lido.augment import Augmenter
 from experiments.lido.config import TrainConfig
 from experiments.lido.fusion import Fusion
@@ -26,6 +27,7 @@ MASTER = 5
 def scene_cfg(**kw):
     d = {
         "scene_mode": "v5",
+        "scene_curriculum": False,  # the tests describe the final mix; the curriculum has its own tests
         "scene_cells": 1500,
         "scene_count": 3,
         "budget_cap": 16,
@@ -190,7 +192,10 @@ class TestSceneRunner(unittest.TestCase):
         self.assertEqual(len(runner.pair_history), sum(1 + j.H for j in jobs))
         summary = runner.epoch_summary()
         self.assertEqual(summary["scenes"], cfg.scene_count)
-        self.assertEqual([s["seed"] for s in summary["scenes_served"]], [j.seed for j in J.assign(jobs, 1, 1)[0][0]])
+        self.assertEqual(
+            [s["seed"] for s in summary["scenes_served"]],
+            [S.epoch_scene_seed(1, j.seed) for j in J.assign(jobs, 1, 1)[0][0]],  # fresh scenes every epoch
+        )
         for key in ("pairs_mean", "body_pairs_mean", "body_pairs_max", "plane_pairs_mean", "steps_with_body_pairs"):
             self.assertIn(key, summary)
         # a further update on the idle runner is harmless and counted
@@ -253,3 +258,22 @@ class TestSceneRunner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSceneCurriculumRunner(unittest.TestCase):
+    def test_fresh_scenes_every_epoch_with_the_epoch_mix(self):
+        cfg = scene_cfg(scene_count=2, scene_curriculum=True, scene_curriculum_epochs=(1, 3), max_epochs=3)
+        runner, _ = make_runner_cpu(cfg)
+        runner.start_epoch(1)
+        first = runner.scene
+        self.assertEqual(first.seed, S.epoch_scene_seed(1, runner.job.seed))
+        self.assertTrue(all(b.pinned for b in first.bodies))  # epoch 1: everything pinned
+        self.assertEqual(runner.epoch_summary()["pinned_fraction"], 1.0)
+        self.assertEqual(runner.epoch_summary()["resting_fraction"], 0.0)
+        runner.start_epoch(3)
+        third = runner.scene
+        self.assertEqual(third.seed, S.epoch_scene_seed(3, runner.job.seed))
+        self.assertNotEqual([b.cell_counts for b in third.bodies], [b.cell_counts for b in first.bodies])
+        self.assertEqual(runner.mix, S.scene_mix(cfg, 3))
+        self.assertEqual(runner.mix.pinned_fraction, cfg.pinned_body_fraction)
+        self.assertEqual(runner.epoch_summary()["pinned_fraction"], cfg.pinned_body_fraction)

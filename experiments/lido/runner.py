@@ -257,6 +257,7 @@ class SceneRunner:
         queues, self.U = assign(jobs, self.world, 1)
         self.queue = deque(queues[self.rank])
         self.epoch, self.update = epoch, 0
+        self.mix = scenes_v5.scene_mix(self.cfg, epoch)
         self.failures, self.resets, self.loaded_jobs, self.contact_scenes = [], 0, 0, 0
         self.queries, self.idle_updates = 0, 0
         self.pair_history, self.scene_summaries = [], []
@@ -270,7 +271,10 @@ class SceneRunner:
                 self._idle(self.batch)
             return
         job = self.job
-        scene = scenes_v5.sample_scene(self.master_seed, job.seed, self.cfg)
+        # fresh scenes every epoch, composed by the epoch's curriculum mix (scenes_v5.scene_mix)
+        scene = scenes_v5.sample_scene(
+            self.master_seed, scenes_v5.epoch_scene_seed(self.epoch, job.seed), self.cfg, mix=self.mix
+        )
         b = scene_batch(scene, self.grids, self.aug, self.device, physical_floor=self.cfg.physical_floor)
         # one candidate-noise generator per scene (Step.prepare draws every grid group in one call)
         self.gens = seeded_generator(self.device, self.master_seed, job.seed, self.epoch, 13)
@@ -339,6 +343,8 @@ class SceneRunner:
         n = max(1, len(hist))
         return {
             "scenes": self.loaded_jobs,
+            "pinned_fraction": self.mix.pinned_fraction,
+            "resting_fraction": self.mix.resting_fraction,
             "bodies_mean": float(np.mean([s["bodies"] for s in self.scene_summaries])) if self.scene_summaries else 0.0,
             "pinned_bodies_mean": float(np.mean([s["pinned_bodies"] for s in self.scene_summaries]))
             if self.scene_summaries
