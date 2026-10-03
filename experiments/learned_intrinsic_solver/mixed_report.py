@@ -342,6 +342,27 @@ def _best_text(best, source):
     return text + "."
 
 
+def _pre_roll_text(config, latest) -> str:
+    """One status line on the pre-roll (v6, 2026-10-03, asked for by Anka): the sampling range and the queries per
+    step from the config, the latest epoch's mean steps actually run, truncations and refills from its records."""
+    max_steps = int(config.get("pre_roll_max_steps", 0) or 0)
+    if max_steps <= 0:
+        return ""
+    dt = float(config.get("time_step", 1.0 / 300.0) or 1.0 / 300.0)
+    queries = config.get("pre_roll_queries", "?")
+    regime = latest.get("regime") or {}
+    scene = latest.get("scene_regime") or {}
+    mean = regime.get("pre_roll_steps_mean")
+    parts = [
+        f"Pre-roll: n ~ U{{0..{max_steps}}} inference-only steps ({max_steps * dt:.1f} s) at {html.escape(str(queries))} queries per step, from the growth table's last stage"
+    ]
+    if mean is not None:
+        parts.append(
+            f"latest epoch: mean {float(mean):.0f} steps run, {html.escape(str(scene.get('pre_roll_truncated', 0)))} pre-rolls truncated at the penetration guard, {html.escape(str(scene.get('refill_scenes', 0)))} refill scenes, {float(scene.get('pre_roll_seconds', 0.0)) / 60:.0f} min of pre-roll on rank 0"
+        )
+    return " · ".join(parts) + "<br>\n"
+
+
 def _tick_plots(report):
     """Two SVGs of the intra-epoch ticks (train.py: running training loss and a small cheap validation every
     ``tick_updates`` updates) against the rank's cumulative updates, with the epoch-end values as a second series."""
@@ -633,6 +654,7 @@ def write_mixed_report(output, report, *, updated_at=None):
     )
     counts_k = progress.get("available_K", latest.get("available_K", [1]))
     counts_h = progress.get("available_H", latest.get("available_H", [8]))
+    pre_roll_text = _pre_roll_text(config, latest)
     loss_plot = _epoch_plot(rows, selection_source=selection_source)
     tick_loss_plot, tick_metric_plot = _tick_plots(report)
     validation_plot = _curve_plot("Validation relative physical energy", relative)
@@ -810,7 +832,7 @@ a{{color:#087c91}}img,svg{{display:block;width:100%;height:auto;background:white
 <p class="status"><strong>{escape(phase.replace("_", " ").capitalize())}</strong> · {epochs_text} · {progress.get("completed_updates", report.get("completed_updates", 0))} Adam updates<br>
 {budget_text} and {escape(config.get("validation_count", validation.get("sample_count", "—")))} fixed validation states.{interval_text} {escape(batch_text)}<br>
 Available solver iterations: K = {escape(counts_k)} · Physical timesteps: H = {escape(counts_h)}<br>
-{schedule_text}{origin_text}</p>
+{pre_roll_text}{schedule_text}{origin_text}</p>
 <p>{selection_text}<br>
 Validation energy: {_number(validation.get("mean_before_joule"))} → {_number(validation.get("mean_after_joule"))} J after one update. Descent: {descent_text}; first-update failures: {escape(validation.get("first_update_failed_count", "Not evaluated"))}; all validation failures: {escape(validation.get("failed_count", "Not evaluated"))}.</p>
 {board_html}
