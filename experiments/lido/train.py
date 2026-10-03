@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
 import json
 import math
 import os
@@ -123,7 +124,12 @@ def train(
         initialized_from = {"checkpoint": str(resume), "completed_epochs": ck["epoch"], "best_selection": best}
     model = net
     if world > 1:
-        torch.distributed.init_process_group("nccl", rank=rank, world_size=world)
+        torch.distributed.init_process_group(
+            "nccl",
+            rank=rank,
+            world_size=world,
+            timeout=datetime.timedelta(seconds=int(os.environ.get("LIDO_COLLECTIVE_TIMEOUT_S", "10800"))),
+        )
         model = torch.nn.parallel.DistributedDataParallel(net, device_ids=[device.index], broadcast_buffers=False)
     grids = GridCache(device)
     grid = grids.get(cfg.cell_counts, cfg.pins) if not v5 else None
