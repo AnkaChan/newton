@@ -281,7 +281,52 @@ class SceneRunner:
         self.failures, self.resets, self.loaded_jobs, self.contact_scenes = [], 0, 0, 0
         self.queries, self.idle_updates, self.pre_roll_seconds = 0, 0, 0.0
         self.pair_history, self.scene_summaries = [], []
+        self.pre_rolled: dict = {}
+        if self.pre_roll_max > 0:
+            self._pre_roll_epoch()
         self.load()
+
+    def _pre_roll_epoch(self) -> None:
+        """Pre-roll every scene of the rank's queue up front, before the epoch's first training update
+        (2026-10-03): the ranks then pre-roll concurrently with no collective between them, where a pre-roll inside
+        `load` stalled the other ranks at every gradient all-reduce until it was over, so the pre-rolls were in
+        effect serialised across the ranks (the v6 run's updates fell seven-fold). Each scene is realised, prepared
+        and pre-rolled with the epoch-start weights by `_pre_roll`; its settled state (X, V, X_prev) is kept on the
+        host and restored by `load`, which prepares it again (the query history starts afresh there, which the
+        inline pre-roll kept). A scene that fails its pre-roll is recorded (kind "pre_roll_" + the guard's kind) and
+        dropped from the queue."""
+        kept: deque = deque()
+        for job in list(self.queue):
+            scene = scenes_v5.sample_scene(
+                self.master_seed, scenes_v5.epoch_scene_seed(self.epoch, job.seed), self.cfg, mix=self.mix
+            )
+            b = scene_batch(scene, self.grids, self.aug, self.device, physical_floor=self.cfg.physical_floor)
+            self.gens = seeded_generator(self.device, self.master_seed, job.seed, self.epoch, 13)
+            n = self._pre_roll_length()
+            self.step.prepare(b, b.active, self.gens)
+            kind, k, h, seconds = self._pre_roll(b, n)
+            self.pre_roll_seconds += seconds
+            if kind is not None:
+                self.failures.append(
+                    FailureRecord(job.seed, job.K, job.H, k, h, "pre_roll_" + kind, self.epoch, self.update)
+                )
+                self.resets += 1
+            else:
+                self.pre_rolled[job.seed] = {
+                    "X": b.X.detach().to("cpu", copy=True),
+                    "V": b.V.detach().to("cpu", copy=True),
+                    "X_prev": b.X_prev.detach().to("cpu", copy=True),
+                    "steps": h,
+                    "drawn": n,
+                    "seconds": seconds,
+                }
+                kept.append(job)
+            b.release()
+            del b
+            gc.collect()
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+        self.queue = kept
 
     # ------------------------------------------------------------------- load
     def load(self) -> None:
@@ -310,6 +355,12 @@ class SceneRunner:
             # pre-roll length is the stream's first draw
             self.gens = seeded_generator(self.device, self.master_seed, job.seed, self.epoch, 13)
             n = self._pre_roll_length()
+            state = self.pre_rolled.pop(job.seed, None)  # settled by _pre_roll_epoch: restore, then prepare
+            if state is not None:
+                b.X.copy_(state["X"].to(self.device))
+                b.V.copy_(state["V"].to(self.device))
+                b.X_prev.copy_(state["X_prev"].to(self.device))
+                b.x.copy_(b.X)
             self.step.prepare(b, b.active, self.gens)
             self.batch, self.scene = b, scene
             self.k = self.h = 0
@@ -317,9 +368,12 @@ class SceneRunner:
             self.contact_scenes += int(bool(b.scene.plane_present.any()))
             summary = {**scenes_v5.scene_summary(scene), "K": job.K, "H": job.H}
             self.scene_summaries.append(summary)
-            kind, k, h, seconds = self._pre_roll(b, n)
+            if state is not None:
+                kind, k, h, seconds, n = None, 0, state["steps"], state["seconds"], state["drawn"]
+            else:
+                kind, k, h, seconds = self._pre_roll(b, n)
+                self.pre_roll_seconds += seconds
             summary["pre_roll"] = {"steps": h, "drawn": n, "seconds": seconds}
-            self.pre_roll_seconds += seconds
             if kind is not None:
                 self.failures.append(
                     FailureRecord(job.seed, job.K, job.H, k, h, "pre_roll_" + kind, self.epoch, self.update)

@@ -480,20 +480,21 @@ class TestPreRoll(unittest.TestCase):
         step.query = failing_in_eval_mode
         runner.start_epoch(2)
         self.assertTrue(step.net.training)
-        self.assertEqual([f.kind for f in runner.failures], ["pre_roll_non_finite"])  # the first scene draws 3
-        f = runner.failures[0]
-        self.assertEqual((f.k, f.h, f.epoch, f.update), (1, 0, 2, 0))  # the first query of the first pre-roll step
-        self.assertEqual(runner.scene_summaries[0]["pre_roll"]["steps"], 0)
-        self.assertGreater(runner.scene_summaries[0]["pre_roll"]["drawn"], 0)
-        self.assertIsNotNone(runner.job)  # the second scene (no pre-roll) is loaded and trains
-        self.assertEqual(runner.scene_summaries[-1]["pre_roll"]["drawn"], 0)
-        self.assertEqual((runner.loaded_jobs, runner.resets), (2, 1))
-        served, _ = self._serve_epoch(runner, step)
+        # the pre-rolls run up front at the epoch start (2026-10-03): both scenes with a non-zero draw fail there,
+        # at the first query of their first pre-roll step, and are dropped; the zero-draw scene is the one loaded
         kinds = [f.kind for f in runner.failures]
-        self.assertEqual(len(kinds), 2)
-        self.assertTrue(all(k == "pre_roll_non_finite" for k in kinds), kinds)
-        self.assertEqual(runner.loaded_jobs, cfg.scene_count)
+        self.assertEqual(kinds, ["pre_roll_non_finite"] * 2)
+        for f in runner.failures:
+            self.assertEqual((f.k, f.h, f.epoch, f.update), (1, 0, 2, 0))
+        self.assertIsNotNone(runner.job)
+        self.assertEqual(len(runner.scene_summaries), 1)
+        self.assertEqual(runner.scene_summaries[-1]["pre_roll"]["drawn"], 0)
+        self.assertEqual((runner.loaded_jobs, runner.resets), (1, 2))
+        served, _ = self._serve_epoch(runner, step)
+        self.assertEqual(len(runner.failures), 2)
+        self.assertEqual(runner.loaded_jobs, cfg.scene_count - 2)
         trained = [s for s in runner.scene_summaries if s["pre_roll"]["drawn"] == 0]
+        self.assertEqual(len(trained), 1)
         self.assertEqual(served, sum(s["K"] * s["H"] for s in trained))
         self.assertEqual(runner.idle_updates, sum(j.K * j.H for j in jobs) - served)
         self.assertTrue(step.net.training)
