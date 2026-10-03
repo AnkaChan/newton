@@ -176,7 +176,9 @@ class TestBatchedSparse(unittest.TestCase):
         fresh = lambda: Batch.build(b.grids, self.device, torch.float32)  # noqa: E731
         self.assertIsNone(Fusion("dense", batched=True).batched_solver(fresh(), torch.float32))
         self.assertIsNone(Fusion("mg", batched=True).batched_solver(fresh(), torch.float32))
-        self.assertIsNone(Fusion(batched=True, options={"sparse_max_free": 10}).batched_solver(fresh(), torch.float32))
+        self.assertIsNone(
+            Fusion(batched=True, options={"batched_sparse_max_free": 10}).batched_solver(fresh(), torch.float32)
+        )
         self.assertIsInstance(
             Fusion("sparse", batched=True, options={"sparse_max_free": 10}).batched_solver(fresh(), torch.float32),
             BatchedSparse,

@@ -320,6 +320,11 @@ def train(
                     "filler_queries": runner.idle_updates if v5 else 0,
                     "updates": n_updates,
                     "step_cap": cap,
+                    "device_memory_gb": (
+                        round((torch.cuda.mem_get_info()[1] - torch.cuda.mem_get_info()[0]) / 2**30, 2)
+                        if torch.device(device).type == "cuda"
+                        else None
+                    ),  # rank 0's device memory in use at the end of the epoch, all allocators (2026-10-03)
                     **(
                         {
                             "pinned_fraction": runner.mix.pinned_fraction,

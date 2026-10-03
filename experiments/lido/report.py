@@ -82,6 +82,7 @@ _REGIME_KEYS = (
     "pinned_fraction",  # the v5 scene curriculum's mix of the epoch (None in body mode)
     "resting_fraction",
     "pre_roll_steps_mean",  # mean inference-only pre-roll steps per scene (v6, 2026-10-02; None in body mode)
+    "device_memory_gb",  # rank 0's device memory in use at the end of the epoch (2026-10-03)
 )
 
 

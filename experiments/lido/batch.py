@@ -232,8 +232,9 @@ class Batch:
         self.fusion_cache = None
         if cache:
             for solver in cache.values():
-                if solver is not None and solver is not False and hasattr(solver, "free"):
-                    solver.free()
+                release = getattr(solver, "free", None) if solver not in (None, False) else None
+                if callable(release):  # BatchedSparse.free; BatchedKron has no cuDSS memory to release
+                    release()
 
     def release(self) -> None:
         """Release what the batch holds outside torch's allocator before it is discarded: the fusion factor and

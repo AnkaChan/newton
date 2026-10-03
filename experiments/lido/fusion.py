@@ -493,6 +493,13 @@ class Fusion:
         self.sparse_max_free = int(
             self.options.pop("sparse_max_free", 300_000)
         )  # "auto": cuDSS up to this many free corners
+        # the block-diagonal factor of a batch fills like the sum of its small blocks, so the batched sparse path
+        # takes far larger batches than one grid would (2026-10-03: the v6 run leaked 46 GB when scenes above
+        # 300k free corners fell back to the per-grid loop and its per-grid cuDSS factors)
+        self.batched_sparse_max_free = int(self.options.pop("batched_sparse_max_free", 4_000_000))
+        self.max_factors = int(
+            self.options.pop("max_factors", 64)
+        )  # per-grid factor cache bound (LRU, freed on eviction)
         self.factors: dict[
             tuple, object
         ] = {}  # (grid key, dtype) -> KronFactor | MultigridFactor | SparseFactor | DenseFactor
@@ -517,7 +524,7 @@ class Fusion:
         if batch.device.type != "cuda" or not sparse_solver_available():
             return None
         free_total = sum(g.Pf if g.pinned.numel() > 0 else g.P - 1 for g in batch.grids)  # dirichlet views
-        if self.solver == "sparse" or (self.solver == "auto" and free_total <= self.sparse_max_free):
+        if self.solver == "sparse" or (self.solver == "auto" and free_total <= self.batched_sparse_max_free):
             return BatchedSparse(batch, dtype)
         return None
 
@@ -529,7 +536,14 @@ class Fusion:
         """The solver of the grid's shape system; every factor exposes `free`, the corner set its solve covers
         (grid.free, or all corners but the reference corner for an unpinned body on a non-Kron solver)."""
         key = (grid.key, dtype)
-        if key not in self.factors:
+        if key in self.factors:
+            self.factors[key] = self.factors.pop(key)  # most recently used last
+        else:
+            while len(self.factors) >= self.max_factors:  # evict the least recently used factor and free its memory
+                old = self.factors.pop(next(iter(self.factors)))
+                release = getattr(old, "free", None)  # KronFactor.free is the free-corner index set, not a method
+                if callable(release):
+                    release()
             if self._kron_grid(grid):
                 self.factors[key] = KronFactor(grid, dtype)
             else:
