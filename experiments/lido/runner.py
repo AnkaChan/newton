@@ -280,6 +280,7 @@ class SceneRunner:
         self.pre_roll_max = int(self.cfg.pre_roll_max_steps) if stage == len(self.cfg.growth_stages) - 1 else 0
         self.failures, self.resets, self.loaded_jobs, self.contact_scenes = [], 0, 0, 0
         self.queries, self.idle_updates, self.pre_roll_seconds = 0, 0, 0.0
+        self.pre_roll_truncated = 0
         self.pair_history, self.scene_summaries = [], []
         self.pre_rolled: dict = {}
         if self.pre_roll_max > 0:
@@ -306,7 +307,7 @@ class SceneRunner:
             self.step.prepare(b, b.active, self.gens)
             kind, k, h, seconds = self._pre_roll(b, n)
             self.pre_roll_seconds += seconds
-            if kind is not None:
+            if kind is not None and not kind.startswith("truncated_"):
                 self.failures.append(
                     FailureRecord(job.seed, job.K, job.H, k, h, "pre_roll_" + kind, self.epoch, self.update)
                 )
@@ -319,6 +320,7 @@ class SceneRunner:
                     "steps": h,
                     "drawn": n,
                     "seconds": seconds,
+                    "truncated": kind[len("truncated_") :] if kind else None,
                 }
                 kept.append(job)
             b.release()
@@ -368,12 +370,16 @@ class SceneRunner:
             self.contact_scenes += int(bool(b.scene.plane_present.any()))
             summary = {**scenes_v5.scene_summary(scene), "K": job.K, "H": job.H}
             self.scene_summaries.append(summary)
+            truncated = None
             if state is not None:
                 kind, k, h, seconds, n = None, 0, state["steps"], state["seconds"], state["drawn"]
+                truncated = state.get("truncated")
             else:
                 kind, k, h, seconds = self._pre_roll(b, n)
                 self.pre_roll_seconds += seconds
-            summary["pre_roll"] = {"steps": h, "drawn": n, "seconds": seconds}
+                if kind is not None and kind.startswith("truncated_"):
+                    truncated, kind = kind[len("truncated_") :], None
+            summary["pre_roll"] = {"steps": h, "drawn": n, "seconds": seconds, "truncated": truncated}
             if kind is not None:
                 self.failures.append(
                     FailureRecord(job.seed, job.K, job.H, k, h, "pre_roll_" + kind, self.epoch, self.update)
@@ -405,11 +411,21 @@ class SceneRunner:
         try:
             with torch.no_grad():
                 for h in range(n):
+                    last_good = (b.X.clone(), b.V.clone(), b.X_prev.clone())  # the step-start state, known sane
                     for k in range(self.cfg.pre_roll_queries):
                         self.step.commit(b, self.step.query(b))
                         kind = self._guard(b)
                         if kind is not None:
-                            return kind, k + 1, h, time.perf_counter() - t0
+                            # 2026-10-03: the pre-roll is truncated at the last sane step instead of dropping the
+                            # scene (dropping most of a rank's scenes left it idle for two thirds of epoch 11): the
+                            # training window starts from that state and the training guard takes it from there
+                            b.X.copy_(last_good[0])
+                            b.V.copy_(last_good[1])
+                            b.X_prev.copy_(last_good[2])
+                            b.x.copy_(b.X)
+                            self.step.prepare(b, b.active, self.gens)
+                            self.pre_roll_truncated += 1
+                            return "truncated_" + kind, k + 1, h, time.perf_counter() - t0
                     self.step.advance(b, b.active, self.gens)
         finally:
             if was_training:
@@ -513,6 +529,7 @@ class SceneRunner:
             if self.scene_summaries
             else 0.0,
             "pre_roll_seconds": self.pre_roll_seconds,
+            "pre_roll_truncated": self.pre_roll_truncated,
             "scenes_served": self.scene_summaries,
         }
 

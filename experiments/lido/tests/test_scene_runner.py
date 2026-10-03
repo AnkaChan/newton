@@ -417,7 +417,8 @@ class TestPreRoll(unittest.TestCase):
         self.assertEqual(served, runner.U)
         self.assertEqual(set(moved.values()), {False})
         self.assertEqual(
-            [s["pre_roll"] for s in runner.scene_summaries], [{"steps": 0, "drawn": 0, "seconds": 0.0}] * 3
+            [s["pre_roll"] for s in runner.scene_summaries],
+            [{"steps": 0, "drawn": 0, "seconds": 0.0, "truncated": None}] * 3,
         )
         summary = runner.epoch_summary()
         self.assertEqual((summary["pre_roll_steps_mean"], summary["pre_roll_seconds"]), (0.0, 0.0))
@@ -466,7 +467,6 @@ class TestPreRoll(unittest.TestCase):
 
     def test_failure_during_the_pre_roll_loads_the_next_scene(self):
         cfg = self._cfg()
-        jobs = J.sample_epoch_jobs(MASTER, 2, cfg)
         runner, step = make_runner_cpu(cfg)
         query = step.query
 
@@ -480,23 +480,28 @@ class TestPreRoll(unittest.TestCase):
         step.query = failing_in_eval_mode
         runner.start_epoch(2)
         self.assertTrue(step.net.training)
-        # the pre-rolls run up front at the epoch start (2026-10-03): both scenes with a non-zero draw fail there,
-        # at the first query of their first pre-roll step, and are dropped; the zero-draw scene is the one loaded
-        kinds = [f.kind for f in runner.failures]
-        self.assertEqual(kinds, ["pre_roll_non_finite"] * 2)
-        for f in runner.failures:
-            self.assertEqual((f.k, f.h, f.epoch, f.update), (1, 0, 2, 0))
+        # the pre-rolls run up front at the epoch start (2026-10-03); a guard hit truncates the pre-roll at its last
+        # sane step instead of dropping the scene: both scenes with a non-zero draw are truncated at their first
+        # query (zero steps kept), nothing is recorded as a failure, and every scene trains
+        self.assertEqual([f.kind for f in runner.failures], [])
+        self.assertEqual(runner.pre_roll_truncated, 2)
         self.assertIsNotNone(runner.job)
-        self.assertEqual(len(runner.scene_summaries), 1)
-        self.assertEqual(runner.scene_summaries[-1]["pre_roll"]["drawn"], 0)
-        self.assertEqual((runner.loaded_jobs, runner.resets), (1, 2))
         served, _ = self._serve_epoch(runner, step)
-        self.assertEqual(len(runner.failures), 2)
-        self.assertEqual(runner.loaded_jobs, cfg.scene_count - 2)
-        trained = [s for s in runner.scene_summaries if s["pre_roll"]["drawn"] == 0]
-        self.assertEqual(len(trained), 1)
-        self.assertEqual(served, sum(s["K"] * s["H"] for s in trained))
-        self.assertEqual(runner.idle_updates, sum(j.K * j.H for j in jobs) - served)
+        self.assertEqual(runner.failures, [])
+        self.assertEqual(runner.loaded_jobs, cfg.scene_count)
+        self.assertEqual(served, runner.U)
+        self.assertEqual(runner.idle_updates, 0)
+        truncated = [s for s in runner.scene_summaries if s["pre_roll"]["truncated"] is not None]
+        self.assertEqual(len(truncated), 2)
+        self.assertTrue(
+            all(
+                s["pre_roll"]["truncated"] == "non_finite"
+                and s["pre_roll"]["steps"] == 0
+                and s["pre_roll"]["drawn"] > 0
+                for s in truncated
+            )
+        )
+        self.assertEqual(runner.epoch_summary()["pre_roll_truncated"], 2)
         self.assertTrue(step.net.training)
 
     def test_ranks_pre_roll_independently_under_ddp(self):
