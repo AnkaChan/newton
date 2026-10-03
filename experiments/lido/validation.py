@@ -267,6 +267,13 @@ def validate_full_horizon_v5(
                 step.commit(batch, out)
             m = scene_metrics(batch)
             alive = m.pop("finite")
+            bound = float(getattr(cfg, "reset_penetration_r", 0.0) or 0.0)
+            if alive and bound > 0.0 and not m["penetration_r"] <= bound:
+                # a collapsed pile (2026-10-03): the same bound as the training guard ends the rollout; such a scene
+                # is not a survivor, and its detection over thousands of interpenetrating bodies ran rank 0 out of
+                # memory in the v6 run (45 GB of candidate tensors)
+                alive = False
+                m["collapsed"] = True
             rows.append(m)
             if not alive:
                 break
