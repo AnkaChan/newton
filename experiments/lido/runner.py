@@ -27,6 +27,9 @@ from .units import material_from_si
 Tensor = torch.Tensor
 
 
+PRE_ROLL_BACKTRACK = 15  # a truncated pre-roll restores the state this many steps before the guard tripped (2026-10-03)
+
+
 def material_for(spec: SceneSpec, grid, cfg, device) -> Material:
     c = spec.contact or {}
     return material_from_si(
@@ -281,6 +284,7 @@ class SceneRunner:
         self.failures, self.resets, self.loaded_jobs, self.contact_scenes = [], 0, 0, 0
         self.queries, self.idle_updates, self.pre_roll_seconds = 0, 0, 0.0
         self.pre_roll_truncated = 0
+        self.refills = 0
         self.pair_history, self.scene_summaries = [], []
         self.pre_rolled: dict = {}
         if self.pre_roll_max > 0:
@@ -337,6 +341,8 @@ class SceneRunner:
         last batch idle (`_idle`)."""
         while True:
             self.job = self.queue.popleft() if self.queue else None
+            if self.job is None and getattr(self.cfg, "refill_scenes", False) and self.update < self.U:
+                self.job = self._refill_job()  # the queue ran dry before the rank's update budget: a fresh scene
             if self.job is None:
                 if self.batch is not None:
                     self._idle(self.batch)
@@ -369,6 +375,7 @@ class SceneRunner:
             self.loaded_jobs += 1
             self.contact_scenes += int(bool(b.scene.plane_present.any()))
             summary = {**scenes_v5.scene_summary(scene), "K": job.K, "H": job.H}
+            summary["refill"] = job.seed >= int(self.cfg.scene_count)  # drawn by _refill_job, not an epoch scene
             self.scene_summaries.append(summary)
             truncated = None
             if state is not None:
@@ -388,6 +395,26 @@ class SceneRunner:
                 continue
             self._record_pairs()
             return
+
+    def _refill_job(self) -> Job:
+        """A fresh job for a rank whose queue ran dry before its update budget (2026-10-03: guard replacements
+        forfeit a scene's remaining K x H, so a rank could idle for most of an epoch): K and H drawn as
+        `jobs.sample_epoch_jobs` draws them for this epoch, the scene seed unique per rank and refill and above the
+        epoch's scene indices; refills are pre-rolled like the queued scenes were not (no up-front state), i.e.
+        they start from the generator's state."""
+        self.refills += 1
+        _, k_max, h_max = growth_stage(self.epoch, self.cfg)
+        rng = np.random.default_rng(
+            np.random.SeedSequence([self.master_seed, self.epoch, self.rank, self.refills, 9173])
+        )
+        H = int(rng.integers(1, h_max + 1))
+        ks = [
+            int(k)
+            for k in self.cfg.iteration_counts
+            if k & (k - 1) == 0 and k <= k_max and k * H <= self.cfg.budget_cap
+        ]
+        seed = int(self.cfg.scene_count) + self.rank * 4096 + self.refills
+        return Job(seed=seed, K=int(rng.choice(ks)), H=H)
 
     def _pre_roll_length(self) -> int:
         """n ~ U{0..pre_roll_max} from the scene's generator stream (its first draw, before the candidate noise of
@@ -410,22 +437,26 @@ class SceneRunner:
             net.eval()
         try:
             with torch.no_grad():
+                recent: deque = deque(maxlen=PRE_ROLL_BACKTRACK)  # step-start states of the last steps, known sane
                 for h in range(n):
-                    last_good = (b.X.clone(), b.V.clone(), b.X_prev.clone())  # the step-start state, known sane
+                    recent.append((h, b.X.clone(), b.V.clone(), b.X_prev.clone()))
                     for k in range(self.cfg.pre_roll_queries):
                         self.step.commit(b, self.step.query(b))
                         kind = self._guard(b)
                         if kind is not None:
-                            # 2026-10-03: the pre-roll is truncated at the last sane step instead of dropping the
-                            # scene (dropping most of a rank's scenes left it idle for two thirds of epoch 11): the
-                            # training window starts from that state and the training guard takes it from there
-                            b.X.copy_(last_good[0])
-                            b.V.copy_(last_good[1])
-                            b.X_prev.copy_(last_good[2])
+                            # 2026-10-03: the pre-roll is truncated instead of dropping the scene (dropping most of a
+                            # rank's scenes left it idle for two thirds of epoch 11), and PRE_ROLL_BACKTRACK steps
+                            # before the violation rather than at the last step (a state on the verge of the bound
+                            # tripped the training guard at once, which forfeited the scene's budget): the training
+                            # window starts from the restored state and the training guard takes it from there
+                            h0, X0, V0, Xp0 = recent[0]
+                            b.X.copy_(X0)
+                            b.V.copy_(V0)
+                            b.X_prev.copy_(Xp0)
                             b.x.copy_(b.X)
                             self.step.prepare(b, b.active, self.gens)
                             self.pre_roll_truncated += 1
-                            return "truncated_" + kind, k + 1, h, time.perf_counter() - t0
+                            return "truncated_" + kind, k + 1, h0, time.perf_counter() - t0
                     self.step.advance(b, b.active, self.gens)
         finally:
             if was_training:
@@ -530,6 +561,7 @@ class SceneRunner:
             else 0.0,
             "pre_roll_seconds": self.pre_roll_seconds,
             "pre_roll_truncated": self.pre_roll_truncated,
+            "refill_scenes": self.refills,
             "scenes_served": self.scene_summaries,
         }
 

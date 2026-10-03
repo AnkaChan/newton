@@ -29,6 +29,7 @@ def scene_cfg(**kw):
     d = {
         "scene_mode": "v5",
         "scene_curriculum": False,  # the tests describe the final mix; the curriculum has its own tests
+        "refill_scenes": False,  # the queue semantics are tested as they are; TestRefill covers the refill
         "world_well": False,  # the v5 suites describe the world without the v6 well (test_scenes_v6 switches it on)
         "scene_cells": 1500,
         "scene_count": 3,
@@ -532,3 +533,38 @@ class TestPreRoll(unittest.TestCase):
             self.assertEqual(len(res["pre_roll"]), len(queues[r]))
             for roll in res["pre_roll"]:
                 self.assertTrue(0 <= roll["drawn"] <= self.MAX and roll["steps"] == roll["drawn"], roll)
+
+
+class TestRefill(unittest.TestCase):
+    """A rank whose queue runs dry before its update budget draws fresh scenes instead of idling (2026-10-03)."""
+
+    def test_lighter_rank_refills_instead_of_idling(self):
+        cfg = scene_cfg(scene_count=3, refill_scenes=True)
+        jobs = J.sample_epoch_jobs(MASTER, 1, cfg)
+        queues, U = J.assign(jobs, 2, 1)
+        light = min(range(2), key=lambda r: sum(j.K * j.H for j in queues[r]))
+        grids = GridCache("cpu")
+        aug = Augmenter("cpu")
+        step = Step(Net.from_config(cfg), Fusion(), aug)
+        runner = SceneRunner(cfg, step, aug, grids, light, 2, "cpu", MASTER)
+        runner.start_epoch(1)
+        own = sum(j.K * j.H for j in queues[light])
+        self.assertLess(own, U)  # the lighter rank would idle for U - own updates
+        served = 0
+        for _ in range(runner.U):
+            self.assertIsNotNone(runner.job)
+            served += int(runner.batch.active.any())
+            runner.commit(step.query(runner.batch))
+        self.assertEqual(served, runner.U)
+        self.assertEqual(runner.idle_updates, 0)
+        self.assertGreaterEqual(runner.refills, 1)
+        refills = [s for s in runner.scene_summaries if s["refill"]]
+        self.assertEqual(len(refills), runner.refills)
+        self.assertTrue(all(s["seed"] >= cfg.scene_count for s in refills))
+        self.assertEqual(runner.epoch_summary()["refill_scenes"], runner.refills)
+        # deterministic: a second runner draws the same refills
+        again = SceneRunner(cfg, step, aug, grids, light, 2, "cpu", MASTER)
+        again.start_epoch(1)
+        for _ in range(again.U):
+            again.commit(step.query(again.batch))
+        self.assertEqual([s["seed"] for s in again.scene_summaries], [s["seed"] for s in runner.scene_summaries])
