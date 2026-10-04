@@ -45,10 +45,15 @@ from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_dat_kernels import (
+    accumulate_alm_contact_force_and_hessian,
     build_contact_planes,
     commit_truncated_displacement,
+    create_particle_contact_alm_state,
     create_particle_contact_dat_planes,
+    match_contact_history,
+    snapshot_contact_history,
     truncate_against_contact_planes,
+    update_alm_contact_multipliers,
 )
 from .particle_vbd_kernels import (
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -1188,6 +1193,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # thickness reserved on each side of a stored plane; the certificate is "no crossing"
         self._dat_margin = 0.0
         self._dat_planes = None
+        self._dat_alm_state = None
         self._dat_anchor = None
         self._alm_dat_iteration = 0
         self._init_particle_system(
@@ -1349,6 +1355,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
             if self._alm_dat:
                 self._dat_anchor = wp.zeros_like(model.particle_q, device=self.device)
+                # frame-to-frame multiplier matching merges sorted rows
+                self._self_contact_detector().sort_contact_rows = True
 
             # the per-pair launch size is a derived cache over the result
             # struct; the accessor builds and heals it
@@ -1466,8 +1474,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.trimesh_collision_info = info
         self._update_self_contact_launch_size(info)
         if self._alm_dat:
-            # plane storage is indexed by row slot, so it follows the row capacity
+            # plane and multiplier storage is indexed by row slot, so it follows the
+            # row capacity; a capacity change drops the matching history once
             self._dat_planes = create_particle_contact_dat_planes(info, self.device)
+            self._dat_alm_state = create_particle_contact_alm_state(self.model, info, self.device)
         self._self_contact_info_source = info
         self._self_contact_storage_generation = generation
         return info
@@ -3443,6 +3453,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 device=self.device,
             )
 
+        if self._alm_dat and self._dat_alm_state is not None:
+            # contact multipliers are rebuilt from matching every step; a reset clears
+            # the whole history (all worlds) rather than tracking per-world rows
+            self._dat_alm_state.vt_lambda.zero_()
+            self._dat_alm_state.ee_lambda.zero_()
+            self._dat_alm_state.prev_vt_offsets.zero_()
+            self._dat_alm_state.prev_ee_offsets.zero_()
+
         if not self._integrates_rigid_bodies:
             return
 
@@ -4056,7 +4074,26 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             refresh_normals=True,
             launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
         )
+        match_contact_history(self._self_contact_info_source, self._dat_alm_state, self.device)
         self._alm_dat_truncate(state_in.particle_q, refresh_normals=True)
+
+    def particle_contact_alm_multipliers(self):
+        """Return the stored self-contact multipliers of the ``alm_dat`` path as one NumPy array.
+
+        Vertex-triangle slots come first, then edge-edge slots; only slots holding
+        a detected contact are included. Returns an empty array on the
+        ``penalty_dat`` path or without self-contact.
+        """
+        import numpy as np  # noqa: PLC0415
+
+        if not self._alm_dat or self._dat_alm_state is None:
+            return np.zeros(0, dtype=np.float32)
+        info = self._self_contact_info_source
+        vt_count = int(info.vertex_colliding_triangles_offsets.numpy()[-1])
+        ee_count = int(info.edge_colliding_edges_offsets.numpy()[-1])
+        return np.concatenate(
+            [self._dat_alm_state.vt_lambda.numpy()[:vt_count], self._dat_alm_state.ee_lambda.numpy()[:ee_count]]
+        )
 
     def _refresh_rigid_contact_state(
         self, contacts: Contacts | None, refresh: bool, *, restore_history: bool = False
@@ -4732,7 +4769,23 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
-            if self.particle_enable_self_contact:
+            if self.particle_enable_self_contact and self._alm_dat:
+                accumulate_alm_contact_force_and_hessian(
+                    model,
+                    dt,
+                    color,
+                    state_in.particle_q,
+                    self.trimesh_collision_info,
+                    self._dat_planes,
+                    self._dat_alm_state,
+                    stiffness=self.model.soft_contact_ke,
+                    radius=self.particle_self_contact_margin,
+                    parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
+                    launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
+                    particle_forces=self.particle_forces,
+                    particle_hessians=self.particle_hessians,
+                )
+            elif self.particle_enable_self_contact:
                 wp.launch(
                     kernel=accumulate_self_contact_force_and_hessian,
                     dim=self.particle_self_contact_evaluation_kernel_launch_size,
@@ -4831,6 +4884,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._penetration_free_truncation(state_in, contacts)
 
         if self._alm_dat:
+            # the dual eats the attempt: multipliers learn from the untruncated iterate
+            update_alm_contact_multipliers(
+                model,
+                dt,
+                state_in.particle_q,
+                self.trimesh_collision_info,
+                self._dat_planes,
+                self._dat_alm_state,
+                stiffness=self.model.soft_contact_ke,
+                radius=self.particle_self_contact_margin,
+                parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
+                launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
+            )
             self._alm_dat_iteration += 1
             interval = self.particle_dat_plane_update_interval
             if interval > 0 and self._alm_dat_iteration % interval == 0:
@@ -5674,6 +5740,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             for _ in range(self.particle_dat_truncation_iterations):
                 self._alm_dat_truncate(state_out.particle_q, refresh_normals=True)
             state_out.particle_q.assign(self._dat_anchor)
+            snapshot_contact_history(self._self_contact_info_source, self._dat_alm_state, self.device)
 
         wp.launch(
             kernel=update_velocity,
