@@ -49,6 +49,7 @@ from .particle_dat_kernels import (
     create_particle_contact_alm_state,
     create_particle_contact_dat_planes,
     match_contact_history,
+    record_contact_coverage,
     snapshot_contact_history,
     truncate_against_contact_planes,
     update_alm_contact_multipliers,
@@ -960,6 +961,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._dat_planes = None
         self._dat_alm_state = None
         self._dat_anchor = None
+        self._dat_coverage = None
         self._alm_dat_iteration = 0
         self.particle_elasticity_alm = bool(particle_elasticity_alm)
         self._particle_elasticity_alm_state = create_particle_elasticity_alm_state(
@@ -1096,6 +1098,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 )
             if self._alm_dat:
                 self._dat_anchor = wp.zeros_like(model.particle_q, device=self.device)
+                self._dat_coverage = wp.zeros(1, dtype=wp.int32, device=self.device)
                 # frame-to-frame multiplier matching merges sorted rows
                 self._self_contact_detector().sort_contact_rows = True
 
@@ -3353,8 +3356,13 @@ class SolverVBD(SolverBase, CouplingInterface):
     def _alm_dat_initialize(self, state_in: State) -> None:
         """Start the step's certified anchor at the detection pose and truncate the inertial target."""
         self._alm_dat_iteration = 0
+        # dropped detection records would leave pairs without planes: record it
+        record_contact_coverage(self._self_contact_info_source, self._dat_coverage, self.device)
         self._dat_anchor.assign(self.pos_prev_collision_detection)
         self._alm_dat_materialize_trial(state_in)
+        # the detection re-assigned the row slots: stored planes belong to last step's pairs
+        self._dat_planes.vt_valid.zero_()
+        self._dat_planes.ee_valid.zero_()
         build_contact_planes(
             self.model,
             self._dat_anchor,
@@ -3367,6 +3375,20 @@ class SolverVBD(SolverBase, CouplingInterface):
         )
         match_contact_history(self._self_contact_info_source, self._dat_alm_state, self.device)
         self._alm_dat_truncate(state_in.particle_q, refresh_normals=True)
+
+    def particle_dat_coverage_ok(self) -> bool:
+        """Return whether the last ``alm_dat`` step's detection stored every found pair.
+
+        ``False`` means the shared self-contact buffer overflowed, some pairs have
+        no stored plane, and the penetration-free certificate does not cover
+        them; call :meth:`check_and_grow_self_contact_buffers` between steps.
+        Reads one device integer back (synchronizes); graph users can read the
+        same flag from ``self._dat_coverage``. Always ``True`` on the
+        ``penalty_dat`` path.
+        """
+        if not self._alm_dat or self._dat_coverage is None:
+            return True
+        return bool(self._dat_coverage.numpy()[0])
 
     def particle_contact_alm_multipliers(self):
         """Return the stored self-contact multipliers of the ``alm_dat`` path as one NumPy array.
