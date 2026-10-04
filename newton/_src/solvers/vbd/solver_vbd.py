@@ -3375,8 +3375,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         a detected contact are included. Returns an empty array on the
         ``penalty_dat`` path or without self-contact.
         """
-        import numpy as np  # noqa: PLC0415
-
         if not self._alm_dat or self._dat_alm_state is None:
             return np.zeros(0, dtype=np.float32)
         info = self._self_contact_info_source
