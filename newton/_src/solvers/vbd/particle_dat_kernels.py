@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...geometry.kernels import triangle_closest_point
+from ...geometry.kernels import EE_PAIR_OVERFLOW, VT_PAIR_OVERFLOW, triangle_closest_point
 from ...geometry.tri_mesh_collision import TriMeshCollisionInfo
 from .rigid_vbd_kernels import (
     dat_separation_epsilon,
@@ -243,7 +243,10 @@ def _build_contact_planes_kernel(
 
     With ``refresh_normals`` the normal is a certified separator found at the
     anchor (the stored normal serves as a candidate hint); otherwise the stored
-    normal is kept and only the offset moves. Offsets follow
+    normal is kept and only the offset moves. Slots are re-assigned by every
+    detection, so callers must clear the ``*_valid`` flags before the first
+    build after a detection; within one detection a plane that can no longer be
+    re-certified (pair thinner than the separation band) is kept as stored. Offsets follow
     :func:`dat_plane_offset` using the remaining displacement ``trial - anchor``.
     Edge-edge records are processed in the canonical direction only
     (``e1 < e2``); mirrored records are marked invalid.
@@ -275,12 +278,15 @@ def _build_contact_planes_kernel(
                 if valid == 1:
                     hint = n
                 # n points from e2 (negative) toward e1 (positive)
-                found, n, _s0, _s1, _gap, _candidate = find_edge_edge_separator(
+                found, n_found, _s0, _s1, _gap, _candidate = find_edge_edge_separator(
                     x_e1_a, x_e1_b, x_e2_a, x_e2_b, hint, separation_eps
                 )
-                valid = int(0)
                 if found:
+                    n = n_found
                     valid = int(1)
+                # not found: a pair thinner than the separation band keeps its stored
+                # plane, which still separates the anchor because the committed motion
+                # never crossed it; a slot without a stored plane stays unconstrained
             if valid == 1:
                 positive = wp.mat33(0.0)
                 positive[0] = x_e1_a
@@ -327,12 +333,13 @@ def _build_contact_planes_kernel(
             if valid == 1:
                 hint = n
             # n points from the triangle (negative) toward the vertex (positive)
-            found, n, _s0, _s1, _gap, _candidate = find_vertex_triangle_separator(
+            found, n_found, _s0, _s1, _gap, _candidate = find_vertex_triangle_separator(
                 x_v, x_a, x_b, x_c, hint, separation_eps
             )
-            valid = int(0)
             if found:
+                n = n_found
                 valid = int(1)
+            # not found: keep a stored plane (see the edge-edge branch)
         if valid == 1:
             positive = wp.mat33(0.0)
             positive[0] = x_v
@@ -964,3 +971,23 @@ def snapshot_contact_history(collision_info: TriMeshCollisionInfo, alm: Particle
             outputs=[prev_offsets, prev_counterpart, prev_lambda],
             device=device,
         )
+
+
+@wp.kernel
+def _record_contact_coverage_kernel(global_pair_counts: wp.array[wp.int32], coverage: wp.array[wp.int32]):
+    """Coverage is 1 only when neither family dropped records in the last detection."""
+    ok = int(1)
+    if global_pair_counts[VT_PAIR_OVERFLOW] != 0 or global_pair_counts[EE_PAIR_OVERFLOW] != 0:
+        ok = 0
+    coverage[0] = ok
+
+
+def record_contact_coverage(collision_info: TriMeshCollisionInfo, coverage: wp.array, device) -> None:
+    """Write the detection's coverage status (graph-safe, no host readback)."""
+    wp.launch(
+        _record_contact_coverage_kernel,
+        dim=1,
+        inputs=[collision_info.global_pair_counts],
+        outputs=[coverage],
+        device=device,
+    )
